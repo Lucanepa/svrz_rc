@@ -1,0 +1,25 @@
+steps:
+  install:
+    image: node:24-alpine
+    commands:
+      - npm ci
+
+  build:
+    image: node:24-alpine
+    commands:
+      - npm run build
+
+  deploy-pages:
+    image: codeberg.org/sugar700/plugin-codeberg-pages-deploy:1
+    settings:
+      folder: dist
+      ssh_key:
+        from_secret: codeberg_pages_ssh_key
+      # Optional: set repository_name if deploying to a different repo.
+      # repository_name: your-username/your-username.codeberg.page
+      # Optional: defaults to "pages".
+      # branch: pages
+
+when:
+  event: push
+  branch: main

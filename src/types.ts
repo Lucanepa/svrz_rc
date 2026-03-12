@@ -38,6 +38,18 @@ export interface FeedbackFormData {
   results: Results;
 }
 
+export interface EligibleGame {
+  id: string;
+  matchNo: string;
+  league: string;
+  date: string;
+  location: string;
+  homeTeam: string;
+  awayTeam: string;
+  firstReferee: string;
+  secondReferee: string;
+}
+
 export const LEGEND = {
   DE: "A: Beispielhaft | B: Mehrheitlich übertroffen | C: Vollumfänglich erreicht (Normalfall) | D: Teilweise erreicht | E: Deutlich nicht erreicht",
   EN: "A: Exemplary | B: Mostly exceeded | C: Fully achieved (normal case) | D: Partially achieved | E: Clearly not achieved"

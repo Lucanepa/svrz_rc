@@ -4,11 +4,14 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "concurrently -n api,web -c green,blue \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:web": "vite --port=3000 --host=0.0.0.0",
+    "dev:api": "tsx watch server/index.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "start:api": "tsx server/index.ts"
   },
   "dependencies": {
     "@google/genai": "^1.45.0",
@@ -16,10 +19,15 @@
     "@vitejs/plugin-react": "^5.1.0",
     "better-sqlite3": "^12.6.2",
     "clsx": "^2.1.1",
+    "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.0",
     "lucide-react": "^0.577.0",
     "motion": "^12.36.0",
+    "node-cron": "^4.2.1",
+    "pocketbase": "^0.26.8",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "tailwind-merge": "^3.5.0",
@@ -27,9 +35,11 @@
     "vite-plugin-pwa": "^1.2.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^25.5.0",
     "autoprefixer": "^10.4.27",
+    "concurrently": "^9.2.1",
     "tailwindcss": "^4.2.1",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3",

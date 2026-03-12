@@ -1,0 +1,13 @@
+---
+description: Always load infrastructure context before acting
+alwaysApply: true
+---
+
+# Infrastructure Context
+
+Before proposing infra/network/deploy commands, read `infrastructure.md`.
+
+Requirements:
+- Treat `infrastructure.md` as the current source of truth for VPS, PocketBase, Nginx, and Tailscale setup.
+- If a requested action changes infrastructure, update `infrastructure.md` in the same task.
+- Never print or commit secrets from local env files.

@@ -1,7 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { Download, FileJson, Printer, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, BarChart3, Languages } from 'lucide-react';
-import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS } from './types';
+import React, { useState, useEffect, useRef } from 'react';
+import { Download, FileJson, Printer, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, Database } from 'lucide-react';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
+import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame } from './types';
+import { hasPocketBaseConfig, loadEligibleGames, saveFeedbackToPocketBase } from './lib/pocketbase';
 import { cn } from './lib/utils';
+import AdminPanel from './components/AdminPanel';
 
 const RATINGS = ['A', 'B', 'C', 'D', 'E'];
 
@@ -46,6 +50,16 @@ const UI_STRINGS = {
     copy: "Kopieren",
     copied: "In die Zwischenablage kopiert!",
     confirmReset: "Möchten Sie alle Daten löschen?",
+    gamePool: "Coachee-Spiele",
+    loadGames: "Spiele laden",
+    noGames: "Keine passenden Spiele gefunden.",
+    selectedGame: "Ausgewähltes Spiel",
+    downloadPdf: "PDF herunterladen",
+    saveBackend: "In Datenbank speichern",
+    saveOk: "Feedback wurde gespeichert.",
+    saveError: "Speichern fehlgeschlagen.",
+    loading: "Lädt...",
+    pbMissing: "VITE_POCKETBASE_URL fehlt. Bitte in .env setzen.",
   },
   EN: {
     title: "Referee Coaching Feedback",
@@ -79,10 +93,42 @@ const UI_STRINGS = {
     copy: "Copy",
     copied: "Copied to clipboard!",
     confirmReset: "Do you want to clear all data?",
+    gamePool: "Coachee Games",
+    loadGames: "Load Games",
+    noGames: "No matching games found.",
+    selectedGame: "Selected Game",
+    downloadPdf: "Download PDF",
+    saveBackend: "Save to Database",
+    saveOk: "Feedback saved successfully.",
+    saveError: "Saving failed.",
+    loading: "Loading...",
+    pbMissing: "VITE_POCKETBASE_URL is missing. Please set it in .env.",
   }
 };
 
+function getRefereeForRole(game: EligibleGame, role: FeedbackFormData['role']) {
+  return role === '1. SR' ? game.firstReferee : game.secondReferee;
+}
+
+function asInputDate(value: string): string {
+  if (!value) {
+    return '';
+  }
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) {
+    return date.toISOString().split('T')[0];
+  }
+  return value;
+}
+
+function pdfFilename(formData: FeedbackFormData): string {
+  const match = formData.meta.spielNr || 'feedback';
+  const role = formData.role.replace('.', '').replace(/\s+/g, '');
+  return `${match}-${role}.pdf`;
+}
+
 export default function App() {
+  const [viewMode, setViewMode] = useState<'feedback' | 'admin'>('feedback');
   const [formData, setFormData] = useState<FeedbackFormData>(() => {
     const saved = localStorage.getItem('sr_feedback_data');
     if (saved) {
@@ -103,12 +149,48 @@ export default function App() {
     return INITIAL_DATA;
   });
   const [showJson, setShowJson] = useState(false);
+  const [eligibleGames, setEligibleGames] = useState<EligibleGame[]>([]);
+  const [selectedGameId, setSelectedGameId] = useState('');
+  const [showFeedbackSheet, setShowFeedbackSheet] = useState(false);
+  const [loadingGames, setLoadingGames] = useState(false);
+  const [savingFeedback, setSavingFeedback] = useState(false);
+  const [backendNotice, setBackendNotice] = useState('');
+  const printableRef = useRef<HTMLDivElement | null>(null);
 
   const t = UI_STRINGS[formData.lang] || UI_STRINGS.DE;
+  const selectedGame = eligibleGames.find((game) => game.id === selectedGameId) ?? null;
 
   useEffect(() => {
     localStorage.setItem('sr_feedback_data', JSON.stringify(formData));
   }, [formData]);
+
+  useEffect(() => {
+    if (!hasPocketBaseConfig()) {
+      setBackendNotice(t.pbMissing);
+      return;
+    }
+    setBackendNotice('');
+    void refreshGames();
+  }, [formData.lang]);
+
+  useEffect(() => {
+    if (!selectedGame) {
+      return;
+    }
+    const srName = getRefereeForRole(selectedGame, formData.role);
+    setFormData((prev) => ({
+      ...prev,
+      meta: {
+        ...prev.meta,
+        spielNr: selectedGame.matchNo || prev.meta.spielNr,
+        liga: selectedGame.league || prev.meta.liga,
+        datum: asInputDate(selectedGame.date) || prev.meta.datum,
+        ort: selectedGame.location || prev.meta.ort,
+        mannschaften: [selectedGame.homeTeam, selectedGame.awayTeam].filter(Boolean).join(' - '),
+        srName: srName || prev.meta.srName,
+      },
+    }));
+  }, [selectedGameId, formData.role]);
 
   const updateMeta = (key: keyof typeof formData.meta, value: string) => {
     setFormData(prev => ({
@@ -147,6 +229,94 @@ export default function App() {
     }));
   };
 
+  const refreshGames = async () => {
+    if (!hasPocketBaseConfig()) {
+      setBackendNotice(t.pbMissing);
+      return;
+    }
+    setLoadingGames(true);
+    setBackendNotice('');
+    try {
+      const games = await loadEligibleGames();
+      setEligibleGames(games);
+      if (games.length > 0 && !selectedGameId) {
+        setSelectedGameId(games[0].id);
+      }
+    } catch (error) {
+      setBackendNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingGames(false);
+    }
+  };
+
+  const handleSelectGame = (game: EligibleGame) => {
+    setSelectedGameId(game.id);
+    setShowFeedbackSheet(true);
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!printableRef.current) {
+      return;
+    }
+    const canvas = await html2canvas(printableRef.current, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: '#ffffff',
+    });
+
+    const imageData = canvas.toDataURL('image/png');
+    const pdf = new jsPDF('p', 'pt', 'a4');
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imageWidth = pageWidth;
+    const imageHeight = (canvas.height * imageWidth) / canvas.width;
+
+    let heightLeft = imageHeight;
+    let position = 0;
+
+    pdf.addImage(imageData, 'PNG', 0, position, imageWidth, imageHeight);
+    heightLeft -= pageHeight;
+
+    while (heightLeft > 0) {
+      position = heightLeft - imageHeight;
+      pdf.addPage();
+      pdf.addImage(imageData, 'PNG', 0, position, imageWidth, imageHeight);
+      heightLeft -= pageHeight;
+    }
+
+    const file = new File([pdf.output('blob')], pdfFilename(formData), { type: 'application/pdf' });
+    if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        title: t.title,
+        files: [file],
+      });
+      return;
+    }
+    pdf.save(pdfFilename(formData));
+  };
+
+  const handleSaveFeedback = async () => {
+    if (!selectedGame) {
+      setBackendNotice(t.noGames);
+      return;
+    }
+    setSavingFeedback(true);
+    setBackendNotice('');
+    try {
+      await saveFeedbackToPocketBase({
+        game: selectedGame,
+        role: formData.role,
+        formData,
+      });
+      setBackendNotice(t.saveOk);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setBackendNotice(`${t.saveError} ${reason}`);
+    } finally {
+      setSavingFeedback(false);
+    }
+  };
+
   const resetForm = () => {
     if (window.confirm(t.confirmReset)) {
       setFormData(INITIAL_DATA);
@@ -165,7 +335,11 @@ export default function App() {
       return {
         ...prev,
         role: newRole,
-        sections: newSections
+        sections: newSections,
+        meta: {
+          ...prev.meta,
+          srName: selectedGame ? getRefereeForRole(selectedGame, newRole) || prev.meta.srName : prev.meta.srName,
+        },
       };
     });
   };
@@ -201,6 +375,21 @@ export default function App() {
     <div className="min-h-screen bg-stone-100 py-8 px-4 print:bg-white print:p-0">
       {/* UI Controls */}
       <div className="max-w-4xl mx-auto mb-6 flex flex-wrap gap-3 no-print">
+        <button
+          onClick={() => setViewMode((prev) => (prev === 'feedback' ? 'admin' : 'feedback'))}
+          className="flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-slate-800 transition-colors"
+        >
+          <Database size={18} />
+          <span>{viewMode === 'feedback' ? 'Admin' : 'Feedback'}</span>
+        </button>
+        {viewMode === 'feedback' && showFeedbackSheet && (
+          <>
+        <button
+          onClick={() => setShowFeedbackSheet(false)}
+          className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
+        >
+          <span>Games</span>
+        </button>
         <button 
           onClick={() => window.print()}
           className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
@@ -208,12 +397,27 @@ export default function App() {
           <Printer size={18} />
           <span>{t.pdf}</span>
         </button>
+        <button
+          onClick={() => void handleDownloadPdf()}
+          className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
+        >
+          <Download size={18} />
+          <span>{t.downloadPdf}</span>
+        </button>
         <button 
           onClick={() => setShowJson(!showJson)}
           className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
         >
           <FileJson size={18} />
           <span>{t.json}</span>
+        </button>
+        <button
+          onClick={() => void handleSaveFeedback()}
+          disabled={savingFeedback || !selectedGame}
+          className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
+        >
+          <Database size={18} />
+          <span>{savingFeedback ? t.loading : t.saveBackend}</span>
         </button>
         <button 
           onClick={toggleLang}
@@ -236,10 +440,55 @@ export default function App() {
           <RefreshCw size={18} />
           <span>{t.reset}</span>
         </button>
+          </>
+        )}
       </div>
 
+      {viewMode === 'admin' && <AdminPanel />}
+
+      {viewMode === 'feedback' && !showFeedbackSheet && (
+        <div className="max-w-4xl mx-auto bg-white p-6 shadow-xl border border-stone-200 no-print">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-base font-semibold text-stone-800">{t.gamePool}</h2>
+            <button
+              onClick={() => void refreshGames()}
+              className="text-xs px-2 py-1 border rounded border-stone-300 hover:bg-stone-50"
+            >
+              {loadingGames ? t.loading : t.loadGames}
+            </button>
+          </div>
+          <div className="max-h-[60vh] overflow-auto border border-stone-200 rounded">
+            {eligibleGames.length === 0 ? (
+              <p className="text-sm text-stone-500 p-4">{t.noGames}</p>
+            ) : (
+              <div className="divide-y divide-stone-100">
+                {eligibleGames.map((game) => (
+                  <button
+                    key={game.id}
+                    onClick={() => handleSelectGame(game)}
+                    className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
+                  >
+                    <div className="font-semibold text-stone-900 text-sm">
+                      {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
+                    </div>
+                    <div className="text-xs text-stone-500 mt-1">
+                      {game.date} | {game.league} | 1SR: {game.firstReferee || '-'} | 2SR: {game.secondReferee || '-'}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {backendNotice && (
+            <p className="text-sm mt-3 text-indigo-700">{backendNotice}</p>
+          )}
+        </div>
+      )}
+
+      {viewMode === 'feedback' && showFeedbackSheet && (
+      <>
       {/* Main Form Container */}
-      <div className="max-w-4xl mx-auto bg-white p-8 shadow-xl border border-stone-200 print:shadow-none print:border-none print:p-0">
+      <div ref={printableRef} className="max-w-4xl mx-auto bg-white p-8 shadow-xl border border-stone-200 print:shadow-none print:border-none print:p-0">
         
         {/* Header */}
         <div className="flex justify-between items-start mb-6">
@@ -449,9 +698,11 @@ export default function App() {
           {t.version}: 12. März 2026 | SVRZ Referee Coaching Tool
         </div>
       </div>
+      </>
+      )}
 
       {/* JSON Modal */}
-      {showJson && (
+      {viewMode === 'feedback' && showJson && (
         <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
             <div className="p-6 border-b border-stone-100 flex justify-between items-center">

@@ -264,6 +264,96 @@ function isMissingCollectionError(error: unknown): boolean {
   return text.includes('Missing collection context') || text.includes('ClientResponseError 404');
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildFeedbackEmailHtml(params: {
+  matchNo: string;
+  league: string;
+  date: string;
+  location: string;
+  homeTeam: string;
+  awayTeam: string;
+  role: string;
+  rcName: string;
+  tipsAndTricks: string;
+  surveyUrl: string;
+}): string {
+  const e = (s: string) => escapeHtml(s);
+  const tipsSection = params.tipsAndTricks.trim()
+    ? `
+    <div style="margin: 24px 0; padding: 16px 20px; border-left: 4px solid #059669; background: #ecfdf5; border-radius: 0 8px 8px 0;">
+      <h2 style="margin: 0 0 8px; font-size: 15px; font-weight: 600; color: #059669;">Tips &amp; Tricks</h2>
+      <p style="margin: 0; font-size: 14px; color: #1e293b; white-space: pre-wrap; line-height: 1.6;">${e(params.tipsAndTricks)}</p>
+    </div>`
+    : '';
+
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin: 0; padding: 0; background-color: #f5f5f4; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+  <div style="max-width: 600px; margin: 0 auto; padding: 32px 16px;">
+    <div style="background: #ffffff; border: 1px solid #e7e5e4; border-radius: 12px; padding: 32px; margin-bottom: 16px;">
+      <h1 style="margin: 0 0 24px; font-size: 20px; font-weight: 700; color: #1c1917;">Referee Coaching Feedback</h1>
+      <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #44403c;">
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Match No.</td><td style="padding: 6px 0;">${e(params.matchNo)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">League</td><td style="padding: 6px 0;">${e(params.league)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Date</td><td style="padding: 6px 0;">${e(params.date)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Location</td><td style="padding: 6px 0;">${e(params.location)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Teams</td><td style="padding: 6px 0;">${e(params.homeTeam)} vs ${e(params.awayTeam)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Role Assessed</td><td style="padding: 6px 0;">${e(params.role)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Referee Coach</td><td style="padding: 6px 0;">${e(params.rcName)}</td></tr>
+      </table>
+      ${tipsSection}
+      <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e7e5e4;">
+        <p style="margin: 0 0 12px; font-size: 14px; color: #44403c;">We value your feedback on the coaching experience:</p>
+        <a href="${e(params.surveyUrl)}" style="display: inline-block; padding: 10px 24px; background: #059669; color: #ffffff; text-decoration: none; border-radius: 8px; font-size: 14px; font-weight: 600;">Share Your Feedback</a>
+      </div>
+    </div>
+    <div style="text-align: center; padding: 8px 0;">
+      <p style="margin: 0 0 4px; font-size: 13px; color: #78716c;">The complete coaching feedback report is attached as a PDF.</p>
+      <p style="margin: 0; font-size: 11px; color: #a8a29e;">This email was sent automatically by the SR-Coaching system.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+function buildFeedbackEmailText(params: {
+  matchNo: string;
+  league: string;
+  date: string;
+  location: string;
+  homeTeam: string;
+  awayTeam: string;
+  role: string;
+  rcName: string;
+  tipsAndTricks: string;
+  surveyUrl: string;
+}): string {
+  let text = `Referee Coaching Feedback\n\n`;
+  text += `Match No.: ${params.matchNo}\n`;
+  text += `League: ${params.league}\n`;
+  text += `Date: ${params.date}\n`;
+  text += `Location: ${params.location}\n`;
+  text += `Teams: ${params.homeTeam} vs ${params.awayTeam}\n`;
+  text += `Role Assessed: ${params.role}\n`;
+  text += `Referee Coach: ${params.rcName}\n`;
+  if (params.tipsAndTricks.trim()) {
+    text += `\n--- Tips & Tricks ---\n${params.tipsAndTricks}\n`;
+  }
+  text += `\nWe value your feedback on the coaching experience:\n${params.surveyUrl}\n`;
+  text += `\nThe complete coaching feedback report is attached as a PDF.\n`;
+  text += `This email was sent automatically by the SR-Coaching system.\n`;
+  return text;
+}
+
 async function withCollection<T>(
   candidates: string[],
   action: (collection: ReturnType<typeof pb.collection>, collectionName: string) => Promise<T>,

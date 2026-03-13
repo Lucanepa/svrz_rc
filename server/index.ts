@@ -571,6 +571,10 @@ async function fetchAllVmGames(
   const headers = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
     'Content-Type': 'application/x-www-form-urlencoded',
+    Accept: 'application/json, text/javascript, */*; q=0.01',
+    'Accept-Language': 'de-CH,de;q=0.9,en;q=0.8',
+    Referer: `${VM_BASE}/indoorvolleyball.refadmin/refereegame/index`,
+    'X-Requested-With': 'XMLHttpRequest',
     Cookie: jar.header(),
   };
 

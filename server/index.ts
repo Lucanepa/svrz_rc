@@ -974,8 +974,8 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     : '';
   const groupDisplay = asText(group.displayName);
   const groupMatch = groupDisplay.match(/Gruppe\s+([A-Z0-9]+)/) || groupDisplay.match(/\|\s*([A-Z0-9]+)\s*$/);
-  const leagueBase = groupMatch ? `${leagueShort} ${groupMatch[1]}` : leagueShort;
-  const leagueText = genderSymbol ? `${leagueBase} ${genderSymbol}` : leagueBase;
+  const groupSuffix = groupMatch ? groupMatch[1] : '';
+  const leagueText = [leagueShort, genderSymbol, groupSuffix].filter(Boolean).join(' ');
   const firstReferee =
     extractRefereeName(item, 'activeRefereeConvocationFirstHeadReferee')
     || asText(item.activeFirstHeadRefereeName);
@@ -1475,6 +1475,166 @@ app.put('/api/games/:id/assign-rc', async (req: Request, res: ExpressResponse) =
       collection.update(gameId, { assigned_rc: rcName }),
     );
     res.json({ ok: true, id: (updated as AnyRecord).id, assignedRc: asText((updated as AnyRecord).assigned_rc) });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// ── RC Overview ──────────────────────────────────────────────────────
+app.get('/api/rc-overview', async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    // 1. RC people
+    const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
+      collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }),
+    );
+    // 2. All games
+    const allGames = await withCollection(collectionCandidates.games, (collection) =>
+      collection.getFullList<AnyRecord>({
+        sort: '-match_date',
+        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles',
+      }),
+    );
+    // 3. All feedback records
+    const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+      collection.getFullList<AnyRecord>({
+        fields: 'id,rc_name,game,submitted_at',
+      }),
+    );
+
+    const now = new Date();
+    // Build set of game IDs that have feedback, keyed by normalized rc_name
+    const feedbackGameIdsByRc = new Map<string, Set<string>>();
+    for (const fb of allFeedbacks) {
+      const rcKey = normalizeName(fb.rc_name);
+      if (!rcKey) continue;
+      if (!feedbackGameIdsByRc.has(rcKey)) feedbackGameIdsByRc.set(rcKey, new Set());
+      feedbackGameIdsByRc.get(rcKey)!.add(String(fb.game || ''));
+    }
+
+    const result = people.map((p) => {
+      const fullName = `${asText(p.first_name)} ${asText(p.last_name)}`.trim();
+      const rcKey = normalizeName(fullName);
+      const fbGameIds = feedbackGameIdsByRc.get(rcKey) ?? new Set<string>();
+
+      let done = 0;
+      let outstanding = 0;
+      let planned = 0;
+
+      for (const game of allGames) {
+        const assignedRc = normalizeName(game.assigned_rc);
+        if (assignedRc !== rcKey) continue;
+        const gameDate = new Date(asText(game.match_date));
+        const hasFeedback = fbGameIds.has(game.id);
+
+        if (hasFeedback) {
+          done++;
+        } else if (gameDate < now) {
+          outstanding++;
+        } else {
+          planned++;
+        }
+      }
+
+      return { id: p.id, fullName, done, outstanding, planned };
+    });
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get('/api/rc-overview/:rcName/coachees', async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const rcName = decodeURIComponent(String(req.params.rcName));
+    const rcKey = normalizeName(rcName);
+
+    // Fetch all games assigned to this RC
+    const allGames = await withCollection(collectionCandidates.games, (collection) =>
+      collection.getFullList<AnyRecord>({
+        sort: '-match_date',
+        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles',
+      }),
+    );
+    const rcGames = allGames.filter((g) => normalizeName(g.assigned_rc) === rcKey);
+
+    // Fetch feedbacks for this RC
+    const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+      collection.getFullList<AnyRecord>({
+        sort: '-submitted_at',
+        expand: 'game,coachee',
+      }),
+    );
+    const rcFeedbacks = allFeedbacks.filter((fb) => normalizeName(fb.rc_name) === rcKey);
+
+    // Build feedback game IDs set
+    const feedbackGameIds = new Set(rcFeedbacks.map((fb) => String(fb.game || '')));
+
+    // Get coachee name set for referee matching
+    const coacheeNameSet = await getCoacheeNameSet();
+
+    // Group by coachee
+    const coacheeMap = new Map<string, {
+      coacheeName: string;
+      coacheeId: string;
+      doneFeedbacks: { gameDate: string; league: string; teams: string; role: string; submittedAt: string }[];
+      outstandingGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string }[];
+      plannedGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string }[];
+    }>();
+
+    const getOrCreate = (name: string, id: string) => {
+      const key = normalizeName(name);
+      if (!coacheeMap.has(key)) {
+        coacheeMap.set(key, { coacheeName: name, coacheeId: id, doneFeedbacks: [], outstandingGames: [], plannedGames: [] });
+      }
+      return coacheeMap.get(key)!;
+    };
+
+    // Done feedbacks
+    for (const fb of rcFeedbacks) {
+      const expanded = fb.expand as Record<string, AnyRecord> | undefined;
+      const coacheeRec = expanded?.coachee;
+      const gameRec = expanded?.game;
+      const coacheeName = asText(coacheeRec?.full_name || coacheeRec?.name);
+      const coacheeId = String(coacheeRec?.id || '');
+      if (!coacheeName) continue;
+      const entry = getOrCreate(coacheeName, coacheeId);
+      entry.doneFeedbacks.push({
+        gameDate: asText(gameRec?.match_date),
+        league: asText(gameRec?.league),
+        teams: `${asText(gameRec?.home_team)} vs ${asText(gameRec?.away_team)}`,
+        role: asText(fb.role_assessed),
+        submittedAt: asText(fb.submitted_at),
+      });
+    }
+
+    // Outstanding & planned games (no feedback yet)
+    const now = new Date();
+    for (const game of rcGames) {
+      if (feedbackGameIds.has(game.id)) continue;
+      const gameDate = new Date(asText(game.match_date));
+      const teams = `${asText(game.home_team)} vs ${asText(game.away_team)}`;
+      const league = asText(game.league);
+
+      // Match referees to coachees
+      for (const ref of [game.first_referee, game.second_referee]) {
+        const refName = asText(ref);
+        if (!refName) continue;
+        if (!coacheeNameSet.has(normalizeName(refName))) continue;
+        const entry = getOrCreate(refName, '');
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: refName };
+        if (gameDate < now) {
+          entry.outstandingGames.push(gameEntry);
+        } else {
+          entry.plannedGames.push(gameEntry);
+        }
+      }
+    }
+
+    const result = Array.from(coacheeMap.values()).sort((a, b) => a.coacheeName.localeCompare(b.coacheeName));
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }

@@ -245,6 +245,38 @@ export const SECTIONS_2SR_EN: AssessmentSection[] = [
   },
 ];
 
+export interface RcOverviewEntry {
+  id: string;
+  fullName: string;
+  done: number;
+  outstanding: number;
+  planned: number;
+}
+
+export interface RcCoacheeSummaryFeedback {
+  gameDate: string;
+  league: string;
+  teams: string;
+  role: string;
+  submittedAt: string;
+}
+
+export interface RcCoacheeSummaryGame {
+  gameId: string;
+  gameDate: string;
+  league: string;
+  teams: string;
+  refereeName: string;
+}
+
+export interface RcCoacheeSummary {
+  coacheeName: string;
+  coacheeId: string;
+  doneFeedbacks: RcCoacheeSummaryFeedback[];
+  outstandingGames: RcCoacheeSummaryGame[];
+  plannedGames: RcCoacheeSummaryGame[];
+}
+
 export const INITIAL_DATA: FeedbackFormData = {
   role: '1. SR',
   lang: 'DE',

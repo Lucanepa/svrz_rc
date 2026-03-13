@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, Database, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays } from 'lucide-react';
+import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, Database, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
-import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame } from './types';
+import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame, RcOverviewEntry, RcCoacheeSummary } from './types';
 import {
   CalendarGameStatus,
   Coachee,
@@ -22,6 +22,8 @@ import {
   listRefereeCoachPeople,
   assignRcToGame,
   RefereeCoachPerson,
+  loadRcOverview,
+  loadRcCoacheeSummary,
 } from './lib/pocketbase';
 import { cn } from './lib/utils';
 import { normalizeCoacheeGroup } from './lib/coacheeGroup';
@@ -132,6 +134,19 @@ const UI_STRINGS = {
     phone: "Telefon",
     emailLabel: "E-Mail",
     noNotes: "Keine Notizen vorhanden.",
+    rcOverview: "Referee Coach",
+    rcDone: "Erledigt",
+    rcOutstanding: "Ausstehend",
+    rcPlanned: "Geplant",
+    rcNoData: "Keine RC-Daten gefunden.",
+    rcCoacheeSummary: "Coachee-Übersicht",
+    rcBackToOverview: "Zurück zur Übersicht",
+    rcDoneFeedbacks: "Erledigte Feedbacks",
+    rcOutstandingGames: "Ausstehende Spiele",
+    rcPlannedGames: "Geplante Spiele",
+    rcNoFeedbacks: "Keine Feedbacks.",
+    rcNoOutstanding: "Keine ausstehenden Spiele.",
+    rcNoPlanned: "Keine geplanten Spiele.",
   },
   EN: {
     title: "Referee Coaching Feedback",
@@ -226,6 +241,19 @@ const UI_STRINGS = {
     phone: "Phone",
     emailLabel: "Email",
     noNotes: "No notes yet.",
+    rcOverview: "Referee Coach",
+    rcDone: "Done",
+    rcOutstanding: "Outstanding",
+    rcPlanned: "Planned",
+    rcNoData: "No RC data found.",
+    rcCoacheeSummary: "Coachee Summary",
+    rcBackToOverview: "Back to overview",
+    rcDoneFeedbacks: "Done Feedbacks",
+    rcOutstandingGames: "Outstanding Games",
+    rcPlannedGames: "Planned Games",
+    rcNoFeedbacks: "No feedbacks.",
+    rcNoOutstanding: "No outstanding games.",
+    rcNoPlanned: "No planned games.",
   }
 };
 
@@ -233,6 +261,10 @@ type FeedbackSubView = 'coachees' | 'coacheeGames' | 'calendar' | 'feedbackForm'
 
 function getRefereeForRole(game: EligibleGame, role: FeedbackFormData['role']) {
   return role === '1. SR' ? game.firstReferee : game.secondReferee;
+}
+
+function normName(value: string): string {
+  return value.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, ' ');
 }
 
 function asInputDate(value: string): string {
@@ -255,6 +287,52 @@ function formatDisplayDate(value: string): string {
   const hh = String(d.getHours()).padStart(2, '0');
   const min = String(d.getMinutes()).padStart(2, '0');
   return `${dd}/${mm}/${d.getFullYear()} ${hh}:${min}`;
+}
+
+function downloadIcal(game: EligibleGame) {
+  const start = new Date(game.date);
+  if (Number.isNaN(start.getTime())) return;
+  const end = new Date(start.getTime() + 2 * 60 * 60 * 1000); // 2h match
+  const fmt = (d: Date) =>
+    d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const title = `${game.matchNo} ${game.homeTeam} vs ${game.awayTeam}`;
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//SVRZ RC//Referee Coaching//EN',
+    'BEGIN:VEVENT',
+    `DTSTART:${fmt(start)}`,
+    `DTEND:${fmt(end)}`,
+    `SUMMARY:${title}`,
+    `LOCATION:${game.location || ''}`,
+    `DESCRIPTION:${game.league}${game.firstReferee ? `\\n1SR: ${game.firstReferee}` : ''}${game.secondReferee ? `\\n2SR: ${game.secondReferee}` : ''}`,
+    `UID:${game.id}@svrz-rc`,
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ];
+  const blob = new Blob([lines.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${game.matchNo || 'game'}.ics`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function LeagueLabel({ text }: { text: string }) {
+  const parts = text.split(/(♂|♀)/);
+  if (parts.length === 1) return <>{text}</>;
+  return (
+    <>
+      {parts.map((part, i) =>
+        part === '♂' || part === '♀' ? (
+          <span key={i} className="text-sm leading-none">{part}</span>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </>
+  );
 }
 
 function pdfFilename(formData: FeedbackFormData): string {
@@ -482,22 +560,33 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder }: {
 export default function App() {
   const [viewMode, setViewMode] = useState<'feedback' | 'admin'>('feedback');
   const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>('coachees');
-  const [listTab, setListTab] = useState<'coachees' | 'games'>('coachees');
+  const [listTab, setListTab] = useState<'coachees' | 'games' | 'rcOverview'>('coachees');
   const [listPage, setListPage] = useState(0);
   const LIST_PAGE_SIZE = 50;
   const [listSearch, setListSearch] = useState('');
-  const [listFilterLevel, setListFilterLevel] = useState('');
+  const [listFilterLevels, setListFilterLevels] = useState<string[]>([]);
   const [listFilterNeedsObs, setListFilterNeedsObs] = useState(true);
   const [listFilterShowInactive, setListFilterShowInactive] = useState(false);
+  const [coacheeFiltersOpen, setCoacheeFiltersOpen] = useState(false);
   const [listSortBy, setListSortBy] = useState<'name' | 'level' | 'status'>('name');
   const [listSortAsc, setListSortAsc] = useState(true);
+
+  // RC Overview state
+  const [rcOverviewData, setRcOverviewData] = useState<RcOverviewEntry[]>([]);
+  const [rcOverviewLoading, setRcOverviewLoading] = useState(false);
+  const [selectedRcName, setSelectedRcName] = useState<string | null>(null);
+  const [rcCoacheeSummaryData, setRcCoacheeSummaryData] = useState<RcCoacheeSummary[]>([]);
+  const [rcCoacheeSummaryLoading, setRcCoacheeSummaryLoading] = useState(false);
   const toggleListSort = (col: 'name' | 'level' | 'status') => {
     if (listSortBy === col) setListSortAsc((v) => !v);
     else { setListSortBy(col); setListSortAsc(true); }
     setListPage(0);
   };
   const [gameFilterCoachees, setGameFilterCoachees] = useState<string[]>([]);
+  const [gameFilterLevels, setGameFilterLevels] = useState<string[]>([]);
   const [gameFilterLeagues, setGameFilterLeagues] = useState<string[]>([]);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [gameFilterFunction, setGameFilterFunction] = useState<string[]>([]);
   const [gameFilterDateFrom, setGameFilterDateFrom] = useState('');
   const [gameFilterDateTo, setGameFilterDateTo] = useState('');
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
@@ -534,6 +623,7 @@ export default function App() {
   const [feedbackPickerCoachee, setFeedbackPickerCoachee] = useState<Coachee | null>(null);
   const [coacheeFeedbacks, setCoacheeFeedbacks] = useState<FeedbackRecord[]>([]);
   const [loadingCoacheeFeedbacks, setLoadingCoacheeFeedbacks] = useState(false);
+  const [showAllPastGames, setShowAllPastGames] = useState(false);
   const [savingFeedback, setSavingFeedback] = useState(false);
   const [backendNotice, setBackendNotice] = useState('');
   const [adminAuthLoading, setAdminAuthLoading] = useState(false);
@@ -699,6 +789,31 @@ export default function App() {
     }
   };
 
+  const refreshRcOverview = async () => {
+    setRcOverviewLoading(true);
+    try {
+      const data = await loadRcOverview();
+      setRcOverviewData(data);
+    } catch {
+      setRcOverviewData([]);
+    } finally {
+      setRcOverviewLoading(false);
+    }
+  };
+
+  const handleSelectRc = async (rcName: string) => {
+    setSelectedRcName(rcName);
+    setRcCoacheeSummaryLoading(true);
+    try {
+      const data = await loadRcCoacheeSummary(rcName);
+      setRcCoacheeSummaryData(data);
+    } catch {
+      setRcCoacheeSummaryData([]);
+    } finally {
+      setRcCoacheeSummaryLoading(false);
+    }
+  };
+
   const applyCoacheeToMeta = (coachee: Coachee) => {
     setFormData((prev) => ({
       ...prev,
@@ -739,6 +854,7 @@ export default function App() {
 
   const loadCoacheeGames = async (coachee: Coachee) => {
     setLoadingCoacheeGames(true);
+    setShowAllPastGames(false);
     setBackendNotice('');
     try {
       const [games, feedbacks] = await Promise.all([
@@ -1087,11 +1203,15 @@ export default function App() {
 
   // Memoize expensive list computations to avoid recomputing on every render
   const coacheeNames = useMemo(
-    () => new Set(coachees.map((c) => (c.full_name || '').toLowerCase().trim())),
+    () => new Set(coachees.map((c) => normName(c.full_name || ''))),
     [coachees],
   );
   const coacheeLevels = useMemo(
-    () => [...new Set(coachees.map((c) => c.referee_level).filter(Boolean))].sort(),
+    () => [...new Set(
+      coachees
+        .map((c) => (c.referee_level && c.stage ? `${c.referee_level}-${c.stage}` : c.referee_level || ''))
+        .filter(Boolean)
+    )].sort(),
     [coachees],
   );
   const gameLeagues = useMemo(
@@ -1101,7 +1221,7 @@ export default function App() {
   const gameCoacheeOptions = useMemo(
     () => Array.from(new Set<string>(
       eligibleGames.flatMap((g) => [g.firstReferee, g.secondReferee].filter(Boolean) as string[])
-        .filter((name) => coacheeNames.has(name.toLowerCase().trim()))
+        .filter((name) => coacheeNames.has(normName(name)))
     )).sort(),
     [eligibleGames, coacheeNames],
   );
@@ -1122,7 +1242,10 @@ export default function App() {
     const q = listSearch.toLowerCase();
     const filtered = coachees.filter((c) => {
       if (q && !(c.full_name || '').toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q)) return false;
-      if (listFilterLevel && (c.referee_level || '') !== listFilterLevel) return false;
+      if (listFilterLevels.length > 0) {
+        const coacheeLevel = c.referee_level && c.stage ? `${c.referee_level}-${c.stage}` : c.referee_level || '';
+        if (!listFilterLevels.includes(coacheeLevel)) return false;
+      }
       const isActive = (c.stage || 'active') !== 'inactive';
       if (!listFilterShowInactive && !isActive) return false;
       if (listFilterNeedsObs && !c.observation_status?.needsObservation) return false;
@@ -1143,12 +1266,12 @@ export default function App() {
       return dir * (statusPriority(a) - statusPriority(b));
     });
     return filtered;
-  }, [coachees, listSearch, listFilterLevel, listFilterShowInactive, listFilterNeedsObs, listSortBy, listSortAsc]);
+  }, [coachees, listSearch, listFilterLevels, listFilterShowInactive, listFilterNeedsObs, listSortBy, listSortAsc]);
   // Lookup coachee by normalized name for game filtering
   const coacheeByName = useMemo(() => {
     const map = new Map<string, Coachee>();
     for (const c of coachees) {
-      const key = (c.full_name || '').toLowerCase().trim();
+      const key = normName(c.full_name || '');
       if (key) map.set(key, c);
     }
     return map;
@@ -1166,8 +1289,25 @@ export default function App() {
         (g.secondReferee || '').toLowerCase().includes(q)
       )) return false;
       if (gameFilterCoachees.length > 0) {
-        const refs = [(g.firstReferee || '').toLowerCase().trim(), (g.secondReferee || '').toLowerCase().trim()];
-        if (!gameFilterCoachees.some((c) => refs.includes(c.toLowerCase().trim()))) return false;
+        const refs = [normName(g.firstReferee || ''), normName(g.secondReferee || '')];
+        if (!gameFilterCoachees.some((c) => refs.includes(normName(c)))) return false;
+      }
+      if (gameFilterLevels.length > 0) {
+        const refs = [g.firstReferee, g.secondReferee].filter(Boolean).map((r) => normName(r!));
+        const refCoachees = refs.map((r) => coacheeByName.get(r)).filter(Boolean) as Coachee[];
+        const hasMatchingLevel = refCoachees.some((c) => {
+          const level = c.referee_level && c.stage ? `${c.referee_level}-${c.stage}` : c.referee_level || '';
+          return gameFilterLevels.includes(level);
+        });
+        if (!hasMatchingLevel) return false;
+      }
+      if (gameFilterFunction.length > 0) {
+        const r1IsCoachee = coacheeNames.has(normName(g.firstReferee || ''));
+        const r2IsCoachee = coacheeNames.has(normName(g.secondReferee || ''));
+        const match = gameFilterFunction.some((fn) =>
+          fn === '1SR' ? r1IsCoachee : fn === '2SR' ? r2IsCoachee : false,
+        );
+        if (!match) return false;
       }
       if (gameFilterLeagues.length > 0 && !gameFilterLeagues.includes(g.league || '')) return false;
       if (gameFilterDateFrom) {
@@ -1180,7 +1320,7 @@ export default function App() {
       }
       // Coachee-aware filters: check if at least one referee passes
       if (gameFilterNeedsObs || !gameFilterShowInactive) {
-        const refs = [g.firstReferee, g.secondReferee].filter(Boolean).map((r) => r!.toLowerCase().trim());
+        const refs = [g.firstReferee, g.secondReferee].filter(Boolean).map((r) => normName(r!));
         const refCoachees = refs.map((r) => coacheeByName.get(r)).filter(Boolean) as Coachee[];
         // If no referees are coachees at all, keep the game visible
         if (refCoachees.length > 0) {
@@ -1195,7 +1335,7 @@ export default function App() {
       }
       return true;
     });
-  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, coacheeByName]);
+  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, coacheeByName, coacheeNames]);
 
   return (
     <div className="min-h-screen bg-stone-100 py-8 px-4 print:bg-white print:p-0">
@@ -1305,33 +1445,35 @@ export default function App() {
 
       {viewMode === 'feedback' && feedbackSubView === 'coachees' && (
         <div className="max-w-5xl mx-auto no-print">
-          <div className="bg-white p-4 shadow-xl border border-stone-200 mb-4 flex items-center gap-4">
-            <img
-              src={swissVolleyLogo}
-              alt="Swiss Volley"
-              className="h-14 w-auto object-contain"
-            />
+          <div className="bg-white p-4 shadow-xl border border-stone-200 mb-4 flex items-end gap-4">
             <div className="flex-1">
               <h1 className="text-xl font-bold text-stone-900">{t.title}</h1>
               <p className="text-xs text-stone-500">Swiss Volley Region Zürich</p>
             </div>
-            <button
-              onClick={toggleLang}
-              className="flex items-center gap-2 bg-stone-50 px-3 py-1.5 rounded-lg border border-stone-200 hover:bg-stone-100 transition-colors"
-              title={t.languageToggleTitle}
-            >
-              <Languages size={18} />
-              <span>{formData.lang === 'DE' ? 'EN' : 'DE'}</span>
-            </button>
+            <div className="flex flex-col items-center justify-end gap-2 self-end">
+              <img
+                src={swissVolleyLogo}
+                alt="Swiss Volley"
+                className="h-10 w-auto object-contain"
+              />
+              <button
+                onClick={toggleLang}
+                className="inline-flex min-w-[94px] items-center justify-center gap-1.5 bg-stone-50 px-4 py-1 rounded-lg border border-stone-200 text-sm hover:bg-stone-100 transition-colors"
+                title={t.languageToggleTitle}
+              >
+                <Languages size={18} />
+                <span>{formData.lang === 'DE' ? 'EN' : 'DE'}</span>
+              </button>
+            </div>
           </div>
 
           <div className="bg-white p-3 sm:p-6 shadow-xl border border-stone-200">
             {/* Toggle tabs */}
-            <div className="flex items-center gap-2 mb-3">
+            <div className="mb-3 grid grid-cols-3 gap-2">
               <button
                 onClick={() => { setListTab('coachees'); setListSearch(''); setListPage(0); }}
                 className={cn(
-                  "px-3 py-1.5 text-sm font-medium rounded transition-colors",
+                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
                   listTab === 'coachees'
                     ? "bg-slate-900 text-white"
                     : "bg-stone-100 text-stone-600 hover:bg-stone-200"
@@ -1342,7 +1484,7 @@ export default function App() {
               <button
                 onClick={() => { setListTab('games'); setListSearch(''); setListPage(0); }}
                 className={cn(
-                  "px-3 py-1.5 text-sm font-medium rounded transition-colors",
+                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
                   listTab === 'games'
                     ? "bg-slate-900 text-white"
                     : "bg-stone-100 text-stone-600 hover:bg-stone-200"
@@ -1350,51 +1492,21 @@ export default function App() {
               >
                 {t.gamePool}
               </button>
+              <button
+                onClick={() => { setListTab('rcOverview'); setSelectedRcName(null); void refreshRcOverview(); }}
+                className={cn(
+                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
+                  listTab === 'rcOverview'
+                    ? "bg-slate-900 text-white"
+                    : "bg-stone-100 text-stone-600 hover:bg-stone-200"
+                )}
+              >
+                {t.rcOverview}
+              </button>
             </div>
 
             {/* Coachees: Search & filters */}
             {listTab === 'coachees' && (
-              <div className="flex flex-wrap items-center gap-2 mb-3">
-                <input
-                  type="text"
-                  value={listSearch}
-                  onChange={(e) => { setListSearch(e.target.value); setListPage(0); }}
-                  placeholder={formData.lang === 'DE' ? 'Suche...' : 'Search...'}
-                  className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-                />
-                <select
-                  value={listFilterLevel}
-                  onChange={(e) => setListFilterLevel(e.target.value)}
-                  className="h-9 px-2 text-sm border border-stone-300 rounded bg-white outline-none w-full sm:w-auto"
-                >
-                  <option value="">{formData.lang === 'DE' ? 'Alle Stufen' : 'All levels'}</option>
-                  {coacheeLevels.map((lvl) => (
-                    <option key={lvl} value={lvl}>{lvl}</option>
-                  ))}
-                </select>
-                <button
-                  onClick={() => setListFilterNeedsObs(!listFilterNeedsObs)}
-                  className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
-                >
-                  <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
-                    <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
-                  </span>
-                  {formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}
-                </button>
-                <button
-                  onClick={() => setListFilterShowInactive(!listFilterShowInactive)}
-                  className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
-                >
-                  <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
-                    <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
-                  </span>
-                  {formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
-                </button>
-              </div>
-            )}
-
-            {/* Games: Search & filters */}
-            {listTab === 'games' && (
               <>
                 <div className="flex flex-wrap items-center gap-2 mb-2">
                   <input
@@ -1404,64 +1516,191 @@ export default function App() {
                     placeholder={formData.lang === 'DE' ? 'Suche...' : 'Search...'}
                     className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                   />
-                  <button
-                    onClick={() => setGameFilterNeedsObs(!gameFilterNeedsObs)}
-                    className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
-                  >
-                    <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
-                      <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
-                    </span>
-                    {formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}
-                  </button>
-                  <button
-                    onClick={() => setGameFilterShowInactive(!gameFilterShowInactive)}
-                    className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
-                  >
-                    <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
-                      <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
-                    </span>
-                    {formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
-                  </button>
+                  {(() => {
+                    const activeFilterCount = [
+                      listFilterLevels.length > 0,
+                      !listFilterNeedsObs,
+                      listFilterShowInactive,
+                    ].filter(Boolean).length;
+                    return (
+                      <button
+                        onClick={() => setCoacheeFiltersOpen(!coacheeFiltersOpen)}
+                        className={cn(
+                          "h-9 flex items-center gap-1.5 px-2.5 text-sm border rounded-md transition-colors cursor-pointer",
+                          coacheeFiltersOpen ? "bg-blue-50 border-blue-300 text-blue-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"
+                        )}
+                      >
+                        <SlidersHorizontal size={14} />
+                        <span className="hidden sm:inline">{formData.lang === 'DE' ? 'Filter' : 'Filters'}</span>
+                        {activeFilterCount > 0 && (
+                          <span className="ml-0.5 w-5 h-5 flex items-center justify-center rounded-full bg-blue-600 text-white text-[10px] font-bold">{activeFilterCount}</span>
+                        )}
+                      </button>
+                    );
+                  })()}
                 </div>
-                <div className="flex flex-wrap items-end gap-2 mb-3">
-                  <div className="flex-1 min-w-[140px]">
-                    <label className="block text-xs font-medium text-stone-500 mb-0.5">
-                      {formData.lang === 'DE' ? 'Coachee' : 'Coachee'}
-                    </label>
-                    <MultiSelectDropdown
-                      options={gameCoacheeOptions}
-                      selected={gameFilterCoachees}
-                      onChange={setGameFilterCoachees}
-                      placeholder={formData.lang === 'DE' ? 'Alle Coachees' : 'All coachees'}
-                    />
-                  </div>
-                  <div className="flex-1 min-w-[140px]">
-                    <label className="block text-xs font-medium text-stone-500 mb-0.5">
-                      {formData.lang === 'DE' ? 'Liga' : 'League'}
-                    </label>
-                    <MultiSelectDropdown
-                      options={gameLeagues}
-                      selected={gameFilterLeagues}
-                      onChange={setGameFilterLeagues}
-                      placeholder={formData.lang === 'DE' ? 'Alle Ligen' : 'All leagues'}
-                    />
-                  </div>
-                  <DateRangeDropdown
-                    from={gameFilterDateFrom}
-                    to={gameFilterDateTo}
-                    onChangeFrom={setGameFilterDateFrom}
-                    onChangeTo={setGameFilterDateTo}
-                    lang={formData.lang}
-                  />
-                  {(gameFilterCoachees.length > 0 || gameFilterLeagues.length > 0 || gameFilterDateFrom || gameFilterDateTo) && (
+                {coacheeFiltersOpen && (
+                  <div className="flex flex-wrap items-end gap-2 mb-3 p-3 bg-stone-50 border border-stone-200 rounded-md">
+                    <div className="flex-1 min-w-[130px] max-w-[220px]">
+                      <label className="block text-xs font-medium text-stone-500 mb-0.5">
+                        {formData.lang === 'DE' ? 'Level' : 'Level'}
+                      </label>
+                      <MultiSelectDropdown
+                        options={coacheeLevels}
+                        selected={listFilterLevels}
+                        onChange={(values) => { setListFilterLevels(values); setListPage(0); }}
+                        placeholder={formData.lang === 'DE' ? 'Alle Level' : 'All levels'}
+                      />
+                    </div>
                     <button
-                      onClick={() => { setGameFilterCoachees([]); setGameFilterLeagues([]); setGameFilterDateFrom(''); setGameFilterDateTo(''); }}
-                      className="h-9 px-3 text-sm border border-stone-300 rounded hover:bg-stone-50 text-stone-600"
+                      onClick={() => setListFilterNeedsObs(!listFilterNeedsObs)}
+                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
                     >
-                      {formData.lang === 'DE' ? 'Filter zurücksetzen' : 'Clear filters'}
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
+                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
+                      </span>
+                      <span>{formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}</span>
                     </button>
-                  )}
+                    <button
+                      onClick={() => setListFilterShowInactive(!listFilterShowInactive)}
+                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
+                    >
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
+                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
+                      </span>
+                      <span>{formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}</span>
+                    </button>
+                    {(listFilterLevels.length > 0 || !listFilterNeedsObs || listFilterShowInactive) && (
+                      <button
+                        onClick={() => {
+                          setListFilterLevels([]);
+                          setListFilterNeedsObs(true);
+                          setListFilterShowInactive(false);
+                          setListPage(0);
+                        }}
+                        className="h-9 px-3 text-sm border border-stone-300 rounded hover:bg-stone-50 text-stone-600"
+                      >
+                        {formData.lang === 'DE' ? 'Zurücksetzen' : 'Clear'}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Games: Search & filters */}
+            {listTab === 'games' && (
+              <>
+                {/* Row 1: search + toggles + filter button */}
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <input
+                    type="text"
+                    value={listSearch}
+                    onChange={(e) => { setListSearch(e.target.value); setListPage(0); }}
+                    placeholder={formData.lang === 'DE' ? 'Suche...' : 'Search...'}
+                    className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                  />
+                  {(() => {
+                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo].filter(Boolean).length;
+                    return (
+                      <button
+                        onClick={() => setFiltersOpen(!filtersOpen)}
+                        className={cn(
+                          "h-9 flex items-center gap-1.5 px-2.5 text-sm border rounded-md transition-colors cursor-pointer",
+                          filtersOpen ? "bg-blue-50 border-blue-300 text-blue-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"
+                        )}
+                      >
+                        <SlidersHorizontal size={14} />
+                        <span className="hidden sm:inline">{formData.lang === 'DE' ? 'Filter' : 'Filters'}</span>
+                        {activeFilterCount > 0 && (
+                          <span className="ml-0.5 w-5 h-5 flex items-center justify-center rounded-full bg-blue-600 text-white text-[10px] font-bold">{activeFilterCount}</span>
+                        )}
+                      </button>
+                    );
+                  })()}
                 </div>
+                {/* Collapsible filter panel */}
+                {filtersOpen && (
+                  <div className="flex flex-wrap items-end gap-2 mb-3 p-3 bg-stone-50 border border-stone-200 rounded-md">
+                    <button
+                      onClick={() => setGameFilterNeedsObs(!gameFilterNeedsObs)}
+                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
+                    >
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
+                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
+                      </span>
+                      <span>{formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}</span>
+                    </button>
+                    <button
+                      onClick={() => setGameFilterShowInactive(!gameFilterShowInactive)}
+                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
+                    >
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
+                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
+                      </span>
+                      <span>{formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}</span>
+                    </button>
+                    <div className="flex-1 min-w-[140px]">
+                      <label className="block text-xs font-medium text-stone-500 mb-0.5">
+                        {formData.lang === 'DE' ? 'Coachee' : 'Coachee'}
+                      </label>
+                      <MultiSelectDropdown
+                        options={gameCoacheeOptions}
+                        selected={gameFilterCoachees}
+                        onChange={setGameFilterCoachees}
+                        placeholder={formData.lang === 'DE' ? 'Alle Coachees' : 'All coachees'}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-[130px] max-w-[220px]">
+                      <label className="block text-xs font-medium text-stone-500 mb-0.5">
+                        {formData.lang === 'DE' ? 'Level' : 'Level'}
+                      </label>
+                      <MultiSelectDropdown
+                        options={coacheeLevels}
+                        selected={gameFilterLevels}
+                        onChange={setGameFilterLevels}
+                        placeholder={formData.lang === 'DE' ? 'Alle Level' : 'All levels'}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-[100px] max-w-[160px]">
+                      <label className="block text-xs font-medium text-stone-500 mb-0.5">
+                        {formData.lang === 'DE' ? 'Funktion' : 'Function'}
+                      </label>
+                      <MultiSelectDropdown
+                        options={['1SR', '2SR']}
+                        selected={gameFilterFunction}
+                        onChange={setGameFilterFunction}
+                        placeholder={formData.lang === 'DE' ? 'Alle' : 'All'}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-[140px]">
+                      <label className="block text-xs font-medium text-stone-500 mb-0.5">
+                        {formData.lang === 'DE' ? 'Liga' : 'League'}
+                      </label>
+                      <MultiSelectDropdown
+                        options={gameLeagues}
+                        selected={gameFilterLeagues}
+                        onChange={setGameFilterLeagues}
+                        placeholder={formData.lang === 'DE' ? 'Alle Ligen' : 'All leagues'}
+                      />
+                    </div>
+                    <DateRangeDropdown
+                      from={gameFilterDateFrom}
+                      to={gameFilterDateTo}
+                      onChangeFrom={setGameFilterDateFrom}
+                      onChangeTo={setGameFilterDateTo}
+                      lang={formData.lang}
+                    />
+                    {(gameFilterCoachees.length > 0 || gameFilterLevels.length > 0 || gameFilterFunction.length > 0 || gameFilterLeagues.length > 0 || gameFilterDateFrom || gameFilterDateTo) && (
+                      <button
+                        onClick={() => { setGameFilterCoachees([]); setGameFilterLevels([]); setGameFilterFunction([]); setGameFilterLeagues([]); setGameFilterDateFrom(''); setGameFilterDateTo(''); }}
+                        className="h-9 px-3 text-sm border border-stone-300 rounded hover:bg-stone-50 text-stone-600"
+                      >
+                        {formData.lang === 'DE' ? 'Zurücksetzen' : 'Clear'}
+                      </button>
+                    )}
+                  </div>
+                )}
               </>
             )}
 
@@ -1567,91 +1806,103 @@ export default function App() {
                           const datePart = dateValid ? `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}` : (game.date || '-');
                           const timePart = dateValid ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
                           const isExpanded = expandedGameId === game.id;
+                          const r1 = game.firstReferee || '';
+                          const r2 = game.secondReferee || '';
+                          const r1IsCoachee = coacheeNames.has(normName(r1));
+                          const r2IsCoachee = r2 ? coacheeNames.has(normName(r2)) : false;
+                          const nonCoacheeRef = (!r1IsCoachee && r1) ? { role: '1SR', name: r1 }
+                            : (!r2IsCoachee && r2) ? { role: '2SR', name: r2 }
+                            : null;
                           return (
                             <div key={game.id}>
                               <div
                                 onClick={() => setExpandedGameId(isExpanded ? null : game.id)}
                                 className={cn(
-                                  "flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors",
+                                  "px-3 py-2.5 cursor-pointer transition-colors",
                                   isExpanded ? "bg-blue-50" : "hover:bg-stone-50"
                                 )}
                               >
-                                {/* Date + match info (compact left) */}
-                                <div className="shrink-0 w-24 text-stone-500">
-                                  <div className="text-sm font-medium text-stone-700">{datePart}</div>
-                                  {timePart && <div className="text-xs text-stone-400">{timePart}</div>}
-                                  <div className="text-xs text-stone-400 mt-0.5">{game.league}{game.matchNo ? ` · #${game.matchNo}` : ''}</div>
-                                </div>
-                                {/* Teams (takes remaining space) */}
-                                <div className="flex-1 min-w-0">
-                                  <div className="font-semibold text-stone-900 text-sm truncate">{game.homeTeam}</div>
-                                  <div className="text-sm text-stone-600 truncate">{game.awayTeam}</div>
-                                </div>
-                                {/* Referees (right) */}
-                                <div className="shrink-0 text-right hidden sm:block">
-                                  <div className="text-xs text-stone-500">
-                                    <span className="font-medium text-stone-400">1SR</span>{' '}
-                                    <span className={coacheeNames.has((game.firstReferee || '').toLowerCase().trim()) ? 'font-semibold text-stone-800' : ''}>{game.firstReferee || '-'}</span>
-                                  </div>
-                                  {game.secondReferee && (
-                                    <div className="text-xs text-stone-500">
-                                      <span className="font-medium text-stone-400">2SR</span>{' '}
-                                      <span className={coacheeNames.has(game.secondReferee.toLowerCase().trim()) ? 'font-semibold text-stone-800' : ''}>{game.secondReferee}</span>
-                                    </div>
-                                  )}
-                                </div>
-                                {/* RC indicator */}
-                                <div className="shrink-0 w-6 flex justify-center">
+                                {/* Row 1: game info */}
+                                <div className="flex items-center gap-2 text-xs text-stone-400">
+                                  <span className="font-medium text-stone-700">{datePart}</span>
+                                  {timePart && <span>{timePart}</span>}
+                                  <span><LeagueLabel text={game.league} /></span>
+                                  {game.matchNo && <span>#{game.matchNo}</span>}
+                                  <div className="flex-1" />
+                                  {/* RC indicator */}
                                   {game.assignedRc ? (
                                     <span className="w-2.5 h-2.5 rounded-full bg-green-500" title={game.assignedRc} />
                                   ) : (
                                     <span className="w-2.5 h-2.5 rounded-full bg-stone-300" title="No RC" />
                                   )}
+                                  <ChevronDown size={14} className={cn("text-stone-400 transition-transform", isExpanded && "rotate-180")} />
                                 </div>
-                                <ChevronDown size={16} className={cn("shrink-0 text-stone-400 transition-transform", isExpanded && "rotate-180")} />
-                              </div>
-                              {/* Expanded row: RC selector + select game */}
-                              {isExpanded && (
-                                <div className="px-3 pb-3 pt-1 bg-blue-50 border-t border-blue-100 flex flex-wrap items-center gap-3">
-                                  {/* Mobile referees (visible only on small screens) */}
-                                  <div className="w-full flex flex-col gap-0.5 text-xs text-stone-500 sm:hidden">
-                                    <span>
-                                      <span className="font-medium text-stone-400">1SR</span>{' '}
-                                      <span className={coacheeNames.has((game.firstReferee || '').toLowerCase().trim()) ? 'font-semibold text-stone-800' : ''}>{game.firstReferee || '-'}</span>
-                                    </span>
-                                    {game.secondReferee && (
-                                      <span>
-                                        <span className="font-medium text-stone-400">2SR</span>{' '}
-                                        <span className={coacheeNames.has(game.secondReferee.toLowerCase().trim()) ? 'font-semibold text-stone-800' : ''}>{game.secondReferee}</span>
-                                      </span>
+                                {/* Row 2 & 3: teams */}
+                                <div className="mt-1 font-semibold text-sm text-stone-900 truncate">{game.homeTeam}</div>
+                                <div className="text-sm text-stone-600 truncate">{game.awayTeam}</div>
+                                {/* Row 4/5: coachee referees */}
+                                {(r1IsCoachee || r2IsCoachee) && (
+                                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs">
+                                    {r1IsCoachee && (
+                                      <span><span className="font-medium text-stone-400">1SR</span>{' '}<span className="font-semibold text-stone-800">{r1}</span></span>
+                                    )}
+                                    {r2IsCoachee && (
+                                      <span><span className="font-medium text-stone-400">2SR</span>{' '}<span className="font-semibold text-stone-800">{r2}</span></span>
                                     )}
                                   </div>
-                                  <label className="text-xs font-medium text-stone-500">RC:</label>
-                                  <select
-                                    value={game.assignedRc || ''}
-                                    onClick={(e) => e.stopPropagation()}
-                                    onChange={async (e) => {
-                                      const rcName = e.target.value;
-                                      try {
-                                        await assignRcToGame(game.id, rcName);
-                                        setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
-                                      } catch (err) {
-                                        setBackendNotice(err instanceof Error ? err.message : String(err));
-                                      }
-                                    }}
-                                    className="h-9 px-3 text-sm border border-stone-300 rounded-md bg-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-400 transition-colors hover:border-stone-400 flex-1 min-w-[14rem] max-w-sm cursor-pointer"
-                                  >
-                                    <option value="">-</option>
-                                    {rcPeople.map((rc) => (
-                                      <option key={rc.id} value={rc.fullName}>{rc.fullName}</option>
-                                    ))}
-                                  </select>
-                                  <button
-                                    onClick={() => handleSelectGame(game)}
-                                    className="h-8 px-3 text-sm font-medium bg-slate-900 text-white rounded hover:bg-slate-800 transition-colors"
-                                  >
-                                    {formData.lang === 'DE' ? 'Spiel auswählen' : 'Select game'}
-                                  </button>
+                                )}
+                                {/* Row 6: RC name */}
+                                {game.assignedRc && (
+                                  <div className="mt-0.5 text-xs text-stone-500">
+                                    <span className="font-medium text-stone-400">RC</span>{' '}{game.assignedRc}
+                                  </div>
+                                )}
+                              </div>
+                              {/* Expanded row */}
+                              {isExpanded && (
+                                <div className="px-3 pb-3 pt-1 bg-blue-50 border-t border-blue-100 space-y-2">
+                                  {/* Non-coachee referee */}
+                                  {nonCoacheeRef && (
+                                    <div className="text-xs text-stone-500">
+                                      <span className="font-medium text-stone-400">{nonCoacheeRef.role}</span>{' '}{nonCoacheeRef.name}
+                                    </div>
+                                  )}
+                                  {/* RC selector + actions */}
+                                  <div className="flex flex-wrap items-center gap-3">
+                                    <label className="text-xs font-medium text-stone-500">RC:</label>
+                                    <select
+                                      value={game.assignedRc || ''}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onChange={async (e) => {
+                                        const rcName = e.target.value;
+                                        try {
+                                          await assignRcToGame(game.id, rcName);
+                                          setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
+                                        } catch (err) {
+                                          setBackendNotice(err instanceof Error ? err.message : String(err));
+                                        }
+                                      }}
+                                      className="h-9 px-3 text-sm border border-stone-300 rounded-md bg-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-400 transition-colors hover:border-stone-400 flex-1 min-w-[14rem] max-w-sm cursor-pointer"
+                                    >
+                                      <option value="">-</option>
+                                      {rcPeople.map((rc) => (
+                                        <option key={rc.id} value={rc.fullName}>{rc.fullName}</option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      onClick={() => handleSelectGame(game)}
+                                      className="h-9 px-3 text-sm font-medium bg-slate-900 text-white rounded-md hover:bg-slate-800 transition-colors"
+                                    >
+                                      {formData.lang === 'DE' ? 'Feedback starten' : 'Start feedback'}
+                                    </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); downloadIcal(game); }}
+                                      className="h-9 w-9 flex items-center justify-center border border-stone-300 rounded-md bg-white shadow-sm hover:border-stone-400 hover:bg-stone-50 transition-colors cursor-pointer"
+                                      title={formData.lang === 'DE' ? 'Kalender-Export' : 'Export to calendar'}
+                                    >
+                                      <CalendarDays size={16} className="text-stone-500" />
+                                    </button>
+                                  </div>
                                 </div>
                               )}
                             </div>
@@ -1790,6 +2041,135 @@ export default function App() {
               </>
             )}
 
+            {/* RC Overview tab content */}
+            {listTab === 'rcOverview' && (
+              <div>
+                {rcOverviewLoading ? (
+                  <p className="text-sm text-stone-500 py-4">{t.loading}</p>
+                ) : selectedRcName ? (
+                  <div>
+                    <button
+                      onClick={() => setSelectedRcName(null)}
+                      className="flex items-center gap-1.5 text-sm text-stone-600 hover:text-stone-900 mb-4"
+                    >
+                      <ArrowLeft size={16} />
+                      {t.rcBackToOverview}
+                    </button>
+                    <h3 className="text-base font-semibold text-stone-800 mb-4">{selectedRcName} — {t.rcCoacheeSummary}</h3>
+                    {rcCoacheeSummaryLoading ? (
+                      <p className="text-sm text-stone-500">{t.loading}</p>
+                    ) : rcCoacheeSummaryData.length === 0 ? (
+                      <p className="text-sm text-stone-500">{t.rcNoData}</p>
+                    ) : (
+                      <div className="space-y-4">
+                        {rcCoacheeSummaryData.map((cs) => (
+                          <div key={cs.coacheeName} className="border border-stone-200 rounded-lg overflow-hidden">
+                            <div className="bg-stone-50 px-4 py-2.5 flex items-center gap-3">
+                              <span className="font-semibold text-sm text-stone-800">{cs.coacheeName}</span>
+                              {cs.doneFeedbacks.length > 0 && (
+                                <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">
+                                  {cs.doneFeedbacks.length} {t.rcDone.toLowerCase()}
+                                </span>
+                              )}
+                              {cs.outstandingGames.length > 0 && (
+                                <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                                  {cs.outstandingGames.length} {t.rcOutstanding.toLowerCase()}
+                                </span>
+                              )}
+                              {cs.plannedGames.length > 0 && (
+                                <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                                  {cs.plannedGames.length} {t.rcPlanned.toLowerCase()}
+                                </span>
+                              )}
+                            </div>
+                            <div className="divide-y divide-stone-100">
+                              {cs.doneFeedbacks.length > 0 && (
+                                <div className="px-4 py-2">
+                                  <p className="text-xs font-medium text-green-700 mb-1.5">{t.rcDoneFeedbacks}</p>
+                                  {cs.doneFeedbacks.map((fb, i) => {
+                                    const d = new Date(fb.gameDate);
+                                    const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : fb.gameDate;
+                                    return (
+                                      <div key={i} className="flex items-center gap-3 text-xs text-stone-600 py-0.5">
+                                        <span className="font-medium text-stone-700 w-20">{dateStr}</span>
+                                        <span className="text-stone-400 w-14">{fb.league}</span>
+                                        <span className="flex-1 truncate">{fb.teams}</span>
+                                        <span className="text-stone-400">{fb.role}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {cs.outstandingGames.length > 0 && (
+                                <div className="px-4 py-2">
+                                  <p className="text-xs font-medium text-amber-700 mb-1.5">{t.rcOutstandingGames}</p>
+                                  {cs.outstandingGames.map((g, i) => {
+                                    const d = new Date(g.gameDate);
+                                    const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : g.gameDate;
+                                    return (
+                                      <div key={i} className="flex items-center gap-3 text-xs text-stone-600 py-0.5">
+                                        <span className="font-medium text-stone-700 w-20">{dateStr}</span>
+                                        <span className="text-stone-400 w-14">{g.league}</span>
+                                        <span className="flex-1 truncate">{g.teams}</span>
+                                        <span className="text-stone-500">{g.refereeName}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {cs.plannedGames.length > 0 && (
+                                <div className="px-4 py-2">
+                                  <p className="text-xs font-medium text-blue-700 mb-1.5">{t.rcPlannedGames}</p>
+                                  {cs.plannedGames.map((g, i) => {
+                                    const d = new Date(g.gameDate);
+                                    const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : g.gameDate;
+                                    return (
+                                      <div key={i} className="flex items-center gap-3 text-xs text-stone-600 py-0.5">
+                                        <span className="font-medium text-stone-700 w-20">{dateStr}</span>
+                                        <span className="text-stone-400 w-14">{g.league}</span>
+                                        <span className="flex-1 truncate">{g.teams}</span>
+                                        <span className="text-stone-500">{g.refereeName}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {cs.doneFeedbacks.length === 0 && cs.outstandingGames.length === 0 && cs.plannedGames.length === 0 && (
+                                <div className="px-4 py-2 text-xs text-stone-400">{t.rcNoFeedbacks}</div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : rcOverviewData.length === 0 ? (
+                  <p className="text-sm text-stone-500 py-4">{t.rcNoData}</p>
+                ) : (
+                  <div className="border border-stone-200 rounded divide-y divide-stone-200">
+                    {rcOverviewData.map((rc) => (
+                      <div
+                        key={rc.id}
+                        onClick={() => void handleSelectRc(rc.fullName)}
+                        className="px-4 py-3 hover:bg-stone-50 cursor-pointer transition-colors flex items-center gap-4"
+                      >
+                        <span className="font-medium text-sm text-stone-800 flex-1">{rc.fullName}</span>
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700" title={t.rcDone}>
+                          {rc.done}
+                        </span>
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700" title={t.rcOutstanding}>
+                          {rc.outstanding}
+                        </span>
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700" title={t.rcPlanned}>
+                          {rc.planned}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {backendNotice && (
               <p className="text-sm mt-3 text-blue-700">{backendNotice}</p>
             )}
@@ -1821,8 +2201,9 @@ export default function App() {
             ) : (() => {
               const now = new Date();
               const upcomingGames = coacheeGames.filter((game) => new Date(game.date) >= now);
-              const pastGames = coacheeGames.filter((game) => new Date(game.date) < now);
+              const allPastGames = coacheeGames.filter((game) => new Date(game.date) < now);
               const feedbackByGameId = new Set(coacheeFeedbacks.map((f) => f.game).filter(Boolean));
+              const pastGames = showAllPastGames ? allPastGames : allPastGames.filter((game) => feedbackByGameId.has(game.id));
               return (
                 <div>
                   {/* Upcoming games */}
@@ -1853,39 +2234,49 @@ export default function App() {
                       })}
                     </div>
                   )}
-                  {/* Past games */}
-                  <div className="px-4 py-2 bg-stone-100 text-xs font-bold uppercase text-stone-500 border-b border-t border-stone-200">
-                    {formData.lang === 'DE' ? 'Vergangene Spiele' : 'Past Games'} ({pastGames.length})
-                  </div>
-                  {pastGames.length === 0 ? (
-                    <p className="text-sm text-stone-500 p-4">{formData.lang === 'DE' ? 'Keine vergangenen Spiele.' : 'No past games.'}</p>
-                  ) : (
-                    <div className="divide-y divide-stone-100">
-                      {pastGames.map((game) => {
-                        const d = new Date(game.date);
-                        const formatted = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-                        const hasFeedback = feedbackByGameId.has(game.id);
-                        return (
-                          <button
-                            key={game.id}
-                            onClick={() => handleSelectGame(game)}
-                            className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
-                          >
-                            <div className="flex items-center justify-between">
-                              <div className="font-semibold text-stone-900 text-sm">
-                                {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
-                              </div>
-                              <span className={cn("text-xs px-2 py-0.5 rounded-full", hasFeedback ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-500")}>
-                                {hasFeedback ? (formData.lang === 'DE' ? 'Feedback' : 'Feedback') : (formData.lang === 'DE' ? 'Kein Feedback' : 'No feedback')}
-                              </span>
-                            </div>
-                            <div className="text-xs text-stone-500 mt-1">
-                              {formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
+                  {/* Past games — only show if feedbacks exist */}
+                  {coacheeFeedbacks.length > 0 && (
+                    <>
+                      <div className="px-4 py-2 bg-stone-100 text-xs font-bold uppercase text-stone-500 border-b border-t border-stone-200 flex items-center justify-between">
+                        <span>{formData.lang === 'DE' ? 'Vergangene Spiele' : 'Past Games'} ({pastGames.length})</span>
+                        <button
+                          onClick={() => setShowAllPastGames((v) => !v)}
+                          className="text-[10px] normal-case font-normal px-2 py-0.5 border rounded border-stone-300 hover:bg-stone-200"
+                        >
+                          {showAllPastGames ? (formData.lang === 'DE' ? 'Nur beobachtete' : 'Observed only') : (formData.lang === 'DE' ? 'Alle Spiele' : 'Show all games')}
+                        </button>
+                      </div>
+                      {pastGames.length === 0 ? (
+                        <p className="text-sm text-stone-500 p-4">{formData.lang === 'DE' ? 'Keine vergangenen Spiele.' : 'No past games.'}</p>
+                      ) : (
+                        <div className="divide-y divide-stone-100">
+                          {pastGames.map((game) => {
+                            const d = new Date(game.date);
+                            const formatted = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                            const hasFeedback = feedbackByGameId.has(game.id);
+                            return (
+                              <button
+                                key={game.id}
+                                onClick={() => handleSelectGame(game)}
+                                className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="font-semibold text-stone-900 text-sm">
+                                    {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
+                                  </div>
+                                  <span className={cn("text-xs px-2 py-0.5 rounded-full", hasFeedback ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-500")}>
+                                    {hasFeedback ? (formData.lang === 'DE' ? 'Feedback' : 'Feedback') : (formData.lang === 'DE' ? 'Kein Feedback' : 'No feedback')}
+                                  </span>
+                                </div>
+                                <div className="text-xs text-stone-500 mt-1">
+                                  {formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               );
@@ -1972,7 +2363,7 @@ export default function App() {
           <div className="flex items-start gap-3">
             <button
               onClick={toggleLang}
-              className="flex items-center gap-2 bg-stone-50 px-3 py-1.5 rounded-lg border border-stone-200 hover:bg-stone-100 transition-colors no-print"
+              className="inline-flex min-w-[94px] items-center justify-center gap-1.5 bg-stone-50 px-4 py-1 rounded-lg border border-stone-200 text-sm hover:bg-stone-100 transition-colors no-print"
               title={t.languageToggleTitle}
             >
               <Languages size={18} />

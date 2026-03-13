@@ -1,4 +1,4 @@
-import type { EligibleGame, FeedbackFormData } from '../types';
+import type { EligibleGame, FeedbackFormData, RcOverviewEntry, RcCoacheeSummary } from '../types';
 
 export type CoacheeObservationStatus = {
   count: number;
@@ -257,6 +257,22 @@ export async function assignRcToGame(gameId: string, assignedRc: string): Promis
   if (!response.ok) {
     throw new Error(await response.text());
   }
+}
+
+export async function loadRcOverview(): Promise<RcOverviewEntry[]> {
+  const response = await fetch('/api/rc-overview');
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<RcOverviewEntry[]>;
+}
+
+export async function loadRcCoacheeSummary(rcName: string): Promise<RcCoacheeSummary[]> {
+  const response = await fetch(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees`);
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<RcCoacheeSummary[]>;
 }
 
 export async function syncGamesFromVolleyManager(payload?: { date?: string; from?: string; to?: string }) {

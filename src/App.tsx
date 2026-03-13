@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, Database, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal } from 'lucide-react';
+import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, Database, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame, RcOverviewEntry, rcCoachSummary } from './types';
@@ -56,6 +56,7 @@ const UI_STRINGS = {
     date: "Datum",
     location: "Ort",
     teams: "Mannschaften",
+    result: "Ergebnis",
     refLevel: "SR-Niveau",
     rc: "Referee Coach",
     group: "Gruppe",
@@ -162,6 +163,7 @@ const UI_STRINGS = {
     date: "Date",
     location: "Location",
     teams: "Teams",
+    result: "Result",
     refLevel: "Referee Level",
     rc: "Referee Coach",
     group: "Group",
@@ -694,6 +696,7 @@ export default function App() {
         datum: formatDisplayDate(selectedGame.date) || prev.meta.datum,
         ort: selectedGame.location || prev.meta.ort,
         mannschaften: [selectedGame.homeTeam, selectedGame.awayTeam].filter(Boolean).join(' - '),
+        ergebnis: selectedGame.game_result || prev.meta.ergebnis,
         srName: srName || prev.meta.srName,
         srNiveau: (coachee?.referee_level && coachee?.stage
           ? `${coachee.referee_level} - ${coachee.stage}`
@@ -1066,13 +1069,23 @@ export default function App() {
     setSavingFeedback(true);
     setBackendNotice('');
     try {
+      // Force German for PDF screenshot and server-side email
+      const originalLang = formData.lang;
+      if (originalLang !== 'DE') {
+        setFormData(prev => ({ ...prev, lang: 'DE' as const }));
+        await new Promise(r => setTimeout(r, 200));
+      }
       const base64 = await generatePdfBase64(printableRef.current, 1.5);
+      const deFormData = { ...formData, lang: 'DE' as const };
+      if (originalLang !== 'DE') {
+        setFormData(prev => ({ ...prev, lang: originalLang }));
+      }
       const result = await saveFeedbackToPocketBase({
         gameId: selectedGame.id,
         role: formData.role,
-        formData,
+        formData: deFormData,
         pdfBase64: base64,
-        pdfFilename: pdfFilename(formData),
+        pdfFilename: pdfFilename(deFormData),
         tipsAndTricks,
       });
 
@@ -1913,10 +1926,10 @@ export default function App() {
                     ) : (
                       <>
                         <div className="sticky top-0 z-10 grid grid-cols-[1fr_auto] items-center gap-2 bg-stone-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-stone-500 border-b border-stone-200">
-                          <span>{formData.lang === 'DE' ? 'Spiel / Datum' : 'Game / Date'}</span>
+                          <span>{formData.lang === 'DE' ? 'Spiel' : 'Game'}</span>
                           <span>{formData.lang === 'DE' ? 'Status' : 'Status'}</span>
                         </div>
-                        <div className="divide-y divide-stone-200">
+                        <div className="divide-y-4 divide-stone-200">
                         {filteredGames.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((game) => {
                           const d = new Date(game.date);
                           const dateValid = !isNaN(d.getTime());
@@ -1934,14 +1947,15 @@ export default function App() {
                               <div
                                 onClick={() => setExpandedGameId(isExpanded ? null : game.id)}
                                 className={cn(
-                                  "px-3 py-2.5 cursor-pointer transition-colors",
+                                  "px-3 py-3.5 cursor-pointer transition-colors",
                                   isExpanded ? "bg-blue-50" : "hover:bg-stone-50"
                                 )}
                               >
                                 {/* Row 1: date/time + status indicators */}
                                 <div className="flex items-center gap-2 text-sm text-stone-400">
+                                  <CalendarDays size={13} className="text-stone-400 shrink-0" />
                                   <span className="font-medium text-stone-700">{datePart}</span>
-                                  {timePart && <span className="font-medium text-stone-700">{timePart}</span>}
+                                  {timePart && <><Clock size={13} className="text-stone-400 shrink-0" /><span className="font-medium text-stone-700">{timePart}</span></>}
                                   <div className="flex-1" />
                                   {/* RC indicator */}
                                   {game.assignedRc ? (
@@ -1958,14 +1972,39 @@ export default function App() {
                                   {game.isRdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>}
                                   {game.isLdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>}
                                 </div>
-                                {/* Teams */}
-                                <div className="mt-1 text-base text-stone-800 truncate">{game.homeTeam}</div>
-                                <div className="text-base text-stone-800 truncate">{game.awayTeam}</div>
+                                {/* Teams + result */}
+                                {(() => {
+                                  const resultParts = game.game_result?.split('|').map((s: string) => s.trim()).filter(Boolean);
+                                  const mainResult = resultParts?.[0]; // e.g. "3:1"
+                                  const setResults = resultParts?.slice(1); // e.g. ["25:20", "23:25", ...]
+                                  return (
+                                    <>
+                                      <div className="mt-1 flex items-center gap-1.5">
+                                        <Home size={13} className="text-stone-400 shrink-0" />
+                                        <span className="text-base text-stone-800 truncate flex-1">{game.homeTeam}</span>
+                                        {mainResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{mainResult.split(':')[0]?.trim()}</span>}
+                                      </div>
+                                      <div className="flex items-center gap-1.5">
+                                        <Navigation size={13} className="text-stone-400 shrink-0" />
+                                        <span className="text-base text-stone-800 truncate flex-1">{game.awayTeam}</span>
+                                        {mainResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{mainResult.split(':')[1]?.trim()}</span>}
+                                      </div>
+                                      {setResults && setResults.length > 0 && (
+                                        <div className="text-[11px] text-stone-400 tabular-nums">
+                                          {setResults.map((s: string, i: number) => (
+                                            <span key={i}>{i > 0 ? ' | ' : ''}{s}</span>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                                 {/* Location (hall name, clickable to maps) */}
                                 {game.location && (
-                                  <div className="mt-0.5">
+                                  <div className="mt-0.5 flex items-center gap-1">
+                                    <MapPin size={13} className="text-blue-400 shrink-0" />
                                     <a
-                                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(game.location)}`}
+                                      href={game.maps_url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(game.location)}`}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       onClick={(e) => e.stopPropagation()}
@@ -1976,7 +2015,8 @@ export default function App() {
                                   </div>
                                 )}
                                 {/* Coachee referees (1SR / 2SR) */}
-                                <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-sm">
+                                <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-sm">
+                                  <Users size={13} className="text-stone-400 shrink-0" />
                                   <span>
                                     <span className="font-medium text-stone-400">1SR</span>{' '}
                                     {r1 ? (
@@ -1994,8 +2034,9 @@ export default function App() {
                                 </div>
                                 {/* RC name (only if assigned) */}
                                 {game.assignedRc && (
-                                  <div className="mt-0.5 text-sm text-stone-500">
-                                    <span className="font-medium text-stone-400">RC</span>{' '}{game.assignedRc}
+                                  <div className="mt-0.5 flex items-center gap-1 text-sm text-stone-500">
+                                    <Eye size={13} className="text-stone-400 shrink-0" />
+                                    <span className="font-medium text-stone-400">RC</span>{' '}<span className="font-bold text-stone-700">{game.assignedRc}</span>
                                   </div>
                                 )}
                               </div>
@@ -2026,9 +2067,11 @@ export default function App() {
                                     </select>
                                     <button
                                       onClick={() => handleSelectGame(game)}
-                                      className="h-9 px-3 text-sm font-medium bg-slate-900 text-white rounded-md hover:bg-slate-800 transition-colors"
+                                      disabled={!game.assignedRc}
+                                      className={cn("h-9 px-3 text-sm font-medium rounded-md transition-colors", game.assignedRc ? "bg-slate-900 text-white hover:bg-slate-800 cursor-pointer" : "bg-stone-200 text-stone-400 cursor-not-allowed")}
                                     >
-                                      {formData.lang === 'DE' ? 'Feedback starten' : 'Start feedback'}
+                                      <Eye size={14} className="inline mr-1.5 -mt-0.5" />
+                                      {formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation'}
                                     </button>
                                     <button
                                       onClick={(e) => { e.stopPropagation(); downloadIcal(game); }}
@@ -2521,8 +2564,9 @@ export default function App() {
           <MetaField label={t.date} value={formData.meta.datum} onChange={v => updateMeta('datum', v)} />
           <MetaField label={t.location} value={formData.meta.ort} onChange={v => updateMeta('ort', v)} />
           
-          <MetaField label={t.teams} value={formData.meta.mannschaften} onChange={v => updateMeta('mannschaften', v)} className="col-span-2 md:col-span-4 print:col-span-4" />
-          
+          <MetaField label={t.teams} value={formData.meta.mannschaften} onChange={v => updateMeta('mannschaften', v)} className="col-span-2" />
+          <MetaField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2" readOnly={!!selectedGame?.game_result} />
+
           <MetaField label={formData.role} value={formData.meta.srName} onChange={v => updateMeta('srName', v)} className="col-span-2" />
           <MetaField label={t.refLevel} value={formData.meta.srNiveau} onChange={v => updateMeta('srNiveau', v)} className="col-span-2" />
           
@@ -2969,15 +3013,16 @@ export default function App() {
   );
 }
 
-function MetaField({ label, value, onChange, type = "text", className = "" }: { label: string, value: string, onChange: (v: string) => void, type?: string, className?: string }) {
+function MetaField({ label, value, onChange, type = "text", className = "", readOnly = false }: { label: string, value: string, onChange: (v: string) => void, type?: string, className?: string, readOnly?: boolean }) {
   return (
     <div className={cn("border-r border-b border-stone-900 p-1.5 flex flex-col min-h-[48px]", className)}>
       <label className="block text-[8px] uppercase font-black text-stone-400 leading-none mb-1">{label}</label>
-      <input 
+      <input
         type={type}
-        className="outline-none text-xs font-medium bg-transparent w-full" 
+        className={cn("outline-none text-xs font-medium bg-transparent w-full", readOnly && "text-stone-500")}
         value={value}
         onChange={e => onChange(e.target.value)}
+        readOnly={readOnly}
       />
     </div>
   );

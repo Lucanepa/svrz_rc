@@ -314,25 +314,25 @@ function buildFeedbackEmailHtml(params: {
 <body style="margin: 0; padding: 0; background-color: #f5f5f4; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
   <div style="max-width: 600px; margin: 0 auto; padding: 32px 16px;">
     <div style="background: #ffffff; border: 1px solid #e7e5e4; border-radius: 12px; padding: 32px; margin-bottom: 16px;">
-      <h1 style="margin: 0 0 24px; font-size: 20px; font-weight: 700; color: #1c1917;">Referee Coaching Feedback</h1>
+      <h1 style="margin: 0 0 24px; font-size: 20px; font-weight: 700; color: #1c1917;">SR-Coaching Feedback</h1>
       <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #44403c;">
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Match No.</td><td style="padding: 6px 0;">${e(params.matchNo)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">League</td><td style="padding: 6px 0;">${e(params.league)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Date</td><td style="padding: 6px 0;">${e(params.date)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Location</td><td style="padding: 6px 0;">${e(params.location)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Teams</td><td style="padding: 6px 0;">${e(params.homeTeam)} vs ${e(params.awayTeam)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Role Assessed</td><td style="padding: 6px 0;">${e(params.role)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Referee Coach</td><td style="padding: 6px 0;">${e(params.rcName)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Spiel Nr.</td><td style="padding: 6px 0;">${e(params.matchNo)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Liga</td><td style="padding: 6px 0;">${e(params.league)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Datum</td><td style="padding: 6px 0;">${e(params.date)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Ort</td><td style="padding: 6px 0;">${e(params.location)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Mannschaften</td><td style="padding: 6px 0;">${e(params.homeTeam)} vs ${e(params.awayTeam)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Beurteilte Rolle</td><td style="padding: 6px 0;">${e(params.role)}</td></tr>
+        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Schiedsrichter-Coach</td><td style="padding: 6px 0;">${e(params.rcName)}</td></tr>
       </table>
       ${tipsSection}
       <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e7e5e4;">
-        <p style="margin: 0 0 12px; font-size: 14px; color: #44403c;">We value your feedback on the coaching experience:</p>
-        <a href="${e(params.surveyUrl)}" style="display: inline-block; padding: 10px 24px; background: #059669; color: #ffffff; text-decoration: none; border-radius: 8px; font-size: 14px; font-weight: 600;">Share Your Feedback</a>
+        <p style="margin: 0 0 12px; font-size: 14px; color: #44403c;">Wir freuen uns über Ihr Feedback zum Coaching-Erlebnis:</p>
+        <a href="${e(params.surveyUrl)}" style="display: inline-block; padding: 10px 24px; background: #059669; color: #ffffff; text-decoration: none; border-radius: 8px; font-size: 14px; font-weight: 600;">Feedback geben</a>
       </div>
     </div>
     <div style="text-align: center; padding: 8px 0;">
-      <p style="margin: 0 0 4px; font-size: 13px; color: #78716c;">The complete coaching feedback report is attached as a PDF.</p>
-      <p style="margin: 0; font-size: 11px; color: #a8a29e;">This email was sent automatically by the SR-Coaching system.</p>
+      <p style="margin: 0 0 4px; font-size: 13px; color: #78716c;">Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt.</p>
+      <p style="margin: 0; font-size: 11px; color: #a8a29e;">Diese E-Mail wurde automatisch vom SR-Coaching-System versendet.</p>
     </div>
   </div>
 </body>
@@ -351,20 +351,20 @@ function buildFeedbackEmailText(params: {
   tipsAndTricks: string;
   surveyUrl: string;
 }): string {
-  let text = `Referee Coaching Feedback\n\n`;
-  text += `Match No.: ${params.matchNo}\n`;
-  text += `League: ${params.league}\n`;
-  text += `Date: ${params.date}\n`;
-  text += `Location: ${params.location}\n`;
-  text += `Teams: ${params.homeTeam} vs ${params.awayTeam}\n`;
-  text += `Role Assessed: ${params.role}\n`;
-  text += `Referee Coach: ${params.rcName}\n`;
+  let text = `SR-Coaching Feedback\n\n`;
+  text += `Spiel Nr.: ${params.matchNo}\n`;
+  text += `Liga: ${params.league}\n`;
+  text += `Datum: ${params.date}\n`;
+  text += `Ort: ${params.location}\n`;
+  text += `Mannschaften: ${params.homeTeam} vs ${params.awayTeam}\n`;
+  text += `Beurteilte Rolle: ${params.role}\n`;
+  text += `Schiedsrichter-Coach: ${params.rcName}\n`;
   if (params.tipsAndTricks.trim()) {
-    text += `\n--- Tips & Tricks ---\n${params.tipsAndTricks}\n`;
+    text += `\n--- Tipps & Tricks ---\n${params.tipsAndTricks}\n`;
   }
-  text += `\nWe value your feedback on the coaching experience:\n${params.surveyUrl}\n`;
-  text += `\nThe complete coaching feedback report is attached as a PDF.\n`;
-  text += `This email was sent automatically by the SR-Coaching system.\n`;
+  text += `\nWir freuen uns über Ihr Feedback zum Coaching-Erlebnis:\n${params.surveyUrl}\n`;
+  text += `\nDer vollständige Coaching-Feedback-Bericht ist als PDF angehängt.\n`;
+  text += `Diese E-Mail wurde automatisch vom SR-Coaching-System versendet.\n`;
   return text;
 }
 
@@ -2478,10 +2478,7 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
       }
 
       const matchNo = asText(game.match_no);
-      const lang = formData.lang === 'DE' ? 'DE' : 'EN';
-      const subject = lang === 'DE'
-        ? `SR-Coaching Feedback – Spiel ${matchNo} (${formattedDate})`
-        : `Referee Coaching Feedback – Match ${matchNo} (${formattedDate})`;
+      const subject = `SR-Coaching Feedback – Spiel ${matchNo} (${formattedDate})`;
 
       const surveyUrl = process.env.FEEDBACK_SURVEY_URL || '';
       const emailParams = {

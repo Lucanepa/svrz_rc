@@ -28,7 +28,7 @@ import {
 } from './lib/pocketbase';
 import { cn } from './lib/utils';
 import { normalizeCoacheeGroup } from './lib/coacheeGroup';
-import swissVolleyLogo from './Swissvolley_logo.jpg';
+import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
 
 const RATINGS = ['A', 'B', 'C', 'D', 'E'];
@@ -1233,7 +1233,7 @@ export default function App() {
         datum: (fd.get('datum') as string) || '',
         ort: (fd.get('ort') as string) || '',
         mannschaften: (fd.get('mannschaften') as string) || '',
-        ergebnis: (fd.get('ergebnis') as string) || '',
+        ergebnis: [fd.get('ergebnisSets') as string, fd.get('ergebnisPoints') as string].filter(Boolean).join(' | ') || (fd.get('ergebnis') as string) || '',
         srName: (fd.get('srName') as string) || '',
         srNiveau: (fd.get('srNiveau') as string) || '',
         rc: (fd.get('rc') as string) || '',
@@ -1289,6 +1289,38 @@ export default function App() {
     }
   };
 
+  const submitSingleFeedback = async (fd: FeedbackFormData, tips: string): Promise<string> => {
+    if (!selectedGame || !printableRef.current) throw new Error(t.noGames);
+    // Force German for PDF screenshot and server-side email
+    const originalLang = fd.lang;
+    if (originalLang !== 'DE') {
+      setFormData({ ...fd, lang: 'DE' as const });
+      await new Promise(r => setTimeout(r, 200));
+    } else {
+      setFormData(fd);
+      await new Promise(r => setTimeout(r, 100));
+    }
+    const base64 = await generatePdfBase64(printableRef.current, 1.5);
+    const deFormData = { ...fd, lang: 'DE' as const };
+    if (originalLang !== 'DE') {
+      setFormData(prev => ({ ...prev, lang: originalLang }));
+    }
+    const result = await saveFeedbackToPocketBase({
+      gameId: selectedGame.id,
+      role: fd.role,
+      formData: deFormData,
+      pdfBase64: base64,
+      pdfFilename: pdfFilename(deFormData),
+      tipsAndTricks: tips,
+    });
+    if (result.emailSent) {
+      return result.emailWarning
+        ? `${fd.role}: ${t.saveOkEmail} (${result.emailWarning})`
+        : `${fd.role}: ${t.saveOkEmail}`;
+    }
+    return `${fd.role}: ${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}`;
+  };
+
   const handleSaveFeedback = async () => {
     if (!selectedGame || !printableRef.current) {
       setBackendNotice(t.noGames);
@@ -1297,37 +1329,31 @@ export default function App() {
     setSavingFeedback(true);
     setBackendNotice('');
     try {
-      // Force German for PDF screenshot and server-side email
-      const originalLang = formData.lang;
-      if (originalLang !== 'DE') {
-        setFormData(prev => ({ ...prev, lang: 'DE' as const }));
-        await new Promise(r => setTimeout(r, 200));
-      }
-      const base64 = await generatePdfBase64(printableRef.current, 1.5);
-      const deFormData = { ...formData, lang: 'DE' as const };
-      if (originalLang !== 'DE') {
-        setFormData(prev => ({ ...prev, lang: originalLang }));
-      }
-      const result = await saveFeedbackToPocketBase({
-        gameId: selectedGame.id,
-        role: formData.role,
-        formData: deFormData,
-        pdfBase64: base64,
-        pdfFilename: pdfFilename(deFormData),
-        tipsAndTricks,
-      });
-
-      if (result.emailSent) {
-        setBackendNotice(result.emailWarning
-          ? `${t.saveOkEmail} (${result.emailWarning})`
-          : t.saveOkEmail);
-      } else {
-        setBackendNotice(`${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}`);
-      }
-
-      // Lock form if not second observation
-      if (formData.results.secondBesuch !== 'Y') {
+      if (bothRefereesAreCoachees) {
+        // Dual submit: submit both roles sequentially
+        const notices: string[] = [];
+        const roles = ['1. SR', '2. SR'] as const;
+        for (const role of roles) {
+          if (selectedGame.feedbackClosedRoles?.includes(role)) continue;
+          const stored = role === formData.role
+            ? { formData, tipsAndTricks }
+            : dualFormData[role];
+          if (!stored) continue;
+          const fd = 'formData' in stored ? stored.formData : stored as FeedbackFormData;
+          const tips = 'tipsAndTricks' in stored ? stored.tipsAndTricks : '';
+          notices.push(await submitSingleFeedback(fd, tips));
+        }
+        // Restore current role's form
+        setFormData(formData);
+        setBackendNotice(notices.join(' | '));
         setFeedbackLocked(true);
+      } else {
+        // Single submit (original logic)
+        const notice = await submitSingleFeedback(formData, tipsAndTricks);
+        setBackendNotice(notice.replace(`${formData.role}: `, ''));
+        if (formData.results.secondBesuch !== 'Y') {
+          setFeedbackLocked(true);
+        }
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -1379,21 +1405,52 @@ export default function App() {
   const [showConfirmModal, setShowConfirmModal] = useState<'reset' | 'save' | null>(null);
   const [validationError, setValidationError] = useState('');
 
-  const validateForm = (): boolean => {
-    const unrated = formData.sections.flatMap(s => s.items).filter(it => !it.rating);
+  const validateSingleForm = (fd: FeedbackFormData): string | null => {
+    const unrated = fd.sections.flatMap(s => s.items).filter(it => !it.rating);
     if (unrated.length > 0) {
-      setValidationError(formData.lang === 'DE'
+      return fd.lang === 'DE'
         ? `Bitte alle Bewertungen ausfüllen (${unrated.length} fehlend).`
-        : `Please fill in all ratings (${unrated.length} missing).`);
-      return false;
+        : `Please fill in all ratings (${unrated.length} missing).`;
     }
-    const r = formData.results;
+    const r = fd.results;
     if (!r.spielniveau || !r.motivation || !r.einstufung || !r.secondBesuch || !r.srZiel) {
-      setValidationError(formData.lang === 'DE'
+      return fd.lang === 'DE'
         ? 'Bitte alle Felder im unteren Bereich ausfüllen (Spielniveau, Motivation, Ausblick, 2. Besuch, SR-Ziel).'
-        : 'Please fill in all bottom fields (Match Level, Motivation, Outlook, 2nd Visit, Referee Goal).');
+        : 'Please fill in all bottom fields (Match Level, Motivation, Outlook, 2nd Visit, Referee Goal).';
+    }
+    return null;
+  };
+
+  const validateForm = (): boolean => {
+    // Validate current form
+    const currentError = validateSingleForm(formData);
+    if (currentError) {
+      setValidationError(currentError);
       return false;
     }
+
+    // In dual mode, also validate the other role's form
+    if (bothRefereesAreCoachees) {
+      const otherRole = formData.role === '1. SR' ? '2. SR' : '1. SR';
+      const otherClosed = selectedGame?.feedbackClosedRoles?.includes(otherRole);
+      if (!otherClosed) {
+        const otherData = dualFormData[otherRole];
+        if (!otherData) {
+          setValidationError(formData.lang === 'DE'
+            ? `Bitte auch das Formular fuer ${otherRole} ausfuellen.`
+            : `Please also fill in the form for ${otherRole}.`);
+          return false;
+        }
+        const otherError = validateSingleForm(otherData.formData);
+        if (otherError) {
+          setValidationError(formData.lang === 'DE'
+            ? `${otherRole}: ${otherError}`
+            : `${otherRole}: ${otherError}`);
+          return false;
+        }
+      }
+    }
+
     setValidationError('');
     return true;
   };
@@ -1423,6 +1480,7 @@ export default function App() {
     }));
     setFeedbackLocked(false);
     setTipsAndTricks('');
+    setDualFormData({ '1. SR': null, '2. SR': null });
     setShowConfirmModal(null);
   };
 
@@ -1431,24 +1489,59 @@ export default function App() {
   };
 
   const toggleRole = () => {
-    setFormData(prev => {
-      const newRole = prev.role === '1. SR' ? '2. SR' : '1. SR';
-      let newSections;
-      if (newRole === '1. SR') {
-        newSections = adjustSectionsFor2SR(prev.lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, gameHas2SR);
-      } else {
-        newSections = prev.lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN;
-      }
-      return {
+    const currentRole = formData.role;
+    const newRole = currentRole === '1. SR' ? '2. SR' : '1. SR';
+
+    if (bothRefereesAreCoachees) {
+      // Stash current role's form data
+      setDualFormData(prev => ({
         ...prev,
-        role: newRole,
-        sections: newSections,
-        meta: {
-          ...prev.meta,
-          srName: selectedGame ? getRefereeForRole(selectedGame, newRole) || prev.meta.srName : prev.meta.srName,
-        },
-      };
-    });
+        [currentRole]: { formData: { ...formData }, tipsAndTricks },
+      }));
+
+      // Restore other role's data if it exists
+      const saved = dualFormData[newRole];
+      if (saved) {
+        setFormData(saved.formData);
+        setTipsAndTricks(saved.tipsAndTricks);
+      } else {
+        // Initialize blank form for new role
+        const lang = formData.lang;
+        const newSections = newRole === '1. SR'
+          ? adjustSectionsFor2SR(lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, gameHas2SR)
+          : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
+        setFormData(prev => ({
+          ...INITIAL_DATA,
+          lang,
+          role: newRole,
+          sections: newSections,
+          meta: {
+            ...prev.meta,
+            srName: selectedGame ? getRefereeForRole(selectedGame, newRole) || '' : '',
+          },
+        }));
+        setTipsAndTricks('');
+      }
+    } else {
+      // Single-coachee mode: original behavior
+      setFormData(prev => {
+        let newSections;
+        if (newRole === '1. SR') {
+          newSections = adjustSectionsFor2SR(prev.lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, gameHas2SR);
+        } else {
+          newSections = prev.lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN;
+        }
+        return {
+          ...prev,
+          role: newRole,
+          sections: newSections,
+          meta: {
+            ...prev.meta,
+            srName: selectedGame ? getRefereeForRole(selectedGame, newRole) || prev.meta.srName : prev.meta.srName,
+          },
+        };
+      });
+    }
   };
 
   const toggleLang = () => {
@@ -1480,7 +1573,21 @@ export default function App() {
 
   // Memoize expensive list computations to avoid recomputing on every render
   const coacheeNames = useMemo(
-    () => new Set(coachees.map((c) => normName(c.full_name || ''))),
+    () => {
+      const names = new Set<string>();
+      for (const c of coachees) {
+        const fn = normName(c.full_name || '');
+        if (fn) names.add(fn);
+        // Also add reversed name order (server stores both variants)
+        const first = (c.first_name || '').trim();
+        const last = (c.last_name || '').trim();
+        if (first && last) {
+          names.add(normName(`${first} ${last}`));
+          names.add(normName(`${last} ${first}`));
+        }
+      }
+      return names;
+    },
     [coachees],
   );
   const bothRefereesAreCoachees = useMemo(() => {
@@ -1564,8 +1671,14 @@ export default function App() {
   const coacheeByName = useMemo(() => {
     const map = new Map<string, Coachee>();
     for (const c of coachees) {
-      const key = normName(c.full_name || '');
-      if (key) map.set(key, c);
+      const fn = normName(c.full_name || '');
+      if (fn) map.set(fn, c);
+      const first = (c.first_name || '').trim();
+      const last = (c.last_name || '').trim();
+      if (first && last) {
+        map.set(normName(`${first} ${last}`), c);
+        map.set(normName(`${last} ${first}`), c);
+      }
     }
     return map;
   }, [coachees]);
@@ -1655,13 +1768,25 @@ export default function App() {
           <Download size={18} />
           <span className="hidden sm:inline">{t.downloadPdf}</span>
         </button>
-        <button
-          onClick={toggleRole}
-          className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-colors"
-        >
-          <RefreshCw size={18} />
-          <span className="hidden sm:inline">{t.switchRole} {formData.role === '1. SR' ? '2. SR' : '1. SR'}</span>
-        </button>
+        {bothRefereesAreCoachees && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={toggleRole}
+              className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-colors"
+            >
+              <RefreshCw size={18} />
+              <span className="hidden sm:inline">{t.switchRole} {formData.role === '1. SR' ? '2. SR' : '1. SR'}</span>
+            </button>
+            <div className="flex gap-1.5 text-xs font-medium">
+              <span className={dualFormData['1. SR'] || formData.role === '1. SR' ? 'text-green-600' : 'text-stone-400'}>
+                1SR {dualFormData['1. SR'] ? '\u2713' : '\u25CB'}
+              </span>
+              <span className={dualFormData['2. SR'] || formData.role === '2. SR' ? 'text-green-600' : 'text-stone-400'}>
+                2SR {dualFormData['2. SR'] ? '\u2713' : '\u25CB'}
+              </span>
+            </div>
+          </div>
+        )}
         <button
           onClick={toggleLang}
           className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors ml-auto"
@@ -1755,11 +1880,7 @@ export default function App() {
               <p className="text-xs text-stone-500">Swiss Volley Region Zürich</p>
             </div>
             <div className="flex flex-col items-center justify-end sm:justify-start gap-2 self-end sm:self-start">
-              <img
-                src={swissVolleyLogo}
-                alt="Swiss Volley"
-                className="h-10 w-auto object-contain"
-              />
+              <SvrzLogo className="h-10 w-auto" />
             </div>
           </div>
 
@@ -2823,11 +2944,7 @@ export default function App() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start gap-4 mb-6 print:flex-row">
           <div className="flex gap-4 items-start">
-            <img 
-              src={swissVolleyLogo}
-              alt="Swiss Volley Region Zürich" 
-              className="h-16 object-contain"
-            />
+            <SvrzLogo className="h-16" />
             <div>
               <p className="text-[10px] text-stone-500 uppercase tracking-wider font-semibold">SVRZ | SR-Wesen | Referee Coaching | schiricoaching@svrz.ch</p>
               <h1 className="text-xl sm:text-2xl font-bold mt-1 text-stone-900 flex items-center gap-3">
@@ -3126,15 +3243,37 @@ export default function App() {
                 <p>{formData.lang === 'DE'
                   ? 'Das Feedback wird gespeichert und eine E-Mail mit dem PDF wird gesendet:'
                   : 'The feedback will be saved and an email with the PDF will be sent:'}</p>
-                <div className="bg-stone-50 rounded-lg p-3 text-xs space-y-1">
-                  <p><span className="font-semibold text-stone-700">{formData.lang === 'DE' ? 'An' : 'To'}:</span>{' '}
-                    {selectedCoacheeInfo.fullName || formData.meta.srName}{' '}
-                    <span className="text-stone-500">{selectedCoacheeEmail ? `<${selectedCoacheeEmail}>` : (formData.lang === 'DE' ? '(keine E-Mail)' : '(no email)')}</span>
-                  </p>
-                  {formData.meta.rc && (
-                    <p><span className="font-semibold text-stone-700">CC:</span> {formData.meta.rc}</p>
-                  )}
-                </div>
+                {bothRefereesAreCoachees ? (
+                  <div className="bg-stone-50 rounded-lg p-3 text-xs space-y-2">
+                    {(['1. SR', '2. SR'] as const).map(role => {
+                      const refName = selectedGame ? getRefereeForRole(selectedGame, role) : '';
+                      const coachee = refName ? coacheeByName.get(normName(refName)) : undefined;
+                      const email = coachee?.email || '';
+                      const alreadyClosed = selectedGame?.feedbackClosedRoles?.includes(role);
+                      return (
+                        <p key={role} className={alreadyClosed ? 'line-through opacity-50' : ''}>
+                          <span className="font-semibold text-stone-700">{role}:</span>{' '}
+                          {coachee?.full_name || refName}{' '}
+                          <span className="text-stone-500">{email ? `<${email}>` : (formData.lang === 'DE' ? '(keine E-Mail)' : '(no email)')}</span>
+                          {alreadyClosed && <span className="ml-1 text-stone-400">{formData.lang === 'DE' ? '(bereits gesendet)' : '(already sent)'}</span>}
+                        </p>
+                      );
+                    })}
+                    {formData.meta.rc && (
+                      <p><span className="font-semibold text-stone-700">CC:</span> {formData.meta.rc}</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-stone-50 rounded-lg p-3 text-xs space-y-1">
+                    <p><span className="font-semibold text-stone-700">{formData.lang === 'DE' ? 'An' : 'To'}:</span>{' '}
+                      {selectedCoacheeInfo.fullName || formData.meta.srName}{' '}
+                      <span className="text-stone-500">{selectedCoacheeEmail ? `<${selectedCoacheeEmail}>` : (formData.lang === 'DE' ? '(keine E-Mail)' : '(no email)')}</span>
+                    </p>
+                    {formData.meta.rc && (
+                      <p><span className="font-semibold text-stone-700">CC:</span> {formData.meta.rc}</p>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <p className="text-sm text-stone-600 mb-6">
@@ -3401,205 +3540,303 @@ export default function App() {
 
       {/* Manual observation upload modal */}
       {manualUploadCoachee && (
-        <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
-            <div className="p-4 border-b border-stone-200 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-stone-900">
-                {t.manualUploadTitle}: {manualUploadCoachee.full_name}
-              </h3>
-              <button onClick={() => { setManualUploadCoachee(null); setManualUploadNotice(''); }} className="text-stone-400 hover:text-stone-600 text-lg leading-none">&times;</button>
-            </div>
-            <form
-              className="overflow-auto p-4 space-y-4 text-sm"
-              onSubmit={(e) => { e.preventDefault(); void handleManualUploadSubmit(e.currentTarget); }}
-            >
-              {/* Role */}
-              <div className="grid grid-cols-2 gap-3">
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">Role</span>
-                  <select name="role" defaultValue="1. SR" className="h-9 rounded border border-stone-300 px-2 text-sm">
-                    <option value="1. SR">1. SR</option>
-                    <option value="2. SR">2. SR</option>
-                  </select>
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.matchNo}</span>
-                  <input name="spielNr" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
-                </label>
-              </div>
-
-              {/* Meta fields */}
-              <div className="grid grid-cols-2 gap-3">
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.league}</span>
-                  <input name="liga" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.date}</span>
-                  <input name="datum" type="date" defaultValue={new Date().toISOString().split('T')[0]} className="h-9 rounded border border-stone-300 px-2 text-sm" />
-                </label>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.location}</span>
-                  <input name="ort" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.teams}</span>
-                  <input name="mannschaften" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
-                </label>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.result}</span>
-                  <input name="ergebnis" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">SR-Name</span>
-                  <select name="srName" defaultValue={manualUploadCoachee.full_name} className="h-9 rounded border border-stone-300 px-2 text-sm">
-                    {coachees.map(c => <option key={c.id} value={c.full_name}>{c.full_name}</option>)}
-                  </select>
-                </label>
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.refLevel}</span>
-                  <input name="srNiveau" type="text" defaultValue={manualUploadCoachee.referee_level || ''} className="h-9 rounded border border-stone-300 px-2 text-sm" />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.rc}</span>
-                  <input name="rc" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.group}</span>
-                  <input name="gruppe" type="text" defaultValue={manualUploadCoachee.groups || ''} className="h-9 rounded border border-stone-300 px-2 text-sm" />
-                </label>
-              </div>
-
-              {/* Assessment sections — always use DE sections, role driven by the select */}
-              <ManualUploadSections />
-
-              {/* Bottom fields */}
-              <div className="grid grid-cols-3 gap-3">
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.matchLevel}</span>
-                  <select name="spielniveau" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
-                    <option value="" disabled>—</option>
-                    <option value="leicht">{t.easy}</option>
-                    <option value="normal">{t.normal}</option>
-                    <option value="schwierig">{t.difficult}</option>
-                  </select>
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.motivation}</span>
-                  <select name="motivation" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
-                    <option value="" disabled>—</option>
-                    <option value="up">↑</option>
-                    <option value="check">✓</option>
-                    <option value="down">↓</option>
-                  </select>
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.rating}</span>
-                  <select name="einstufung" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
-                    <option value="" disabled>—</option>
-                    <option value="up">↑</option>
-                    <option value="check">✓</option>
-                    <option value="down">↓</option>
-                  </select>
-                </label>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.secondVisit}</span>
-                  <select name="secondBesuch" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
-                    <option value="" disabled>—</option>
-                    <option value="Y">Ja / Yes</option>
-                    <option value="N">Nein / No</option>
-                  </select>
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.refGoal}</span>
-                  <select name="srZiel" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
-                    <option value="" disabled>—</option>
-                    {SR_ZIEL_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                  </select>
-                </label>
-              </div>
-
-              {/* Remarks */}
-              <label className="flex flex-col gap-1">
-                <span className="text-xs font-semibold text-stone-500 uppercase">{t.remarks}</span>
-                <textarea name="bemerkungen" rows={3} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
-              </label>
-
-              {/* File upload */}
-              <label className="flex flex-col gap-1">
-                <span className="text-xs font-semibold text-stone-500 uppercase">{t.manualUploadFile}</span>
-                <input name="formFile" type="file" accept=".pdf,image/*" className="text-sm" />
-              </label>
-
-              {/* Notice */}
-              {manualUploadNotice && (
-                <p className={cn("text-sm font-medium", manualUploadNotice.includes(t.manualUploadSuccess) ? "text-green-600" : "text-red-600")}>
-                  {manualUploadNotice}
-                </p>
-              )}
-
-              {/* Submit */}
-              <button
-                type="submit"
-                disabled={manualUploadSubmitting}
-                className="w-full h-10 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
-              >
-                {manualUploadSubmitting ? t.loading : <><Send size={14} /> {t.manualUploadSubmit}</>}
-              </button>
-            </form>
-          </div>
-        </div>
+        <ManualUploadModal
+          coachee={manualUploadCoachee}
+          coachees={coachees}
+          rcPeople={rcPeople}
+          notice={manualUploadNotice}
+          submitting={manualUploadSubmitting}
+          onSubmit={handleManualUploadSubmit}
+          onClose={() => { setManualUploadCoachee(null); setManualUploadNotice(''); }}
+        />
       )}
     </div>
   );
 }
 
-/* Helper component for manual upload assessment sections — renders role-reactive dropdowns */
-function ManualUploadSections() {
+/* ── Manual Upload Modal ── */
+function ManualUploadModal({ coachee, coachees, rcPeople, notice, submitting, onSubmit, onClose }: {
+  coachee: Coachee;
+  coachees: Coachee[];
+  rcPeople: RefereeCoachPerson[];
+  notice: string;
+  submitting: boolean;
+  onSubmit: (form: HTMLFormElement) => void;
+  onClose: () => void;
+}) {
   const [role, setRole] = useState<'1. SR' | '2. SR'>('1. SR');
+  const [selectedGroups, setSelectedGroups] = useState<string[]>(
+    () => (coachee.groups || '').split(',').map(g => g.trim()).filter(Boolean)
+  );
+  const [usePlusMinus, setUsePlusMinus] = useState(false);
 
-  // Listen to the role select in the parent form
-  useEffect(() => {
-    const select = document.querySelector<HTMLSelectElement>('select[name="role"]');
-    if (!select) return;
-    const handler = () => setRole(select.value as '1. SR' | '2. SR');
-    select.addEventListener('change', handler);
-    return () => select.removeEventListener('change', handler);
-  }, []);
+  // Derive unique groups from all coachees
+  const allGroups = useMemo(() => {
+    const set = new Set<string>();
+    coachees.forEach(c => {
+      (normalizeCoacheeGroup(c.groups) || '').split(',').map(g => g.trim()).filter(Boolean).forEach(g => set.add(g));
+    });
+    return Array.from(set).sort();
+  }, [coachees]);
+
+  // Derive unique levels from all coachees (level - stage format)
+  const allLevels = useMemo(() => {
+    const set = new Set<string>();
+    coachees.forEach(c => {
+      if (c.referee_level) {
+        const label = c.stage ? `${c.referee_level} - ${c.stage}` : c.referee_level;
+        set.add(label);
+      }
+    });
+    return Array.from(set).sort();
+  }, [coachees]);
+
+  const defaultLevel = coachee.referee_level && coachee.stage
+    ? `${coachee.referee_level} - ${coachee.stage}`
+    : coachee.referee_level || '';
 
   const sections = role === '1. SR' ? SECTIONS_1SR_DE : SECTIONS_2SR_DE;
 
+  const ratingOptions = usePlusMinus
+    ? ['A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','E+','E','E-']
+    : RATINGS;
+
+  const toggleGroup = (g: string) => {
+    setSelectedGroups(prev => prev.includes(g) ? prev.filter(x => x !== g) : [...prev, g]);
+  };
+
   return (
-    <div className="space-y-3">
-      {sections.map((section) => (
-        <div key={section.title}>
-          <p className="text-xs font-bold text-stone-700 mb-1">{section.title}</p>
-          <div className="space-y-1">
-            {section.items.map((item) => (
-              <div key={item.id} className="flex items-center gap-2">
-                <select
-                  name={`rating-${item.id}`}
-                  defaultValue=""
-                  className="w-14 h-7 rounded border border-stone-300 px-1 text-xs text-center"
-                >
-                  <option value="" disabled>—</option>
-                  {RATINGS.map(r => <option key={r} value={r}>{r}</option>)}
-                  {NA_ELIGIBLE_IDS.has(item.id) && <option value="N/A">N/A</option>}
-                </select>
-                <span className="text-xs text-stone-700">{item.label}</span>
-              </div>
-            ))}
-          </div>
+    <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+        <div className="p-4 border-b border-stone-200 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-stone-900">
+            Manuelle Beobachtung: {coachee.full_name}
+          </h3>
+          <button onClick={onClose} className="text-stone-400 hover:text-stone-600 text-lg leading-none">&times;</button>
         </div>
-      ))}
+        <form
+          className="overflow-auto p-4 space-y-4 text-sm"
+          onSubmit={(e) => { e.preventDefault(); void onSubmit(e.currentTarget); }}
+        >
+          {/* Hidden field for gruppe (populated from checkboxes) */}
+          <input type="hidden" name="gruppe" value={selectedGroups.join(', ')} />
+
+          {/* Rolle + Spiel-Nr. */}
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Rolle</span>
+              <select name="role" value={role} onChange={e => setRole(e.target.value as '1. SR' | '2. SR')} className="h-9 rounded border border-stone-300 px-2 text-sm">
+                <option value="1. SR">1. SR</option>
+                <option value="2. SR">2. SR</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Spiel-Nr.</span>
+              <input name="spielNr" type="number" className="h-9 rounded border border-stone-300 px-2 text-sm [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
+            </label>
+          </div>
+
+          {/* Liga + Datum */}
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Liga</span>
+              <input name="liga" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Datum</span>
+              <input name="datum" type="date" defaultValue={new Date().toISOString().split('T')[0]} className="h-9 rounded border border-stone-300 px-2 text-sm" />
+            </label>
+          </div>
+
+          {/* Ort + Mannschaften */}
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Ort</span>
+              <input name="ort" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Mannschaften</span>
+              <input name="mannschaften" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+            </label>
+          </div>
+
+          {/* Ergebnis: Sätze + Punkte */}
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Ergebnis (Sätze)</span>
+              <input name="ergebnisSets" type="text" placeholder="3:1" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Ergebnis (Punkte)</span>
+              <input name="ergebnisPoints" type="text" placeholder="25:20, 22:25, 25:18, 25:23" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+            </label>
+          </div>
+
+          {/* SR-Name + SR-Niveau */}
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">SR-Name</span>
+              <select name="srName" defaultValue={coachee.full_name} className="h-9 rounded border border-stone-300 px-2 text-sm">
+                {coachees.map(c => <option key={c.id} value={c.full_name}>{c.full_name}</option>)}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">SR-Niveau</span>
+              <select name="srNiveau" defaultValue={defaultLevel} className="h-9 rounded border border-stone-300 px-2 text-sm">
+                <option value="">—</option>
+                {allLevels.map(l => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </label>
+          </div>
+
+          {/* Referee Coach + Gruppe */}
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Referee Coach</span>
+              <select name="rc" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                <option value="">—</option>
+                {rcPeople.map(p => <option key={p.id} value={p.fullName}>{p.fullName}</option>)}
+              </select>
+            </label>
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Gruppe</span>
+              <div className="flex flex-wrap gap-1.5 min-h-[36px] p-1.5 rounded border border-stone-300">
+                {allGroups.map(g => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => toggleGroup(g)}
+                    className={cn(
+                      "px-2 py-0.5 rounded text-xs border transition-colors",
+                      selectedGroups.includes(g)
+                        ? "bg-blue-600 text-white border-blue-600"
+                        : "bg-white text-stone-600 border-stone-300 hover:border-stone-400"
+                    )}
+                  >
+                    {g}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* +/- toggle for grades */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setUsePlusMinus(!usePlusMinus)}
+              className={cn(
+                "px-3 py-1 rounded text-xs border transition-colors",
+                usePlusMinus
+                  ? "bg-blue-600 text-white border-blue-600"
+                  : "bg-white text-stone-600 border-stone-300"
+              )}
+            >
+              +/- Noten
+            </button>
+            <span className="text-xs text-stone-400">{usePlusMinus ? 'A+ bis E- verfügbar' : 'A bis E'}</span>
+          </div>
+
+          {/* Assessment sections */}
+          {sections.map((section) => (
+            <div key={section.title}>
+              <p className="text-xs font-bold text-stone-700 mb-1">{section.title}</p>
+              <div className="space-y-1">
+                {section.items.map((item) => (
+                  <div key={item.id} className="flex items-center gap-2">
+                    <select
+                      name={`rating-${item.id}`}
+                      defaultValue=""
+                      className="w-14 h-7 rounded border border-stone-300 px-1 text-xs text-center"
+                    >
+                      <option value="" disabled>—</option>
+                      {ratingOptions.map(r => <option key={r} value={r}>{r}</option>)}
+                      {NA_ELIGIBLE_IDS.has(item.id) && <option value="N/A">N/A</option>}
+                    </select>
+                    <span className="text-xs text-stone-700">{item.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {/* Bottom fields */}
+          <div className="grid grid-cols-3 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Spielniveau</span>
+              <select name="spielniveau" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                <option value="" disabled>—</option>
+                <option value="leicht">Leicht</option>
+                <option value="normal">Normal</option>
+                <option value="schwierig">Schwierig</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Motivation</span>
+              <select name="motivation" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                <option value="" disabled>—</option>
+                <option value="up">↑</option>
+                <option value="check">✓</option>
+                <option value="down">↓</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">Ausblick</span>
+              <select name="einstufung" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                <option value="" disabled>—</option>
+                <option value="up">↑</option>
+                <option value="check">✓</option>
+                <option value="down">↓</option>
+              </select>
+            </label>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">2. Besuch</span>
+              <select name="secondBesuch" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                <option value="" disabled>—</option>
+                <option value="Y">Ja</option>
+                <option value="N">Nein</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-stone-500 uppercase">SR-Ziel</span>
+              <select name="srZiel" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                <option value="" disabled>—</option>
+                {SR_ZIEL_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+            </label>
+          </div>
+
+          {/* Bemerkungen */}
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-stone-500 uppercase">Bemerkungen</span>
+            <textarea name="bemerkungen" rows={3} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
+          </label>
+
+          {/* Formular-Datei */}
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-stone-500 uppercase">Formular-Datei (PDF/Bild)</span>
+            <input name="formFile" type="file" accept=".pdf,image/*" className="text-sm" />
+          </label>
+
+          {/* Notice */}
+          {notice && (
+            <p className={cn("text-sm font-medium", notice.includes('gespeichert') ? "text-green-600" : "text-red-600")}>
+              {notice}
+            </p>
+          )}
+
+          {/* Submit */}
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-full h-10 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
+          >
+            {submitting ? 'Lädt...' : <><Send size={14} /> Hochladen und senden</>}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
@@ -3614,7 +3851,7 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
       {/* Header */}
       <div className="flex justify-between items-start gap-3 mb-4">
         <div className="flex gap-3 items-start">
-          <img src={swissVolleyLogo} alt="" className="h-12 object-contain" />
+          <SvrzLogo className="h-12" />
           <div>
             <p className="text-[8px] text-stone-500 uppercase tracking-wider font-semibold">SVRZ | SR-Wesen | Referee Coaching | schiricoaching@svrz.ch</p>
             <h1 className="text-xl font-bold mt-0.5 text-stone-900 flex items-center gap-2">

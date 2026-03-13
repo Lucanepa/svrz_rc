@@ -9,6 +9,8 @@ steps:
     environment:
       VITE_API_BASE_URL:
         from_secret: vite_api_base_url
+      VITE_APP_PASSWORD_HASH:
+        from_secret: vite_app_password_hash
     commands:
       - npm run build
 

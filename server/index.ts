@@ -267,6 +267,11 @@ function isMissingCollectionError(error: unknown): boolean {
   return text.includes('Missing collection context') || text.includes('ClientResponseError 404');
 }
 
+function isPocketBaseBadRequest(error: unknown): boolean {
+  const text = String(error ?? '');
+  return text.includes('ClientResponseError 400');
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -1066,12 +1071,27 @@ async function getEligibleGames() {
 
   // Fetch all games in a single request and filter in-memory
   // to avoid PocketBase 414 (URI too long) and 429 (rate limit) errors
-  const allGames = await withCollection(collectionCandidates.games, (collection) =>
-    collection.getFullList<AnyRecord>({
-      sort: '-match_date,-created',
-      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game',
-    }),
-  );
+  const allGames = await (async () => {
+    try {
+      return await withCollection(collectionCandidates.games, (collection) =>
+        collection.getFullList<AnyRecord>({
+          sort: '-match_date',
+          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game',
+        }),
+      );
+    } catch (error) {
+      // Some environments may temporarily miss one of the requested fields.
+      // Retry without an explicit field projection for backward compatibility.
+      if (!isPocketBaseBadRequest(error)) {
+        throw error;
+      }
+      return withCollection(collectionCandidates.games, (collection) =>
+        collection.getFullList<AnyRecord>({
+          sort: '-match_date',
+        }),
+      );
+    }
+  })();
 
   const games = allGames.filter((game) =>
     matchesCoachee(game.first_referee) || matchesCoachee(game.second_referee),

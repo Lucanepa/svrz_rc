@@ -1,261 +1,359 @@
 # Infrastructure
 
-## Overview
+## What This Repo Contains
 
-This project is a React PWA + Node API + PocketBase setup:
+This project is a React PWA + Node/Express API + PocketBase backend:
 
-- Frontend: `src/*`
+- Frontend app: `src/*` (main UI in `src/App.tsx`, API client in `src/lib/pocketbase.ts`)
 - Backend API: `server/index.ts`
-- Database: PocketBase on VPS (Tailscale reachable)
-- External source: VolleyManager (login + CSRF + paginated API sync)
+- Database/storage/auth backend: PocketBase on VPS
+- External upstream data source: VolleyManager (login + CSRF + paginated games sync)
 
-Run locally:
+Local dev command:
 
 ```bash
 npm run dev
 ```
 
-This starts:
-- web (Vite) on `http://localhost:3000` (or `3001` if port busy)
-- API on `http://localhost:8787`
+This runs:
 
-## VPS Access
+- Frontend (Vite): `http://localhost:3000`
+- Backend API: `http://localhost:8787`
 
-- **Provider**: Infomaniak
-- **Host**: `ubuntu@83.228.220.158`
-- **SSH**: `ssh -i ~/.ssh/id_ed25519 ubuntu@83.228.220.158`
-- **Tailscale IP**: `100.69.245.37`
-- **OS**: Ubuntu 24.04.3 LTS
-- **Disk**: ~57 GB (`/`)
-- **Hostname**: `ov-c45f75`
+Vite proxy forwards `/api/*` to `http://localhost:8787` in local development.
 
-## Infrastructure Endpoints
+## Architecture (Frontend + Backend + Data)
 
-- PocketBase API base URL: `http://100.69.245.37`
-- PocketBase admin UI: `http://100.69.245.37/_/` (Tailscale-only)
+1. Frontend calls only `/api/*` (no direct PocketBase admin calls in browser).
+2. Backend authenticates against PocketBase admin API.
+3. Backend reads/writes PocketBase collections (`games`, `coachees`, `referee_coaches`, `referee_coach_feedbacks`, `observations`).
+4. Games can be synced from VolleyManager manually and on schedule.
+5. Feedback submit endpoint saves DB records + uploads PDF + sends email + closes role when applicable.
 
-Important: use API base URL **without** `/_/` in env variables.
+## VPS + Network Context
 
-## PocketBase Service
+- Provider: Infomaniak
+- Host: `ubuntu@83.228.220.158`
+- SSH: `ssh -i ~/.ssh/id_ed25519 ubuntu@83.228.220.158`
+- Tailscale IP: `100.69.245.37`
+- OS: Ubuntu 24.04.3 LTS
+- Hostname: `ov-c45f75`
 
-- **Binary**: `/opt/pocketbase/pocketbase`
-- **Systemd unit**: `pocketbase.service` (enabled, auto-start)
-- **Listens on**: `127.0.0.1:8090`
-- **App name**: "Referee Coaching"
+PocketBase endpoints:
+
+- API base URL: `http://100.69.245.37`
+- Admin UI: `http://100.69.245.37/_/` (Tailscale-only)
+
+Important: use `POCKETBASE_URL` without `/_/`.
+
+## Runtime Services
+
+PocketBase:
+
+- Binary: `/opt/pocketbase/pocketbase`
+- Systemd service: `pocketbase.service`
+- Internal bind: `127.0.0.1:8090`
+- Public entry: Nginx reverse proxy
+
+Nginx:
+
+- Config: `/etc/nginx/sites-available/pocketbase`
+- Proxies port 80 -> `127.0.0.1:8090`
+- Restricts `/_/` to localhost + Tailscale (`100.64.0.0/10`)
+- Keeps API routes public
+- `client_max_body_size 50m`
+
+PM2:
+
+- Existing process noted on VPS: `openvolley`
+
+Useful commands:
 
 ```bash
-# manage
 sudo systemctl status pocketbase
 sudo systemctl restart pocketbase
 journalctl -u pocketbase -f
-```
-
-## Nginx Reverse Proxy
-
-- **Config**: `/etc/nginx/sites-available/pocketbase`
-- Proxies all traffic from port 80 to `127.0.0.1:8090`
-- Admin UI (`/_/`) restricted to Tailscale range (`100.64.0.0/10`) + localhost
-- API routes (`/`) open to all
-- `client_max_body_size 50m`
-
-## PM2 Processes
-
-- **openvolley** (Node.js) — managed by PM2 under `ubuntu` user
-
-```bash
 pm2 list
 pm2 logs openvolley
 ```
 
 ## Environment Variables
 
-Use `.env.local` (not committed):
+Use `.env.local` for local/prod runtime values (never commit secrets).
+
+### Frontend vars
 
 ```env
 VITE_POCKETBASE_URL="http://100.69.245.37"
-POCKETBASE_URL="http://100.69.245.37"
+VITE_API_BASE_URL="" # optional; set for static hosting that needs absolute API origin
+```
 
+### Backend vars (required)
+
+```env
+POCKETBASE_URL="http://100.69.245.37"
 POCKETBASE_ADMIN_EMAIL="..."
 POCKETBASE_ADMIN_PASSWORD="..."
-
 VM_USERNAME="..."
 VM_PASSWORD="..."
+```
 
-# optional
+### Backend vars (admin session / scheduling / collections)
+
+```env
+ADMIN_SESSION_SECRET="long-random-secret" # recommended
+ADMIN_SESSION_TTL_MS="28800000"           # default 8h
+
 VM_BASE="https://volleymanager.volleyball.ch"
 VM_SYNC_CRON="0 5 * * *"
 VM_SYNC_TIMEZONE="Europe/Zurich"
 VM_SYNC_MAX_RETRIES="10"
 VM_SYNC_RETRY_DELAY_MS="15000"
 
-# optional collection overrides
 PB_GAMES_COLLECTION="games"
 PB_COACHEES_COLLECTION="coachees"
+PB_OBSERVATIONS_COLLECTION="observations"
 PB_REFEREE_COACH_PEOPLE_COLLECTION="referee_coaches"
 PB_REFEREE_COACH_FEEDBACK_COLLECTION="referee_coach_feedbacks"
-PB_OBSERVATIONS_COLLECTION="observations"
+PB_REFEREE_COACHES_COLLECTION="referee_coach_feedbacks" # legacy alias fallback
 ```
 
-## PocketBase Collections (Current)
+### Backend vars (feedback email)
+
+```env
+SMTP_HOST="smtp.migadu.com"
+SMTP_PORT="465"
+SMTP_USER="..."
+SMTP_PASS="..."
+SMTP_FROM="coaching-feedback@svrz.ch"
+
+FEEDBACK_CC="rc_coaching@volleyball.lucanepa.com"
+FEEDBACK_SURVEY_URL="https://docs.google.com/forms/..."
+FEEDBACK_EMAIL_TEST="1"              # 1 => redirect all emails to test recipient
+FEEDBACK_TEST_RECIPIENT="you@..."
+```
+
+## PocketBase Collections (Current Model)
 
 ### `games`
-Stores synced VolleyManager games.
 
-Core fields:
-- `match_no`, `match_date`, `league`
-- `home_team`, `away_team`
-- `first_referee`, `second_referee`
-- `external_id`, `source_payload`
+Stores synced matches from VolleyManager.
+
+Common fields: `match_no`, `league`, `match_date`, `location`, `home_team`, `away_team`, `first_referee`, `second_referee`, `first_line_judge`, `second_line_judge`, `assigned_rc`, `feedback_closed_roles`, `source_payload`.
 
 ### `coachees`
-Master list of coachees (seeded for season 2025/26).
 
-Fields:
-- identity: `full_name`, `first_name`, `last_name`
-- alt/de legacy: `vorname`, `nachname`
-- level: `referee_level`, `stage`
-- alt/de legacy: `niveau`, `stufe`
-- groups: `groups` (json array)
-- alt/de legacy: `gruppe` (json array), `group` (text)
-- contacts: `email`, `phone`
-- feedback linkage: `feedback_entries`, `last_feedback_at`
+Master list of referees/coachees.
 
-### `referee_coaches`
-People directory for referee coaches.
+Common fields: `full_name`, `first_name`, `last_name`, `email`, `phone`, `referee_level`, `stage`, `groups`, `feedback_entries`, `last_feedback_at`.
 
-Fields:
-- `full_name`, `first_name`, `last_name`
-- legacy: `vorname`, `nachname`
-- `email`, `phone`, `active`
+### `referee_coaches` (people directory)
 
-### `referee_coach_feedbacks`
-Feedback submission records (formerly named `referee_coaches` before rename).
+Directory of RC persons.
 
-Fields:
-- relations: `game`, `coachee`
-- payload: `feedback_json`
-- metadata: `rc_name`, `email`, `role_assessed`, `submitted_at`
+Common fields: `first_name`, `last_name`, `email`, `phone`, `active`.
+
+### `referee_coach_feedbacks` (feedback records)
+
+Submitted coaching feedbacks.
+
+Common fields: `game` (relation), `coachee` (relation), `rc_name`, `role_assessed`, `feedback_json`, `submitted_at`, `pdf_file`.
 
 ### `observations`
-Normalized observation records from each feedback save.
 
-Relations:
-- `coachee` -> `coachees`
-- `referee_coach` -> `referee_coaches`
-- `game` -> `games`
+Normalized reporting records derived from feedback.
 
-Fields:
-- `game_level` (`easy|medium|hard`)
-- `game_result`
-- `coachee_function` (`1SR|2SR`)
-- `grades` (json; includes per-item mapped numeric grades)
-- `promotion` (`promotion|relegation|same_level`)
-- `motivation` (`high_motivated|not_motivated|in_order`)
-- `sr_goal` (`same_level|4L|3L|2L|1L|NL|International`)
-- `remarks`
+Common fields: `coachee`, `referee_coach`, `game`, `coachee_function`, `grades`, `game_level`, `promotion`, `motivation`, `sr_goal`, `game_result`, `remarks`, `second_observation`.
 
-## Runtime Data Flow
+## API Authentication Model
 
-1. PWA calls local API (`/api/*`).
-2. API authenticates to PocketBase (admin or `_superusers` fallback).
-3. `POST /api/games/sync` logs into VolleyManager, fetches games, transforms rows, upserts into `games`.
-4. `GET /api/eligible-games` filters games by coachee match on referee names.
-5. `POST /api/feedback/submit` writes:
-   - `referee_coach_feedbacks` record
-   - updates `coachees.feedback_entries`
-   - creates `observations` record
-6. Grade mapping in `observations.grades`:
-   - `E- = 1 ... A+ = 15`
+Two auth layers are in use:
 
-## Scheduler
+1. PocketBase admin auth (server-side, via env creds) for DB operations.
+2. App admin session cookie (`svrz_admin_session`) for protected admin endpoints.
 
-Daily sync is internal (`node-cron`) in API process:
+Admin cookie endpoints:
 
-- default cron: `0 5 * * *`
-- default timezone: `Europe/Zurich`
-- retries on scheduler path controlled by:
-  - `VM_SYNC_MAX_RETRIES`
-  - `VM_SYNC_RETRY_DELAY_MS`
+- `GET /api/admin/auth/status`
+- `POST /api/admin/auth/login`
+- `POST /api/admin/auth/logout`
 
-API process must run continuously in production (PM2/systemd/container).
+Protected endpoints requiring admin cookie:
 
-## API Endpoints (Current)
-
-- `GET /api/health`
-- `GET /api/eligible-games`
 - `POST /api/games/sync`
 - `POST /api/games/sync/debug`
 - `POST /api/vm/auth-check`
-- `GET /api/coachees`
-- `POST /api/coachees`
-- `PUT /api/coachees/:id`
-- `DELETE /api/coachees/:id`
-- `GET /api/coachees/:id/games`
-- `GET /api/coachees/:id/feedbacks`
-- `GET /api/referee-coaches` (list feedback records from `referee_coach_feedbacks`)
-- `POST /api/referee-coaches`
-- `PUT /api/referee-coaches/:id`
-- `DELETE /api/referee-coaches/:id`
-- `GET /api/observations`
-- `GET /api/observations/summary`
-- `GET /api/games/calendar-status`
-- `POST /api/feedback/submit`
+- `POST|PUT|DELETE /api/coachees`
+- `GET|POST|PUT|DELETE /api/referee-coaches`
+- `POST /api/admin/migrate-source-payload`
 
-## Data Import Status
+Read endpoints used by app are generally open, but still depend on valid server-side PocketBase credentials.
+
+## API Endpoints (What They Do)
+
+- `GET /api/health`: checks PocketBase reachability + admin auth.
+- `GET /api/eligible-games`: games filtered to coachees by name matching.
+- `GET /api/referee-coach-people`: active RC people list for assignment/selectors.
+- `PUT /api/games/:id/assign-rc`: assign RC to a game.
+- `GET /api/rc-overview`: per-RC done/outstanding/planned summary.
+- `GET /api/rc-overview/:rcName/coachees`: per-RC coachee breakdown.
+- `POST /api/games/sync`: run VolleyManager sync.
+- `POST /api/games/sync/debug`: run sync with debug trace payload.
+- `POST /api/vm/auth-check`: validate VolleyManager login/session.
+- `GET /api/coachees`: list coachees + observation status summary.
+- `POST /api/coachees`: create coachee.
+- `PUT /api/coachees/:id`: update coachee.
+- `DELETE /api/coachees/:id`: delete coachee.
+- `GET /api/coachees/:id/games`: get coachee-related games (SR/LJ roles).
+- `GET /api/coachees/:id/feedbacks`: feedback records for one coachee.
+- `GET /api/referee-coaches`: feedback records list (expanded game/coachee).
+- `POST /api/referee-coaches`: create feedback record (admin tool path).
+- `PUT /api/referee-coaches/:id`: update feedback record.
+- `DELETE /api/referee-coaches/:id`: delete feedback record.
+- `GET /api/observations`: paginated observations list with filters.
+- `GET /api/observations/summary`: aggregated KPIs.
+- `GET /api/games/calendar-status`: game statuses (`outstanding|completed|none`).
+- `POST /api/feedback/submit`: main workflow submit (save + PDF + email + closure).
+- `POST /api/admin/migrate-source-payload`: one-time migration utility.
+
+## How To Do Common Operations
+
+### 1) Start everything locally
+
+```bash
+npm install
+npm run dev
+```
+
+Then open `http://localhost:3000`.
+
+### 2) Validate backend health
+
+```bash
+curl "http://localhost:8787/api/health"
+```
+
+Expect `{ "ok": true }` when PocketBase URL + credentials are correct.
+
+### 3) Login as admin (needed for protected endpoints)
+
+```bash
+curl -i -X POST "http://localhost:8787/api/admin/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"<admin-email>","password":"<admin-password>"}'
+```
+
+Use returned cookie for protected API calls (or login via UI admin panel).
+
+### 4) Get games for the app
+
+Option A: pre-existing DB games:
+
+```bash
+curl "http://localhost:8787/api/eligible-games"
+```
+
+Option B: import latest games first:
+
+```bash
+curl -X POST "http://localhost:8787/api/games/sync" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Then call `/api/eligible-games` again.
+
+### 5) Debug VolleyManager auth/sync
+
+```bash
+curl -X POST "http://localhost:8787/api/vm/auth-check" \
+  -H "Content-Type: application/json" \
+  -d '{"debug":true}'
+```
+
+```bash
+curl -X POST "http://localhost:8787/api/games/sync/debug" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+### 6) Submit feedback (app flow)
+
+Frontend calls:
+
+- `POST /api/feedback/submit` with `gameId`, `role`, `formData`, `pdfBase64`, `pdfFilename`, `tipsAndTricks`
+
+Backend does:
+
+1. validation + PDF size check (max 3 MB)
+2. resolve game + coachee
+3. create feedback record
+4. append coachee `feedback_entries`
+5. create normalized `observations` row
+6. upload PDF to feedback record
+7. send feedback email (with test mode support)
+8. close role in `games.feedback_closed_roles` (unless second observation)
+
+## Scheduler
+
+Automatic sync runs inside `server/index.ts` using `node-cron`:
+
+- cron default: `0 5 * * *`
+- timezone default: `Europe/Zurich`
+- retries (cron path): `VM_SYNC_MAX_RETRIES`, `VM_SYNC_RETRY_DELAY_MS`
+
+Production note: keep API process continuously running (PM2/systemd/container), otherwise scheduled sync will not run.
+
+## Frontend Hosting / API Routing Notes
+
+- Local dev: frontend uses relative `/api/*` and Vite proxy.
+- Static hosting (e.g., Codeberg Pages): set `VITE_API_BASE_URL` to absolute API origin.
+- Vite base in production is `/svrz_rc/`, so assets are generated for that subpath.
+
+## Data Import Status (Current Snapshot)
 
 - Coachees seeded: `83`
 - Referee coaches seeded: `12`
-- Coachees matched from XLS contacts: `70` direct + manual best-match completion applied
-- Referee coach contacts completed including manual updates:
-  - `Baumgartner Daniela`
-  - `Schöni Jennifer`
-  - `Dominik Schläpfer`
-  - `Alexandra Périsset`
-  - `Andrea Berckemeyer`
+- Coachees matched from contacts: `70` direct + manual completion
+- Remaining dependency: games availability depends on successful VolleyManager auth/session during sync
 
-Remaining known gap: games table population depends on successful VolleyManager auth/session at sync time.
+## Troubleshooting Checklist
 
-## Troubleshooting Quick Checks
+If `/api/health` fails:
+
+1. check `.env.local` exists and values are loaded
+2. verify `POCKETBASE_URL` is reachable from API host
+3. verify PocketBase admin email/password
+4. verify Tailscale connectivity for private PB endpoint
+5. restart API process and retest
+
+Quick checks:
 
 ```bash
-curl "http://100.69.245.37/api/health"
 curl "http://localhost:8787/api/health"
-curl -X POST "http://localhost:8787/api/vm/auth-check" -H "Content-Type: application/json" -d '{"debug":true}'
+curl "http://100.69.245.37/api/health"
 ```
-
-If local API health fails:
-1. verify `.env.local` is saved
-2. restart API (`npm run dev:api`)
-3. verify `POCKETBASE_URL` (no `/_/`)
-4. verify admin credentials
-5. verify Tailscale connectivity
 
 ## VPS Memory Baseline
 
-The current VPS has experienced OOM kills (`pocketbase` killed by kernel). Keep a small swap file enabled as a safety buffer, even after RAM upgrades.
-
-Recommended baseline:
+This VPS had previous OOM kills. Keep swap enabled as safety buffer.
 
 ```bash
-# create 2GB swap (run once)
 sudo fallocate -l 2G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-
-# tune swap behavior
 echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swappiness.conf
 sudo sysctl -p /etc/sysctl.d/99-swappiness.conf
-
-# verify
 free -h
 swapon --show
 ```
 
-## Security Notes
+## Security Rules
 
+- Never commit secrets from `.env*`.
 - Keep PocketBase admin UI private (Tailscale-only).
-- Never commit secrets.
+- Set `ADMIN_SESSION_SECRET` to a strong random value.
 - Rotate credentials immediately if exposed.
-- Prefer HTTPS for public-facing paths when available.
+- Use HTTPS for all public API/frontend routes where available.

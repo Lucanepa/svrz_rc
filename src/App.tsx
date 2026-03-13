@@ -1449,12 +1449,12 @@ export default function App() {
 
       {viewMode === 'feedback' && feedbackSubView === 'coachees' && (
         <div className="max-w-5xl mx-auto no-print">
-          <div className="bg-white p-4 shadow-xl border border-stone-200 mb-4 flex items-end gap-4">
+          <div className="bg-white p-4 shadow-xl border border-stone-200 mb-4 flex items-end sm:items-start gap-4">
             <div className="flex-1">
               <h1 className="text-xl font-bold text-stone-900">{t.title}</h1>
               <p className="text-xs text-stone-500">Swiss Volley Region Zürich</p>
             </div>
-            <div className="flex flex-col items-center justify-end gap-2 self-end">
+            <div className="flex flex-col items-center justify-end sm:justify-start gap-2 self-end sm:self-start">
               <img
                 src={swissVolleyLogo}
                 alt="Swiss Volley"
@@ -1651,7 +1651,7 @@ export default function App() {
                       <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterRd ? "bg-amber-500" : "bg-stone-300")}>
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterRd ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
-                      <span>RD</span>
+                      <span>RD Game</span>
                     </button>
                     <button
                       onClick={() => setGameFilterLd(!gameFilterLd)}
@@ -1660,7 +1660,7 @@ export default function App() {
                       <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterLd ? "bg-violet-500" : "bg-stone-300")}>
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterLd ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
-                      <span>LD</span>
+                      <span>LD Game</span>
                     </button>
                     <div className="flex-1 min-w-[140px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
@@ -1733,7 +1733,7 @@ export default function App() {
                   <p className="text-sm text-stone-500 p-4">{t.noCoachees}</p>
                 ) : (
                   <table className="w-full text-base">
-                    <thead className="sticky top-0 bg-stone-50 text-xs uppercase font-bold text-stone-500 border-b border-stone-200">
+                    <thead className="sticky top-0 z-10 bg-stone-50 text-xs uppercase font-bold text-stone-500 border-b border-stone-200">
                       <tr>
                         <th className="text-left px-3 py-2.5 cursor-pointer select-none" onClick={() => toggleListSort('name')}>{formData.lang === 'DE' ? 'Name' : 'Name'}{listSortBy === 'name' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</th>
                         <th className="text-left px-3 py-2.5 w-24 cursor-pointer select-none" onClick={() => toggleListSort('level')}>{formData.lang === 'DE' ? 'Stufe' : 'Level'}{listSortBy === 'level' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</th>
@@ -1821,7 +1821,12 @@ export default function App() {
                     {filteredGames.length === 0 ? (
                       <p className="text-sm text-stone-500 p-4">{t.noGames}</p>
                     ) : (
-                      <div className="divide-y divide-stone-200">
+                      <>
+                        <div className="sticky top-0 z-10 grid grid-cols-[1fr_auto] items-center gap-2 bg-stone-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-stone-500 border-b border-stone-200">
+                          <span>{formData.lang === 'DE' ? 'Spiel / Datum' : 'Game / Date'}</span>
+                          <span>{formData.lang === 'DE' ? 'Status' : 'Status'}</span>
+                        </div>
+                        <div className="divide-y divide-stone-200">
                         {filteredGames.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((game) => {
                           const d = new Date(game.date);
                           const dateValid = !isNaN(d.getTime());
@@ -1850,8 +1855,8 @@ export default function App() {
                                   {timePart && <span>{timePart}</span>}
                                   <span><LeagueLabel text={game.league} /></span>
                                   {game.matchNo && <span>#{game.matchNo}</span>}
-                                  {game.isRdGame && <span className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300">RD</span>}
-                                  {game.isLdGame && <span className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-violet-100 text-violet-700 border border-violet-300">LD</span>}
+                                  {game.isRdGame && <span className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300">RD Game</span>}
+                                  {game.isLdGame && <span className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-violet-100 text-violet-700 border border-violet-300">LD Game</span>}
                                   <div className="flex-1" />
                                   {/* RC indicator */}
                                   {game.assignedRc ? (
@@ -1932,7 +1937,8 @@ export default function App() {
                             </div>
                           );
                         })}
-                      </div>
+                        </div>
+                      </>
                     )}
                     {filteredGames.length > LIST_PAGE_SIZE && (
                       <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
@@ -2171,20 +2177,26 @@ export default function App() {
                   <p className="text-sm text-stone-500 py-4">{t.rcNoData}</p>
                 ) : (
                   <div className="border border-stone-200 rounded divide-y divide-stone-200">
+                    <div className="px-4 py-2.5 bg-stone-50 text-[11px] font-bold uppercase tracking-wide text-stone-500 grid grid-cols-[minmax(0,1fr)_minmax(72px,auto)_minmax(72px,auto)_minmax(72px,auto)] items-center gap-4 border-b border-stone-200">
+                      <span>{formData.lang === 'DE' ? 'Name' : 'Name'}</span>
+                      <span className="text-center">{formData.lang === 'DE' ? 'Erledigt' : 'Done'}</span>
+                      <span className="text-center">{formData.lang === 'DE' ? 'Offen' : 'Open'}</span>
+                      <span className="text-center">{formData.lang === 'DE' ? 'Geplant' : 'Planned'}</span>
+                    </div>
                     {rcOverviewData.map((rc) => (
                       <div
                         key={rc.id}
                         onClick={() => void handleSelectRc(rc.fullName)}
-                        className="px-4 py-3 hover:bg-stone-50 cursor-pointer transition-colors flex items-center gap-4"
+                        className="px-4 py-3 hover:bg-stone-50 cursor-pointer transition-colors grid grid-cols-[minmax(0,1fr)_minmax(72px,auto)_minmax(72px,auto)_minmax(72px,auto)] items-center gap-4"
                       >
-                        <span className="font-medium text-sm text-stone-800 flex-1">{rc.fullName}</span>
-                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700" title={t.rcDone}>
+                        <span className="font-medium text-sm text-stone-800 truncate">{rc.fullName}</span>
+                        <span className="inline-flex items-center justify-center text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700" title={t.rcDone}>
                           {rc.done}
                         </span>
-                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700" title={t.rcOutstanding}>
+                        <span className="inline-flex items-center justify-center text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700" title={t.rcOutstanding}>
                           {rc.outstanding}
                         </span>
-                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700" title={t.rcPlanned}>
+                        <span className="inline-flex items-center justify-center text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700" title={t.rcPlanned}>
                           {rc.planned}
                         </span>
                       </div>

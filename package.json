@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -n api,web -c green,blue \"npm run dev:api\" \"npm run dev:web\"",
     "dev:web": "vite --port=3000 --host=0.0.0.0",
-    "dev:api": "tsx watch --ignore='src/**' --ignore='dist/**' --ignore='node_modules/**' --ignore='*.html' server/index.ts",
+    "dev:api": "tsx server/index.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",

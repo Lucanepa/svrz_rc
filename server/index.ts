@@ -1149,13 +1149,29 @@ async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<st
 
   // Fetch all observations in a single getFullList call to avoid 429 rate limiting
   const stats = new Map<string, { count: number; hasFurther: boolean; hasCompleted: boolean; latestAt: string }>();
-  const allObservations = await withCollection(collectionCandidates.observations, (collection) =>
-    collection.getFullList<AnyRecord>({
-      sort: '-created',
-      fields: 'coachee,second_observation,created,updated',
-      batch: 500,
-    }),
-  );
+  const allObservations = await (async () => {
+    try {
+      return await withCollection(collectionCandidates.observations, (collection) =>
+        collection.getFullList<AnyRecord>({
+          sort: '-created',
+          fields: 'coachee,second_observation,created,updated',
+          batch: 500,
+        }),
+      );
+    } catch (error) {
+      if (!isPocketBaseBadRequest(error)) {
+        throw error;
+      }
+      // Older schemas may miss projected fields (e.g. second_observation).
+      // Retry without field projection for compatibility.
+      return withCollection(collectionCandidates.observations, (collection) =>
+        collection.getFullList<AnyRecord>({
+          sort: '-created',
+          batch: 500,
+        }),
+      );
+    }
+  })();
   for (const row of allObservations) {
     const coacheeId = asText(row.coachee);
     if (!coacheeId) continue;

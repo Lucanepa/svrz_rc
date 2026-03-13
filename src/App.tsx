@@ -1015,6 +1015,11 @@ export default function App() {
   const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
   const formDisabled = feedbackLocked || isGameRoleClosed;
 
+  const selectedCoacheeEmail = useMemo(() => {
+    const c = coachees.find(c => c.id === selectedCoacheeId);
+    return c?.email || '';
+  }, [coachees, selectedCoacheeId]);
+
   const doResetForm = () => {
     setFormData((prev) => ({
       ...prev,
@@ -1585,11 +1590,15 @@ export default function App() {
                                 {/* Referees (right) */}
                                 <div className="shrink-0 text-right hidden sm:block">
                                   <div className="text-xs text-stone-500">
-                                    <span className="font-medium text-stone-400">1SR</span> {game.firstReferee || '-'}
+                                    <span className="font-medium text-stone-400">1SR</span>{' '}
+                                    <span className={coacheeNames.has((game.firstReferee || '').toLowerCase().trim()) ? 'font-semibold text-stone-800' : ''}>{game.firstReferee || '-'}</span>
                                   </div>
-                                  <div className="text-xs text-stone-500">
-                                    <span className="font-medium text-stone-400">2SR</span> {game.secondReferee || '-'}
-                                  </div>
+                                  {game.secondReferee && (
+                                    <div className="text-xs text-stone-500">
+                                      <span className="font-medium text-stone-400">2SR</span>{' '}
+                                      <span className={coacheeNames.has(game.secondReferee.toLowerCase().trim()) ? 'font-semibold text-stone-800' : ''}>{game.secondReferee}</span>
+                                    </div>
+                                  )}
                                 </div>
                                 {/* RC indicator */}
                                 <div className="shrink-0 w-6 flex justify-center">
@@ -1605,9 +1614,17 @@ export default function App() {
                               {isExpanded && (
                                 <div className="px-3 pb-3 pt-1 bg-blue-50 border-t border-blue-100 flex flex-wrap items-center gap-3">
                                   {/* Mobile referees (visible only on small screens) */}
-                                  <div className="w-full flex gap-4 text-xs text-stone-500 sm:hidden">
-                                    <span><span className="font-medium text-stone-400">1SR</span> {game.firstReferee || '-'}</span>
-                                    <span><span className="font-medium text-stone-400">2SR</span> {game.secondReferee || '-'}</span>
+                                  <div className="w-full flex flex-col gap-0.5 text-xs text-stone-500 sm:hidden">
+                                    <span>
+                                      <span className="font-medium text-stone-400">1SR</span>{' '}
+                                      <span className={coacheeNames.has((game.firstReferee || '').toLowerCase().trim()) ? 'font-semibold text-stone-800' : ''}>{game.firstReferee || '-'}</span>
+                                    </span>
+                                    {game.secondReferee && (
+                                      <span>
+                                        <span className="font-medium text-stone-400">2SR</span>{' '}
+                                        <span className={coacheeNames.has(game.secondReferee.toLowerCase().trim()) ? 'font-semibold text-stone-800' : ''}>{game.secondReferee}</span>
+                                      </span>
+                                    )}
                                   </div>
                                   <label className="text-xs font-medium text-stone-500">RC:</label>
                                   <select
@@ -1687,7 +1704,7 @@ export default function App() {
                   const cells: React.ReactNode[] = [];
                   // Empty cells before first day
                   for (let i = 0; i < startWeekday; i++) {
-                    cells.push(<div key={`empty-${i}`} className="h-16 sm:h-20" />);
+                    cells.push(<div key={`empty-${i}`} className="min-h-[3.5rem] sm:h-20" />);
                   }
                   for (let day = 1; day <= daysInMonth; day++) {
                     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -1709,31 +1726,31 @@ export default function App() {
                           }
                         }}
                         className={cn(
-                          "h-16 sm:h-20 p-1 border border-stone-100 rounded text-xs transition-colors",
+                          "min-h-[3.5rem] sm:h-20 p-0.5 sm:p-1 border border-stone-100 rounded text-xs transition-colors overflow-hidden",
                           hasGames ? "cursor-pointer hover:bg-blue-50" : "",
                           isToday && "ring-2 ring-blue-400"
                         )}
                       >
-                        <div className={cn("font-medium", isToday ? "text-blue-600" : "text-stone-700")}>{day}</div>
+                        <div className={cn("font-medium text-[11px] sm:text-xs", isToday ? "text-blue-600" : "text-stone-700")}>{day}</div>
                         {hasGames && (
-                          <div className="mt-1 flex flex-wrap gap-0.5">
-                            {dayGames.slice(0, 4).map((g, i) => (
+                          <div className="mt-0.5 sm:mt-1 flex flex-wrap gap-0.5">
+                            {dayGames.slice(0, 3).map((g, i) => (
                               <span
                                 key={i}
                                 className={cn(
-                                  "w-2 h-2 rounded-full",
+                                  "w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full",
                                   g.assignedRc ? "bg-green-500" : "bg-stone-300"
                                 )}
                                 title={`${g.homeTeam} vs ${g.awayTeam}${g.assignedRc ? ` (RC: ${g.assignedRc})` : ''}`}
                               />
                             ))}
-                            {dayGames.length > 4 && (
-                              <span className="text-[10px] text-stone-400">+{dayGames.length - 4}</span>
+                            {dayGames.length > 3 && (
+                              <span className="text-[9px] sm:text-[10px] text-stone-400 leading-none">+{dayGames.length - 3}</span>
                             )}
                           </div>
                         )}
                         {hasGames && (
-                          <div className="mt-0.5 text-[10px] text-stone-400">{dayGames.length} {dayGames.length === 1 ? (formData.lang === 'DE' ? 'Spiel' : 'game') : (formData.lang === 'DE' ? 'Spiele' : 'games')}</div>
+                          <div className="mt-0.5 text-[9px] sm:text-[10px] text-stone-400 leading-tight truncate">{dayGames.length} {dayGames.length === 1 ? (formData.lang === 'DE' ? 'Spiel' : 'game') : (formData.lang === 'DE' ? 'Spiele' : 'games')}</div>
                         )}
                       </div>
                     );
@@ -2158,6 +2175,7 @@ export default function App() {
           onChange={e => setTipsAndTricks(e.target.value)}
         />
       </div>
+      </div>{/* end formDisabled wrapper */}
 
       {(feedbackLocked || isGameRoleClosed) && (
         <div className="max-w-4xl mx-auto mt-4 no-print">
@@ -2197,7 +2215,9 @@ export default function App() {
             </h3>
             <p className="text-sm text-stone-600 mb-6">
               {showConfirmModal === 'save'
-                ? (formData.lang === 'DE' ? 'Das Feedback wird in der Datenbank gespeichert.' : 'The feedback will be saved to the database.')
+                ? (formData.lang === 'DE'
+                  ? `Das Feedback wird gespeichert und eine E-Mail mit dem PDF wird an ${selectedCoacheeEmail || '(keine E-Mail)'} gesendet.`
+                  : `The feedback will be saved and an email with the PDF will be sent to ${selectedCoacheeEmail || '(no email)'}.`)
                 : (formData.lang === 'DE' ? 'Alle Bewertungen und Bemerkungen werden zurückgesetzt. Spieldaten bleiben erhalten.' : 'All ratings and remarks will be reset. Game data will be kept.')}
             </p>
             <div className="flex justify-end gap-3">

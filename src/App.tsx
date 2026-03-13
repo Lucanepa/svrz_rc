@@ -594,6 +594,8 @@ export default function App() {
   const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });
   const [gameFilterNeedsObs, setGameFilterNeedsObs] = useState(true);
   const [gameFilterShowInactive, setGameFilterShowInactive] = useState(false);
+  const [gameFilterRd, setGameFilterRd] = useState(false);
+  const [gameFilterLd, setGameFilterLd] = useState(false);
   const [formData, setFormData] = useState<FeedbackFormData>(() => {
     const lang = detectInitialLang();
     return {
@@ -1310,6 +1312,8 @@ export default function App() {
         if (!match) return false;
       }
       if (gameFilterLeagues.length > 0 && !gameFilterLeagues.includes(g.league || '')) return false;
+      if (gameFilterRd && !g.isRdGame) return false;
+      if (gameFilterLd && !g.isLdGame) return false;
       if (gameFilterDateFrom) {
         const from = new Date(gameFilterDateFrom);
         if (new Date(g.date) < from) return false;
@@ -1335,7 +1339,7 @@ export default function App() {
       }
       return true;
     });
-  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, coacheeByName, coacheeNames]);
+  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, coacheeByName, coacheeNames]);
 
   return (
     <div className="min-h-screen bg-stone-100 py-8 px-4 print:bg-white print:p-0">
@@ -1601,7 +1605,7 @@ export default function App() {
                     className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                   />
                   {(() => {
-                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo].filter(Boolean).length;
+                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo, gameFilterRd, gameFilterLd].filter(Boolean).length;
                     return (
                       <button
                         onClick={() => setFiltersOpen(!filtersOpen)}
@@ -1639,6 +1643,24 @@ export default function App() {
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
                       <span>{formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}</span>
+                    </button>
+                    <button
+                      onClick={() => setGameFilterRd(!gameFilterRd)}
+                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
+                    >
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterRd ? "bg-amber-500" : "bg-stone-300")}>
+                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterRd ? "translate-x-4.5" : "translate-x-0.5")} />
+                      </span>
+                      <span>RD</span>
+                    </button>
+                    <button
+                      onClick={() => setGameFilterLd(!gameFilterLd)}
+                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
+                    >
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterLd ? "bg-violet-500" : "bg-stone-300")}>
+                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterLd ? "translate-x-4.5" : "translate-x-0.5")} />
+                      </span>
+                      <span>LD</span>
                     </button>
                     <div className="flex-1 min-w-[140px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">

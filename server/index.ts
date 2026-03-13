@@ -210,6 +210,9 @@ const RENDER_PROPERTIES = [
   'activeFirstHeadRefereeName', 'activeSecondHeadRefereeName',
   'activeFirstLineJudgeName', 'activeSecondLineJudgeName',
   'refereeConvocations.*.indoorAssociationReferee.indoorReferee.person.displayName',
+  'isSupervised', 'hasAtLeastOneRefereeIntendedToBeSupervised',
+  'isLinesmanOneSupervised', 'isLinesmanTwoSupervised',
+  'isLinesmanThreeSupervised', 'isLinesmanFourSupervised',
 ];
 
 function normalizeName(value: unknown): string {

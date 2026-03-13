@@ -1622,7 +1622,7 @@ export default function App() {
                                         setBackendNotice(err instanceof Error ? err.message : String(err));
                                       }
                                     }}
-                                    className="h-8 px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400 flex-1 min-w-0 max-w-xs"
+                                    className="h-9 px-3 text-sm border border-stone-300 rounded-md bg-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-400 transition-colors hover:border-stone-400 flex-1 min-w-[14rem] max-w-sm cursor-pointer"
                                   >
                                     <option value="">-</option>
                                     {rcPeople.map((rc) => (
@@ -1990,6 +1990,8 @@ export default function App() {
           {LEGEND[formData.lang]}
         </div>
 
+        <div className={cn(formDisabled && 'pointer-events-none opacity-60')}>
+
         {/* Assessment Sections */}
         <div className="space-y-6">
           {formData.sections.map((section, sIdx) => (
@@ -2157,17 +2159,27 @@ export default function App() {
         />
       </div>
 
+      {(feedbackLocked || isGameRoleClosed) && (
+        <div className="max-w-4xl mx-auto mt-4 no-print">
+          <div className="bg-stone-100 border border-stone-300 rounded-lg px-4 py-3 text-sm text-stone-600 font-medium">
+            {isGameRoleClosed ? t.gameClosed : t.feedbackLocked}
+          </div>
+        </div>
+      )}
+
       {/* Save to database */}
-      <div className="max-w-4xl mx-auto mt-4 flex justify-end no-print">
-        <button
-          onClick={() => setShowConfirmModal('save')}
-          disabled={savingFeedback || !selectedGame}
-          className="flex items-center gap-2 bg-emerald-600 text-white px-6 py-3 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50 font-medium"
-        >
-          <Database size={18} />
-          <span>{savingFeedback ? t.loading : t.saveBackend}</span>
-        </button>
-      </div>
+      {!feedbackLocked && !isGameRoleClosed && (
+        <div className="max-w-4xl mx-auto mt-4 flex justify-end no-print">
+          <button
+            onClick={() => setShowConfirmModal('save')}
+            disabled={savingFeedback || !selectedGame}
+            className="flex items-center gap-2 bg-emerald-600 text-white px-6 py-3 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50 font-medium"
+          >
+            <Database size={18} />
+            <span>{savingFeedback ? t.loading : t.saveBackend}</span>
+          </button>
+        </div>
+      )}
       {backendNotice && (
         <p className="max-w-4xl mx-auto mt-2 text-sm text-blue-700 no-print">{backendNotice}</p>
       )}

@@ -1061,7 +1061,7 @@ async function getEligibleGames() {
   const allGames = await withCollection(collectionCandidates.games, (collection) =>
     collection.getFullList<AnyRecord>({
       sort: '-match_date,-created',
-      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc',
+      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles',
     }),
   );
 
@@ -1080,6 +1080,7 @@ async function getEligibleGames() {
     firstReferee: asText(game.first_referee),
     secondReferee: asText(game.second_referee),
     assignedRc: asText(game.assigned_rc),
+    feedbackClosedRoles: Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [],
   }));
 }
 
@@ -1953,17 +1954,36 @@ app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request,
 });
 
 app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
-  const { gameId, role, formData } = req.body ?? {};
-  if (!gameId || !role || !formData) {
-    res.status(400).json({ error: 'gameId, role and formData are required.' });
+  const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks } = req.body ?? {};
+
+  // Phase 1 — Validation
+  if (!gameId || !role || !formData || !pdfBase64) {
+    res.status(400).json({ error: 'gameId, role, formData and pdfBase64 are required.' });
+    return;
+  }
+
+  // Validate PDF size (3MB decoded limit)
+  const pdfBuffer = Buffer.from(String(pdfBase64), 'base64');
+  if (pdfBuffer.length > 3 * 1024 * 1024) {
+    res.status(400).json({ error: 'PDF exceeds 3MB size limit.' });
     return;
   }
 
   try {
     await ensureAdminAuth();
+
+    // Fetch game and check closure
     const game = await withCollection(collectionCandidates.games, (collection) =>
       collection.getOne<AnyRecord>(String(gameId)),
     );
+
+    const closedRoles: string[] = Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [];
+    if (closedRoles.includes(String(role))) {
+      res.status(409).json({ error: `Feedback for role "${role}" has already been submitted for this game.` });
+      return;
+    }
+
+    // Resolve coachee and validate email
     const refereeName = role === '1. SR' ? asText(game.first_referee) : asText(game.second_referee);
     if (!refereeName) {
       throw new Error(`No referee name found in game for role ${role}.`);
@@ -1984,6 +2004,14 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
     }));
     const coachee = coacheeResult.coachee;
     const coacheeCollection = coacheeResult.collection;
+
+    const coacheeEmail = asText(coachee.email);
+    if (!coacheeEmail) {
+      res.status(400).json({ error: 'Coachee has no email address. Add an email in the admin panel before submitting feedback.' });
+      return;
+    }
+
+    // Phase 2 — Save (existing logic)
     const submittedAt = new Date().toISOString();
     const refereeCoachPersonId = await resolveRefereeCoachPersonId(asText(formData.meta?.rc));
 
@@ -2025,37 +2053,140 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
     };
 
     const gameLevel = mapGameLevel(formData.results?.spielniveau);
-    if (gameLevel) {
-      observationPayload.game_level = gameLevel;
-    }
-
+    if (gameLevel) observationPayload.game_level = gameLevel;
     const promotion = mapPromotion(formData.results?.einstufung);
-    if (promotion) {
-      observationPayload.promotion = promotion;
-    }
-
+    if (promotion) observationPayload.promotion = promotion;
     const motivation = mapMotivation(formData.results?.motivation);
-    if (motivation) {
-      observationPayload.motivation = motivation;
-    }
-
+    if (motivation) observationPayload.motivation = motivation;
     const srGoal = mapSrGoal(formData.results?.srZiel);
-    if (srGoal) {
-      observationPayload.sr_goal = srGoal;
-    }
-
+    if (srGoal) observationPayload.sr_goal = srGoal;
     const gameResult = asText(formData.results?.einstufung);
-    if (gameResult) {
-      observationPayload.game_result = gameResult;
-    }
-
+    if (gameResult) observationPayload.game_result = gameResult;
     observationPayload.second_observation = asBoolean(formData.results?.secondBesuch, false);
 
     await withCollection(collectionCandidates.observations, (collection) =>
       collection.create(observationPayload),
     );
 
-    res.status(201).json(created);
+    // Upload PDF to feedback record
+    const pdfFormData = new FormData();
+    pdfFormData.append('pdf_file', new Blob([pdfBuffer], { type: 'application/pdf' }), String(pdfFilename || 'feedback.pdf'));
+    await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+      collection.update(created.id, pdfFormData),
+    );
+
+    // Phase 3 — Email (best-effort)
+    let emailSent = false;
+    let emailError: string | null = null;
+    let emailWarning: string | null = null;
+
+    try {
+      // Resolve RC email
+      let rcEmail = '';
+      try {
+        const rcPerson = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
+          collection.getOne<AnyRecord>(refereeCoachPersonId),
+        );
+        rcEmail = asText(rcPerson.email);
+      } catch {
+        // RC person fetch failed — continue without RC email
+      }
+
+      if (!rcEmail) {
+        emailWarning = 'RC has no email, sent without RC in CC';
+      }
+
+      // Format date as dd.MM.yyyy
+      const matchDate = asText(game.match_date);
+      let formattedDate = matchDate;
+      if (matchDate) {
+        const d = new Date(matchDate);
+        if (!isNaN(d.getTime())) {
+          formattedDate = `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
+        }
+      }
+
+      const matchNo = asText(game.match_no);
+      const lang = formData.lang === 'DE' ? 'DE' : 'EN';
+      const subject = lang === 'DE'
+        ? `SR-Coaching Feedback – Spiel ${matchNo} (${formattedDate})`
+        : `Referee Coaching Feedback – Match ${matchNo} (${formattedDate})`;
+
+      const surveyUrl = process.env.FEEDBACK_SURVEY_URL || '';
+      const emailParams = {
+        matchNo,
+        league: asText(game.league),
+        date: formattedDate,
+        location: asText(game.location),
+        homeTeam: asText(game.home_team),
+        awayTeam: asText(game.away_team),
+        role: String(role),
+        rcName: asText(formData.meta?.rc),
+        tipsAndTricks: String(tipsAndTricks || ''),
+        surveyUrl,
+      };
+
+      const isTestMode = process.env.FEEDBACK_EMAIL_TEST === '1';
+      const testRecipient = process.env.FEEDBACK_TEST_RECIPIENT || '';
+
+      let mailTo: string;
+      let mailCc: string[] | undefined;
+      let mailSubject: string;
+
+      if (isTestMode && testRecipient) {
+        // Test mode: redirect all emails to test recipient, no CC
+        mailTo = testRecipient;
+        mailCc = undefined;
+        mailSubject = `[TEST] ${subject}`;
+        console.log(`[feedback-email] TEST MODE: redirecting email from ${coacheeEmail} to ${testRecipient}`);
+      } else {
+        mailTo = coacheeEmail;
+        const ccList = [process.env.FEEDBACK_CC].filter(Boolean) as string[];
+        if (rcEmail) ccList.unshift(rcEmail);
+        mailCc = ccList.length > 0 ? ccList : undefined;
+        mailSubject = subject;
+      }
+
+      await smtpTransport.sendMail({
+        from: process.env.SMTP_FROM || 'coaching-feedback@svrz.ch',
+        replyTo: rcEmail || undefined,
+        to: mailTo,
+        cc: mailCc,
+        subject: mailSubject,
+        html: buildFeedbackEmailHtml(emailParams),
+        text: buildFeedbackEmailText(emailParams),
+        attachments: [{
+          filename: String(pdfFilename || 'feedback.pdf'),
+          content: pdfBuffer,
+          contentType: 'application/pdf',
+        }],
+      });
+
+      emailSent = true;
+    } catch (emailErr) {
+      emailError = emailErr instanceof Error ? emailErr.message : String(emailErr);
+      console.error('[feedback-email] Failed to send:', emailError);
+    }
+
+    // Phase 4 — Closure
+    if (formData.results?.secondBesuch !== 'Y') {
+      try {
+        const updatedClosedRoles = [...closedRoles, String(role)];
+        await withCollection(collectionCandidates.games, (collection) =>
+          collection.update(game.id, { feedback_closed_roles: updatedClosedRoles }),
+        );
+      } catch (closeErr) {
+        console.error('[feedback-closure] Failed to close game role:', closeErr);
+      }
+    }
+
+    // Phase 5 — Response
+    res.status(201).json({
+      id: created.id,
+      emailSent,
+      emailError,
+      emailWarning,
+    });
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }

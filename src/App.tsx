@@ -134,7 +134,7 @@ const UI_STRINGS = {
     phone: "Telefon",
     emailLabel: "E-Mail",
     noNotes: "Keine Notizen vorhanden.",
-    rcOverview: "Referee Coach",
+    rcOverview: "Referee Coaches",
     rcDone: "Erledigt",
     rcOutstanding: "Ausstehend",
     rcPlanned: "Geplant",
@@ -241,7 +241,7 @@ const UI_STRINGS = {
     phone: "Phone",
     emailLabel: "Email",
     noNotes: "No notes yet.",
-    rcOverview: "Referee Coach",
+    rcOverview: "Referee Coaches",
     rcDone: "Done",
     rcOutstanding: "Outstanding",
     rcPlanned: "Planned",
@@ -326,7 +326,7 @@ function LeagueLabel({ text }: { text: string }) {
     <>
       {parts.map((part, i) =>
         part === '♂' || part === '♀' ? (
-          <span key={i} className="text-sm leading-none">{part}</span>
+          <span key={i} className={cn("text-base leading-none font-bold", part === '♂' ? 'text-blue-500' : 'text-pink-500')}>{part}</span>
         ) : (
           <span key={i}>{part}</span>
         ),
@@ -1849,14 +1849,10 @@ export default function App() {
                                   isExpanded ? "bg-blue-50" : "hover:bg-stone-50"
                                 )}
                               >
-                                {/* Row 1: game info */}
-                                <div className="flex items-center gap-2 text-xs text-stone-400">
+                                {/* Row 1: date/time + status indicators */}
+                                <div className="flex items-center gap-2 text-sm text-stone-400">
                                   <span className="font-medium text-stone-700">{datePart}</span>
-                                  {timePart && <span>{timePart}</span>}
-                                  <span><LeagueLabel text={game.league} /></span>
-                                  {game.matchNo && <span>#{game.matchNo}</span>}
-                                  {game.isRdGame && <span className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300">RD Game</span>}
-                                  {game.isLdGame && <span className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-violet-100 text-violet-700 border border-violet-300">LD Game</span>}
+                                  {timePart && <span className="font-medium text-stone-700">{timePart}</span>}
                                   <div className="flex-1" />
                                   {/* RC indicator */}
                                   {game.assignedRc ? (
@@ -1866,23 +1862,48 @@ export default function App() {
                                   )}
                                   <ChevronDown size={14} className={cn("text-stone-400 transition-transform", isExpanded && "rotate-180")} />
                                 </div>
-                                {/* Row 2 & 3: teams */}
-                                <div className="mt-1 font-semibold text-sm text-stone-900 truncate">{game.homeTeam}</div>
-                                <div className="text-sm text-stone-600 truncate">{game.awayTeam}</div>
-                                {/* Row 4/5: coachee referees */}
-                                {(r1IsCoachee || r2IsCoachee) && (
-                                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs">
-                                    {r1IsCoachee && (
-                                      <span><span className="font-medium text-stone-400">1SR</span>{' '}<span className="font-semibold text-stone-800">{r1}</span></span>
-                                    )}
-                                    {r2IsCoachee && (
-                                      <span><span className="font-medium text-stone-400">2SR</span>{' '}<span className="font-semibold text-stone-800">{r2}</span></span>
-                                    )}
-                                  </div>
+                                {/* Row 2: league, match#, chips */}
+                                <div className="flex items-center gap-2 text-sm text-stone-400 mt-0.5">
+                                  <span><LeagueLabel text={game.league} /></span>
+                                  {game.matchNo && <span>#{game.matchNo}</span>}
+                                  {game.isRdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>}
+                                  {game.isLdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>}
+                                </div>
+                                {/* Teams */}
+                                <div className="mt-1 text-base text-stone-900 truncate">{game.homeTeam}</div>
+                                <div className="text-base text-stone-600 truncate">{game.awayTeam}</div>
+                                {/* Location (hall name, clickable to maps) */}
+                                {game.location && (
+                                  <a
+                                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(game.location)}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="mt-0.5 block text-sm text-stone-400 hover:text-stone-600 underline decoration-stone-300 hover:decoration-stone-400 truncate transition-colors"
+                                  >
+                                    {game.location.split(',')[0].trim()}
+                                  </a>
                                 )}
-                                {/* Row 6: RC name */}
+                                {/* Coachee referees (1SR / 2SR) */}
+                                <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-sm">
+                                  <span>
+                                    <span className="font-medium text-stone-400">1SR</span>{' '}
+                                    {r1 ? (
+                                      <span className={r1IsCoachee ? 'font-bold text-stone-900' : 'font-semibold text-stone-700'}>{r1}</span>
+                                    ) : (
+                                      <span className="text-stone-300">–</span>
+                                    )}
+                                  </span>
+                                  {r2 && (
+                                    <span>
+                                      <span className="font-medium text-stone-400">2SR</span>{' '}
+                                      <span className={r2IsCoachee ? 'font-bold text-stone-900' : 'font-semibold text-stone-700'}>{r2}</span>
+                                    </span>
+                                  )}
+                                </div>
+                                {/* RC name (only if assigned) */}
                                 {game.assignedRc && (
-                                  <div className="mt-0.5 text-xs text-stone-500">
+                                  <div className="mt-0.5 text-sm text-stone-500">
                                     <span className="font-medium text-stone-400">RC</span>{' '}{game.assignedRc}
                                   </div>
                                 )}
@@ -2177,28 +2198,24 @@ export default function App() {
                   <p className="text-sm text-stone-500 py-4">{t.rcNoData}</p>
                 ) : (
                   <div className="border border-stone-200 rounded divide-y divide-stone-200">
-                    <div className="px-4 py-2.5 bg-stone-50 text-[11px] font-bold uppercase tracking-wide text-stone-500 grid grid-cols-[minmax(0,1fr)_minmax(72px,auto)_minmax(72px,auto)_minmax(72px,auto)] items-center gap-4 border-b border-stone-200">
-                      <span>{formData.lang === 'DE' ? 'Name' : 'Name'}</span>
-                      <span className="text-center">{formData.lang === 'DE' ? 'Erledigt' : 'Done'}</span>
-                      <span className="text-center">{formData.lang === 'DE' ? 'Offen' : 'Open'}</span>
-                      <span className="text-center">{formData.lang === 'DE' ? 'Geplant' : 'Planned'}</span>
-                    </div>
                     {rcOverviewData.map((rc) => (
                       <div
                         key={rc.id}
                         onClick={() => void handleSelectRc(rc.fullName)}
-                        className="px-4 py-3 hover:bg-stone-50 cursor-pointer transition-colors grid grid-cols-[minmax(0,1fr)_minmax(72px,auto)_minmax(72px,auto)_minmax(72px,auto)] items-center gap-4"
+                        className="px-4 py-3 hover:bg-stone-50 cursor-pointer transition-colors"
                       >
-                        <span className="font-medium text-sm text-stone-800 truncate">{rc.fullName}</span>
-                        <span className="inline-flex items-center justify-center text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700" title={t.rcDone}>
-                          {rc.done}
-                        </span>
-                        <span className="inline-flex items-center justify-center text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700" title={t.rcOutstanding}>
-                          {rc.outstanding}
-                        </span>
-                        <span className="inline-flex items-center justify-center text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700" title={t.rcPlanned}>
-                          {rc.planned}
-                        </span>
+                        <div className="font-medium text-sm text-stone-800">{rc.fullName}</div>
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-green-100 text-green-700" title={t.rcDone}>
+                            {rc.done} {formData.lang === 'DE' ? 'erledigt' : 'done'}
+                          </span>
+                          <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700" title={t.rcOutstanding}>
+                            {rc.outstanding} {formData.lang === 'DE' ? 'offen' : 'open'}
+                          </span>
+                          <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-700" title={t.rcPlanned}>
+                            {rc.planned} {formData.lang === 'DE' ? 'geplant' : 'planned'}
+                          </span>
+                        </div>
                       </div>
                     ))}
                   </div>

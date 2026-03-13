@@ -1,0 +1,492 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e4]:
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - heading "SR-Coaching Feedback" [level=1] [ref=e7]
+      - paragraph [ref=e8]: Swiss Volley Region Zürich
+    - generic [ref=e9]:
+      - img "Swiss Volley" [ref=e10]
+      - button "EN" [active] [ref=e11]:
+        - img [ref=e12]
+        - generic [ref=e16]: EN
+  - generic [ref=e17]:
+    - generic [ref=e18]:
+      - button "Coachees" [ref=e19]
+      - button "Coachee-Spiele" [ref=e20]
+      - button "Referee Coaches" [ref=e21]
+    - generic [ref=e22]:
+      - textbox "Suche..." [ref=e23]
+      - button "Filter" [ref=e24] [cursor=pointer]:
+        - img [ref=e25]
+        - generic [ref=e26]: Filter
+    - generic [ref=e27]:
+      - table [ref=e28]:
+        - rowgroup [ref=e29]:
+          - row "Name ▲ Stufe Stage Gruppe 1SR 2SR Status" [ref=e30]:
+            - columnheader "Name ▲" [ref=e31] [cursor=pointer]
+            - columnheader "Stufe" [ref=e32] [cursor=pointer]
+            - columnheader "Stage" [ref=e33]
+            - columnheader "Gruppe" [ref=e34]
+            - columnheader "1SR" [ref=e35]
+            - columnheader "2SR" [ref=e36]
+            - columnheader "Status" [ref=e37] [cursor=pointer]
+        - rowgroup [ref=e38]:
+          - row "Ackermann Urs N3-1 1 Varia, 2. SR - - Keine Beobachtung" [ref=e39] [cursor=pointer]:
+            - cell "Ackermann Urs" [ref=e40]
+            - cell "N3-1" [ref=e41]
+            - cell "1" [ref=e42]
+            - cell "Varia, 2. SR" [ref=e43]
+            - cell "-" [ref=e44]
+            - cell "-" [ref=e45]
+            - cell "Keine Beobachtung" [ref=e46]:
+              - generic "Keine Beobachtung" [ref=e48]
+          - row "Araujo Briana N4-2 2 Neu-SR 2025/26 - - Keine Beobachtung" [ref=e49] [cursor=pointer]:
+            - cell "Araujo Briana" [ref=e50]
+            - cell "N4-2" [ref=e51]
+            - cell "2" [ref=e52]
+            - cell "Neu-SR 2025/26" [ref=e53]
+            - cell "-" [ref=e54]
+            - cell "-" [ref=e55]
+            - cell "Keine Beobachtung" [ref=e56]:
+              - generic "Keine Beobachtung" [ref=e58]
+          - row "Arrenbrecht Sarah N3-3 3 Befördert, 2. SR - - Keine Beobachtung" [ref=e59] [cursor=pointer]:
+            - cell "Arrenbrecht Sarah" [ref=e60]
+            - cell "N3-3" [ref=e61]
+            - cell "3" [ref=e62]
+            - cell "Befördert, 2. SR" [ref=e63]
+            - cell "-" [ref=e64]
+            - cell "-" [ref=e65]
+            - cell "Keine Beobachtung" [ref=e66]:
+              - generic "Keine Beobachtung" [ref=e68]
+          - row "Asani Fjolla N4-2 2 Beförderung? - - Keine Beobachtung" [ref=e69] [cursor=pointer]:
+            - cell "Asani Fjolla" [ref=e70]
+            - cell "N4-2" [ref=e71]
+            - cell "2" [ref=e72]
+            - cell "Beförderung?" [ref=e73]
+            - cell "-" [ref=e74]
+            - cell "-" [ref=e75]
+            - cell "Keine Beobachtung" [ref=e76]:
+              - generic "Keine Beobachtung" [ref=e78]
+          - row "Ayata Zilan N4-1 1 Neu-SR 2024/25 - - Keine Beobachtung" [ref=e79] [cursor=pointer]:
+            - cell "Ayata Zilan" [ref=e80]
+            - cell "N4-1" [ref=e81]
+            - cell "1" [ref=e82]
+            - cell "Neu-SR 2024/25" [ref=e83]
+            - cell "-" [ref=e84]
+            - cell "-" [ref=e85]
+            - cell "Keine Beobachtung" [ref=e86]:
+              - generic "Keine Beobachtung" [ref=e88]
+          - row "Bagdasarianz Jérôme N3-2 2 Befördert - - Keine Beobachtung" [ref=e89] [cursor=pointer]:
+            - cell "Bagdasarianz Jérôme" [ref=e90]
+            - cell "N3-2" [ref=e91]
+            - cell "2" [ref=e92]
+            - cell "Befördert" [ref=e93]
+            - cell "-" [ref=e94]
+            - cell "-" [ref=e95]
+            - cell "Keine Beobachtung" [ref=e96]:
+              - generic "Keine Beobachtung" [ref=e98]
+          - row "Bareder Olivia N4-2 2 Beförderung? - - Keine Beobachtung" [ref=e99] [cursor=pointer]:
+            - cell "Bareder Olivia" [ref=e100]
+            - cell "N4-2" [ref=e101]
+            - cell "2" [ref=e102]
+            - cell "Beförderung?" [ref=e103]
+            - cell "-" [ref=e104]
+            - cell "-" [ref=e105]
+            - cell "Keine Beobachtung" [ref=e106]:
+              - generic "Keine Beobachtung" [ref=e108]
+          - row "Bergmann Annika N3-3 3 Beförderung?, Neu-SR 2024/25 - - Keine Beobachtung" [ref=e109] [cursor=pointer]:
+            - cell "Bergmann Annika" [ref=e110]
+            - cell "N3-3" [ref=e111]
+            - cell "3" [ref=e112]
+            - cell "Beförderung?, Neu-SR 2024/25" [ref=e113]
+            - cell "-" [ref=e114]
+            - cell "-" [ref=e115]
+            - cell "Keine Beobachtung" [ref=e116]:
+              - generic "Keine Beobachtung" [ref=e118]
+          - row "Bizard Oscar N4-2 2 Neu-SR 2024/25 - - Keine Beobachtung" [ref=e119] [cursor=pointer]:
+            - cell "Bizard Oscar" [ref=e120]
+            - cell "N4-2" [ref=e121]
+            - cell "2" [ref=e122]
+            - cell "Neu-SR 2024/25" [ref=e123]
+            - cell "-" [ref=e124]
+            - cell "-" [ref=e125]
+            - cell "Keine Beobachtung" [ref=e126]:
+              - generic "Keine Beobachtung" [ref=e128]
+          - row "Brandenberg Eliane N4-1 1 Neu-SR 2024/25 - - Keine Beobachtung" [ref=e129] [cursor=pointer]:
+            - cell "Brandenberg Eliane" [ref=e130]
+            - cell "N4-1" [ref=e131]
+            - cell "1" [ref=e132]
+            - cell "Neu-SR 2024/25" [ref=e133]
+            - cell "-" [ref=e134]
+            - cell "-" [ref=e135]
+            - cell "Keine Beobachtung" [ref=e136]:
+              - generic "Keine Beobachtung" [ref=e138]
+          - row "Bright Emma N3-3 3 Beförderung?, Neu-SR 2024/25 - - Keine Beobachtung" [ref=e139] [cursor=pointer]:
+            - cell "Bright Emma" [ref=e140]
+            - cell "N3-3" [ref=e141]
+            - cell "3" [ref=e142]
+            - cell "Beförderung?, Neu-SR 2024/25" [ref=e143]
+            - cell "-" [ref=e144]
+            - cell "-" [ref=e145]
+            - cell "Keine Beobachtung" [ref=e146]:
+              - generic "Keine Beobachtung" [ref=e148]
+          - row "Bucher Larissa N3-2 2 Beförderung? - - Keine Beobachtung" [ref=e149] [cursor=pointer]:
+            - cell "Bucher Larissa" [ref=e150]
+            - cell "N3-2" [ref=e151]
+            - cell "2" [ref=e152]
+            - cell "Beförderung?" [ref=e153]
+            - cell "-" [ref=e154]
+            - cell "-" [ref=e155]
+            - cell "Keine Beobachtung" [ref=e156]:
+              - generic "Keine Beobachtung" [ref=e158]
+          - row "Chaudhary Rohan N3-2 2 Befördert - - Keine Beobachtung" [ref=e159] [cursor=pointer]:
+            - cell "Chaudhary Rohan" [ref=e160]
+            - cell "N3-2" [ref=e161]
+            - cell "2" [ref=e162]
+            - cell "Befördert" [ref=e163]
+            - cell "-" [ref=e164]
+            - cell "-" [ref=e165]
+            - cell "Keine Beobachtung" [ref=e166]:
+              - generic "Keine Beobachtung" [ref=e168]
+          - row "Dang Thanh N3-2 2 RC Gewünscht - - Keine Beobachtung" [ref=e169] [cursor=pointer]:
+            - cell "Dang Thanh" [ref=e170]
+            - cell "N3-2" [ref=e171]
+            - cell "2" [ref=e172]
+            - cell "RC Gewünscht" [ref=e173]
+            - cell "-" [ref=e174]
+            - cell "-" [ref=e175]
+            - cell "Keine Beobachtung" [ref=e176]:
+              - generic "Keine Beobachtung" [ref=e178]
+          - row "De Maria Celine Rita N4-1 1 Varia - - Keine Beobachtung" [ref=e179] [cursor=pointer]:
+            - cell "De Maria Celine Rita" [ref=e180]
+            - cell "N4-1" [ref=e181]
+            - cell "1" [ref=e182]
+            - cell "Varia" [ref=e183]
+            - cell "-" [ref=e184]
+            - cell "-" [ref=e185]
+            - cell "Keine Beobachtung" [ref=e186]:
+              - generic "Keine Beobachtung" [ref=e188]
+          - row "Degiorgi Stefano N4-1 1 Befördert - - Keine Beobachtung" [ref=e189] [cursor=pointer]:
+            - cell "Degiorgi Stefano" [ref=e190]
+            - cell "N4-1" [ref=e191]
+            - cell "1" [ref=e192]
+            - cell "Befördert" [ref=e193]
+            - cell "-" [ref=e194]
+            - cell "-" [ref=e195]
+            - cell "Keine Beobachtung" [ref=e196]:
+              - generic "Keine Beobachtung" [ref=e198]
+          - row "Dietlicher Meret N4-1 1 Neu-SR 2025/26 - - Keine Beobachtung" [ref=e199] [cursor=pointer]:
+            - cell "Dietlicher Meret" [ref=e200]
+            - cell "N4-1" [ref=e201]
+            - cell "1" [ref=e202]
+            - cell "Neu-SR 2025/26" [ref=e203]
+            - cell "-" [ref=e204]
+            - cell "-" [ref=e205]
+            - cell "Keine Beobachtung" [ref=e206]:
+              - generic "Keine Beobachtung" [ref=e208]
+          - row "Fliege Loïc N4-1 1 Neu-SR 2024/25 - - Keine Beobachtung" [ref=e209] [cursor=pointer]:
+            - cell "Fliege Loïc" [ref=e210]
+            - cell "N4-1" [ref=e211]
+            - cell "1" [ref=e212]
+            - cell "Neu-SR 2024/25" [ref=e213]
+            - cell "-" [ref=e214]
+            - cell "-" [ref=e215]
+            - cell "Keine Beobachtung" [ref=e216]:
+              - generic "Keine Beobachtung" [ref=e218]
+          - row "Franzoso Constantino N2-1 1 Varia - - Keine Beobachtung" [ref=e219] [cursor=pointer]:
+            - cell "Franzoso Constantino" [ref=e220]
+            - cell "N2-1" [ref=e221]
+            - cell "1" [ref=e222]
+            - cell "Varia" [ref=e223]
+            - cell "-" [ref=e224]
+            - cell "-" [ref=e225]
+            - cell "Keine Beobachtung" [ref=e226]:
+              - generic "Keine Beobachtung" [ref=e228]
+          - row "Gamper Mario N3-1 1 RC Gewünscht, Beförderung? - - Keine Beobachtung" [ref=e229] [cursor=pointer]:
+            - cell "Gamper Mario" [ref=e230]
+            - cell "N3-1" [ref=e231]
+            - cell "1" [ref=e232]
+            - cell "RC Gewünscht, Beförderung?" [ref=e233]
+            - cell "-" [ref=e234]
+            - cell "-" [ref=e235]
+            - cell "Keine Beobachtung" [ref=e236]:
+              - generic "Keine Beobachtung" [ref=e238]
+          - row "Girnth Martina N3-2 2 Varia - - Keine Beobachtung" [ref=e239] [cursor=pointer]:
+            - cell "Girnth Martina" [ref=e240]
+            - cell "N3-2" [ref=e241]
+            - cell "2" [ref=e242]
+            - cell "Varia" [ref=e243]
+            - cell "-" [ref=e244]
+            - cell "-" [ref=e245]
+            - cell "Keine Beobachtung" [ref=e246]:
+              - generic "Keine Beobachtung" [ref=e248]
+          - row "Giugliano Irene N3-3 3 Beförderung?, 2. SR - - Keine Beobachtung" [ref=e249] [cursor=pointer]:
+            - cell "Giugliano Irene" [ref=e250]
+            - cell "N3-3" [ref=e251]
+            - cell "3" [ref=e252]
+            - cell "Beförderung?, 2. SR" [ref=e253]
+            - cell "-" [ref=e254]
+            - cell "-" [ref=e255]
+            - cell "Keine Beobachtung" [ref=e256]:
+              - generic "Keine Beobachtung" [ref=e258]
+          - row "Gligorijevic Mateja N3-3 3 Befördert, 2. SR, Beförderung? - - Keine Beobachtung" [ref=e259] [cursor=pointer]:
+            - cell "Gligorijevic Mateja" [ref=e260]
+            - cell "N3-3" [ref=e261]
+            - cell "3" [ref=e262]
+            - cell "Befördert, 2. SR, Beförderung?" [ref=e263]
+            - cell "-" [ref=e264]
+            - cell "-" [ref=e265]
+            - cell "Keine Beobachtung" [ref=e266]:
+              - generic "Keine Beobachtung" [ref=e268]
+          - row "Grüninger Neva N4-1 1 Befördert - - Keine Beobachtung" [ref=e269] [cursor=pointer]:
+            - cell "Grüninger Neva" [ref=e270]
+            - cell "N4-1" [ref=e271]
+            - cell "1" [ref=e272]
+            - cell "Befördert" [ref=e273]
+            - cell "-" [ref=e274]
+            - cell "-" [ref=e275]
+            - cell "Keine Beobachtung" [ref=e276]:
+              - generic "Keine Beobachtung" [ref=e278]
+          - row "Gusmini Letizia N3-1 1 Beförderung?, RC Gewünscht - - Keine Beobachtung" [ref=e279] [cursor=pointer]:
+            - cell "Gusmini Letizia" [ref=e280]
+            - cell "N3-1" [ref=e281]
+            - cell "1" [ref=e282]
+            - cell "Beförderung?, RC Gewünscht" [ref=e283]
+            - cell "-" [ref=e284]
+            - cell "-" [ref=e285]
+            - cell "Keine Beobachtung" [ref=e286]:
+              - generic "Keine Beobachtung" [ref=e288]
+          - row "Hefele Caroline N3-3 3 Befördert, 2. SR, Beförderung? - - Keine Beobachtung" [ref=e289] [cursor=pointer]:
+            - cell "Hefele Caroline" [ref=e290]
+            - cell "N3-3" [ref=e291]
+            - cell "3" [ref=e292]
+            - cell "Befördert, 2. SR, Beförderung?" [ref=e293]
+            - cell "-" [ref=e294]
+            - cell "-" [ref=e295]
+            - cell "Keine Beobachtung" [ref=e296]:
+              - generic "Keine Beobachtung" [ref=e298]
+          - row "Hennet Niels N4-2 2 Varia - - Keine Beobachtung" [ref=e299] [cursor=pointer]:
+            - cell "Hennet Niels" [ref=e300]
+            - cell "N4-2" [ref=e301]
+            - cell "2" [ref=e302]
+            - cell "Varia" [ref=e303]
+            - cell "-" [ref=e304]
+            - cell "-" [ref=e305]
+            - cell "Keine Beobachtung" [ref=e306]:
+              - generic "Keine Beobachtung" [ref=e308]
+          - row "Hinrichs Tjark N4-2 2 Varia - - Keine Beobachtung" [ref=e309] [cursor=pointer]:
+            - cell "Hinrichs Tjark" [ref=e310]
+            - cell "N4-2" [ref=e311]
+            - cell "2" [ref=e312]
+            - cell "Varia" [ref=e313]
+            - cell "-" [ref=e314]
+            - cell "-" [ref=e315]
+            - cell "Keine Beobachtung" [ref=e316]:
+              - generic "Keine Beobachtung" [ref=e318]
+          - row "Hintermann Elio N4-1 1 Befördert - - Keine Beobachtung" [ref=e319] [cursor=pointer]:
+            - cell "Hintermann Elio" [ref=e320]
+            - cell "N4-1" [ref=e321]
+            - cell "1" [ref=e322]
+            - cell "Befördert" [ref=e323]
+            - cell "-" [ref=e324]
+            - cell "-" [ref=e325]
+            - cell "Keine Beobachtung" [ref=e326]:
+              - generic "Keine Beobachtung" [ref=e328]
+          - row "Hirsch-Hoffmann Timo N3-3 3 Beförderung? - - Keine Beobachtung" [ref=e329] [cursor=pointer]:
+            - cell "Hirsch-Hoffmann Timo" [ref=e330]
+            - cell "N3-3" [ref=e331]
+            - cell "3" [ref=e332]
+            - cell "Beförderung?" [ref=e333]
+            - cell "-" [ref=e334]
+            - cell "-" [ref=e335]
+            - cell "Keine Beobachtung" [ref=e336]:
+              - generic "Keine Beobachtung" [ref=e338]
+          - row "Jirousek Shirine N4-1 1 Neu-SR 2024/25 - - Keine Beobachtung" [ref=e339] [cursor=pointer]:
+            - cell "Jirousek Shirine" [ref=e340]
+            - cell "N4-1" [ref=e341]
+            - cell "1" [ref=e342]
+            - cell "Neu-SR 2024/25" [ref=e343]
+            - cell "-" [ref=e344]
+            - cell "-" [ref=e345]
+            - cell "Keine Beobachtung" [ref=e346]:
+              - generic "Keine Beobachtung" [ref=e348]
+          - row "Kale Nando N4-2 2 Neu-SR 2025/26 - - Keine Beobachtung" [ref=e349] [cursor=pointer]:
+            - cell "Kale Nando" [ref=e350]
+            - cell "N4-2" [ref=e351]
+            - cell "2" [ref=e352]
+            - cell "Neu-SR 2025/26" [ref=e353]
+            - cell "-" [ref=e354]
+            - cell "-" [ref=e355]
+            - cell "Keine Beobachtung" [ref=e356]:
+              - generic "Keine Beobachtung" [ref=e358]
+          - row "Kanagalingam Aniisanth N4-1 1 Neu-SR 2025/26 - - Keine Beobachtung" [ref=e359] [cursor=pointer]:
+            - cell "Kanagalingam Aniisanth" [ref=e360]
+            - cell "N4-1" [ref=e361]
+            - cell "1" [ref=e362]
+            - cell "Neu-SR 2025/26" [ref=e363]
+            - cell "-" [ref=e364]
+            - cell "-" [ref=e365]
+            - cell "Keine Beobachtung" [ref=e366]:
+              - generic "Keine Beobachtung" [ref=e368]
+          - row "Kanagalingam Sharusanth N4-2 2 Beförderung? - - Keine Beobachtung" [ref=e369] [cursor=pointer]:
+            - cell "Kanagalingam Sharusanth" [ref=e370]
+            - cell "N4-2" [ref=e371]
+            - cell "2" [ref=e372]
+            - cell "Beförderung?" [ref=e373]
+            - cell "-" [ref=e374]
+            - cell "-" [ref=e375]
+            - cell "Keine Beobachtung" [ref=e376]:
+              - generic "Keine Beobachtung" [ref=e378]
+          - row "Kanagalingam Thamayanth N2-2 2 Beförderung? - - Keine Beobachtung" [ref=e379] [cursor=pointer]:
+            - cell "Kanagalingam Thamayanth" [ref=e380]
+            - cell "N2-2" [ref=e381]
+            - cell "2" [ref=e382]
+            - cell "Beförderung?" [ref=e383]
+            - cell "-" [ref=e384]
+            - cell "-" [ref=e385]
+            - cell "Keine Beobachtung" [ref=e386]:
+              - generic "Keine Beobachtung" [ref=e388]
+          - row "König Felix N4-1 1 Beförderung? - - Keine Beobachtung" [ref=e389] [cursor=pointer]:
+            - cell "König Felix" [ref=e390]
+            - cell "N4-1" [ref=e391]
+            - cell "1" [ref=e392]
+            - cell "Beförderung?" [ref=e393]
+            - cell "-" [ref=e394]
+            - cell "-" [ref=e395]
+            - cell "Keine Beobachtung" [ref=e396]:
+              - generic "Keine Beobachtung" [ref=e398]
+          - row "Kos Dominik N4-2 2 Neu-SR 2025/26 - - Keine Beobachtung" [ref=e399] [cursor=pointer]:
+            - cell "Kos Dominik" [ref=e400]
+            - cell "N4-2" [ref=e401]
+            - cell "2" [ref=e402]
+            - cell "Neu-SR 2025/26" [ref=e403]
+            - cell "-" [ref=e404]
+            - cell "-" [ref=e405]
+            - cell "Keine Beobachtung" [ref=e406]:
+              - generic "Keine Beobachtung" [ref=e408]
+          - row "Kunz Nick Leo N3-1 1 Varia - - Keine Beobachtung" [ref=e409] [cursor=pointer]:
+            - cell "Kunz Nick Leo" [ref=e410]
+            - cell "N3-1" [ref=e411]
+            - cell "1" [ref=e412]
+            - cell "Varia" [ref=e413]
+            - cell "-" [ref=e414]
+            - cell "-" [ref=e415]
+            - cell "Keine Beobachtung" [ref=e416]:
+              - generic "Keine Beobachtung" [ref=e418]
+          - row "Langhart Zoe N4-2 2 Neu-SR 2024/25 - - Keine Beobachtung" [ref=e419] [cursor=pointer]:
+            - cell "Langhart Zoe" [ref=e420]
+            - cell "N4-2" [ref=e421]
+            - cell "2" [ref=e422]
+            - cell "Neu-SR 2024/25" [ref=e423]
+            - cell "-" [ref=e424]
+            - cell "-" [ref=e425]
+            - cell "Keine Beobachtung" [ref=e426]:
+              - generic "Keine Beobachtung" [ref=e428]
+          - row "Lebedev Margot N4-2 2 Neu-SR 2025/26 - - Keine Beobachtung" [ref=e429] [cursor=pointer]:
+            - cell "Lebedev Margot" [ref=e430]
+            - cell "N4-2" [ref=e431]
+            - cell "2" [ref=e432]
+            - cell "Neu-SR 2025/26" [ref=e433]
+            - cell "-" [ref=e434]
+            - cell "-" [ref=e435]
+            - cell "Keine Beobachtung" [ref=e436]:
+              - generic "Keine Beobachtung" [ref=e438]
+          - row "Leray Alexia N3-2 2 Varia - - Keine Beobachtung" [ref=e439] [cursor=pointer]:
+            - cell "Leray Alexia" [ref=e440]
+            - cell "N3-2" [ref=e441]
+            - cell "2" [ref=e442]
+            - cell "Varia" [ref=e443]
+            - cell "-" [ref=e444]
+            - cell "-" [ref=e445]
+            - cell "Keine Beobachtung" [ref=e446]:
+              - generic "Keine Beobachtung" [ref=e448]
+          - row "Leskiewicz Kornelia N3-2 2 Befördert, 2. SR - - Keine Beobachtung" [ref=e449] [cursor=pointer]:
+            - cell "Leskiewicz Kornelia" [ref=e450]
+            - cell "N3-2" [ref=e451]
+            - cell "2" [ref=e452]
+            - cell "Befördert, 2. SR" [ref=e453]
+            - cell "-" [ref=e454]
+            - cell "-" [ref=e455]
+            - cell "Keine Beobachtung" [ref=e456]:
+              - generic "Keine Beobachtung" [ref=e458]
+          - row "Leutwiler Seline N4-1 1 Befördert - - Keine Beobachtung" [ref=e459] [cursor=pointer]:
+            - cell "Leutwiler Seline" [ref=e460]
+            - cell "N4-1" [ref=e461]
+            - cell "1" [ref=e462]
+            - cell "Befördert" [ref=e463]
+            - cell "-" [ref=e464]
+            - cell "-" [ref=e465]
+            - cell "Keine Beobachtung" [ref=e466]:
+              - generic "Keine Beobachtung" [ref=e468]
+          - row "Lüscher Jonas N3-2 2 Befördert - - Keine Beobachtung" [ref=e469] [cursor=pointer]:
+            - cell "Lüscher Jonas" [ref=e470]
+            - cell "N3-2" [ref=e471]
+            - cell "2" [ref=e472]
+            - cell "Befördert" [ref=e473]
+            - cell "-" [ref=e474]
+            - cell "-" [ref=e475]
+            - cell "Keine Beobachtung" [ref=e476]:
+              - generic "Keine Beobachtung" [ref=e478]
+          - row "Lustenberger Livio N3-3 3 Befördert, 2. SR, Beförderung? - - Keine Beobachtung" [ref=e479] [cursor=pointer]:
+            - cell "Lustenberger Livio" [ref=e480]
+            - cell "N3-3" [ref=e481]
+            - cell "3" [ref=e482]
+            - cell "Befördert, 2. SR, Beförderung?" [ref=e483]
+            - cell "-" [ref=e484]
+            - cell "-" [ref=e485]
+            - cell "Keine Beobachtung" [ref=e486]:
+              - generic "Keine Beobachtung" [ref=e488]
+          - row "Mareels Evelin N3-3 3 Befördert, 2. SR - - Keine Beobachtung" [ref=e489] [cursor=pointer]:
+            - cell "Mareels Evelin" [ref=e490]
+            - cell "N3-3" [ref=e491]
+            - cell "3" [ref=e492]
+            - cell "Befördert, 2. SR" [ref=e493]
+            - cell "-" [ref=e494]
+            - cell "-" [ref=e495]
+            - cell "Keine Beobachtung" [ref=e496]:
+              - generic "Keine Beobachtung" [ref=e498]
+          - row "Mikolajova Ema N4-1 1 Neu-SR 2025/26 - - Keine Beobachtung" [ref=e499] [cursor=pointer]:
+            - cell "Mikolajova Ema" [ref=e500]
+            - cell "N4-1" [ref=e501]
+            - cell "1" [ref=e502]
+            - cell "Neu-SR 2025/26" [ref=e503]
+            - cell "-" [ref=e504]
+            - cell "-" [ref=e505]
+            - cell "Keine Beobachtung" [ref=e506]:
+              - generic "Keine Beobachtung" [ref=e508]
+          - row "Misselwitz Pepe Joseph-Frederik N4-1 1 Befördert - - Keine Beobachtung" [ref=e509] [cursor=pointer]:
+            - cell "Misselwitz Pepe Joseph-Frederik" [ref=e510]
+            - cell "N4-1" [ref=e511]
+            - cell "1" [ref=e512]
+            - cell "Befördert" [ref=e513]
+            - cell "-" [ref=e514]
+            - cell "-" [ref=e515]
+            - cell "Keine Beobachtung" [ref=e516]:
+              - generic "Keine Beobachtung" [ref=e518]
+          - row "Müdespacher Felix N3-2 2 Varia - - Keine Beobachtung" [ref=e519] [cursor=pointer]:
+            - cell "Müdespacher Felix" [ref=e520]
+            - cell "N3-2" [ref=e521]
+            - cell "2" [ref=e522]
+            - cell "Varia" [ref=e523]
+            - cell "-" [ref=e524]
+            - cell "-" [ref=e525]
+            - cell "Keine Beobachtung" [ref=e526]:
+              - generic "Keine Beobachtung" [ref=e528]
+          - row "Müller Peter N3-2 2 Rückstufung?, 2. SR - - Keine Beobachtung" [ref=e529] [cursor=pointer]:
+            - cell "Müller Peter" [ref=e530]
+            - cell "N3-2" [ref=e531]
+            - cell "2" [ref=e532]
+            - cell "Rückstufung?, 2. SR" [ref=e533]
+            - cell "-" [ref=e534]
+            - cell "-" [ref=e535]
+            - cell "Keine Beobachtung" [ref=e536]:
+              - generic "Keine Beobachtung" [ref=e538]
+      - generic [ref=e539]:
+        - generic [ref=e540]: 83 Einträge
+        - generic [ref=e541]:
+          - button "«" [disabled] [ref=e542]
+          - generic [ref=e543]: 1 / 2
+          - button "»" [ref=e544]
+```

@@ -100,6 +100,10 @@ const UI_STRINGS = {
     downloadPdf: "PDF herunterladen",
     saveBackend: "Bestätigen und speichern",
     saveOk: "Feedback wurde gespeichert.",
+    saveOkEmail: "Feedback gespeichert und E-Mail gesendet.",
+    saveOkNoEmail: "Feedback gespeichert, aber E-Mail fehlgeschlagen:",
+    feedbackLocked: "Feedback eingereicht",
+    gameClosed: "Dieses Spiel wurde für diese Rolle bereits beobachtet",
     saveError: "Speichern fehlgeschlagen.",
     loading: "Lädt...",
     pbMissing: "VITE_POCKETBASE_URL fehlt. Bitte in .env setzen.",
@@ -190,6 +194,10 @@ const UI_STRINGS = {
     downloadPdf: "Download PDF",
     saveBackend: "Confirm and save",
     saveOk: "Feedback saved successfully.",
+    saveOkEmail: "Feedback saved and email sent.",
+    saveOkNoEmail: "Feedback saved, but email failed:",
+    feedbackLocked: "Feedback submitted",
+    gameClosed: "This game has already been observed for this role",
     saveError: "Saving failed.",
     loading: "Loading...",
     pbMissing: "VITE_POCKETBASE_URL is missing. Please set it in .env.",
@@ -707,6 +715,7 @@ export default function App() {
 
   const handleSelectGame = (game: EligibleGame | CoacheeGame) => {
     setSelectedGameId(game.id);
+    setFeedbackLocked(false);
     setFeedbackSubView('feedbackForm');
   };
 
@@ -791,6 +800,7 @@ export default function App() {
       };
       setEligibleGames((prev) => (prev.some((item) => item.id === mappedGame.id) ? prev : [mappedGame, ...prev]));
       setSelectedGameId(mappedGame.id);
+      setFeedbackLocked(false);
     }
     setFeedbackPickerCoachee(null);
     setActionTargetCoachee(null);
@@ -920,19 +930,35 @@ export default function App() {
   };
 
   const handleSaveFeedback = async () => {
-    if (!selectedGame) {
+    if (!selectedGame || !printableRef.current) {
       setBackendNotice(t.noGames);
       return;
     }
     setSavingFeedback(true);
     setBackendNotice('');
     try {
-      await saveFeedbackToPocketBase({
-        game: selectedGame,
+      const base64 = await generatePdfBase64(printableRef.current, 1.5);
+      const result = await saveFeedbackToPocketBase({
+        gameId: selectedGame.id,
         role: formData.role,
         formData,
+        pdfBase64: base64,
+        pdfFilename: pdfFilename(formData),
+        tipsAndTricks,
       });
-      setBackendNotice(t.saveOk);
+
+      if (result.emailSent) {
+        setBackendNotice(result.emailWarning
+          ? `${t.saveOkEmail} (${result.emailWarning})`
+          : t.saveOkEmail);
+      } else {
+        setBackendNotice(`${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}`);
+      }
+
+      // Lock form if not second observation
+      if (formData.results.secondBesuch !== 'Y') {
+        setFeedbackLocked(true);
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(`${t.saveError} ${localizeRuntimeError(reason, formData.lang)}`);
@@ -979,6 +1005,7 @@ export default function App() {
   };
 
   const [tipsAndTricks, setTipsAndTricks] = useState('');
+  const [feedbackLocked, setFeedbackLocked] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState<'reset' | 'save' | null>(null);
 
   const doResetForm = () => {
@@ -989,6 +1016,8 @@ export default function App() {
         : (prev.role === '1. SR' ? SECTIONS_1SR_EN : SECTIONS_2SR_EN),
       results: { ...INITIAL_DATA.results },
     }));
+    setFeedbackLocked(false);
+    setTipsAndTricks('');
     setShowConfirmModal(null);
   };
 

@@ -23,6 +23,8 @@
 | `.env.example` | Add SMTP + feedback email env vars |
 | `package.json` | Add `nodemailer` + `@types/nodemailer` |
 
+**Note:** Line numbers reference the codebase at plan creation time. As earlier tasks insert code, line numbers in later tasks will have shifted — use function/variable names as anchors rather than exact line numbers.
+
 ---
 
 ## Chunk 1: Dependencies, Config, and Types
@@ -135,14 +137,9 @@ export async function saveFeedbackToPocketBase(params: {
 }
 ```
 
-Note: This is a **breaking change** — callers must be updated to pass the new params and handle the return value. The caller update happens in Task 7 (App.tsx).
+Note: This is a **breaking change** — the caller in `src/App.tsx` (`handleSaveFeedback`) will not compile until updated in Task 9. Do NOT commit this separately — it will be committed together with the App.tsx caller update in Task 9, Step 6.
 
-- [ ] **Step 2: Commit**
-
-```bash
-git add src/lib/pocketbase.ts
-git commit -m "feat: update saveFeedbackToPocketBase with PDF, tips, and response type"
-```
+- [ ] **Step 2: Verify the change is saved (no commit yet — waits for Task 9)**
 
 ---
 
@@ -647,40 +644,9 @@ async function generatePdfBase64(element: HTMLElement, pixelRatio: number): Prom
 }
 ```
 
-- [ ] **Step 2: Refactor `handleDownloadPdf` to use the helper**
+- [ ] **Step 2: Verify `handleDownloadPdf` remains unchanged**
 
-Replace the body of `handleDownloadPdf` (lines 843-874) with:
-
-```ts
-  const handleDownloadPdf = async () => {
-    if (!printableRef.current) return;
-
-    const imageData = await toPng(printableRef.current, {
-      pixelRatio: 2,
-      backgroundColor: '#ffffff',
-    });
-
-    const img = new Image();
-    await new Promise<void>((resolve) => { img.onload = () => resolve(); img.src = imageData; });
-    const pdfWidth = img.width * 0.75;
-    const pdfHeight = img.height * 0.75;
-    const pdf = new jsPDF({
-      orientation: pdfWidth > pdfHeight ? 'l' : 'p',
-      unit: 'pt',
-      format: [pdfWidth, pdfHeight],
-    });
-    pdf.addImage(imageData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-
-    const file = new File([pdf.output('blob')], pdfFilename(formData), { type: 'application/pdf' });
-    if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
-      await navigator.share({ title: t.title, files: [file] });
-      return;
-    }
-    pdf.save(pdfFilename(formData));
-  };
-```
-
-Note: `handleDownloadPdf` stays unchanged (still uses `pixelRatio: 2`). The `generatePdfBase64` helper is only used by `handleSaveFeedback` with `pixelRatio: 1.5`.
+`handleDownloadPdf` (lines 843-874) stays as-is — it uses `pixelRatio: 2` for high-quality downloads and has the Web Share API fallback. The new `generatePdfBase64` helper is only used by `handleSaveFeedback` (Task 9) with `pixelRatio: 1.5` for email-sized PDFs.
 
 - [ ] **Step 3: Commit**
 
@@ -768,22 +734,30 @@ Replace the `handleSaveFeedback` function (lines 876-896) with:
   };
 ```
 
-- [ ] **Step 4: Reset `feedbackLocked` in `doResetForm`**
+- [ ] **Step 4: Reset `feedbackLocked` and `tipsAndTricks` in `doResetForm`**
 
-In the `doResetForm` function (around line 938), add at the end (before the closing `}`):
+In the `doResetForm` function (around line 940-949), add before `setShowConfirmModal(null);`:
 
 ```ts
     setFeedbackLocked(false);
+    setTipsAndTricks('');
 ```
 
 - [ ] **Step 5: Reset `feedbackLocked` when selecting a new game/coachee**
 
-Find where `setSelectedGame` is called when user selects a new game. Add `setFeedbackLocked(false);` alongside those calls. Do the same for coachee selection changes.
+Add `setFeedbackLocked(false);` alongside existing `setSelectedGameId(...)` calls at these exact locations:
+- Line 605: after `setSelectedGameId(games[0].id);`
+- Line 665: after `setSelectedGameId(game.id);`
+- Line 749: after `setSelectedGameId(mappedGame.id);`
+
+Also reset when changing coachee — add `setFeedbackLocked(false);` alongside `setSelectedCoacheeId(...)` calls.
 
 - [ ] **Step 6: Commit**
 
+This commit includes both `src/lib/pocketbase.ts` (from Task 3) and `src/App.tsx` changes:
+
 ```bash
-git add src/App.tsx
+git add src/App.tsx src/lib/pocketbase.ts
 git commit -m "feat: update handleSaveFeedback with PDF generation, email handling, and form locking"
 ```
 
@@ -816,25 +790,42 @@ Before the save button `<div>` (line 1966), add:
       )}
 ```
 
-- [ ] **Step 3: Disable save button when locked or closed**
+- [ ] **Step 3: Hide save button when locked or closed**
 
-Update the save button's `disabled` prop (line 1970) from:
+Wrap the save button `<div>` in a conditional so it is hidden (not just disabled) when locked or closed:
 
-```ts
-          disabled={savingFeedback || !selectedGame}
+```tsx
+      {!feedbackLocked && !isGameRoleClosed && (
+        <div className="max-w-4xl mx-auto mt-4 flex justify-end no-print">
+          <button
+            onClick={() => setShowConfirmModal('save')}
+            disabled={savingFeedback || !selectedGame}
+            className="flex items-center gap-2 bg-emerald-600 text-white px-6 py-3 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50 font-medium"
+          >
+            <Database size={18} />
+            <span>{savingFeedback ? t.loading : t.saveBackend}</span>
+          </button>
+        </div>
+      )}
 ```
 
-to:
+- [ ] **Step 4: Disable all form inputs when locked**
 
-```ts
-          disabled={savingFeedback || !selectedGame || feedbackLocked || isGameRoleClosed}
+Pass `feedbackLocked || isGameRoleClosed` as a `disabled` condition to all form sections. The simplest approach: add a `const formDisabled = feedbackLocked || isGameRoleClosed;` derived value, then add `pointer-events-none opacity-60` to the form container when `formDisabled` is true. Wrap the main form area (assessment sections, results, tips & tricks) in:
+
+```tsx
+<div className={cn(formDisabled && 'pointer-events-none opacity-60')}>
+  {/* existing form content */}
+</div>
 ```
 
-- [ ] **Step 4: Commit**
+This visually and functionally disables all inputs without modifying each individual input element.
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/App.tsx
-git commit -m "feat: add feedback locked banner and game closure check in UI"
+git commit -m "feat: add feedback locked banner, form disabling, and game closure check in UI"
 ```
 
 ---
@@ -844,18 +835,16 @@ git commit -m "feat: add feedback locked banner and game closure check in UI"
 **Files:**
 - Modify: `src/App.tsx:1984-2027` (confirmation modal)
 
-- [ ] **Step 1: Find the coachee email for display**
+- [ ] **Step 1: Derive the coachee email for display**
 
-The coachee email comes from the `coachees` list. Add a derived value:
+The codebase tracks `selectedCoacheeId` (line 471) and `coachees` array (line 474). Look up the email from the coachees list. Add near the other derived values (after `selectedGame` at line 496):
 
 ```ts
   const selectedCoacheeEmail = useMemo(() => {
-    if (!selectedCoachee) return '';
-    return selectedCoachee.email || '';
-  }, [selectedCoachee]);
+    const c = coachees.find(c => c.id === selectedCoacheeId);
+    return c?.email || '';
+  }, [coachees, selectedCoacheeId]);
 ```
-
-(If `selectedCoachee` is not already tracked as state, use the coachee matched to `selectedGame`.)
 
 - [ ] **Step 2: Update the modal text for save confirmation**
 

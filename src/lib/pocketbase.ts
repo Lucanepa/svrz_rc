@@ -1,12 +1,72 @@
 import type { EligibleGame, FeedbackFormData } from '../types';
 
-type Coachee = {
+export type CoacheeObservationStatus = {
+  count: number;
+  hasNoObservation: boolean;
+  hasFurtherObservationNeeded: boolean;
+  hasCompletedObservation: boolean;
+  needsObservation: boolean;
+  latestObservationAt: string;
+};
+
+export type Coachee = {
   id: string;
   full_name: string;
   email?: string;
   level?: string;
   group?: string;
+  is_active?: boolean;
+  notes?: string;
   feedback_entries?: unknown[];
+  observations_count?: number;
+  observation_status?: CoacheeObservationStatus;
+};
+
+export type CoacheeGame = EligibleGame & {
+  firstLineJudge?: string;
+  secondLineJudge?: string;
+  assignedRoles: string[];
+};
+
+export type FeedbackRecord = {
+  id: string;
+  role_assessed?: FeedbackFormData['role'];
+  rc_name?: string;
+  submitted_at?: string;
+  feedback_json?: FeedbackFormData;
+  game?: string;
+  coachee?: string;
+  expand?: {
+    game?: {
+      id?: string;
+      match_no?: string;
+      league?: string;
+      match_date?: string;
+      location?: string;
+      home_team?: string;
+      away_team?: string;
+      first_referee?: string;
+      second_referee?: string;
+    };
+  };
+};
+
+export type CalendarGameStatus = {
+  id: string;
+  matchNo: string;
+  league: string;
+  date: string;
+  location: string;
+  homeTeam: string;
+  awayTeam: string;
+  status: 'outstanding' | 'completed' | 'none';
+  hasOutstanding: boolean;
+  hasCompleted: boolean;
+};
+
+export type AdminAuthStatus = {
+  authenticated: boolean;
+  email: string;
 };
 
 export async function loadEligibleGames(): Promise<EligibleGame[]> {
@@ -40,6 +100,39 @@ export async function saveFeedbackToPocketBase(params: {
 
 export function hasPocketBaseConfig(): boolean {
   return true;
+}
+
+export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
+  const response = await fetch('/api/admin/auth/status');
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<AdminAuthStatus>;
+}
+
+export async function loginAdmin(payload: { email: string; password: string }): Promise<AdminAuthStatus> {
+  const response = await fetch('/api/admin/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  const result = await response.json() as { email?: string };
+  return {
+    authenticated: true,
+    email: result.email || payload.email,
+  };
+}
+
+export async function logoutAdmin(): Promise<void> {
+  const response = await fetch('/api/admin/auth/logout', {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
 }
 
 export async function listCoachees(): Promise<Coachee[]> {
@@ -89,6 +182,30 @@ export async function listRefereeCoaches() {
     throw new Error(await response.text());
   }
   return response.json();
+}
+
+export async function listCoacheeGames(coacheeId: string): Promise<CoacheeGame[]> {
+  const response = await fetch(`/api/coachees/${coacheeId}/games`);
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<CoacheeGame[]>;
+}
+
+export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackRecord[]> {
+  const response = await fetch(`/api/coachees/${coacheeId}/feedbacks`);
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<FeedbackRecord[]>;
+}
+
+export async function loadCalendarGames(): Promise<CalendarGameStatus[]> {
+  const response = await fetch('/api/games/calendar-status');
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<CalendarGameStatus[]>;
 }
 
 export async function deleteRefereeCoach(id: string) {

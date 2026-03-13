@@ -3,6 +3,7 @@ import cors from 'cors';
 import PocketBase from 'pocketbase';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -15,19 +16,138 @@ const port = Number(process.env.PORT || 8787);
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
+const ADMIN_SESSION_COOKIE = 'svrz_admin_session';
+const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 1000 * 60 * 60 * 8);
+const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || process.env.POCKETBASE_ADMIN_PASSWORD || '';
+
+if (!ADMIN_SESSION_SECRET) {
+  console.warn('[startup] Missing ADMIN_SESSION_SECRET (falling back to empty secret). Set ADMIN_SESSION_SECRET for secure admin sessions.');
+}
+
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+function base64UrlEncode(value: string): string {
+  return Buffer.from(value, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function base64UrlDecode(value: string): string {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+  return Buffer.from(padded, 'base64').toString('utf8');
+}
+
+function signAdminSessionPayload(payload: string): string {
+  return createHmac('sha256', ADMIN_SESSION_SECRET)
+    .update(payload)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function createAdminSessionToken(email: string): string {
+  const body = JSON.stringify({
+    sub: randomUUID(),
+    email,
+    exp: Date.now() + ADMIN_SESSION_TTL_MS,
+  });
+  const payload = base64UrlEncode(body);
+  const signature = signAdminSessionPayload(payload);
+  return `${payload}.${signature}`;
+}
+
+function getCookieValue(req: Request, cookieName: string): string {
+  const cookieHeader = req.headers.cookie || '';
+  const parts = cookieHeader.split(';').map((item) => item.trim()).filter(Boolean);
+  for (const part of parts) {
+    const separatorIndex = part.indexOf('=');
+    if (separatorIndex === -1) {
+      continue;
+    }
+    const key = part.slice(0, separatorIndex).trim();
+    if (key !== cookieName) {
+      continue;
+    }
+    return decodeURIComponent(part.slice(separatorIndex + 1));
+  }
+  return '';
+}
+
+function clearAdminSessionCookie(res: ExpressResponse) {
+  res.cookie(ADMIN_SESSION_COOKIE, '', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 0,
+    path: '/',
+  });
+}
+
+function setAdminSessionCookie(res: ExpressResponse, token: string) {
+  res.cookie(ADMIN_SESSION_COOKIE, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: ADMIN_SESSION_TTL_MS,
+    path: '/',
+  });
+}
+
+function verifyAdminSession(req: Request): { ok: boolean; email?: string } {
+  const token = getCookieValue(req, ADMIN_SESSION_COOKIE);
+  if (!token) {
+    return { ok: false };
+  }
+  const [payload, signature] = token.split('.');
+  if (!payload || !signature) {
+    return { ok: false };
+  }
+  const expectedSignature = signAdminSessionPayload(payload);
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+  if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
+    return { ok: false };
+  }
+  try {
+    const parsed = JSON.parse(base64UrlDecode(payload)) as { email?: unknown; exp?: unknown };
+    const exp = Number(parsed.exp);
+    if (!Number.isFinite(exp) || exp < Date.now()) {
+      return { ok: false };
+    }
+    const email = asText(parsed.email);
+    if (!email) {
+      return { ok: false };
+    }
+    return { ok: true, email };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function requireAdminSession(req: Request, res: ExpressResponse, next: () => void) {
+  const session = verifyAdminSession(req);
+  if (!session.ok) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  next();
 }
 
 const collectionCandidates = {
   games: unique([process.env.PB_GAMES_COLLECTION || 'games', 'games', 'svrz_games']),
   coachees: unique([process.env.PB_COACHEES_COLLECTION || 'coachees', 'coachees', 'svrz_coachees']),
   observations: unique([process.env.PB_OBSERVATIONS_COLLECTION || 'observations', 'observations', 'svrz_observations']),
-  refereeCoachPeople: unique([process.env.PB_REFEREE_COACH_PEOPLE_COLLECTION || 'referee_coach_people', 'referee_coach_people']),
+  refereeCoachPeople: unique([process.env.PB_REFEREE_COACH_PEOPLE_COLLECTION || 'referee_coaches', 'referee_coaches', 'referee_coach_people']),
   refereeCoaches: unique([
-    process.env.PB_REFEREE_COACHES_COLLECTION || 'referee_coaches',
-    'referee_coaches',
-    'svrz_referee_coaches',
+    process.env.PB_REFEREE_COACH_FEEDBACK_COLLECTION || process.env.PB_REFEREE_COACHES_COLLECTION || 'referee_coach_feedbacks',
+    'referee_coach_feedbacks',
+    'svrz_referee_coach_feedbacks',
   ]),
 };
 
@@ -39,10 +159,13 @@ for (const key of requiredEnv) {
 }
 
 const pb = new PocketBase(process.env.POCKETBASE_URL || 'http://127.0.0.1:8090');
+pb.autoCancellation(false);
 const VM_BASE = process.env.VM_BASE || 'https://volleymanager.volleyball.ch';
 const VM_BATCH_SIZE = 200;
 const VM_SYNC_CRON = process.env.VM_SYNC_CRON || '0 5 * * *';
 const VM_SYNC_TIMEZONE = process.env.VM_SYNC_TIMEZONE || 'Europe/Zurich';
+const VM_SYNC_MAX_RETRIES = Number(process.env.VM_SYNC_MAX_RETRIES || 10);
+const VM_SYNC_RETRY_DELAY_MS = Number(process.env.VM_SYNC_RETRY_DELAY_MS || 15000);
 const RENDER_PROPERTIES = [
   'game.startingDateTime', 'gameDayOfWeek', 'game.number',
   'game.group.phase.league.leagueCategory.name',
@@ -73,6 +196,23 @@ function asText(value: unknown): string {
     return '';
   }
   return String(value).trim();
+}
+
+function asBoolean(value: unknown, defaultValue = false): boolean {
+  if (value === null || value === undefined || value === '') {
+    return defaultValue;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['false', '0', 'no', 'n', 'off'].includes(normalized)) {
+    return false;
+  }
+  return defaultValue;
 }
 
 function escapeFilterValue(value: string): string {
@@ -123,6 +263,12 @@ function getTodayRange(): { from: string; to: string } {
     from: `${dateStr}T00:00:00.000Z`,
     to: `${dateStr}T23:59:59.000Z`,
   };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 class CookieJar {
@@ -181,6 +327,32 @@ async function ensureAdminAuth() {
   await pb.collection('_superusers').authWithPassword(email, password);
 }
 
+async function verifyAdminCredentials(email: string, password: string): Promise<void> {
+  const authPb = new PocketBase(process.env.POCKETBASE_URL || 'http://127.0.0.1:8090');
+  const isAuthError = (error: unknown) => {
+    const status = Number((error as { status?: unknown })?.status);
+    return status === 400 || status === 401;
+  };
+  try {
+    await authPb.admins.authWithPassword(email, password);
+    return;
+  } catch (error) {
+    if (!isAuthError(error)) {
+      throw error;
+    }
+    // PocketBase versions may use _superusers instead of admins.
+  }
+  try {
+    await authPb.collection('_superusers').authWithPassword(email, password);
+    return;
+  } catch (error) {
+    if (isAuthError(error)) {
+      throw new Error('INVALID_ADMIN_CREDENTIALS');
+    }
+    throw error;
+  }
+}
+
 function mapIncomingGame(raw: Record<string, unknown>) {
   return {
     external_id: asText(raw.external_id ?? raw.game_id ?? raw.id ?? raw.uuid),
@@ -192,7 +364,8 @@ function mapIncomingGame(raw: Record<string, unknown>) {
     away_team: asText(raw.away_team ?? raw.team_away ?? raw.away),
     first_referee: asText(raw.first_referee ?? raw.referee_1 ?? raw.sr1 ?? raw.r1),
     second_referee: asText(raw.second_referee ?? raw.referee_2 ?? raw.sr2 ?? raw.r2),
-    source_payload: raw,
+    first_line_judge: asText(raw.first_line_judge ?? raw.lj1),
+    second_line_judge: asText(raw.second_line_judge ?? raw.lj2),
   };
 }
 
@@ -660,7 +833,8 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     away_team: asText(away.name),
     first_referee: firstReferee,
     second_referee: secondReferee,
-    source_payload: item,
+    first_line_judge: firstLineJudge,
+    second_line_judge: secondLineJudge,
     _assigned_people: [firstReferee, secondReferee, firstLineJudge, secondLineJudge],
   };
 }
@@ -670,45 +844,150 @@ async function getCoacheeNameSet(): Promise<Set<string>> {
   const coachees = await withCollection(collectionCandidates.coachees, (collection) =>
     collection.getFullList<AnyRecord>({ sort: 'full_name' }),
   );
-  return new Set(
-    coachees
-      .map((c) => asText(c.full_name ?? c.name ?? c.coachee_name ?? c.referee_name))
-      .map(normalizeName)
-      .filter(Boolean),
-  );
+  const names = new Set<string>();
+
+  const addVariant = (value: unknown) => {
+    const normalized = normalizeName(value);
+    if (normalized) {
+      names.add(normalized);
+    }
+  };
+
+  for (const coachee of coachees) {
+    const firstName = asText(coachee.first_name ?? coachee.vorname);
+    const lastName = asText(coachee.last_name ?? coachee.nachname);
+
+    addVariant(coachee.full_name);
+    addVariant(coachee.name);
+    addVariant(coachee.coachee_name);
+    addVariant(coachee.referee_name);
+    addVariant(`${firstName} ${lastName}`.trim());
+    addVariant(`${lastName} ${firstName}`.trim());
+  }
+
+  return names;
 }
 
 async function getEligibleGames() {
   await ensureAdminAuth();
-  const [games, coachees] = await Promise.all([
-    withCollection(collectionCandidates.games, (collection) => collection.getFullList<AnyRecord>({ sort: '-match_date,-created' })),
-    withCollection(collectionCandidates.coachees, (collection) => collection.getFullList<AnyRecord>({ sort: 'full_name' })),
-  ]);
-
-  const coacheeNames = new Set(
-    coachees
-      .map((c) => asText(c.full_name ?? c.name ?? c.coachee_name ?? c.referee_name))
-      .map(normalizeName)
-      .filter(Boolean),
+  const coachees = await withCollection(collectionCandidates.coachees, (collection) =>
+    collection.getFullList<AnyRecord>({ sort: 'full_name' }),
   );
 
-  return games
-    .filter((game) => {
-      const r1 = normalizeName(game.first_referee);
-      const r2 = normalizeName(game.second_referee);
-      return coacheeNames.has(r1) || coacheeNames.has(r2);
-    })
-    .map((game) => ({
-      id: game.id,
-      matchNo: asText(game.match_no),
-      league: asText(game.league),
-      date: asText(game.match_date),
-      location: asText(game.location),
-      homeTeam: asText(game.home_team),
-      awayTeam: asText(game.away_team),
-      firstReferee: asText(game.first_referee),
-      secondReferee: asText(game.second_referee),
-    }));
+  const coacheeNames = [...new Set(
+    coachees
+      .map((c) => asText(c.full_name ?? c.name ?? c.coachee_name ?? c.referee_name))
+      .filter(Boolean),
+  )];
+
+  if (coacheeNames.length === 0) return [];
+
+  const nameFilter = coacheeNames.flatMap((name) => {
+    const escaped = escapeFilterValue(name);
+    return [
+      `first_referee = "${escaped}"`,
+      `second_referee = "${escaped}"`,
+    ];
+  }).join(' || ');
+
+  const games = await withCollection(collectionCandidates.games, (collection) =>
+    collection.getFullList<AnyRecord>({
+      sort: '-match_date,-created',
+      filter: nameFilter,
+      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee',
+    }),
+  );
+
+  return games.map((game) => ({
+    id: game.id,
+    matchNo: asText(game.match_no),
+    league: asText(game.league),
+    date: asText(game.match_date),
+    location: asText(game.location),
+    homeTeam: asText(game.home_team),
+    awayTeam: asText(game.away_team),
+    firstReferee: asText(game.first_referee),
+    secondReferee: asText(game.second_referee),
+  }));
+}
+
+function getAssignedPeopleFromGameRecord(game: AnyRecord) {
+  return {
+    firstReferee: asText(game.first_referee),
+    secondReferee: asText(game.second_referee),
+    firstLineJudge: asText(game.first_line_judge),
+    secondLineJudge: asText(game.second_line_judge),
+  };
+}
+
+type CoacheeObservationSummary = {
+  count: number;
+  hasNoObservation: boolean;
+  hasFurtherObservationNeeded: boolean;
+  hasCompletedObservation: boolean;
+  needsObservation: boolean;
+  latestObservationAt: string;
+};
+
+async function getCoacheeObservationSummaryMap(activeOverrides?: Map<string, boolean>) {
+  await ensureAdminAuth();
+  const coachees = await withCollection(collectionCandidates.coachees, (collection) =>
+    collection.getFullList<AnyRecord>({ sort: 'full_name' }),
+  );
+
+  // Accumulate lightweight per-coachee stats by paginating observations
+  const stats = new Map<string, { count: number; hasFurther: boolean; hasCompleted: boolean; latestAt: string }>();
+  let page = 1;
+  const perPage = 200;
+  while (true) {
+    const batch = await withCollection(collectionCandidates.observations, (collection) =>
+      collection.getList<AnyRecord>(page, perPage, {
+        sort: '-created',
+        fields: 'coachee,second_observation,created,updated',
+      }),
+    );
+    for (const row of batch.items) {
+      const coacheeId = asText(row.coachee);
+      if (!coacheeId) continue;
+      const existing = stats.get(coacheeId);
+      const isSecond = asBoolean(row.second_observation, false);
+      const createdAt = asText(row.created ?? row.updated);
+      if (existing) {
+        existing.count += 1;
+        if (isSecond) existing.hasFurther = true;
+        if (!isSecond) existing.hasCompleted = true;
+        // Sorted by -created, so first seen is latest
+      } else {
+        stats.set(coacheeId, {
+          count: 1,
+          hasFurther: isSecond,
+          hasCompleted: !isSecond,
+          latestAt: createdAt,
+        });
+      }
+    }
+    if (page >= batch.totalPages) break;
+    page += 1;
+  }
+
+  const summaryById = new Map<string, CoacheeObservationSummary>();
+  for (const coachee of coachees) {
+    const coacheeId = coachee.id;
+    const st = stats.get(coacheeId);
+    const isActive = activeOverrides?.get(coacheeId) ?? asBoolean(coachee.is_active, true);
+    const count = st?.count ?? 0;
+
+    summaryById.set(coacheeId, {
+      count,
+      hasNoObservation: count === 0,
+      hasFurtherObservationNeeded: st?.hasFurther ?? false,
+      hasCompletedObservation: st?.hasCompleted ?? false,
+      needsObservation: isActive && (count === 0 || (st?.hasFurther ?? false)),
+      latestObservationAt: st?.latestAt ?? '',
+    });
+  }
+
+  return summaryById;
 }
 
 type SyncWindow = { from: string; to: string };
@@ -771,6 +1050,31 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
   };
 }
 
+async function runGamesSyncWithRetry(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
+  let lastError: unknown = null;
+  const totalAttempts = VM_SYNC_MAX_RETRIES + 1;
+
+  for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        console.warn(`[scheduler] Retrying games sync (${attempt}/${totalAttempts})...`);
+      }
+      return await runGamesSync(windowInput);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= totalAttempts) {
+        break;
+      }
+      console.warn(
+        `[scheduler] Games sync attempt ${attempt}/${totalAttempts} failed. Retrying in ${VM_SYNC_RETRY_DELAY_MS}ms...`,
+      );
+      await sleep(VM_SYNC_RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastError;
+}
+
 async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
   const vmUsername = asText(process.env.VM_USERNAME);
   const vmPassword = asText(process.env.VM_PASSWORD);
@@ -786,6 +1090,7 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
   const transformed = items
     .map((raw) => transformVmGame(raw as Record<string, unknown>))
     .filter((row) => asText(row.match_no));
+  const requestedMatchNo = asText((windowInput as Record<string, unknown>).matchNo ?? (windowInput as Record<string, unknown>).match_no);
 
   const matchedRows = transformed.filter((row) => {
     const assignedPeople = Array.isArray(row._assigned_people) ? row._assigned_people : [];
@@ -818,6 +1123,27 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
     .slice(0, 50)
     .map(([name, count]) => ({ name, count }));
 
+  const matchNoLookup = requestedMatchNo
+    ? transformed.find((row) => asText(row.match_no) === requestedMatchNo)
+    : null;
+
+  const requestedGame = matchNoLookup
+    ? (() => {
+        const assignedPeople = Array.isArray(matchNoLookup._assigned_people) ? matchNoLookup._assigned_people : [];
+        const normalizedAssigned = assignedPeople.map((name) => normalizeName(name));
+        const matchedNames = assignedPeople.filter((name) => coacheeNames.has(normalizeName(name)));
+        return {
+          match_no: asText(matchNoLookup.match_no),
+          league: asText(matchNoLookup.league),
+          match_date: asText(matchNoLookup.match_date),
+          assigned_people: assignedPeople,
+          normalized_assigned_people: normalizedAssigned,
+          has_coachee_match: normalizedAssigned.some((name) => coacheeNames.has(name)),
+          matched_people: matchedNames,
+        };
+      })()
+    : null;
+
   return {
     from,
     to,
@@ -838,6 +1164,8 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
       assigned_people: Array.isArray(row._assigned_people) ? row._assigned_people : [],
     })),
     topUnmatchedNames,
+    requestedMatchNo,
+    requestedGame,
   };
 }
 
@@ -911,6 +1239,41 @@ app.get('/api/health', async (_req: Request, res: ExpressResponse) => {
   }
 });
 
+app.get('/api/admin/auth/status', (req: Request, res: ExpressResponse) => {
+  const session = verifyAdminSession(req);
+  res.json({
+    authenticated: session.ok,
+    email: session.email || '',
+  });
+});
+
+app.post('/api/admin/auth/login', async (req: Request, res: ExpressResponse) => {
+  const email = asText((req.body ?? {}).email);
+  const password = asText((req.body ?? {}).password);
+  if (!email || !password) {
+    res.status(400).json({ error: 'email and password are required.' });
+    return;
+  }
+  try {
+    await verifyAdminCredentials(email, password);
+    const token = createAdminSessionToken(email);
+    setAdminSessionCookie(res, token);
+    res.json({ ok: true, email });
+  } catch (error) {
+    clearAdminSessionCookie(res);
+    if (error instanceof Error && error.message === 'INVALID_ADMIN_CREDENTIALS') {
+      res.status(401).json({ error: 'Invalid credentials.' });
+      return;
+    }
+    res.status(503).json({ error: 'PocketBase auth unavailable. Please try again.' });
+  }
+});
+
+app.post('/api/admin/auth/logout', (_req: Request, res: ExpressResponse) => {
+  clearAdminSessionCookie(res);
+  res.json({ ok: true });
+});
+
 app.get('/api/eligible-games', async (_req: Request, res: ExpressResponse) => {
   try {
     const games = await getEligibleGames();
@@ -920,7 +1283,7 @@ app.get('/api/eligible-games', async (_req: Request, res: ExpressResponse) => {
   }
 });
 
-app.post('/api/games/sync', async (req: Request, res: ExpressResponse) => {
+app.post('/api/games/sync', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     const result = await runGamesSync(req.body ?? {});
     res.json(result);
@@ -929,7 +1292,7 @@ app.post('/api/games/sync', async (req: Request, res: ExpressResponse) => {
   }
 });
 
-app.post('/api/games/sync/debug', async (req: Request, res: ExpressResponse) => {
+app.post('/api/games/sync/debug', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     const result = await runGamesSyncDebug(req.body ?? {});
     res.json(result);
@@ -938,7 +1301,7 @@ app.post('/api/games/sync/debug', async (req: Request, res: ExpressResponse) => 
   }
 });
 
-app.post('/api/vm/auth-check', async (req: Request, res: ExpressResponse) => {
+app.post('/api/vm/auth-check', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     const debug = Boolean((req.body ?? {}).debug);
     const result = await runVmAuthCheck(debug);
@@ -959,13 +1322,31 @@ app.get('/api/coachees', async (_req: Request, res: ExpressResponse) => {
     const rows = await withCollection(collectionCandidates.coachees, (collection) =>
       collection.getFullList<AnyRecord>({ sort: 'full_name' }),
     );
-    res.json(rows);
+    const summaries = await getCoacheeObservationSummaryMap();
+    const enriched = rows.map((row) => {
+      const summary = summaries.get(row.id) ?? {
+        count: 0,
+        hasNoObservation: true,
+        hasFurtherObservationNeeded: false,
+        hasCompletedObservation: false,
+        needsObservation: asBoolean(row.is_active, true),
+        latestObservationAt: '',
+      };
+      return {
+        ...row,
+        is_active: asBoolean(row.is_active, true),
+        notes: asText(row.notes),
+        observations_count: summary.count,
+        observation_status: summary,
+      };
+    });
+    res.json(enriched);
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }
 });
 
-app.post('/api/coachees', async (req: Request, res: ExpressResponse) => {
+app.post('/api/coachees', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const data = req.body ?? {};
@@ -975,6 +1356,8 @@ app.post('/api/coachees', async (req: Request, res: ExpressResponse) => {
         email: asText(data.email),
         level: asText(data.level),
         group: asText(data.group),
+        is_active: asBoolean(data.is_active, true),
+        notes: asText(data.notes),
         feedback_entries: Array.isArray(data.feedback_entries) ? data.feedback_entries : [],
       }),
     );
@@ -984,11 +1367,31 @@ app.post('/api/coachees', async (req: Request, res: ExpressResponse) => {
   }
 });
 
-app.put('/api/coachees/:id', async (req: Request, res: ExpressResponse) => {
+app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
+    const raw = (req.body ?? {}) as Record<string, unknown>;
+    const payload: Record<string, unknown> = { ...raw };
+    if ('is_active' in raw) {
+      payload.is_active = asBoolean(raw.is_active, true);
+    }
+    if ('notes' in raw) {
+      payload.notes = asText(raw.notes);
+    }
+    if ('group' in raw) {
+      payload.group = asText(raw.group);
+    }
+    if ('level' in raw) {
+      payload.level = asText(raw.level);
+    }
+    if ('email' in raw) {
+      payload.email = asText(raw.email);
+    }
+    if ('full_name' in raw) {
+      payload.full_name = asText(raw.full_name);
+    }
     const updated = await withCollection(collectionCandidates.coachees, (collection) =>
-      collection.update(String(req.params.id), req.body ?? {}),
+      collection.update(String(req.params.id), payload),
     );
     res.json(updated);
   } catch (error) {
@@ -996,7 +1399,7 @@ app.put('/api/coachees/:id', async (req: Request, res: ExpressResponse) => {
   }
 });
 
-app.delete('/api/coachees/:id', async (req: Request, res: ExpressResponse) => {
+app.delete('/api/coachees/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     await withCollection(collectionCandidates.coachees, (collection) =>
@@ -1008,7 +1411,103 @@ app.delete('/api/coachees/:id', async (req: Request, res: ExpressResponse) => {
   }
 });
 
-app.get('/api/referee-coaches', async (_req: Request, res: ExpressResponse) => {
+app.get('/api/coachees/:id/games', async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const coacheeId = asText(req.params.id);
+    const coachee = await withCollection(collectionCandidates.coachees, (collection) =>
+      collection.getOne<AnyRecord>(coacheeId),
+    );
+    const firstName = asText(coachee.first_name ?? coachee.vorname);
+    const lastName = asText(coachee.last_name ?? coachee.nachname);
+    const variants = new Set<string>([
+      normalizeName(coachee.full_name),
+      normalizeName(coachee.name),
+      normalizeName(coachee.coachee_name),
+      normalizeName(coachee.referee_name),
+      normalizeName(`${firstName} ${lastName}`.trim()),
+      normalizeName(`${lastName} ${firstName}`.trim()),
+    ].filter(Boolean));
+
+    const rawNames = [
+      asText(coachee.full_name),
+      asText(coachee.name),
+      asText(coachee.coachee_name),
+      asText(coachee.referee_name),
+      `${firstName} ${lastName}`.trim(),
+      `${lastName} ${firstName}`.trim(),
+    ].filter(Boolean);
+    const uniqueNames = [...new Set(rawNames)];
+
+    const nameFilterParts = uniqueNames.flatMap((name) => {
+      const escaped = escapeFilterValue(name);
+      return [
+        `first_referee = "${escaped}"`,
+        `second_referee = "${escaped}"`,
+        `first_line_judge = "${escaped}"`,
+        `second_line_judge = "${escaped}"`,
+      ];
+    });
+
+    const games = await withCollection(collectionCandidates.games, (collection) =>
+      collection.getFullList<AnyRecord>({
+        sort: '-match_date,-created',
+        filter: nameFilterParts.join(' || '),
+        fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge',
+      }),
+    );
+
+    const result = games.map((game) => {
+      const assigned = getAssignedPeopleFromGameRecord(game);
+      const roleMap: Array<[string, string]> = [
+        ['1. SR', assigned.firstReferee],
+        ['2. SR', assigned.secondReferee],
+        ['LJ1', assigned.firstLineJudge],
+        ['LJ2', assigned.secondLineJudge],
+      ];
+      const assignedRoles = roleMap
+        .filter((entry) => variants.has(normalizeName(entry[1])))
+        .map((entry) => entry[0]);
+      return {
+        id: game.id,
+        matchNo: asText(game.match_no),
+        league: asText(game.league),
+        date: asText(game.match_date),
+        location: asText(game.location),
+        homeTeam: asText(game.home_team),
+        awayTeam: asText(game.away_team),
+        firstReferee: assigned.firstReferee,
+        secondReferee: assigned.secondReferee,
+        firstLineJudge: assigned.firstLineJudge,
+        secondLineJudge: assigned.secondLineJudge,
+        assignedRoles,
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get('/api/coachees/:id/feedbacks', async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const coacheeId = asText(req.params.id);
+    const rows = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+      collection.getFullList<AnyRecord>({
+        sort: '-submitted_at,-created',
+        filter: `coachee = "${escapeFilterValue(coacheeId)}"`,
+        expand: 'game,coachee',
+      }),
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.get('/api/referee-coaches', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const rows = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -1085,38 +1584,44 @@ app.get('/api/observations/summary', async (req: Request, res: ExpressResponse) 
       filterParts.push(`game = "${escapeFilterValue(gameId)}"`);
     }
 
-    const rows = await withCollection(collectionCandidates.observations, (collection) =>
-      collection.getFullList<AnyRecord>({
-        sort: '-created',
-        filter: filterParts.length > 0 ? filterParts.join(' && ') : undefined,
-      }),
-    );
-
+    const filter = filterParts.length > 0 ? filterParts.join(' && ') : undefined;
     const gradeAverages: number[] = [];
     const byPromotion: Record<string, number> = {};
     const byMotivation: Record<string, number> = {};
     const byFunction: Record<string, number> = {};
+    let totalObservations = 0;
 
-    for (const row of rows) {
-      const avg = Number((row.grades as { average_score?: unknown } | undefined)?.average_score);
-      if (Number.isFinite(avg)) {
-        gradeAverages.push(avg);
+    let page = 1;
+    const perPage = 200;
+    while (true) {
+      const batch = await withCollection(collectionCandidates.observations, (collection) =>
+        collection.getList<AnyRecord>(page, perPage, {
+          sort: '-created',
+          filter,
+          fields: 'grades,promotion,motivation,coachee_function',
+        }),
+      );
+      for (const row of batch.items) {
+        totalObservations += 1;
+        const avg = Number((row.grades as { average_score?: unknown } | undefined)?.average_score);
+        if (Number.isFinite(avg)) {
+          gradeAverages.push(avg);
+        }
+        const promotion = asText(row.promotion);
+        if (promotion) {
+          byPromotion[promotion] = (byPromotion[promotion] || 0) + 1;
+        }
+        const motivation = asText(row.motivation);
+        if (motivation) {
+          byMotivation[motivation] = (byMotivation[motivation] || 0) + 1;
+        }
+        const func = asText(row.coachee_function);
+        if (func) {
+          byFunction[func] = (byFunction[func] || 0) + 1;
+        }
       }
-
-      const promotion = asText(row.promotion);
-      if (promotion) {
-        byPromotion[promotion] = (byPromotion[promotion] || 0) + 1;
-      }
-
-      const motivation = asText(row.motivation);
-      if (motivation) {
-        byMotivation[motivation] = (byMotivation[motivation] || 0) + 1;
-      }
-
-      const func = asText(row.coachee_function);
-      if (func) {
-        byFunction[func] = (byFunction[func] || 0) + 1;
-      }
+      if (page >= batch.totalPages) break;
+      page += 1;
     }
 
     const averageGradeScore = gradeAverages.length > 0
@@ -1124,7 +1629,7 @@ app.get('/api/observations/summary', async (req: Request, res: ExpressResponse) 
       : null;
 
     res.json({
-      total_observations: rows.length,
+      total_observations: totalObservations,
       average_grade_score: averageGradeScore,
       by_promotion: byPromotion,
       by_motivation: byMotivation,
@@ -1135,7 +1640,82 @@ app.get('/api/observations/summary', async (req: Request, res: ExpressResponse) 
   }
 });
 
-app.post('/api/referee-coaches', async (req: Request, res: ExpressResponse) => {
+app.get('/api/games/calendar-status', async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const [games, coachees, summaryById] = await Promise.all([
+      withCollection(collectionCandidates.games, (collection) =>
+        collection.getFullList<AnyRecord>({
+          sort: 'match_date,created',
+          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge',
+        }),
+      ),
+      withCollection(collectionCandidates.coachees, (collection) =>
+        collection.getFullList<AnyRecord>({ sort: 'full_name' }),
+      ),
+      getCoacheeObservationSummaryMap(),
+    ]);
+
+    const activeCoacheeByName = new Map<string, { id: string; full_name: string }>();
+    for (const coachee of coachees) {
+      if (!asBoolean(coachee.is_active, true)) {
+        continue;
+      }
+      const firstName = asText(coachee.first_name ?? coachee.vorname);
+      const lastName = asText(coachee.last_name ?? coachee.nachname);
+      const variants = [
+        normalizeName(coachee.full_name),
+        normalizeName(coachee.name),
+        normalizeName(coachee.coachee_name),
+        normalizeName(coachee.referee_name),
+        normalizeName(`${firstName} ${lastName}`.trim()),
+        normalizeName(`${lastName} ${firstName}`.trim()),
+      ].filter(Boolean);
+      for (const name of variants) {
+        if (!activeCoacheeByName.has(name)) {
+          activeCoacheeByName.set(name, { id: coachee.id, full_name: asText(coachee.full_name) });
+        }
+      }
+    }
+
+    const result = games.map((game) => {
+      const assigned = getAssignedPeopleFromGameRecord(game);
+      const assignedPeople = [
+        assigned.firstReferee,
+        assigned.secondReferee,
+        assigned.firstLineJudge,
+        assigned.secondLineJudge,
+      ].filter(Boolean);
+
+      const matchedCoachees = assignedPeople
+        .map((name) => activeCoacheeByName.get(normalizeName(name)))
+        .filter(Boolean) as Array<{ id: string; full_name: string }>;
+
+      const statuses = matchedCoachees.map((coachee) => summaryById.get(coachee.id)).filter(Boolean) as CoacheeObservationSummary[];
+      const hasOutstanding = statuses.some((status) => status.needsObservation);
+      const hasCompleted = statuses.some((status) => status.hasCompletedObservation);
+
+      return {
+        id: game.id,
+        matchNo: asText(game.match_no),
+        league: asText(game.league),
+        date: asText(game.match_date),
+        location: asText(game.location),
+        homeTeam: asText(game.home_team),
+        awayTeam: asText(game.away_team),
+        status: hasOutstanding ? 'outstanding' : hasCompleted ? 'completed' : 'none',
+        hasOutstanding,
+        hasCompleted,
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.post('/api/referee-coaches', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const created = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -1147,7 +1727,7 @@ app.post('/api/referee-coaches', async (req: Request, res: ExpressResponse) => {
   }
 });
 
-app.put('/api/referee-coaches/:id', async (req: Request, res: ExpressResponse) => {
+app.put('/api/referee-coaches/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const updated = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -1159,7 +1739,7 @@ app.put('/api/referee-coaches/:id', async (req: Request, res: ExpressResponse) =
   }
 });
 
-app.delete('/api/referee-coaches/:id', async (req: Request, res: ExpressResponse) => {
+app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -1262,6 +1842,8 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
       observationPayload.game_result = gameResult;
     }
 
+    observationPayload.second_observation = asBoolean(formData.results?.secondBesuch, false);
+
     await withCollection(collectionCandidates.observations, (collection) =>
       collection.create(observationPayload),
     );
@@ -1280,7 +1862,7 @@ app.listen(port, () => {
     VM_SYNC_CRON,
     async () => {
       try {
-        const result = await runGamesSync();
+        const result = await runGamesSyncWithRetry();
         console.log(`[scheduler] Synced ${result.imported}/${result.totalFetched} games (${result.from} -> ${result.to})`);
       } catch (error) {
         console.error('[scheduler] Daily games sync failed:', error);

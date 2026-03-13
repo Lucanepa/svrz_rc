@@ -86,6 +86,11 @@ SMTP_FROM=coaching-feedback@svrz.ch
 # Feedback email settings
 FEEDBACK_CC=rc_coaching@volleyball.lucanepa.com
 FEEDBACK_SURVEY_URL=https://docs.google.com/forms/d/e/1FAIpQLSe-UY2EknI02mkGwoPlFso9pcigGV5ceSt2Q3CKJaT6PQzzpA/viewform
+
+# Test mode: set to 1 to redirect ALL emails to FEEDBACK_TEST_RECIPIENT instead of real recipients.
+# Set to 0 (or remove) for production. Subject line is prefixed with [TEST] in test mode.
+FEEDBACK_EMAIL_TEST=1
+FEEDBACK_TEST_RECIPIENT=luca.canepa@gmail.com
 ```
 
 ### Express body limit

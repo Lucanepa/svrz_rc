@@ -59,6 +59,11 @@ SMTP_FROM=coaching-feedback@svrz.ch
 # Feedback email settings
 FEEDBACK_CC=rc_coaching@volleyball.lucanepa.com
 FEEDBACK_SURVEY_URL=https://docs.google.com/forms/d/e/1FAIpQLSe-UY2EknI02mkGwoPlFso9pcigGV5ceSt2Q3CKJaT6PQzzpA/viewform
+
+# Test mode: set to 1 to redirect ALL emails to FEEDBACK_TEST_RECIPIENT instead of real recipients.
+# Set to 0 (or remove) for production. Subject line is prefixed with [TEST] in test mode.
+FEEDBACK_EMAIL_TEST=1
+FEEDBACK_TEST_RECIPIENT=luca.canepa@gmail.com
 ```
 
 - [ ] **Step 3: Commit**
@@ -505,15 +510,33 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
         surveyUrl,
       };
 
-      const ccList = [process.env.FEEDBACK_CC].filter(Boolean) as string[];
-      if (rcEmail) ccList.unshift(rcEmail);
+      const isTestMode = process.env.FEEDBACK_EMAIL_TEST === '1';
+      const testRecipient = process.env.FEEDBACK_TEST_RECIPIENT || '';
+
+      let mailTo: string;
+      let mailCc: string[] | undefined;
+      let mailSubject: string;
+
+      if (isTestMode && testRecipient) {
+        // Test mode: redirect all emails to test recipient, no CC
+        mailTo = testRecipient;
+        mailCc = undefined;
+        mailSubject = `[TEST] ${subject}`;
+        console.log(`[feedback-email] TEST MODE: redirecting email from ${coacheeEmail} to ${testRecipient}`);
+      } else {
+        mailTo = coacheeEmail;
+        const ccList = [process.env.FEEDBACK_CC].filter(Boolean) as string[];
+        if (rcEmail) ccList.unshift(rcEmail);
+        mailCc = ccList.length > 0 ? ccList : undefined;
+        mailSubject = subject;
+      }
 
       await smtpTransport.sendMail({
         from: process.env.SMTP_FROM || 'coaching-feedback@svrz.ch',
         replyTo: rcEmail || undefined,
-        to: coacheeEmail,
-        cc: ccList.length > 0 ? ccList : undefined,
-        subject,
+        to: mailTo,
+        cc: mailCc,
+        subject: mailSubject,
         html: buildFeedbackEmailHtml(emailParams),
         text: buildFeedbackEmailText(emailParams),
         attachments: [{

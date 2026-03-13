@@ -82,24 +82,38 @@ export async function loadEligibleGames(): Promise<EligibleGame[]> {
   return response.json() as Promise<EligibleGame[]>;
 }
 
+export type FeedbackSubmitResponse = {
+  id: string;
+  emailSent: boolean;
+  emailError?: string;
+  emailWarning?: string;
+};
+
 export async function saveFeedbackToPocketBase(params: {
-  game: EligibleGame;
+  gameId: string;
   role: FeedbackFormData['role'];
   formData: FeedbackFormData;
-}): Promise<void> {
+  pdfBase64: string;
+  pdfFilename: string;
+  tipsAndTricks: string;
+}): Promise<FeedbackSubmitResponse> {
   const response = await fetch('/api/feedback/submit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      gameId: params.game.id,
+      gameId: params.gameId,
       role: params.role,
       formData: params.formData,
+      pdfBase64: params.pdfBase64,
+      pdfFilename: params.pdfFilename,
+      tipsAndTricks: params.tipsAndTricks,
     }),
   });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`Failed to save feedback: ${text}`);
   }
+  return response.json() as Promise<FeedbackSubmitResponse>;
 }
 
 export function hasPocketBaseConfig(): boolean {

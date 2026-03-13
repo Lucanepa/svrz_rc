@@ -238,6 +238,17 @@ function asInputDate(value: string): string {
   return value;
 }
 
+function formatDisplayDate(value: string): string {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${dd}/${mm}/${d.getFullYear()} ${hh}:${min}`;
+}
+
 function pdfFilename(formData: FeedbackFormData): string {
   const match = formData.meta.spielNr || 'feedback';
   const role = formData.role.replace('.', '').replace(/\s+/g, '');
@@ -540,7 +551,7 @@ export default function App() {
         ...prev.meta,
         spielNr: selectedGame.matchNo || prev.meta.spielNr,
         liga: selectedGame.league || prev.meta.liga,
-        datum: asInputDate(selectedGame.date) || prev.meta.datum,
+        datum: formatDisplayDate(selectedGame.date) || prev.meta.datum,
         ort: selectedGame.location || prev.meta.ort,
         mannschaften: [selectedGame.homeTeam, selectedGame.awayTeam].filter(Boolean).join(' - '),
         srName: srName || prev.meta.srName,

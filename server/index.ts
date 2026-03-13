@@ -8,6 +8,13 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 dotenv.config({ path: '.env.local' });
 dotenv.config();
 
+process.on('unhandledRejection', (reason) => {
+  console.error('[server] Unhandled rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[server] Uncaught exception:', err);
+});
+
 type AnyRecord = Record<string, unknown> & { id: string };
 
 const app = express();
@@ -896,7 +903,6 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     first_line_judge: firstLineJudge,
     second_line_judge: secondLineJudge,
     _assigned_people: [firstReferee, secondReferee, firstLineJudge, secondLineJudge],
-    _debug_gender: { raw: asText(league.gender), leagueName: asText(league.name), leagueDisplayName: asText(league.displayName), categoryName: asText(leagueCategory.name), resolved: genderSymbol },
   };
 }
 
@@ -1211,14 +1217,12 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
       league: asText(row.league),
       match_date: asText(row.match_date),
       assigned_people: Array.isArray(row._assigned_people) ? row._assigned_people : [],
-      _debug_gender: row._debug_gender,
     })),
     unmatchedSample: unmatchedRows.slice(0, 20).map((row) => ({
       match_no: asText(row.match_no),
       league: asText(row.league),
       match_date: asText(row.match_date),
       assigned_people: Array.isArray(row._assigned_people) ? row._assigned_people : [],
-      _debug_gender: row._debug_gender,
     })),
     topUnmatchedNames,
     requestedMatchNo,

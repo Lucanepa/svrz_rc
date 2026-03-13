@@ -39,6 +39,13 @@ Vite proxy forwards `/api/*` to `http://localhost:8787` in local development.
 - OS: Ubuntu 24.04.3 LTS
 - Hostname: `ov-c45f75`
 
+Public API domain:
+
+- API base URL (public): `https://rc-api.volleyball.lucanepa.com`
+- DNS: Cloudflare A record `rc-api.volleyball -> 83.228.220.158`
+- TLS: Let's Encrypt certificate installed via Certbot on VPS Nginx
+- Cloudflare proxy note: keep record as DNS-only unless edge certificate coverage is configured for this hostname
+
 PocketBase endpoints:
 
 - API base URL: `http://100.69.245.37`
@@ -66,6 +73,7 @@ Nginx:
 PM2:
 
 - Existing process noted on VPS: `openvolley`
+- API process: `svrz-api` (runs `npm run start:api` with `PORT=8787`)
 
 Useful commands:
 
@@ -75,11 +83,30 @@ sudo systemctl restart pocketbase
 journalctl -u pocketbase -f
 pm2 list
 pm2 logs openvolley
+pm2 logs svrz-api
 ```
+
+API process lifecycle (VPS):
+
+```bash
+cd ~/apps/svrz_rc
+pm2 delete svrz-api
+PORT=8787 pm2 start npm --name svrz-api -- run start:api
+pm2 save
+pm2 restart svrz-api --update-env
+```
+
+Nginx API site:
+
+- Config: `/etc/nginx/sites-available/svrz-api`
+- Enabled: `/etc/nginx/sites-enabled/svrz-api`
+- Server name: `rc-api.volleyball.lucanepa.com`
+- Upstream: `http://127.0.0.1:8787`
 
 ## Environment Variables
 
 Use `.env.local` for local/prod runtime values (never commit secrets).
+Store actual secret values in `infrastructure.private.md` (gitignored), not in this tracked file.
 
 ### Frontend vars
 
@@ -308,7 +335,14 @@ Production note: keep API process continuously running (PM2/systemd/container), 
 
 - Local dev: frontend uses relative `/api/*` and Vite proxy.
 - Static hosting (e.g., Codeberg Pages): set `VITE_API_BASE_URL` to absolute API origin.
+- Current production API origin: `https://rc-api.volleyball.lucanepa.com`
 - Vite base in production is `/svrz_rc/`, so assets are generated for that subpath.
+
+Woodpecker CI requirement for static production builds:
+
+- Secret name: `vite_api_base_url`
+- Secret value: `https://rc-api.volleyball.lucanepa.com`
+- `.woodpecker.yml` injects this into `VITE_API_BASE_URL` during `npm run build`
 
 ## Data Import Status (Current Snapshot)
 

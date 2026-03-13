@@ -447,7 +447,15 @@ async function followRedirects(
   throw new Error(`Too many redirects while requesting ${url}`);
 }
 
+// Cache VM session to avoid re-login on every sync retry (valid for 30 min)
+let vmCsrfCache: { jar: CookieJar; csrfToken: string; cachedAt: number } | null = null;
+const VM_CSRF_CACHE_TTL_MS = 30 * 60 * 1000;
+
 async function vmLogin(username: string, password: string): Promise<{ jar: CookieJar; csrfToken: string }> {
+  if (vmCsrfCache && (Date.now() - vmCsrfCache.cachedAt) < VM_CSRF_CACHE_TTL_MS) {
+    console.log('[vm] Using cached CSRF token');
+    return { jar: vmCsrfCache.jar, csrfToken: vmCsrfCache.csrfToken };
+  }
   return vmLoginWithTrace(username, password);
 }
 
@@ -481,15 +489,6 @@ async function vmLoginWithTrace(
     'authenticate',
   );
 
-  const { body: refereeHtml } = await followRedirects(
-    `${VM_BASE}/indoorvolleyball.refadmin/refereegame/index`,
-    jar,
-    {},
-    10,
-    trace,
-    'referee-index',
-  );
-
   const tokenPatterns = [
     /data-csrf-token="([^"]+)"/,
     /name="__csrfToken"[^>]*value="([^"]+)"/,
@@ -497,17 +496,41 @@ async function vmLoginWithTrace(
     /meta\s+name="csrf-token"\s+content="([^"]+)"/,
   ];
 
-  for (const pattern of tokenPatterns) {
-    const match = refereeHtml.match(pattern);
-    if (match?.[1]) {
-      return { jar, csrfToken: match[1] };
+  // Retry CSRF page fetch — VM sometimes returns 403 if session isn't propagated yet
+  const csrfRetries = 5;
+  const csrfRetryDelayMs = 3000;
+  let lastTitle = 'unknown';
+  let lastLoginHint = '';
+
+  for (let attempt = 1; attempt <= csrfRetries; attempt += 1) {
+    if (attempt > 1) {
+      console.warn(`[vm] CSRF page attempt ${attempt}/${csrfRetries} — retrying in ${csrfRetryDelayMs}ms...`);
+      await sleep(csrfRetryDelayMs);
     }
+
+    const { body: refereeHtml } = await followRedirects(
+      `${VM_BASE}/indoorvolleyball.refadmin/refereegame/index`,
+      jar,
+      {},
+      10,
+      trace,
+      `referee-index-attempt-${attempt}`,
+    );
+
+    for (const pattern of tokenPatterns) {
+      const match = refereeHtml.match(pattern);
+      if (match?.[1]) {
+        vmCsrfCache = { jar, csrfToken: match[1], cachedAt: Date.now() };
+        return { jar, csrfToken: match[1] };
+      }
+    }
+
+    const titleMatch = refereeHtml.match(/<title>([^<]+)<\/title>/i);
+    lastTitle = titleMatch?.[1] || 'unknown';
+    lastLoginHint = refereeHtml.includes('/login') ? 'Likely redirected to login (credentials/permissions).' : 'No login redirect hint detected.';
   }
 
-  const titleMatch = refereeHtml.match(/<title>([^<]+)<\/title>/i);
-  const title = titleMatch?.[1] || 'unknown';
-  const loginHint = refereeHtml.includes('/login') ? 'Likely redirected to login (credentials/permissions).' : 'No login redirect hint detected.';
-  throw new Error(`Could not extract VolleyManager CSRF token after login. Page title: "${title}". ${loginHint}`);
+  throw new Error(`Could not extract VolleyManager CSRF token after login (${csrfRetries} attempts). Page title: "${lastTitle}". ${lastLoginHint}`);
 }
 
 function buildVmSearchBody(csrfToken: string, offset: number, limit: number, from: string, to: string): string {

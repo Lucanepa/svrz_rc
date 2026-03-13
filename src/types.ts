@@ -48,6 +48,7 @@ export interface EligibleGame {
   awayTeam: string;
   firstReferee: string;
   secondReferee: string;
+  assignedRc?: string;
 }
 
 export const LEGEND = {

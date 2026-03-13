@@ -785,10 +785,16 @@ async function resolveRefereeCoachPersonId(rcName: string): Promise<string> {
   }
 
   const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
-    collection.getFullList<AnyRecord>({ sort: 'full_name' }),
+    collection.getFullList<AnyRecord>({ sort: 'last_name' }),
   );
 
-  const exact = people.find((person) => normalizeText(asText(person.full_name)) === normalizedInput);
+  const personFullName = (person: AnyRecord) => {
+    const first = asText(person.first_name);
+    const last = asText(person.last_name);
+    return `${first} ${last}`.trim();
+  };
+
+  const exact = people.find((person) => normalizeText(personFullName(person)) === normalizedInput);
   if (exact) {
     return exact.id;
   }
@@ -796,7 +802,7 @@ async function resolveRefereeCoachPersonId(rcName: string): Promise<string> {
   const tokens = normalizedInput.split(' ').filter(Boolean);
   if (tokens.length >= 2) {
     const reversed = `${tokens[tokens.length - 1]} ${tokens.slice(0, -1).join(' ')}`;
-    const byReverse = people.find((person) => normalizeText(asText(person.full_name)) === reversed);
+    const byReverse = people.find((person) => normalizeText(personFullName(person)) === reversed);
     if (byReverse) {
       return byReverse.id;
     }
@@ -807,11 +813,8 @@ async function resolveRefereeCoachPersonId(rcName: string): Promise<string> {
   const fallbackLastName = rawTokens.length > 1 ? rawTokens[rawTokens.length - 1] : rcName;
   const created = await withCollection<AnyRecord>(collectionCandidates.refereeCoachPeople, (collection) =>
     collection.create({
-      full_name: rcName,
       first_name: fallbackFirstName,
       last_name: fallbackLastName,
-      vorname: fallbackFirstName,
-      nachname: fallbackLastName,
       active: true,
     }),
   );
@@ -850,9 +853,15 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
   const leagueCategory = (league.leagueCategory ?? {}) as Record<string, unknown>;
 
   const leagueShort = asText(leagueCategory.shortName || leagueCategory.name);
+  const genderRaw = asText(league.gender).toUpperCase().trim();
+  if (genderRaw) console.log(`[vm-gender] league="${leagueShort}" gender="${genderRaw}"`);
+  const genderSymbol = /^(MALE|M|HERREN|MEN|MÄNNER|MAENNER)$/.test(genderRaw) ? '♂'
+    : /^(FEMALE|F|DAMEN|WOMEN|FRAUEN)$/.test(genderRaw) ? '♀'
+    : '';
   const groupDisplay = asText(group.displayName);
   const groupMatch = groupDisplay.match(/Gruppe\s+([A-Z0-9]+)/) || groupDisplay.match(/\|\s*([A-Z0-9]+)\s*$/);
-  const leagueText = groupMatch ? `${leagueShort} ${groupMatch[1]}` : leagueShort;
+  const leagueBase = groupMatch ? `${leagueShort} ${groupMatch[1]}` : leagueShort;
+  const leagueText = genderSymbol ? `${leagueBase} ${genderSymbol}` : leagueBase;
   const firstReferee =
     extractRefereeName(item, 'activeRefereeConvocationFirstHeadReferee')
     || asText(item.activeFirstHeadRefereeName);
@@ -882,11 +891,13 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
   };
 }
 
-async function getCoacheeNameSet(): Promise<Set<string>> {
-  await ensureAdminAuth();
-  const coachees = await withCollection(collectionCandidates.coachees, (collection) =>
-    collection.getFullList<AnyRecord>({ sort: 'full_name' }),
-  );
+async function getCoacheeNameSet(prefetchedCoachees?: AnyRecord[]): Promise<Set<string>> {
+  const coachees = prefetchedCoachees ?? await (async () => {
+    await ensureAdminAuth();
+    return withCollection(collectionCandidates.coachees, (collection) =>
+      collection.getFullList<AnyRecord>({ sort: 'full_name' }),
+    );
+  })();
   const names = new Set<string>();
 
   const addVariant = (value: unknown) => {
@@ -913,32 +924,26 @@ async function getCoacheeNameSet(): Promise<Set<string>> {
 
 async function getEligibleGames() {
   await ensureAdminAuth();
-  const coachees = await withCollection(collectionCandidates.coachees, (collection) =>
-    collection.getFullList<AnyRecord>({ sort: 'full_name' }),
-  );
+  const coacheeNameSet = await getCoacheeNameSet();
 
-  const coacheeNames = [...new Set(
-    coachees
-      .map((c) => asText(c.full_name ?? c.name ?? c.coachee_name ?? c.referee_name))
-      .filter(Boolean),
-  )];
+  if (coacheeNameSet.size === 0) return [];
 
-  if (coacheeNames.length === 0) return [];
+  const matchesCoachee = (value: unknown) => {
+    const text = normalizeName(value);
+    return text ? coacheeNameSet.has(text) : false;
+  };
 
-  const nameFilter = coacheeNames.flatMap((name) => {
-    const escaped = escapeFilterValue(name);
-    return [
-      `first_referee = "${escaped}"`,
-      `second_referee = "${escaped}"`,
-    ];
-  }).join(' || ');
-
-  const games = await withCollection(collectionCandidates.games, (collection) =>
+  // Fetch all games in a single request and filter in-memory
+  // to avoid PocketBase 414 (URI too long) and 429 (rate limit) errors
+  const allGames = await withCollection(collectionCandidates.games, (collection) =>
     collection.getFullList<AnyRecord>({
       sort: '-match_date,-created',
-      filter: nameFilter,
-      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee',
+      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc',
     }),
+  );
+
+  const games = allGames.filter((game) =>
+    matchesCoachee(game.first_referee) || matchesCoachee(game.second_referee),
   );
 
   return games.map((game) => ({
@@ -951,6 +956,7 @@ async function getEligibleGames() {
     awayTeam: asText(game.away_team),
     firstReferee: asText(game.first_referee),
     secondReferee: asText(game.second_referee),
+    assignedRc: asText(game.assigned_rc),
   }));
 }
 
@@ -972,52 +978,49 @@ type CoacheeObservationSummary = {
   latestObservationAt: string;
 };
 
-async function getCoacheeObservationSummaryMap(activeOverrides?: Map<string, boolean>) {
-  await ensureAdminAuth();
-  const coachees = await withCollection(collectionCandidates.coachees, (collection) =>
-    collection.getFullList<AnyRecord>({ sort: 'full_name' }),
-  );
-
-  // Accumulate lightweight per-coachee stats by paginating observations
-  const stats = new Map<string, { count: number; hasFurther: boolean; hasCompleted: boolean; latestAt: string }>();
-  let page = 1;
-  const perPage = 200;
-  while (true) {
-    const batch = await withCollection(collectionCandidates.observations, (collection) =>
-      collection.getList<AnyRecord>(page, perPage, {
-        sort: '-created',
-        fields: 'coachee,second_observation,created,updated',
-      }),
+async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<string, boolean>; coachees?: AnyRecord[] }) {
+  const coachees = opts?.coachees ?? await (async () => {
+    await ensureAdminAuth();
+    return withCollection(collectionCandidates.coachees, (collection) =>
+      collection.getFullList<AnyRecord>({ sort: 'full_name' }),
     );
-    for (const row of batch.items) {
-      const coacheeId = asText(row.coachee);
-      if (!coacheeId) continue;
-      const existing = stats.get(coacheeId);
-      const isSecond = asBoolean(row.second_observation, false);
-      const createdAt = asText(row.created ?? row.updated);
-      if (existing) {
-        existing.count += 1;
-        if (isSecond) existing.hasFurther = true;
-        if (!isSecond) existing.hasCompleted = true;
-        // Sorted by -created, so first seen is latest
-      } else {
-        stats.set(coacheeId, {
-          count: 1,
-          hasFurther: isSecond,
-          hasCompleted: !isSecond,
-          latestAt: createdAt,
-        });
-      }
+  })();
+
+  // Fetch all observations in a single getFullList call to avoid 429 rate limiting
+  const stats = new Map<string, { count: number; hasFurther: boolean; hasCompleted: boolean; latestAt: string }>();
+  const allObservations = await withCollection(collectionCandidates.observations, (collection) =>
+    collection.getFullList<AnyRecord>({
+      sort: '-created',
+      fields: 'coachee,second_observation,created,updated',
+      batch: 500,
+    }),
+  );
+  for (const row of allObservations) {
+    const coacheeId = asText(row.coachee);
+    if (!coacheeId) continue;
+    const existing = stats.get(coacheeId);
+    const isSecond = asBoolean(row.second_observation, false);
+    const createdAt = asText(row.created ?? row.updated);
+    if (existing) {
+      existing.count += 1;
+      if (isSecond) existing.hasFurther = true;
+      if (!isSecond) existing.hasCompleted = true;
+    } else {
+      stats.set(coacheeId, {
+        count: 1,
+        hasFurther: isSecond,
+        hasCompleted: !isSecond,
+        latestAt: createdAt,
+      });
     }
-    if (page >= batch.totalPages) break;
-    page += 1;
   }
 
   const summaryById = new Map<string, CoacheeObservationSummary>();
   for (const coachee of coachees) {
     const coacheeId = coachee.id;
     const st = stats.get(coacheeId);
-    const isActive = activeOverrides?.get(coacheeId) ?? asBoolean(coachee.is_active, true);
+    const stage = asText(coachee.stage) || 'active';
+    const isActive = opts?.activeOverrides?.get(coacheeId) ?? (stage !== 'inactive');
     const count = st?.count ?? 0;
 
     summaryById.set(coacheeId, {
@@ -1326,6 +1329,42 @@ app.get('/api/eligible-games', async (_req: Request, res: ExpressResponse) => {
   }
 });
 
+let rcPeopleCache: { data: unknown[]; expiresAt: number } | null = null;
+
+app.get('/api/referee-coach-people', async (_req: Request, res: ExpressResponse) => {
+  try {
+    if (rcPeopleCache && Date.now() < rcPeopleCache.expiresAt) {
+      return res.json(rcPeopleCache.data);
+    }
+    await ensureAdminAuth();
+    const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
+      collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }),
+    );
+    const mapped = people.map((p) => ({
+      id: p.id,
+      fullName: `${asText(p.first_name)} ${asText(p.last_name)}`.trim(),
+    }));
+    rcPeopleCache = { data: mapped, expiresAt: Date.now() + 10 * 60 * 1000 };
+    res.json(mapped);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+app.put('/api/games/:id/assign-rc', async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const gameId = String(req.params.id);
+    const rcName = asText((req.body ?? {}).assignedRc);
+    const updated = await withCollection(collectionCandidates.games, (collection) =>
+      collection.update(gameId, { assigned_rc: rcName }),
+    );
+    res.json({ ok: true, id: (updated as AnyRecord).id, assignedRc: asText((updated as AnyRecord).assigned_rc) });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 app.post('/api/games/sync', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     const result = await runGamesSync(req.body ?? {});
@@ -1365,20 +1404,27 @@ app.get('/api/coachees', async (_req: Request, res: ExpressResponse) => {
     const rows = await withCollection(collectionCandidates.coachees, (collection) =>
       collection.getFullList<AnyRecord>({ sort: 'full_name' }),
     );
-    const summaries = await getCoacheeObservationSummaryMap();
+    const summaries = await getCoacheeObservationSummaryMap({ coachees: rows });
     const enriched = rows.map((row) => {
+      const stage = asText(row.stage) || 'active';
+      const isActive = stage !== 'inactive';
       const summary = summaries.get(row.id) ?? {
         count: 0,
         hasNoObservation: true,
         hasFurtherObservationNeeded: false,
         hasCompletedObservation: false,
-        needsObservation: asBoolean(row.is_active, true),
+        needsObservation: isActive,
         latestObservationAt: '',
       };
       return {
         ...row,
-        is_active: asBoolean(row.is_active, true),
-        notes: asText(row.notes),
+        referee_level: asText(row.referee_level),
+        stage,
+        groups: asText(row.groups),
+        phone: asText(row.phone),
+        last_feedback_at: asText(row.last_feedback_at),
+        first_name: asText(row.first_name),
+        last_name: asText(row.last_name),
         observations_count: summary.count,
         observation_status: summary,
       };
@@ -1396,11 +1442,13 @@ app.post('/api/coachees', requireAdminSession, async (req: Request, res: Express
     const created = await withCollection(collectionCandidates.coachees, (collection) =>
       collection.create({
         full_name: asText(data.full_name),
+        first_name: asText(data.first_name),
+        last_name: asText(data.last_name),
         email: asText(data.email),
-        level: asText(data.level),
-        group: asText(data.group),
-        is_active: asBoolean(data.is_active, true),
-        notes: asText(data.notes),
+        phone: asText(data.phone),
+        referee_level: asText(data.referee_level),
+        stage: asText(data.stage) || 'active',
+        groups: asText(data.groups),
         feedback_entries: Array.isArray(data.feedback_entries) ? data.feedback_entries : [],
       }),
     );
@@ -1414,25 +1462,16 @@ app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: Expr
   try {
     await ensureAdminAuth();
     const raw = (req.body ?? {}) as Record<string, unknown>;
-    const payload: Record<string, unknown> = { ...raw };
-    if ('is_active' in raw) {
-      payload.is_active = asBoolean(raw.is_active, true);
-    }
-    if ('notes' in raw) {
-      payload.notes = asText(raw.notes);
-    }
-    if ('group' in raw) {
-      payload.group = asText(raw.group);
-    }
-    if ('level' in raw) {
-      payload.level = asText(raw.level);
-    }
-    if ('email' in raw) {
-      payload.email = asText(raw.email);
-    }
-    if ('full_name' in raw) {
-      payload.full_name = asText(raw.full_name);
-    }
+    const payload: Record<string, unknown> = {};
+    if ('full_name' in raw) payload.full_name = asText(raw.full_name);
+    if ('first_name' in raw) payload.first_name = asText(raw.first_name);
+    if ('last_name' in raw) payload.last_name = asText(raw.last_name);
+    if ('email' in raw) payload.email = asText(raw.email);
+    if ('phone' in raw) payload.phone = asText(raw.phone);
+    if ('referee_level' in raw) payload.referee_level = asText(raw.referee_level);
+    if ('stage' in raw) payload.stage = asText(raw.stage);
+    if ('groups' in raw) payload.groups = asText(raw.groups);
+    if ('feedback_entries' in raw) payload.feedback_entries = raw.feedback_entries;
     const updated = await withCollection(collectionCandidates.coachees, (collection) =>
       collection.update(String(req.params.id), payload),
     );
@@ -1634,37 +1673,33 @@ app.get('/api/observations/summary', async (req: Request, res: ExpressResponse) 
     const byFunction: Record<string, number> = {};
     let totalObservations = 0;
 
-    let page = 1;
-    const perPage = 200;
-    while (true) {
-      const batch = await withCollection(collectionCandidates.observations, (collection) =>
-        collection.getList<AnyRecord>(page, perPage, {
-          sort: '-created',
-          filter,
-          fields: 'grades,promotion,motivation,coachee_function',
-        }),
-      );
-      for (const row of batch.items) {
-        totalObservations += 1;
-        const avg = Number((row.grades as { average_score?: unknown } | undefined)?.average_score);
-        if (Number.isFinite(avg)) {
-          gradeAverages.push(avg);
-        }
-        const promotion = asText(row.promotion);
-        if (promotion) {
-          byPromotion[promotion] = (byPromotion[promotion] || 0) + 1;
-        }
-        const motivation = asText(row.motivation);
-        if (motivation) {
-          byMotivation[motivation] = (byMotivation[motivation] || 0) + 1;
-        }
-        const func = asText(row.coachee_function);
-        if (func) {
-          byFunction[func] = (byFunction[func] || 0) + 1;
-        }
+    // Use getFullList to avoid 429 rate limiting from manual pagination
+    const allObs = await withCollection(collectionCandidates.observations, (collection) =>
+      collection.getFullList<AnyRecord>({
+        sort: '-created',
+        filter,
+        fields: 'grades,promotion,motivation,coachee_function',
+        batch: 500,
+      }),
+    );
+    for (const row of allObs) {
+      totalObservations += 1;
+      const avg = Number((row.grades as { average_score?: unknown } | undefined)?.average_score);
+      if (Number.isFinite(avg)) {
+        gradeAverages.push(avg);
       }
-      if (page >= batch.totalPages) break;
-      page += 1;
+      const promotion = asText(row.promotion);
+      if (promotion) {
+        byPromotion[promotion] = (byPromotion[promotion] || 0) + 1;
+      }
+      const motivation = asText(row.motivation);
+      if (motivation) {
+        byMotivation[motivation] = (byMotivation[motivation] || 0) + 1;
+      }
+      const func = asText(row.coachee_function);
+      if (func) {
+        byFunction[func] = (byFunction[func] || 0) + 1;
+      }
     }
 
     const averageGradeScore = gradeAverages.length > 0
@@ -1686,7 +1721,7 @@ app.get('/api/observations/summary', async (req: Request, res: ExpressResponse) 
 app.get('/api/games/calendar-status', async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    const [games, coachees, summaryById] = await Promise.all([
+    const [games, coachees] = await Promise.all([
       withCollection(collectionCandidates.games, (collection) =>
         collection.getFullList<AnyRecord>({
           sort: 'match_date,created',
@@ -1696,12 +1731,12 @@ app.get('/api/games/calendar-status', async (_req: Request, res: ExpressResponse
       withCollection(collectionCandidates.coachees, (collection) =>
         collection.getFullList<AnyRecord>({ sort: 'full_name' }),
       ),
-      getCoacheeObservationSummaryMap(),
     ]);
+    const summaryById = await getCoacheeObservationSummaryMap({ coachees });
 
     const activeCoacheeByName = new Map<string, { id: string; full_name: string }>();
     for (const coachee of coachees) {
-      if (!asBoolean(coachee.is_active, true)) {
+      if ((asText(coachee.stage) || 'active') === 'inactive') {
         continue;
       }
       const firstName = asText(coachee.first_name ?? coachee.vorname);

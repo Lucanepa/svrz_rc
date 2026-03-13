@@ -5,9 +5,13 @@ const GROUP_LABELS = new Map<string, string>([
   ['neu-sr 24/25', 'Neu-SR 2024/25'],
   ['beförderung?', 'Beförderung?'],
   ['befoerderung?', 'Beförderung?'],
+  ['beförderung?', 'Beförderung?'],
   ['b?', 'Beförderung?'],
   ['befördert', 'Befördert'],
+  ['beförderung', 'Befördert'],
   ['befoerdert', 'Befördert'],
+  ['befoerderung', 'Befördert'],
+  ['beforderung', 'Befördert'],
   ['b', 'Befördert'],
   ['rc gewünscht', 'RC Gewünscht'],
   ['rc gewuenscht', 'RC Gewünscht'],
@@ -51,10 +55,12 @@ export function normalizeCoacheeGroup(value?: string): string {
   if (!value) {
     return '';
   }
-  const normalized = value
-    .split('/')
+  // Replace commas between digits with "/" to preserve season patterns like "2025,26"
+  const fixed = value.replace(/(\d),(\d)/g, '$1/$2');
+  const normalized = fixed
+    .split(',')
     .map((part) => normalizeToken(part))
     .filter(Boolean)
-    .join(' / ');
+    .join(', ');
   return normalized;
 }

@@ -12,11 +12,15 @@ export type CoacheeObservationStatus = {
 export type Coachee = {
   id: string;
   full_name: string;
+  first_name?: string;
+  last_name?: string;
   email?: string;
-  level?: string;
-  group?: string;
-  is_active?: boolean;
+  phone?: string;
+  referee_level?: string;
+  stage?: string;
+  groups?: string;
   notes?: string;
+  last_feedback_at?: string;
   feedback_entries?: unknown[];
   observations_count?: number;
   observation_status?: CoacheeObservationStatus;
@@ -211,6 +215,30 @@ export async function loadCalendarGames(): Promise<CalendarGameStatus[]> {
 export async function deleteRefereeCoach(id: string) {
   const response = await fetch(`/api/referee-coaches/${id}`, {
     method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+}
+
+export type RefereeCoachPerson = {
+  id: string;
+  fullName: string;
+};
+
+export async function listRefereeCoachPeople(): Promise<RefereeCoachPerson[]> {
+  const response = await fetch('/api/referee-coach-people');
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<RefereeCoachPerson[]>;
+}
+
+export async function assignRcToGame(gameId: string, assignedRc: string): Promise<void> {
+  const response = await fetch(`/api/games/${gameId}/assign-rc`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assignedRc }),
   });
   if (!response.ok) {
     throw new Error(await response.text());

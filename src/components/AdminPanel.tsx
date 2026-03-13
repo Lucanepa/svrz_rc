@@ -102,11 +102,13 @@ function localizeRuntimeError(message: string, lang: Lang): string {
 type Coachee = {
   id: string;
   full_name: string;
+  first_name?: string;
+  last_name?: string;
   email?: string;
-  level?: string;
-  group?: string;
-  is_active?: boolean;
-  notes?: string;
+  phone?: string;
+  referee_level?: string;
+  stage?: string;
+  groups?: string;
 };
 
 type RefCoach = {
@@ -131,7 +133,7 @@ export default function AdminPanel({ lang }: AdminPanelProps) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [editingId, setEditingId] = useState('');
-  const [form, setForm] = useState({ full_name: '', email: '', level: '', group: '', is_active: true, notes: '' });
+  const [form, setForm] = useState({ full_name: '', first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: 'active', groups: '' });
 
   const loadAll = async () => {
     setLoading(true);
@@ -154,7 +156,7 @@ export default function AdminPanel({ lang }: AdminPanelProps) {
 
   const resetForm = () => {
     setEditingId('');
-    setForm({ full_name: '', email: '', level: '', group: '', is_active: true, notes: '' });
+    setForm({ full_name: '', first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: 'active', groups: '' });
   };
 
   const onSaveCoachee = async (event: FormEvent<HTMLFormElement>) => {
@@ -163,10 +165,10 @@ export default function AdminPanel({ lang }: AdminPanelProps) {
     setMessage('');
     try {
       if (editingId) {
-        await updateCoachee(editingId, { ...form, group: normalizeCoacheeGroup(form.group) });
+        await updateCoachee(editingId, { ...form, groups: normalizeCoacheeGroup(form.groups) });
         setMessage(t.coacheeUpdated);
       } else {
-        await createCoachee({ ...form, group: normalizeCoacheeGroup(form.group) });
+        await createCoachee({ ...form, groups: normalizeCoacheeGroup(form.groups) });
         setMessage(t.coacheeCreated);
       }
       resetForm();
@@ -255,6 +257,24 @@ export default function AdminPanel({ lang }: AdminPanelProps) {
                 required
               />
             </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block text-xs text-slate-300">
+                {lang === 'DE' ? 'Vorname' : 'First name'}
+                <input
+                  value={form.first_name}
+                  onChange={(e) => setForm((prev) => ({ ...prev, first_name: e.target.value }))}
+                  className="h-10 w-full px-3 mt-1 bg-slate-900 border border-slate-700 rounded-md focus-visible:ring-2 focus-visible:ring-emerald-400"
+                />
+              </label>
+              <label className="block text-xs text-slate-300">
+                {lang === 'DE' ? 'Nachname' : 'Last name'}
+                <input
+                  value={form.last_name}
+                  onChange={(e) => setForm((prev) => ({ ...prev, last_name: e.target.value }))}
+                  className="h-10 w-full px-3 mt-1 bg-slate-900 border border-slate-700 rounded-md focus-visible:ring-2 focus-visible:ring-emerald-400"
+                />
+              </label>
+            </div>
             <label className="block text-xs text-slate-300">
               {t.email}
               <input
@@ -264,18 +284,26 @@ export default function AdminPanel({ lang }: AdminPanelProps) {
               />
             </label>
             <label className="block text-xs text-slate-300">
+              {lang === 'DE' ? 'Telefon' : 'Phone'}
+              <input
+                value={form.phone}
+                onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))}
+                className="h-10 w-full px-3 mt-1 bg-slate-900 border border-slate-700 rounded-md focus-visible:ring-2 focus-visible:ring-emerald-400"
+              />
+            </label>
+            <label className="block text-xs text-slate-300">
               {t.level}
               <input
-                value={form.level}
-                onChange={(e) => setForm((prev) => ({ ...prev, level: e.target.value }))}
+                value={form.referee_level}
+                onChange={(e) => setForm((prev) => ({ ...prev, referee_level: e.target.value }))}
                 className="h-10 w-full px-3 mt-1 bg-slate-900 border border-slate-700 rounded-md focus-visible:ring-2 focus-visible:ring-emerald-400"
               />
             </label>
             <label className="block text-xs text-slate-300">
               {t.group}
               <select
-                value={form.group}
-                onChange={(e) => setForm((prev) => ({ ...prev, group: e.target.value }))}
+                value={form.groups}
+                onChange={(e) => setForm((prev) => ({ ...prev, groups: e.target.value }))}
                 className="h-10 w-full px-3 mt-1 bg-slate-900 border border-slate-700 rounded-md focus-visible:ring-2 focus-visible:ring-emerald-400"
               >
                 <option value="">{t.choose}</option>
@@ -287,22 +315,12 @@ export default function AdminPanel({ lang }: AdminPanelProps) {
               </select>
             </label>
             <label className="block text-xs text-slate-300">
-              {t.notes}
-              <textarea
-                value={form.notes}
-                onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))}
-                className="w-full px-3 py-2 mt-1 bg-slate-900 border border-slate-700 rounded-md focus-visible:ring-2 focus-visible:ring-emerald-400"
-                rows={3}
-              />
-            </label>
-            <label className="flex items-center gap-2 text-xs text-slate-300 pt-1">
+              Stage
               <input
-                type="checkbox"
-                checked={form.is_active}
-                onChange={(e) => setForm((prev) => ({ ...prev, is_active: e.target.checked }))}
-                className="h-4 w-4 rounded border-slate-600 bg-slate-900"
+                value={form.stage}
+                onChange={(e) => setForm((prev) => ({ ...prev, stage: e.target.value }))}
+                className="h-10 w-full px-3 mt-1 bg-slate-900 border border-slate-700 rounded-md focus-visible:ring-2 focus-visible:ring-emerald-400"
               />
-              {t.isActive}
             </label>
             <div className="flex gap-2">
               <button
@@ -330,18 +348,17 @@ export default function AdminPanel({ lang }: AdminPanelProps) {
               <div key={coachee.id} className="py-2">
                 <div className="text-sm font-medium flex items-center gap-2">
                   <span>{coachee.full_name}</span>
-                  <span
-                    className={coachee.is_active === false
-                      ? 'text-[10px] px-2 py-0.5 rounded bg-stone-700 text-stone-200'
-                      : 'text-[10px] px-2 py-0.5 rounded bg-emerald-700/30 text-emerald-300'}
-                  >
-                    {coachee.is_active === false ? t.inactive : t.active}
-                  </span>
+                  {coachee.stage && (
+                    <span
+                      className={coachee.stage === 'inactive'
+                        ? 'text-[10px] px-2 py-0.5 rounded bg-stone-700 text-stone-200'
+                        : 'text-[10px] px-2 py-0.5 rounded bg-emerald-700/30 text-emerald-300'}
+                    >
+                      {coachee.stage}
+                    </span>
+                  )}
                 </div>
-                <div className="text-xs text-slate-400">{coachee.level || '-'} | {normalizeCoacheeGroup(coachee.group) || '-'}</div>
-                {coachee.notes && (
-                  <div className="text-xs text-slate-500 mt-1">{coachee.notes}</div>
-                )}
+                <div className="text-xs text-slate-400">{coachee.referee_level || '-'} | {normalizeCoacheeGroup(coachee.groups) || '-'}</div>
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
@@ -349,11 +366,13 @@ export default function AdminPanel({ lang }: AdminPanelProps) {
                       setEditingId(coachee.id);
                       setForm({
                         full_name: coachee.full_name || '',
+                        first_name: coachee.first_name || '',
+                        last_name: coachee.last_name || '',
                         email: coachee.email || '',
-                        level: coachee.level || '',
-                        group: normalizeCoacheeGroup(coachee.group) || '',
-                        is_active: coachee.is_active !== false,
-                        notes: coachee.notes || '',
+                        phone: coachee.phone || '',
+                        referee_level: coachee.referee_level || '',
+                        stage: coachee.stage || 'active',
+                        groups: normalizeCoacheeGroup(coachee.groups) || '',
                       });
                     }}
                     className="h-9 px-3 text-xs border border-slate-700 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"

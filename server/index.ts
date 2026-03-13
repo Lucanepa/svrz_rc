@@ -169,8 +169,11 @@ const VM_SYNC_RETRY_DELAY_MS = Number(process.env.VM_SYNC_RETRY_DELAY_MS || 1500
 const RENDER_PROPERTIES = [
   'game.startingDateTime', 'gameDayOfWeek', 'game.number',
   'game.group.phase.league.leagueCategory.name',
+  'game.group.phase.league.leagueCategory.shortName',
   'game.group.phase.league.leagueCategory.displayNameWithManagingAssociationShortName',
   'game.group.phase.league.gender',
+  'game.group.phase.league.name',
+  'game.group.phase.league.displayName',
   'game.group.name', 'game.group.displayName',
   'game.group.phase.name', 'game.group.phase.displayName',
   'game.encounter.teamHome.identifier', 'game.encounter.teamHome.name',
@@ -188,6 +191,8 @@ function normalizeName(value: unknown): string {
   return String(value ?? '')
     .trim()
     .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
     .replace(/\s+/g, ' ');
 }
 
@@ -854,9 +859,12 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
 
   const leagueShort = asText(leagueCategory.shortName || leagueCategory.name);
   const genderRaw = asText(league.gender).toUpperCase().trim();
-  if (genderRaw) console.log(`[vm-gender] league="${leagueShort}" gender="${genderRaw}"`);
+  // Try explicit gender field first, then fall back to detecting from league/category names
+  const leagueFullName = [asText(league.name), asText(league.displayName), asText(leagueCategory.name)].join(' ').toUpperCase();
   const genderSymbol = /^(MALE|M|HERREN|MEN|MÄNNER|MAENNER)$/.test(genderRaw) ? '♂'
     : /^(FEMALE|F|DAMEN|WOMEN|FRAUEN)$/.test(genderRaw) ? '♀'
+    : /\b(HERREN|MEN|MÄNNER|MAENNER|MALE)\b/.test(leagueFullName) ? '♂'
+    : /\b(DAMEN|WOMEN|FRAUEN|FEMALE)\b/.test(leagueFullName) ? '♀'
     : '';
   const groupDisplay = asText(group.displayName);
   const groupMatch = groupDisplay.match(/Gruppe\s+([A-Z0-9]+)/) || groupDisplay.match(/\|\s*([A-Z0-9]+)\s*$/);
@@ -880,7 +888,7 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     match_no: asText(game.number),
     league: leagueText,
     match_date: asText(game.startingDateTime),
-    location: asText(hall.name || address.city),
+    location: [asText(hall.name), [asText(address.postalCode), asText(address.city)].filter(Boolean).join(' ')].filter(Boolean).join(', '),
     home_team: asText(home.name),
     away_team: asText(away.name),
     first_referee: firstReferee,
@@ -888,6 +896,7 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     first_line_judge: firstLineJudge,
     second_line_judge: secondLineJudge,
     _assigned_people: [firstReferee, secondReferee, firstLineJudge, secondLineJudge],
+    _debug_gender: { raw: asText(league.gender), leagueName: asText(league.name), leagueDisplayName: asText(league.displayName), categoryName: asText(leagueCategory.name), resolved: genderSymbol },
   };
 }
 
@@ -1202,12 +1211,14 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
       league: asText(row.league),
       match_date: asText(row.match_date),
       assigned_people: Array.isArray(row._assigned_people) ? row._assigned_people : [],
+      _debug_gender: row._debug_gender,
     })),
     unmatchedSample: unmatchedRows.slice(0, 20).map((row) => ({
       match_no: asText(row.match_no),
       league: asText(row.league),
       match_date: asText(row.match_date),
       assigned_people: Array.isArray(row._assigned_people) ? row._assigned_people : [],
+      _debug_gender: row._debug_gender,
     })),
     topUnmatchedNames,
     requestedMatchNo,
@@ -1847,10 +1858,16 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
     }
 
     const escaped = escapeFilterValue(refereeName);
+    const nameParts = refereeName.trim().split(/\s+/);
+    const reversed = nameParts.length >= 2 ? nameParts.reverse().join(' ') : '';
+    const escapedReversed = reversed ? escapeFilterValue(reversed) : '';
+    const reverseClause = escapedReversed
+      ? ` || full_name = "${escapedReversed}" || name = "${escapedReversed}" || coachee_name = "${escapedReversed}" || referee_name = "${escapedReversed}"`
+      : '';
     const coacheeResult = await withCollection(collectionCandidates.coachees, async (collection) => ({
       collection,
       coachee: await collection.getFirstListItem<AnyRecord>(
-        `full_name = "${escaped}" || name = "${escaped}" || coachee_name = "${escaped}" || referee_name = "${escaped}"`,
+        `full_name = "${escaped}" || name = "${escaped}" || coachee_name = "${escaped}" || referee_name = "${escaped}"${reverseClause}`,
       ),
     }));
     const coachee = coacheeResult.coachee;

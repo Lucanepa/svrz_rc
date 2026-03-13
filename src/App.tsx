@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, Database, LogIn, LogOut, ShieldAlert, ChevronDown } from 'lucide-react';
+import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, Database, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame } from './types';
@@ -55,7 +55,7 @@ const UI_STRINGS = {
     location: "Ort",
     teams: "Mannschaften",
     refLevel: "SR-Niveau",
-    rc: "RC (Coach)",
+    rc: "Referee Coach",
     group: "Gruppe",
     criteria: "Kriterien",
     matchLevel: "Spielniveau",
@@ -98,7 +98,7 @@ const UI_STRINGS = {
     noGames: "Keine passenden Spiele gefunden.",
     selectedGame: "Ausgewähltes Spiel",
     downloadPdf: "PDF herunterladen",
-    saveBackend: "In Datenbank speichern",
+    saveBackend: "Bestätigen und speichern",
     saveOk: "Feedback wurde gespeichert.",
     saveError: "Speichern fehlgeschlagen.",
     loading: "Lädt...",
@@ -144,8 +144,8 @@ const UI_STRINGS = {
     date: "Date",
     location: "Location",
     teams: "Teams",
-    refLevel: "Ref Level",
-    rc: "RC (Coach)",
+    refLevel: "Referee Level",
+    rc: "Referee Coach",
     group: "Group",
     criteria: "Criteria",
     matchLevel: "Match Level",
@@ -153,7 +153,7 @@ const UI_STRINGS = {
     rating: "Rating",
     secondVisit: "2nd Visit",
     remarks: "Remarks",
-    refGoal: "Ref Goal",
+    refGoal: "Referee Goal",
     easy: "Easy",
     normal: "Normal",
     difficult: "Difficult",
@@ -188,7 +188,7 @@ const UI_STRINGS = {
     noGames: "No matching games found.",
     selectedGame: "Selected Game",
     downloadPdf: "Download PDF",
-    saveBackend: "Save to Database",
+    saveBackend: "Confirm and save",
     saveOk: "Feedback saved successfully.",
     saveError: "Saving failed.",
     loading: "Loading...",
@@ -448,10 +448,19 @@ export default function App() {
   const [gameFilterLeagues, setGameFilterLeagues] = useState<string[]>([]);
   const [gameFilterDateFrom, setGameFilterDateFrom] = useState('');
   const [gameFilterDateTo, setGameFilterDateTo] = useState('');
-  const [formData, setFormData] = useState<FeedbackFormData>(() => ({
-    ...INITIAL_DATA,
-    lang: detectInitialLang(),
-  }));
+  const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
+  const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
+  const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });
+  const [gameFilterNeedsObs, setGameFilterNeedsObs] = useState(true);
+  const [gameFilterShowInactive, setGameFilterShowInactive] = useState(false);
+  const [formData, setFormData] = useState<FeedbackFormData>(() => {
+    const lang = detectInitialLang();
+    return {
+      ...INITIAL_DATA,
+      lang,
+      sections: lang === 'EN' ? SECTIONS_1SR_EN : SECTIONS_1SR_DE,
+    };
+  });
   const [showJson, setShowJson] = useState(false);
   const [eligibleGames, setEligibleGames] = useState<EligibleGame[]>([]);
   const [rcPeople, setRcPeople] = useState<RefereeCoachPerson[]>([]);
@@ -513,6 +522,18 @@ export default function App() {
       return;
     }
     const srName = getRefereeForRole(selectedGame, formData.role);
+    // Try to find coachee by ID first, then by matching referee name (handles first/last name order)
+    const coacheeById = coachees.find((c) => c.id === selectedCoacheeId);
+    const normalizeName = (name: string) => name.toLowerCase().trim().split(/\s+/).sort().join(' ');
+    const srNorm = normalizeName(srName || '');
+    const coacheeByName = coachees.find((c) => {
+      if (normalizeName(c.full_name || '') === srNorm) return true;
+      if (c.first_name && c.last_name) {
+        if (normalizeName(`${c.first_name} ${c.last_name}`) === srNorm) return true;
+      }
+      return false;
+    });
+    const coachee = coacheeById || coacheeByName;
     setFormData((prev) => ({
       ...prev,
       meta: {
@@ -523,9 +544,14 @@ export default function App() {
         ort: selectedGame.location || prev.meta.ort,
         mannschaften: [selectedGame.homeTeam, selectedGame.awayTeam].filter(Boolean).join(' - '),
         srName: srName || prev.meta.srName,
+        srNiveau: (coachee?.referee_level && coachee?.stage
+          ? `${coachee.referee_level} - ${coachee.stage}`
+          : coachee?.referee_level) || prev.meta.srNiveau,
+        gruppe: normalizeCoacheeGroup(coachee?.groups) || prev.meta.gruppe,
+        rc: selectedGame.assignedRc || prev.meta.rc,
       },
     }));
-  }, [selectedGameId, formData.role]);
+  }, [selectedGameId, selectedGame?.assignedRc, formData.role, coachees, selectedCoacheeId]);
 
   const updateMeta = (key: keyof typeof formData.meta, value: string) => {
     setFormData(prev => ({
@@ -627,7 +653,9 @@ export default function App() {
       meta: {
         ...prev.meta,
         srName: coachee.full_name || prev.meta.srName,
-        srNiveau: coachee.referee_level || prev.meta.srNiveau,
+        srNiveau: (coachee.referee_level && coachee.stage
+          ? `${coachee.referee_level} - ${coachee.stage}`
+          : coachee.referee_level) || prev.meta.srNiveau,
         gruppe: normalizeCoacheeGroup(coachee.groups) || prev.meta.gruppe,
       },
     }));
@@ -1016,6 +1044,16 @@ export default function App() {
       return true;
     });
   }, [coachees, listSearch, listFilterLevel, listFilterShowInactive, listFilterNeedsObs]);
+  // Lookup coachee by normalized name for game filtering
+  const coacheeByName = useMemo(() => {
+    const map = new Map<string, Coachee>();
+    for (const c of coachees) {
+      const key = (c.full_name || '').toLowerCase().trim();
+      if (key) map.set(key, c);
+    }
+    return map;
+  }, [coachees]);
+
   const filteredGames = useMemo(() => {
     const q = listSearch.toLowerCase();
     return eligibleGames.filter((g) => {
@@ -1040,38 +1078,37 @@ export default function App() {
         const to = new Date(gameFilterDateTo + 'T23:59:59');
         if (new Date(g.date) > to) return false;
       }
+      // Coachee-aware filters: check if at least one referee passes
+      if (gameFilterNeedsObs || !gameFilterShowInactive) {
+        const refs = [g.firstReferee, g.secondReferee].filter(Boolean).map((r) => r!.toLowerCase().trim());
+        const refCoachees = refs.map((r) => coacheeByName.get(r)).filter(Boolean) as Coachee[];
+        // If no referees are coachees at all, keep the game visible
+        if (refCoachees.length > 0) {
+          const hasEligibleRef = refCoachees.some((c) => {
+            const isActive = (c.stage || 'active') !== 'inactive';
+            if (!gameFilterShowInactive && !isActive) return false;
+            if (gameFilterNeedsObs && !c.observation_status?.needsObservation) return false;
+            return true;
+          });
+          if (!hasEligibleRef) return false;
+        }
+      }
       return true;
     });
-  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo]);
+  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, coacheeByName]);
 
   return (
     <div className="min-h-screen bg-stone-100 py-8 px-4 print:bg-white print:p-0">
       {/* UI Controls */}
       <div className="max-w-4xl mx-auto mb-6 flex flex-wrap gap-3 no-print">
-        <button
-          onClick={() => setViewMode((prev) => (prev === 'feedback' ? 'admin' : 'feedback'))}
-          className="flex items-center gap-2 bg-slate-900 text-white px-3 py-2 sm:px-4 rounded-lg shadow-sm hover:bg-slate-800 transition-colors"
-        >
-          <Database size={18} />
-          <span className="hidden sm:inline">{viewMode === 'feedback' ? t.modeAdmin : t.modeFeedback}</span>
-        </button>
-        {viewMode === 'feedback' && (
-          <button
-            onClick={toggleLang}
-            className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
-            title={t.languageToggleTitle}
-          >
-            <Languages size={18} />
-            <span>{formData.lang === 'DE' ? 'EN' : 'DE'}</span>
-          </button>
-        )}
         {viewMode === 'feedback' && feedbackSubView !== 'coachees' && (
           <>
         <button
           onClick={() => setFeedbackSubView('coachees')}
           className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
         >
-          <span>{t.lists}</span>
+          <ArrowLeft size={18} />
+          <span>{formData.lang === 'DE' ? 'Zurück' : 'Back'}</span>
         </button>
         {feedbackSubView === 'feedbackForm' && (
           <>
@@ -1174,10 +1211,18 @@ export default function App() {
               alt="Swiss Volley"
               className="h-14 w-auto object-contain"
             />
-            <div>
+            <div className="flex-1">
               <h1 className="text-xl font-bold text-stone-900">{t.title}</h1>
               <p className="text-xs text-stone-500">Swiss Volley Region Zürich</p>
             </div>
+            <button
+              onClick={toggleLang}
+              className="flex items-center gap-2 bg-stone-50 px-3 py-1.5 rounded-lg border border-stone-200 hover:bg-stone-100 transition-colors"
+              title={t.languageToggleTitle}
+            >
+              <Languages size={18} />
+              <span>{formData.lang === 'DE' ? 'EN' : 'DE'}</span>
+            </button>
           </div>
 
           <div className="bg-white p-3 sm:p-6 shadow-xl border border-stone-200">
@@ -1228,24 +1273,24 @@ export default function App() {
                       <option key={lvl} value={lvl}>{lvl}</option>
                     ))}
                   </select>
-                  <label className="flex items-center gap-1.5 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={listFilterNeedsObs}
-                      onChange={(e) => setListFilterNeedsObs(e.target.checked)}
-                      className="h-4 w-4 rounded border-stone-300 accent-blue-600"
-                    />
+                  <button
+                    onClick={() => setListFilterNeedsObs(!listFilterNeedsObs)}
+                    className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
+                  >
+                    <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
+                      <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
+                    </span>
                     {formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}
-                  </label>
-                  <label className="flex items-center gap-1.5 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={listFilterShowInactive}
-                      onChange={(e) => setListFilterShowInactive(e.target.checked)}
-                      className="h-4 w-4 rounded border-stone-300 accent-blue-600"
-                    />
+                  </button>
+                  <button
+                    onClick={() => setListFilterShowInactive(!listFilterShowInactive)}
+                    className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
+                  >
+                    <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
+                      <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
+                    </span>
                     {formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
-                  </label>
+                  </button>
                 </>
               )}
             </div>
@@ -1282,6 +1327,24 @@ export default function App() {
                   onChangeTo={setGameFilterDateTo}
                   lang={formData.lang}
                 />
+                <button
+                  onClick={() => setGameFilterNeedsObs(!gameFilterNeedsObs)}
+                  className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
+                >
+                  <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
+                    <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
+                  </span>
+                  {formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}
+                </button>
+                <button
+                  onClick={() => setGameFilterShowInactive(!gameFilterShowInactive)}
+                  className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
+                >
+                  <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
+                    <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
+                  </span>
+                  {formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
+                </button>
                 {(gameFilterCoachees.length > 0 || gameFilterLeagues.length > 0 || gameFilterDateFrom || gameFilterDateTo) && (
                   <button
                     onClick={() => { setGameFilterCoachees([]); setGameFilterLeagues([]); setGameFilterDateFrom(''); setGameFilterDateTo(''); }}
@@ -1356,86 +1419,254 @@ export default function App() {
               </div>
             )}
 
-            {/* Games table */}
+            {/* Games: view toggle */}
             {listTab === 'games' && (
-              <div className="max-h-[60vh] overflow-auto border border-stone-200 rounded">
-                {filteredGames.length === 0 ? (
-                  <p className="text-sm text-stone-500 p-4">{t.noGames}</p>
-                ) : (
-                  <table className="w-full text-base">
-                    <thead className="sticky top-0 bg-stone-50 text-xs uppercase font-bold text-stone-500 border-b border-stone-200">
-                      <tr>
-                        <th className="text-left px-3 py-2.5">{t.date}</th>
-                        <th className="text-left px-3 py-2.5 hidden sm:table-cell">{t.matchNo}</th>
-                        <th className="text-left px-3 py-2.5 hidden sm:table-cell">{t.league}</th>
-                        <th className="text-left px-3 py-2.5">{t.teams}</th>
-                        <th className="text-left px-3 py-2.5">{t.role1Short}</th>
-                        <th className="text-left px-3 py-2.5">{t.role2Short}</th>
-                        <th className="text-center px-3 py-2.5">RC</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-stone-200">
-                      {filteredGames.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((game) => {
-                        const d = new Date(game.date);
-                        const dateValid = !isNaN(d.getTime());
-                        const datePart = dateValid ? `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}` : (game.date || '-');
-                        const timePart = dateValid ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
-                        return (
-                        <tr
-                          key={game.id}
-                          onClick={() => handleSelectGame(game)}
-                          className="cursor-pointer hover:bg-stone-50 transition-colors"
-                        >
-                          <td className="px-3 py-2.5 text-stone-600 whitespace-nowrap">
-                            <div>{datePart}</div>
-                            {timePart && <div className="text-xs text-stone-400">{timePart}</div>}
-                          </td>
-                          <td className="px-3 py-2.5 font-semibold text-stone-900 hidden sm:table-cell">{game.matchNo}</td>
-                          <td className="px-3 py-2.5 text-stone-600 hidden sm:table-cell">{game.league}</td>
-                          <td className="px-3 py-2.5 text-stone-900">
-                            <div>{game.homeTeam}</div>
-                            <div>{game.awayTeam}</div>
-                          </td>
-                          <td className="px-3 py-2.5 text-stone-600">{game.firstReferee || '-'}</td>
-                          <td className="px-3 py-2.5 text-stone-600">{game.secondReferee || '-'}</td>
-                          <td className="px-3 py-2.5 text-center">
-                            <select
-                              value={game.assignedRc || ''}
-                              onClick={(e) => e.stopPropagation()}
-                              onChange={async (e) => {
-                                const rcName = e.target.value;
-                                try {
-                                  await assignRcToGame(game.id, rcName);
-                                  setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
-                                } catch (err) {
-                                  setBackendNotice(err instanceof Error ? err.message : String(err));
-                                }
-                              }}
-                              className="h-8 px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400 w-48 mx-auto"
-                            >
-                              <option value="">-</option>
-                              {rcPeople.map((rc) => (
-                                <option key={rc.id} value={rc.fullName}>{rc.fullName}</option>
-                              ))}
-                            </select>
-                          </td>
-                        </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
-                {filteredGames.length > LIST_PAGE_SIZE && (
-                  <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
-                    <span>{filteredGames.length} {formData.lang === 'DE' ? 'Spiele' : 'games'}</span>
-                    <div className="flex items-center gap-2">
-                      <button disabled={listPage === 0} onClick={() => setListPage((p) => p - 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&laquo;</button>
-                      <span>{listPage + 1} / {Math.ceil(filteredGames.length / LIST_PAGE_SIZE)}</span>
-                      <button disabled={(listPage + 1) * LIST_PAGE_SIZE >= filteredGames.length} onClick={() => setListPage((p) => p + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
-                    </div>
+              <>
+                <div className="flex items-center gap-1 mb-3">
+                  <button
+                    onClick={() => setGameViewMode('list')}
+                    className={cn(
+                      "p-1.5 rounded transition-colors",
+                      gameViewMode === 'list' ? "bg-slate-900 text-white" : "text-stone-400 hover:text-stone-600"
+                    )}
+                    title={formData.lang === 'DE' ? 'Liste' : 'List'}
+                  >
+                    <List size={18} />
+                  </button>
+                  <button
+                    onClick={() => setGameViewMode('calendar')}
+                    className={cn(
+                      "p-1.5 rounded transition-colors",
+                      gameViewMode === 'calendar' ? "bg-slate-900 text-white" : "text-stone-400 hover:text-stone-600"
+                    )}
+                    title={formData.lang === 'DE' ? 'Kalender' : 'Calendar'}
+                  >
+                    <CalendarDays size={18} />
+                  </button>
+                </div>
+
+                {/* Games list view */}
+                {gameViewMode === 'list' && (
+                  <div className="max-h-[60vh] overflow-auto border border-stone-200 rounded">
+                    {filteredGames.length === 0 ? (
+                      <p className="text-sm text-stone-500 p-4">{t.noGames}</p>
+                    ) : (
+                      <div className="divide-y divide-stone-200">
+                        {filteredGames.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((game) => {
+                          const d = new Date(game.date);
+                          const dateValid = !isNaN(d.getTime());
+                          const datePart = dateValid ? `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}` : (game.date || '-');
+                          const timePart = dateValid ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
+                          const isExpanded = expandedGameId === game.id;
+                          return (
+                            <div key={game.id}>
+                              <div
+                                onClick={() => setExpandedGameId(isExpanded ? null : game.id)}
+                                className={cn(
+                                  "flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors",
+                                  isExpanded ? "bg-blue-50" : "hover:bg-stone-50"
+                                )}
+                              >
+                                {/* Date + match info (compact left) */}
+                                <div className="shrink-0 w-24 text-stone-500">
+                                  <div className="text-sm font-medium text-stone-700">{datePart}</div>
+                                  {timePart && <div className="text-xs text-stone-400">{timePart}</div>}
+                                  <div className="text-xs text-stone-400 mt-0.5">{game.league}{game.matchNo ? ` · #${game.matchNo}` : ''}</div>
+                                </div>
+                                {/* Teams (takes remaining space) */}
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-semibold text-stone-900 text-sm truncate">{game.homeTeam}</div>
+                                  <div className="text-sm text-stone-600 truncate">{game.awayTeam}</div>
+                                </div>
+                                {/* Referees (right) */}
+                                <div className="shrink-0 text-right hidden sm:block">
+                                  <div className="text-xs text-stone-500">
+                                    <span className="font-medium text-stone-400">1SR</span> {game.firstReferee || '-'}
+                                  </div>
+                                  <div className="text-xs text-stone-500">
+                                    <span className="font-medium text-stone-400">2SR</span> {game.secondReferee || '-'}
+                                  </div>
+                                </div>
+                                {/* RC indicator */}
+                                <div className="shrink-0 w-6 flex justify-center">
+                                  {game.assignedRc ? (
+                                    <span className="w-2.5 h-2.5 rounded-full bg-green-500" title={game.assignedRc} />
+                                  ) : (
+                                    <span className="w-2.5 h-2.5 rounded-full bg-stone-300" title="No RC" />
+                                  )}
+                                </div>
+                                <ChevronDown size={16} className={cn("shrink-0 text-stone-400 transition-transform", isExpanded && "rotate-180")} />
+                              </div>
+                              {/* Expanded row: RC selector + select game */}
+                              {isExpanded && (
+                                <div className="px-3 pb-3 pt-1 bg-blue-50 border-t border-blue-100 flex flex-wrap items-center gap-3">
+                                  {/* Mobile referees (visible only on small screens) */}
+                                  <div className="w-full flex gap-4 text-xs text-stone-500 sm:hidden">
+                                    <span><span className="font-medium text-stone-400">1SR</span> {game.firstReferee || '-'}</span>
+                                    <span><span className="font-medium text-stone-400">2SR</span> {game.secondReferee || '-'}</span>
+                                  </div>
+                                  <label className="text-xs font-medium text-stone-500">RC:</label>
+                                  <select
+                                    value={game.assignedRc || ''}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={async (e) => {
+                                      const rcName = e.target.value;
+                                      try {
+                                        await assignRcToGame(game.id, rcName);
+                                        setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
+                                      } catch (err) {
+                                        setBackendNotice(err instanceof Error ? err.message : String(err));
+                                      }
+                                    }}
+                                    className="h-8 px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400 flex-1 min-w-0 max-w-xs"
+                                  >
+                                    <option value="">-</option>
+                                    {rcPeople.map((rc) => (
+                                      <option key={rc.id} value={rc.fullName}>{rc.fullName}</option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    onClick={() => handleSelectGame(game)}
+                                    className="h-8 px-3 text-sm font-medium bg-slate-900 text-white rounded hover:bg-slate-800 transition-colors"
+                                  >
+                                    {formData.lang === 'DE' ? 'Spiel auswählen' : 'Select game'}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {filteredGames.length > LIST_PAGE_SIZE && (
+                      <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
+                        <span>{filteredGames.length} {formData.lang === 'DE' ? 'Spiele' : 'games'}</span>
+                        <div className="flex items-center gap-2">
+                          <button disabled={listPage === 0} onClick={() => setListPage((p) => p - 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&laquo;</button>
+                          <span>{listPage + 1} / {Math.ceil(filteredGames.length / LIST_PAGE_SIZE)}</span>
+                          <button disabled={(listPage + 1) * LIST_PAGE_SIZE >= filteredGames.length} onClick={() => setListPage((p) => p + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
+
+                {/* Games calendar view */}
+                {gameViewMode === 'calendar' && (() => {
+                  const year = calendarMonth.getFullYear();
+                  const month = calendarMonth.getMonth();
+                  const firstDay = new Date(year, month, 1);
+                  const startWeekday = (firstDay.getDay() + 6) % 7; // Monday = 0
+                  const daysInMonth = new Date(year, month + 1, 0).getDate();
+                  const today = new Date();
+                  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+                  // Build map of date string -> games
+                  const gamesByDate = new Map<string, EligibleGame[]>();
+                  for (const game of filteredGames) {
+                    const gd = new Date(game.date);
+                    if (isNaN(gd.getTime())) continue;
+                    if (gd.getFullYear() !== year || gd.getMonth() !== month) continue;
+                    const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(gd.getDate()).padStart(2, '0')}`;
+                    const arr = gamesByDate.get(key) || [];
+                    arr.push(game);
+                    gamesByDate.set(key, arr);
+                  }
+
+                  const weekdays = formData.lang === 'DE'
+                    ? ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So']
+                    : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                  const monthNames = formData.lang === 'DE'
+                    ? ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember']
+                    : ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+                  const cells: React.ReactNode[] = [];
+                  // Empty cells before first day
+                  for (let i = 0; i < startWeekday; i++) {
+                    cells.push(<div key={`empty-${i}`} className="h-16 sm:h-20" />);
+                  }
+                  for (let day = 1; day <= daysInMonth; day++) {
+                    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    const dayGames = gamesByDate.get(dateStr) || [];
+                    const isToday = dateStr === todayStr;
+                    const hasGames = dayGames.length > 0;
+
+
+                    cells.push(
+                      <div
+                        key={day}
+                        onClick={() => {
+                          if (hasGames) {
+                            const ds = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                            setGameFilterDateFrom(ds);
+                            setGameFilterDateTo(ds);
+                            setGameViewMode('list');
+                            setListPage(0);
+                          }
+                        }}
+                        className={cn(
+                          "h-16 sm:h-20 p-1 border border-stone-100 rounded text-xs transition-colors",
+                          hasGames ? "cursor-pointer hover:bg-blue-50" : "",
+                          isToday && "ring-2 ring-blue-400"
+                        )}
+                      >
+                        <div className={cn("font-medium", isToday ? "text-blue-600" : "text-stone-700")}>{day}</div>
+                        {hasGames && (
+                          <div className="mt-1 flex flex-wrap gap-0.5">
+                            {dayGames.slice(0, 4).map((g, i) => (
+                              <span
+                                key={i}
+                                className={cn(
+                                  "w-2 h-2 rounded-full",
+                                  g.assignedRc ? "bg-green-500" : "bg-stone-300"
+                                )}
+                                title={`${g.homeTeam} vs ${g.awayTeam}${g.assignedRc ? ` (RC: ${g.assignedRc})` : ''}`}
+                              />
+                            ))}
+                            {dayGames.length > 4 && (
+                              <span className="text-[10px] text-stone-400">+{dayGames.length - 4}</span>
+                            )}
+                          </div>
+                        )}
+                        {hasGames && (
+                          <div className="mt-0.5 text-[10px] text-stone-400">{dayGames.length} {dayGames.length === 1 ? (formData.lang === 'DE' ? 'Spiel' : 'game') : (formData.lang === 'DE' ? 'Spiele' : 'games')}</div>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="border border-stone-200 rounded">
+                      {/* Month navigation */}
+                      <div className="flex items-center justify-between px-3 py-2 border-b border-stone-200 bg-stone-50">
+                        <button
+                          onClick={() => setCalendarMonth(new Date(year, month - 1, 1))}
+                          className="p-1 rounded hover:bg-stone-200 transition-colors"
+                        >
+                          <ChevronLeft size={18} className="text-stone-600" />
+                        </button>
+                        <span className="text-sm font-semibold text-stone-800">
+                          {monthNames[month]} {year}
+                        </span>
+                        <button
+                          onClick={() => setCalendarMonth(new Date(year, month + 1, 1))}
+                          className="p-1 rounded hover:bg-stone-200 transition-colors"
+                        >
+                          <ChevronRight size={18} className="text-stone-600" />
+                        </button>
+                      </div>
+                      {/* Weekday headers */}
+                      <div className="grid grid-cols-7 text-center text-xs font-medium text-stone-500 border-b border-stone-100 py-1.5">
+                        {weekdays.map((wd) => <div key={wd}>{wd}</div>)}
+                      </div>
+                      {/* Day grid */}
+                      <div className="grid grid-cols-7 gap-0 p-1">
+                        {cells}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </>
             )}
 
             {backendNotice && (
@@ -1572,17 +1803,27 @@ export default function App() {
               </h1>
             </div>
           </div>
-          <div className="text-left sm:text-right print:text-right">
-            <div className="text-red-600 font-black italic text-2xl leading-none tracking-tighter">Swiss Volley</div>
-            <div className="text-[10px] font-bold text-stone-800 tracking-widest uppercase mt-1">REGION ZÜRICH</div>
+          <div className="flex items-start gap-3">
+            <button
+              onClick={toggleLang}
+              className="flex items-center gap-2 bg-stone-50 px-3 py-1.5 rounded-lg border border-stone-200 hover:bg-stone-100 transition-colors no-print"
+              title={t.languageToggleTitle}
+            >
+              <Languages size={18} />
+              <span>{formData.lang === 'DE' ? 'EN' : 'DE'}</span>
+            </button>
+            <div className="text-left sm:text-right print:text-right">
+              <div className="text-red-600 font-black italic text-2xl leading-none tracking-tighter">Swiss Volley</div>
+              <div className="text-[10px] font-bold text-stone-800 tracking-widest uppercase mt-1">REGION ZÜRICH</div>
+            </div>
           </div>
         </div>
 
         {/* Meta Data Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 print:grid-cols-4 border-t border-l border-stone-900 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-[1fr_1fr_1fr_2fr] print:grid-cols-[1fr_1fr_1fr_2fr] border-t border-l border-stone-900 mb-4">
           <MetaField label={t.matchNo} value={formData.meta.spielNr} onChange={v => updateMeta('spielNr', v)} />
           <MetaField label={t.league} value={formData.meta.liga} onChange={v => updateMeta('liga', v)} />
-          <MetaField label={t.date} value={formData.meta.datum} onChange={v => updateMeta('datum', v)} type="date" />
+          <MetaField label={t.date} value={formData.meta.datum} onChange={v => updateMeta('datum', v)} />
           <MetaField label={t.location} value={formData.meta.ort} onChange={v => updateMeta('ort', v)} />
           
           <MetaField label={t.teams} value={formData.meta.mannschaften} onChange={v => updateMeta('mannschaften', v)} className="col-span-2 md:col-span-4 print:col-span-4" />
@@ -1748,6 +1989,25 @@ export default function App() {
         </div>
       </div>
 
+      {/* Tips & Tricks (not saved to feedback, included in email only) */}
+      <div className="max-w-4xl mx-auto mt-6 bg-white p-6 shadow-xl border border-stone-200 no-print">
+        <h3 className="font-bold text-stone-800 mb-3 flex items-center gap-2">
+          <Info size={16} />
+          {formData.lang === 'DE' ? 'Tipps & Tricks' : 'Tips & Tricks'}
+        </h3>
+        <p className="text-xs text-stone-500 mb-3">
+          {formData.lang === 'DE'
+            ? 'Diese Tipps werden nicht im offiziellen Feedback gespeichert, sondern nur per E-Mail an den Schiedsrichter gesendet.'
+            : 'These tips will not be saved in the official feedback, but will be sent to the referee via email only.'}
+        </p>
+        <textarea
+          className="w-full min-h-[8rem] text-sm leading-relaxed resize-none outline-none bg-stone-50 border border-stone-200 rounded p-3 placeholder:text-stone-300"
+          placeholder={formData.lang === 'DE' ? 'Tipps und Tricks für den Schiedsrichter eingeben...' : 'Enter tips and tricks for the referee...'}
+          value={tipsAndTricks}
+          onChange={e => setTipsAndTricks(e.target.value)}
+        />
+      </div>
+
       {/* Save to database */}
       <div className="max-w-4xl mx-auto mt-4 flex justify-end no-print">
         <button
@@ -1763,22 +2023,6 @@ export default function App() {
         <p className="max-w-4xl mx-auto mt-2 text-sm text-blue-700 no-print">{backendNotice}</p>
       )}
       </>
-      )}
-
-      {/* Tips & Tricks (not saved to feedback, for email body later) */}
-      {viewMode === 'feedback' && feedbackSubView === 'feedbackForm' && (
-        <div className="max-w-4xl mx-auto mt-6 bg-white p-6 shadow-xl border border-stone-200 no-print">
-          <h3 className="font-bold text-stone-800 mb-3 flex items-center gap-2">
-            <Info size={16} />
-            {formData.lang === 'DE' ? 'Tipps & Tricks' : 'Tips & Tricks'}
-          </h3>
-          <textarea
-            className="w-full min-h-[8rem] text-sm leading-relaxed resize-none outline-none bg-stone-50 border border-stone-200 rounded p-3 placeholder:text-stone-300"
-            placeholder={formData.lang === 'DE' ? 'Tipps und Tricks für den Schiedsrichter eingeben...' : 'Enter tips and tricks for the referee...'}
-            value={tipsAndTricks}
-            onChange={e => setTipsAndTricks(e.target.value)}
-          />
-        </div>
       )}
 
       {/* Confirm Modal */}

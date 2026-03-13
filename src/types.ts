@@ -4,6 +4,7 @@ export interface MetaData {
   datum: string;
   ort: string;
   mannschaften: string;
+  ergebnis: string;
   srName: string;
   srNiveau: string;
   rc: string;
@@ -52,6 +53,8 @@ export interface EligibleGame {
   feedbackClosedRoles?: string[];
   isRdGame?: boolean;
   isLdGame?: boolean;
+  maps_url?: string;
+  game_result?: string;
 }
 
 export const LEGEND = {
@@ -110,47 +113,47 @@ export const SECTIONS_1SR_DE: AssessmentSection[] = [
 
 export const SECTIONS_1SR_EN: AssessmentSection[] = [
   {
-    title: 'Match Preparation / Formalities',
+    title: 'Match preparation / formalities',
     items: [
-      { id: '1sr-prep-1', label: 'Punctuality, Correct Clothing, Complete Equipment', rating: '' },
-      { id: '1sr-prep-2', label: 'Checks: Net, IDs, Match Balls, Uniforms, Match Sheet', rating: '' },
-      { id: '1sr-prep-3', label: 'Briefing with Scorer and 2nd Referee (Division of Tasks)', rating: '' },
-      { id: '1sr-prep-4', label: 'Adherence to Match Protocol, Toss', rating: '' },
+      { id: '1sr-prep-1', label: 'Punctuality, correct clothing, complete equipment', rating: '' },
+      { id: '1sr-prep-2', label: 'Checks: net, IDs, match balls, uniforms, match sheet', rating: '' },
+      { id: '1sr-prep-3', label: 'Briefing with scorer and 2nd referee (division of tasks)', rating: '' },
+      { id: '1sr-prep-4', label: 'Adherence to match protocol, coin toss', rating: '' },
     ],
   },
   {
     title: 'Referee Technique',
     items: [
-      { id: '1sr-tech-1', label: 'Whistle (Volume, Distinction between Fault Whistle or Game Interruption)', rating: '' },
-      { id: '1sr-tech-2', label: 'Hand Signals (Clarity, Correctness, Tempo)', rating: '' },
-      { id: '1sr-tech-3', label: 'Speed of Reaction, Rhythm: Whistle – Gather Information - Decision', rating: '' },
-      { id: '1sr-tech-4', label: 'Eye Technique (During Play, at Fault Whistle, Before Service, Before/After TO)', rating: '' },
-      { id: '1sr-tech-5', label: 'Cooperation with 2nd Referee / Scorer', rating: '' },
+      { id: '1sr-tech-1', label: 'Whistle (Volume, distinction between fault whistle or management whistle)', rating: '' },
+      { id: '1sr-tech-2', label: 'Hand signals (Clarity, correctness, timing)', rating: '' },
+      { id: '1sr-tech-3', label: 'Speed of reaction, rhythm: whistle – gather information – decision', rating: '' },
+      { id: '1sr-tech-4', label: 'Eye technique (During play, at fault whistle, before service, before/after TO)', rating: '' },
+      { id: '1sr-tech-5', label: 'Cooperation with 2nd referee / scorer', rating: '' },
+    ], 
+  },
+  {
+    title: 'Application of the Rules',
+    items: [
+      { id: '1sr-rule-1', label: 'Assessment of technical ball contact (double, held ball): appropriateness / uniformity / consistency', rating: '' },
+      { id: '1sr-rule-2', label: 'Assessment of general ball contact (in/out, touch, non passé): appropriateness / uniformity / consistency', rating: '' },
+      { id: '1sr-rule-3', label: 'Assessment of play at the net (block, reaching over, penetration, net touch,...)', rating: '' },
+      { id: '1sr-rule-4', label: 'Handling of game interruptions (time out, substitutions, injuries)', rating: '' },
+      { id: '1sr-rule-5', label: 'Line-up / positions (positional/rotational faults)', rating: '' },
     ],
   },
   {
-    title: 'Interpretation and Application of the Rules',
+    title: 'Overall game management',
     items: [
-      { id: '1sr-rule-1', label: 'Assessment of Technical Ball Contact (Double, Held Ball): Appropriateness / Uniformity / Consistency', rating: '' },
-      { id: '1sr-rule-2', label: 'Assessment of General Ball Contact (In/Out, Touch, Non Passé): Appropriateness / Uniformity / Consistency', rating: '' },
-      { id: '1sr-rule-3', label: 'Assessment of Play at the Net (Block, Reaching Over, Penetration, Net Touch,...)', rating: '' },
-      { id: '1sr-rule-4', label: 'Handling of Game Interruptions (Time Out, Substitutions, Injuries)', rating: '' },
-      { id: '1sr-rule-5', label: 'Line-up / Positions (Basic Player Faults)', rating: '' },
-    ],
-  },
-  {
-    title: 'Overall Match Management',
-    items: [
-      { id: '1sr-lead-1', label: 'Interactions with Teams / Crisis Management', rating: '' },
-      { id: '1sr-lead-2', label: 'Handling of Misconduct, Delays (Sanctions)', rating: '' },
-      { id: '1sr-lead-3', label: 'General Handling of Teams / Order', rating: '' },
+      { id: '1sr-lead-1', label: 'Interactions with teams / crisis management', rating: '' },
+      { id: '1sr-lead-2', label: 'Handling of misconduct, delays (sanctions)', rating: '' },
+      { id: '1sr-lead-3', label: 'General handling of teams / order', rating: '' },
     ],
   },
   {
     title: 'Personality and Appearance',
     items: [
-      { id: '1sr-pers-1', label: 'Presentation / Concentration / Sovereignty', rating: '' },
-      { id: '1sr-pers-2', label: 'Feeling for the Game / Credibility / Acceptance', rating: '' },
+      { id: '1sr-pers-1', label: 'Presentation / concentration / authority', rating: '' },
+      { id: '1sr-pers-2', label: 'Feeling for the game / credibility / acceptance', rating: '' },
     ],
   },
 ];
@@ -205,44 +208,44 @@ export const SECTIONS_2SR_EN: AssessmentSection[] = [
   {
     title: 'Match Preparation / Formalities',
     items: [
-      { id: '2sr-prep-1', label: 'Punctuality, Correct Clothing, Complete Equipment', rating: '' },
-      { id: '2sr-prep-2', label: 'Checks: Net, IDs, Match Balls, Uniforms, Match Sheet', rating: '' },
-      { id: '2sr-prep-3', label: 'Briefing with Scorer and 1st Referee (Division of Tasks)', rating: '' },
-      { id: '2sr-prep-4', label: 'Adherence to Match Protocol, Toss', rating: '' },
+      { id: '2sr-prep-1', label: 'Punctuality, correct clothing, complete equipment', rating: '' },
+      { id: '2sr-prep-2', label: 'Checks: net, IDs, match balls, uniforms, match sheet', rating: '' },
+      { id: '2sr-prep-3', label: 'Briefing with scorer and 1st referee (division of tasks)', rating: '' },
+      { id: '2sr-prep-4', label: 'Adherence to match protocol, coin toss', rating: '' },
     ],
   },
   {
     title: 'Referee Technique',
     items: [
-      { id: '2sr-tech-1', label: 'Whistle (Volume, Distinction between Fault Whistle or Game Interruption)', rating: '' },
-      { id: '2sr-tech-2', label: 'Hand Signals (Clarity, Correctness, Sequence/Order)', rating: '' },
-      { id: '2sr-tech-3', label: 'Movement Paths (Lateral, Forward/Backward, Position at Fault Whistle, Basic Position)', rating: '' },
-      { id: '2sr-tech-4', label: 'Speed of Reaction (at Whistle and Movement Paths)', rating: '' },
-      { id: '2sr-tech-5', label: 'Eye Technique (During Play, at Fault Whistle, Between Whistle for Start and End of Rally)', rating: '' },
-      { id: '2sr-tech-6', label: 'Support / Cooperation with 1st Referee', rating: '' },
-      { id: '2sr-tech-7', label: 'Cooperation with Scorer', rating: '' },
+      { id: '2sr-tech-1', label: 'Whistle (Volume, distinction between fault whistle or management whistle)', rating: '' },
+      { id: '2sr-tech-2', label: 'Hand signals (Clarity, correctness, timing)', rating: '' },
+      { id: '2sr-tech-3', label: 'Movement paths (lateral, forward/backward, position at fault whistle, basic position)', rating: '' },
+      { id: '2sr-tech-4', label: 'Speed of reaction (at whistle and movement paths)', rating: '' },
+      { id: '2sr-tech-5', label: 'Eye technique (During play, at fault whistle, between whistle for start and end of rally)', rating: '' },
+      { id: '2sr-tech-6', label: 'Support / cooperation with 1st referee', rating: '' },
+      { id: '2sr-tech-7', label: 'Cooperation with scorer', rating: '' },
     ],
   },
   {
     title: 'Interpretation and Application of the Rules',
     items: [
-      { id: '2sr-rule-1', label: 'Line-up / Positions (Basic Player Faults)', rating: '' },
-      { id: '2sr-rule-2', label: 'Assessment of Play at the Net (Net Touch, Penetration)', rating: '' },
-      { id: '2sr-rule-3', label: 'Handling of Game Interruptions (Time Out, Substitutions)', rating: '' },
+      { id: '2sr-rule-1', label: 'Line-up / positions (positional/rotational faults)', rating: '' },
+      { id: '2sr-rule-2', label: 'Assessment of play at the net (net touch, penetration)', rating: '' },
+      { id: '2sr-rule-3', label: 'Handling of game interruptions (time out, substitutions)', rating: '' },
     ],
   },
   {
-    title: 'Interactions with Teams / Crisis Management',
+    title: 'Interactions with teams / crisis management',
     items: [
-      { id: '2sr-lead-1', label: 'Handling of Misconduct, Delays', rating: '' },
-      { id: '2sr-lead-2', label: 'General Handling of Teams / Order', rating: '' },
+      { id: '2sr-lead-1', label: 'Handling of misconduct, delays', rating: '' },
+      { id: '2sr-lead-2', label: 'General handling of teams / order', rating: '' },
     ],
   },
   {
     title: 'Personality and Appearance',
     items: [
-      { id: '2sr-pers-1', label: 'Presentation / Concentration / Sovereignty', rating: '' },
-      { id: '2sr-pers-2', label: 'Feeling for the Game / Credibility / Acceptance', rating: '' },
+      { id: '2sr-pers-1', label: 'Presentation / concentration / authority', rating: '' },
+      { id: '2sr-pers-2', label: 'Feeling for the game / credibility / acceptance', rating: '' },
     ],
   },
 ];
@@ -288,6 +291,7 @@ export const INITIAL_DATA: FeedbackFormData = {
     datum: new Date().toISOString().split('T')[0],
     ort: '',
     mannschaften: '',
+    ergebnis: '',
     srName: '',
     srNiveau: '',
     rc: '',

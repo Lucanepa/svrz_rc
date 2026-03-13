@@ -2499,19 +2499,24 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
 
       let mailTo: string;
       let mailCc: string[] | undefined;
+      let mailBcc: string[] | undefined;
       let mailSubject: string;
 
       if (isTestMode && testRecipient) {
-        // Test mode: redirect all emails to test recipient, no CC
+        // Test mode: redirect all emails to test recipient, no CC/BCC
         mailTo = testRecipient;
         mailCc = undefined;
+        mailBcc = undefined;
         mailSubject = `[TEST] ${subject}`;
         console.log(`[feedback-email] TEST MODE: redirecting email from ${coacheeEmail} to ${testRecipient}`);
       } else {
         mailTo = coacheeEmail;
-        const ccList = [process.env.FEEDBACK_CC].filter(Boolean) as string[];
-        if (rcEmail) ccList.unshift(rcEmail);
+        // RC email in CC
+        const ccList = rcEmail ? [rcEmail] : [];
         mailCc = ccList.length > 0 ? ccList : undefined;
+        // Coaching address (FEEDBACK_CC) in BCC
+        const bccList = [process.env.FEEDBACK_CC].filter(Boolean) as string[];
+        mailBcc = bccList.length > 0 ? bccList : undefined;
         mailSubject = subject;
       }
 
@@ -2520,6 +2525,7 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
         replyTo: rcEmail || undefined,
         to: mailTo,
         cc: mailCc,
+        bcc: mailBcc,
         subject: mailSubject,
         html: buildFeedbackEmailHtml(emailParams),
         text: buildFeedbackEmailText(emailParams),

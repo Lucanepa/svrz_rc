@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, Database, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag } from 'lucide-react';
+import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
+import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame, RcOverviewEntry, rcCoachSummary } from './types';
 import {
   CalendarGameStatus,
@@ -38,7 +39,10 @@ const RATING_COLORS: Record<string, string> = {
   'C': 'bg-blue-600 text-white',
   'D': 'bg-yellow-400 text-stone-900',
   'E': 'bg-orange-500 text-white',
+  'N/A': 'bg-stone-400 text-white',
 };
+
+const NA_ELIGIBLE_IDS = new Set(['1sr-lead-2', '2sr-lead-1']);
 
 const UI_STRINGS = {
   DE: {
@@ -63,7 +67,7 @@ const UI_STRINGS = {
     criteria: "Kriterien",
     matchLevel: "Spielniveau",
     motivation: "Motivation",
-    rating: "Einstufung",
+    rating: "Ausblick",
     secondVisit: "2. Besuch",
     remarks: "Bemerkungen",
     refGoal: "SR-Ziel",
@@ -101,7 +105,12 @@ const UI_STRINGS = {
     noGames: "Keine passenden Spiele gefunden.",
     selectedGame: "Ausgewähltes Spiel",
     downloadPdf: "PDF herunterladen",
-    saveBackend: "Bestätigen und speichern",
+    downloadEmptyForm: "Leeres Formular herunterladen",
+    emptyFormChoose: "Formular wählen",
+    emptyForm1SR: "1. SR",
+    emptyForm2SR: "2. SR",
+    emptyFormBoth: "Beide",
+    saveBackend: "Bestätigen und senden",
     saveOk: "Feedback wurde gespeichert.",
     saveOkEmail: "Feedback gespeichert und E-Mail gesendet.",
     saveOkNoEmail: "Feedback gespeichert, aber E-Mail fehlgeschlagen:",
@@ -147,6 +156,14 @@ const UI_STRINGS = {
     rcNoFeedbacks: "Keine Feedbacks.",
     rcNoOutstanding: "Keine ausstehenden Spiele.",
     rcNoPlanned: "Keine geplanten Spiele.",
+    manualUpload: "Manuelle Beobachtung hochladen",
+    manualUploadTitle: "Manuelle Beobachtung",
+    manualUploadFile: "Formular-Datei (PDF/Bild)",
+    manualUploadSubmit: "Hochladen und senden",
+    manualUploadSuccess: "Manuelle Beobachtung gespeichert und E-Mail gesendet.",
+    manualUploadError: "Hochladen fehlgeschlagen.",
+    manualUploadFileRequired: "Bitte Formular-Datei hochladen.",
+    manualUploadFieldsMissing: "Bitte alle Pflichtfelder ausfüllen.",
   },
   EN: {
     title: "Referee Coaching Feedback",
@@ -170,7 +187,7 @@ const UI_STRINGS = {
     criteria: "Criteria",
     matchLevel: "Match Level",
     motivation: "Motivation",
-    rating: "Rating",
+    rating: "Outlook",
     secondVisit: "2nd Visit",
     remarks: "Remarks",
     refGoal: "Referee Goal",
@@ -208,7 +225,12 @@ const UI_STRINGS = {
     noGames: "No matching games found.",
     selectedGame: "Selected Game",
     downloadPdf: "Download PDF",
-    saveBackend: "Confirm and save",
+    downloadEmptyForm: "Download empty form",
+    emptyFormChoose: "Choose form",
+    emptyForm1SR: "1st Ref",
+    emptyForm2SR: "2nd Ref",
+    emptyFormBoth: "Both",
+    saveBackend: "Confirm and send",
     saveOk: "Feedback saved successfully.",
     saveOkEmail: "Feedback saved and email sent.",
     saveOkNoEmail: "Feedback saved, but email failed:",
@@ -254,6 +276,14 @@ const UI_STRINGS = {
     rcNoFeedbacks: "No feedbacks.",
     rcNoOutstanding: "No outstanding games.",
     rcNoPlanned: "No planned games.",
+    manualUpload: "Upload manual observation",
+    manualUploadTitle: "Manual Observation",
+    manualUploadFile: "Form file (PDF/Image)",
+    manualUploadSubmit: "Upload and send",
+    manualUploadSuccess: "Manual observation saved and email sent.",
+    manualUploadError: "Upload failed.",
+    manualUploadFileRequired: "Please upload a form file.",
+    manualUploadFieldsMissing: "Please fill in all required fields.",
   }
 };
 
@@ -326,13 +356,24 @@ function LeagueLabel({ text }: { text: string }) {
     <>
       {parts.map((part, i) =>
         part === '♂' || part === '♀' ? (
-          <span key={i} className={cn("text-lg leading-none font-bold", part === '♂' ? 'text-blue-500' : 'text-pink-500')}>{part}</span>
+          <span key={i} className={cn("leading-none font-bold", part === '♂' ? 'text-blue-500' : 'text-pink-500')}>{part}</span>
         ) : (
           <span key={i}>{part}</span>
         ),
       )}
     </>
   );
+}
+
+/** "Doppelturnhalle Feld 1, Gerlisbergstrasse 5, 8302 Kloter" → "Doppelturnhalle Feld 1, Kloter" */
+function shortenLocation(loc: string): string {
+  const parts = loc.split(',').map(p => p.trim());
+  if (parts.length < 2) return loc;
+  const hall = parts[0];
+  const last = parts[parts.length - 1];
+  // Strip leading ZIP (e.g. "8302 Kloter" → "Kloter")
+  const city = last.replace(/^\d{4,5}\s+/, '');
+  return `${hall}, ${city}`;
 }
 
 function pdfFilename(formData: FeedbackFormData): string {
@@ -545,7 +586,9 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder }: {
       </button>
       {open && (
         <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto bg-white border border-stone-300 rounded shadow-lg">
-          {options.map((opt) => (
+          {options.length === 0 ? (
+            <div className="px-2 py-2 text-sm text-stone-400 italic">No options</div>
+          ) : options.map((opt) => (
             <label
               key={opt}
               className="flex items-center gap-2 px-2 py-1.5 text-sm hover:bg-stone-50 cursor-pointer"
@@ -613,6 +656,10 @@ export default function App() {
       sections: lang === 'EN' ? SECTIONS_1SR_EN : SECTIONS_1SR_DE,
     };
   });
+  const [dualFormData, setDualFormData] = useState<{
+    '1. SR': { formData: FeedbackFormData; tipsAndTricks: string } | null;
+    '2. SR': { formData: FeedbackFormData; tipsAndTricks: string } | null;
+  }>({ '1. SR': null, '2. SR': null });
   const [showJson, setShowJson] = useState(false);
   const [eligibleGames, setEligibleGames] = useState<EligibleGame[]>([]);
   const [rcPeople, setRcPeople] = useState<RefereeCoachPerson[]>([]);
@@ -644,11 +691,37 @@ export default function App() {
   const [adminLoginPassword, setAdminLoginPassword] = useState('');
   const [adminAuthNotice, setAdminAuthNotice] = useState('');
   const printableRef = useRef<HTMLDivElement | null>(null);
+  const emptyForm1SRRef = useRef<HTMLDivElement | null>(null);
+  const emptyForm2SRRef = useRef<HTMLDivElement | null>(null);
+  const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
+  const [downloadingEmptyForm, setDownloadingEmptyForm] = useState(false);
+  const [manualUploadCoachee, setManualUploadCoachee] = useState<Coachee | null>(null);
+  const [manualUploadSubmitting, setManualUploadSubmitting] = useState(false);
+  const [manualUploadNotice, setManualUploadNotice] = useState('');
 
   const t = UI_STRINGS[formData.lang] || UI_STRINGS.DE;
   const selectedGame = eligibleGames.find((game) => game.id === selectedGameId) ?? null;
+  const gameHas2SR = !!(selectedGame?.secondReferee);
 
-
+  const adjustSectionsFor2SR = (sections: typeof SECTIONS_1SR_DE, has2SR: boolean) =>
+    sections.map(section => ({
+      ...section,
+      items: section.items.map(item => {
+        if (!has2SR) {
+          if (item.id === '1sr-prep-3') {
+            return { ...item, label: item.label.includes('Schreiber')
+              ? 'Absprache mit Schreiber (Aufgabenteilung)'
+              : 'Briefing with scorer (division of tasks)' };
+          }
+          if (item.id === '1sr-tech-5') {
+            return { ...item, label: item.label.includes('Schreiber')
+              ? 'Zusammenarbeit mit Schreiber'
+              : 'Cooperation with scorer' };
+          }
+        }
+        return item;
+      }),
+    }));
 
   useEffect(() => {
     document.documentElement.lang = formData.lang === 'DE' ? 'de' : 'en';
@@ -687,14 +760,16 @@ export default function App() {
       return false;
     });
     const coachee = coacheeById || coacheeByName;
+    const has2SR = !!selectedGame.secondReferee;
     setFormData((prev) => ({
       ...prev,
+      sections: adjustSectionsFor2SR(prev.sections, has2SR),
       meta: {
         ...prev.meta,
         spielNr: selectedGame.matchNo || prev.meta.spielNr,
-        liga: selectedGame.league || prev.meta.liga,
+        liga: (selectedGame.league || prev.meta.liga).replace('♂', 'M').replace('♀', 'D'),
         datum: formatDisplayDate(selectedGame.date) || prev.meta.datum,
-        ort: selectedGame.location || prev.meta.ort,
+        ort: shortenLocation(selectedGame.location) || prev.meta.ort,
         mannschaften: [selectedGame.homeTeam, selectedGame.awayTeam].filter(Boolean).join(' - '),
         ergebnis: selectedGame.game_result || prev.meta.ergebnis,
         srName: srName || prev.meta.srName,
@@ -740,7 +815,7 @@ export default function App() {
   const updateResult = (key: keyof typeof formData.results, value: string) => {
     setFormData(prev => ({
       ...prev,
-      results: { ...prev.results, [key]: value }
+      results: { ...prev.results, [key]: prev.results[key] === value ? '' : value }
     }));
   };
 
@@ -844,6 +919,23 @@ export default function App() {
     setSelectedGameId(game.id);
     setFeedbackLocked(false);
     setFeedbackSubView('feedbackForm');
+
+    // Reset dual form storage
+    setDualFormData({ '1. SR': null, '2. SR': null });
+
+    // Auto-detect coachee role
+    const g = game as EligibleGame;
+    const r1 = g.firstReferee || '';
+    const r2 = g.secondReferee || '';
+    const r1IsC = coacheeNames.has(normName(r1));
+    const r2IsC = !!(r2 && coacheeNames.has(normName(r2)));
+
+    if (r1IsC && !r2IsC) {
+      setFormData(prev => ({ ...prev, role: '1. SR' }));
+    } else if (!r1IsC && r2IsC) {
+      setFormData(prev => ({ ...prev, role: '2. SR' }));
+    }
+    // If both are coachees, keep default '1. SR'
   };
 
   const refreshCalendarGames = async () => {
@@ -887,10 +979,13 @@ export default function App() {
   const normalizeLoadedFeedback = (raw: FeedbackFormData): FeedbackFormData => {
     const role = raw.role === '2. SR' ? '2. SR' : '1. SR';
     const lang = raw.lang === 'EN' ? 'EN' : 'DE';
-    const defaultSections =
+    const rawDefaultSections =
       role === '1. SR'
         ? (lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN)
         : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
+    const defaultSections = role === '1. SR'
+      ? adjustSectionsFor2SR(rawDefaultSections, gameHas2SR)
+      : rawDefaultSections;
     const sections = Array.isArray(raw.sections) ? raw.sections : defaultSections;
 
     return {
@@ -1061,6 +1156,139 @@ export default function App() {
     pdf.save(pdfFilename(formData));
   };
 
+  const handleDownloadEmptyForm = async (choice: '1SR' | '2SR' | 'both') => {
+    setDownloadingEmptyForm(true);
+    setShowEmptyFormModal(false);
+    await new Promise(r => setTimeout(r, 100)); // let hidden forms render
+
+    const refs = choice === '1SR' ? [emptyForm1SRRef]
+      : choice === '2SR' ? [emptyForm2SRRef]
+      : [emptyForm1SRRef, emptyForm2SRRef];
+
+    // A4 dimensions in pt
+    const a4W = 595.28;
+    const a4H = 841.89;
+    const margin = 20;
+
+    for (const ref of refs) {
+      if (!ref.current) continue;
+      const imageData = await toPng(ref.current, { pixelRatio: 2, backgroundColor: '#ffffff' });
+      const img = new Image();
+      await new Promise<void>((resolve) => { img.onload = () => resolve(); img.src = imageData; });
+      // Scale image to fit A4 with margins
+      const usableW = a4W - margin * 2;
+      const usableH = a4H - margin * 2;
+      const scale = Math.min(usableW / img.width, usableH / img.height);
+      const imgW = img.width * scale;
+      const imgH = img.height * scale;
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+      pdf.addImage(imageData, 'PNG', margin, margin, imgW, imgH);
+      const role = ref === emptyForm1SRRef ? '1SR' : '2SR';
+      const filename = `feedback-${role}-empty.pdf`;
+      const file = new File([pdf.output('blob')], filename, { type: 'application/pdf' });
+      if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+        await navigator.share({ title: t.title, files: [file] });
+      } else {
+        pdf.save(filename);
+      }
+    }
+    setDownloadingEmptyForm(false);
+  };
+
+  const handleManualUploadSubmit = async (form: HTMLFormElement) => {
+    const fd = new FormData(form);
+    const role = fd.get('role') as FeedbackFormData['role'];
+    const file = fd.get('formFile') as File;
+    if (!file || file.size === 0) { setManualUploadNotice(t.manualUploadFileRequired); return; }
+
+    // Build sections from form data
+    const sectionsDef = role === '1. SR' ? SECTIONS_1SR_DE : SECTIONS_2SR_DE;
+    const sections = sectionsDef.map(section => ({
+      ...section,
+      items: section.items.map(item => ({
+        ...item,
+        rating: (fd.get(`rating-${item.id}`) as string) || '',
+      })),
+    }));
+
+    // Check all ratings filled
+    const unrated = sections.flatMap(s => s.items).filter(it => !it.rating);
+    if (unrated.length > 0) { setManualUploadNotice(t.manualUploadFieldsMissing); return; }
+
+    const spielniveau = fd.get('spielniveau') as string;
+    const motivation = fd.get('motivation') as string;
+    const einstufung = fd.get('einstufung') as string;
+    const secondBesuch = fd.get('secondBesuch') as string;
+    const srZiel = fd.get('srZiel') as string;
+    if (!spielniveau || !motivation || !einstufung || !secondBesuch || !srZiel) {
+      setManualUploadNotice(t.manualUploadFieldsMissing); return;
+    }
+
+    const feedbackData: FeedbackFormData = {
+      role,
+      lang: 'DE',
+      meta: {
+        spielNr: (fd.get('spielNr') as string) || '',
+        liga: (fd.get('liga') as string) || '',
+        datum: (fd.get('datum') as string) || '',
+        ort: (fd.get('ort') as string) || '',
+        mannschaften: (fd.get('mannschaften') as string) || '',
+        ergebnis: (fd.get('ergebnis') as string) || '',
+        srName: (fd.get('srName') as string) || '',
+        srNiveau: (fd.get('srNiveau') as string) || '',
+        rc: (fd.get('rc') as string) || '',
+        gruppe: (fd.get('gruppe') as string) || '',
+      },
+      sections,
+      results: {
+        spielniveau: spielniveau as FeedbackFormData['results']['spielniveau'],
+        motivation: motivation as FeedbackFormData['results']['motivation'],
+        einstufung: einstufung as FeedbackFormData['results']['einstufung'],
+        secondBesuch: secondBesuch as FeedbackFormData['results']['secondBesuch'],
+        bemerkungen: (fd.get('bemerkungen') as string) || '',
+        srZiel,
+      },
+    };
+
+    // Convert file to base64
+    const arrayBuf = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuf);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    const fileBase64 = btoa(binary);
+
+    setManualUploadSubmitting(true);
+    setManualUploadNotice('');
+    try {
+      // We need a gameId. For manual upload, find or create a placeholder.
+      // Use the spielNr to look up the game, or pass empty and let server handle it.
+      const matchNo = feedbackData.meta.spielNr;
+      const matchingGame = eligibleGames.find(g => g.matchNo === matchNo);
+      const gameId = matchingGame?.id || '';
+
+      const result = await saveFeedbackToPocketBase({
+        gameId,
+        role,
+        formData: feedbackData,
+        pdfBase64: fileBase64,
+        pdfFilename: file.name || 'manual-feedback.pdf',
+        tipsAndTricks: '',
+      });
+      if (result.emailSent) {
+        setManualUploadNotice(t.manualUploadSuccess);
+      } else {
+        setManualUploadNotice(result.emailWarning
+          ? `${t.saveOkNoEmail} ${result.emailWarning}`
+          : t.manualUploadSuccess);
+      }
+      setTimeout(() => setManualUploadCoachee(null), 2000);
+    } catch (err: unknown) {
+      setManualUploadNotice(`${t.manualUploadError} ${err instanceof Error ? err.message : ''}`);
+    } finally {
+      setManualUploadSubmitting(false);
+    }
+  };
+
   const handleSaveFeedback = async () => {
     if (!selectedGame || !printableRef.current) {
       setBackendNotice(t.noGames);
@@ -1149,21 +1377,48 @@ export default function App() {
   const [tipsAndTricks, setTipsAndTricks] = useState('');
   const [feedbackLocked, setFeedbackLocked] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState<'reset' | 'save' | null>(null);
+  const [validationError, setValidationError] = useState('');
+
+  const validateForm = (): boolean => {
+    const unrated = formData.sections.flatMap(s => s.items).filter(it => !it.rating);
+    if (unrated.length > 0) {
+      setValidationError(formData.lang === 'DE'
+        ? `Bitte alle Bewertungen ausfüllen (${unrated.length} fehlend).`
+        : `Please fill in all ratings (${unrated.length} missing).`);
+      return false;
+    }
+    const r = formData.results;
+    if (!r.spielniveau || !r.motivation || !r.einstufung || !r.secondBesuch || !r.srZiel) {
+      setValidationError(formData.lang === 'DE'
+        ? 'Bitte alle Felder im unteren Bereich ausfüllen (Spielniveau, Motivation, Ausblick, 2. Besuch, SR-Ziel).'
+        : 'Please fill in all bottom fields (Match Level, Motivation, Outlook, 2nd Visit, Referee Goal).');
+      return false;
+    }
+    setValidationError('');
+    return true;
+  };
 
   const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
   const formDisabled = feedbackLocked || isGameRoleClosed;
 
-  const selectedCoacheeEmail = useMemo(() => {
+  const selectedCoacheeInfo = useMemo(() => {
     const c = coachees.find(c => c.id === selectedCoacheeId);
-    return c?.email || '';
+    return {
+      email: c?.email || '',
+      fullName: c?.full_name || [c?.first_name, c?.last_name].filter(Boolean).join(' ') || '',
+    };
   }, [coachees, selectedCoacheeId]);
+  const selectedCoacheeEmail = selectedCoacheeInfo.email;
 
   const doResetForm = () => {
     setFormData((prev) => ({
       ...prev,
-      sections: prev.lang === 'DE'
-        ? (prev.role === '1. SR' ? SECTIONS_1SR_DE : SECTIONS_2SR_DE)
-        : (prev.role === '1. SR' ? SECTIONS_1SR_EN : SECTIONS_2SR_EN),
+      sections: adjustSectionsFor2SR(
+        prev.lang === 'DE'
+          ? (prev.role === '1. SR' ? SECTIONS_1SR_DE : SECTIONS_2SR_DE)
+          : (prev.role === '1. SR' ? SECTIONS_1SR_EN : SECTIONS_2SR_EN),
+        gameHas2SR
+      ),
       results: { ...INITIAL_DATA.results },
     }));
     setFeedbackLocked(false);
@@ -1180,7 +1435,7 @@ export default function App() {
       const newRole = prev.role === '1. SR' ? '2. SR' : '1. SR';
       let newSections;
       if (newRole === '1. SR') {
-        newSections = prev.lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN;
+        newSections = adjustSectionsFor2SR(prev.lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, gameHas2SR);
       } else {
         newSections = prev.lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN;
       }
@@ -1201,11 +1456,11 @@ export default function App() {
       const newLang = prev.lang === 'DE' ? 'EN' : 'DE';
       let newSections;
       if (prev.role === '1. SR') {
-        newSections = newLang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN;
+        newSections = adjustSectionsFor2SR(newLang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, gameHas2SR);
       } else {
         newSections = newLang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN;
       }
-      
+
       // Map existing ratings to new sections
       const mappedSections = newSections.map((section, sIdx) => ({
         ...section,
@@ -1228,6 +1483,22 @@ export default function App() {
     () => new Set(coachees.map((c) => normName(c.full_name || ''))),
     [coachees],
   );
+  const bothRefereesAreCoachees = useMemo(() => {
+    if (!selectedGame) return false;
+    const r1 = selectedGame.firstReferee || '';
+    const r2 = selectedGame.secondReferee || '';
+    return !!(r1 && r2 && coacheeNames.has(normName(r1)) && coacheeNames.has(normName(r2)));
+  }, [selectedGame, coacheeNames]);
+
+  const onlyCoacheeRole = useMemo<'1. SR' | '2. SR' | null>(() => {
+    if (!selectedGame || bothRefereesAreCoachees) return null;
+    const r1 = selectedGame.firstReferee || '';
+    const r2 = selectedGame.secondReferee || '';
+    if (coacheeNames.has(normName(r1))) return '1. SR';
+    if (r2 && coacheeNames.has(normName(r2))) return '2. SR';
+    return null;
+  }, [selectedGame, coacheeNames, bothRefereesAreCoachees]);
+
   const coacheeLevels = useMemo(
     () => [...new Set(
       coachees
@@ -1392,8 +1663,16 @@ export default function App() {
           <span className="hidden sm:inline">{t.switchRole} {formData.role === '1. SR' ? '2. SR' : '1. SR'}</span>
         </button>
         <button
+          onClick={toggleLang}
+          className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors ml-auto"
+          title={t.languageToggleTitle}
+        >
+          <Languages size={18} />
+          <span className="hidden sm:inline">{formData.lang}</span>
+        </button>
+        <button
           onClick={resetForm}
-          className="flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2 rounded-lg shadow-sm border border-red-100 hover:bg-red-100 transition-colors ml-auto"
+          className="flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2 rounded-lg shadow-sm border border-red-100 hover:bg-red-100 transition-colors"
         >
           <RefreshCw size={18} />
           <span className="hidden sm:inline">{t.reset}</span>
@@ -1481,18 +1760,29 @@ export default function App() {
                 alt="Swiss Volley"
                 className="h-10 w-auto object-contain"
               />
-              <button
-                onClick={toggleLang}
-                className="inline-flex min-w-[94px] items-center justify-center gap-1.5 bg-stone-50 px-4 py-1 rounded-lg border border-stone-200 text-sm hover:bg-stone-100 transition-colors"
-                title={t.languageToggleTitle}
-              >
-                <Languages size={18} />
-                <span>{formData.lang === 'DE' ? 'EN' : 'DE'}</span>
-              </button>
             </div>
           </div>
 
           <div className="bg-white p-3 sm:p-6 shadow-xl border border-stone-200">
+            {/* Top row: language toggle + empty form download */}
+            <div className="mb-3 flex items-center gap-2">
+              <button
+                onClick={toggleLang}
+                className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
+                title={t.languageToggleTitle}
+              >
+                <Languages size={14} />
+                <span>{formData.lang}</span>
+              </button>
+              <button
+                onClick={() => setShowEmptyFormModal(true)}
+                disabled={downloadingEmptyForm}
+                className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors disabled:opacity-50"
+              >
+                <Download size={14} />
+                {downloadingEmptyForm ? t.loading : t.downloadEmptyForm}
+              </button>
+            </div>
             {/* Toggle tabs */}
             <div className="mb-3 grid grid-cols-3 gap-2">
               <button
@@ -1518,7 +1808,7 @@ export default function App() {
                 {t.gamePool}
               </button>
               <button
-                onClick={() => { setListTab('rcOverview'); setSelectedRcName(null); void refreshRcOverview(); }}
+                onClick={() => { setListTab('rcOverview'); setSelectedRcName(null); if (rcOverviewData.length === 0) void refreshRcOverview(); }}
                 className={cn(
                   "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
                   listTab === 'rcOverview'
@@ -1659,10 +1949,10 @@ export default function App() {
                     setGameFilterDateTo(ds);
                     setListPage(0);
                   };
-                  const setDay = (ds: string) => { setGameFilterDateFrom(ds); setGameFilterDateTo(ds); setListPage(0); };
                   const isActive = (ds: string) => gameFilterDateFrom === ds && gameFilterDateTo === ds;
+                  const toggleDay = (ds: string) => { if (isActive(ds)) { setGameFilterDateFrom(''); setGameFilterDateTo(''); } else { setGameFilterDateFrom(ds); setGameFilterDateTo(ds); } setListPage(0); };
                   return (
-                    <div className="flex items-center gap-1.5 mb-2">
+                    <div className="flex items-center justify-center gap-1.5 mb-2">
                       <button
                         onClick={() => shiftDay(-1)}
                         className="h-8 w-8 flex items-center justify-center border border-stone-300 rounded hover:bg-stone-50 text-stone-500"
@@ -1671,19 +1961,19 @@ export default function App() {
                         <ChevronLeft size={16} />
                       </button>
                       <button
-                        onClick={() => setDay(yesterdayStr)}
+                        onClick={() => toggleDay(yesterdayStr)}
                         className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(yesterdayStr) ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
                       >
                         {isDE ? 'Gestern' : 'Yesterday'}
                       </button>
                       <button
-                        onClick={() => setDay(todayStr)}
+                        onClick={() => toggleDay(todayStr)}
                         className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(todayStr) ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
                       >
                         {isDE ? 'Heute' : 'Today'}
                       </button>
                       <button
-                        onClick={() => setDay(tomorrowStr)}
+                        onClick={() => toggleDay(tomorrowStr)}
                         className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(tomorrowStr) ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
                       >
                         {isDE ? 'Morgen' : 'Tomorrow'}
@@ -1695,14 +1985,6 @@ export default function App() {
                       >
                         <ChevronRight size={16} />
                       </button>
-                      {(gameFilterDateFrom || gameFilterDateTo) && (
-                        <button
-                          onClick={() => { setGameFilterDateFrom(''); setGameFilterDateTo(''); setListPage(0); }}
-                          className="h-8 px-2 text-xs text-stone-400 hover:text-stone-600 transition-colors"
-                        >
-                          ✕
-                        </button>
-                      )}
                     </div>
                   );
                 })()}
@@ -1952,12 +2234,11 @@ export default function App() {
                                 )}
                               >
                                 {/* Row 1: date/time + status indicators */}
-                                <div className="flex items-center gap-2 text-sm text-stone-400">
-                                  <CalendarDays size={13} className="text-stone-400 shrink-0" />
+                                <div className="flex items-center gap-1.5 text-sm text-stone-400">
+                                  <CalendarDays size={14} className="w-3.5 text-stone-400 shrink-0" />
                                   <span className="font-medium text-stone-700">{datePart}</span>
-                                  {timePart && <><Clock size={13} className="text-stone-400 shrink-0" /><span className="font-medium text-stone-700">{timePart}</span></>}
+                                  {timePart && <><Clock size={14} className="w-3.5 text-stone-400 shrink-0 ml-1" /><span className="font-medium text-stone-700">{timePart}</span></>}
                                   <div className="flex-1" />
-                                  {/* RC indicator */}
                                   {game.assignedRc ? (
                                     <span className="w-2.5 h-2.5 rounded-full bg-green-500" title={game.assignedRc} />
                                   ) : (
@@ -1966,7 +2247,8 @@ export default function App() {
                                   <ChevronDown size={14} className={cn("text-stone-400 transition-transform", isExpanded && "rotate-180")} />
                                 </div>
                                 {/* Row 2: league, match#, chips */}
-                                <div className="flex items-center gap-2 text-sm text-stone-400 mt-0.5">
+                                <div className="flex items-center gap-1.5 text-sm text-stone-400 mt-0.5">
+                                  <Tag size={14} className="w-3.5 text-stone-400 shrink-0" />
                                   <span><LeagueLabel text={game.league} /></span>
                                   {game.matchNo && <span>#{game.matchNo}</span>}
                                   {game.isRdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>}
@@ -1975,22 +2257,22 @@ export default function App() {
                                 {/* Teams + result */}
                                 {(() => {
                                   const resultParts = game.game_result?.split('|').map((s: string) => s.trim()).filter(Boolean);
-                                  const mainResult = resultParts?.[0]; // e.g. "3:1"
-                                  const setResults = resultParts?.slice(1); // e.g. ["25:20", "23:25", ...]
+                                  const mainResult = resultParts?.[0];
+                                  const setResults = resultParts?.slice(1);
                                   return (
                                     <>
                                       <div className="mt-1 flex items-center gap-1.5">
-                                        <Home size={13} className="text-stone-400 shrink-0" />
+                                        <Home size={14} className="w-3.5 text-stone-400 shrink-0" />
                                         <span className="text-base text-stone-800 truncate flex-1">{game.homeTeam}</span>
                                         {mainResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{mainResult.split(':')[0]?.trim()}</span>}
                                       </div>
                                       <div className="flex items-center gap-1.5">
-                                        <Navigation size={13} className="text-stone-400 shrink-0" />
+                                        <Navigation size={14} className="w-3.5 text-stone-400 shrink-0" />
                                         <span className="text-base text-stone-800 truncate flex-1">{game.awayTeam}</span>
                                         {mainResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{mainResult.split(':')[1]?.trim()}</span>}
                                       </div>
                                       {setResults && setResults.length > 0 && (
-                                        <div className="text-[11px] text-stone-400 tabular-nums">
+                                        <div className="pl-[20px] text-[11px] text-stone-400 tabular-nums">
                                           {setResults.map((s: string, i: number) => (
                                             <span key={i}>{i > 0 ? ' | ' : ''}{s}</span>
                                           ))}
@@ -1999,10 +2281,10 @@ export default function App() {
                                     </>
                                   );
                                 })()}
-                                {/* Location (hall name, clickable to maps) */}
+                                {/* Location */}
                                 {game.location && (
-                                  <div className="mt-0.5 flex items-center gap-1">
-                                    <MapPin size={13} className="text-blue-400 shrink-0" />
+                                  <div className="mt-0.5 flex items-center gap-1.5">
+                                    <MapPin size={14} className="w-3.5 text-blue-400 shrink-0" />
                                     <a
                                       href={game.maps_url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(game.location)}`}
                                       target="_blank"
@@ -2014,29 +2296,31 @@ export default function App() {
                                     </a>
                                   </div>
                                 )}
-                                {/* Coachee referees (1SR / 2SR) */}
-                                <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-sm">
-                                  <Users size={13} className="text-stone-400 shrink-0" />
-                                  <span>
-                                    <span className="font-medium text-stone-400">1SR</span>{' '}
+                                {/* Referees */}
+                                <div className="mt-1.5 text-sm">
+                                  <div className="flex items-center gap-1.5">
+                                    <Users size={14} className="w-3.5 text-stone-400 shrink-0" />
+                                    <span className="font-medium text-stone-400">1SR</span>
                                     {r1 ? (
                                       <span className={r1IsCoachee ? 'font-bold text-stone-900' : 'font-semibold text-stone-700'}>{r1}</span>
                                     ) : (
                                       <span className="text-stone-300">–</span>
                                     )}
-                                  </span>
+                                  </div>
                                   {r2 && (
-                                    <span>
-                                      <span className="font-medium text-stone-400">2SR</span>{' '}
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="w-3.5 shrink-0" />
+                                      <span className="font-medium text-stone-400">2SR</span>
                                       <span className={r2IsCoachee ? 'font-bold text-stone-900' : 'font-semibold text-stone-700'}>{r2}</span>
-                                    </span>
+                                    </div>
                                   )}
                                 </div>
-                                {/* RC name (only if assigned) */}
+                                {/* RC */}
                                 {game.assignedRc && (
-                                  <div className="mt-0.5 flex items-center gap-1 text-sm text-stone-500">
-                                    <Eye size={13} className="text-stone-400 shrink-0" />
-                                    <span className="font-medium text-stone-400">RC</span>{' '}<span className="font-bold text-stone-700">{game.assignedRc}</span>
+                                  <div className="mt-0.5 flex items-center gap-1.5 text-sm text-stone-500">
+                                    <Eye size={14} className="w-3.5 text-stone-400 shrink-0" />
+                                    <span className="font-medium text-stone-400">RC</span>
+                                    <span className="font-bold text-stone-700">{game.assignedRc}</span>
                                   </div>
                                 )}
                               </div>
@@ -2223,6 +2507,17 @@ export default function App() {
             {/* RC Overview tab content */}
             {listTab === 'rcOverview' && (
               <div>
+                {!rcOverviewLoading && !selectedRcName && rcOverviewData.length > 0 && (
+                  <div className="flex justify-end mb-2">
+                    <button
+                      onClick={() => void refreshRcOverview()}
+                      className="text-xs text-stone-400 hover:text-stone-600 flex items-center gap-1"
+                    >
+                      <RefreshCw size={12} />
+                      {formData.lang === 'DE' ? 'Aktualisieren' : 'Refresh'}
+                    </button>
+                  </div>
+                )}
                 {rcOverviewLoading ? (
                   <p className="text-sm text-stone-500 py-4">{t.loading}</p>
                 ) : selectedRcName ? (
@@ -2542,14 +2837,6 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-start gap-3">
-            <button
-              onClick={toggleLang}
-              className="inline-flex min-w-[94px] items-center justify-center gap-1.5 bg-stone-50 px-4 py-1 rounded-lg border border-stone-200 text-sm hover:bg-stone-100 transition-colors no-print"
-              title={t.languageToggleTitle}
-            >
-              <Languages size={18} />
-              <span>{formData.lang === 'DE' ? 'EN' : 'DE'}</span>
-            </button>
             <div className="text-left sm:text-right print:text-right">
               <div className="text-red-600 font-black italic text-2xl leading-none tracking-tighter">Swiss Volley</div>
               <div className="text-[10px] font-bold text-stone-800 tracking-widest uppercase mt-1">REGION ZÜRICH</div>
@@ -2564,14 +2851,14 @@ export default function App() {
           <MetaField label={t.date} value={formData.meta.datum} onChange={v => updateMeta('datum', v)} />
           <MetaField label={t.location} value={formData.meta.ort} onChange={v => updateMeta('ort', v)} />
           
-          <MetaField label={t.teams} value={formData.meta.mannschaften} onChange={v => updateMeta('mannschaften', v)} className="col-span-2" />
-          <MetaField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2" readOnly={!!selectedGame?.game_result} />
+          <MetaField label={t.teams} value={formData.meta.mannschaften} onChange={v => updateMeta('mannschaften', v)} className="col-span-2 md:col-span-4 print:col-span-4" />
 
           <MetaField label={formData.role} value={formData.meta.srName} onChange={v => updateMeta('srName', v)} className="col-span-2" />
-          <MetaField label={t.refLevel} value={formData.meta.srNiveau} onChange={v => updateMeta('srNiveau', v)} className="col-span-2" />
-          
+          <MetaField label={t.refLevel} value={formData.meta.srNiveau} onChange={v => updateMeta('srNiveau', v)} />
+          <MetaField label={t.group} value={formData.meta.gruppe} onChange={v => updateMeta('gruppe', v)} />
+
           <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2" />
-          <MetaField label={t.group} value={formData.meta.gruppe} onChange={v => updateMeta('gruppe', v)} className="col-span-2" />
+          <MetaField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2" readOnly={!!selectedGame?.game_result} />
         </div>
 
         {/* Legend */}
@@ -2590,39 +2877,82 @@ export default function App() {
                 <ClipboardCheck size={14} />
                 {section.title}
               </div>
+              {(() => {
+                const sectionHasNA = section.items.some(it => NA_ELIGIBLE_IDS.has(it.id));
+                return (
               <table className="w-full border-collapse border border-stone-900">
                 <thead>
                   <tr className="bg-stone-50 text-[10px] uppercase font-bold text-stone-500">
                     <th className="p-2 text-left border-b border-stone-900">{t.criteria}</th>
+                    {sectionHasNA && <th className="w-10 border-b border-stone-900 print:hidden" />}
                     {RATINGS.map(r => (
                       <th key={r} className={cn("w-10 border-l border-b border-stone-900 text-center", r === 'C' && "bg-stone-200")}>{r}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {section.items.map((item, iIdx) => (
+                  {section.items.map((item, iIdx) => {
+                    const hasNA = NA_ELIGIBLE_IDS.has(item.id);
+                    const isNA = item.rating === 'N/A';
+                    return (
                     <tr key={item.id} className="group hover:bg-stone-50 transition-colors">
                       <td className="p-2 text-xs border-b border-stone-900 leading-tight">{item.label}</td>
-                      {RATINGS.map(r => {
-                        const isSelected = item.rating.startsWith(r);
-                        return (
-                          <td 
-                            key={r} 
-                            onClick={() => updateRating(sIdx, iIdx, r)}
+                      {sectionHasNA && (
+                        hasNA ? (
+                          <td
+                            onClick={() => {
+                              setFormData(prev => {
+                                const newSections = [...prev.sections];
+                                const newItems = [...newSections[sIdx].items];
+                                newItems[iIdx] = { ...newItems[iIdx], rating: isNA ? '' : 'N/A' };
+                                newSections[sIdx] = { ...newSections[sIdx], items: newItems };
+                                return { ...prev, sections: newSections };
+                              });
+                            }}
                             className={cn(
-                              "rating-cell w-10 border-l border-b border-stone-900 text-center cursor-pointer transition-all text-sm font-bold",
-                              r === 'C' && !item.rating && "bg-stone-200/50",
-                              isSelected && RATING_COLORS[r]
+                              "w-10 border-l border-r border-b border-stone-900 text-center cursor-pointer transition-all text-[10px] font-bold print:hidden",
+                              isNA
+                                ? "bg-stone-500 text-white"
+                                : "text-stone-400 hover:bg-stone-100"
                             )}
                           >
-                            {isSelected ? item.rating : ''}
+                            N/A
                           </td>
-                        );
-                      })}
+                        ) : (
+                          <td className="w-10 border-b border-stone-900 print:hidden" />
+                        )
+                      )}
+                      {isNA ? (
+                        <td colSpan={5} className="border-l border-b border-stone-900 relative">
+                          <div className="absolute inset-0 flex items-center px-2">
+                            <div className="w-full border-t-2 border-stone-900" />
+                          </div>
+                        </td>
+                      ) : (
+                        RATINGS.map(r => {
+                          const isSelected = item.rating.startsWith(r);
+                          return (
+                            <td
+                              key={r}
+                              onClick={() => updateRating(sIdx, iIdx, r)}
+                              className={cn(
+                                "rating-cell w-10 border-l border-b border-stone-900 text-center cursor-pointer transition-all text-sm font-bold",
+                                r === 'C' && !item.rating && "bg-stone-200/50",
+                                isSelected && RATING_COLORS[r]
+                              )}
+                            >
+                              {isSelected ? item.rating : ''}
+                            </td>
+                          );
+                        })
+                      )}
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
+                );
+              })()}
             </div>
           ))}
         </div>
@@ -2696,7 +3026,7 @@ export default function App() {
           <div className="p-3">
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.refGoal}</h4>
             <select
-              className="w-full bg-white border border-stone-200 rounded text-xs p-1 outline-none font-bold text-indigo-600"
+              className="w-full bg-white border border-stone-200 rounded text-xs p-1 outline-none text-stone-900"
               value={formData.results.srZiel}
               onChange={e => updateResult('srZiel', e.target.value)}
             >
@@ -2761,14 +3091,19 @@ export default function App() {
       {/* Save to database */}
       {!feedbackLocked && !isGameRoleClosed && (
         <div className="max-w-4xl mx-auto mt-4 flex justify-end no-print">
-          <button
-            onClick={() => setShowConfirmModal('save')}
-            disabled={savingFeedback || !selectedGame}
-            className="flex items-center gap-2 bg-emerald-600 text-white px-6 py-3 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50 font-medium"
-          >
-            <Database size={18} />
-            <span>{savingFeedback ? t.loading : t.saveBackend}</span>
-          </button>
+          <div className="flex flex-col items-end gap-2">
+            {validationError && (
+              <p className="text-sm text-red-600 font-medium">{validationError}</p>
+            )}
+            <button
+              onClick={() => { if (validateForm()) setShowConfirmModal('save'); }}
+              disabled={savingFeedback || !selectedGame}
+              className="flex items-center gap-2 bg-emerald-600 text-white px-6 py-3 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50 font-medium"
+            >
+              <Send size={18} />
+              <span>{savingFeedback ? t.loading : t.saveBackend}</span>
+            </button>
+          </div>
         </div>
       )}
       {backendNotice && (
@@ -2786,13 +3121,26 @@ export default function App() {
                 ? (formData.lang === 'DE' ? 'Feedback speichern?' : 'Save feedback?')
                 : (formData.lang === 'DE' ? 'Eingaben zurücksetzen?' : 'Reset inputs?')}
             </h3>
-            <p className="text-sm text-stone-600 mb-6">
-              {showConfirmModal === 'save'
-                ? (formData.lang === 'DE'
-                  ? `Das Feedback wird gespeichert und eine E-Mail mit dem PDF wird an ${selectedCoacheeEmail || '(keine E-Mail)'} gesendet.`
-                  : `The feedback will be saved and an email with the PDF will be sent to ${selectedCoacheeEmail || '(no email)'}.`)
-                : (formData.lang === 'DE' ? 'Alle Bewertungen und Bemerkungen werden zurückgesetzt. Spieldaten bleiben erhalten.' : 'All ratings and remarks will be reset. Game data will be kept.')}
-            </p>
+            {showConfirmModal === 'save' ? (
+              <div className="text-sm text-stone-600 mb-6 space-y-2">
+                <p>{formData.lang === 'DE'
+                  ? 'Das Feedback wird gespeichert und eine E-Mail mit dem PDF wird gesendet:'
+                  : 'The feedback will be saved and an email with the PDF will be sent:'}</p>
+                <div className="bg-stone-50 rounded-lg p-3 text-xs space-y-1">
+                  <p><span className="font-semibold text-stone-700">{formData.lang === 'DE' ? 'An' : 'To'}:</span>{' '}
+                    {selectedCoacheeInfo.fullName || formData.meta.srName}{' '}
+                    <span className="text-stone-500">{selectedCoacheeEmail ? `<${selectedCoacheeEmail}>` : (formData.lang === 'DE' ? '(keine E-Mail)' : '(no email)')}</span>
+                  </p>
+                  {formData.meta.rc && (
+                    <p><span className="font-semibold text-stone-700">CC:</span> {formData.meta.rc}</p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-stone-600 mb-6">
+                {formData.lang === 'DE' ? 'Alle Bewertungen und Bemerkungen werden zurückgesetzt. Spieldaten bleiben erhalten.' : 'All ratings and remarks will be reset. Game data will be kept.'}
+              </p>
+            )}
             <div className="flex justify-end gap-3">
               <button
                 onClick={() => setShowConfirmModal(null)}
@@ -2824,6 +3172,38 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Empty Form Modal */}
+      {showEmptyFormModal && (
+        <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-xs p-6">
+            <h3 className="text-lg font-bold text-stone-900 mb-4">{t.emptyFormChoose}</h3>
+            <div className="flex flex-col gap-2">
+              {(['1SR', '2SR', 'both'] as const).map(choice => (
+                <button
+                  key={choice}
+                  onClick={() => void handleDownloadEmptyForm(choice)}
+                  className="h-10 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 transition-colors"
+                >
+                  {choice === '1SR' ? t.emptyForm1SR : choice === '2SR' ? t.emptyForm2SR : t.emptyFormBoth}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setShowEmptyFormModal(false)}
+              className="mt-3 w-full h-9 rounded-lg border border-stone-300 text-sm hover:bg-stone-50 transition-colors"
+            >
+              {formData.lang === 'DE' ? 'Abbrechen' : 'Cancel'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden empty form renderers for PDF capture (always DE) */}
+      <div className="fixed left-[-9999px] top-0">
+        <EmptyFormPage ref={emptyForm1SRRef} role="1. SR" lang="DE" />
+        <EmptyFormPage ref={emptyForm2SRRef} role="2. SR" lang="DE" />
+      </div>
 
       {/* JSON Modal */}
       {viewMode === 'feedback' && showJson && (
@@ -2921,18 +3301,27 @@ export default function App() {
               </button>
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2">
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleCoacheeAction(detailCoachee)}
+                  className="flex-1 h-10 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm"
+                >
+                  {t.openGames} / {t.openFeedback}
+                </button>
+                <button
+                  onClick={() => setDetailCoachee(null)}
+                  className="flex-1 h-10 rounded border border-stone-300 hover:bg-stone-50 text-sm"
+                >
+                  {t.closeMenu}
+                </button>
+              </div>
               <button
-                onClick={() => handleCoacheeAction(detailCoachee)}
-                className="flex-1 h-10 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm"
+                onClick={() => { setManualUploadCoachee(detailCoachee); setDetailCoachee(null); }}
+                className="h-10 w-full rounded border border-stone-300 hover:bg-stone-50 text-sm flex items-center justify-center gap-2 text-stone-600"
               >
-                {t.openGames} / {t.openFeedback}
-              </button>
-              <button
-                onClick={() => setDetailCoachee(null)}
-                className="flex-1 h-10 rounded border border-stone-300 hover:bg-stone-50 text-sm"
-              >
-                {t.closeMenu}
+                <Upload size={14} />
+                {t.manualUpload}
               </button>
             </div>
           </div>
@@ -3009,9 +3398,343 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Manual observation upload modal */}
+      {manualUploadCoachee && (
+        <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <div className="p-4 border-b border-stone-200 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-stone-900">
+                {t.manualUploadTitle}: {manualUploadCoachee.full_name}
+              </h3>
+              <button onClick={() => { setManualUploadCoachee(null); setManualUploadNotice(''); }} className="text-stone-400 hover:text-stone-600 text-lg leading-none">&times;</button>
+            </div>
+            <form
+              className="overflow-auto p-4 space-y-4 text-sm"
+              onSubmit={(e) => { e.preventDefault(); void handleManualUploadSubmit(e.currentTarget); }}
+            >
+              {/* Role */}
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">Role</span>
+                  <select name="role" defaultValue="1. SR" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                    <option value="1. SR">1. SR</option>
+                    <option value="2. SR">2. SR</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.matchNo}</span>
+                  <input name="spielNr" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+                </label>
+              </div>
+
+              {/* Meta fields */}
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.league}</span>
+                  <input name="liga" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.date}</span>
+                  <input name="datum" type="date" defaultValue={new Date().toISOString().split('T')[0]} className="h-9 rounded border border-stone-300 px-2 text-sm" />
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.location}</span>
+                  <input name="ort" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.teams}</span>
+                  <input name="mannschaften" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.result}</span>
+                  <input name="ergebnis" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">SR-Name</span>
+                  <select name="srName" defaultValue={manualUploadCoachee.full_name} className="h-9 rounded border border-stone-300 px-2 text-sm">
+                    {coachees.map(c => <option key={c.id} value={c.full_name}>{c.full_name}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.refLevel}</span>
+                  <input name="srNiveau" type="text" defaultValue={manualUploadCoachee.referee_level || ''} className="h-9 rounded border border-stone-300 px-2 text-sm" />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.rc}</span>
+                  <input name="rc" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.group}</span>
+                  <input name="gruppe" type="text" defaultValue={manualUploadCoachee.groups || ''} className="h-9 rounded border border-stone-300 px-2 text-sm" />
+                </label>
+              </div>
+
+              {/* Assessment sections — always use DE sections, role driven by the select */}
+              <ManualUploadSections />
+
+              {/* Bottom fields */}
+              <div className="grid grid-cols-3 gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.matchLevel}</span>
+                  <select name="spielniveau" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                    <option value="" disabled>—</option>
+                    <option value="leicht">{t.easy}</option>
+                    <option value="normal">{t.normal}</option>
+                    <option value="schwierig">{t.difficult}</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.motivation}</span>
+                  <select name="motivation" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                    <option value="" disabled>—</option>
+                    <option value="up">↑</option>
+                    <option value="check">✓</option>
+                    <option value="down">↓</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.rating}</span>
+                  <select name="einstufung" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                    <option value="" disabled>—</option>
+                    <option value="up">↑</option>
+                    <option value="check">✓</option>
+                    <option value="down">↓</option>
+                  </select>
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.secondVisit}</span>
+                  <select name="secondBesuch" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                    <option value="" disabled>—</option>
+                    <option value="Y">Ja / Yes</option>
+                    <option value="N">Nein / No</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-stone-500 uppercase">{t.refGoal}</span>
+                  <select name="srZiel" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                    <option value="" disabled>—</option>
+                    {SR_ZIEL_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  </select>
+                </label>
+              </div>
+
+              {/* Remarks */}
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-semibold text-stone-500 uppercase">{t.remarks}</span>
+                <textarea name="bemerkungen" rows={3} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
+              </label>
+
+              {/* File upload */}
+              <label className="flex flex-col gap-1">
+                <span className="text-xs font-semibold text-stone-500 uppercase">{t.manualUploadFile}</span>
+                <input name="formFile" type="file" accept=".pdf,image/*" className="text-sm" />
+              </label>
+
+              {/* Notice */}
+              {manualUploadNotice && (
+                <p className={cn("text-sm font-medium", manualUploadNotice.includes(t.manualUploadSuccess) ? "text-green-600" : "text-red-600")}>
+                  {manualUploadNotice}
+                </p>
+              )}
+
+              {/* Submit */}
+              <button
+                type="submit"
+                disabled={manualUploadSubmitting}
+                className="w-full h-10 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
+              >
+                {manualUploadSubmitting ? t.loading : <><Send size={14} /> {t.manualUploadSubmit}</>}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+/* Helper component for manual upload assessment sections — renders role-reactive dropdowns */
+function ManualUploadSections() {
+  const [role, setRole] = useState<'1. SR' | '2. SR'>('1. SR');
+
+  // Listen to the role select in the parent form
+  useEffect(() => {
+    const select = document.querySelector<HTMLSelectElement>('select[name="role"]');
+    if (!select) return;
+    const handler = () => setRole(select.value as '1. SR' | '2. SR');
+    select.addEventListener('change', handler);
+    return () => select.removeEventListener('change', handler);
+  }, []);
+
+  const sections = role === '1. SR' ? SECTIONS_1SR_DE : SECTIONS_2SR_DE;
+
+  return (
+    <div className="space-y-3">
+      {sections.map((section) => (
+        <div key={section.title}>
+          <p className="text-xs font-bold text-stone-700 mb-1">{section.title}</p>
+          <div className="space-y-1">
+            {section.items.map((item) => (
+              <div key={item.id} className="flex items-center gap-2">
+                <select
+                  name={`rating-${item.id}`}
+                  defaultValue=""
+                  className="w-14 h-7 rounded border border-stone-300 px-1 text-xs text-center"
+                >
+                  <option value="" disabled>—</option>
+                  {RATINGS.map(r => <option key={r} value={r}>{r}</option>)}
+                  {NA_ELIGIBLE_IDS.has(item.id) && <option value="N/A">N/A</option>}
+                </select>
+                <span className="text-xs text-stone-700">{item.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'; lang: 'DE' | 'EN' }>(({ role, lang }, ref) => {
+  const t = UI_STRINGS[lang];
+  const sections = role === '1. SR'
+    ? (lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN)
+    : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
+  return (
+    <div ref={ref} className="bg-white" style={{ width: 794, padding: '28px 32px' }}>
+      {/* Header */}
+      <div className="flex justify-between items-start gap-3 mb-4">
+        <div className="flex gap-3 items-start">
+          <img src={swissVolleyLogo} alt="" className="h-12 object-contain" />
+          <div>
+            <p className="text-[8px] text-stone-500 uppercase tracking-wider font-semibold">SVRZ | SR-Wesen | Referee Coaching | schiricoaching@svrz.ch</p>
+            <h1 className="text-xl font-bold mt-0.5 text-stone-900 flex items-center gap-2">
+              {t.title}
+              <span className="bg-stone-900 text-white px-2 py-0.5 rounded text-sm">{role}</span>
+            </h1>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-red-600 font-black italic text-xl leading-none tracking-tighter">Swiss Volley</div>
+          <div className="text-[8px] font-bold text-stone-800 tracking-widest uppercase mt-0.5">REGION ZÜRICH</div>
+        </div>
+      </div>
+      {/* Meta grid */}
+      <div className="grid grid-cols-[1fr_1fr_1fr_2fr] border-t border-l border-stone-900 mb-3">
+        {[t.matchNo, t.league, t.date, t.location].map((label, i) => (
+          <div key={i} className="border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
+            <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{label}</span>
+          </div>
+        ))}
+        <div className="col-span-4 border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
+          <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{t.teams}</span>
+        </div>
+        {[role, t.refLevel, t.group, t.rc].map((label, i) => (
+          <div key={i} className="border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
+            <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{label}</span>
+          </div>
+        ))}
+        <div className="col-span-4 border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
+          <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{t.result}</span>
+        </div>
+      </div>
+      {/* Legend */}
+      <div className="mb-3 p-1.5 bg-stone-50 border border-stone-200 rounded flex items-center gap-1.5 text-[8px] text-stone-600 italic">
+        <Info size={10} className="text-blue-500 shrink-0" />
+        {LEGEND[lang]}
+      </div>
+      {/* Assessment sections */}
+      <div className="space-y-3">
+        {sections.map((section) => (
+          <div key={section.title}>
+            <div className="bg-stone-100 border-x border-t border-stone-900 px-2 py-1 font-bold text-[9px] uppercase tracking-wider text-stone-700 flex items-center gap-1.5">
+              <ClipboardCheck size={10} />
+              {section.title}
+            </div>
+            <table className="w-full border-collapse border border-stone-900">
+              <thead>
+                <tr className="bg-stone-50 text-[8px] uppercase font-bold text-stone-500">
+                  <th className="p-1.5 text-left border-b border-stone-900">{t.criteria}</th>
+                  {RATINGS.map(r => (
+                    <th key={r} className={cn("w-8 border-l border-b border-stone-900 text-center", r === 'C' && "bg-stone-200")}>{r}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {section.items.map((item) => (
+                  <tr key={item.id}>
+                    <td className="p-1.5 text-[10px] border-b border-stone-900 leading-tight">{item.label}</td>
+                    {RATINGS.map(r => (
+                      <td key={r} className={cn("w-8 border-l border-b border-stone-900 text-center", r === 'C' && "bg-stone-200/50")} />
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </div>
+      {/* Results row */}
+      <div className="mt-4 border border-stone-900 bg-stone-50 grid grid-cols-5">
+        {[
+          { label: t.matchLevel, content: <div className="h-5" /> },
+          { label: t.motivation, content: <div className="flex gap-1">{['↑', '✓', '↓'].map(v => <div key={v} className="w-6 h-6 border border-stone-300 rounded flex items-center justify-center text-sm font-bold text-stone-300">{v}</div>)}</div> },
+          { label: t.rating, content: <div className="flex gap-1">{['↑', '✓', '↓'].map(v => <div key={v} className="w-6 h-6 border border-stone-300 rounded flex items-center justify-center text-sm font-bold text-stone-300">{v}</div>)}</div> },
+          { label: t.secondVisit, content: <div className="flex gap-1">{['Y', 'N'].map(v => <div key={v} className="w-6 h-6 border border-stone-300 rounded flex items-center justify-center text-[9px] font-bold text-stone-300">{v}</div>)}</div> },
+          { label: t.refGoal, content: <div className="h-5" /> },
+        ].map((cell, i) => (
+          <div key={i} className={cn("p-2", i > 0 && "border-l border-stone-900")}>
+            <h4 className="text-[8px] font-bold uppercase text-stone-500 mb-0.5">{cell.label}</h4>
+            {cell.content}
+          </div>
+        ))}
+      </div>
+      {/* Remarks + Signatures + QR */}
+      <div className="border-x border-b border-stone-900 grid grid-cols-[1fr_auto]">
+        {/* Remarks (left) */}
+        <div className="p-3 border-r border-stone-900 min-h-[7rem] flex flex-col">
+          <h3 className="font-bold border-b border-stone-900 mb-2 pb-1 flex items-center gap-1.5 text-stone-800 text-sm">
+            <MessageSquare size={14} />
+            {t.remarks}
+          </h3>
+        </div>
+        {/* Signatures + QR (right) */}
+        <div className="p-3 flex flex-col justify-between" style={{ width: 200 }}>
+          <div className="space-y-4">
+            <div>
+              <p className="text-[8px] font-bold uppercase text-stone-500 mb-6">Unterschrift Schiedsrichter</p>
+              <div className="border-b border-stone-400" />
+            </div>
+            <div>
+              <p className="text-[8px] font-bold uppercase text-stone-500 mb-6">Unterschrift Referee Coach</p>
+              <div className="border-b border-stone-400" />
+            </div>
+          </div>
+          <div className="flex items-end gap-2 mt-3">
+            <QRCodeSVG
+              value="https://docs.google.com/forms/d/e/1FAIpQLSe-UY2EknI02mkGwoPlFso9pcigGV5ceSt2Q3CKJaT6PQzzpA/viewform?usp=sf_link"
+              size={48}
+              level="L"
+            />
+            <p className="text-[7px] text-stone-400 leading-tight">Feedback-<br/>Umfrage</p>
+          </div>
+        </div>
+      </div>
+      <div className="mt-2 pt-1 border-t border-stone-100 text-[7px] text-right text-stone-400 italic">
+        {t.version}: {t.versionDate} | SVRZ Referee Coaching Tool
+      </div>
+    </div>
+  );
+});
 
 function MetaField({ label, value, onChange, type = "text", className = "", readOnly = false }: { label: string, value: string, onChange: (v: string) => void, type?: string, className?: string, readOnly?: boolean }) {
   return (

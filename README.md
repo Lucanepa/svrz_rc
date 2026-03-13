@@ -60,6 +60,7 @@ Create these collections in PocketBase:
 Set in `.env`:
 
 - `VITE_POCKETBASE_URL`
+- optional `VITE_API_BASE_URL` (example: `https://api.your-domain.tld` for static hosting)
 - optional `VITE_PB_GAMES_COLLECTION`
 - optional `VITE_PB_COACHEES_COLLECTION`
 - optional `VITE_PB_REFEREE_COACHES_COLLECTION`

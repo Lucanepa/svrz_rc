@@ -1828,6 +1828,8 @@ export default function App() {
                                   {timePart && <span>{timePart}</span>}
                                   <span><LeagueLabel text={game.league} /></span>
                                   {game.matchNo && <span>#{game.matchNo}</span>}
+                                  {game.isRdGame && <span className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300">RD</span>}
+                                  {game.isLdGame && <span className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-violet-100 text-violet-700 border border-violet-300">LD</span>}
                                   <div className="flex-1" />
                                   {/* RC indicator */}
                                   {game.assignedRc ? (

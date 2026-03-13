@@ -486,6 +486,8 @@ function mapIncomingGame(raw: Record<string, unknown>) {
     second_referee: asText(raw.second_referee ?? raw.referee_2 ?? raw.sr2 ?? raw.r2),
     first_line_judge: asText(raw.first_line_judge ?? raw.lj1),
     second_line_judge: asText(raw.second_line_judge ?? raw.lj2),
+    is_rd_game: Boolean(raw.is_rd_game),
+    is_ld_game: Boolean(raw.is_ld_game),
   };
 }
 
@@ -989,6 +991,16 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     extractLineJudgeName(item, 'activeRefereeConvocationSecondLineJudge')
     || asText(item.activeSecondLineJudgeName);
 
+  const isRdGame = Boolean(
+    item.hasAtLeastOneRefereeIntendedToBeSupervised || item.isSupervised,
+  );
+  const isLdGame = Boolean(
+    item.isLinesmanOneSupervised
+    || item.isLinesmanTwoSupervised
+    || item.isLinesmanThreeSupervised
+    || item.isLinesmanFourSupervised,
+  );
+
   return {
     external_id: asText(game.number),
     match_no: asText(game.number),
@@ -1001,6 +1013,8 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     second_referee: secondReferee,
     first_line_judge: firstLineJudge,
     second_line_judge: secondLineJudge,
+    is_rd_game: isRdGame,
+    is_ld_game: isLdGame,
     _assigned_people: [firstReferee, secondReferee, firstLineJudge, secondLineJudge],
   };
 }
@@ -1052,7 +1066,7 @@ async function getEligibleGames() {
   const allGames = await withCollection(collectionCandidates.games, (collection) =>
     collection.getFullList<AnyRecord>({
       sort: '-match_date,-created',
-      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles',
+      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game',
     }),
   );
 
@@ -1072,6 +1086,8 @@ async function getEligibleGames() {
     secondReferee: asText(game.second_referee),
     assignedRc: asText(game.assigned_rc),
     feedbackClosedRoles: Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [],
+    isRdGame: Boolean(game.is_rd_game),
+    isLdGame: Boolean(game.is_ld_game),
   }));
 }
 
@@ -1492,7 +1508,7 @@ app.get('/api/rc-overview', async (_req: Request, res: ExpressResponse) => {
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date',
-        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles',
+        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game',
       }),
     );
     // 3. All feedback records
@@ -1555,7 +1571,7 @@ app.get('/api/rc-overview/:rcName/coachees', async (req: Request, res: ExpressRe
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date',
-        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles',
+        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game',
       }),
     );
     const rcGames = allGames.filter((g) => normalizeName(g.assigned_rc) === rcKey);

@@ -50,6 +50,8 @@ export interface EligibleGame {
   secondReferee: string;
   assignedRc?: string;
   feedbackClosedRoles?: string[];
+  isRdGame?: boolean;
+  isLdGame?: boolean;
 }
 
 export const LEGEND = {

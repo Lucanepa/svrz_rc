@@ -16,19 +16,7 @@ export default defineConfig(({mode}) => {
         manifest: {
           name: 'SR-Coaching Feedback',
           short_name: 'SR-Coaching',
-          theme_color: '#ffffff',
-          icons: [
-            {
-              src: 'pwa-192x192.png',
-              sizes: '192x192',
-              type: 'image/png'
-            },
-            {
-              src: 'pwa-512x512.png',
-              sizes: '512x512',
-              type: 'image/png'
-            }
-          ]
+          theme_color: '#ffffff'
         }
       })
     ],

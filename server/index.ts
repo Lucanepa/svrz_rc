@@ -1362,6 +1362,14 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
     ? transformed.find((row) => asText(row.match_no) === requestedMatchNo)
     : null;
 
+  // Also find the raw VM item for the requested match number
+  const rawMatchItem = requestedMatchNo
+    ? (items as Record<string, unknown>[]).find(item => {
+        const game = (item.game ?? {}) as Record<string, unknown>;
+        return String(game.number) === requestedMatchNo;
+      })
+    : null;
+
   const requestedGame = matchNoLookup
     ? (() => {
         const assignedPeople = Array.isArray(matchNoLookup._assigned_people) ? matchNoLookup._assigned_people : [];
@@ -1375,6 +1383,7 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
           normalized_assigned_people: normalizedAssigned,
           has_coachee_match: normalizedAssigned.some((name) => coacheeNames.has(name)),
           matched_people: matchedNames,
+          raw: rawMatchItem ?? null,
         };
       })()
     : null;
@@ -1401,6 +1410,20 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
     topUnmatchedNames,
     requestedMatchNo,
     requestedGame,
+    // If gameNumbers array is provided, return raw data for each
+    ...(Array.isArray((windowInput as Record<string, unknown>).gameNumbers)
+      ? {
+          rawGames: Object.fromEntries(
+            ((windowInput as Record<string, unknown>).gameNumbers as string[]).map(gn => {
+              const raw = (items as Record<string, unknown>[]).find(item => {
+                const game = (item.game ?? {}) as Record<string, unknown>;
+                return String(game.number) === String(gn);
+              });
+              return [String(gn), raw ?? null];
+            }),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -1736,35 +1759,6 @@ app.post('/api/games/sync/debug', requireAdminSession, async (req: Request, res:
   try {
     const result = await runGamesSyncDebug(req.body ?? {});
     res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: String(error) });
-  }
-});
-
-// Temporary debug endpoint: fetch raw VM data for specific game numbers
-app.post('/api/vm/raw-games', requireAdminSession, async (req: Request, res: ExpressResponse) => {
-  try {
-    const gameNumbers: string[] = Array.isArray(req.body?.gameNumbers)
-      ? req.body.gameNumbers.map(String)
-      : [String(req.body?.gameNumber ?? '')].filter(Boolean);
-    if (gameNumbers.length === 0) {
-      res.status(400).json({ error: 'Provide gameNumbers array or gameNumber string' });
-      return;
-    }
-    const vmUsername = asText(process.env.VM_USERNAME);
-    const vmPassword = asText(process.env.VM_PASSWORD);
-    const { jar, csrfToken } = await vmLogin(vmUsername, vmPassword);
-    // Fetch a wide date range
-    const { items } = await fetchAllVmGames(jar, csrfToken, '2024-08-01T00:00:00', '2026-06-30T23:59:59');
-    const results: Record<string, unknown> = {};
-    for (const gn of gameNumbers) {
-      const match = (items as Record<string, unknown>[]).find(item => {
-        const game = (item.game ?? {}) as Record<string, unknown>;
-        return String(game.number) === gn;
-      });
-      results[gn] = match ?? null;
-    }
-    res.json({ totalFetched: items.length, games: results });
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }

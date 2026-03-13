@@ -381,16 +381,138 @@ Header behavior in `server/index.ts`:
   - `Sec-Fetch-Site: same-origin`
 - Search API fetch (`/api/.../searchForManagingAssociation`) sends:
   - `User-Agent`
-  - `Content-Type: application/x-www-form-urlencoded`
-  - `Accept: application/json, text/javascript, */*; q=0.01`
+  - **`Content-Type: text/plain;charset=UTF-8`** (NOT `application/x-www-form-urlencoded` — VM returns 500 with wrong content-type)
+  - `Accept: */*`
   - `Accept-Language: de-CH,de;q=0.9,en;q=0.8`
+  - `Origin: ${VM_BASE}`
   - `Referer: ${VM_BASE}/indoorvolleyball.refadmin/refereegame/index`
-  - `X-Requested-With: XMLHttpRequest`
+  - `Window-Unique-Id: <from data-window-unique-id attribute on referee page>`
+  - `Sec-Fetch-Dest: empty`
+  - `Sec-Fetch-Mode: cors`
+  - `Sec-Fetch-Site: same-origin`
   - `Cookie`
 
-Optional future hardening for intermittent `403`:
+### VM login flow — required navigation sequence
 
-- Add `Origin: ${VM_BASE}` to VM POST calls (authenticate + search) if VM tightens request validation.
+The VM session requires visiting pages in order. Skipping the dashboard causes 403 on referee-index:
+
+1. `GET /login` → 200 (extract hidden form fields)
+2. `POST /sportmanager.security/authentication/authenticate` → 303 redirect
+3. **`GET /` (dashboard)** → 200 (MUST visit — establishes session permissions)
+4. `GET /indoorvolleyball.refadmin/refereegame/index` → 200 (extract `data-csrf-token` + `data-window-unique-id`)
+5. `POST /api/indoorvolleyball.refadmin/api%5celasticsearchrefereegame/searchForManagingAssociation` → 200 JSON
+
+Skipping step 3 (dashboard) results in persistent 403 at step 4.
+
+### VM search API date format
+
+Dates must be ISO 8601 with time and timezone offset:
+
+- `from`: `2025-10-10T22:00:00.000Z` (previous day 22:00 UTC = midnight CET)
+- `to`: `2025-10-11T21:59:59.000Z` (end of day CET in UTC)
+
+Simple date strings like `2025-10-11` cause 500 errors.
+
+### VM search API — default filters in browser UI
+
+The browser UI has active toggle buttons:
+
+- **"Contrassegnato per RD"** → adds `searchConfiguration[propertyFilters][1][propertyName]=isSupervised` + `boolean=true`
+- **"ARB da osservare"** → similar filter
+- **Date range** → defaults to the indoor season (e.g. `21.05.2025 - 20.05.2026`)
+
+Our sync does NOT use these filters — it fetches all games in the date range, then filters by coachee name match locally. This is intentional (we want all games, not just RD-flagged ones).
+
+### VM API — available game result data (verified 2026-03-13)
+
+Game results ARE available from the VM Elasticsearch API. Add these to `propertyRenderConfiguration`:
+
+- `game.gameResultReportFromHomeTeam` — most commonly filled
+- `game.gameResultReportFromReferee` — sometimes filled
+- `game.gameResultReportFromChampionshipOwner` — rarely filled
+- `game.bestOfSeriesResult` — aggregate result
+
+The `gameResultReportFromHomeTeam` object contains per-set scores:
+
+```json
+{
+  "homeTeamSet1Balls": 25,
+  "homeTeamSet2Balls": 25,
+  "homeTeamSet3Balls": 25,
+  "homeTeamSet4Balls": null,
+  "homeTeamSet5Balls": null,
+  "awayTeamSet1Balls": 18,
+  "awayTeamSet2Balls": 15,
+  "awayTeamSet3Balls": 15,
+  "awayTeamSet4Balls": null,
+  "awayTeamSet5Balls": null,
+  "homeTeamGoldenSetBalls": null,
+  "awayTeamGoldenSetBalls": null
+}
+```
+
+To derive the match result: count non-null sets where `homeTeamSetNBalls > awayTeamSetNBalls` (and vice versa).
+
+Priority for reading results: `gameResultReportFromChampionshipOwner` > `gameResultReportFromReferee` > `gameResultReportFromHomeTeam`.
+
+### VM API — full property list (reference)
+
+Properties actually used by the browser UI (42 render properties):
+
+```text
+game.startingDateTime, gameDayOfWeek, game.number,
+game.group.phase.league.leagueCategory.name,
+game.group.phase.league.leagueCategory.displayNameWithManagingAssociationShortName,
+game.group.phase.league.gender,
+game.group.name, game.group.displayName,
+game.group.phase.name, game.group.phase.displayName,
+game.encounter.teamHome.identifier, game.encounter.teamHome.name,
+game.encounter.teamHome.displayName, game.encounter.teamHome.leagueCategory.name,
+game.encounter.teamAway.identifier, game.encounter.teamAway.name,
+game.encounter.teamAway.displayName, game.encounter.teamAway.leagueCategory.name,
+game.hall.name, game.hall.displayName,
+game.hall.primaryPostalAddress.additionToAddress,
+game.hall.primaryPostalAddress.combinedAddress,
+game.hall.primaryPostalAddress.country.countryCode,
+game.hall.primaryPostalAddress.postalCode, game.hall.primaryPostalAddress.city,
+activeFirstHeadRefereeName, activeSecondHeadRefereeName,
+activeFirstLinesmanRefereeName, activeSecondLinesmanRefereeName,
+activeThirdLinesmanRefereeName, activeFourthLinesmanRefereeName,
+activeStandbyHeadRefereeName, activeStandbyLinesmanName,
+isSupervised, isHeadOneSupervised, isHeadTwoSupervised,
+isLinesmanOneSupervised, isLinesmanTwoSupervised,
+isLinesmanThreeSupervised, isLinesmanFourSupervised,
+hasAtLeastOneRefereeIntendedToBeSupervised,
+refereeConvocations.*.indoorAssociationReferee.indoorReferee.person.displayName
+```
+
+Note: our `RENDER_PROPERTIES` in `server/index.ts` uses `activeFirstLineJudgeName` / `activeSecondLineJudgeName` — the browser uses `activeFirstLinesmanRefereeName` / `activeSecondLinesmanRefereeName`. Both seem to work but the browser naming is canonical.
+
+### VM API — hall geolocation and Google Maps links (verified 2026-03-13)
+
+Gym/hall location data is available at:
+
+- `game.hall.primaryPostalAddress.geographicalLocation.plusCode` — Google Plus Code (e.g. `8FVCFH6H+V5`)
+- `game.hall.primaryPostalAddress.geographicalLocation.latitude` — e.g. `47.4621939`
+- `game.hall.primaryPostalAddress.geographicalLocation.longitude` — e.g. `8.577942`
+- `game.hall.hasPlusCode` — boolean indicating if plus code exists
+
+To build a Google Maps link:
+
+```text
+Plus code:  https://www.google.com/maps/place/{urlEncode(plusCode)}
+Lat/Lng:    https://www.google.com/maps?q={lat},{lng}
+```
+
+Example: `https://www.google.com/maps/place/8FVCFH6H%2BV5` → Sporthalle Ruebisbach, Kloten
+
+Add these to `propertyRenderConfiguration` to include in sync:
+
+```text
+game.hall.primaryPostalAddress.geographicalLocation.plusCode
+game.hall.primaryPostalAddress.geographicalLocation.latitude
+game.hall.primaryPostalAddress.geographicalLocation.longitude
+```
 
 ### 403 troubleshooting runbook (use this sequence)
 

@@ -207,12 +207,18 @@ const RENDER_PROPERTIES = [
   'game.hall.primaryPostalAddress.combinedAddress',
   'game.hall.primaryPostalAddress.postalCode',
   'game.hall.primaryPostalAddress.city',
+  'game.hall.primaryPostalAddress.geographicalLocation.plusCode',
+  'game.hall.primaryPostalAddress.geographicalLocation.latitude',
+  'game.hall.primaryPostalAddress.geographicalLocation.longitude',
   'activeFirstHeadRefereeName', 'activeSecondHeadRefereeName',
   'activeFirstLineJudgeName', 'activeSecondLineJudgeName',
   'refereeConvocations.*.indoorAssociationReferee.indoorReferee.person.displayName',
   'isSupervised', 'hasAtLeastOneRefereeIntendedToBeSupervised',
   'isLinesmanOneSupervised', 'isLinesmanTwoSupervised',
   'isLinesmanThreeSupervised', 'isLinesmanFourSupervised',
+  'game.gameResultReportFromHomeTeam',
+  'game.gameResultReportFromReferee',
+  'game.gameResultReportFromChampionshipOwner',
 ];
 
 function normalizeName(value: unknown): string {
@@ -496,6 +502,8 @@ function mapIncomingGame(raw: Record<string, unknown>) {
     second_line_judge: asText(raw.second_line_judge ?? raw.lj2),
     is_rd_game: Boolean(raw.is_rd_game),
     is_ld_game: Boolean(raw.is_ld_game),
+    maps_url: asText(raw.maps_url),
+    game_result: asText(raw.game_result),
   };
 }
 
@@ -578,13 +586,14 @@ async function followRedirects(
 }
 
 // Cache VM session to avoid re-login on every sync retry (valid for 30 min)
-let vmCsrfCache: { jar: CookieJar; csrfToken: string; cachedAt: number } | null = null;
+type VmSession = { jar: CookieJar; csrfToken: string; windowUniqueId: string };
+let vmCsrfCache: (VmSession & { cachedAt: number }) | null = null;
 const VM_CSRF_CACHE_TTL_MS = 30 * 60 * 1000;
 
-async function vmLogin(username: string, password: string): Promise<{ jar: CookieJar; csrfToken: string }> {
+async function vmLogin(username: string, password: string): Promise<VmSession> {
   if (vmCsrfCache && (Date.now() - vmCsrfCache.cachedAt) < VM_CSRF_CACHE_TTL_MS) {
     console.log('[vm] Using cached CSRF token');
-    return { jar: vmCsrfCache.jar, csrfToken: vmCsrfCache.csrfToken };
+    return { jar: vmCsrfCache.jar, csrfToken: vmCsrfCache.csrfToken, windowUniqueId: vmCsrfCache.windowUniqueId };
   }
   return vmLoginWithTrace(username, password);
 }
@@ -593,7 +602,7 @@ async function vmLoginWithTrace(
   username: string,
   password: string,
   trace?: VmTraceEntry[],
-): Promise<{ jar: CookieJar; csrfToken: string }> {
+): Promise<VmSession> {
   const jar = new CookieJar();
   const { body: loginHtml } = await followRedirects(`${VM_BASE}/login`, jar, {}, 10, trace, 'login-page');
 
@@ -618,6 +627,9 @@ async function vmLoginWithTrace(
     trace,
     'authenticate',
   );
+
+  // Visit dashboard — required to establish session permissions before referee-index
+  await followRedirects(`${VM_BASE}/`, jar, {}, 10, trace, 'dashboard');
 
   const tokenPatterns = [
     /data-csrf-token="([^"]+)"/,
@@ -659,8 +671,10 @@ async function vmLoginWithTrace(
     for (const pattern of tokenPatterns) {
       const match = refereeHtml.match(pattern);
       if (match?.[1]) {
-        vmCsrfCache = { jar, csrfToken: match[1], cachedAt: Date.now() };
-        return { jar, csrfToken: match[1] };
+        const wuidMatch = refereeHtml.match(/data-window-unique-id="([^"]+)"/);
+        const windowUniqueId = wuidMatch?.[1] || '';
+        vmCsrfCache = { jar, csrfToken: match[1], windowUniqueId, cachedAt: Date.now() };
+        return { jar, csrfToken: match[1], windowUniqueId };
       }
     }
 
@@ -696,17 +710,24 @@ async function fetchAllVmGames(
   csrfToken: string,
   from: string,
   to: string,
+  windowUniqueId = '',
 ): Promise<{ items: unknown[]; total: number }> {
   const url = `${VM_BASE}/api/indoorvolleyball.refadmin/api%5celasticsearchrefereegame/searchForManagingAssociation`;
-  const headers = {
+  const headers: Record<string, string> = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-    'Content-Type': 'application/x-www-form-urlencoded',
-    Accept: 'application/json, text/javascript, */*; q=0.01',
+    'Content-Type': 'text/plain;charset=UTF-8',
+    Accept: '*/*',
     'Accept-Language': 'de-CH,de;q=0.9,en;q=0.8',
+    Origin: VM_BASE,
     Referer: `${VM_BASE}/indoorvolleyball.refadmin/refereegame/index`,
-    'X-Requested-With': 'XMLHttpRequest',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
     Cookie: jar.header(),
   };
+  if (windowUniqueId) {
+    headers['Window-Unique-Id'] = windowUniqueId;
+  }
 
   console.log(`[vm] Fetching games from ${from} to ${to} — first batch...`);
   const firstResponse = await fetch(url, {
@@ -1009,6 +1030,45 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     || item.isLinesmanFourSupervised,
   );
 
+  // Extract geo data for maps link
+  const geo = (address.geographicalLocation ?? {}) as Record<string, unknown>;
+  const plusCode = asText(geo.plusCode);
+  const lat = geo.latitude != null ? Number(geo.latitude) : null;
+  const lng = geo.longitude != null ? Number(geo.longitude) : null;
+  const mapsUrl = plusCode
+    ? `https://www.google.com/maps/place/${encodeURIComponent(plusCode)}`
+    : lat != null && lng != null
+      ? `https://www.google.com/maps?q=${lat},${lng}`
+      : '';
+
+  // Extract game result — priority: championship > referee > home team
+  const resultReport = (
+    game.gameResultReportFromChampionshipOwner
+    || game.gameResultReportFromReferee
+    || game.gameResultReportFromHomeTeam
+    || null
+  ) as Record<string, unknown> | null;
+
+  let gameResult = '';
+  if (resultReport) {
+    const homeSets: number[] = [];
+    const awaySets: number[] = [];
+    for (let s = 1; s <= 5; s += 1) {
+      const h = resultReport[`homeTeamSet${s}Balls`];
+      const a = resultReport[`awayTeamSet${s}Balls`];
+      if (h != null && a != null) {
+        homeSets.push(Number(h));
+        awaySets.push(Number(a));
+      }
+    }
+    if (homeSets.length > 0) {
+      const homeWins = homeSets.filter((h, i) => h > awaySets[i]).length;
+      const awayWins = awaySets.filter((a, i) => a > homeSets[i]).length;
+      const setScores = homeSets.map((h, i) => `${h}:${awaySets[i]}`).join(' / ');
+      gameResult = `${homeWins}:${awayWins} (${setScores})`;
+    }
+  }
+
   return {
     external_id: asText(game.number),
     match_no: asText(game.number),
@@ -1023,6 +1083,8 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     second_line_judge: secondLineJudge,
     is_rd_game: isRdGame,
     is_ld_game: isLdGame,
+    maps_url: mapsUrl,
+    game_result: gameResult,
     _assigned_people: [firstReferee, secondReferee, firstLineJudge, secondLineJudge],
   };
 }
@@ -1255,8 +1317,8 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
   }
 
   const { from, to } = resolveSyncWindow(windowInput);
-  const { jar, csrfToken } = await vmLogin(vmUsername, vmPassword);
-  const { items } = await fetchAllVmGames(jar, csrfToken, from, to);
+  const { jar, csrfToken, windowUniqueId } = await vmLogin(vmUsername, vmPassword);
+  const { items } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
   const coacheeNames = await getCoacheeNameSet();
 
   const transformed = items
@@ -1318,8 +1380,8 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
   }
 
   const { from, to } = resolveSyncWindow(windowInput);
-  const { jar, csrfToken } = await vmLogin(vmUsername, vmPassword);
-  const { items } = await fetchAllVmGames(jar, csrfToken, from, to);
+  const { jar, csrfToken, windowUniqueId } = await vmLogin(vmUsername, vmPassword);
+  const { items } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
   const coacheeNames = await getCoacheeNameSet();
 
   const transformed = items

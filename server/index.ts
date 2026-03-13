@@ -511,7 +511,16 @@ async function vmLoginWithTrace(
     const { body: refereeHtml } = await followRedirects(
       `${VM_BASE}/indoorvolleyball.refadmin/refereegame/index`,
       jar,
-      {},
+      {
+        headers: {
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'de-CH,de;q=0.9,en;q=0.8',
+          Referer: `${VM_BASE}/`,
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'same-origin',
+        },
+      },
       10,
       trace,
       `referee-index-attempt-${attempt}`,

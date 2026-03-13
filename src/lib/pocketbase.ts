@@ -285,7 +285,7 @@ export async function loadrcCoachSummary(rcName: string): Promise<rcCoachSummary
   return response.json() as Promise<rcCoachSummary[]>;
 }
 
-export async function syncGamesFromVolleyManager(payload?: { date?: string; from?: string; to?: string }) {
+export async function syncGames(payload?: { date?: string; from?: string; to?: string }) {
   const response = await fetch(apiUrl('/api/games/sync'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

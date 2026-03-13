@@ -5,7 +5,7 @@ import {
   deleteRefereeCoach,
   listCoachees,
   listRefereeCoaches,
-  syncGamesFromVolleyManager,
+  syncGames,
   updateCoachee,
 } from '../lib/pocketbase';
 import { COACHEE_GROUP_OPTIONS, normalizeCoacheeGroup } from '../lib/coacheeGroup';
@@ -34,8 +34,8 @@ const ADMIN_STRINGS = {
     edit: 'Bearbeiten',
     delete: 'Löschen',
     gamesAutoSync: 'Spiele Auto-Sync',
-    syncFromVolleyManager: 'Mit VolleyManager API synchronisieren',
-    syncHelp: 'Spiele werden automatisch aus VolleyManager über den konfigurierten Endpunkt synchronisiert.',
+    syncGamesLabel: 'Spiele synchronisieren',
+    syncHelp: 'Spiele werden automatisch aus öffentlichen Swiss Volley Daten synchronisiert.',
     refereeCoachesRecords: 'Schiedsrichter-Coaching Einträge',
     game: 'Spiel',
     role: 'Rolle',
@@ -68,8 +68,8 @@ const ADMIN_STRINGS = {
     edit: 'Edit',
     delete: 'Delete',
     gamesAutoSync: 'Games Auto Sync',
-    syncFromVolleyManager: 'Sync from VolleyManager API',
-    syncHelp: 'Games are synced automatically from VolleyManager using your configured endpoint.',
+    syncGamesLabel: 'Sync games',
+    syncHelp: 'Games are synced automatically from public Swiss Volley data.',
     refereeCoachesRecords: 'Referee Coaches Records',
     game: 'Game',
     role: 'Role',
@@ -221,7 +221,7 @@ export default function AdminPanel({ lang }: AdminPanelProps) {
     setLoading(true);
     setMessage('');
     try {
-      const result = await syncGamesFromVolleyManager();
+      const result = await syncGames();
       setMessage(t.syncedGames.replace('{count}', String(result.imported ?? 0)));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -400,7 +400,7 @@ export default function AdminPanel({ lang }: AdminPanelProps) {
             disabled={loading}
             className="h-10 px-4 bg-slate-100 text-slate-900 hover:bg-white rounded-md text-sm font-medium transition-colors disabled:opacity-50 cursor-pointer"
           >
-            {t.syncFromVolleyManager}
+            {t.syncGamesLabel}
           </button>
           <p className="mt-3 text-xs text-slate-400">
             {t.syncHelp}

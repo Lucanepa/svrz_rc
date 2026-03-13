@@ -741,8 +741,12 @@ export default function App() {
     setLoadingCoacheeGames(true);
     setBackendNotice('');
     try {
-      const games = await listCoacheeGames(coachee.id);
+      const [games, feedbacks] = await Promise.all([
+        listCoacheeGames(coachee.id),
+        listCoacheeFeedbacks(coachee.id),
+      ]);
       setCoacheeGames(games);
+      setCoacheeFeedbacks(feedbacks);
       setFeedbackSubView('coacheeGames');
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -1007,6 +1011,9 @@ export default function App() {
   const [tipsAndTricks, setTipsAndTricks] = useState('');
   const [feedbackLocked, setFeedbackLocked] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState<'reset' | 'save' | null>(null);
+
+  const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
+  const formDisabled = feedbackLocked || isGameRoleClosed;
 
   const doResetForm = () => {
     setFormData((prev) => ({
@@ -1777,9 +1784,9 @@ export default function App() {
         <div className="max-w-4xl mx-auto bg-white p-3 sm:p-6 shadow-xl border border-stone-200 no-print">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-stone-800">
-              {t.coacheeGames}: {selectedCoacheeName || '-'}
+              {selectedCoacheeName || '-'}
               {selectedCoacheeLevel && (
-                <span className="ml-2 text-xs font-normal text-stone-500">({formData.lang === 'DE' ? 'Stufe' : 'Sublevel'}: {selectedCoacheeLevel})</span>
+                <span className="ml-2 text-xs font-normal text-stone-500">(Level: {selectedCoacheeLevel}{detailCoachee?.stage ? `-${detailCoachee.stage}` : ''})</span>
               )}
             </h2>
             <button
@@ -1795,29 +1802,74 @@ export default function App() {
             ) : coacheeGames.length === 0 ? (
               <p className="text-sm text-stone-500 p-4">{t.noCoacheeGames}</p>
             ) : (() => {
-              const upcomingGames = coacheeGames.filter((game) => new Date(game.date) >= new Date());
-              return upcomingGames.length === 0 ? (
-                <p className="text-sm text-stone-500 p-4">{formData.lang === 'DE' ? 'Keine bevorstehenden Spiele.' : 'No upcoming games.'}</p>
-              ) : (
-                <div className="divide-y divide-stone-100">
-                  {upcomingGames.map((game) => {
-                    const d = new Date(game.date);
-                    const formatted = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-                    return (
-                      <button
-                        key={game.id}
-                        onClick={() => handleSelectGame(game)}
-                        className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
-                      >
-                        <div className="font-semibold text-stone-900 text-sm">
-                          {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
-                        </div>
-                        <div className="text-xs text-stone-500 mt-1">
-                          {formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}
-                        </div>
-                      </button>
-                    );
-                  })}
+              const now = new Date();
+              const upcomingGames = coacheeGames.filter((game) => new Date(game.date) >= now);
+              const pastGames = coacheeGames.filter((game) => new Date(game.date) < now);
+              const feedbackByGameId = new Set(coacheeFeedbacks.map((f) => f.game).filter(Boolean));
+              return (
+                <div>
+                  {/* Upcoming games */}
+                  <div className="px-4 py-2 bg-stone-100 text-xs font-bold uppercase text-stone-500 border-b border-stone-200">
+                    {formData.lang === 'DE' ? 'Bevorstehende Spiele' : 'Upcoming Games'} ({upcomingGames.length})
+                  </div>
+                  {upcomingGames.length === 0 ? (
+                    <p className="text-sm text-stone-500 p-4">{formData.lang === 'DE' ? 'Keine bevorstehenden Spiele.' : 'No upcoming games.'}</p>
+                  ) : (
+                    <div className="divide-y divide-stone-100">
+                      {upcomingGames.map((game) => {
+                        const d = new Date(game.date);
+                        const formatted = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                        return (
+                          <button
+                            key={game.id}
+                            onClick={() => handleSelectGame(game)}
+                            className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
+                          >
+                            <div className="font-semibold text-stone-900 text-sm">
+                              {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
+                            </div>
+                            <div className="text-xs text-stone-500 mt-1">
+                              {formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* Past games */}
+                  <div className="px-4 py-2 bg-stone-100 text-xs font-bold uppercase text-stone-500 border-b border-t border-stone-200">
+                    {formData.lang === 'DE' ? 'Vergangene Spiele' : 'Past Games'} ({pastGames.length})
+                  </div>
+                  {pastGames.length === 0 ? (
+                    <p className="text-sm text-stone-500 p-4">{formData.lang === 'DE' ? 'Keine vergangenen Spiele.' : 'No past games.'}</p>
+                  ) : (
+                    <div className="divide-y divide-stone-100">
+                      {pastGames.map((game) => {
+                        const d = new Date(game.date);
+                        const formatted = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                        const hasFeedback = feedbackByGameId.has(game.id);
+                        return (
+                          <button
+                            key={game.id}
+                            onClick={() => handleSelectGame(game)}
+                            className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="font-semibold text-stone-900 text-sm">
+                                {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
+                              </div>
+                              <span className={cn("text-xs px-2 py-0.5 rounded-full", hasFeedback ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-500")}>
+                                {hasFeedback ? (formData.lang === 'DE' ? 'Feedback' : 'Feedback') : (formData.lang === 'DE' ? 'Kein Feedback' : 'No feedback')}
+                              </span>
+                            </div>
+                            <div className="text-xs text-stone-500 mt-1">
+                              {formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })()}

@@ -1162,14 +1162,26 @@ async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<st
       if (!isPocketBaseBadRequest(error)) {
         throw error;
       }
-      // Older schemas may miss projected fields (e.g. second_observation).
-      // Retry without field projection for compatibility.
-      return withCollection(collectionCandidates.observations, (collection) =>
-        collection.getFullList<AnyRecord>({
-          sort: '-created',
-          batch: 500,
-        }),
-      );
+      try {
+        // Older schemas may miss projected fields (e.g. second_observation).
+        // Retry without field projection for compatibility.
+        return await withCollection(collectionCandidates.observations, (collection) =>
+          collection.getFullList<AnyRecord>({
+            sort: '-created',
+            batch: 500,
+          }),
+        );
+      } catch (fallbackError) {
+        if (!isPocketBaseBadRequest(fallbackError)) {
+          throw fallbackError;
+        }
+        // Final compatibility fallback: avoid both projection and sort constraints.
+        return withCollection(collectionCandidates.observations, (collection) =>
+          collection.getFullList<AnyRecord>({
+            batch: 500,
+          }),
+        );
+      }
     }
   })();
   for (const row of allObservations) {
@@ -1502,7 +1514,16 @@ app.get('/api/eligible-games', async (_req: Request, res: ExpressResponse) => {
     const games = await getEligibleGames();
     res.json(games);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    const details = error && typeof error === 'object'
+      ? {
+          name: (error as { name?: string }).name,
+          message: (error as { message?: string }).message,
+          status: (error as { status?: number }).status,
+          response: (error as { response?: unknown }).response,
+          data: (error as { data?: unknown }).data,
+        }
+      : { message: String(error) };
+    res.status(500).json({ error: details });
   }
 });
 
@@ -1715,6 +1736,35 @@ app.post('/api/games/sync/debug', requireAdminSession, async (req: Request, res:
   try {
     const result = await runGamesSyncDebug(req.body ?? {});
     res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// Temporary debug endpoint: fetch raw VM data for specific game numbers
+app.post('/api/vm/raw-games', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const gameNumbers: string[] = Array.isArray(req.body?.gameNumbers)
+      ? req.body.gameNumbers.map(String)
+      : [String(req.body?.gameNumber ?? '')].filter(Boolean);
+    if (gameNumbers.length === 0) {
+      res.status(400).json({ error: 'Provide gameNumbers array or gameNumber string' });
+      return;
+    }
+    const vmUsername = asText(process.env.VM_USERNAME);
+    const vmPassword = asText(process.env.VM_PASSWORD);
+    const { jar, csrfToken } = await vmLogin(vmUsername, vmPassword);
+    // Fetch a wide date range
+    const { items } = await fetchAllVmGames(jar, csrfToken, '2024-08-01T00:00:00', '2026-06-30T23:59:59');
+    const results: Record<string, unknown> = {};
+    for (const gn of gameNumbers) {
+      const match = (items as Record<string, unknown>[]).find(item => {
+        const game = (item.game ?? {}) as Record<string, unknown>;
+        return String(game.number) === gn;
+      });
+      results[gn] = match ?? null;
+    }
+    res.json({ totalFetched: items.length, games: results });
   } catch (error) {
     res.status(500).json({ error: String(error) });
   }
@@ -2056,16 +2106,57 @@ app.get('/api/observations/summary', async (req: Request, res: ExpressResponse) 
 app.get('/api/games/calendar-status', async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    const [games, coachees] = await Promise.all([
-      withCollection(collectionCandidates.games, (collection) =>
-        collection.getFullList<AnyRecord>({
-          sort: 'match_date,created',
-          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge',
-        }),
-      ),
-      listCoacheesWithFallbackSort(),
-    ]);
-    const summaryById = await getCoacheeObservationSummaryMap({ coachees });
+    const listCalendarGamesWithFallback = async () => {
+      try {
+        return await withCollection(collectionCandidates.games, (collection) =>
+          collection.getFullList<AnyRecord>({
+            sort: '-match_date',
+            fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge',
+          }),
+        );
+      } catch (error) {
+        if (!isPocketBaseBadRequest(error)) {
+          throw error;
+        }
+        try {
+          // Older schemas may not expose every projected field.
+          // Retry without field projection for compatibility.
+          return await withCollection(collectionCandidates.games, (collection) =>
+            collection.getFullList<AnyRecord>({
+              sort: '-match_date',
+            }),
+          );
+        } catch (fallbackError) {
+          if (!isPocketBaseBadRequest(fallbackError)) {
+            throw fallbackError;
+          }
+          // Final compatibility fallback: avoid projection and sort constraints.
+          return withCollection(collectionCandidates.games, (collection) =>
+            collection.getFullList<AnyRecord>({}),
+          );
+        }
+      }
+    };
+
+    let games: AnyRecord[] = [];
+    let coachees: AnyRecord[] = [];
+    let summaryById = new Map<string, CoacheeObservationSummary>();
+
+    try {
+      games = await listCalendarGamesWithFallback();
+    } catch (error) {
+      throw new Error(`calendar_status_stage:games_fetch failed: ${String(error)}`);
+    }
+    try {
+      coachees = await listCoacheesWithFallbackSort();
+    } catch (error) {
+      throw new Error(`calendar_status_stage:coachees_fetch failed: ${String(error)}`);
+    }
+    try {
+      summaryById = await getCoacheeObservationSummaryMap({ coachees });
+    } catch (error) {
+      throw new Error(`calendar_status_stage:observation_summary failed: ${String(error)}`);
+    }
 
     const activeCoacheeByName = new Map<string, { id: string; full_name: string }>();
     for (const coachee of coachees) {
@@ -2122,7 +2213,16 @@ app.get('/api/games/calendar-status', async (_req: Request, res: ExpressResponse
 
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    const details = error && typeof error === 'object'
+      ? {
+          name: (error as { name?: string }).name,
+          message: (error as { message?: string }).message,
+          status: (error as { status?: number }).status,
+          response: (error as { response?: unknown }).response,
+          data: (error as { data?: unknown }).data,
+        }
+      : { message: String(error) };
+    res.status(500).json({ error: details });
   }
 });
 

@@ -411,6 +411,7 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
 
   const hasFilter = from || to;
   const today = toDateString(new Date());
+  const yesterday = toDateString(new Date(Date.now() - 86400000));
   const tomorrow = toDateString(new Date(Date.now() + 86400000));
   const isDE = lang === 'DE';
 
@@ -446,6 +447,13 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
       {open && (
         <div className="absolute z-50 mt-1 w-64 bg-white border border-stone-300 rounded shadow-lg p-3">
           <div className="flex gap-1.5 mb-3">
+            <button
+              type="button"
+              onClick={() => setPreset(yesterday, yesterday)}
+              className={cn("flex-1 h-8 text-xs rounded border", from === yesterday && to === yesterday ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 hover:bg-stone-50")}
+            >
+              {isDE ? 'Gestern' : 'Yesterday'}
+            </button>
             <button
               type="button"
               onClick={() => setPreset(today, today)}
@@ -585,8 +593,8 @@ export default function App() {
   const [gameFilterLeagues, setGameFilterLeagues] = useState<string[]>([]);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [gameFilterFunction, setGameFilterFunction] = useState<string[]>([]);
-  const [gameFilterDateFrom, setGameFilterDateFrom] = useState('');
-  const [gameFilterDateTo, setGameFilterDateTo] = useState('');
+  const [gameFilterDateFrom, setGameFilterDateFrom] = useState(() => toDateString(new Date()));
+  const [gameFilterDateTo, setGameFilterDateTo] = useState(() => toDateString(new Date()));
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });
@@ -594,6 +602,7 @@ export default function App() {
   const [gameFilterShowInactive, setGameFilterShowInactive] = useState(false);
   const [gameFilterRd, setGameFilterRd] = useState(false);
   const [gameFilterLd, setGameFilterLd] = useState(false);
+  const [gameFilterRcAssigned, setGameFilterRcAssigned] = useState(false);
   const [formData, setFormData] = useState<FeedbackFormData>(() => {
     const lang = detectInitialLang();
     return {
@@ -1312,6 +1321,7 @@ export default function App() {
       if (gameFilterLeagues.length > 0 && !gameFilterLeagues.includes(g.league || '')) return false;
       if (gameFilterRd && !g.isRdGame) return false;
       if (gameFilterLd && !g.isLdGame) return false;
+      if (gameFilterRcAssigned && !g.assignedRc) return false;
       if (gameFilterDateFrom) {
         const from = new Date(gameFilterDateFrom);
         if (new Date(g.date) < from) return false;
@@ -1337,7 +1347,7 @@ export default function App() {
       }
       return true;
     });
-  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, coacheeByName, coacheeNames]);
+  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, coacheeByName, coacheeNames]);
 
   return (
     <div className="min-h-screen bg-stone-100 py-8 px-4 print:bg-white print:p-0">
@@ -1603,7 +1613,7 @@ export default function App() {
                     className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                   />
                   {(() => {
-                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo, gameFilterRd, gameFilterLd].filter(Boolean).length;
+                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo, gameFilterRd, gameFilterLd, gameFilterRcAssigned].filter(Boolean).length;
                     return (
                       <button
                         onClick={() => setFiltersOpen(!filtersOpen)}
@@ -1621,6 +1631,68 @@ export default function App() {
                     );
                   })()}
                 </div>
+                {/* Quick date navigation */}
+                {(() => {
+                  const todayStr = toDateString(new Date());
+                  const yesterdayStr = toDateString(new Date(Date.now() - 86400000));
+                  const tomorrowStr = toDateString(new Date(Date.now() + 86400000));
+                  const isDE = formData.lang === 'DE';
+                  const shiftDay = (delta: number) => {
+                    const base = gameFilterDateFrom || todayStr;
+                    const d = new Date(base + 'T00:00:00');
+                    d.setDate(d.getDate() + delta);
+                    const ds = toDateString(d);
+                    setGameFilterDateFrom(ds);
+                    setGameFilterDateTo(ds);
+                    setListPage(0);
+                  };
+                  const setDay = (ds: string) => { setGameFilterDateFrom(ds); setGameFilterDateTo(ds); setListPage(0); };
+                  const isActive = (ds: string) => gameFilterDateFrom === ds && gameFilterDateTo === ds;
+                  return (
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <button
+                        onClick={() => shiftDay(-1)}
+                        className="h-8 w-8 flex items-center justify-center border border-stone-300 rounded hover:bg-stone-50 text-stone-500"
+                        title={isDE ? 'Vorheriger Tag' : 'Previous day'}
+                      >
+                        <ChevronLeft size={16} />
+                      </button>
+                      <button
+                        onClick={() => setDay(yesterdayStr)}
+                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(yesterdayStr) ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
+                      >
+                        {isDE ? 'Gestern' : 'Yesterday'}
+                      </button>
+                      <button
+                        onClick={() => setDay(todayStr)}
+                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(todayStr) ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
+                      >
+                        {isDE ? 'Heute' : 'Today'}
+                      </button>
+                      <button
+                        onClick={() => setDay(tomorrowStr)}
+                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(tomorrowStr) ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
+                      >
+                        {isDE ? 'Morgen' : 'Tomorrow'}
+                      </button>
+                      <button
+                        onClick={() => shiftDay(1)}
+                        className="h-8 w-8 flex items-center justify-center border border-stone-300 rounded hover:bg-stone-50 text-stone-500"
+                        title={isDE ? 'Nächster Tag' : 'Next day'}
+                      >
+                        <ChevronRight size={16} />
+                      </button>
+                      {(gameFilterDateFrom || gameFilterDateTo) && (
+                        <button
+                          onClick={() => { setGameFilterDateFrom(''); setGameFilterDateTo(''); setListPage(0); }}
+                          className="h-8 px-2 text-xs text-stone-400 hover:text-stone-600 transition-colors"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
                 {/* Collapsible filter panel */}
                 {filtersOpen && (
                   <div className="flex flex-wrap items-end gap-2 mb-3 p-3 bg-stone-50 border border-stone-200 rounded-md">
@@ -1659,6 +1731,15 @@ export default function App() {
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterLd ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
                       <span>LD Game</span>
+                    </button>
+                    <button
+                      onClick={() => setGameFilterRcAssigned(!gameFilterRcAssigned)}
+                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
+                    >
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterRcAssigned ? "bg-green-500" : "bg-stone-300")}>
+                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterRcAssigned ? "translate-x-4.5" : "translate-x-0.5")} />
+                      </span>
+                      <span>{formData.lang === 'DE' ? 'RC zugewiesen' : 'RC assigned'}</span>
                     </button>
                     <div className="flex-1 min-w-[140px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
@@ -1711,9 +1792,9 @@ export default function App() {
                       onChangeTo={setGameFilterDateTo}
                       lang={formData.lang}
                     />
-                    {(gameFilterCoachees.length > 0 || gameFilterLevels.length > 0 || gameFilterFunction.length > 0 || gameFilterLeagues.length > 0 || gameFilterDateFrom || gameFilterDateTo) && (
+                    {(gameFilterCoachees.length > 0 || gameFilterLevels.length > 0 || gameFilterFunction.length > 0 || gameFilterLeagues.length > 0 || gameFilterDateFrom || gameFilterDateTo || gameFilterRcAssigned) && (
                       <button
-                        onClick={() => { setGameFilterCoachees([]); setGameFilterLevels([]); setGameFilterFunction([]); setGameFilterLeagues([]); setGameFilterDateFrom(''); setGameFilterDateTo(''); }}
+                        onClick={() => { setGameFilterCoachees([]); setGameFilterLevels([]); setGameFilterFunction([]); setGameFilterLeagues([]); setGameFilterDateFrom(''); setGameFilterDateTo(''); setGameFilterRcAssigned(false); }}
                         className="h-9 px-3 text-sm border border-stone-300 rounded hover:bg-stone-50 text-stone-600"
                       >
                         {formData.lang === 'DE' ? 'Zurücksetzen' : 'Clear'}
@@ -1848,9 +1929,6 @@ export default function App() {
                           const r2 = game.secondReferee || '';
                           const r1IsCoachee = coacheeNames.has(normName(r1));
                           const r2IsCoachee = r2 ? coacheeNames.has(normName(r2)) : false;
-                          const nonCoacheeRef = (!r1IsCoachee && r1) ? { role: '1SR', name: r1 }
-                            : (!r2IsCoachee && r2) ? { role: '2SR', name: r2 }
-                            : null;
                           return (
                             <div key={game.id}>
                               <div
@@ -1885,15 +1963,17 @@ export default function App() {
                                 <div className="text-base text-stone-800 truncate">{game.awayTeam}</div>
                                 {/* Location (hall name, clickable to maps) */}
                                 {game.location && (
-                                  <a
-                                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(game.location)}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    onClick={(e) => e.stopPropagation()}
-                                    className="mt-0.5 block text-sm text-blue-500 hover:text-blue-700 underline decoration-blue-300 hover:decoration-blue-500 truncate transition-colors"
-                                  >
-                                    {game.location.split(',')[0].trim()}
-                                  </a>
+                                  <div className="mt-0.5">
+                                    <a
+                                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(game.location)}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-sm text-blue-500 hover:text-blue-700 underline decoration-blue-300 hover:decoration-blue-500 transition-colors"
+                                    >
+                                      {game.location.split(',')[0].trim()}
+                                    </a>
+                                  </div>
                                 )}
                                 {/* Coachee referees (1SR / 2SR) */}
                                 <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-sm">
@@ -1922,12 +2002,6 @@ export default function App() {
                               {/* Expanded row */}
                               {isExpanded && (
                                 <div className="px-3 pb-3 pt-1 bg-blue-50 border-t border-blue-100 space-y-2">
-                                  {/* Non-coachee referee */}
-                                  {nonCoacheeRef && (
-                                    <div className="text-xs text-stone-500">
-                                      <span className="font-medium text-stone-400">{nonCoacheeRef.role}</span>{' '}{nonCoacheeRef.name}
-                                    </div>
-                                  )}
                                   {/* RC selector + actions */}
                                   <div className="flex flex-wrap items-center gap-3">
                                     <label className="text-xs font-medium text-stone-500">RC:</label>

@@ -1854,6 +1854,55 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
   }
 });
 
+// One-time migration: extract line judge names from source_payload, then clear it
+app.post('/api/admin/migrate-source-payload', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    let migrated = 0;
+    let skipped = 0;
+    let page = 1;
+    const perPage = 50;
+
+    while (true) {
+      const batch = await withCollection(collectionCandidates.games, (collection) =>
+        collection.getList<AnyRecord>(page, perPage, { sort: 'created' }),
+      );
+
+      for (const game of batch.items) {
+        const payload = game.source_payload;
+        if (!payload || typeof payload !== 'object') {
+          skipped += 1;
+          continue;
+        }
+
+        const sp = payload as Record<string, unknown>;
+        const firstLineJudge = asText(game.first_line_judge)
+          || asText(sp.activeFirstLineJudgeName)
+          || extractLineJudgeName(sp, 'activeRefereeConvocationFirstLineJudge');
+        const secondLineJudge = asText(game.second_line_judge)
+          || asText(sp.activeSecondLineJudgeName)
+          || extractLineJudgeName(sp, 'activeRefereeConvocationSecondLineJudge');
+
+        await withCollection(collectionCandidates.games, (collection) =>
+          collection.update(game.id, {
+            first_line_judge: firstLineJudge,
+            second_line_judge: secondLineJudge,
+            source_payload: null,
+          }),
+        );
+        migrated += 1;
+      }
+
+      if (page >= batch.totalPages) break;
+      page += 1;
+    }
+
+    res.json({ migrated, skipped });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 app.listen(port, () => {
   console.log(`API server listening on http://localhost:${port}`);
   console.log(`[scheduler] games sync cron: "${VM_SYNC_CRON}" (${VM_SYNC_TIMEZONE})`);

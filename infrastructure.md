@@ -19,12 +19,53 @@ This starts:
 - web (Vite) on `http://localhost:3000` (or `3001` if port busy)
 - API on `http://localhost:8787`
 
+## VPS Access
+
+- **Provider**: Infomaniak
+- **Host**: `ubuntu@83.228.220.158`
+- **SSH**: `ssh -i ~/.ssh/id_ed25519 ubuntu@83.228.220.158`
+- **Tailscale IP**: `100.69.245.37`
+- **OS**: Ubuntu 24.04.3 LTS
+- **Disk**: ~57 GB (`/`)
+- **Hostname**: `ov-c45f75`
+
 ## Infrastructure Endpoints
 
 - PocketBase API base URL: `http://100.69.245.37`
-- PocketBase admin UI: `http://100.69.245.37/_/`
+- PocketBase admin UI: `http://100.69.245.37/_/` (Tailscale-only)
 
 Important: use API base URL **without** `/_/` in env variables.
+
+## PocketBase Service
+
+- **Binary**: `/opt/pocketbase/pocketbase`
+- **Systemd unit**: `pocketbase.service` (enabled, auto-start)
+- **Listens on**: `127.0.0.1:8090`
+- **App name**: "Referee Coaching"
+
+```bash
+# manage
+sudo systemctl status pocketbase
+sudo systemctl restart pocketbase
+journalctl -u pocketbase -f
+```
+
+## Nginx Reverse Proxy
+
+- **Config**: `/etc/nginx/sites-available/pocketbase`
+- Proxies all traffic from port 80 to `127.0.0.1:8090`
+- Admin UI (`/_/`) restricted to Tailscale range (`100.64.0.0/10`) + localhost
+- API routes (`/`) open to all
+- `client_max_body_size 50m`
+
+## PM2 Processes
+
+- **openvolley** (Node.js) — managed by PM2 under `ubuntu` user
+
+```bash
+pm2 list
+pm2 logs openvolley
+```
 
 ## Environment Variables
 

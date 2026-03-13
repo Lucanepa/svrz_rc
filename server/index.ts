@@ -750,15 +750,6 @@ function deepGet(obj: unknown, ...keys: string[]): unknown {
   return current ?? null;
 }
 
-function normalizeText(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 function gradeToScore(value: string): number | null {
   const normalized = value.trim().toUpperCase();
   const scores: Record<string, number> = {
@@ -899,7 +890,7 @@ function buildGradesPayload(formData: unknown) {
 }
 
 async function resolveRefereeCoachPersonId(rcName: string): Promise<string> {
-  const normalizedInput = normalizeText(rcName);
+  const normalizedInput = normalizeName(rcName);
   if (!normalizedInput) {
     throw new Error('RC (coach) name is required to create observation.');
   }
@@ -914,7 +905,7 @@ async function resolveRefereeCoachPersonId(rcName: string): Promise<string> {
     return `${first} ${last}`.trim();
   };
 
-  const exact = people.find((person) => normalizeText(personFullName(person)) === normalizedInput);
+  const exact = people.find((person) => normalizeName(personFullName(person)) === normalizedInput);
   if (exact) {
     return exact.id;
   }
@@ -922,7 +913,7 @@ async function resolveRefereeCoachPersonId(rcName: string): Promise<string> {
   const tokens = normalizedInput.split(' ').filter(Boolean);
   if (tokens.length >= 2) {
     const reversed = `${tokens[tokens.length - 1]} ${tokens.slice(0, -1).join(' ')}`;
-    const byReverse = people.find((person) => normalizeText(personFullName(person)) === reversed);
+    const byReverse = people.find((person) => normalizeName(personFullName(person)) === reversed);
     if (byReverse) {
       return byReverse.id;
     }

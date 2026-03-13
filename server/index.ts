@@ -428,6 +428,10 @@ class CookieJar {
     }
   }
 
+  set(name: string, value: string) {
+    this.cookies[name] = value;
+  }
+
   header(): string {
     return Object.entries(this.cookies)
       .map(([key, value]) => `${key}=${value}`)
@@ -543,7 +547,7 @@ async function followRedirects(
   trace?: VmTraceEntry[],
   step = 'request',
 ): Promise<{ response: Response; body: string }> {
-  const userAgent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36';
+  const userAgent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36';
   let currentUrl = url;
   let currentInit = init;
 
@@ -604,6 +608,8 @@ async function vmLoginWithTrace(
   trace?: VmTraceEntry[],
 ): Promise<VmSession> {
   const jar = new CookieJar();
+  // Pre-set language cookie — VM expects it (browser always sends it)
+  jar.set('language', 'de');
   const { body: loginHtml } = await followRedirects(`${VM_BASE}/login`, jar, {}, 10, trace, 'login-page');
 
   const hiddenFields: Record<string, string> = {};
@@ -714,7 +720,7 @@ async function fetchAllVmGames(
 ): Promise<{ items: unknown[]; total: number }> {
   const url = `${VM_BASE}/api/indoorvolleyball.refadmin/api%5celasticsearchrefereegame/searchForManagingAssociation`;
   const headers: Record<string, string> = {
-    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
     'Content-Type': 'text/plain;charset=UTF-8',
     Accept: '*/*',
     'Accept-Language': 'de-CH,de;q=0.9,en;q=0.8',

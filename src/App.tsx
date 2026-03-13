@@ -1252,108 +1252,117 @@ export default function App() {
               </button>
             </div>
 
-            {/* Search & filters */}
-            <div className="flex flex-wrap items-center gap-2 mb-3">
-              <input
-                type="text"
-                value={listSearch}
-                onChange={(e) => { setListSearch(e.target.value); setListPage(0); }}
-                placeholder={formData.lang === 'DE' ? 'Suche...' : 'Search...'}
-                className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
-              />
-              {listTab === 'coachees' && (
-                <>
-                  <select
-                    value={listFilterLevel}
-                    onChange={(e) => setListFilterLevel(e.target.value)}
-                    className="h-9 px-2 text-sm border border-stone-300 rounded bg-white outline-none w-full sm:w-auto"
-                  >
-                    <option value="">{formData.lang === 'DE' ? 'Alle Stufen' : 'All levels'}</option>
-                    {coacheeLevels.map((lvl) => (
-                      <option key={lvl} value={lvl}>{lvl}</option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => setListFilterNeedsObs(!listFilterNeedsObs)}
-                    className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
-                  >
-                    <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
-                      <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
-                    </span>
-                    {formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}
-                  </button>
-                  <button
-                    onClick={() => setListFilterShowInactive(!listFilterShowInactive)}
-                    className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
-                  >
-                    <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
-                      <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
-                    </span>
-                    {formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
-                  </button>
-                </>
-              )}
-            </div>
-
-            {/* Games filters */}
-            {listTab === 'games' && (
-              <div className="flex flex-wrap items-end gap-2 mb-3">
-                <div className="flex-1 min-w-[140px]">
-                  <label className="block text-xs font-medium text-stone-500 mb-0.5">
-                    {formData.lang === 'DE' ? 'Coachee' : 'Coachee'}
-                  </label>
-                  <MultiSelectDropdown
-                    options={gameCoacheeOptions}
-                    selected={gameFilterCoachees}
-                    onChange={setGameFilterCoachees}
-                    placeholder={formData.lang === 'DE' ? 'Alle Coachees' : 'All coachees'}
-                  />
-                </div>
-                <div className="flex-1 min-w-[140px]">
-                  <label className="block text-xs font-medium text-stone-500 mb-0.5">
-                    {formData.lang === 'DE' ? 'Liga' : 'League'}
-                  </label>
-                  <MultiSelectDropdown
-                    options={gameLeagues}
-                    selected={gameFilterLeagues}
-                    onChange={setGameFilterLeagues}
-                    placeholder={formData.lang === 'DE' ? 'Alle Ligen' : 'All leagues'}
-                  />
-                </div>
-                <DateRangeDropdown
-                  from={gameFilterDateFrom}
-                  to={gameFilterDateTo}
-                  onChangeFrom={setGameFilterDateFrom}
-                  onChangeTo={setGameFilterDateTo}
-                  lang={formData.lang}
+            {/* Coachees: Search & filters */}
+            {listTab === 'coachees' && (
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                <input
+                  type="text"
+                  value={listSearch}
+                  onChange={(e) => { setListSearch(e.target.value); setListPage(0); }}
+                  placeholder={formData.lang === 'DE' ? 'Suche...' : 'Search...'}
+                  className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
                 />
+                <select
+                  value={listFilterLevel}
+                  onChange={(e) => setListFilterLevel(e.target.value)}
+                  className="h-9 px-2 text-sm border border-stone-300 rounded bg-white outline-none w-full sm:w-auto"
+                >
+                  <option value="">{formData.lang === 'DE' ? 'Alle Stufen' : 'All levels'}</option>
+                  {coacheeLevels.map((lvl) => (
+                    <option key={lvl} value={lvl}>{lvl}</option>
+                  ))}
+                </select>
                 <button
-                  onClick={() => setGameFilterNeedsObs(!gameFilterNeedsObs)}
+                  onClick={() => setListFilterNeedsObs(!listFilterNeedsObs)}
                   className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
                 >
-                  <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
-                    <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
+                  <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
+                    <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
                   </span>
                   {formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}
                 </button>
                 <button
-                  onClick={() => setGameFilterShowInactive(!gameFilterShowInactive)}
+                  onClick={() => setListFilterShowInactive(!listFilterShowInactive)}
                   className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
                 >
-                  <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
-                    <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
+                  <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
+                    <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
                   </span>
                   {formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
                 </button>
-                {(gameFilterCoachees.length > 0 || gameFilterLeagues.length > 0 || gameFilterDateFrom || gameFilterDateTo) && (
-                  <button
-                    onClick={() => { setGameFilterCoachees([]); setGameFilterLeagues([]); setGameFilterDateFrom(''); setGameFilterDateTo(''); }}
-                    className="h-9 px-3 text-sm border border-stone-300 rounded hover:bg-stone-50 text-stone-600"
-                  >
-                    {formData.lang === 'DE' ? 'Filter zurücksetzen' : 'Clear filters'}
-                  </button>
-                )}
               </div>
+            )}
+
+            {/* Games: Search & filters */}
+            {listTab === 'games' && (
+              <>
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <input
+                    type="text"
+                    value={listSearch}
+                    onChange={(e) => { setListSearch(e.target.value); setListPage(0); }}
+                    placeholder={formData.lang === 'DE' ? 'Suche...' : 'Search...'}
+                    className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                  />
+                  <button
+                    onClick={() => setGameFilterNeedsObs(!gameFilterNeedsObs)}
+                    className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
+                  >
+                    <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
+                      <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
+                    </span>
+                    {formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}
+                  </button>
+                  <button
+                    onClick={() => setGameFilterShowInactive(!gameFilterShowInactive)}
+                    className="flex items-center gap-2 text-sm text-stone-600 whitespace-nowrap cursor-pointer select-none"
+                  >
+                    <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
+                      <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
+                    </span>
+                    {formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-end gap-2 mb-3">
+                  <div className="flex-1 min-w-[140px]">
+                    <label className="block text-xs font-medium text-stone-500 mb-0.5">
+                      {formData.lang === 'DE' ? 'Coachee' : 'Coachee'}
+                    </label>
+                    <MultiSelectDropdown
+                      options={gameCoacheeOptions}
+                      selected={gameFilterCoachees}
+                      onChange={setGameFilterCoachees}
+                      placeholder={formData.lang === 'DE' ? 'Alle Coachees' : 'All coachees'}
+                    />
+                  </div>
+                  <div className="flex-1 min-w-[140px]">
+                    <label className="block text-xs font-medium text-stone-500 mb-0.5">
+                      {formData.lang === 'DE' ? 'Liga' : 'League'}
+                    </label>
+                    <MultiSelectDropdown
+                      options={gameLeagues}
+                      selected={gameFilterLeagues}
+                      onChange={setGameFilterLeagues}
+                      placeholder={formData.lang === 'DE' ? 'Alle Ligen' : 'All leagues'}
+                    />
+                  </div>
+                  <DateRangeDropdown
+                    from={gameFilterDateFrom}
+                    to={gameFilterDateTo}
+                    onChangeFrom={setGameFilterDateFrom}
+                    onChangeTo={setGameFilterDateTo}
+                    lang={formData.lang}
+                  />
+                  {(gameFilterCoachees.length > 0 || gameFilterLeagues.length > 0 || gameFilterDateFrom || gameFilterDateTo) && (
+                    <button
+                      onClick={() => { setGameFilterCoachees([]); setGameFilterLeagues([]); setGameFilterDateFrom(''); setGameFilterDateTo(''); }}
+                      className="h-9 px-3 text-sm border border-stone-300 rounded hover:bg-stone-50 text-stone-600"
+                    >
+                      {formData.lang === 'DE' ? 'Filter zurücksetzen' : 'Clear filters'}
+                    </button>
+                  )}
+                </div>
+              </>
             )}
 
             {/* Coachees table */}

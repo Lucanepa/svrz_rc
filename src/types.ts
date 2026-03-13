@@ -255,7 +255,7 @@ export interface RcOverviewEntry {
   planned: number;
 }
 
-export interface RcCoacheeSummaryFeedback {
+export interface rcCoachSummaryFeedback {
   gameDate: string;
   league: string;
   teams: string;
@@ -263,7 +263,7 @@ export interface RcCoacheeSummaryFeedback {
   submittedAt: string;
 }
 
-export interface RcCoacheeSummaryGame {
+export interface rcCoachSummaryGame {
   gameId: string;
   gameDate: string;
   league: string;
@@ -271,12 +271,12 @@ export interface RcCoacheeSummaryGame {
   refereeName: string;
 }
 
-export interface RcCoacheeSummary {
+export interface rcCoachSummary {
   coacheeName: string;
   coacheeId: string;
-  doneFeedbacks: RcCoacheeSummaryFeedback[];
-  outstandingGames: RcCoacheeSummaryGame[];
-  plannedGames: RcCoacheeSummaryGame[];
+  doneFeedbacks: rcCoachSummaryFeedback[];
+  outstandingGames: rcCoachSummaryGame[];
+  plannedGames: rcCoachSummaryGame[];
 }
 
 export const INITIAL_DATA: FeedbackFormData = {

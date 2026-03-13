@@ -331,6 +331,135 @@ Automatic sync runs inside `server/index.ts` using `node-cron`:
 
 Production note: keep API process continuously running (PM2/systemd/container), otherwise scheduled sync will not run.
 
+## VolleyManager 403 Auth-Check Incident (Reference)
+
+This repo had an intermittent VolleyManager auth/session issue where sync failed before fetch with:
+
+- `Error: Could not extract VolleyManager CSRF token after login.`
+- `403 - Forbidden` on the referee admin page.
+
+The key troubleshooting endpoint is:
+
+- `POST /api/vm/auth-check` (use `{"debug": true}` to return request-chain trace)
+
+Known trace patterns:
+
+- Healthy:
+  - `login-page` -> `200`
+  - `authenticate` -> `303` (redirect)
+  - `dashboard` -> `200`
+  - `referee-index` -> `200`
+  - `csrfTokenFound: true`
+- Failing 403 case:
+  - login may still show `303` + dashboard `200`
+  - `referee-index` (`/indoorvolleyball.refadmin/refereegame/index`) -> `403`
+  - CSRF extraction fails, so `/api/games/sync` cannot proceed
+
+Interpretation: account can partially authenticate, but does not have working access to the referee admin page (permission/role/session-policy issue or transient upstream block).
+
+Operational mitigation in place:
+
+- Keep `POST /api/vm/auth-check` for fast diagnosis without DB writes.
+- Use `POST /api/games/sync/debug` for end-to-end trace with payload details.
+- Scheduler retries are configured via `VM_SYNC_MAX_RETRIES` and `VM_SYNC_RETRY_DELAY_MS` to reduce failures from transient VM `403`.
+
+### Headers used by VM flow (current)
+
+Header behavior in `server/index.ts`:
+
+- Base redirect/login helper (`followRedirects`) always sends:
+  - `User-Agent`
+  - `Cookie` (from in-memory cookie jar)
+- Login submit (`/sportmanager.security/authentication/authenticate`) adds:
+  - `Content-Type: application/x-www-form-urlencoded`
+- Referee index fetch (`/indoorvolleyball.refadmin/refereegame/index`) adds:
+  - `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`
+  - `Accept-Language: de-CH,de;q=0.9,en;q=0.8`
+  - `Referer: ${VM_BASE}/`
+  - `Sec-Fetch-Dest: document`
+  - `Sec-Fetch-Mode: navigate`
+  - `Sec-Fetch-Site: same-origin`
+- Search API fetch (`/api/.../searchForManagingAssociation`) sends:
+  - `User-Agent`
+  - `Content-Type: application/x-www-form-urlencoded`
+  - `Accept: application/json, text/javascript, */*; q=0.01`
+  - `Accept-Language: de-CH,de;q=0.9,en;q=0.8`
+  - `Referer: ${VM_BASE}/indoorvolleyball.refadmin/refereegame/index`
+  - `X-Requested-With: XMLHttpRequest`
+  - `Cookie`
+
+Optional future hardening for intermittent `403`:
+
+- Add `Origin: ${VM_BASE}` to VM POST calls (authenticate + search) if VM tightens request validation.
+
+### 403 troubleshooting runbook (use this sequence)
+
+When VM sync starts failing, follow this exact order:
+
+1. Verify API and PocketBase baseline:
+
+```bash
+curl "http://localhost:8787/api/health"
+```
+
+2. Run VM auth preflight (no DB writes):
+
+```bash
+curl -X POST "http://localhost:8787/api/vm/auth-check" \
+  -H "Content-Type: application/json" \
+  -d '{"debug":true}'
+```
+
+3. If auth-check is healthy, run sync:
+
+```bash
+curl -X POST "http://localhost:8787/api/games/sync" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+4. If sync still fails, run detailed sync trace:
+
+```bash
+curl -X POST "http://localhost:8787/api/games/sync/debug" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+#### How to interpret auth-check quickly
+
+- Healthy chain:
+  - `login-page` -> `200`
+  - `authenticate` -> `303`
+  - `dashboard` -> `200`
+  - `referee-index` -> `200`
+  - `csrfTokenFound: true`
+- Broken chain (403 incident):
+  - auth can appear accepted (`303` + dashboard `200`)
+  - then `referee-index` -> `403`
+  - CSRF not found -> sync cannot continue
+
+#### Immediate actions when `referee-index` is 403
+
+- Treat this as VM access/session issue first (not PocketBase schema issue).
+- Re-check VM account permissions for referee admin pages.
+- Retry auth-check before retrying full sync.
+- Keep scheduler retries enabled to absorb transient VM refusals.
+
+#### Reliability settings to keep enabled
+
+- `VM_SYNC_MAX_RETRIES="10"`
+- `VM_SYNC_RETRY_DELAY_MS="15000"`
+
+These apply to cron path and reduce impact of intermittent VM `403` responses.
+
+#### Definition of recovered state
+
+Consider incident resolved only when both are true:
+
+- `POST /api/vm/auth-check` returns `ok: true` and `csrfTokenFound: true`
+- `POST /api/games/sync` returns success payload (for example with `imported` / `totalFetched`)
+
 ## Frontend Hosting / API Routing Notes
 
 - Local dev: frontend uses relative `/api/*` and Vite proxy.

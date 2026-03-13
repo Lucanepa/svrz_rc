@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, Database, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
-import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame, RcOverviewEntry, RcCoacheeSummary } from './types';
+import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame, RcOverviewEntry, rcCoachSummary } from './types';
 import {
   CalendarGameStatus,
   Coachee,
@@ -23,7 +23,7 @@ import {
   assignRcToGame,
   RefereeCoachPerson,
   loadRcOverview,
-  loadRcCoacheeSummary,
+  loadrcCoachSummary,
 } from './lib/pocketbase';
 import { cn } from './lib/utils';
 import { normalizeCoacheeGroup } from './lib/coacheeGroup';
@@ -139,7 +139,6 @@ const UI_STRINGS = {
     rcOutstanding: "Ausstehend",
     rcPlanned: "Geplant",
     rcNoData: "Keine RC-Daten gefunden.",
-    rcCoacheeSummary: "Coachee-Übersicht",
     rcBackToOverview: "Zurück zur Übersicht",
     rcDoneFeedbacks: "Erledigte Feedbacks",
     rcOutstandingGames: "Ausstehende Spiele",
@@ -246,7 +245,6 @@ const UI_STRINGS = {
     rcOutstanding: "Outstanding",
     rcPlanned: "Planned",
     rcNoData: "No RC data found.",
-    rcCoacheeSummary: "Coachee Summary",
     rcBackToOverview: "Back to overview",
     rcDoneFeedbacks: "Done Feedbacks",
     rcOutstandingGames: "Outstanding Games",
@@ -326,7 +324,7 @@ function LeagueLabel({ text }: { text: string }) {
     <>
       {parts.map((part, i) =>
         part === '♂' || part === '♀' ? (
-          <span key={i} className={cn("text-base leading-none font-bold", part === '♂' ? 'text-blue-500' : 'text-pink-500')}>{part}</span>
+          <span key={i} className={cn("text-lg leading-none font-bold", part === '♂' ? 'text-blue-500' : 'text-pink-500')}>{part}</span>
         ) : (
           <span key={i}>{part}</span>
         ),
@@ -575,8 +573,8 @@ export default function App() {
   const [rcOverviewData, setRcOverviewData] = useState<RcOverviewEntry[]>([]);
   const [rcOverviewLoading, setRcOverviewLoading] = useState(false);
   const [selectedRcName, setSelectedRcName] = useState<string | null>(null);
-  const [rcCoacheeSummaryData, setRcCoacheeSummaryData] = useState<RcCoacheeSummary[]>([]);
-  const [rcCoacheeSummaryLoading, setRcCoacheeSummaryLoading] = useState(false);
+  const [rcCoachSummaryData, setrcCoachSummaryData] = useState<rcCoachSummary[]>([]);
+  const [rcCoachSummaryLoading, setrcCoachSummaryLoading] = useState(false);
   const toggleListSort = (col: 'name' | 'level' | 'status') => {
     if (listSortBy === col) setListSortAsc((v) => !v);
     else { setListSortBy(col); setListSortAsc(true); }
@@ -805,14 +803,14 @@ export default function App() {
 
   const handleSelectRc = async (rcName: string) => {
     setSelectedRcName(rcName);
-    setRcCoacheeSummaryLoading(true);
+    setrcCoachSummaryLoading(true);
     try {
-      const data = await loadRcCoacheeSummary(rcName);
-      setRcCoacheeSummaryData(data);
+      const data = await loadrcCoachSummary(rcName);
+      setrcCoachSummaryData(data);
     } catch {
-      setRcCoacheeSummaryData([]);
+      setrcCoachSummaryData([]);
     } finally {
-      setRcCoacheeSummaryLoading(false);
+      setrcCoachSummaryLoading(false);
     }
   };
 
@@ -989,13 +987,13 @@ export default function App() {
     const status = coachee.observation_status;
     const balls: Array<{ color: string; title: string; key: string }> = [];
     if (isActive && (status?.hasNoObservation ?? false)) {
-      balls.push({ key: 'none', color: 'bg-yellow-400', title: t.noObservation });
+      balls.push({ key: 'none', color: 'bg-amber-100 text-amber-800', title: t.noObservation });
     }
     if (isActive && (status?.hasFurtherObservationNeeded ?? false)) {
-      balls.push({ key: 'further', color: 'bg-yellow-500', title: t.furtherObservation });
+      balls.push({ key: 'further', color: 'bg-orange-100 text-orange-800', title: t.furtherObservation });
     }
     if (status?.hasCompletedObservation) {
-      balls.push({ key: 'done', color: 'bg-emerald-500', title: t.completedObservation });
+      balls.push({ key: 'done', color: 'bg-emerald-100 text-emerald-800', title: t.completedObservation });
     }
     return balls;
   };
@@ -1732,49 +1730,60 @@ export default function App() {
                 {filteredCoachees.length === 0 ? (
                   <p className="text-sm text-stone-500 p-4">{t.noCoachees}</p>
                 ) : (
-                  <table className="w-full text-base">
-                    <thead className="sticky top-0 z-10 bg-stone-50 text-xs uppercase font-bold text-stone-500 border-b border-stone-200">
-                      <tr>
-                        <th className="text-left px-3 py-2.5 cursor-pointer select-none" onClick={() => toggleListSort('name')}>{formData.lang === 'DE' ? 'Name' : 'Name'}{listSortBy === 'name' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</th>
-                        <th className="text-left px-3 py-2.5 w-24 cursor-pointer select-none" onClick={() => toggleListSort('level')}>{formData.lang === 'DE' ? 'Stufe' : 'Level'}{listSortBy === 'level' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</th>
-                        <th className="text-left px-3 py-2.5 hidden md:table-cell">Stage</th>
-                        <th className="text-left px-3 py-2.5 hidden md:table-cell">{t.group}</th>
-                        <th className="text-center px-3 py-2.5 hidden md:table-cell">1SR</th>
-                        <th className="text-center px-3 py-2.5 hidden md:table-cell">2SR</th>
-                        <th className="text-center px-3 py-2.5 w-16 cursor-pointer select-none" onClick={() => toggleListSort('status')}>Status{listSortBy === 'status' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-stone-200">
-                      {filteredCoachees.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((coachee) => (
-                        <tr
-                          key={coachee.id}
-                          onClick={() => handleSelectCoachee(coachee)}
-                          className={cn(
-                            "cursor-pointer transition-colors",
-                            selectedCoacheeId === coachee.id ? "bg-blue-900/40" : "hover:bg-stone-50"
-                          )}
-                        >
-                          <td className="px-3 py-2.5 font-semibold text-stone-900">{coachee.full_name}</td>
-                          <td className="px-3 py-2.5 text-stone-600">{coachee.referee_level ? `${coachee.referee_level}${coachee.stage ? `-${coachee.stage}` : ''}` : '-'}</td>
-                          <td className="px-3 py-2.5 text-stone-600 hidden md:table-cell">{coachee.stage || '-'}</td>
-                          <td className="px-3 py-2.5 text-stone-600 hidden md:table-cell">{normalizeCoacheeGroup(coachee.groups) || '-'}</td>
-                          <td className="px-3 py-2.5 text-center text-stone-600 hidden md:table-cell">{games1SRCount.get((coachee.full_name || '').toLowerCase().trim()) || '-'}</td>
-                          <td className="px-3 py-2.5 text-center text-stone-600 hidden md:table-cell">{games2SRCount.get((coachee.full_name || '').toLowerCase().trim()) || '-'}</td>
-                          <td className="px-3 py-2.5 text-center">
-                            <span className="flex items-center justify-center gap-1">
-                              {coacheeBalls(coachee).map((ball) => (
-                                <span
-                                  key={ball.key}
-                                  title={ball.title}
-                                  className={cn('w-3.5 h-3.5 rounded-full', ball.color)}
-                                />
-                              ))}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <>
+                    <div className="sticky top-0 z-10 flex items-center gap-4 bg-stone-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-stone-500 border-b border-stone-200">
+                      <span className="flex-1 cursor-pointer select-none" onClick={() => toggleListSort('name')}>{formData.lang === 'DE' ? 'Name' : 'Name'}{listSortBy === 'name' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</span>
+                      <span className="cursor-pointer select-none" onClick={() => toggleListSort('status')}>Status{listSortBy === 'status' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</span>
+                    </div>
+                    <div className="divide-y divide-stone-200">
+                      {filteredCoachees.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((coachee) => {
+                        const balls = coacheeBalls(coachee);
+                        const levelStr = coachee.referee_level ? `${coachee.referee_level}${coachee.stage ? `-${coachee.stage}` : ''}` : '';
+                        const groupStr = normalizeCoacheeGroup(coachee.groups) || '';
+                        const sr1 = games1SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
+                        const sr2 = games2SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
+                        return (
+                          <div
+                            key={coachee.id}
+                            onClick={() => handleSelectCoachee(coachee)}
+                            className={cn(
+                              "px-3 py-2.5 cursor-pointer transition-colors",
+                              selectedCoacheeId === coachee.id ? "bg-blue-50" : "hover:bg-stone-50"
+                            )}
+                          >
+                            <div className="flex items-start gap-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="font-semibold text-sm text-stone-900">{coachee.full_name}</div>
+                                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-stone-500">
+                                  {levelStr && <span>{levelStr}</span>}
+                                  {groupStr && <span>{groupStr}</span>}
+                                  {(sr1 > 0 || sr2 > 0) && (
+                                    <span className="text-stone-400">
+                                      {sr1 > 0 && <span>1SR: {sr1}</span>}
+                                      {sr1 > 0 && sr2 > 0 && <span className="mx-1">·</span>}
+                                      {sr2 > 0 && <span>2SR: {sr2}</span>}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                                {balls.length > 0 ? balls.map((ball) => (
+                                  <span
+                                    key={ball.key}
+                                    className={cn('inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-full', ball.color)}
+                                  >
+                                    {ball.title}
+                                  </span>
+                                )) : (
+                                  <span className="text-xs text-stone-300">–</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
                 )}
                 {filteredCoachees.length > LIST_PAGE_SIZE && (
                   <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
@@ -1830,7 +1839,9 @@ export default function App() {
                         {filteredGames.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((game) => {
                           const d = new Date(game.date);
                           const dateValid = !isNaN(d.getTime());
-                          const datePart = dateValid ? `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}` : (game.date || '-');
+                          const dayOfWeek = dateValid ? d.toLocaleDateString(formData.lang === 'DE' ? 'de-CH' : 'en-GB', { weekday: 'short' }) : '';
+                          const yearStr = window.innerWidth < 640 ? String(d.getFullYear()).slice(-2) : String(d.getFullYear());
+                          const datePart = dateValid ? `${dayOfWeek} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${yearStr}` : (game.date || '-');
                           const timePart = dateValid ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
                           const isExpanded = expandedGameId === game.id;
                           const r1 = game.firstReferee || '';
@@ -1870,8 +1881,8 @@ export default function App() {
                                   {game.isLdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>}
                                 </div>
                                 {/* Teams */}
-                                <div className="mt-1 text-base text-stone-900 truncate">{game.homeTeam}</div>
-                                <div className="text-base text-stone-600 truncate">{game.awayTeam}</div>
+                                <div className="mt-1 text-base text-stone-800 truncate">{game.homeTeam}</div>
+                                <div className="text-base text-stone-800 truncate">{game.awayTeam}</div>
                                 {/* Location (hall name, clickable to maps) */}
                                 {game.location && (
                                   <a
@@ -1879,7 +1890,7 @@ export default function App() {
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     onClick={(e) => e.stopPropagation()}
-                                    className="mt-0.5 block text-sm text-stone-400 hover:text-stone-600 underline decoration-stone-300 hover:decoration-stone-400 truncate transition-colors"
+                                    className="mt-0.5 block text-sm text-blue-500 hover:text-blue-700 underline decoration-blue-300 hover:decoration-blue-500 truncate transition-colors"
                                   >
                                     {game.location.split(',')[0].trim()}
                                   </a>
@@ -2106,14 +2117,14 @@ export default function App() {
                       <ArrowLeft size={16} />
                       {t.rcBackToOverview}
                     </button>
-                    <h3 className="text-base font-semibold text-stone-800 mb-4">{selectedRcName} — {t.rcCoacheeSummary}</h3>
-                    {rcCoacheeSummaryLoading ? (
+                    <h3 className="text-base font-semibold text-stone-800 mb-4">{selectedRcName}</h3>
+                    {rcCoachSummaryLoading ? (
                       <p className="text-sm text-stone-500">{t.loading}</p>
-                    ) : rcCoacheeSummaryData.length === 0 ? (
+                    ) : rcCoachSummaryData.length === 0 ? (
                       <p className="text-sm text-stone-500">{t.rcNoData}</p>
                     ) : (
                       <div className="space-y-4">
-                        {rcCoacheeSummaryData.map((cs) => (
+                        {rcCoachSummaryData.map((cs) => (
                           <div key={cs.coacheeName} className="border border-stone-200 rounded-lg overflow-hidden">
                             <div className="bg-stone-50 px-4 py-2.5 flex items-center gap-3">
                               <span className="font-semibold text-sm text-stone-800">{cs.coacheeName}</span>

@@ -1,4 +1,4 @@
-import type { EligibleGame, FeedbackFormData, RcOverviewEntry, RcCoacheeSummary } from '../types';
+import type { EligibleGame, FeedbackFormData, RcOverviewEntry, rcCoachSummary } from '../types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
@@ -277,12 +277,12 @@ export async function loadRcOverview(): Promise<RcOverviewEntry[]> {
   return response.json() as Promise<RcOverviewEntry[]>;
 }
 
-export async function loadRcCoacheeSummary(rcName: string): Promise<RcCoacheeSummary[]> {
+export async function loadrcCoachSummary(rcName: string): Promise<rcCoachSummary[]> {
   const response = await fetch(apiUrl(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees`));
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  return response.json() as Promise<RcCoacheeSummary[]>;
+  return response.json() as Promise<rcCoachSummary[]>;
 }
 
 export async function syncGamesFromVolleyManager(payload?: { date?: string; from?: string; to?: string }) {

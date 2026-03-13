@@ -578,25 +578,31 @@ async function fetchAllVmGames(
     Cookie: jar.header(),
   };
 
+  console.log(`[vm] Fetching games from ${from} to ${to} — first batch...`);
   const firstResponse = await fetch(url, {
     method: 'POST',
     headers,
     body: buildVmSearchBody(csrfToken, 0, VM_BATCH_SIZE, from, to),
   });
+  console.log(`[vm] First batch response: ${firstResponse.status}`);
   if (!firstResponse.ok) {
-    throw new Error(`VolleyManager search failed: ${firstResponse.status}`);
+    const body = await firstResponse.text();
+    throw new Error(`VolleyManager search failed: ${firstResponse.status} — ${body.slice(0, 200)}`);
   }
 
   const firstResult = await firstResponse.json() as { items?: unknown[]; totalItemsCount?: number };
   const items = [...(firstResult.items ?? [])];
   const total = firstResult.totalItemsCount ?? 0;
+  console.log(`[vm] First batch: ${items.length} items, total: ${total}`);
 
   while (items.length < total) {
+    console.log(`[vm] Fetching batch at offset ${items.length}/${total}...`);
     const response = await fetch(url, {
       method: 'POST',
       headers,
       body: buildVmSearchBody(csrfToken, items.length, VM_BATCH_SIZE, from, to),
     });
+    console.log(`[vm] Batch response: ${response.status}`);
     if (!response.ok) {
       break;
     }
@@ -606,6 +612,7 @@ async function fetchAllVmGames(
       break;
     }
     items.push(...nextItems);
+    console.log(`[vm] Progress: ${items.length}/${total}`);
   }
 
   return { items, total };

@@ -438,6 +438,8 @@ export default function App() {
   const [viewMode, setViewMode] = useState<'feedback' | 'admin'>('feedback');
   const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>('coachees');
   const [listTab, setListTab] = useState<'coachees' | 'games'>('coachees');
+  const [listPage, setListPage] = useState(0);
+  const LIST_PAGE_SIZE = 50;
   const [listSearch, setListSearch] = useState('');
   const [listFilterLevel, setListFilterLevel] = useState('');
   const [listFilterNeedsObs, setListFilterNeedsObs] = useState(true);
@@ -1182,7 +1184,7 @@ export default function App() {
             {/* Toggle tabs */}
             <div className="flex items-center gap-2 mb-3">
               <button
-                onClick={() => { setListTab('coachees'); setListSearch(''); }}
+                onClick={() => { setListTab('coachees'); setListSearch(''); setListPage(0); }}
                 className={cn(
                   "px-3 py-1.5 text-sm font-medium rounded transition-colors",
                   listTab === 'coachees'
@@ -1193,7 +1195,7 @@ export default function App() {
                 {t.coacheePool}
               </button>
               <button
-                onClick={() => { setListTab('games'); setListSearch(''); }}
+                onClick={() => { setListTab('games'); setListSearch(''); setListPage(0); }}
                 className={cn(
                   "px-3 py-1.5 text-sm font-medium rounded transition-colors",
                   listTab === 'games'
@@ -1210,7 +1212,7 @@ export default function App() {
               <input
                 type="text"
                 value={listSearch}
-                onChange={(e) => setListSearch(e.target.value)}
+                onChange={(e) => { setListSearch(e.target.value); setListPage(0); }}
                 placeholder={formData.lang === 'DE' ? 'Suche...' : 'Search...'}
                 className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
               />
@@ -1310,7 +1312,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-stone-200">
-                      {filteredCoachees.map((coachee) => (
+                      {filteredCoachees.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((coachee) => (
                         <tr
                           key={coachee.id}
                           onClick={() => handleSelectCoachee(coachee)}
@@ -1341,6 +1343,16 @@ export default function App() {
                     </tbody>
                   </table>
                 )}
+                {filteredCoachees.length > LIST_PAGE_SIZE && (
+                  <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
+                    <span>{filteredCoachees.length} {formData.lang === 'DE' ? 'Einträge' : 'entries'}</span>
+                    <div className="flex items-center gap-2">
+                      <button disabled={listPage === 0} onClick={() => setListPage((p) => p - 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&laquo;</button>
+                      <span>{listPage + 1} / {Math.ceil(filteredCoachees.length / LIST_PAGE_SIZE)}</span>
+                      <button disabled={(listPage + 1) * LIST_PAGE_SIZE >= filteredCoachees.length} onClick={() => setListPage((p) => p + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1363,7 +1375,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-stone-200">
-                      {filteredGames.map((game) => {
+                      {filteredGames.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((game) => {
                         const d = new Date(game.date);
                         const dateValid = !isNaN(d.getTime());
                         const datePart = dateValid ? `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}` : (game.date || '-');
@@ -1412,6 +1424,16 @@ export default function App() {
                       })}
                     </tbody>
                   </table>
+                )}
+                {filteredGames.length > LIST_PAGE_SIZE && (
+                  <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
+                    <span>{filteredGames.length} {formData.lang === 'DE' ? 'Spiele' : 'games'}</span>
+                    <div className="flex items-center gap-2">
+                      <button disabled={listPage === 0} onClick={() => setListPage((p) => p - 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&laquo;</button>
+                      <span>{listPage + 1} / {Math.ceil(filteredGames.length / LIST_PAGE_SIZE)}</span>
+                      <button disabled={(listPage + 1) * LIST_PAGE_SIZE >= filteredGames.length} onClick={() => setListPage((p) => p + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}

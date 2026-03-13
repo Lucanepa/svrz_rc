@@ -404,6 +404,13 @@ The VM session requires visiting pages in order. Skipping the dashboard causes 4
 
 Skipping step 3 (dashboard) results in persistent 403 at step 4.
 
+### VM login — required cookies and headers
+
+Two additional requirements for VM login to succeed (without these, referee-index returns 403):
+
+- **`language` cookie**: Must be pre-set before the login flow (e.g. `language=de`). The browser always sends this cookie. Without it, VM returns 403 on the referee-index page even with a valid session.
+- **Full User-Agent string**: Must include the full Chrome UA string (e.g. `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36`). A truncated UA (just `AppleWebKit/537.36`) causes 403.
+
 ### VM search API date format
 
 Dates must be ISO 8601 with time and timezone offset:

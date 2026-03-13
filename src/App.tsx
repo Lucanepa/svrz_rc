@@ -255,6 +255,32 @@ function pdfFilename(formData: FeedbackFormData): string {
   return `${match}-${role}.pdf`;
 }
 
+async function generatePdfBase64(element: HTMLElement, pixelRatio: number): Promise<string> {
+  const imageData = await toPng(element, {
+    pixelRatio,
+    backgroundColor: '#ffffff',
+  });
+
+  const img = new Image();
+  await new Promise<void>((resolve) => { img.onload = () => resolve(); img.src = imageData; });
+  const pdfWidth = img.width * 0.75;
+  const pdfHeight = img.height * 0.75;
+  const pdf = new jsPDF({
+    orientation: pdfWidth > pdfHeight ? 'l' : 'p',
+    unit: 'pt',
+    format: [pdfWidth, pdfHeight],
+  });
+  pdf.addImage(imageData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+
+  const arrayBuffer = pdf.output('arraybuffer');
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 function detectInitialLang(): FeedbackFormData['lang'] {
   if (typeof window === 'undefined' || !window.navigator?.language) {
     return INITIAL_DATA.lang;
@@ -455,6 +481,13 @@ export default function App() {
   const [listFilterLevel, setListFilterLevel] = useState('');
   const [listFilterNeedsObs, setListFilterNeedsObs] = useState(true);
   const [listFilterShowInactive, setListFilterShowInactive] = useState(false);
+  const [listSortBy, setListSortBy] = useState<'name' | 'level' | 'status'>('name');
+  const [listSortAsc, setListSortAsc] = useState(true);
+  const toggleListSort = (col: 'name' | 'level' | 'status') => {
+    if (listSortBy === col) setListSortAsc((v) => !v);
+    else { setListSortBy(col); setListSortAsc(true); }
+    setListPage(0);
+  };
   const [gameFilterCoachees, setGameFilterCoachees] = useState<string[]>([]);
   const [gameFilterLeagues, setGameFilterLeagues] = useState<string[]>([]);
   const [gameFilterDateFrom, setGameFilterDateFrom] = useState('');
@@ -1046,7 +1079,7 @@ export default function App() {
   }, [eligibleGames]);
   const filteredCoachees = useMemo(() => {
     const q = listSearch.toLowerCase();
-    return coachees.filter((c) => {
+    const filtered = coachees.filter((c) => {
       if (q && !(c.full_name || '').toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q)) return false;
       if (listFilterLevel && (c.referee_level || '') !== listFilterLevel) return false;
       const isActive = (c.stage || 'active') !== 'inactive';
@@ -1054,7 +1087,22 @@ export default function App() {
       if (listFilterNeedsObs && !c.observation_status?.needsObservation) return false;
       return true;
     });
-  }, [coachees, listSearch, listFilterLevel, listFilterShowInactive, listFilterNeedsObs]);
+    const statusPriority = (c: Coachee) => {
+      const s = c.observation_status;
+      const active = (c.stage || 'active') !== 'inactive';
+      if (active && (s?.hasNoObservation ?? false)) return 0;
+      if (active && (s?.hasFurtherObservationNeeded ?? false)) return 1;
+      if (s?.hasCompletedObservation) return 2;
+      return 3;
+    };
+    const dir = listSortAsc ? 1 : -1;
+    filtered.sort((a, b) => {
+      if (listSortBy === 'name') return dir * (a.full_name || '').localeCompare(b.full_name || '');
+      if (listSortBy === 'level') return dir * (`${a.referee_level || ''}${a.stage || ''}`).localeCompare(`${b.referee_level || ''}${b.stage || ''}`);
+      return dir * (statusPriority(a) - statusPriority(b));
+    });
+    return filtered;
+  }, [coachees, listSearch, listFilterLevel, listFilterShowInactive, listFilterNeedsObs, listSortBy, listSortAsc]);
   // Lookup coachee by normalized name for game filtering
   const coacheeByName = useMemo(() => {
     const map = new Map<string, Coachee>();
@@ -1385,13 +1433,13 @@ export default function App() {
                   <table className="w-full text-base">
                     <thead className="sticky top-0 bg-stone-50 text-xs uppercase font-bold text-stone-500 border-b border-stone-200">
                       <tr>
-                        <th className="text-left px-3 py-2.5">{formData.lang === 'DE' ? 'Name' : 'Name'}</th>
-                        <th className="text-left px-3 py-2.5">{formData.lang === 'DE' ? 'Stufe' : 'Level'}</th>
+                        <th className="text-left px-3 py-2.5 cursor-pointer select-none" onClick={() => toggleListSort('name')}>{formData.lang === 'DE' ? 'Name' : 'Name'}{listSortBy === 'name' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</th>
+                        <th className="text-left px-3 py-2.5 w-24 cursor-pointer select-none" onClick={() => toggleListSort('level')}>{formData.lang === 'DE' ? 'Stufe' : 'Level'}{listSortBy === 'level' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</th>
                         <th className="text-left px-3 py-2.5 hidden md:table-cell">Stage</th>
                         <th className="text-left px-3 py-2.5 hidden md:table-cell">{t.group}</th>
-                        <th className="text-center px-3 py-2.5">1SR</th>
-                        <th className="text-center px-3 py-2.5">2SR</th>
-                        <th className="text-center px-3 py-2.5 w-16"></th>
+                        <th className="text-center px-3 py-2.5 hidden md:table-cell">1SR</th>
+                        <th className="text-center px-3 py-2.5 hidden md:table-cell">2SR</th>
+                        <th className="text-center px-3 py-2.5 w-16 cursor-pointer select-none" onClick={() => toggleListSort('status')}>Status{listSortBy === 'status' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-stone-200">
@@ -1405,11 +1453,11 @@ export default function App() {
                           )}
                         >
                           <td className="px-3 py-2.5 font-semibold text-stone-900">{coachee.full_name}</td>
-                          <td className="px-3 py-2.5 text-stone-600">{coachee.referee_level || '-'}</td>
+                          <td className="px-3 py-2.5 text-stone-600">{coachee.referee_level ? `${coachee.referee_level}${coachee.stage ? `-${coachee.stage}` : ''}` : '-'}</td>
                           <td className="px-3 py-2.5 text-stone-600 hidden md:table-cell">{coachee.stage || '-'}</td>
                           <td className="px-3 py-2.5 text-stone-600 hidden md:table-cell">{normalizeCoacheeGroup(coachee.groups) || '-'}</td>
-                          <td className="px-3 py-2.5 text-center text-stone-600">{games1SRCount.get((coachee.full_name || '').toLowerCase().trim()) || '-'}</td>
-                          <td className="px-3 py-2.5 text-center text-stone-600">{games2SRCount.get((coachee.full_name || '').toLowerCase().trim()) || '-'}</td>
+                          <td className="px-3 py-2.5 text-center text-stone-600 hidden md:table-cell">{games1SRCount.get((coachee.full_name || '').toLowerCase().trim()) || '-'}</td>
+                          <td className="px-3 py-2.5 text-center text-stone-600 hidden md:table-cell">{games2SRCount.get((coachee.full_name || '').toLowerCase().trim()) || '-'}</td>
                           <td className="px-3 py-2.5 text-center">
                             <span className="flex items-center justify-center gap-1">
                               {coacheeBalls(coachee).map((ball) => (

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, Database, LogIn, LogOut, ShieldAlert, ChevronDown } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
@@ -970,6 +970,78 @@ export default function App() {
     });
   };
 
+  // Memoize expensive list computations to avoid recomputing on every render
+  const coacheeNames = useMemo(
+    () => new Set(coachees.map((c) => (c.full_name || '').toLowerCase().trim())),
+    [coachees],
+  );
+  const coacheeLevels = useMemo(
+    () => [...new Set(coachees.map((c) => c.referee_level).filter(Boolean))].sort(),
+    [coachees],
+  );
+  const gameLeagues = useMemo(
+    () => Array.from(new Set<string>(eligibleGames.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort(),
+    [eligibleGames],
+  );
+  const gameCoacheeOptions = useMemo(
+    () => Array.from(new Set<string>(
+      eligibleGames.flatMap((g) => [g.firstReferee, g.secondReferee].filter(Boolean) as string[])
+        .filter((name) => coacheeNames.has(name.toLowerCase().trim()))
+    )).sort(),
+    [eligibleGames, coacheeNames],
+  );
+  const { games1SRCount, games2SRCount } = useMemo(() => {
+    const now = new Date();
+    const upcomingGames = eligibleGames.filter((g) => new Date(g.date) >= now);
+    const sr1 = new Map<string, number>();
+    const sr2 = new Map<string, number>();
+    for (const g of upcomingGames) {
+      const r1 = (g.firstReferee || '').toLowerCase().trim();
+      const r2 = (g.secondReferee || '').toLowerCase().trim();
+      if (r1) sr1.set(r1, (sr1.get(r1) || 0) + 1);
+      if (r2) sr2.set(r2, (sr2.get(r2) || 0) + 1);
+    }
+    return { games1SRCount: sr1, games2SRCount: sr2 };
+  }, [eligibleGames]);
+  const filteredCoachees = useMemo(() => {
+    const q = listSearch.toLowerCase();
+    return coachees.filter((c) => {
+      if (q && !(c.full_name || '').toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q)) return false;
+      if (listFilterLevel && (c.referee_level || '') !== listFilterLevel) return false;
+      const isActive = (c.stage || 'active') !== 'inactive';
+      if (!listFilterShowInactive && !isActive) return false;
+      if (listFilterNeedsObs && !c.observation_status?.needsObservation) return false;
+      return true;
+    });
+  }, [coachees, listSearch, listFilterLevel, listFilterShowInactive, listFilterNeedsObs]);
+  const filteredGames = useMemo(() => {
+    const q = listSearch.toLowerCase();
+    return eligibleGames.filter((g) => {
+      if (q && !(
+        (g.matchNo || '').toLowerCase().includes(q) ||
+        (g.homeTeam || '').toLowerCase().includes(q) ||
+        (g.awayTeam || '').toLowerCase().includes(q) ||
+        (g.league || '').toLowerCase().includes(q) ||
+        (g.firstReferee || '').toLowerCase().includes(q) ||
+        (g.secondReferee || '').toLowerCase().includes(q)
+      )) return false;
+      if (gameFilterCoachees.length > 0) {
+        const refs = [(g.firstReferee || '').toLowerCase().trim(), (g.secondReferee || '').toLowerCase().trim()];
+        if (!gameFilterCoachees.some((c) => refs.includes(c.toLowerCase().trim()))) return false;
+      }
+      if (gameFilterLeagues.length > 0 && !gameFilterLeagues.includes(g.league || '')) return false;
+      if (gameFilterDateFrom) {
+        const from = new Date(gameFilterDateFrom);
+        if (new Date(g.date) < from) return false;
+      }
+      if (gameFilterDateTo) {
+        const to = new Date(gameFilterDateTo + 'T23:59:59');
+        if (new Date(g.date) > to) return false;
+      }
+      return true;
+    });
+  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo]);
+
   return (
     <div className="min-h-screen bg-stone-100 py-8 px-4 print:bg-white print:p-0">
       {/* UI Controls */}
@@ -1092,58 +1164,7 @@ export default function App() {
         )
       )}
 
-      {viewMode === 'feedback' && feedbackSubView === 'coachees' && (() => {
-        const q = listSearch.toLowerCase();
-        const filteredCoachees = coachees.filter((c) => {
-          if (q && !(c.full_name || '').toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q)) return false;
-          if (listFilterLevel && (c.referee_level || '') !== listFilterLevel) return false;
-          const isActive = (c.stage || 'active') !== 'inactive';
-          if (!listFilterShowInactive && !isActive) return false;
-          if (listFilterNeedsObs && !c.observation_status?.needsObservation) return false;
-          return true;
-        });
-        const coacheeNames = new Set(coachees.map((c) => (c.full_name || '').toLowerCase().trim()));
-        const gameLeagues = Array.from(new Set<string>(eligibleGames.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort();
-        const gameCoacheeOptions = Array.from(new Set<string>(
-          eligibleGames.flatMap((g) => [g.firstReferee, g.secondReferee].filter(Boolean) as string[])
-            .filter((name) => coacheeNames.has(name.toLowerCase().trim()))
-        )).sort();
-        const filteredGames = eligibleGames.filter((g) => {
-          if (q && !(
-            (g.matchNo || '').toLowerCase().includes(q) ||
-            (g.homeTeam || '').toLowerCase().includes(q) ||
-            (g.awayTeam || '').toLowerCase().includes(q) ||
-            (g.league || '').toLowerCase().includes(q) ||
-            (g.firstReferee || '').toLowerCase().includes(q) ||
-            (g.secondReferee || '').toLowerCase().includes(q)
-          )) return false;
-          if (gameFilterCoachees.length > 0) {
-            const refs = [(g.firstReferee || '').toLowerCase().trim(), (g.secondReferee || '').toLowerCase().trim()];
-            if (!gameFilterCoachees.some((c) => refs.includes(c.toLowerCase().trim()))) return false;
-          }
-          if (gameFilterLeagues.length > 0 && !gameFilterLeagues.includes(g.league || '')) return false;
-          if (gameFilterDateFrom) {
-            const from = new Date(gameFilterDateFrom);
-            if (new Date(g.date) < from) return false;
-          }
-          if (gameFilterDateTo) {
-            const to = new Date(gameFilterDateTo + 'T23:59:59');
-            if (new Date(g.date) > to) return false;
-          }
-          return true;
-        });
-        const coacheeLevels = [...new Set(coachees.map((c) => c.referee_level).filter(Boolean))].sort();
-        const now = new Date();
-        const upcomingGames = eligibleGames.filter((g) => new Date(g.date) >= now);
-        const games1SRCount = new Map<string, number>();
-        const games2SRCount = new Map<string, number>();
-        for (const g of upcomingGames) {
-          const r1 = (g.firstReferee || '').toLowerCase().trim();
-          const r2 = (g.secondReferee || '').toLowerCase().trim();
-          if (r1) games1SRCount.set(r1, (games1SRCount.get(r1) || 0) + 1);
-          if (r2) games2SRCount.set(r2, (games2SRCount.get(r2) || 0) + 1);
-        }
-        return (
+      {viewMode === 'feedback' && feedbackSubView === 'coachees' && (
         <div className="max-w-5xl mx-auto no-print">
           <div className="bg-white p-4 shadow-xl border border-stone-200 mb-4 flex items-center gap-4">
             <img
@@ -1400,8 +1421,7 @@ export default function App() {
             )}
           </div>
         </div>
-        );
-      })()}
+      )}
 
       {viewMode === 'feedback' && feedbackSubView === 'coacheeGames' && (
         <div className="max-w-4xl mx-auto bg-white p-3 sm:p-6 shadow-xl border border-stone-200 no-print">

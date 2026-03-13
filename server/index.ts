@@ -1028,12 +1028,7 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
 }
 
 async function getCoacheeNameSet(prefetchedCoachees?: AnyRecord[]): Promise<Set<string>> {
-  const coachees = prefetchedCoachees ?? await (async () => {
-    await ensureAdminAuth();
-    return withCollection(collectionCandidates.coachees, (collection) =>
-      collection.getFullList<AnyRecord>({ sort: 'full_name' }),
-    );
-  })();
+  const coachees = prefetchedCoachees ?? await listCoacheesWithFallbackSort();
   const names = new Set<string>();
 
   const addVariant = (value: unknown) => {
@@ -1056,6 +1051,23 @@ async function getCoacheeNameSet(prefetchedCoachees?: AnyRecord[]): Promise<Set<
   }
 
   return names;
+}
+
+async function listCoacheesWithFallbackSort(): Promise<AnyRecord[]> {
+  await ensureAdminAuth();
+  try {
+    return await withCollection(collectionCandidates.coachees, (collection) =>
+      collection.getFullList<AnyRecord>({ sort: 'full_name' }),
+    );
+  } catch (error) {
+    if (!isPocketBaseBadRequest(error)) {
+      throw error;
+    }
+    // Older schemas may not expose `full_name`; retry without sort for compatibility.
+    return withCollection(collectionCandidates.coachees, (collection) =>
+      collection.getFullList<AnyRecord>({}),
+    );
+  }
 }
 
 async function getEligibleGames() {
@@ -1133,12 +1145,7 @@ type CoacheeObservationSummary = {
 };
 
 async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<string, boolean>; coachees?: AnyRecord[] }) {
-  const coachees = opts?.coachees ?? await (async () => {
-    await ensureAdminAuth();
-    return withCollection(collectionCandidates.coachees, (collection) =>
-      collection.getFullList<AnyRecord>({ sort: 'full_name' }),
-    );
-  })();
+  const coachees = opts?.coachees ?? await listCoacheesWithFallbackSort();
 
   // Fetch all observations in a single getFullList call to avoid 429 rate limiting
   const stats = new Map<string, { count: number; hasFurther: boolean; hasCompleted: boolean; latestAt: string }>();
@@ -1715,9 +1722,7 @@ app.post('/api/vm/auth-check', requireAdminSession, async (req: Request, res: Ex
 app.get('/api/coachees', async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    const rows = await withCollection(collectionCandidates.coachees, (collection) =>
-      collection.getFullList<AnyRecord>({ sort: 'full_name' }),
-    );
+    const rows = await listCoacheesWithFallbackSort();
     const summaries = await getCoacheeObservationSummaryMap({ coachees: rows });
     const enriched = rows.map((row) => {
       const stage = asText(row.stage) || 'active';
@@ -2042,9 +2047,7 @@ app.get('/api/games/calendar-status', async (_req: Request, res: ExpressResponse
           fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge',
         }),
       ),
-      withCollection(collectionCandidates.coachees, (collection) =>
-        collection.getFullList<AnyRecord>({ sort: 'full_name' }),
-      ),
+      listCoacheesWithFallbackSort(),
     ]);
     const summaryById = await getCoacheeObservationSummaryMap({ coachees });
 

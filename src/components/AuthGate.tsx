@@ -1,5 +1,6 @@
 import React, { useState, useEffect, type ReactNode } from 'react';
 import { Lock, Eye, EyeOff } from 'lucide-react';
+import SvrzLogo from '../SvrzLogo';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
@@ -67,14 +68,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-lg p-8 w-full max-w-sm border border-stone-200">
         <div className="flex flex-col items-center mb-6">
-          <div className="text-center mb-4">
-            <div className="text-red-600 font-black italic text-3xl leading-none tracking-tighter">Swiss Volley</div>
-            <div className="text-[11px] font-bold text-stone-800 tracking-widest uppercase mt-1">REGION ZÜRICH</div>
-          </div>
-          <div className="bg-stone-100 rounded-full p-3">
+          <SvrzLogo className="h-12 w-auto" />
+          <p className="text-sm text-stone-500 mt-3">Referee Coaching</p>
+          <div className="bg-stone-100 rounded-full p-3 mt-2">
             <Lock className="h-6 w-6 text-stone-500" />
           </div>
-          <p className="text-sm text-stone-500 mt-3">Referee Coaching</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

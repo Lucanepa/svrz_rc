@@ -534,13 +534,6 @@ async function ensureAdminAuth() {
   }
   const email = process.env.POCKETBASE_ADMIN_EMAIL || '';
   const password = process.env.POCKETBASE_ADMIN_PASSWORD || '';
-  try {
-    await pb.admins.authWithPassword(email, password);
-    return;
-  } catch {
-    // PocketBase versions may use _superusers instead of admins.
-  }
-
   await pb.collection('_superusers').authWithPassword(email, password);
 }
 

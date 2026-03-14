@@ -7,7 +7,7 @@ This project is a React PWA + Node/Express API + PocketBase backend:
 - Frontend app: `src/*` (main UI in `src/App.tsx`, API client in `src/lib/pocketbase.ts`)
 - Backend API: `server/index.ts`
 - Database/storage/auth backend: PocketBase on VPS
-- External upstream data source: VolleyManager (login + CSRF + paginated games sync)
+- External upstream data source: Swiss Volley public data (authenticated sync)
 
 Local dev command:
 
@@ -27,7 +27,7 @@ Vite proxy forwards `/api/*` to `http://localhost:8787` in local development.
 1. Frontend calls only `/api/*` (no direct PocketBase admin calls in browser).
 2. Backend authenticates against PocketBase admin API.
 3. Backend reads/writes PocketBase collections (`games`, `coachees`, `referee_coaches`, `referee_coach_feedbacks`, `observations`).
-4. Games can be synced from VolleyManager manually and on schedule.
+4. Games can be synced from Swiss Volley public data manually and on schedule.
 5. Feedback submit endpoint saves DB records + uploads PDF + sends email + closes role when applicable.
 
 ## VPS + Network Context
@@ -121,8 +121,8 @@ VITE_API_BASE_URL="" # optional; set for static hosting that needs absolute API 
 POCKETBASE_URL="http://100.69.245.37"
 POCKETBASE_ADMIN_EMAIL="..."
 POCKETBASE_ADMIN_PASSWORD="..."
-VM_USERNAME="..."
-VM_PASSWORD="..."
+VM_USERNAME="..."   # game sync credentials
+VM_PASSWORD="..."   # game sync credentials
 ```
 
 ### Backend vars (admin session / scheduling / collections)
@@ -131,7 +131,7 @@ VM_PASSWORD="..."
 ADMIN_SESSION_SECRET="long-random-secret" # recommended
 ADMIN_SESSION_TTL_MS="28800000"           # default 8h
 
-VM_BASE="https://volleymanager.volleyball.ch"
+VM_BASE=""  # game sync base URL
 VM_SYNC_CRON="0 5 * * *"
 VM_SYNC_TIMEZONE="Europe/Zurich"
 VM_SYNC_MAX_RETRIES="10"
@@ -164,7 +164,7 @@ FEEDBACK_TEST_RECIPIENT="you@..."
 
 ### `games`
 
-Stores synced matches from VolleyManager.
+Stores synced matches from Swiss Volley public data.
 
 Common fields: `match_no`, `league`, `match_date`, `location`, `home_team`, `away_team`, `first_referee`, `second_referee`, `first_line_judge`, `second_line_judge`, `assigned_rc`, `feedback_closed_roles`, `source_payload`.
 
@@ -224,9 +224,9 @@ Read endpoints used by app are generally open, but still depend on valid server-
 - `PUT /api/games/:id/assign-rc`: assign RC to a game.
 - `GET /api/rc-overview`: per-RC done/outstanding/planned summary.
 - `GET /api/rc-overview/:rcName/coachees`: per-RC coachee breakdown.
-- `POST /api/games/sync`: run VolleyManager sync.
+- `POST /api/games/sync`: run game sync from Swiss Volley data.
 - `POST /api/games/sync/debug`: run sync with debug trace payload.
-- `POST /api/vm/auth-check`: validate VolleyManager login/session.
+- `POST /api/vm/auth-check`: validate upstream auth/session.
 - `GET /api/coachees`: list coachees + observation status summary.
 - `POST /api/coachees`: create coachee.
 - `PUT /api/coachees/:id`: update coachee.
@@ -290,7 +290,7 @@ curl -X POST "http://localhost:8787/api/games/sync" \
 
 Then call `/api/eligible-games` again.
 
-### 5) Debug VolleyManager auth/sync
+### 5) Debug upstream auth/sync
 
 ```bash
 curl -X POST "http://localhost:8787/api/vm/auth-check" \
@@ -327,267 +327,13 @@ Automatic sync runs inside `server/index.ts` using `node-cron`:
 
 - cron default: `0 5 * * *`
 - timezone default: `Europe/Zurich`
-- retries (cron path): `VM_SYNC_MAX_RETRIES`, `VM_SYNC_RETRY_DELAY_MS`
+- retries (cron path): configurable via env vars
 
 Production note: keep API process continuously running (PM2/systemd/container), otherwise scheduled sync will not run.
 
-## VolleyManager 403 Auth-Check Incident (Reference)
+## Upstream Sync Troubleshooting
 
-This repo had an intermittent VolleyManager auth/session issue where sync failed before fetch with:
-
-- `Error: Could not extract VolleyManager CSRF token after login.`
-- `403 - Forbidden` on the referee admin page.
-
-The key troubleshooting endpoint is:
-
-- `POST /api/vm/auth-check` (use `{"debug": true}` to return request-chain trace)
-
-Known trace patterns:
-
-- Healthy:
-  - `login-page` -> `200`
-  - `authenticate` -> `303` (redirect)
-  - `dashboard` -> `200`
-  - `referee-index` -> `200`
-  - `csrfTokenFound: true`
-- Failing 403 case:
-  - login may still show `303` + dashboard `200`
-  - `referee-index` (`/indoorvolleyball.refadmin/refereegame/index`) -> `403`
-  - CSRF extraction fails, so `/api/games/sync` cannot proceed
-
-Interpretation: account can partially authenticate, but does not have working access to the referee admin page (permission/role/session-policy issue or transient upstream block).
-
-Operational mitigation in place:
-
-- Keep `POST /api/vm/auth-check` for fast diagnosis without DB writes.
-- Use `POST /api/games/sync/debug` for end-to-end trace with payload details.
-- Scheduler retries are configured via `VM_SYNC_MAX_RETRIES` and `VM_SYNC_RETRY_DELAY_MS` to reduce failures from transient VM `403`.
-
-### Headers used by VM flow (current)
-
-Header behavior in `server/index.ts`:
-
-- Base redirect/login helper (`followRedirects`) always sends:
-  - `User-Agent`
-  - `Cookie` (from in-memory cookie jar)
-- Login submit (`/sportmanager.security/authentication/authenticate`) adds:
-  - `Content-Type: application/x-www-form-urlencoded`
-- Referee index fetch (`/indoorvolleyball.refadmin/refereegame/index`) adds:
-  - `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`
-  - `Accept-Language: de-CH,de;q=0.9,en;q=0.8`
-  - `Referer: ${VM_BASE}/`
-  - `Sec-Fetch-Dest: document`
-  - `Sec-Fetch-Mode: navigate`
-  - `Sec-Fetch-Site: same-origin`
-- Search API fetch (`/api/.../searchForManagingAssociation`) sends:
-  - `User-Agent`
-  - **`Content-Type: text/plain;charset=UTF-8`** (NOT `application/x-www-form-urlencoded` — VM returns 500 with wrong content-type)
-  - `Accept: */*`
-  - `Accept-Language: de-CH,de;q=0.9,en;q=0.8`
-  - `Origin: ${VM_BASE}`
-  - `Referer: ${VM_BASE}/indoorvolleyball.refadmin/refereegame/index`
-  - `Window-Unique-Id: <from data-window-unique-id attribute on referee page>`
-  - `Sec-Fetch-Dest: empty`
-  - `Sec-Fetch-Mode: cors`
-  - `Sec-Fetch-Site: same-origin`
-  - `Cookie`
-
-### VM login flow — required navigation sequence
-
-The VM session requires visiting pages in order. Skipping the dashboard causes 403 on referee-index:
-
-1. `GET /login` → 200 (extract hidden form fields)
-2. `POST /sportmanager.security/authentication/authenticate` → 303 redirect
-3. **`GET /` (dashboard)** → 200 (MUST visit — establishes session permissions)
-4. `GET /indoorvolleyball.refadmin/refereegame/index` → 200 (extract `data-csrf-token` + `data-window-unique-id`)
-5. `POST /api/indoorvolleyball.refadmin/api%5celasticsearchrefereegame/searchForManagingAssociation` → 200 JSON
-
-Skipping step 3 (dashboard) results in persistent 403 at step 4.
-
-### VM login — required cookies and headers
-
-Two additional requirements for VM login to succeed (without these, referee-index returns 403):
-
-- **`language` cookie**: Must be pre-set before the login flow (e.g. `language=de`). The browser always sends this cookie. Without it, VM returns 403 on the referee-index page even with a valid session.
-- **Full User-Agent string**: Must include the full Chrome UA string (e.g. `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36`). A truncated UA (just `AppleWebKit/537.36`) causes 403.
-
-### VM search API date format
-
-Dates must be ISO 8601 with time and timezone offset:
-
-- `from`: `2025-10-10T22:00:00.000Z` (previous day 22:00 UTC = midnight CET)
-- `to`: `2025-10-11T21:59:59.000Z` (end of day CET in UTC)
-
-Simple date strings like `2025-10-11` cause 500 errors.
-
-### VM search API — default filters in browser UI
-
-The browser UI has active toggle buttons:
-
-- **"Contrassegnato per RD"** → adds `searchConfiguration[propertyFilters][1][propertyName]=isSupervised` + `boolean=true`
-- **"ARB da osservare"** → similar filter
-- **Date range** → defaults to the indoor season (e.g. `21.05.2025 - 20.05.2026`)
-
-Our sync does NOT use these filters — it fetches all games in the date range, then filters by coachee name match locally. This is intentional (we want all games, not just RD-flagged ones).
-
-### VM API — available game result data (verified 2026-03-13)
-
-Game results ARE available from the VM Elasticsearch API. Add these to `propertyRenderConfiguration`:
-
-- `game.gameResultReportFromHomeTeam` — most commonly filled
-- `game.gameResultReportFromReferee` — sometimes filled
-- `game.gameResultReportFromChampionshipOwner` — rarely filled
-- `game.bestOfSeriesResult` — aggregate result
-
-The `gameResultReportFromHomeTeam` object contains per-set scores:
-
-```json
-{
-  "homeTeamSet1Balls": 25,
-  "homeTeamSet2Balls": 25,
-  "homeTeamSet3Balls": 25,
-  "homeTeamSet4Balls": null,
-  "homeTeamSet5Balls": null,
-  "awayTeamSet1Balls": 18,
-  "awayTeamSet2Balls": 15,
-  "awayTeamSet3Balls": 15,
-  "awayTeamSet4Balls": null,
-  "awayTeamSet5Balls": null,
-  "homeTeamGoldenSetBalls": null,
-  "awayTeamGoldenSetBalls": null
-}
-```
-
-To derive the match result: count non-null sets where `homeTeamSetNBalls > awayTeamSetNBalls` (and vice versa).
-
-Priority for reading results: `gameResultReportFromChampionshipOwner` > `gameResultReportFromReferee` > `gameResultReportFromHomeTeam`.
-
-### VM API — full property list (reference)
-
-Properties actually used by the browser UI (42 render properties):
-
-```text
-game.startingDateTime, gameDayOfWeek, game.number,
-game.group.phase.league.leagueCategory.name,
-game.group.phase.league.leagueCategory.displayNameWithManagingAssociationShortName,
-game.group.phase.league.gender,
-game.group.name, game.group.displayName,
-game.group.phase.name, game.group.phase.displayName,
-game.encounter.teamHome.identifier, game.encounter.teamHome.name,
-game.encounter.teamHome.displayName, game.encounter.teamHome.leagueCategory.name,
-game.encounter.teamAway.identifier, game.encounter.teamAway.name,
-game.encounter.teamAway.displayName, game.encounter.teamAway.leagueCategory.name,
-game.hall.name, game.hall.displayName,
-game.hall.primaryPostalAddress.additionToAddress,
-game.hall.primaryPostalAddress.combinedAddress,
-game.hall.primaryPostalAddress.country.countryCode,
-game.hall.primaryPostalAddress.postalCode, game.hall.primaryPostalAddress.city,
-activeFirstHeadRefereeName, activeSecondHeadRefereeName,
-activeFirstLinesmanRefereeName, activeSecondLinesmanRefereeName,
-activeThirdLinesmanRefereeName, activeFourthLinesmanRefereeName,
-activeStandbyHeadRefereeName, activeStandbyLinesmanName,
-isSupervised, isHeadOneSupervised, isHeadTwoSupervised,
-isLinesmanOneSupervised, isLinesmanTwoSupervised,
-isLinesmanThreeSupervised, isLinesmanFourSupervised,
-hasAtLeastOneRefereeIntendedToBeSupervised,
-refereeConvocations.*.indoorAssociationReferee.indoorReferee.person.displayName
-```
-
-Note: our `RENDER_PROPERTIES` in `server/index.ts` uses `activeFirstLineJudgeName` / `activeSecondLineJudgeName` — the browser uses `activeFirstLinesmanRefereeName` / `activeSecondLinesmanRefereeName`. Both seem to work but the browser naming is canonical.
-
-### VM API — hall geolocation and Google Maps links (verified 2026-03-13)
-
-Gym/hall location data is available at:
-
-- `game.hall.primaryPostalAddress.geographicalLocation.plusCode` — Google Plus Code (e.g. `8FVCFH6H+V5`)
-- `game.hall.primaryPostalAddress.geographicalLocation.latitude` — e.g. `47.4621939`
-- `game.hall.primaryPostalAddress.geographicalLocation.longitude` — e.g. `8.577942`
-- `game.hall.hasPlusCode` — boolean indicating if plus code exists
-
-To build a Google Maps link:
-
-```text
-Plus code:  https://www.google.com/maps/place/{urlEncode(plusCode)}
-Lat/Lng:    https://www.google.com/maps?q={lat},{lng}
-```
-
-Example: `https://www.google.com/maps/place/8FVCFH6H%2BV5` → Sporthalle Ruebisbach, Kloten
-
-Add these to `propertyRenderConfiguration` to include in sync:
-
-```text
-game.hall.primaryPostalAddress.geographicalLocation.plusCode
-game.hall.primaryPostalAddress.geographicalLocation.latitude
-game.hall.primaryPostalAddress.geographicalLocation.longitude
-```
-
-### 403 troubleshooting runbook (use this sequence)
-
-When VM sync starts failing, follow this exact order:
-
-1. Verify API and PocketBase baseline:
-
-```bash
-curl "http://localhost:8787/api/health"
-```
-
-2. Run VM auth preflight (no DB writes):
-
-```bash
-curl -X POST "http://localhost:8787/api/vm/auth-check" \
-  -H "Content-Type: application/json" \
-  -d '{"debug":true}'
-```
-
-3. If auth-check is healthy, run sync:
-
-```bash
-curl -X POST "http://localhost:8787/api/games/sync" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
-4. If sync still fails, run detailed sync trace:
-
-```bash
-curl -X POST "http://localhost:8787/api/games/sync/debug" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
-#### How to interpret auth-check quickly
-
-- Healthy chain:
-  - `login-page` -> `200`
-  - `authenticate` -> `303`
-  - `dashboard` -> `200`
-  - `referee-index` -> `200`
-  - `csrfTokenFound: true`
-- Broken chain (403 incident):
-  - auth can appear accepted (`303` + dashboard `200`)
-  - then `referee-index` -> `403`
-  - CSRF not found -> sync cannot continue
-
-#### Immediate actions when `referee-index` is 403
-
-- Treat this as VM access/session issue first (not PocketBase schema issue).
-- Re-check VM account permissions for referee admin pages.
-- Retry auth-check before retrying full sync.
-- Keep scheduler retries enabled to absorb transient VM refusals.
-
-#### Reliability settings to keep enabled
-
-- `VM_SYNC_MAX_RETRIES="10"`
-- `VM_SYNC_RETRY_DELAY_MS="15000"`
-
-These apply to cron path and reduce impact of intermittent VM `403` responses.
-
-#### Definition of recovered state
-
-Consider incident resolved only when both are true:
-
-- `POST /api/vm/auth-check` returns `ok: true` and `csrfTokenFound: true`
-- `POST /api/games/sync` returns success payload (for example with `imported` / `totalFetched`)
+Game sync uses Swiss Volley public data with authenticated access. For detailed implementation notes (auth flow, headers, API properties, troubleshooting runbook), see `infrastructure.private.md`.
 
 ## Frontend Hosting / API Routing Notes
 
@@ -600,14 +346,14 @@ Woodpecker CI requirement for static production builds:
 
 - Secret name: `vite_api_base_url`
 - Secret value: `https://rc-api.volleyball.lucanepa.com`
-- `.woodpecker.yml` injects this into `VITE_API_BASE_URL` during `npm run build`
+- `.woodpecker/build.yml` injects this into `VITE_API_BASE_URL` during `npm run build`
 
 ## Data Import Status (Current Snapshot)
 
 - Coachees seeded: `83`
 - Referee coaches seeded: `12`
 - Coachees matched from contacts: `70` direct + manual completion
-- Remaining dependency: games availability depends on successful VolleyManager auth/session during sync
+- Remaining dependency: games availability depends on successful upstream auth/session during sync
 
 ## Troubleshooting Checklist
 

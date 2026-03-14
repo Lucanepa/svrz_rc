@@ -1,11 +1,11 @@
 /**
- * Temporary debug script: fetch raw VM data for specific game numbers.
+ * Temporary debug script: fetch raw game data for specific game numbers.
  * Usage: npx tsx debug-vm-game.ts 378325 382924
  */
 import dotenv from 'dotenv';
 dotenv.config({ path: '.env.local' });
 
-const VM_BASE = process.env.VM_BASE || 'https://volleymanager.volleyball.ch';
+const VM_BASE = process.env.VM_BASE || '';
 const VM_USERNAME = process.env.VM_USERNAME!;
 const VM_PASSWORD = process.env.VM_PASSWORD!;
 
@@ -171,7 +171,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('Logging into VolleyManager...');
+  console.log('Logging in...');
   const { jar, csrfToken } = await login();
   console.log('Logged in successfully!\n');
 

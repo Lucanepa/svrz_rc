@@ -185,7 +185,7 @@ for (const key of requiredEnv) {
 
 const pb = new PocketBase(process.env.POCKETBASE_URL || 'http://127.0.0.1:8090');
 pb.autoCancellation(false);
-const VM_BASE = process.env.VM_BASE || 'https://volleymanager.volleyball.ch';
+const VM_BASE = process.env.VM_BASE || '';
 const VM_BATCH_SIZE = 200;
 const VM_SYNC_CRON = process.env.VM_SYNC_CRON || '0 5 * * *';
 const VM_SYNC_TIMEZONE = process.env.VM_SYNC_TIMEZONE || 'Europe/Zurich';
@@ -689,7 +689,7 @@ async function vmLoginWithTrace(
     lastLoginHint = refereeHtml.includes('/login') ? 'Likely redirected to login (credentials/permissions).' : 'No login redirect hint detected.';
   }
 
-  throw new Error(`Could not extract VolleyManager CSRF token after login (${csrfRetries} attempts). Page title: "${lastTitle}". ${lastLoginHint}`);
+  throw new Error(`Could not extract CSRF token after login (${csrfRetries} attempts). Page title: "${lastTitle}". ${lastLoginHint}`);
 }
 
 function buildVmSearchBody(csrfToken: string, offset: number, limit: number, from: string, to: string): string {
@@ -744,7 +744,7 @@ async function fetchAllVmGames(
   console.log(`[vm] First batch response: ${firstResponse.status}`);
   if (!firstResponse.ok) {
     const body = await firstResponse.text();
-    throw new Error(`VolleyManager search failed: ${firstResponse.status} — ${body.slice(0, 200)}`);
+    throw new Error(`Upstream search failed: ${firstResponse.status} — ${body.slice(0, 200)}`);
   }
 
   const firstResult = await firstResponse.json() as { items?: unknown[]; totalItemsCount?: number };

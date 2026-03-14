@@ -13,6 +13,10 @@ export default defineConfig(({mode}) => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
+        workbox: {
+          clientsClaim: true,
+          skipWaiting: true,
+        },
         manifest: {
           name: 'SR-Coaching Feedback',
           short_name: 'SR-Coaching',

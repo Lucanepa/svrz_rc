@@ -1,6 +1,6 @@
 # Automatic deploy to Codeberg Pages
 
-This repository includes a Woodpecker CI pipeline in `.woodpecker.yml` that:
+This repository includes a Woodpecker CI pipeline in `.woodpecker/` that:
 
 1. installs dependencies with `npm ci`
 2. builds the app with `npm run build`
@@ -75,11 +75,9 @@ Set in `.env` (used by `server/index.ts`):
 - optional `PB_GAMES_COLLECTION`
 - optional `PB_COACHEES_COLLECTION`
 - optional `PB_REFEREE_COACHES_COLLECTION`
-- `VM_USERNAME`
-- `VM_PASSWORD`
-- optional `VM_BASE` (defaults to `https://volleymanager.volleyball.ch`)
-- optional `VM_SYNC_CRON` (defaults to `0 5 * * *`)
-- optional `VM_SYNC_TIMEZONE` (defaults to `Europe/Zurich`)
+- Game sync credentials (see `.env.example`)
+- optional `SYNC_CRON` (defaults to `0 5 * * *`)
+- optional `SYNC_TIMEZONE` (defaults to `Europe/Zurich`)
 
 ### Run locally
 
@@ -106,7 +104,7 @@ npm run dev
 - `POST /api/feedback/submit`
 - `GET/POST/PUT/DELETE /api/coachees`
 - `GET/POST/PUT/DELETE /api/referee-coaches`
-- `POST /api/games/sync` (automatic VolleyManager login + fetch + transform + upsert)
+- `POST /api/games/sync` (sync games from public Swiss Volley data)
 - `GET /api/observations` (supports filters + expand)
 - `GET /api/observations/summary` (aggregated reporting metrics)
 
@@ -116,10 +114,10 @@ npm run dev
 - Defaults:
   - cron: `0 5 * * *`
   - timezone: `Europe/Zurich`
-- Override with `VM_SYNC_CRON` and `VM_SYNC_TIMEZONE` in `.env.local`.
+- Override with `SYNC_CRON` and `SYNC_TIMEZONE` in `.env.local`.
 
 ### Admin UI features
 
 - Create / edit / delete coachees
 - List and delete referee coaching records
-- Trigger automatic games sync from VolleyManager
+- Trigger automatic games sync from Swiss Volley public data

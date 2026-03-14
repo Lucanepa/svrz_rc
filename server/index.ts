@@ -4,7 +4,7 @@ import PocketBase from 'pocketbase';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
 import nodemailer from 'nodemailer';
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual, scryptSync } from 'node:crypto';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -48,6 +48,82 @@ const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || process.env.POC
 if (!ADMIN_SESSION_SECRET) {
   console.warn('[startup] Missing ADMIN_SESSION_SECRET (falling back to empty secret). Set ADMIN_SESSION_SECRET for secure admin sessions.');
 }
+
+// ── Auth gate (app-level password protection) ────────────────────────
+const GATE_COOKIE = 'svrz_gate_session';
+const GATE_TTL_MS = 1000 * 60 * 60 * 24; // 24 h
+const GATE_PASSWORD = process.env.APP_PASSWORD || '';
+const GATE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 min
+const GATE_RATE_LIMIT_MAX = 5;
+
+if (!GATE_PASSWORD) {
+  console.warn('[startup] APP_PASSWORD not set — auth gate is disabled.');
+}
+
+// Precompute scrypt hash of the gate password at startup (64-byte key, 16-byte salt derived from secret)
+const GATE_SALT = ADMIN_SESSION_SECRET ? ADMIN_SESSION_SECRET.slice(0, 16).padEnd(16, '0') : '0'.repeat(16);
+const GATE_PASSWORD_HASH = GATE_PASSWORD
+  ? scryptSync(GATE_PASSWORD, GATE_SALT, 64).toString('hex')
+  : '';
+
+// In-memory rate limiter per IP
+const gateAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function checkGateRateLimit(ip: string): { allowed: boolean; retryAfterMs: number } {
+  const now = Date.now();
+  const entry = gateAttempts.get(ip);
+  if (!entry || now >= entry.resetAt) {
+    gateAttempts.set(ip, { count: 1, resetAt: now + GATE_RATE_LIMIT_WINDOW_MS });
+    return { allowed: true, retryAfterMs: 0 };
+  }
+  if (entry.count >= GATE_RATE_LIMIT_MAX) {
+    return { allowed: false, retryAfterMs: entry.resetAt - now };
+  }
+  entry.count++;
+  return { allowed: true, retryAfterMs: 0 };
+}
+
+function verifyGatePassword(input: string): boolean {
+  const inputHash = scryptSync(input, GATE_SALT, 64);
+  const expectedBuffer = Buffer.from(GATE_PASSWORD_HASH, 'hex');
+  if (inputHash.length !== expectedBuffer.length) return false;
+  return timingSafeEqual(inputHash, expectedBuffer);
+}
+
+function createGateSessionToken(): string {
+  const body = JSON.stringify({ sub: randomUUID(), purpose: 'gate', exp: Date.now() + GATE_TTL_MS });
+  const payload = base64UrlEncode(body);
+  const signature = signAdminSessionPayload(payload);
+  return `${payload}.${signature}`;
+}
+
+function verifyGateSession(req: Request): boolean {
+  const token = getCookieValue(req, GATE_COOKIE);
+  if (!token) return false;
+  const [payload, signature] = token.split('.');
+  if (!payload || !signature) return false;
+  const expectedSignature = signAdminSessionPayload(payload);
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+  if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(base64UrlDecode(payload)) as { exp?: unknown };
+    const exp = Number(parsed.exp);
+    return Number.isFinite(exp) && exp > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+// Periodic cleanup of stale rate-limit entries (every 10 min)
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of gateAttempts) {
+    if (now >= entry.resetAt) gateAttempts.delete(ip);
+  }
+}, 10 * 60 * 1000);
 
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
@@ -1597,6 +1673,46 @@ app.post('/api/admin/auth/login', async (req: Request, res: ExpressResponse) => 
 
 app.post('/api/admin/auth/logout', (_req: Request, res: ExpressResponse) => {
   clearAdminSessionCookie(res);
+  res.json({ ok: true });
+});
+
+// ── Auth gate endpoints ──────────────────────────────────────────────
+app.get('/api/auth/gate/status', (req: Request, res: ExpressResponse) => {
+  if (!GATE_PASSWORD) {
+    res.json({ authenticated: true }); // gate disabled
+    return;
+  }
+  res.json({ authenticated: verifyGateSession(req) });
+});
+
+app.post('/api/auth/gate', (req: Request, res: ExpressResponse) => {
+  if (!GATE_PASSWORD) {
+    res.json({ ok: true }); // gate disabled
+    return;
+  }
+  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+  const { allowed, retryAfterMs } = checkGateRateLimit(ip);
+  if (!allowed) {
+    res.status(429).json({ error: 'Too many attempts. Try again later.', retryAfterMs });
+    return;
+  }
+  const password = asText((req.body ?? {}).password);
+  if (!password) {
+    res.status(400).json({ error: 'Password is required.' });
+    return;
+  }
+  if (!verifyGatePassword(password)) {
+    res.status(401).json({ error: 'Wrong password.' });
+    return;
+  }
+  const token = createGateSessionToken();
+  res.cookie(GATE_COOKIE, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: GATE_TTL_MS,
+    path: '/',
+  });
   res.json({ ok: true });
 });
 

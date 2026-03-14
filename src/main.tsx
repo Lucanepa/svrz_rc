@@ -9,7 +9,7 @@ registerSW({
   immediate: true,
   onRegisteredSW(_swUrl, registration) {
     if (registration) {
-      setInterval(() => { registration.update(); }, 60 * 1000);
+      setInterval(() => { registration.update(); }, 15 * 1000);
     }
   },
 });

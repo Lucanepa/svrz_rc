@@ -1,5 +1,5 @@
 import React, { useState, useEffect, type ReactNode } from 'react';
-import { Lock } from 'lucide-react';
+import { Lock, Eye, EyeOff } from 'lucide-react';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
@@ -16,6 +16,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     fetch(apiUrl('/api/auth/gate/status'), { credentials: 'include' })
@@ -50,8 +51,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         setError('Falsches Passwort');
       }
       setPassword('');
-    } catch {
-      setError('Verbindungsfehler');
+    } catch (err) {
+      console.error('[AuthGate] Login fetch failed:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`Verbindungsfehler: ${msg}`);
     } finally {
       setSubmitting(false);
     }
@@ -71,22 +74,32 @@ export default function AuthGate({ children }: { children: ReactNode }) {
           <div className="bg-stone-100 rounded-full p-3">
             <Lock className="h-6 w-6 text-stone-500" />
           </div>
-          <p className="text-sm text-stone-500 mt-3">SR-Coaching Feedback</p>
+          <p className="text-sm text-stone-500 mt-3">Referee Coaching</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              placeholder="Passwort"
-              autoFocus
-              disabled={submitting}
-              className={`w-full px-4 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-red-500 ${
-                error ? 'border-red-400 bg-red-50' : 'border-stone-300'
-              }`}
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="Passwort"
+                autoFocus
+                disabled={submitting}
+                className={`w-full px-4 py-2.5 pr-10 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-red-500 ${
+                  error ? 'border-red-400 bg-red-50' : 'border-stone-300'
+                }`}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(v => !v)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600"
+                tabIndex={-1}
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
             {error && (
               <p className="text-red-500 text-xs mt-1.5">{error}</p>
             )}

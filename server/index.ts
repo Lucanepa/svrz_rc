@@ -460,6 +460,15 @@ async function withCollection<T>(
         lastError = error;
         continue;
       }
+      // Retry once on 429 (Too Many Requests) after a brief delay
+      if (typeof error === 'object' && error !== null && (error as { status?: number }).status === 429) {
+        await sleep(1000);
+        try {
+          return await action(pb.collection(collectionName), collectionName);
+        } catch (retryError) {
+          throw retryError;
+        }
+      }
       throw error;
     }
   }

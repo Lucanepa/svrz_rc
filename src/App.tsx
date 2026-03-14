@@ -734,9 +734,13 @@ export default function App() {
       return;
     }
     setBackendNotice('');
-    void refreshGames();
-    void refreshCoachees();
-    void refreshCalendarGames();
+    // Load sequentially to avoid overwhelming PocketBase with concurrent requests (429)
+    const loadAll = async () => {
+      await refreshGames();
+      await refreshCoachees();
+      await refreshCalendarGames();
+    };
+    void loadAll();
   }, [formData.lang]);
 
   useEffect(() => {

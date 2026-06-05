@@ -36,7 +36,7 @@ const RATINGS = ['A', 'B', 'C', 'D', 'E'];
 const RATING_COLORS: Record<string, string> = {
   'A': 'bg-green-400 text-white',
   'B': 'bg-green-700 text-white',
-  'C': 'bg-blue-600 text-white',
+  'C': 'bg-red-600 text-white',
   'D': 'bg-yellow-400 text-stone-900',
   'E': 'bg-orange-500 text-white',
   'N/A': 'bg-stone-400 text-white',
@@ -356,7 +356,7 @@ function LeagueLabel({ text }: { text: string }) {
     <>
       {parts.map((part, i) =>
         part === '♂' || part === '♀' ? (
-          <span key={i} className={cn("leading-none font-bold", part === '♂' ? 'text-blue-500' : 'text-pink-500')}>{part}</span>
+          <span key={i} className={cn("leading-none font-bold", part === '♂' ? 'text-red-500' : 'text-pink-500')}>{part}</span>
         ) : (
           <span key={i}>{part}</span>
         ),
@@ -482,7 +482,7 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="h-9 w-full min-w-[120px] flex items-center justify-between gap-1 px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400 text-left"
+        className="h-9 w-full min-w-[120px] flex items-center justify-between gap-1 px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400 text-left"
       >
         <span className="truncate text-stone-700">{label}</span>
         <ChevronDown className="w-4 h-4 text-stone-400 shrink-0" />
@@ -493,21 +493,21 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
             <button
               type="button"
               onClick={() => setPreset(yesterday, yesterday)}
-              className={cn("flex-1 h-8 text-xs rounded border", from === yesterday && to === yesterday ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 hover:bg-stone-50")}
+              className={cn("flex-1 h-8 text-xs rounded border", from === yesterday && to === yesterday ? "bg-red-600 text-white border-red-600" : "border-stone-300 hover:bg-stone-50")}
             >
               {isDE ? 'Gestern' : 'Yesterday'}
             </button>
             <button
               type="button"
               onClick={() => setPreset(today, today)}
-              className={cn("flex-1 h-8 text-xs rounded border", from === today && to === today ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 hover:bg-stone-50")}
+              className={cn("flex-1 h-8 text-xs rounded border", from === today && to === today ? "bg-red-600 text-white border-red-600" : "border-stone-300 hover:bg-stone-50")}
             >
               {isDE ? 'Heute' : 'Today'}
             </button>
             <button
               type="button"
               onClick={() => setPreset(tomorrow, tomorrow)}
-              className={cn("flex-1 h-8 text-xs rounded border", from === tomorrow && to === tomorrow ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 hover:bg-stone-50")}
+              className={cn("flex-1 h-8 text-xs rounded border", from === tomorrow && to === tomorrow ? "bg-red-600 text-white border-red-600" : "border-stone-300 hover:bg-stone-50")}
             >
               {isDE ? 'Morgen' : 'Tomorrow'}
             </button>
@@ -528,7 +528,7 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
                 type="date"
                 value={from}
                 onChange={(e) => onChangeFrom(e.target.value)}
-                className="h-8 w-full px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                className="h-8 w-full px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400"
               />
             </div>
             <div>
@@ -537,7 +537,7 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
                 type="date"
                 value={to}
                 onChange={(e) => onChangeTo(e.target.value)}
-                className="h-8 w-full px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                className="h-8 w-full px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400"
               />
             </div>
           </div>
@@ -577,7 +577,7 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder }: {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="h-9 w-full flex items-center justify-between gap-1 px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400 text-left"
+        className="h-9 w-full flex items-center justify-between gap-1 px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400 text-left"
       >
         <span className="truncate text-stone-700">
           {selected.length === 0 ? placeholder : `${selected.length} ${selected.length === 1 ? 'selected' : 'selected'}`}
@@ -597,7 +597,7 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder }: {
                 type="checkbox"
                 checked={selected.includes(opt)}
                 onChange={() => toggle(opt)}
-                className="h-3.5 w-3.5 rounded border-stone-300 accent-blue-600"
+                className="h-3.5 w-3.5 rounded border-stone-300 accent-red-600"
               />
               <span className="truncate">{opt}</span>
             </label>
@@ -1751,7 +1751,7 @@ export default function App() {
   }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, coacheeByName, coacheeNames]);
 
   return (
-    <div className="min-h-screen bg-stone-100 py-8 px-4 print:bg-white print:p-0">
+    <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
       {/* UI Controls */}
       <div className="max-w-4xl mx-auto mb-6 flex flex-wrap gap-3 no-print">
         {viewMode === 'feedback' && feedbackSubView !== 'coachees' && (
@@ -1776,7 +1776,7 @@ export default function App() {
           <div className="flex items-center gap-2">
             <button
               onClick={toggleRole}
-              className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-colors"
+              className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-red-700 transition-colors"
             >
               <RefreshCw size={18} />
               <span className="hidden sm:inline">{t.switchRole} {formData.role === '1. SR' ? '2. SR' : '1. SR'}</span>
@@ -1826,7 +1826,7 @@ export default function App() {
         adminAuthenticated ? (
           <AdminPanel lang={formData.lang} />
         ) : (
-          <div className="max-w-md mx-auto bg-white border border-stone-200 shadow-xl rounded-lg p-6 no-print">
+          <div className="max-w-md mx-auto bg-white border border-stone-200/70 shadow-card-lg rounded-2xl p-6 sm:p-7 no-print">
             <div className="flex items-start gap-3 mb-4">
               <ShieldAlert className="text-slate-700 mt-0.5" size={20} />
               <div>
@@ -1843,7 +1843,7 @@ export default function App() {
                   type="email"
                   value={adminLoginEmail}
                   onChange={(e) => setAdminLoginEmail(e.target.value)}
-                  className="h-10 w-full mt-1 px-3 rounded border border-stone-300 bg-white focus-visible:ring-2 focus-visible:ring-blue-400 outline-none"
+                  className="h-10 w-full mt-1 px-3 rounded border border-stone-300 bg-white focus-visible:ring-2 focus-visible:ring-red-400 outline-none"
                   required
                 />
               </label>
@@ -1853,7 +1853,7 @@ export default function App() {
                   type="password"
                   value={adminLoginPassword}
                   onChange={(e) => setAdminLoginPassword(e.target.value)}
-                  className="h-10 w-full mt-1 px-3 rounded border border-stone-300 bg-white focus-visible:ring-2 focus-visible:ring-blue-400 outline-none"
+                  className="h-10 w-full mt-1 px-3 rounded border border-stone-300 bg-white focus-visible:ring-2 focus-visible:ring-red-400 outline-none"
                   required
                 />
               </label>
@@ -1870,7 +1870,7 @@ export default function App() {
               <p className="mt-3 text-xs text-stone-500">{t.currentSession}: {adminAuthEmail}</p>
             )}
             {adminAuthNotice && (
-              <p className="mt-2 text-xs text-blue-700">{adminAuthNotice}</p>
+              <p className="mt-2 text-xs text-red-700">{adminAuthNotice}</p>
             )}
           </div>
         )
@@ -1878,17 +1878,17 @@ export default function App() {
 
       {viewMode === 'feedback' && feedbackSubView === 'coachees' && (
         <div className="max-w-5xl mx-auto no-print">
-          <div className="bg-white p-4 shadow-xl border border-stone-200 mb-4 flex items-end sm:items-start gap-4">
+          <div className="bg-white p-4 sm:p-5 rounded-2xl shadow-card border border-stone-200/70 mb-4 flex items-end sm:items-start gap-4">
             <div className="flex-1">
-              <h1 className="text-xl font-bold text-stone-900">{t.title}</h1>
-              <p className="text-xs text-stone-500">Swiss Volley Region Zürich</p>
+              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-stone-900">{t.title}</h1>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400 mt-0.5">Swiss Volley Region Zürich</p>
             </div>
             <div className="flex flex-col items-center justify-end sm:justify-start gap-2 self-end sm:self-start">
               <SvrzLogo className="h-10 w-auto" />
             </div>
           </div>
 
-          <div className="bg-white p-3 sm:p-6 shadow-xl border border-stone-200">
+          <div className="bg-white p-3 sm:p-6 rounded-2xl shadow-card border border-stone-200/70">
             {/* Top row: language toggle + empty form download */}
             <div className="mb-3 flex items-center gap-2">
               <button
@@ -1954,7 +1954,7 @@ export default function App() {
                     value={listSearch}
                     onChange={(e) => { setListSearch(e.target.value); setListPage(0); }}
                     placeholder={formData.lang === 'DE' ? 'Suche...' : 'Search...'}
-                    className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                    className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                   />
                   {(() => {
                     const activeFilterCount = [
@@ -1967,13 +1967,13 @@ export default function App() {
                         onClick={() => setCoacheeFiltersOpen(!coacheeFiltersOpen)}
                         className={cn(
                           "h-9 flex items-center gap-1.5 px-2.5 text-sm border rounded-md transition-colors cursor-pointer",
-                          coacheeFiltersOpen ? "bg-blue-50 border-blue-300 text-blue-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"
+                          coacheeFiltersOpen ? "bg-red-50 border-red-300 text-red-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"
                         )}
                       >
                         <SlidersHorizontal size={14} />
                         <span className="hidden sm:inline">{formData.lang === 'DE' ? 'Filter' : 'Filters'}</span>
                         {activeFilterCount > 0 && (
-                          <span className="ml-0.5 w-5 h-5 flex items-center justify-center rounded-full bg-blue-600 text-white text-[10px] font-bold">{activeFilterCount}</span>
+                          <span className="ml-0.5 w-5 h-5 flex items-center justify-center rounded-full bg-red-600 text-white text-[10px] font-bold">{activeFilterCount}</span>
                         )}
                       </button>
                     );
@@ -1996,7 +1996,7 @@ export default function App() {
                       onClick={() => setListFilterNeedsObs(!listFilterNeedsObs)}
                       className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
                     >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterNeedsObs ? "bg-red-600" : "bg-stone-300")}>
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
                       <span>{formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}</span>
@@ -2005,7 +2005,7 @@ export default function App() {
                       onClick={() => setListFilterShowInactive(!listFilterShowInactive)}
                       className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
                     >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterShowInactive ? "bg-red-600" : "bg-stone-300")}>
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
                       <span>{formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}</span>
@@ -2038,7 +2038,7 @@ export default function App() {
                     value={listSearch}
                     onChange={(e) => { setListSearch(e.target.value); setListPage(0); }}
                     placeholder={formData.lang === 'DE' ? 'Suche...' : 'Search...'}
-                    className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                    className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                   />
                   {(() => {
                     const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo, gameFilterRd, gameFilterLd, gameFilterRcAssigned].filter(Boolean).length;
@@ -2047,13 +2047,13 @@ export default function App() {
                         onClick={() => setFiltersOpen(!filtersOpen)}
                         className={cn(
                           "h-9 flex items-center gap-1.5 px-2.5 text-sm border rounded-md transition-colors cursor-pointer",
-                          filtersOpen ? "bg-blue-50 border-blue-300 text-blue-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"
+                          filtersOpen ? "bg-red-50 border-red-300 text-red-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"
                         )}
                       >
                         <SlidersHorizontal size={14} />
                         <span className="hidden sm:inline">{formData.lang === 'DE' ? 'Filter' : 'Filters'}</span>
                         {activeFilterCount > 0 && (
-                          <span className="ml-0.5 w-5 h-5 flex items-center justify-center rounded-full bg-blue-600 text-white text-[10px] font-bold">{activeFilterCount}</span>
+                          <span className="ml-0.5 w-5 h-5 flex items-center justify-center rounded-full bg-red-600 text-white text-[10px] font-bold">{activeFilterCount}</span>
                         )}
                       </button>
                     );
@@ -2087,19 +2087,19 @@ export default function App() {
                       </button>
                       <button
                         onClick={() => toggleDay(yesterdayStr)}
-                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(yesterdayStr) ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
+                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(yesterdayStr) ? "bg-red-600 text-white border-red-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
                       >
                         {isDE ? 'Gestern' : 'Yesterday'}
                       </button>
                       <button
                         onClick={() => toggleDay(todayStr)}
-                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(todayStr) ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
+                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(todayStr) ? "bg-red-600 text-white border-red-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
                       >
                         {isDE ? 'Heute' : 'Today'}
                       </button>
                       <button
                         onClick={() => toggleDay(tomorrowStr)}
-                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(tomorrowStr) ? "bg-blue-600 text-white border-blue-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
+                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(tomorrowStr) ? "bg-red-600 text-white border-red-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
                       >
                         {isDE ? 'Morgen' : 'Tomorrow'}
                       </button>
@@ -2120,7 +2120,7 @@ export default function App() {
                       onClick={() => setGameFilterNeedsObs(!gameFilterNeedsObs)}
                       className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
                     >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterNeedsObs ? "bg-blue-600" : "bg-stone-300")}>
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterNeedsObs ? "bg-red-600" : "bg-stone-300")}>
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
                       <span>{formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}</span>
@@ -2129,7 +2129,7 @@ export default function App() {
                       onClick={() => setGameFilterShowInactive(!gameFilterShowInactive)}
                       className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
                     >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterShowInactive ? "bg-blue-600" : "bg-stone-300")}>
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterShowInactive ? "bg-red-600" : "bg-stone-300")}>
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
                       <span>{formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}</span>
@@ -2229,7 +2229,7 @@ export default function App() {
             {listTab === 'coachees' && (
               <div className="max-h-[60vh] overflow-auto border border-stone-200 rounded">
                 {filteredCoachees.length === 0 ? (
-                  <p className="text-sm text-stone-500 p-4">{t.noCoachees}</p>
+                  <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><Users size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noCoachees}</p></div>
                 ) : (
                   <>
                     <div className="sticky top-0 z-10 flex items-center gap-4 bg-stone-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-stone-500 border-b border-stone-200">
@@ -2249,7 +2249,7 @@ export default function App() {
                             onClick={() => handleSelectCoachee(coachee)}
                             className={cn(
                               "px-3 py-2.5 cursor-pointer transition-colors",
-                              selectedCoacheeId === coachee.id ? "bg-blue-50" : "hover:bg-stone-50"
+                              selectedCoacheeId === coachee.id ? "bg-red-50" : "hover:bg-stone-50"
                             )}
                           >
                             <div className="flex items-start gap-2">
@@ -2329,7 +2329,7 @@ export default function App() {
                 {gameViewMode === 'list' && (
                   <div className="max-h-[60vh] overflow-auto border border-stone-200 rounded">
                     {filteredGames.length === 0 ? (
-                      <p className="text-sm text-stone-500 p-4">{t.noGames}</p>
+                      <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><CalendarDays size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noGames}</p></div>
                     ) : (
                       <>
                         <div className="sticky top-0 z-10 grid grid-cols-[1fr_auto] items-center gap-2 bg-stone-50 px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-stone-500 border-b border-stone-200">
@@ -2355,7 +2355,7 @@ export default function App() {
                                 onClick={() => setExpandedGameId(isExpanded ? null : game.id)}
                                 className={cn(
                                   "px-3 py-3.5 cursor-pointer transition-colors",
-                                  isExpanded ? "bg-blue-50" : "hover:bg-stone-50"
+                                  isExpanded ? "bg-red-50" : "hover:bg-stone-50"
                                 )}
                               >
                                 {/* Row 1: date/time + status indicators */}
@@ -2409,13 +2409,13 @@ export default function App() {
                                 {/* Location */}
                                 {game.location && (
                                   <div className="mt-0.5 flex items-center gap-1.5">
-                                    <MapPin size={14} className="w-3.5 text-blue-400 shrink-0" />
+                                    <MapPin size={14} className="w-3.5 text-red-400 shrink-0" />
                                     <a
                                       href={game.maps_url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(game.location)}`}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       onClick={(e) => e.stopPropagation()}
-                                      className="text-sm text-blue-500 hover:text-blue-700 underline decoration-blue-300 hover:decoration-blue-500 transition-colors"
+                                      className="text-sm text-red-500 hover:text-red-700 underline decoration-red-300 hover:decoration-red-500 transition-colors"
                                     >
                                       {game.location.split(',')[0].trim()}
                                     </a>
@@ -2451,7 +2451,7 @@ export default function App() {
                               </div>
                               {/* Expanded row */}
                               {isExpanded && (
-                                <div className="px-3 pb-3 pt-1 bg-blue-50 border-t border-blue-100 space-y-2">
+                                <div className="px-3 pb-3 pt-1 bg-red-50 border-t border-red-100 space-y-2">
                                   {/* RC selector + actions */}
                                   <div className="flex flex-wrap items-center gap-3">
                                     <label className="text-xs font-medium text-stone-500">RC:</label>
@@ -2467,7 +2467,7 @@ export default function App() {
                                           setBackendNotice(err instanceof Error ? err.message : String(err));
                                         }
                                       }}
-                                      className="h-9 px-3 text-sm border border-stone-300 rounded-md bg-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-400 transition-colors hover:border-stone-400 flex-1 min-w-[14rem] max-w-sm cursor-pointer"
+                                      className="h-9 px-3 text-sm border border-stone-300 rounded-md bg-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-red-400 transition-colors hover:border-stone-400 flex-1 min-w-[14rem] max-w-sm cursor-pointer"
                                     >
                                       <option value="">-</option>
                                       {rcPeople.map((rc) => (
@@ -2566,11 +2566,11 @@ export default function App() {
                         }}
                         className={cn(
                           "min-h-[3.5rem] sm:h-20 p-0.5 sm:p-1 border border-stone-100 rounded text-xs transition-colors overflow-hidden",
-                          hasGames ? "cursor-pointer hover:bg-blue-50" : "",
-                          isToday && "ring-2 ring-blue-400"
+                          hasGames ? "cursor-pointer hover:bg-red-50" : "",
+                          isToday && "ring-2 ring-red-400"
                         )}
                       >
-                        <div className={cn("font-medium text-[11px] sm:text-xs", isToday ? "text-blue-600" : "text-stone-700")}>{day}</div>
+                        <div className={cn("font-medium text-[11px] sm:text-xs", isToday ? "text-red-600" : "text-stone-700")}>{day}</div>
                         {hasGames && (
                           <div className="mt-0.5 sm:mt-1 flex flex-wrap gap-0.5">
                             {dayGames.slice(0, 3).map((g, i) => (
@@ -2676,7 +2676,7 @@ export default function App() {
                                 </span>
                               )}
                               {cs.plannedGames.length > 0 && (
-                                <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                                <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">
                                   {cs.plannedGames.length} {t.rcPlanned.toLowerCase()}
                                 </span>
                               )}
@@ -2718,7 +2718,7 @@ export default function App() {
                               )}
                               {cs.plannedGames.length > 0 && (
                                 <div className="px-4 py-2">
-                                  <p className="text-xs font-medium text-blue-700 mb-1.5">{t.rcPlannedGames}</p>
+                                  <p className="text-xs font-medium text-red-700 mb-1.5">{t.rcPlannedGames}</p>
                                   {cs.plannedGames.map((g, i) => {
                                     const d = new Date(g.gameDate);
                                     const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : g.gameDate;
@@ -2760,7 +2760,7 @@ export default function App() {
                           <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700" title={t.rcOutstanding}>
                             {rc.outstanding} {formData.lang === 'DE' ? 'offen' : 'open'}
                           </span>
-                          <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-700" title={t.rcPlanned}>
+                          <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-red-100 text-red-700" title={t.rcPlanned}>
                             {rc.planned} {formData.lang === 'DE' ? 'geplant' : 'planned'}
                           </span>
                         </div>
@@ -2772,7 +2772,7 @@ export default function App() {
             )}
 
             {backendNotice && (
-              <p className="text-sm mt-3 text-blue-700">{backendNotice}</p>
+              <p className="text-sm mt-3 text-red-700">{backendNotice}</p>
             )}
           </div>
         </div>
@@ -2884,7 +2884,7 @@ export default function App() {
             })()}
           </div>
           {backendNotice && (
-            <p className="text-sm mt-3 text-blue-700">{backendNotice}</p>
+            <p className="text-sm mt-3 text-red-700">{backendNotice}</p>
           )}
         </div>
       )}
@@ -2935,7 +2935,7 @@ export default function App() {
             )}
           </div>
           {backendNotice && (
-            <p className="text-sm mt-3 text-blue-700">{backendNotice}</p>
+            <p className="text-sm mt-3 text-red-700">{backendNotice}</p>
           )}
         </div>
       )}
@@ -2984,7 +2984,7 @@ export default function App() {
 
         {/* Legend */}
         <div className="mb-6 p-2 bg-stone-50 border border-stone-200 rounded flex items-center gap-2 text-[10px] text-stone-600 italic">
-          <Info size={14} className="text-blue-500 shrink-0" />
+          <Info size={14} className="text-red-500 shrink-0" />
           {LEGEND[formData.lang]}
         </div>
 
@@ -3102,7 +3102,7 @@ export default function App() {
                   onClick={() => updateResult('motivation', v)}
                   className={cn(
                     "w-8 h-8 border border-stone-300 rounded flex items-center justify-center text-lg font-bold transition-all",
-                    formData.results.motivation === v ? "bg-blue-600 text-white border-blue-600 font-bold" : "bg-white hover:bg-stone-100"
+                    formData.results.motivation === v ? "bg-red-600 text-white border-red-600 font-bold" : "bg-white hover:bg-stone-100"
                   )}
                 >
                   {v === 'up' ? '↑' : v === 'check' ? '✓' : '↓'}
@@ -3119,7 +3119,7 @@ export default function App() {
                   onClick={() => updateResult('einstufung', v)}
                   className={cn(
                     "w-8 h-8 border border-stone-300 rounded flex items-center justify-center text-lg font-bold transition-all",
-                    formData.results.einstufung === v ? "bg-blue-600 text-white border-blue-600 font-bold" : "bg-white hover:bg-stone-100"
+                    formData.results.einstufung === v ? "bg-red-600 text-white border-red-600 font-bold" : "bg-white hover:bg-stone-100"
                   )}
                 >
                   {v === 'up' ? '↑' : v === 'check' ? '✓' : '↓'}
@@ -3136,7 +3136,7 @@ export default function App() {
                   onClick={() => updateResult('secondBesuch', v)}
                   className={cn(
                     "w-8 h-8 border border-stone-300 rounded flex items-center justify-center text-xs font-bold transition-all",
-                    formData.results.secondBesuch === v ? "bg-blue-600 text-white border-blue-600 font-bold" : "bg-white hover:bg-stone-100"
+                    formData.results.secondBesuch === v ? "bg-red-600 text-white border-red-600 font-bold" : "bg-white hover:bg-stone-100"
                   )}
                 >
                   {v}
@@ -3228,7 +3228,7 @@ export default function App() {
         </div>
       )}
       {backendNotice && (
-        <p className="max-w-4xl mx-auto mt-2 text-sm text-blue-700 no-print">{backendNotice}</p>
+        <p className="max-w-4xl mx-auto mt-2 text-sm text-red-700 no-print">{backendNotice}</p>
       )}
       </>
       )}
@@ -3354,7 +3354,7 @@ export default function App() {
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
             <div className="p-6 border-b border-stone-100 flex justify-between items-center">
               <h2 className="text-xl font-bold text-stone-900 flex items-center gap-2">
-                <FileJson className="text-blue-600" />
+                <FileJson className="text-red-600" />
                 {t.json}
               </h2>
               <button 
@@ -3373,7 +3373,7 @@ export default function App() {
                   navigator.clipboard.writeText(JSON.stringify(formData, null, 2));
                   alert(t.copied);
                 }}
-                className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-200"
+                className="bg-red-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-red-700 transition-all shadow-lg shadow-red-200"
               >
                 {t.copy}
               </button>
@@ -3415,13 +3415,13 @@ export default function App() {
               {detailCoachee.phone && (
                 <div className="flex justify-between">
                   <span className="text-stone-500">{t.phone}</span>
-                  <a href={`tel:${detailCoachee.phone}`} className="font-medium text-blue-600 hover:underline">{detailCoachee.phone}</a>
+                  <a href={`tel:${detailCoachee.phone}`} className="font-medium text-red-600 hover:underline">{detailCoachee.phone}</a>
                 </div>
               )}
               {detailCoachee.email && (
                 <div className="flex justify-between">
                   <span className="text-stone-500">{t.emailLabel}</span>
-                  <a href={`mailto:${detailCoachee.email}`} className="font-medium text-blue-600 hover:underline">{detailCoachee.email}</a>
+                  <a href={`mailto:${detailCoachee.email}`} className="font-medium text-red-600 hover:underline">{detailCoachee.email}</a>
                 </div>
               )}
             </div>
@@ -3433,12 +3433,12 @@ export default function App() {
                 onChange={(e) => setDetailNotes(e.target.value)}
                 placeholder={t.notesPlaceholder}
                 rows={4}
-                className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+                className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500 resize-y"
               />
               <button
                 onClick={() => void handleSaveNotes()}
                 disabled={savingNotes}
-                className="mt-2 h-9 px-4 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm disabled:opacity-50"
+                className="mt-2 h-9 px-4 rounded bg-red-600 text-white hover:bg-red-700 text-sm disabled:opacity-50"
               >
                 {savingNotes ? t.loading : t.saveNotes}
               </button>
@@ -3448,7 +3448,7 @@ export default function App() {
               <div className="flex gap-2">
                 <button
                   onClick={() => handleCoacheeAction(detailCoachee)}
-                  className="flex-1 h-10 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm"
+                  className="flex-1 h-10 rounded bg-red-600 text-white hover:bg-red-700 text-sm"
                 >
                   {t.openGames} / {t.openFeedback}
                 </button>
@@ -3489,7 +3489,7 @@ export default function App() {
               </button>
               <button
                 onClick={() => void openFeedbackPicker(actionTargetCoachee)}
-                className="flex-1 h-10 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm"
+                className="flex-1 h-10 rounded bg-red-600 text-white hover:bg-red-700 text-sm"
               >
                 {loadingCoacheeFeedbacks ? t.loading : t.openFeedback}
               </button>
@@ -3713,7 +3713,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, notice, submitting, on
                     className={cn(
                       "px-2 py-0.5 rounded text-xs border transition-colors",
                       selectedGroups.includes(g)
-                        ? "bg-blue-600 text-white border-blue-600"
+                        ? "bg-red-600 text-white border-red-600"
                         : "bg-white text-stone-600 border-stone-300 hover:border-stone-400"
                     )}
                   >
@@ -3732,7 +3732,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, notice, submitting, on
               className={cn(
                 "px-3 py-1 rounded text-xs border transition-colors",
                 usePlusMinus
-                  ? "bg-blue-600 text-white border-blue-600"
+                  ? "bg-red-600 text-white border-red-600"
                   : "bg-white text-stone-600 border-stone-300"
               )}
             >
@@ -3835,7 +3835,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, notice, submitting, on
           <button
             type="submit"
             disabled={submitting}
-            className="w-full h-10 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
+            className="w-full h-10 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
           >
             {submitting ? 'Lädt...' : <><Send size={14} /> Hochladen und senden</>}
           </button>
@@ -3890,7 +3890,7 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
       </div>
       {/* Legend */}
       <div className="mb-3 p-1.5 bg-stone-50 border border-stone-200 rounded flex items-center gap-1.5 text-[8px] text-stone-600 italic">
-        <Info size={10} className="text-blue-500 shrink-0" />
+        <Info size={10} className="text-red-500 shrink-0" />
         {LEGEND[lang]}
       </div>
       {/* Assessment sections */}

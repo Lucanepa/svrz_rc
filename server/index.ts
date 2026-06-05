@@ -47,6 +47,7 @@ app.use(express.json({ limit: '8mb' }));
 const ADMIN_SESSION_COOKIE = 'svrz_admin_session';
 const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 1000 * 60 * 60 * 8);
 const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || process.env.POCKETBASE_ADMIN_PASSWORD || '';
+const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || 'coaching_admin_2026';
 
 if (!ADMIN_SESSION_SECRET) {
   console.warn('[startup] Missing ADMIN_SESSION_SECRET (falling back to empty secret). Set ADMIN_SESSION_SECRET for secure admin sessions.');
@@ -1681,6 +1682,121 @@ app.post('/api/admin/auth/logout', (_req: Request, res: ExpressResponse) => {
   res.json({ ok: true });
 });
 
+// ── Admin UI password gate (single password -> admin session) ─────────
+app.post('/api/admin/ui-login', (req: Request, res: ExpressResponse) => {
+  const password = asText((req.body ?? {}).password);
+  if (!ADMIN_UI_PASSWORD || password !== ADMIN_UI_PASSWORD) {
+    clearAdminSessionCookie(res);
+    res.status(401).json({ error: 'Invalid password.' });
+    return;
+  }
+  setAdminSessionCookie(res, createAdminSessionToken('admin-ui'));
+  res.json({ ok: true });
+});
+
+// ── App settings (default season, ...) ───────────────────────────────
+async function getSettingRecord(key: string): Promise<AnyRecord | null> {
+  try {
+    return await withCollection(['app_settings'], (collection) =>
+      collection.getFirstListItem<AnyRecord>(`key = "${key.replace(/"/g, '')}"`));
+  } catch { return null; }
+}
+app.get('/api/settings', async (_req: Request, res: ExpressResponse) => {
+  try {
+    const rec = await getSettingRecord('default_season');
+    res.json({ default_season: rec ? Number(asText(rec.value)) || null : null });
+  } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const ds = asText((req.body ?? {}).default_season);
+    const existing = await getSettingRecord('default_season');
+    if (existing) {
+      await withCollection(['app_settings'], (c) => c.update(existing.id, { value: ds }));
+    } else {
+      await withCollection(['app_settings'], (c) => c.create({ key: 'default_season', value: ds }));
+    }
+    res.json({ ok: true, default_season: Number(ds) || null });
+  } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+
+// ── RC people CRUD (admin) ────────────────────────────────────────────
+app.get('/api/admin/rc-people', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const people = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+      c.getFullList<AnyRecord>({ sort: 'last_name' }));
+    res.json(people.map((p) => ({
+      id: p.id, first_name: asText(p.first_name), last_name: asText(p.last_name),
+      email: asText(p.email), phone: asText(p.phone), active: p.active !== false,
+    })));
+  } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const d = req.body ?? {};
+    const created = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+      c.create({ first_name: asText(d.first_name), last_name: asText(d.last_name),
+        email: asText(d.email), phone: asText(d.phone), active: d.active !== false }));
+    rcPeopleCache = null;
+    res.status(201).json(created);
+  } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const raw = (req.body ?? {}) as Record<string, unknown>;
+    const payload: Record<string, unknown> = {};
+    if ('first_name' in raw) payload.first_name = asText(raw.first_name);
+    if ('last_name' in raw) payload.last_name = asText(raw.last_name);
+    if ('email' in raw) payload.email = asText(raw.email);
+    if ('phone' in raw) payload.phone = asText(raw.phone);
+    if ('active' in raw) payload.active = Boolean(raw.active);
+    const updated = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+      c.update(String(req.params.id), payload));
+    rcPeopleCache = null;
+    res.json(updated);
+  } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+app.delete('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    await withCollection(collectionCandidates.refereeCoachPeople, (c) => c.delete(String(req.params.id)));
+    rcPeopleCache = null;
+    res.json({ ok: true });
+  } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+
+// ── Coachee bulk import (parsed xlsx rows + season) ───────────────────
+app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const body = req.body ?? {};
+    const season = body.season == null || body.season === '' ? null : Number(body.season);
+    const rows = Array.isArray(body.coachees) ? body.coachees : [];
+    const existing = await withCollection(collectionCandidates.coachees, (c) =>
+      c.getFullList<AnyRecord>({ fields: 'id,full_name,season' }));
+    const byKey = new Map<string, AnyRecord>();
+    for (const e of existing) byKey.set(`${normalizeName(e.full_name)}|${e.season ?? ''}`, e);
+    let created = 0, updated = 0;
+    for (const r of rows) {
+      const full_name = asText(r.full_name) || `${asText(r.first_name)} ${asText(r.last_name)}`.trim();
+      if (!full_name) continue;
+      const payload = {
+        full_name, first_name: asText(r.first_name), last_name: asText(r.last_name),
+        referee_level: asText(r.referee_level), stage: asText(r.stage) || 'active',
+        groups: asText(r.groups), season,
+      };
+      const ex = byKey.get(`${normalizeName(full_name)}|${season ?? ''}`);
+      if (ex) { await withCollection(collectionCandidates.coachees, (c) => c.update(ex.id, payload)); updated++; }
+      else { await withCollection(collectionCandidates.coachees, (c) => c.create({ ...payload, feedback_entries: [] })); created++; }
+    }
+    res.json({ created, updated, total: rows.length });
+  } catch (error) { res.status(500).json({ error: String(error) }); }
+});
+
 // ── Auth gate endpoints ──────────────────────────────────────────────
 app.get('/api/auth/gate/status', (req: Request, res: ExpressResponse) => {
   if (!GATE_PASSWORD) {
@@ -2017,6 +2133,7 @@ app.post('/api/coachees', requireAdminSession, async (req: Request, res: Express
         referee_level: asText(data.referee_level),
         stage: asText(data.stage) || 'active',
         groups: asText(data.groups),
+        season: data.season == null || data.season === '' ? null : Number(data.season),
         feedback_entries: Array.isArray(data.feedback_entries) ? data.feedback_entries : [],
       }),
     );
@@ -2039,6 +2156,7 @@ app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: Expr
     if ('referee_level' in raw) payload.referee_level = asText(raw.referee_level);
     if ('stage' in raw) payload.stage = asText(raw.stage);
     if ('groups' in raw) payload.groups = asText(raw.groups);
+    if ('season' in raw) payload.season = raw.season == null || raw.season === '' ? null : Number(raw.season);
     if ('feedback_entries' in raw) payload.feedback_entries = raw.feedback_entries;
     const updated = await withCollection(collectionCandidates.coachees, (collection) =>
       collection.update(String(req.params.id), payload),

@@ -109,6 +109,7 @@ export async function saveFeedbackToPocketBase(params: {
   tipsAndTricks: string;
 }): Promise<FeedbackSubmitResponse> {
   const response = await fetch(apiUrl('/api/feedback/submit'), {
+    credentials: 'include',
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -132,7 +133,7 @@ export function hasPocketBaseConfig(): boolean {
 }
 
 export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
-  const response = await fetch(apiUrl('/api/admin/auth/status'));
+  const response = await fetch(apiUrl('/api/admin/auth/status'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -141,6 +142,7 @@ export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
 
 export async function loginAdmin(payload: { email: string; password: string }): Promise<AdminAuthStatus> {
   const response = await fetch(apiUrl('/api/admin/auth/login'), {
+    credentials: 'include',
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -157,6 +159,7 @@ export async function loginAdmin(payload: { email: string; password: string }): 
 
 export async function logoutAdmin(): Promise<void> {
   const response = await fetch(apiUrl('/api/admin/auth/logout'), {
+    credentials: 'include',
     method: 'POST',
   });
   if (!response.ok) {
@@ -174,6 +177,7 @@ export async function listCoachees(): Promise<Coachee[]> {
 
 export async function createCoachee(payload: Partial<Coachee>) {
   const response = await fetch(apiUrl('/api/coachees'), {
+    credentials: 'include',
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -186,6 +190,7 @@ export async function createCoachee(payload: Partial<Coachee>) {
 
 export async function updateCoachee(id: string, payload: Partial<Coachee>) {
   const response = await fetch(apiUrl(`/api/coachees/${id}`), {
+    credentials: 'include',
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -198,6 +203,7 @@ export async function updateCoachee(id: string, payload: Partial<Coachee>) {
 
 export async function deleteCoachee(id: string) {
   const response = await fetch(apiUrl(`/api/coachees/${id}`), {
+    credentials: 'include',
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -239,6 +245,7 @@ export async function loadCalendarGames(): Promise<CalendarGameStatus[]> {
 
 export async function deleteRefereeCoach(id: string) {
   const response = await fetch(apiUrl(`/api/referee-coaches/${id}`), {
+    credentials: 'include',
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -261,6 +268,7 @@ export async function listRefereeCoachPeople(): Promise<RefereeCoachPerson[]> {
 
 export async function assignRcToGame(gameId: string, assignedRc: string): Promise<void> {
   const response = await fetch(apiUrl(`/api/games/${gameId}/assign-rc`), {
+    credentials: 'include',
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ assignedRc }),
@@ -288,6 +296,7 @@ export async function loadrcCoachSummary(rcName: string): Promise<rcCoachSummary
 
 export async function syncGames(payload?: { date?: string; from?: string; to?: string }) {
   const response = await fetch(apiUrl('/api/games/sync'), {
+    credentials: 'include',
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload ?? {}),
@@ -296,4 +305,65 @@ export async function syncGames(payload?: { date?: string; from?: string; to?: s
     throw new Error(await response.text());
   }
   return response.json();
+}
+
+// ── Admin console (simple-password gate) ──────────────────────────────
+export async function adminUiLogin(password: string): Promise<void> {
+  const r = await fetch(apiUrl('/api/admin/ui-login'), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Login failed');
+}
+
+export type RcPerson = { id: string; first_name?: string; last_name?: string; email?: string; phone?: string; active?: boolean };
+
+export async function listRcPeopleFull(): Promise<RcPerson[]> {
+  const r = await fetch(apiUrl('/api/admin/rc-people'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+export async function createRcPerson(p: Partial<RcPerson>) {
+  const r = await fetch(apiUrl('/api/admin/rc-people'), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+export async function updateRcPerson(id: string, p: Partial<RcPerson>) {
+  const r = await fetch(apiUrl(`/api/admin/rc-people/${id}`), {
+    method: 'PUT', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+export async function deleteRcPerson(id: string) {
+  const r = await fetch(apiUrl(`/api/admin/rc-people/${id}`), { method: 'DELETE', credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export type ImportRow = { full_name?: string; first_name?: string; last_name?: string; referee_level?: string; stage?: string; groups?: string };
+export async function importCoachees(coachees: ImportRow[], season: number): Promise<{ created: number; updated: number; total: number }> {
+  const r = await fetch(apiUrl('/api/coachees/import'), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ coachees, season }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getSettings(): Promise<{ default_season: number | null }> {
+  const r = await fetch(apiUrl('/api/settings'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+export async function putSettings(default_season: number): Promise<void> {
+  const r = await fetch(apiUrl('/api/admin/settings'), {
+    method: 'PUT', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ default_season }),
+  });
+  if (!r.ok) throw new Error(await r.text());
 }

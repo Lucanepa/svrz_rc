@@ -25,6 +25,7 @@ import {
   RefereeCoachPerson,
   loadRcOverview,
   loadrcCoachSummary,
+  getSettings,
 } from './lib/pocketbase';
 import { cn } from './lib/utils';
 import { normalizeCoacheeGroup } from './lib/coacheeGroup';
@@ -650,6 +651,11 @@ export default function App() {
   const seasonFrom = `${seasonStartYear}-09-01`;
   const seasonTo = `${seasonStartYear + 1}-04-30`;
   const seasonOptions = Array.from(new Set([seasonStartYear, curSeasonYear, curSeasonYear + 1, curSeasonYear + 2].filter((y) => y >= curSeasonYear))).sort((a, b) => a - b);
+  // Apply the admin-configured default season when the user has no saved preference
+  useEffect(() => {
+    try { if (localStorage.getItem('svrz_season')) return; } catch { /* ignore */ }
+    getSettings().then((s) => { if (s.default_season) setSeasonStartYear(s.default_season); }).catch(() => { /* ignore */ });
+  }, []);
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });

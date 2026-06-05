@@ -2076,40 +2076,40 @@ export default function App() {
                   };
                   const isActive = (ds: string) => gameFilterDateFrom === ds && gameFilterDateTo === ds;
                   const toggleDay = (ds: string) => { if (isActive(ds)) { setGameFilterDateFrom(''); setGameFilterDateTo(''); } else { setGameFilterDateFrom(ds); setGameFilterDateTo(ds); } setListPage(0); };
+                  const presets = [yesterdayStr, todayStr, tomorrowStr];
+                  const selectedSingle = gameFilterDateFrom && gameFilterDateFrom === gameFilterDateTo ? gameFilterDateFrom : '';
+                  const customSelected = Boolean(selectedSingle) && !presets.includes(selectedSingle);
+                  const fmtSel = (ds: string) => new Date(ds + 'T00:00:00').toLocaleDateString(isDE ? 'de-CH' : 'en-GB', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' });
+                  const chipCls = (active: boolean) => cn(
+                    "h-8 flex-1 sm:flex-none sm:px-3 px-1 text-xs rounded border transition-colors whitespace-nowrap",
+                    active ? "bg-red-600 text-white border-red-600" : "border-stone-300 text-stone-600 hover:bg-stone-50"
+                  );
                   return (
-                    <div className="flex items-center justify-center gap-1.5 mb-2">
-                      <button
-                        onClick={() => shiftDay(-1)}
-                        className="h-8 w-8 flex items-center justify-center border border-stone-300 rounded hover:bg-stone-50 text-stone-500"
-                        title={isDE ? 'Vorheriger Tag' : 'Previous day'}
-                      >
-                        <ChevronLeft size={16} />
-                      </button>
-                      <button
-                        onClick={() => toggleDay(yesterdayStr)}
-                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(yesterdayStr) ? "bg-red-600 text-white border-red-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
-                      >
-                        {isDE ? 'Gestern' : 'Yesterday'}
-                      </button>
-                      <button
-                        onClick={() => toggleDay(todayStr)}
-                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(todayStr) ? "bg-red-600 text-white border-red-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
-                      >
-                        {isDE ? 'Heute' : 'Today'}
-                      </button>
-                      <button
-                        onClick={() => toggleDay(tomorrowStr)}
-                        className={cn("h-8 px-3 text-xs rounded border transition-colors", isActive(tomorrowStr) ? "bg-red-600 text-white border-red-600" : "border-stone-300 text-stone-600 hover:bg-stone-50")}
-                      >
-                        {isDE ? 'Morgen' : 'Tomorrow'}
-                      </button>
-                      <button
-                        onClick={() => shiftDay(1)}
-                        className="h-8 w-8 flex items-center justify-center border border-stone-300 rounded hover:bg-stone-50 text-stone-500"
-                        title={isDE ? 'Nächster Tag' : 'Next day'}
-                      >
-                        <ChevronRight size={16} />
-                      </button>
+                    <div className="mb-2 flex flex-col items-stretch gap-1.5">
+                      <div className="flex items-center justify-center gap-1.5">
+                        <button onClick={() => shiftDay(-1)} className="h-8 w-8 shrink-0 flex items-center justify-center border border-stone-300 rounded hover:bg-stone-50 text-stone-500" title={isDE ? 'Vorheriger Tag' : 'Previous day'}>
+                          <ChevronLeft size={16} />
+                        </button>
+                        <button onClick={() => toggleDay(yesterdayStr)} className={chipCls(isActive(yesterdayStr))}>{isDE ? 'Gestern' : 'Yesterday'}</button>
+                        <button onClick={() => toggleDay(todayStr)} className={chipCls(isActive(todayStr))}>{isDE ? 'Heute' : 'Today'}</button>
+                        <button onClick={() => toggleDay(tomorrowStr)} className={chipCls(isActive(tomorrowStr))}>{isDE ? 'Morgen' : 'Tomorrow'}</button>
+                        <button onClick={() => shiftDay(1)} className="h-8 w-8 shrink-0 flex items-center justify-center border border-stone-300 rounded hover:bg-stone-50 text-stone-500" title={isDE ? 'Nächster Tag' : 'Next day'}>
+                          <ChevronRight size={16} />
+                        </button>
+                      </div>
+                      {customSelected && (
+                        <div className="flex items-center justify-center">
+                          <button
+                            onClick={() => { setGameFilterDateFrom(''); setGameFilterDateTo(''); setListPage(0); }}
+                            className="h-7 inline-flex items-center gap-1.5 pl-3 pr-2.5 text-xs font-semibold rounded-full bg-red-600 text-white shadow-sm hover:bg-red-700 transition-colors"
+                            title={isDE ? 'Auswahl zurücksetzen' : 'Clear selection'}
+                          >
+                            <CalendarDays size={13} />
+                            <span>{fmtSel(selectedSingle)}</span>
+                            <span className="text-white/70">✕</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}

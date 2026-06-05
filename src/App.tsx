@@ -638,10 +638,10 @@ export default function App() {
   const [gameFilterLeagues, setGameFilterLeagues] = useState<string[]>([]);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [gameFilterFunction, setGameFilterFunction] = useState<string[]>([]);
-  const [gameFilterDateFrom, setGameFilterDateFrom] = useState(() => toDateString(new Date()));
-  const [gameFilterDateTo, setGameFilterDateTo] = useState(() => toDateString(new Date()));
+  const [gameFilterDateFrom, setGameFilterDateFrom] = useState('');
+  const [gameFilterDateTo, setGameFilterDateTo] = useState('');
   // Season selector (Sep 1 -> Apr 30), persisted across reloads
-  const curSeasonYear = new Date().getMonth() <= 3 ? new Date().getFullYear() - 1 : new Date().getFullYear();
+  const curSeasonYear = new Date().getMonth() <= 7 ? new Date().getFullYear() - 1 : new Date().getFullYear();
   const [seasonStartYear, setSeasonStartYear] = useState<number>(() => {
     try { const sv = localStorage.getItem('svrz_season'); const n = sv ? parseInt(sv, 10) : NaN; if (Number.isFinite(n)) return n; } catch { /* ignore */ }
     return curSeasonYear;
@@ -649,7 +649,7 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem('svrz_season', String(seasonStartYear)); } catch { /* ignore */ } }, [seasonStartYear]);
   const seasonFrom = `${seasonStartYear}-09-01`;
   const seasonTo = `${seasonStartYear + 1}-04-30`;
-  const seasonOptions = Array.from(new Set([seasonStartYear, ...Array.from({ length: 4 }, (_, i) => curSeasonYear - 2 + i)])).sort((a, b) => a - b);
+  const seasonOptions = Array.from(new Set([seasonStartYear, curSeasonYear, curSeasonYear + 1, curSeasonYear + 2].filter((y) => y >= curSeasonYear))).sort((a, b) => a - b);
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });

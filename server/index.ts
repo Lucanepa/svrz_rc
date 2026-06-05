@@ -4,6 +4,7 @@ import PocketBase from 'pocketbase';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
 import nodemailer from 'nodemailer';
+import helmet from 'helmet';
 import { createHmac, randomUUID, timingSafeEqual, scryptSync } from 'node:crypto';
 
 dotenv.config({ path: '.env.local' });
@@ -38,8 +39,15 @@ type AnyRecord = Record<string, unknown> & { id: string };
 const app = express();
 const port = Number(process.env.PORT || 8787);
 
+app.set('trust proxy', true);
+app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false, crossOriginEmbedderPolicy: false, crossOriginOpenerPolicy: false }));
+const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || 'https://lucanepa.codeberg.page')
+  .split(',').map((o) => o.trim()).filter(Boolean);
 app.use(cors({
-  origin: true,
+  origin: (origin, cb) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error('Origin not allowed by CORS'));
+  },
   credentials: true,
 }));
 app.use(express.json({ limit: '8mb' }));
@@ -47,7 +55,10 @@ app.use(express.json({ limit: '8mb' }));
 const ADMIN_SESSION_COOKIE = 'svrz_admin_session';
 const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 1000 * 60 * 60 * 8);
 const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || process.env.POCKETBASE_ADMIN_PASSWORD || '';
-const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || 'coaching_admin_2026';
+const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || '';
+const TEST_MODE = process.env.TEST_MODE === '1' || process.env.TEST_MODE === 'true';
+if (TEST_MODE) console.warn('[startup] TEST_MODE enabled — outbound emails are suppressed.');
+if (!ADMIN_UI_PASSWORD) console.warn('[startup] ADMIN_UI_PASSWORD not set — admin console login disabled.');
 
 if (!ADMIN_SESSION_SECRET) {
   console.warn('[startup] Missing ADMIN_SESSION_SECRET (falling back to empty secret). Set ADMIN_SESSION_SECRET for secure admin sessions.');
@@ -242,6 +253,24 @@ function requireAdminSession(req: Request, res: ExpressResponse, next: () => voi
     return;
   }
   next();
+}
+
+function clientIp(req: Request): string {
+  const xff = req.headers['x-forwarded-for'];
+  const fromXff = typeof xff === 'string' ? xff.split(',')[0]?.trim() : '';
+  return fromXff || req.socket.remoteAddress || 'unknown';
+}
+
+function safeError(error: unknown): string {
+  console.error('[api-error]', error);
+  return 'Internal server error';
+}
+
+// Gate-level auth: requires the app gate cookie OR a valid admin session.
+function requireGateSession(req: Request, res: ExpressResponse, next: () => void) {
+  if (!GATE_PASSWORD) { next(); return; }
+  if (verifyGateSession(req) || verifyAdminSession(req).ok) { next(); return; }
+  res.status(401).json({ error: 'Unauthorized' });
 }
 
 const collectionCandidates = {
@@ -1656,6 +1685,8 @@ app.get('/api/admin/auth/status', (req: Request, res: ExpressResponse) => {
 });
 
 app.post('/api/admin/auth/login', async (req: Request, res: ExpressResponse) => {
+  const rl = checkGateRateLimit(clientIp(req));
+  if (!rl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: rl.retryAfterMs }); return; }
   const email = asText((req.body ?? {}).email);
   const password = asText((req.body ?? {}).password);
   if (!email || !password) {
@@ -1684,8 +1715,12 @@ app.post('/api/admin/auth/logout', (_req: Request, res: ExpressResponse) => {
 
 // ── Admin UI password gate (single password -> admin session) ─────────
 app.post('/api/admin/ui-login', (req: Request, res: ExpressResponse) => {
+  const rl = checkGateRateLimit(clientIp(req));
+  if (!rl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: rl.retryAfterMs }); return; }
   const password = asText((req.body ?? {}).password);
-  if (!ADMIN_UI_PASSWORD || password !== ADMIN_UI_PASSWORD) {
+  const ok = Boolean(ADMIN_UI_PASSWORD) && password.length === ADMIN_UI_PASSWORD.length
+    && timingSafeEqual(Buffer.from(password), Buffer.from(ADMIN_UI_PASSWORD));
+  if (!ok) {
     clearAdminSessionCookie(res);
     res.status(401).json({ error: 'Invalid password.' });
     return;
@@ -1698,27 +1733,37 @@ app.post('/api/admin/ui-login', (req: Request, res: ExpressResponse) => {
 async function getSettingRecord(key: string): Promise<AnyRecord | null> {
   try {
     return await withCollection(['app_settings'], (collection) =>
-      collection.getFirstListItem<AnyRecord>(`key = "${key.replace(/"/g, '')}"`));
+      collection.getFirstListItem<AnyRecord>(`key = "${escapeFilterValue(key)}"`));
   } catch { return null; }
 }
-app.get('/api/settings', async (_req: Request, res: ExpressResponse) => {
+
+async function setSetting(key: string, value: string): Promise<void> {
+  const existing = await getSettingRecord(key);
+  if (existing) await withCollection(['app_settings'], (c) => c.update(existing.id, { value }));
+  else await withCollection(['app_settings'], (c) => c.create({ key, value }));
+}
+
+// Effective email test mode: admin DB setting wins, else TEST_MODE env var.
+async function isEmailTestMode(): Promise<boolean> {
+  const rec = await getSettingRecord('test_mode');
+  if (rec) return asText(rec.value) === '1';
+  return TEST_MODE;
+}
+app.get('/api/settings', requireGateSession, async (_req: Request, res: ExpressResponse) => {
   try {
     const rec = await getSettingRecord('default_season');
-    res.json({ default_season: rec ? Number(asText(rec.value)) || null : null });
-  } catch (error) { res.status(500).json({ error: String(error) }); }
+    res.json({ default_season: rec ? Number(asText(rec.value)) || null : null, test_mode: await isEmailTestMode() });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    const ds = asText((req.body ?? {}).default_season);
-    const existing = await getSettingRecord('default_season');
-    if (existing) {
-      await withCollection(['app_settings'], (c) => c.update(existing.id, { value: ds }));
-    } else {
-      await withCollection(['app_settings'], (c) => c.create({ key: 'default_season', value: ds }));
-    }
-    res.json({ ok: true, default_season: Number(ds) || null });
-  } catch (error) { res.status(500).json({ error: String(error) }); }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if ('default_season' in body) await setSetting('default_season', asText(body.default_season));
+    if ('test_mode' in body) await setSetting('test_mode', body.test_mode ? '1' : '0');
+    const seasonRec = await getSettingRecord('default_season');
+    res.json({ ok: true, default_season: seasonRec ? Number(asText(seasonRec.value)) || null : null, test_mode: await isEmailTestMode() });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
 // ── RC people CRUD (admin) ────────────────────────────────────────────
@@ -1731,7 +1776,7 @@ app.get('/api/admin/rc-people', requireAdminSession, async (_req: Request, res: 
       id: p.id, first_name: asText(p.first_name), last_name: asText(p.last_name),
       email: asText(p.email), phone: asText(p.phone), active: p.active !== false,
     })));
-  } catch (error) { res.status(500).json({ error: String(error) }); }
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
@@ -1742,7 +1787,7 @@ app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: 
         email: asText(d.email), phone: asText(d.phone), active: d.active !== false }));
     rcPeopleCache = null;
     res.status(201).json(created);
-  } catch (error) { res.status(500).json({ error: String(error) }); }
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
@@ -1758,7 +1803,7 @@ app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, re
       c.update(String(req.params.id), payload));
     rcPeopleCache = null;
     res.json(updated);
-  } catch (error) { res.status(500).json({ error: String(error) }); }
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.delete('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
@@ -1766,7 +1811,7 @@ app.delete('/api/admin/rc-people/:id', requireAdminSession, async (req: Request,
     await withCollection(collectionCandidates.refereeCoachPeople, (c) => c.delete(String(req.params.id)));
     rcPeopleCache = null;
     res.json({ ok: true });
-  } catch (error) { res.status(500).json({ error: String(error) }); }
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
 // ── Coachee bulk import (parsed xlsx rows + season) ───────────────────
@@ -1794,7 +1839,7 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
       else { await withCollection(collectionCandidates.coachees, (c) => c.create({ ...payload, feedback_entries: [] })); created++; }
     }
     res.json({ created, updated, total: rows.length });
-  } catch (error) { res.status(500).json({ error: String(error) }); }
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
 // ── Auth gate endpoints ──────────────────────────────────────────────
@@ -1837,7 +1882,7 @@ app.post('/api/auth/gate', (req: Request, res: ExpressResponse) => {
   res.json({ ok: true });
 });
 
-app.get('/api/eligible-games', async (_req: Request, res: ExpressResponse) => {
+app.get('/api/eligible-games', requireGateSession, async (_req: Request, res: ExpressResponse) => {
   try {
     const games = await getEligibleGames();
     res.json(games);
@@ -1857,7 +1902,7 @@ app.get('/api/eligible-games', async (_req: Request, res: ExpressResponse) => {
 
 let rcPeopleCache: { data: unknown[]; expiresAt: number } | null = null;
 
-app.get('/api/referee-coach-people', async (_req: Request, res: ExpressResponse) => {
+app.get('/api/referee-coach-people', requireGateSession, async (_req: Request, res: ExpressResponse) => {
   try {
     if (rcPeopleCache && Date.now() < rcPeopleCache.expiresAt) {
       return res.json(rcPeopleCache.data);
@@ -1873,11 +1918,11 @@ app.get('/api/referee-coach-people', async (_req: Request, res: ExpressResponse)
     rcPeopleCache = { data: mapped, expiresAt: Date.now() + 10 * 60 * 1000 };
     res.json(mapped);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
-app.put('/api/games/:id/assign-rc', async (req: Request, res: ExpressResponse) => {
+app.put('/api/games/:id/assign-rc', requireGateSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const gameId = String(req.params.id);
@@ -1887,12 +1932,12 @@ app.put('/api/games/:id/assign-rc', async (req: Request, res: ExpressResponse) =
     );
     res.json({ ok: true, id: (updated as AnyRecord).id, assignedRc: asText((updated as AnyRecord).assigned_rc) });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
 // ── RC Overview ──────────────────────────────────────────────────────
-app.get('/api/rc-overview', async (_req: Request, res: ExpressResponse) => {
+app.get('/api/rc-overview', requireGateSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     // 1. RC people
@@ -1952,11 +1997,11 @@ app.get('/api/rc-overview', async (_req: Request, res: ExpressResponse) => {
 
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
-app.get('/api/rc-overview/:rcName/coachees', async (req: Request, res: ExpressResponse) => {
+app.get('/api/rc-overview/:rcName/coachees', requireGateSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const rcName = decodeURIComponent(String(req.params.rcName));
@@ -2047,7 +2092,7 @@ app.get('/api/rc-overview/:rcName/coachees', async (req: Request, res: ExpressRe
     const result = Array.from(coacheeMap.values()).sort((a, b) => a.coacheeName.localeCompare(b.coacheeName));
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -2056,7 +2101,7 @@ app.post('/api/games/sync', requireAdminSession, async (req: Request, res: Expre
     const result = await runGamesSync(req.body ?? {});
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -2065,7 +2110,7 @@ app.post('/api/games/sync/debug', requireAdminSession, async (req: Request, res:
     const result = await runGamesSyncDebug(req.body ?? {});
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -2078,13 +2123,13 @@ app.post('/api/vm/auth-check', requireAdminSession, async (req: Request, res: Ex
     const debug = Boolean((req.body ?? {}).debug);
     const trace = (error as Error & { trace?: VmTraceEntry[] })?.trace;
     res.status(500).json({
-      error: String(error),
+      error: safeError(error),
       ...(debug && trace ? { trace } : {}),
     });
   }
 });
 
-app.get('/api/coachees', async (_req: Request, res: ExpressResponse) => {
+app.get('/api/coachees', requireGateSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const rows = await listCoacheesWithFallbackSort();
@@ -2115,7 +2160,7 @@ app.get('/api/coachees', async (_req: Request, res: ExpressResponse) => {
     });
     res.json(enriched);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -2139,7 +2184,7 @@ app.post('/api/coachees', requireAdminSession, async (req: Request, res: Express
     );
     res.status(201).json(created);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -2163,7 +2208,7 @@ app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: Expr
     );
     res.json(updated);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -2175,11 +2220,11 @@ app.delete('/api/coachees/:id', requireAdminSession, async (req: Request, res: E
     );
     res.status(204).send();
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
-app.get('/api/coachees/:id/games', async (req: Request, res: ExpressResponse) => {
+app.get('/api/coachees/:id/games', requireGateSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const coacheeId = asText(req.params.id);
@@ -2254,11 +2299,11 @@ app.get('/api/coachees/:id/games', async (req: Request, res: ExpressResponse) =>
 
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
-app.get('/api/coachees/:id/feedbacks', async (req: Request, res: ExpressResponse) => {
+app.get('/api/coachees/:id/feedbacks', requireGateSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const coacheeId = asText(req.params.id);
@@ -2271,7 +2316,7 @@ app.get('/api/coachees/:id/feedbacks', async (req: Request, res: ExpressResponse
     );
     res.json(rows);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -2286,11 +2331,11 @@ app.get('/api/referee-coaches', requireAdminSession, async (_req: Request, res: 
     );
     res.json(rows);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
-app.get('/api/observations', async (req: Request, res: ExpressResponse) => {
+app.get('/api/observations', requireGateSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const filterParts: string[] = [];
@@ -2335,11 +2380,11 @@ app.get('/api/observations', async (req: Request, res: ExpressResponse) => {
 
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
-app.get('/api/observations/summary', async (req: Request, res: ExpressResponse) => {
+app.get('/api/observations/summary', requireGateSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const coacheeId = asText(req.query.coacheeId);
@@ -2400,11 +2445,11 @@ app.get('/api/observations/summary', async (req: Request, res: ExpressResponse) 
       by_coachee_function: byFunction,
     });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
-app.get('/api/games/calendar-status', async (_req: Request, res: ExpressResponse) => {
+app.get('/api/games/calendar-status', requireGateSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const listCalendarGamesWithFallback = async () => {
@@ -2530,24 +2575,33 @@ app.get('/api/games/calendar-status', async (_req: Request, res: ExpressResponse
 app.post('/api/referee-coaches', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
+    const b = (req.body ?? {}) as Record<string, unknown>;
     const created = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
-      collection.create(req.body ?? {}),
+      collection.create({
+        game: asText(b.game), coachee: asText(b.coachee), rc_name: asText(b.rc_name),
+        role_assessed: asText(b.role_assessed), feedback_json: b.feedback_json ?? {},
+        submitted_at: asText(b.submitted_at),
+      }),
     );
     res.status(201).json(created);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
 app.put('/api/referee-coaches/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const payload: Record<string, unknown> = {};
+    for (const k of ['game', 'coachee', 'rc_name', 'role_assessed', 'submitted_at'] as const) if (k in b) payload[k] = asText(b[k]);
+    if ('feedback_json' in b) payload.feedback_json = b.feedback_json;
     const updated = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
-      collection.update(String(req.params.id), req.body ?? {}),
+      collection.update(String(req.params.id), payload),
     );
     res.json(updated);
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -2559,11 +2613,11 @@ app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request,
     );
     res.status(204).send();
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
-app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
+app.post('/api/feedback/submit', requireGateSession, async (req: Request, res: ExpressResponse) => {
   const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks } = req.body ?? {};
 
   // Phase 1 — Validation
@@ -2759,23 +2813,28 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
         mailSubject = subject;
       }
 
-      await smtpTransport.sendMail({
-        from: process.env.SMTP_FROM || 'coaching-feedback@svrz.ch',
-        replyTo: rcEmail || undefined,
-        to: mailTo,
-        cc: mailCc,
-        bcc: mailBcc,
-        subject: mailSubject,
-        html: buildFeedbackEmailHtml(emailParams),
-        text: buildFeedbackEmailText(emailParams),
-        attachments: [{
-          filename: String(pdfFilename || 'feedback.pdf'),
-          content: pdfBuffer,
-          contentType: 'application/pdf',
-        }],
-      });
-
-      emailSent = true;
+      const emailTestMode = await isEmailTestMode();
+      if (emailTestMode) {
+        console.log(`[feedback-email] TEST_MODE — outbound email suppressed (would send to ${mailTo})`);
+        emailSent = false;
+      } else {
+        await smtpTransport.sendMail({
+          from: process.env.SMTP_FROM || 'coaching-feedback@svrz.ch',
+          replyTo: rcEmail || undefined,
+          to: mailTo,
+          cc: mailCc,
+          bcc: mailBcc,
+          subject: mailSubject,
+          html: buildFeedbackEmailHtml(emailParams),
+          text: buildFeedbackEmailText(emailParams),
+          attachments: [{
+            filename: String(pdfFilename || 'feedback.pdf'),
+            content: pdfBuffer,
+            contentType: 'application/pdf',
+          }],
+        });
+        emailSent = true;
+      }
     } catch (emailErr) {
       emailError = emailErr instanceof Error ? emailErr.message : String(emailErr);
       console.error('[feedback-email] Failed to send:', emailError);
@@ -2801,7 +2860,7 @@ app.post('/api/feedback/submit', async (req: Request, res: ExpressResponse) => {
       emailWarning,
     });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -2850,7 +2909,7 @@ app.post('/api/admin/migrate-source-payload', requireAdminSession, async (_req: 
 
     res.json({ migrated, skipped });
   } catch (error) {
-    res.status(500).json({ error: String(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 

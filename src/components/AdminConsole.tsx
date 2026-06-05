@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon } from 'lucide-react';
+import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import {
   getAdminAuthStatus, adminUiLogin, logoutAdmin,
@@ -51,10 +51,14 @@ export default function AdminConsole() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [tab, setTab] = useState<'coachees' | 'rcs' | 'settings'>('coachees');
+  const [testMode, setTestMode] = useState(false);
 
   useEffect(() => {
     getAdminAuthStatus().then((s) => setAuthed(Boolean(s.authenticated))).catch(() => {}).finally(() => setChecking(false));
   }, []);
+  useEffect(() => {
+    if (authed) getSettings().then((s) => setTestMode(Boolean(s.test_mode))).catch(() => {});
+  }, [authed]);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault(); setSubmitting(true); setError('');
@@ -111,6 +115,7 @@ export default function AdminConsole() {
         <div className="max-w-4xl mx-auto px-4 py-3 flex items-center gap-3">
           <SvrzLogo className="h-7 w-auto" />
           <span className="text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">Admin</span>
+          {testMode && <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-[11px] font-semibold px-2 py-0.5"><FlaskConical size={12} /> Testmodus</span>}
           <button onClick={logout} className="ml-auto inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors">
             <LogOut size={15} /> <span className="hidden sm:inline">Abmelden</span>
           </button>
@@ -127,7 +132,7 @@ export default function AdminConsole() {
       <main className="max-w-4xl mx-auto px-4 pt-5">
         {tab === 'coachees' && <CoacheesAdmin />}
         {tab === 'rcs' && <RcsAdmin />}
-        {tab === 'settings' && <SettingsAdmin />}
+        {tab === 'settings' && <SettingsAdmin onTestMode={setTestMode} />}
       </main>
     </div>
   );
@@ -303,23 +308,46 @@ function RcsAdmin() {
   );
 }
 
-function SettingsAdmin() {
+function SettingsAdmin({ onTestMode }: { onTestMode: (v: boolean) => void }) {
   const [season, setSeason] = useState<number>(CUR_SEASON);
+  const [testMode, setTm] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
-  useEffect(() => { getSettings().then((s) => { if (s.default_season) setSeason(s.default_season); }).catch(() => {}).finally(() => setLoading(false)); }, []);
-  const save = async () => { await putSettings(season); setSaved(true); setTimeout(() => setSaved(false), 2500); };
+  useEffect(() => {
+    getSettings().then((s) => { if (s.default_season) setSeason(s.default_season); setTm(Boolean(s.test_mode)); onTestMode(Boolean(s.test_mode)); }).catch(() => {}).finally(() => setLoading(false));
+  }, [onTestMode]);
+  const save = async () => { await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
+  const toggleTest = async () => {
+    const next = !testMode; setTm(next); onTestMode(next);
+    try { await putSettings({ test_mode: next }); } catch { setTm(!next); onTestMode(!next); }
+  };
   return (
-    <Card>
-      <h2 className="text-sm font-semibold text-stone-700 mb-1">Standard-Saison</h2>
-      <p className="text-xs text-stone-400 mb-3">Die Saison, in der die App standardmässig startet (für neue Nutzer).</p>
-      <div className="flex items-center gap-2">
-        <select value={season} disabled={loading} onChange={(e) => setSeason(Number(e.target.value))} className="h-9 rounded-lg border border-stone-300 bg-white text-sm px-3">
-          {SEASONS.map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}
-        </select>
-        <button onClick={save} className={btnPrimary}><Check size={15} /> Speichern</button>
-        {saved && <span className="text-xs text-green-600 font-medium">Gespeichert ✓</span>}
-      </div>
-    </Card>
+    <>
+      <Card>
+        <h2 className="text-sm font-semibold text-stone-700 mb-1">Standard-Saison</h2>
+        <p className="text-xs text-stone-400 mb-3">Die Saison, in der die App standardmässig startet (für neue Nutzer).</p>
+        <div className="flex items-center gap-2">
+          <select value={season} disabled={loading} onChange={(e) => setSeason(Number(e.target.value))} className="h-9 rounded-lg border border-stone-300 bg-white text-sm px-3">
+            {SEASONS.map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}
+          </select>
+          <button onClick={save} className={btnPrimary}><Check size={15} /> Speichern</button>
+          {saved && <span className="text-xs text-green-600 font-medium">Gespeichert ✓</span>}
+        </div>
+      </Card>
+      <Card>
+        <div className="flex items-start gap-3">
+          <FlaskConical size={18} className={testMode ? 'text-amber-600 mt-0.5' : 'text-stone-400 mt-0.5'} />
+          <div className="flex-1">
+            <h2 className="text-sm font-semibold text-stone-700">Test-Modus (E-Mail)</h2>
+            <p className="text-xs text-stone-400">Wenn aktiv, werden <b>keine E-Mails</b> versendet (Feedback wird trotzdem gespeichert). Zum Live-Betrieb ausschalten.</p>
+          </div>
+          <button onClick={toggleTest} disabled={loading} role="switch" aria-checked={testMode}
+            className={`relative inline-flex h-7 w-12 shrink-0 rounded-full transition-colors ${testMode ? 'bg-amber-500' : 'bg-stone-300'}`}>
+            <span className={`inline-block h-6 w-6 rounded-full bg-white shadow transform transition-transform mt-0.5 ${testMode ? 'translate-x-5' : 'translate-x-0.5'}`} />
+          </button>
+        </div>
+        <p className={`mt-2 text-xs font-medium ${testMode ? 'text-amber-700' : 'text-green-600'}`}>{testMode ? 'AN — es werden keine E-Mails versendet.' : 'AUS — E-Mails werden versendet.'}</p>
+      </Card>
+    </>
   );
 }

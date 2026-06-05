@@ -651,10 +651,13 @@ export default function App() {
   const seasonFrom = `${seasonStartYear}-09-01`;
   const seasonTo = `${seasonStartYear + 1}-04-30`;
   const seasonOptions = Array.from(new Set([seasonStartYear, curSeasonYear, curSeasonYear + 1, curSeasonYear + 2].filter((y) => y >= curSeasonYear))).sort((a, b) => a - b);
-  // Apply the admin-configured default season when the user has no saved preference
+  const [emailTestMode, setEmailTestMode] = useState(false);
+  // Read admin settings: email test-mode banner + default season (if no saved pref)
   useEffect(() => {
-    try { if (localStorage.getItem('svrz_season')) return; } catch { /* ignore */ }
-    getSettings().then((s) => { if (s.default_season) setSeasonStartYear(s.default_season); }).catch(() => { /* ignore */ });
+    getSettings().then((s) => {
+      setEmailTestMode(Boolean(s.test_mode));
+      try { if (!localStorage.getItem('svrz_season') && s.default_season) setSeasonStartYear(s.default_season); } catch { /* ignore */ }
+    }).catch(() => { /* ignore */ });
   }, []);
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
@@ -1774,6 +1777,13 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
+      {emailTestMode && (
+        <div className="max-w-5xl mx-auto mb-3 no-print">
+          <div className="flex items-center gap-2 rounded-xl bg-amber-100 border border-amber-300 text-amber-800 text-xs font-semibold px-3 py-2">
+            <Info size={14} /> {formData.lang === 'DE' ? 'Testmodus aktiv — es werden keine E-Mails versendet.' : 'Test mode on — no emails are sent.'}
+          </div>
+        </div>
+      )}
       {/* UI Controls */}
       <div className="max-w-4xl mx-auto mb-6 flex flex-wrap gap-3 no-print">
         {viewMode === 'feedback' && feedbackSubView !== 'coachees' && (

@@ -85,7 +85,7 @@ export type AdminAuthStatus = {
 };
 
 export async function loadEligibleGames(): Promise<EligibleGame[]> {
-  const response = await fetch(apiUrl('/api/eligible-games'));
+  const response = await fetch(apiUrl('/api/eligible-games'), { credentials: 'include' });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`Failed to load eligible games: ${text}`);
@@ -168,7 +168,7 @@ export async function logoutAdmin(): Promise<void> {
 }
 
 export async function listCoachees(): Promise<Coachee[]> {
-  const response = await fetch(apiUrl('/api/coachees'));
+  const response = await fetch(apiUrl('/api/coachees'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -212,7 +212,7 @@ export async function deleteCoachee(id: string) {
 }
 
 export async function listRefereeCoaches() {
-  const response = await fetch(apiUrl('/api/referee-coaches'));
+  const response = await fetch(apiUrl('/api/referee-coaches'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -220,7 +220,7 @@ export async function listRefereeCoaches() {
 }
 
 export async function listCoacheeGames(coacheeId: string): Promise<CoacheeGame[]> {
-  const response = await fetch(apiUrl(`/api/coachees/${coacheeId}/games`));
+  const response = await fetch(apiUrl(`/api/coachees/${coacheeId}/games`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -228,7 +228,7 @@ export async function listCoacheeGames(coacheeId: string): Promise<CoacheeGame[]
 }
 
 export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackRecord[]> {
-  const response = await fetch(apiUrl(`/api/coachees/${coacheeId}/feedbacks`));
+  const response = await fetch(apiUrl(`/api/coachees/${coacheeId}/feedbacks`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -236,7 +236,7 @@ export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackR
 }
 
 export async function loadCalendarGames(): Promise<CalendarGameStatus[]> {
-  const response = await fetch(apiUrl('/api/games/calendar-status'));
+  const response = await fetch(apiUrl('/api/games/calendar-status'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -259,7 +259,7 @@ export type RefereeCoachPerson = {
 };
 
 export async function listRefereeCoachPeople(): Promise<RefereeCoachPerson[]> {
-  const response = await fetch(apiUrl('/api/referee-coach-people'));
+  const response = await fetch(apiUrl('/api/referee-coach-people'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -279,7 +279,7 @@ export async function assignRcToGame(gameId: string, assignedRc: string): Promis
 }
 
 export async function loadRcOverview(): Promise<RcOverviewEntry[]> {
-  const response = await fetch(apiUrl('/api/rc-overview'));
+  const response = await fetch(apiUrl('/api/rc-overview'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -287,7 +287,7 @@ export async function loadRcOverview(): Promise<RcOverviewEntry[]> {
 }
 
 export async function loadrcCoachSummary(rcName: string): Promise<rcCoachSummary[]> {
-  const response = await fetch(apiUrl(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees`));
+  const response = await fetch(apiUrl(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -355,15 +355,15 @@ export async function importCoachees(coachees: ImportRow[], season: number): Pro
   return r.json();
 }
 
-export async function getSettings(): Promise<{ default_season: number | null }> {
+export async function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean }> {
   const r = await fetch(apiUrl('/api/settings'), { credentials: 'include' });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
-export async function putSettings(default_season: number): Promise<void> {
+export async function putSettings(payload: { default_season?: number; test_mode?: boolean }): Promise<void> {
   const r = await fetch(apiUrl('/api/admin/settings'), {
     method: 'PUT', credentials: 'include',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ default_season }),
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   });
   if (!r.ok) throw new Error(await r.text());
 }

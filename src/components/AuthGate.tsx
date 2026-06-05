@@ -65,8 +65,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setPassword('');
     } catch (err) {
       console.error('[AuthGate] Login fetch failed:', err);
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(`Verbindungsfehler: ${msg}`);
+      setError('Verbindungsfehler. Bitte versuche es später erneut.');
     } finally {
       setSubmitting(false);
     }

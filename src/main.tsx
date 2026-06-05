@@ -17,7 +17,8 @@ registerSW({
 
 // Simple hash route: #/admin -> admin console (own password gate)
 const isAdminRoute = () => window.location.hash.replace(/^#\/?/, '').toLowerCase() === 'admin';
-window.addEventListener('hashchange', () => window.location.reload());
+let _wasAdmin = isAdminRoute();
+window.addEventListener('hashchange', () => { if (isAdminRoute() !== _wasAdmin) { _wasAdmin = isAdminRoute(); window.location.reload(); } });
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

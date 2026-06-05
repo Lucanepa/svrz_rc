@@ -6,3 +6,4 @@ dist
 deploy/hetzner/pb_data
 deploy/hetzner/.env
 _shots
+deploy/hetzner/svrz-api.env.example

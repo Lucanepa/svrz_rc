@@ -7,3 +7,4 @@ coverage/
 .env*
 !.env.example
 infrastructure.private.md
+deploy/hetzner/seed/

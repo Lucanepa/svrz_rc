@@ -1,0 +1,35 @@
+# svrz_rc backend on Hetzner — PocketBase + API. Cloudflare Tunnel is external
+# (existing "hetzner-prod" tunnel). API published on 127.0.0.1:8787 for the
+# tunnel to route:  rc-api.volleyball.lucanepa.com -> http://localhost:8787
+#
+# Deploy: cd deploy/hetzner; restore ./pb_data; cp svrz-api.env.example svrz-api.env
+#         (fill secrets); docker compose up -d --build
+services:
+  pocketbase:
+    build:
+      context: .
+      dockerfile: Dockerfile.pocketbase
+      args:
+        PB_VERSION: ${PB_VERSION:-0.22.21}
+    restart: unless-stopped
+    volumes:
+      - ./pb_data:/pb/pb_data
+    networks: [svrz]
+
+  svrz-api:
+    build:
+      context: ../..
+      dockerfile: deploy/hetzner/Dockerfile.api
+    restart: unless-stopped
+    env_file: ./svrz-api.env
+    environment:
+      POCKETBASE_URL: http://pocketbase:8090
+      PORT: "8787"
+    ports:
+      - "127.0.0.1:8787:8787"
+    depends_on: [pocketbase]
+    networks: [svrz]
+
+networks:
+  svrz:
+    driver: bridge

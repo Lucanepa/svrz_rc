@@ -1,0 +1,11 @@
+# svrz-api (Express + tsx). Build context = repo root.
+FROM node:24-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 make g++ ca-certificates && apt-get clean
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+ENV PORT=8787
+EXPOSE 8787
+CMD ["npm", "run", "start:api"]

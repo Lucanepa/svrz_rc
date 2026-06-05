@@ -640,6 +640,16 @@ export default function App() {
   const [gameFilterFunction, setGameFilterFunction] = useState<string[]>([]);
   const [gameFilterDateFrom, setGameFilterDateFrom] = useState(() => toDateString(new Date()));
   const [gameFilterDateTo, setGameFilterDateTo] = useState(() => toDateString(new Date()));
+  // Season selector (Sep 1 -> Apr 30), persisted across reloads
+  const curSeasonYear = new Date().getMonth() <= 3 ? new Date().getFullYear() - 1 : new Date().getFullYear();
+  const [seasonStartYear, setSeasonStartYear] = useState<number>(() => {
+    try { const sv = localStorage.getItem('svrz_season'); const n = sv ? parseInt(sv, 10) : NaN; if (Number.isFinite(n)) return n; } catch { /* ignore */ }
+    return curSeasonYear;
+  });
+  useEffect(() => { try { localStorage.setItem('svrz_season', String(seasonStartYear)); } catch { /* ignore */ } }, [seasonStartYear]);
+  const seasonFrom = `${seasonStartYear}-09-01`;
+  const seasonTo = `${seasonStartYear + 1}-04-30`;
+  const seasonOptions = Array.from(new Set([seasonStartYear, ...Array.from({ length: 4 }, (_, i) => curSeasonYear - 2 + i)])).sort((a, b) => a - b);
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });
@@ -1731,6 +1741,11 @@ export default function App() {
         const to = new Date(gameFilterDateTo + 'T23:59:59');
         if (new Date(g.date) > to) return false;
       }
+      // Season bound (whole-app season scope)
+      if (g.date) {
+        const sd = new Date(g.date);
+        if (!Number.isNaN(sd.getTime()) && (sd < new Date(seasonFrom) || sd > new Date(seasonTo + 'T23:59:59'))) return false;
+      }
       // Coachee-aware filters: check if at least one referee passes
       if (gameFilterNeedsObs || !gameFilterShowInactive) {
         const refs = [g.firstReferee, g.secondReferee].filter(Boolean).map((r) => normName(r!));
@@ -1748,7 +1763,7 @@ export default function App() {
       }
       return true;
     });
-  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, coacheeByName, coacheeNames]);
+  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, coacheeByName, coacheeNames, seasonFrom, seasonTo]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
@@ -1878,12 +1893,12 @@ export default function App() {
 
       {viewMode === 'feedback' && feedbackSubView === 'coachees' && (
         <div className="max-w-5xl mx-auto no-print">
-          <div className="bg-white p-4 sm:p-5 rounded-2xl shadow-card border border-stone-200/70 mb-4 flex items-end sm:items-start gap-4">
+          <div className="bg-white p-4 sm:p-5 rounded-2xl shadow-card border border-stone-200/70 mb-4 flex items-center sm:items-start gap-4">
             <div className="flex-1">
               <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-stone-900">{t.title}</h1>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400 mt-0.5">Swiss Volley Region Zürich</p>
+              <p className="hidden sm:block text-[11px] font-semibold uppercase tracking-[0.12em] text-stone-400 mt-0.5">Swiss Volley Region Zürich</p>
             </div>
-            <div className="flex flex-col items-center justify-end sm:justify-start gap-2 self-end sm:self-start">
+            <div className="flex flex-col items-center justify-center gap-2 self-center sm:self-start">
               <SvrzLogo className="h-10 w-auto" />
             </div>
           </div>
@@ -1907,6 +1922,17 @@ export default function App() {
                 <Download size={14} />
                 {downloadingEmptyForm ? t.loading : t.downloadEmptyForm}
               </button>
+              <select
+                value={seasonStartYear}
+                onChange={(e) => setSeasonStartYear(parseInt(e.target.value, 10))}
+                className="h-9 ml-auto rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5 hover:bg-stone-100 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-500"
+                title={formData.lang === 'DE' ? 'Saison' : 'Season'}
+                aria-label={formData.lang === 'DE' ? 'Saison wählen' : 'Select season'}
+              >
+                {seasonOptions.map((y) => (
+                  <option key={y} value={y}>{`${y}/${String((y + 1) % 100).padStart(2, '0')}`}</option>
+                ))}
+              </select>
             </div>
             {/* Toggle tabs */}
             <div className="mb-3 grid grid-cols-3 gap-2">

@@ -8,3 +8,6 @@ coverage/
 !.env.example
 infrastructure.private.md
 deploy/hetzner/seed/
+deploy/hetzner/svrz-api.env
+deploy/hetzner/pb_data/
+deploy/hetzner/.env

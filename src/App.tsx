@@ -1655,6 +1655,7 @@ export default function App() {
   const filteredCoachees = useMemo(() => {
     const q = listSearch.toLowerCase();
     const filtered = coachees.filter((c) => {
+      if (typeof c.season === 'number' && c.season !== seasonStartYear) return false;
       if (q && !(c.full_name || '').toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q)) return false;
       if (listFilterLevels.length > 0) {
         const coacheeLevel = c.referee_level && c.stage ? `${c.referee_level}-${c.stage}` : c.referee_level || '';
@@ -1680,7 +1681,7 @@ export default function App() {
       return dir * (statusPriority(a) - statusPriority(b));
     });
     return filtered;
-  }, [coachees, listSearch, listFilterLevels, listFilterShowInactive, listFilterNeedsObs, listSortBy, listSortAsc]);
+  }, [coachees, listSearch, listFilterLevels, listFilterShowInactive, listFilterNeedsObs, listSortBy, listSortAsc, seasonStartYear]);
   // Lookup coachee by normalized name for game filtering
   const coacheeByName = useMemo(() => {
     const map = new Map<string, Coachee>();

@@ -29,6 +29,7 @@ export type Coachee = {
   referee_level?: string;
   stage?: string;
   groups?: string;
+  season?: number;
   notes?: string;
   last_feedback_at?: string;
   feedback_entries?: unknown[];

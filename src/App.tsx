@@ -3302,15 +3302,15 @@ export default function App() {
             {(() => {
               const cur = formData.results.srZiel || '';
               const curLevel = SR_ZIEL_OPTIONS.find(o => cur === o || cur.startsWith(o + ' ')) || '';
-              const curGender = / M$/.test(cur) ? 'M' : / F$/.test(cur) ? 'F' : '';
+              const curGender = / M$/.test(cur) ? 'M' : / F$/.test(cur) ? 'F' : / A$/.test(cur) ? 'A' : '';
               const setGoal = (lvl: string, gen: string) => setFormData(prev => ({ ...prev, results: { ...prev.results, srZiel: lvl ? (gen ? `${lvl} ${gen}` : lvl) : '' } }));
               return (
                 <div className="space-y-1">
                   <div className="flex gap-1">
-                    {(['M', 'F'] as const).map(g => (
+                    {(['M', 'F', 'A'] as const).map(g => (
                       <button key={g} type="button" onClick={() => setGoal(curLevel, curGender === g ? '' : g)}
-                        className={cn("h-7 w-8 border rounded text-xs font-bold transition-all", curGender === g ? "bg-stone-900 text-white border-stone-900" : "bg-white border-stone-300 hover:bg-stone-100")}>
-                        {g}
+                        className={cn("h-7 px-2 min-w-[2rem] border rounded text-xs font-bold transition-all", curGender === g ? "bg-stone-900 text-white border-stone-900" : "bg-white border-stone-300 hover:bg-stone-100")}>
+                        {g === 'A' ? (formData.lang === 'DE' ? 'Alle' : 'Any') : g}
                       </button>
                     ))}
                   </div>

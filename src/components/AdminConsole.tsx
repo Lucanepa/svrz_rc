@@ -105,6 +105,7 @@ export default function AdminConsole() {
   const [tab, setTab] = useState<'coachees' | 'rcs' | 'settings'>('coachees');
   const [testMode, setTestMode] = useState(false);
   const [groups, setGroups] = useState<string[]>([]);
+  const [defaultSeason, setDefaultSeason] = useState<number>(CUR_SEASON);
   const [lang, setLang] = useState<Lang>(() => {
     try { return (localStorage.getItem('svrz_admin_lang') as Lang) || 'DE'; } catch { return 'DE'; }
   });
@@ -112,7 +113,7 @@ export default function AdminConsole() {
   const toggleLang = () => setLang((l) => { const n = l === 'DE' ? 'EN' : 'DE'; try { localStorage.setItem('svrz_admin_lang', n); } catch { /* ignore */ } return n; });
 
   useEffect(() => { getAdminAuthStatus().then((s) => setAuthed(Boolean(s.authenticated))).catch(() => {}).finally(() => setChecking(false)); }, []);
-  useEffect(() => { if (authed) getSettings().then((s) => { setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); }).catch(() => {}); }, [authed]);
+  useEffect(() => { if (authed) getSettings().then((s) => { setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); if (s.default_season) setDefaultSeason(s.default_season); }).catch(() => {}); }, [authed]);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault(); setSubmitting(true); setError('');
@@ -177,7 +178,7 @@ export default function AdminConsole() {
         </div>
       </header>
       <main className="max-w-4xl mx-auto px-4 pt-5">
-        {tab === 'coachees' && <CoacheesAdmin t={t} groups={groups} />}
+        {tab === 'coachees' && <CoacheesAdmin t={t} groups={groups} defaultSeason={defaultSeason} />}
         {tab === 'rcs' && <RcsAdmin t={t} />}
         {tab === 'settings' && <SettingsAdmin t={t} onTestMode={setTestMode} groups={groups} onGroups={setGroups} />}
       </main>
@@ -219,8 +220,10 @@ function GroupMultiSelect({ groups, value, onChange, placeholder }: { groups: st
   );
 }
 
-function CoacheesAdmin({ t, groups }: { t: T; groups: string[] }) {
-  const [season, setSeason] = useState(CUR_SEASON);
+function CoacheesAdmin({ t, groups, defaultSeason }: { t: T; groups: string[]; defaultSeason: number }) {
+  const [season, setSeason] = useState(defaultSeason);
+  const seasonTouched = useRef(false);
+  useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
   const [all, setAll] = useState<Coachee[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
@@ -248,7 +251,7 @@ function CoacheesAdmin({ t, groups }: { t: T; groups: string[] }) {
       <Card>
         <div className="flex flex-wrap items-center gap-2 mb-1">
           <h2 className="text-sm font-semibold text-stone-700">{t.coachees}</h2>
-          <select value={season} onChange={(e) => setSeason(Number(e.target.value))} className="ml-auto h-9 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5">{SEASONS.map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
+          <select value={season} onChange={(e) => { seasonTouched.current = true; setSeason(Number(e.target.value)); }} className="ml-auto h-9 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5">{SEASONS.map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
           <label className={`${btnPrimary} cursor-pointer ${importing ? 'opacity-60 pointer-events-none' : ''}`}>{importing ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}<span>{t.importXlsx}</span><input type="file" accept=".xlsx" className="hidden" onChange={onFile} /></label>
         </div>
         <p className="text-xs text-stone-400">{t.importHint(seasonLabel(season))}</p>

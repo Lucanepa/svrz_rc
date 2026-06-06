@@ -3037,7 +3037,7 @@ export default function App() {
           <MetaField label={t.group} value={formData.meta.gruppe} onChange={v => updateMeta('gruppe', v)} />
 
           <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2" />
-          <MetaField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2" readOnly={!!selectedGame?.game_result} />
+          <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2" readOnly={!!selectedGame?.game_result} lang={formData.lang} />
         </div>
 
         {/* Legend */}
@@ -4047,6 +4047,29 @@ function MetaField({ label, value, onChange, type = "text", className = "", read
         onChange={e => onChange(e.target.value)}
         readOnly={readOnly}
       />
+    </div>
+  );
+}
+
+function ResultField({ label, value, onChange, readOnly = false, lang, className = "" }: { label: string; value: string; onChange: (v: string) => void; readOnly?: boolean; lang: 'DE' | 'EN'; className?: string }) {
+  const parts = (value || '').split(/[:\-]/);
+  const home = (parts[0] || '').replace(/\D/g, '').slice(0, 1);
+  const away = (parts[1] || '').replace(/\D/g, '').slice(0, 1);
+  const clamp = (v: string) => v.replace(/[^0-3]/g, '').slice(0, 1);
+  const commit = (h: string, a: string) => onChange((h || a) ? `${h}:${a}` : '');
+  const both = home !== '' && away !== '';
+  const valid = (home === '3' && ['0', '1', '2'].includes(away)) || (away === '3' && ['0', '1', '2'].includes(home));
+  const bad = both && !valid;
+  const box = cn('w-8 h-8 text-center text-sm font-bold rounded border outline-none focus:ring-2 focus:ring-red-500 print:w-7 print:h-7', bad ? 'border-red-500 bg-red-50 text-red-700' : 'border-stone-400');
+  return (
+    <div className={cn("border-r border-b border-stone-900 p-1.5 flex flex-col min-h-[48px]", className)}>
+      <label className="block text-[8px] uppercase font-black text-stone-400 leading-none mb-1">{label}</label>
+      <div className="flex items-center gap-1">
+        <input inputMode="numeric" maxLength={1} value={home} readOnly={readOnly} onChange={e => commit(clamp(e.target.value), away)} className={box} title={lang === 'DE' ? 'Sätze Heim' : 'Home sets'} aria-label={lang === 'DE' ? 'Sätze Heim' : 'Home sets'} />
+        <span className="text-stone-400 font-bold">:</span>
+        <input inputMode="numeric" maxLength={1} value={away} readOnly={readOnly} onChange={e => commit(home, clamp(e.target.value))} className={box} title={lang === 'DE' ? 'Sätze Gast' : 'Away sets'} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'} />
+        {bad && <span className="text-[9px] text-red-600 leading-tight ml-1 no-print">{lang === 'DE' ? 'Ein Satzstand muss 3 sein.' : 'One side must be 3.'}</span>}
+      </div>
     </div>
   );
 }

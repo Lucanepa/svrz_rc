@@ -367,3 +367,20 @@ export async function putSettings(payload: { default_season?: number; test_mode?
   });
   if (!r.ok) throw new Error(await r.text());
 }
+
+
+// ---- Signature sessions ----
+export async function startSignature(context: string, signer?: string): Promise<{ slug: string }> {
+  const res = await fetch(apiUrl('/api/signature/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ context, signer }) });
+  if (!res.ok) throw new Error('Could not start signature');
+  return res.json();
+}
+export async function getSignatureSession(slug: string): Promise<{ context: string; signer: string; signed: boolean; data: string }> {
+  const res = await fetch(apiUrl(`/api/signature/${encodeURIComponent(slug)}`));
+  if (!res.ok) throw new Error('Signature not found');
+  return res.json();
+}
+export async function submitSignatureSession(slug: string, data: string, signer?: string): Promise<void> {
+  const res = await fetch(apiUrl(`/api/signature/${encodeURIComponent(slug)}`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data, signer }) });
+  if (!res.ok) throw new Error('Could not save signature');
+}

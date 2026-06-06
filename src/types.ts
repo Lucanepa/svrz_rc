@@ -37,6 +37,7 @@ export interface FeedbackFormData {
   meta: MetaData;
   sections: AssessmentSection[];
   results: Results;
+  signature?: string;
 }
 
 export interface EligibleGame {
@@ -306,4 +307,5 @@ export const INITIAL_DATA: FeedbackFormData = {
     spielniveau: '',
     secondBesuch: '',
   },
+  signature: '',
 };

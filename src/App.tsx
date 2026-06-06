@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Download, FileJson, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload } from 'lucide-react';
+import { Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { QRCodeSVG } from 'qrcode.react';
@@ -26,7 +26,11 @@ import {
   loadRcOverview,
   loadrcCoachSummary,
   getSettings,
+  startSignature,
+  getSignatureSession,
+  submitSignatureSession,
 } from './lib/pocketbase';
+import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
 import { cn } from './lib/utils';
 import { normalizeCoacheeGroup } from './lib/coacheeGroup';
 import SvrzLogo from './SvrzLogo';
@@ -714,6 +718,33 @@ export default function App() {
   const emptyForm2SRRef = useRef<HTMLDivElement | null>(null);
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showInfoModal, setShowInfoModal] = useState(false);
+  const [sigModalOpen, setSigModalOpen] = useState(false);
+  const [sigSlug, setSigSlug] = useState('');
+  const [sigError, setSigError] = useState('');
+  const sigPadRef = useRef<SignaturePadHandle>(null);
+  const updateSignature = (data: string) => setFormData(prev => ({ ...prev, signature: data }));
+  const openSignatureModal = async () => {
+    setSigModalOpen(true); setSigSlug(''); setSigError('');
+    try {
+      const context = [formData.meta.mannschaften, formData.meta.liga, `${formData.role} ${formData.meta.srName}`.trim()].filter(Boolean).join(' · ');
+      const started = await startSignature(context, formData.meta.srName);
+      setSigSlug(started.slug);
+    } catch { setSigError(formData.lang === 'DE' ? 'Konnte nicht gestartet werden.' : 'Could not start.'); }
+  };
+  const saveSignatureHere = async () => {
+    if (!sigPadRef.current || sigPadRef.current.isEmpty()) return;
+    const data = sigPadRef.current.toDataURL();
+    updateSignature(data);
+    if (sigSlug) { try { await submitSignatureSession(sigSlug, data, formData.meta.srName); } catch { /* ignore */ } }
+    setSigModalOpen(false);
+  };
+  useEffect(() => {
+    if (!sigModalOpen || !sigSlug) return;
+    const id = setInterval(async () => {
+      try { const sess = await getSignatureSession(sigSlug); if (sess.signed && sess.data) { setFormData(prev => ({ ...prev, signature: sess.data })); setSigModalOpen(false); } } catch { /* ignore */ }
+    }, 3000);
+    return () => clearInterval(id);
+  }, [sigModalOpen, sigSlug]);
   const [downloadingEmptyForm, setDownloadingEmptyForm] = useState(false);
   const [manualUploadCoachee, setManualUploadCoachee] = useState<Coachee | null>(null);
   const [manualUploadSubmitting, setManualUploadSubmitting] = useState(false);
@@ -3306,6 +3337,22 @@ export default function App() {
           />
         </div>
 
+        {/* Signature */}
+        <div className="border-x border-b border-stone-900 p-4 flex items-end gap-4">
+          <div className="flex-1 min-w-0">
+            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-2">{formData.lang === 'DE' ? 'Unterschrift Schiedsrichter' : 'Referee signature'}</h4>
+            {formData.signature ? (
+              <img src={formData.signature} alt="Signature" className="h-20 max-w-full object-contain" />
+            ) : (
+              <div className="h-14 border-b border-stone-400" />
+            )}
+          </div>
+          <div className="no-print flex flex-col gap-1.5 shrink-0">
+            <button type="button" onClick={openSignatureModal} className="h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700">{formData.lang === 'DE' ? 'Unterschrift einholen' : 'Capture signature'}</button>
+            {formData.signature && <button type="button" onClick={() => updateSignature('')} className="h-8 px-3 rounded-lg border border-stone-200 text-xs text-stone-500 hover:bg-stone-100">{formData.lang === 'DE' ? 'Entfernen' : 'Remove'}</button>}
+          </div>
+        </div>
+
         <div className="mt-6 pt-4 border-t border-stone-100 text-[9px] text-right text-stone-400 italic">
           {t.version}: {t.versionDate} | SVRZ Referee Coaching Tool
         </div>
@@ -3447,6 +3494,37 @@ export default function App() {
       )}
 
       {/* Empty Form Modal */}
+      {sigModalOpen && (
+        <div onClick={() => setSigModalOpen(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
+          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5 max-h-[92vh] overflow-auto">
+            <div className="flex items-start justify-between mb-3">
+              <h3 className="text-base font-bold text-stone-900">{formData.lang === 'DE' ? 'Unterschrift' : 'Signature'}</h3>
+              <button onClick={() => setSigModalOpen(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
+            </div>
+            {sigError ? (
+              <p className="text-sm text-red-600 py-6 text-center">{sigError}</p>
+            ) : !sigSlug ? (
+              <div className="py-10 flex justify-center"><Loader2 className="h-6 w-6 animate-spin text-stone-300" /></div>
+            ) : (
+              <>
+                <p className="text-[11px] text-stone-400 mb-1.5">{formData.lang === 'DE' ? 'Hier unterschreiben:' : 'Sign here:'}</p>
+                <div className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50/50"><SignaturePad ref={sigPadRef} className="w-full h-36 block" /></div>
+                <div className="flex gap-2 mt-2">
+                  <button onClick={() => sigPadRef.current?.clear()} className="h-9 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100">{formData.lang === 'DE' ? 'Löschen' : 'Clear'}</button>
+                  <button onClick={saveSignatureHere} className="flex-1 h-9 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700">{formData.lang === 'DE' ? 'Auf diesem Gerät' : 'On this device'}</button>
+                </div>
+                <div className="flex items-center gap-2 my-3"><div className="flex-1 h-px bg-stone-200" /><span className="text-[10px] uppercase text-stone-400 font-semibold">{formData.lang === 'DE' ? 'oder' : 'or'}</span><div className="flex-1 h-px bg-stone-200" /></div>
+                <div className="flex flex-col items-center gap-2">
+                  <div className="p-2 bg-white border border-stone-200 rounded-lg"><QRCodeSVG value={`${window.location.origin}${window.location.pathname}#/sign/${sigSlug}`} size={132} level="M" /></div>
+                  <p className="text-[11px] text-stone-500 text-center">{formData.lang === 'DE' ? 'Mit dem Handy scannen und dort unterschreiben.' : 'Scan with a phone and sign there.'}</p>
+                  <p className="text-[11px] text-amber-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> {formData.lang === 'DE' ? 'Warte auf Unterschrift…' : 'Waiting for signature…'}</p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {showInfoModal && (
         <div onClick={() => setShowInfoModal(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
           <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5">

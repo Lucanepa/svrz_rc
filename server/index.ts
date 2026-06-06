@@ -1855,6 +1855,40 @@ app.get('/api/auth/gate/status', (req: Request, res: ExpressResponse) => {
   res.json({ authenticated: verifyGateSession(req) });
 });
 
+// ---- Signature sessions (cross-device signing via slug capability token) ----
+async function getSignatureRecord(slug: string) {
+  if (!slug || slug.length > 64) return null;
+  try { return await pb.collection('signatures').getFirstListItem(`slug = "${escapeFilterValue(slug)}"`); }
+  catch { return null; }
+}
+app.post('/api/signature/start', requireGateSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const slug = randomUUID().replace(/-/g, '');
+    const context = asText((req.body ?? {}).context).slice(0, 300);
+    const signer = asText((req.body ?? {}).signer).slice(0, 120);
+    await pb.collection('signatures').create({ slug, context, signer, data: '', signed: false });
+    res.json({ slug });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+app.get('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
+  try {
+    const rec = await getSignatureRecord(asText(req.params.slug));
+    if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
+    res.json({ context: asText(rec.context), signer: asText(rec.signer), signed: Boolean(rec.signed), data: rec.signed ? asText(rec.data) : '' });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
+  try {
+    const data = asText((req.body ?? {}).data);
+    const signer = asText((req.body ?? {}).signer).slice(0, 120);
+    if (!data.startsWith('data:image/') || data.length > 2_000_000) { res.status(400).json({ error: 'Invalid signature' }); return; }
+    const rec = await getSignatureRecord(asText(req.params.slug));
+    if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
+    await pb.collection('signatures').update(rec.id, { data, signed: true, signer: signer || asText(rec.signer) });
+    res.json({ ok: true });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
 app.post('/api/auth/gate', (req: Request, res: ExpressResponse) => {
   if (!GATE_PASSWORD) {
     res.json({ ok: true }); // gate disabled

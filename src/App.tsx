@@ -81,6 +81,15 @@ const UI_STRINGS = {
     difficult: "Schwierig",
     select: "Wählen...",
     remarksPlaceholder: "Hier Feedback, Beobachtungen und Verbesserungsvorschläge eingeben...",
+    highlights: "Highlights & Potenziale",
+    improvements: "Bereiche / Potenzial zur Verbesserung",
+    goalsNext: "Ziele für nächste Spiele",
+    nailsNewTitle: "3 Nägel (für nächstes Mal)",
+    nailsReviewTitle: "Vorherige Nägel — Bewertung",
+    nailAchieved: "Erreicht",
+    nailPartial: "Teilweise",
+    nailNot: "Nicht erreicht",
+    required: "Pflicht",
     goalPlaceholder: "Ziele werden basierend auf dem gewählten Niveau und den Bemerkungen festgelegt.",
     version: "Stand",
     versionDate: "12. März 2026",
@@ -201,6 +210,15 @@ const UI_STRINGS = {
     difficult: "Difficult",
     select: "Select...",
     remarksPlaceholder: "Enter feedback, observations and suggestions for improvement here...",
+    highlights: "Highlights & potential",
+    improvements: "Areas / potential for improvement",
+    goalsNext: "Goals for next games",
+    nailsNewTitle: "3 nails (for next time)",
+    nailsReviewTitle: "Previous nails — review",
+    nailAchieved: "Achieved",
+    nailPartial: "Partially",
+    nailNot: "Not achieved",
+    required: "required",
     goalPlaceholder: "Goals are set based on the selected level and remarks.",
     version: "Version",
     versionDate: "12 March 2026",
@@ -991,6 +1009,17 @@ export default function App() {
       setFormData(prev => ({ ...prev, role: '2. SR' }));
     }
     // If both are coachees, keep default '1. SR'
+
+    // Carry over the 3 nails set in this coachee's most recent feedback (to review now)
+    const cid = selectedCoacheeId;
+    if (cid) {
+      void listCoacheeFeedbacks(cid).then(records => {
+        const prevNew = records.map(r => r.feedback_json?.results?.nailsNew).find(n => Array.isArray(n) && n.some(x => x && String(x).trim()));
+        setFormData(prev => ({ ...prev, results: { ...prev.results, nailsNew: ['', '', ''], nailsReview: prevNew ? prevNew.map(text => ({ text: String(text), status: '' as const })) : [] } }));
+      }).catch(() => {});
+    } else {
+      setFormData(prev => ({ ...prev, results: { ...prev.results, nailsNew: ['', '', ''], nailsReview: [] } }));
+    }
   };
 
   const refreshCalendarGames = async () => {
@@ -3332,17 +3361,59 @@ export default function App() {
         </div>
 
         {/* Full-width Remarks */}
-        <div className="border-x border-b border-stone-900 p-4 min-h-[12rem] flex flex-col">
-          <h3 className="font-bold border-b border-stone-900 mb-3 pb-1 flex items-center gap-2 text-stone-800">
+        <div className="border-x border-b border-stone-900 p-4 flex flex-col gap-3">
+          <h3 className="font-bold border-b border-stone-900 pb-1 flex items-center gap-2 text-stone-800">
             <MessageSquare size={16} />
             {t.remarks}
           </h3>
           <textarea
-            className="flex-grow text-xs leading-relaxed resize-none outline-none bg-transparent placeholder:text-stone-300"
+            className="min-h-[3rem] text-xs leading-relaxed resize-y outline-none bg-transparent placeholder:text-stone-300"
             placeholder={t.remarksPlaceholder}
             value={formData.results.bemerkungen}
             onChange={e => updateResult('bemerkungen', e.target.value)}
           />
+          {(([['highlights', t.highlights], ['improvements', t.improvements], ['goals', t.goalsNext]]) as ['highlights' | 'improvements' | 'goals', string][]).map(([key, label]) => (
+            <div key={key}>
+              <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{label} <span className="text-stone-300 font-normal normal-case">· optional</span></h4>
+              <textarea
+                className="w-full min-h-[2.75rem] text-xs leading-relaxed resize-y outline-none bg-white placeholder:text-stone-300 border border-stone-200 rounded p-2"
+                value={formData.results[key] || ''}
+                onChange={e => setFormData(prev => ({ ...prev, results: { ...prev.results, [key]: e.target.value } }))}
+              />
+            </div>
+          ))}
+          {(formData.results.nailsReview && formData.results.nailsReview.length > 0) && (
+            <div className="border border-stone-200 rounded p-2.5 bg-stone-50/60">
+              <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-2">{t.nailsReviewTitle}</h4>
+              <div className="space-y-2">
+                {formData.results.nailsReview.map((nail, i) => (
+                  <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-1.5">
+                    <span className="flex-1 text-xs text-stone-700"><span className="font-semibold text-stone-400 mr-1">{i + 1}.</span>{nail.text || '—'}</span>
+                    <div className="flex gap-1 shrink-0">
+                      {(([['achieved', t.nailAchieved, 'bg-green-600'], ['partial', t.nailPartial, 'bg-amber-500'], ['not', t.nailNot, 'bg-red-600']]) as ['achieved' | 'partial' | 'not', string, string][]).map(([val, lbl, color]) => (
+                        <button key={val} type="button" onClick={() => setFormData(prev => { const nr = [...(prev.results.nailsReview || [])]; nr[i] = { ...nr[i], status: nr[i].status === val ? '' : val }; return { ...prev, results: { ...prev.results, nailsReview: nr } }; })}
+                          className={cn("h-7 px-2 rounded border text-[10px] font-bold transition-all", nail.status === val ? `${color} text-white border-transparent` : "bg-white border-stone-300 text-stone-500 hover:bg-stone-100")}>
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div>
+            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.nailsNewTitle} <span className="text-red-500 font-normal normal-case">· {t.required}</span></h4>
+            <div className="space-y-1.5">
+              {[0, 1, 2].map(i => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-stone-400 w-4 shrink-0">{i + 1}.</span>
+                  <input type="text" value={(formData.results.nailsNew || [])[i] || ''} onChange={e => setFormData(prev => { const nn = [...(prev.results.nailsNew || ['', '', ''])]; while (nn.length < 3) nn.push(''); nn[i] = e.target.value; return { ...prev, results: { ...prev.results, nailsNew: nn } }; })}
+                    className="flex-1 h-8 text-xs rounded border border-stone-200 px-2 outline-none focus:ring-2 focus:ring-red-500" />
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Signature */}

@@ -1250,7 +1250,7 @@ export default function App() {
       : choice === '2SR' ? [emptyForm2SRRef]
       : [emptyForm1SRRef, emptyForm2SRRef];
 
-    const a4W = 595.28, a4H = 841.89, margin = 18;
+    const a4W = 595.28, a4H = 841.89, margin = 6;
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
     const AcroForm = (jsPDF as unknown as { AcroForm: { TextField: new () => PdfField } }).AcroForm;
     const addField = (pdf as unknown as { addField: (fld: PdfField) => void }).addField.bind(pdf);
@@ -4112,7 +4112,7 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
     ? (lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN)
     : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
   return (
-    <div ref={ref} className="bg-white" style={{ width: 794, padding: '28px 32px' }}>
+    <div ref={ref} className="bg-white flex flex-col" style={{ width: 794, minHeight: 1128, padding: '10px 14px' }}>
       {/* Header */}
       <div className="flex justify-between items-start gap-3 mb-4">
         <div className="flex gap-3 items-start">
@@ -4201,7 +4201,7 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
         ))}
       </div>
       {/* Remarks + Signatures + QR */}
-      <div className="border-x border-b border-stone-900 grid grid-cols-[1fr_auto]">
+      <div className="border-x border-b border-stone-900 grid grid-cols-[1fr_auto] flex-1">
         {/* Remarks (left) */}
         <div className="p-3 border-r border-stone-900 flex flex-col gap-2">
           <h3 className="font-bold border-b border-stone-900 pb-1 flex items-center gap-1.5 text-stone-800 text-sm">

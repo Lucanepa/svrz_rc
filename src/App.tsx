@@ -713,6 +713,7 @@ export default function App() {
   const emptyForm1SRRef = useRef<HTMLDivElement | null>(null);
   const emptyForm2SRRef = useRef<HTMLDivElement | null>(null);
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
+  const [showInfoModal, setShowInfoModal] = useState(false);
   const [downloadingEmptyForm, setDownloadingEmptyForm] = useState(false);
   const [manualUploadCoachee, setManualUploadCoachee] = useState<Coachee | null>(null);
   const [manualUploadSubmitting, setManualUploadSubmitting] = useState(false);
@@ -1920,7 +1921,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="bg-white p-4 rounded-2xl shadow-card border border-stone-200/70 mb-4 no-print">
+          <div className="bg-white p-4 rounded-2xl shadow-card border border-stone-200/70 mb-4 no-print hidden sm:block">
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stone-400 mb-2">{formData.lang === 'DE' ? 'Nützliche Infos & Dokumente' : 'Useful info & documents'}</h3>
             <div className="flex flex-col gap-1.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
@@ -1930,41 +1931,51 @@ export default function App() {
 
           <div className="bg-white p-3 sm:p-6 rounded-2xl shadow-card border border-stone-200/70">
             {/* Top row: language toggle + empty form download */}
-            <div className="mb-3 flex items-center gap-2">
-              <button
-                onClick={toggleLang}
-                className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
-                title={t.languageToggleTitle}
-              >
-                <Languages size={14} />
-                <span>{formData.lang}</span>
-              </button>
+            <div className="mb-3 space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={toggleLang}
+                  className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
+                  title={t.languageToggleTitle}
+                >
+                  <Languages size={14} />
+                  <span>{formData.lang}</span>
+                </button>
+                <button
+                  onClick={() => { window.location.hash = '/admin'; }}
+                  className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
+                >
+                  <ShieldAlert size={14} />
+                  <span className="hidden sm:inline">Admin</span>
+                </button>
+                <button
+                  onClick={() => setShowInfoModal(true)}
+                  className="sm:hidden h-9 inline-flex items-center justify-center px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
+                  title={formData.lang === 'DE' ? 'Infos & Dokumente' : 'Info & documents'}
+                  aria-label="Info"
+                >
+                  <Info size={14} />
+                </button>
+                <select
+                  value={seasonStartYear}
+                  onChange={(e) => setSeasonStartYear(parseInt(e.target.value, 10))}
+                  className="h-9 ml-auto sm:ml-0 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5 hover:bg-stone-100 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-500"
+                  title={formData.lang === 'DE' ? 'Saison' : 'Season'}
+                  aria-label={formData.lang === 'DE' ? 'Saison wählen' : 'Select season'}
+                >
+                  {seasonOptions.map((y) => (
+                    <option key={y} value={y}>{`${y}/${String((y + 1) % 100).padStart(2, '0')}`}</option>
+                  ))}
+                </select>
+              </div>
               <button
                 onClick={() => setShowEmptyFormModal(true)}
                 disabled={downloadingEmptyForm}
-                className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors disabled:opacity-50"
+                className="w-full sm:w-auto sm:ml-auto h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors disabled:opacity-50"
               >
                 <Download size={14} />
                 {downloadingEmptyForm ? t.loading : t.downloadEmptyForm}
               </button>
-              <button
-                onClick={() => { window.location.hash = '/admin'; }}
-                className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
-              >
-                <ShieldAlert size={14} />
-                <span className="hidden sm:inline">Admin</span>
-              </button>
-              <select
-                value={seasonStartYear}
-                onChange={(e) => setSeasonStartYear(parseInt(e.target.value, 10))}
-                className="h-9 ml-auto rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5 hover:bg-stone-100 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-500"
-                title={formData.lang === 'DE' ? 'Saison' : 'Season'}
-                aria-label={formData.lang === 'DE' ? 'Saison wählen' : 'Select season'}
-              >
-                {seasonOptions.map((y) => (
-                  <option key={y} value={y}>{`${y}/${String((y + 1) % 100).padStart(2, '0')}`}</option>
-                ))}
-              </select>
             </div>
             {/* Toggle tabs */}
             <div className="mb-3 grid grid-cols-3 gap-2">
@@ -3375,6 +3386,21 @@ export default function App() {
       )}
 
       {/* Empty Form Modal */}
+      {showInfoModal && (
+        <div onClick={() => setShowInfoModal(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
+          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5">
+            <div className="flex items-start justify-between mb-3">
+              <h3 className="text-base font-bold text-stone-900">{formData.lang === 'DE' ? 'Infos & Dokumente' : 'Info & documents'}</h3>
+              <button onClick={() => setShowInfoModal(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
+            </div>
+            <div className="flex flex-col gap-2.5">
+              <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
+              <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Info size={15} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showEmptyFormModal && (
         <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-xs p-6">

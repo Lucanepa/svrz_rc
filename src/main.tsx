@@ -10,7 +10,7 @@ registerSW({
   immediate: true,
   onRegisteredSW(_swUrl, registration) {
     if (registration) {
-      setInterval(() => { registration.update(); }, 15 * 1000);
+      setInterval(() => { try { registration.update(); } catch { /* ignore (e.g. sandboxed preview/iframe) */ } }, 15 * 1000);
     }
   },
 });

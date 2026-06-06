@@ -2327,7 +2327,7 @@ export default function App() {
 
             {/* Coachees table */}
             {listTab === 'coachees' && (
-              <div className="max-h-[60vh] overflow-auto border border-stone-200 rounded">
+              <div className="border border-stone-200 rounded">
                 {filteredCoachees.length === 0 ? (
                   <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><Users size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noCoachees}</p></div>
                 ) : (
@@ -2427,7 +2427,7 @@ export default function App() {
 
                 {/* Games list view */}
                 {gameViewMode === 'list' && (
-                  <div className="max-h-[60vh] overflow-auto border border-stone-200 rounded">
+                  <div className="border border-stone-200 rounded">
                     {filteredGames.length === 0 ? (
                       <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><CalendarDays size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noGames}</p></div>
                     ) : (
@@ -2894,7 +2894,7 @@ export default function App() {
               {t.lists}
             </button>
           </div>
-          <div className="max-h-[65vh] overflow-auto border border-stone-200 rounded">
+          <div className="border border-stone-200 rounded">
             {loadingCoacheeGames ? (
               <p className="text-sm text-stone-500 p-4">{t.loading}</p>
             ) : coacheeGames.length === 0 ? (

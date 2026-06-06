@@ -1752,7 +1752,10 @@ async function isEmailTestMode(): Promise<boolean> {
 app.get('/api/settings', requireGateSession, async (_req: Request, res: ExpressResponse) => {
   try {
     const rec = await getSettingRecord('default_season');
-    res.json({ default_season: rec ? Number(asText(rec.value)) || null : null, test_mode: await isEmailTestMode() });
+    const groupsRec = await getSettingRecord('groups');
+    let groups: string[] = [];
+    try { groups = groupsRec ? JSON.parse(asText(groupsRec.value)) : []; } catch { groups = []; }
+    res.json({ default_season: rec ? Number(asText(rec.value)) || null : null, test_mode: await isEmailTestMode(), groups });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -1761,8 +1764,8 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
     const body = (req.body ?? {}) as Record<string, unknown>;
     if ('default_season' in body) await setSetting('default_season', asText(body.default_season));
     if ('test_mode' in body) await setSetting('test_mode', body.test_mode ? '1' : '0');
-    const seasonRec = await getSettingRecord('default_season');
-    res.json({ ok: true, default_season: seasonRec ? Number(asText(seasonRec.value)) || null : null, test_mode: await isEmailTestMode() });
+    if ('groups' in body && Array.isArray(body.groups)) await setSetting('groups', JSON.stringify((body.groups as unknown[]).map((g) => String(g).trim()).filter(Boolean)));
+    res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 

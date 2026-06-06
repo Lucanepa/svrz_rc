@@ -355,12 +355,12 @@ export async function importCoachees(coachees: ImportRow[], season: number): Pro
   return r.json();
 }
 
-export async function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean }> {
+export async function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[] }> {
   const r = await fetch(apiUrl('/api/settings'), { credentials: 'include' });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
-export async function putSettings(payload: { default_season?: number; test_mode?: boolean }): Promise<void> {
+export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[] }): Promise<void> {
   const r = await fetch(apiUrl('/api/admin/settings'), {
     method: 'PUT', credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

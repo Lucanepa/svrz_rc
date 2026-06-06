@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import {
   getAdminAuthStatus, adminUiLogin, logoutAdmin,
@@ -14,6 +14,15 @@ const NOW = new Date();
 const CUR_SEASON = NOW.getMonth() <= 7 ? NOW.getFullYear() - 1 : NOW.getFullYear();
 const SEASONS = [CUR_SEASON, CUR_SEASON + 1, CUR_SEASON + 2];
 const seasonLabel = (y: number) => `${y}/${String((y + 1) % 100).padStart(2, '0')}`;
+
+// SR-Niveau & Stufe scale (svrz.ch), lowest -> highest
+const STUFEN = ['N4-3', 'N4-2', 'N4-1', 'N3-3', 'N3-2', 'N3-1', 'N2-2', 'N2-1', 'N1'];
+function joinStufe(level?: string, stage?: string): string { if (!level) return ''; return stage ? `${level}-${stage}` : level; }
+function splitStufe(v: string): { referee_level: string; stage: string } {
+  if (!v) return { referee_level: '', stage: '' };
+  if (v.indexOf('-') < 0) return { referee_level: v, stage: '' };
+  const [lvl, st] = v.split('-'); return { referee_level: lvl, stage: st || '' };
+}
 
 const STR = {
   DE: {
@@ -32,6 +41,7 @@ const STR = {
     noRows: 'Keine Zeilen in der Datei gefunden.',
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} neu, ${u} aktualisiert (von ${t}).`,
     importFail: (e: string) => `Import fehlgeschlagen: ${e}`,
+    groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppen wählen',
   },
   EN: {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminPw: 'Admin password', wrongPw: 'Wrong password',
@@ -49,6 +59,7 @@ const STR = {
     noRows: 'No rows found in the file.',
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} new, ${u} updated (of ${t}).`,
     importFail: (e: string) => `Import failed: ${e}`,
+    groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Choose groups',
   },
 } as const;
 type T = typeof STR['DE'];
@@ -86,6 +97,7 @@ export default function AdminConsole() {
   const [submitting, setSubmitting] = useState(false);
   const [tab, setTab] = useState<'coachees' | 'rcs' | 'settings'>('coachees');
   const [testMode, setTestMode] = useState(false);
+  const [groups, setGroups] = useState<string[]>([]);
   const [lang, setLang] = useState<Lang>(() => {
     try { return (localStorage.getItem('svrz_admin_lang') as Lang) || 'DE'; } catch { return 'DE'; }
   });
@@ -93,7 +105,7 @@ export default function AdminConsole() {
   const toggleLang = () => setLang((l) => { const n = l === 'DE' ? 'EN' : 'DE'; try { localStorage.setItem('svrz_admin_lang', n); } catch { /* ignore */ } return n; });
 
   useEffect(() => { getAdminAuthStatus().then((s) => setAuthed(Boolean(s.authenticated))).catch(() => {}).finally(() => setChecking(false)); }, []);
-  useEffect(() => { if (authed) getSettings().then((s) => setTestMode(Boolean(s.test_mode))).catch(() => {}); }, [authed]);
+  useEffect(() => { if (authed) getSettings().then((s) => { setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); }).catch(() => {}); }, [authed]);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault(); setSubmitting(true); setError('');
@@ -157,9 +169,9 @@ export default function AdminConsole() {
         </div>
       </header>
       <main className="max-w-4xl mx-auto px-4 pt-5">
-        {tab === 'coachees' && <CoacheesAdmin t={t} />}
+        {tab === 'coachees' && <CoacheesAdmin t={t} groups={groups} />}
         {tab === 'rcs' && <RcsAdmin t={t} />}
-        {tab === 'settings' && <SettingsAdmin t={t} onTestMode={setTestMode} />}
+        {tab === 'settings' && <SettingsAdmin t={t} onTestMode={setTestMode} groups={groups} onGroups={setGroups} />}
       </main>
     </div>
   );
@@ -169,7 +181,37 @@ function Card({ children }: { children: React.ReactNode }) {
   return <div className="bg-white rounded-2xl shadow-card border border-stone-200/70 p-4 sm:p-5 mb-4">{children}</div>;
 }
 
-function CoacheesAdmin({ t }: { t: T }) {
+function GroupMultiSelect({ groups, value, onChange, placeholder }: { groups: string[]; value: string; onChange: (v: string) => void; placeholder: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = value ? value.split('/').map((x) => x.trim()).filter(Boolean) : [];
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h);
+  }, []);
+  const toggle = (g: string) => { const next = selected.includes(g) ? selected.filter((x) => x !== g) : [...selected, g]; onChange(next.join('/')); };
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button" onClick={() => setOpen((o) => !o)} className={`${input} text-left flex items-center justify-between gap-1`}>
+        <span className={selected.length ? 'text-stone-800 truncate' : 'text-stone-400'}>{selected.length ? selected.join('/') : placeholder}</span>
+        <ChevronDown size={14} className="text-stone-400 shrink-0" />
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 w-full max-h-52 overflow-auto rounded-lg border border-stone-200 bg-white shadow-lg p-1">
+          {groups.length === 0 && <p className="px-2 py-2 text-xs text-stone-400">—</p>}
+          {groups.map((g) => (
+            <label key={g} className="flex items-center gap-2 px-2 py-1.5 text-sm rounded hover:bg-stone-50 cursor-pointer">
+              <input type="checkbox" checked={selected.includes(g)} onChange={() => toggle(g)} className="accent-red-600" />
+              <span>{g}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CoacheesAdmin({ t, groups }: { t: T; groups: string[] }) {
   const [season, setSeason] = useState(CUR_SEASON);
   const [all, setAll] = useState<Coachee[]>([]);
   const [loading, setLoading] = useState(true);
@@ -205,12 +247,14 @@ function CoacheesAdmin({ t }: { t: T }) {
         {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}
       </Card>
       <Card>
-        <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
           <input className={input} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
           <input className={input} placeholder={t.lastName} value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
-          <input className={input} placeholder={t.level} value={form.referee_level} onChange={(e) => setForm({ ...form, referee_level: e.target.value })} />
-          <input className={input} placeholder={t.stage} value={form.stage} onChange={(e) => setForm({ ...form, stage: e.target.value })} />
-          <input className={`${input} sm:col-span-1 col-span-2`} placeholder={t.group} value={form.groups} onChange={(e) => setForm({ ...form, groups: e.target.value })} />
+          <select className={input} value={joinStufe(form.referee_level, form.stage)} onChange={(e) => setForm({ ...form, ...splitStufe(e.target.value) })}>
+            <option value="">{t.stage}</option>
+            {STUFEN.map((v) => <option key={v} value={v}>{v}</option>)}
+          </select>
+          <GroupMultiSelect groups={groups} value={form.groups} onChange={(v) => setForm({ ...form, groups: v })} placeholder={t.chooseGroups} />
           <button onClick={add} disabled={!form.first_name && !form.last_name} className={`${btnPrimary} justify-center`}><Plus size={15} /> {t.add}</button>
         </div>
       </Card>
@@ -218,12 +262,14 @@ function CoacheesAdmin({ t }: { t: T }) {
         <p className="text-xs text-stone-400 mb-2">{loading ? t.loading : t.count(rows.length, seasonLabel(season))}</p>
         <div className="divide-y divide-stone-100">
           {rows.map((c) => editId === c.id ? (
-            <div key={c.id} className="py-2 grid grid-cols-2 sm:grid-cols-6 gap-2 items-center">
+            <div key={c.id} className="py-2 grid grid-cols-2 sm:grid-cols-5 gap-2 items-center">
               <input className={input} value={editForm.first_name} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
               <input className={input} value={editForm.last_name} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
-              <input className={input} value={editForm.referee_level} onChange={(e) => setEditForm({ ...editForm, referee_level: e.target.value })} />
-              <input className={input} value={editForm.stage} onChange={(e) => setEditForm({ ...editForm, stage: e.target.value })} />
-              <input className={input} value={editForm.groups} onChange={(e) => setEditForm({ ...editForm, groups: e.target.value })} />
+              <select className={input} value={joinStufe(editForm.referee_level, editForm.stage)} onChange={(e) => setEditForm({ ...editForm, ...splitStufe(e.target.value) })}>
+                <option value="">{t.stage}</option>
+                {STUFEN.map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+              <GroupMultiSelect groups={groups} value={editForm.groups} onChange={(v) => setEditForm({ ...editForm, groups: v })} placeholder={t.chooseGroups} />
               <div className="flex gap-1.5"><button onClick={() => saveEdit(c.id)} className={btnPrimary}><Check size={15} /></button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
             </div>
           ) : (
@@ -288,12 +334,19 @@ function RcsAdmin({ t }: { t: T }) {
   );
 }
 
-function SettingsAdmin({ t, onTestMode }: { t: T; onTestMode: (v: boolean) => void }) {
+function SettingsAdmin({ t, onTestMode, groups, onGroups }: { t: T; onTestMode: (v: boolean) => void; groups: string[]; onGroups: (g: string[]) => void }) {
   const [season, setSeason] = useState<number>(CUR_SEASON);
   const [testMode, setTm] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [ng, setNg] = useState('');
+  const [gi, setGi] = useState<number | null>(null);
+  const [gv, setGv] = useState('');
   useEffect(() => { getSettings().then((s) => { if (s.default_season) setSeason(s.default_season); setTm(Boolean(s.test_mode)); onTestMode(Boolean(s.test_mode)); }).catch(() => {}).finally(() => setLoading(false)); }, [onTestMode]);
+  const saveGroups = async (next: string[]) => { onGroups(next); try { await putSettings({ groups: next }); } catch { /* ignore */ } };
+  const addGroup = () => { const v = ng.trim(); if (!v || groups.includes(v)) return; setNg(''); void saveGroups([...groups, v].sort()); };
+  const delGroup = (i: number) => void saveGroups(groups.filter((_, idx) => idx !== i));
+  const saveEditGroup = (i: number) => { const v = gv.trim(); if (v) { const next = groups.slice(); next[i] = v; void saveGroups(Array.from(new Set(next)).sort()); } setGi(null); };
   const save = async () => { await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
   const toggleTest = async () => { const next = !testMode; setTm(next); onTestMode(next); try { await putSettings({ test_mode: next }); } catch { setTm(!next); onTestMode(!next); } };
   return (
@@ -305,6 +358,30 @@ function SettingsAdmin({ t, onTestMode }: { t: T; onTestMode: (v: boolean) => vo
           <select value={season} disabled={loading} onChange={(e) => setSeason(Number(e.target.value))} className="h-9 rounded-lg border border-stone-300 bg-white text-sm px-3">{SEASONS.map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
           <button onClick={save} className={btnPrimary}><Check size={15} /> {t.save}</button>
           {saved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
+        </div>
+      </Card>
+      <Card>
+        <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.groups}</h2>
+        <p className="text-xs text-stone-400 mb-3">{t.groupsHint}</p>
+        <div className="flex gap-2 mb-3">
+          <input className={input} placeholder={t.newGroup} value={ng} onChange={(e) => setNg(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addGroup(); }} />
+          <button onClick={addGroup} className={btnPrimary}><Plus size={15} /> {t.add}</button>
+        </div>
+        <div className="divide-y divide-stone-100">
+          {groups.map((g, i) => gi === i ? (
+            <div key={g} className="py-2 flex items-center gap-2">
+              <input className={input} value={gv} onChange={(e) => setGv(e.target.value)} />
+              <button onClick={() => saveEditGroup(i)} className={btnPrimary}><Check size={15} /></button>
+              <button onClick={() => setGi(null)} className={btnGhost}><X size={14} /></button>
+            </div>
+          ) : (
+            <div key={g} className="py-2 flex items-center gap-3">
+              <span className="flex-1 text-sm text-stone-800">{g}</span>
+              <button onClick={() => { setGi(i); setGv(g); }} className={btnGhost}><Pencil size={13} /></button>
+              <button onClick={() => delGroup(i)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+            </div>
+          ))}
+          {groups.length === 0 && <p className="py-4 text-center text-xs text-stone-400">—</p>}
         </div>
       </Card>
       <Card>

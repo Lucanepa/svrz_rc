@@ -3011,7 +3011,7 @@ export default function App() {
               <p className="text-[10px] text-stone-500 uppercase tracking-wider font-semibold">SVRZ | SR-Wesen | Referee Coaching | schiricoaching@svrz.ch</p>
               <h1 className="text-xl sm:text-2xl font-bold mt-1 text-stone-900 flex items-center gap-3">
                 {t.title} 
-                <span className="bg-stone-900 text-white px-3 py-0.5 rounded text-lg">{formData.role}</span>
+                <span className="bg-stone-900 text-white px-3 py-0.5 rounded text-lg whitespace-nowrap shrink-0">{formData.role}</span>
               </h1>
             </div>
           </div>
@@ -3919,7 +3919,7 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
             <p className="text-[8px] text-stone-500 uppercase tracking-wider font-semibold">SVRZ | SR-Wesen | Referee Coaching | schiricoaching@svrz.ch</p>
             <h1 className="text-xl font-bold mt-0.5 text-stone-900 flex items-center gap-2">
               {t.title}
-              <span className="bg-stone-900 text-white px-2 py-0.5 rounded text-sm">{role}</span>
+              <span className="bg-stone-900 text-white px-2 py-0.5 rounded text-sm whitespace-nowrap shrink-0">{role}</span>
             </h1>
           </div>
         </div>

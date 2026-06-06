@@ -46,7 +46,7 @@ const SignaturePad = forwardRef<SignaturePadHandle, { className?: string }>(({ c
     toDataURL: () => canvasRef.current?.toDataURL('image/png') ?? '',
   }));
 
-  return <canvas ref={canvasRef} className={className} style={{ touchAction: 'none' }} />;
+  return <canvas ref={canvasRef} className={className} style={{ width: '100%', height: '100%', display: 'block', touchAction: 'none' }} />;
 });
 SignaturePad.displayName = 'SignaturePad';
 export default SignaturePad;

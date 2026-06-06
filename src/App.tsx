@@ -3078,10 +3078,10 @@ export default function App() {
         
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start gap-4 mb-6 print:flex-row">
-          <div className="flex gap-4 items-start">
-            <SvrzLogo className="h-16" />
-            <div>
-              <p className="text-[10px] text-stone-500 uppercase tracking-wider font-semibold">SVRZ | SR-Wesen | Referee Coaching | schiricoaching@svrz.ch</p>
+          <div className="flex flex-col sm:flex-row print:flex-row gap-2 sm:gap-4 items-start">
+            <SvrzLogo className="h-12 sm:h-16 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-[10px] text-stone-500 uppercase tracking-wider font-semibold break-words">SVRZ | SR-Wesen | Referee Coaching | schiricoaching@svrz.ch</p>
               <h1 className="text-xl sm:text-2xl font-bold mt-1 text-stone-900 flex items-center gap-3">
                 {t.title} 
                 <span className="bg-stone-900 text-white px-3 py-0.5 rounded text-lg whitespace-nowrap shrink-0">{formData.role}</span>
@@ -3490,7 +3490,7 @@ export default function App() {
       {/* Empty Form Modal */}
       {sigModalOpen && (
         <div onClick={() => setSigModalOpen(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5 max-h-[92vh] overflow-auto">
+          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-4 max-h-[85vh] overflow-y-auto">
             <div className="flex items-start justify-between mb-3">
               <h3 className="text-base font-bold text-stone-900">{formData.lang === 'DE' ? 'Unterschrift' : 'Signature'}</h3>
               <button onClick={() => setSigModalOpen(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
@@ -3502,14 +3502,14 @@ export default function App() {
             ) : (
               <>
                 <p className="text-[11px] text-stone-400 mb-1.5">{formData.lang === 'DE' ? 'Hier unterschreiben:' : 'Sign here:'}</p>
-                <div className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50/50"><SignaturePad ref={sigPadRef} className="w-full h-36 block" /></div>
+                <div className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50/50 h-36 overflow-hidden"><SignaturePad ref={sigPadRef} /></div>
                 <div className="flex gap-2 mt-2">
                   <button onClick={() => sigPadRef.current?.clear()} className="h-9 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100">{formData.lang === 'DE' ? 'Löschen' : 'Clear'}</button>
-                  <button onClick={saveSignatureHere} className="flex-1 h-9 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700">{formData.lang === 'DE' ? 'Auf diesem Gerät' : 'On this device'}</button>
+                  <button onClick={saveSignatureHere} className="flex-1 h-9 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700">{formData.lang === 'DE' ? 'Unterschrift speichern' : 'Save signature'}</button>
                 </div>
                 <div className="flex items-center gap-2 my-3"><div className="flex-1 h-px bg-stone-200" /><span className="text-[10px] uppercase text-stone-400 font-semibold">{formData.lang === 'DE' ? 'oder' : 'or'}</span><div className="flex-1 h-px bg-stone-200" /></div>
                 <div className="flex flex-col items-center gap-2">
-                  <div className="p-2 bg-white border border-stone-200 rounded-lg"><QRCodeSVG value={`${window.location.origin}${window.location.pathname}#/sign/${sigSlug}`} size={132} level="M" /></div>
+                  <div className="p-2 bg-white border border-stone-200 rounded-lg"><QRCodeSVG value={`${window.location.origin}${window.location.pathname}#/sign/${sigSlug}`} size={116} level="M" /></div>
                   <p className="text-[11px] text-stone-500 text-center">{formData.lang === 'DE' ? 'Mit dem Handy scannen und dort unterschreiben.' : 'Scan with a phone and sign there.'}</p>
                   <p className="text-[11px] text-amber-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> {formData.lang === 'DE' ? 'Warte auf Unterschrift…' : 'Waiting for signature…'}</p>
                 </div>

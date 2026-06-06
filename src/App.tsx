@@ -3066,7 +3066,7 @@ export default function App() {
         </div>
 
         {/* Meta Data Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-[1fr_1fr_1fr_2fr] print:grid-cols-[1fr_1fr_1fr_2fr] border-t border-l border-stone-900 mb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-[1fr_1fr_1fr_2fr] print:grid-cols-[1fr_1fr_1fr_2fr] border-t border-l border-stone-900 mb-4">
           <MetaField label={t.matchNo} value={formData.meta.spielNr} onChange={v => updateMeta('spielNr', v)} />
           <MetaField label={t.league} value={formData.meta.liga} onChange={v => updateMeta('liga', v)} />
           <MetaField label={t.date} value={formData.meta.datum} onChange={v => updateMeta('datum', v)} />
@@ -3101,7 +3101,8 @@ export default function App() {
               {(() => {
                 const sectionHasNA = section.items.some(it => NA_ELIGIBLE_IDS.has(it.id));
                 return (
-              <table className="w-full border-collapse border border-stone-900">
+              <>
+              <table className="w-full border-collapse border border-stone-900 hidden sm:table">
                 <thead>
                   <tr className="bg-stone-50 text-[10px] uppercase font-bold text-stone-500">
                     <th className="p-2 text-left border-b border-stone-900">{t.criteria}</th>
@@ -3172,6 +3173,35 @@ export default function App() {
                   })}
                 </tbody>
               </table>
+              <div className="sm:hidden border-x border-b border-stone-900 divide-y divide-stone-200">
+                {section.items.map((item, iIdx) => {
+                  const hasNA = NA_ELIGIBLE_IDS.has(item.id);
+                  const isNA = item.rating === 'N/A';
+                  return (
+                    <div key={item.id} className="p-2.5">
+                      <div className="text-xs text-stone-700 mb-2 leading-snug">{item.label}</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {RATINGS.map(r => {
+                          const isSelected = item.rating.startsWith(r);
+                          return (
+                            <button key={r} type="button" onClick={() => updateRating(sIdx, iIdx, r)}
+                              className={cn("w-9 h-9 rounded border text-sm font-bold transition-all", isSelected ? cn(RATING_COLORS[r], "border-transparent") : "bg-white border-stone-300 text-stone-600 hover:bg-stone-100")}>
+                              {isSelected ? item.rating : r}
+                            </button>
+                          );
+                        })}
+                        {hasNA && (
+                          <button type="button" onClick={() => setFormData(prev => { const ns = [...prev.sections]; const ni = [...ns[sIdx].items]; ni[iIdx] = { ...ni[iIdx], rating: isNA ? '' : 'N/A' }; ns[sIdx] = { ...ns[sIdx], items: ni }; return { ...prev, sections: ns }; })}
+                            className={cn("h-9 px-3 rounded border text-xs font-bold transition-all", isNA ? "bg-stone-500 text-white border-stone-500" : "bg-white border-stone-300 text-stone-400 hover:bg-stone-100")}>
+                            N/A
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              </>
                 );
               })()}
             </div>
@@ -3179,7 +3209,7 @@ export default function App() {
         </div>
 
         {/* Results Header Row */}
-        <div className="mt-8 border border-stone-900 bg-stone-50 grid grid-cols-2 md:grid-cols-5 print:grid-cols-5 divide-x divide-stone-900">
+        <div className="mt-8 border border-stone-900 bg-stone-50 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 print:grid-cols-5 divide-y sm:divide-y-0 sm:divide-x divide-stone-900">
           <div className="p-3">
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.matchLevel}</h4>
             <select 

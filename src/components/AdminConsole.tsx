@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown } from 'lucide-react';
+import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import {
   getAdminAuthStatus, adminUiLogin, logoutAdmin,
@@ -24,6 +24,13 @@ function splitStufe(v: string): { referee_level: string; stage: string } {
   const [lvl, st] = v.split('-'); return { referee_level: lvl, stage: st || '' };
 }
 
+const GROUP_MAP: Record<string, string> = { 'B': 'Beförderung', 'B?': 'Beförderung?', 'RC': 'Referee Coaching', '2.SR': '2. Schiedsrichter', '2. SR': '2. Schiedsrichter', '1.SR': '1. Schiedsrichter', '1. SR': '1. Schiedsrichter', 'Neu-SR 24/25': 'Neu-Schiedsrichter 24/25', 'Neu-SR 25/26': 'Neu-Schiedsrichter 25/26' };
+function mapGroups(s: string): string {
+  const out: string[] = [];
+  for (const p of s.split('/').map((x) => x.trim()).filter(Boolean)) { if (/^\d{2}$/.test(p) && out.length) out[out.length - 1] += '/' + p; else out.push(p); }
+  return out.map((g) => GROUP_MAP[g] || g).join('/');
+}
+
 const STR = {
   DE: {
     admin: 'Admin', logout: 'Abmelden', login: 'Anmelden', adminPw: 'Admin-Passwort', wrongPw: 'Falsches Passwort',
@@ -41,7 +48,7 @@ const STR = {
     noRows: 'Keine Zeilen in der Datei gefunden.',
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} neu, ${u} aktualisiert (von ${t}).`,
     importFail: (e: string) => `Import fehlgeschlagen: ${e}`,
-    groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppen wählen',
+    groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppen wählen', toApp: 'Zur App',
   },
   EN: {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminPw: 'Admin password', wrongPw: 'Wrong password',
@@ -59,7 +66,7 @@ const STR = {
     noRows: 'No rows found in the file.',
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} new, ${u} updated (of ${t}).`,
     importFail: (e: string) => `Import failed: ${e}`,
-    groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Choose groups',
+    groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Choose groups', toApp: 'To app',
   },
 } as const;
 type T = typeof STR['DE'];
@@ -83,7 +90,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
     const last = String(r[ci.last] ?? '').trim();
     const first = String(r[ci.first] ?? '').trim();
     if (!first && !last) continue;
-    out.push({ first_name: first, last_name: last, full_name: `${first} ${last}`.trim(), referee_level: String(r[ci.level] ?? '').trim(), stage: String(r[ci.stage] ?? '').trim().replace(/\.0$/, ''), groups: String(r[ci.group] ?? '').trim() });
+    out.push({ first_name: first, last_name: last, full_name: `${first} ${last}`.trim(), referee_level: String(r[ci.level] ?? '').trim(), stage: String(r[ci.stage] ?? '').trim().replace(/\.0$/, ''), groups: mapGroups(String(r[ci.group] ?? '').trim()) });
   }
   return out;
 }
@@ -159,7 +166,8 @@ export default function AdminConsole() {
           <SvrzLogo className="h-7 w-auto" />
           <span className="text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">{t.admin}</span>
           {testMode && <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-[11px] font-semibold px-2 py-0.5"><FlaskConical size={12} /> {t.testBadge}</span>}
-          <button onClick={toggleLang} className="ml-auto inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
+          <button onClick={() => { window.location.href = window.location.pathname + window.location.search; }} className="ml-auto inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Home size={14} /><span className="hidden sm:inline">{t.toApp}</span></button>
+          <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
         <div className="max-w-4xl mx-auto px-4 pb-3 grid grid-cols-3 gap-2">

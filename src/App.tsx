@@ -1947,6 +1947,13 @@ export default function App() {
                 <Download size={14} />
                 {downloadingEmptyForm ? t.loading : t.downloadEmptyForm}
               </button>
+              <button
+                onClick={() => { window.location.hash = '/admin'; }}
+                className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
+              >
+                <ShieldAlert size={14} />
+                <span className="hidden sm:inline">Admin</span>
+              </button>
               <select
                 value={seasonStartYear}
                 onChange={(e) => setSeasonStartYear(parseInt(e.target.value, 10))}

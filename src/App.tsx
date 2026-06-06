@@ -73,7 +73,7 @@ const UI_STRINGS = {
     matchLevel: "Spielniveau",
     motivation: "Motivation",
     rating: "Ausblick",
-    secondVisit: "2. Besuch",
+    secondVisit: "Weiterer Besuch",
     remarks: "Bemerkungen",
     refGoal: "SR-Ziel",
     easy: "Leicht",
@@ -193,7 +193,7 @@ const UI_STRINGS = {
     matchLevel: "Match Level",
     motivation: "Motivation",
     rating: "Outlook",
-    secondVisit: "2nd Visit",
+    secondVisit: "Further visit",
     remarks: "Remarks",
     refGoal: "Referee Goal",
     easy: "Easy",
@@ -3237,16 +3237,14 @@ export default function App() {
         <div className="mt-8 border border-stone-900 bg-stone-50 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 print:grid-cols-5 divide-y sm:divide-y-0 sm:divide-x divide-stone-900">
           <div className="p-3">
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.matchLevel}</h4>
-            <select 
-              className="w-full bg-white border border-stone-200 rounded text-xs p-1 outline-none"
-              value={formData.results.spielniveau}
-              onChange={e => updateResult('spielniveau', e.target.value)}
-            >
-              <option value="">{t.select}</option>
-              <option value="leicht">{t.easy}</option>
-              <option value="normal">{t.normal}</option>
-              <option value="schwierig">{t.difficult}</option>
-            </select>
+            <div className="flex flex-wrap gap-1">
+              {([['leicht', t.easy], ['normal', t.normal], ['schwierig', t.difficult]] as [string, string][]).map(([v, lbl]) => (
+                <button key={v} type="button" onClick={() => updateResult('spielniveau', v)}
+                  className={cn("h-8 px-2.5 border rounded text-xs font-bold transition-all", formData.results.spielniveau === v ? "bg-red-600 text-white border-red-600" : "bg-white border-stone-300 hover:bg-stone-100")}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="p-3">
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.motivation}</h4>
@@ -3301,19 +3299,35 @@ export default function App() {
           </div>
           <div className="p-3">
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.refGoal}</h4>
-            <select
-              className="w-full bg-white border border-stone-200 rounded text-xs p-1 outline-none text-stone-900"
-              value={formData.results.srZiel}
-              onChange={e => updateResult('srZiel', e.target.value)}
-            >
-              <option value="">{t.select}</option>
-              {SR_ZIEL_OPTIONS.map(opt => {
-                const label = (formData.lang === 'EN' && opt === 'Verbleib') ? 'Remain' : opt;
-                return (
-                  <option key={opt} value={opt}>{label}</option>
-                );
-              })}
-            </select>
+            {(() => {
+              const cur = formData.results.srZiel || '';
+              const curLevel = SR_ZIEL_OPTIONS.find(o => cur === o || cur.startsWith(o + ' ')) || '';
+              const curGender = / M$/.test(cur) ? 'M' : / F$/.test(cur) ? 'F' : '';
+              const setGoal = (lvl: string, gen: string) => setFormData(prev => ({ ...prev, results: { ...prev.results, srZiel: lvl ? (gen ? `${lvl} ${gen}` : lvl) : '' } }));
+              return (
+                <div className="space-y-1">
+                  <div className="flex gap-1">
+                    {(['M', 'F'] as const).map(g => (
+                      <button key={g} type="button" onClick={() => setGoal(curLevel, curGender === g ? '' : g)}
+                        className={cn("h-7 w-8 border rounded text-xs font-bold transition-all", curGender === g ? "bg-stone-900 text-white border-stone-900" : "bg-white border-stone-300 hover:bg-stone-100")}>
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {SR_ZIEL_OPTIONS.map(opt => {
+                      const lbl = (formData.lang === 'EN' && opt === 'Verbleib') ? 'Remain' : opt;
+                      return (
+                        <button key={opt} type="button" onClick={() => setGoal(curLevel === opt ? '' : opt, curGender)}
+                          className={cn("h-7 px-2 border rounded text-xs font-bold transition-all", curLevel === opt ? "bg-red-600 text-white border-red-600" : "bg-white border-stone-300 hover:bg-stone-100")}>
+                          {lbl}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -4245,6 +4259,7 @@ function ResultField({ label, value, onChange, readOnly = false, lang, className
   };
   const sbox = cn('w-7 h-7 text-center text-sm font-bold rounded border outline-none focus:ring-2 focus:ring-red-500', bad ? 'border-red-500 bg-red-50 text-red-700' : 'border-stone-400');
   const pbox = 'w-7 h-6 text-center text-[11px] font-medium rounded border border-stone-300 outline-none focus:ring-2 focus:ring-red-500';
+  const ROMAN = ['I', 'II', 'III', 'IV', 'V'];
   return (
     <div className={cn("border-r border-b border-stone-900 p-1.5 flex flex-col min-h-[48px]", className)}>
       <label className="block text-[8px] uppercase font-black text-stone-400 leading-none mb-1">{label}</label>
@@ -4254,9 +4269,10 @@ function ResultField({ label, value, onChange, readOnly = false, lang, className
           <span className="text-stone-400 font-bold">:</span>
           <input inputMode="numeric" maxLength={1} value={away} readOnly={readOnly} onChange={e => setScore(home, c1(e.target.value))} className={sbox} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'} />
         </div>
+        {!bad && n > 0 && <span className="text-[8px] uppercase font-semibold text-stone-400 self-center">+ {lang === 'DE' ? 'Sätze' : 'sets'}</span>}
         {!bad && sets.map((s, i) => (
           <div key={i} className="flex items-center gap-0.5">
-            <span className="text-[8px] text-stone-400 mr-0.5">{i + 1}.</span>
+            <span className="text-[9px] font-semibold text-stone-400 mr-0.5">{ROMAN[i] ?? i + 1}</span>
             <input inputMode="numeric" maxLength={2} value={s.h} readOnly={readOnly} onChange={e => setPoint(i, 'h', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Heim' : 'home'}`} />
             <span className="text-stone-300 text-[10px]">:</span>
             <input inputMode="numeric" maxLength={2} value={s.a} readOnly={readOnly} onChange={e => setPoint(i, 'a', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Gast' : 'away'}`} />

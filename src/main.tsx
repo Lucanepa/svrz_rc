@@ -11,7 +11,7 @@ registerSW({
   immediate: true,
   onRegisteredSW(_swUrl, registration) {
     if (registration) {
-      setInterval(() => { try { registration.update(); } catch { /* ignore (e.g. sandboxed preview/iframe) */ } }, 15 * 1000);
+      setInterval(() => { Promise.resolve(registration.update()).catch(() => { /* ignore network/sandbox errors */ }); }, 15 * 1000);
     }
   },
 });

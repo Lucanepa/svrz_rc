@@ -3088,12 +3088,6 @@ export default function App() {
               </h1>
             </div>
           </div>
-          <div className="flex items-start gap-3">
-            <div className="text-left sm:text-right print:text-right">
-              <div className="text-red-600 font-black italic text-2xl leading-none tracking-tighter">Swiss Volley</div>
-              <div className="text-[10px] font-bold text-stone-800 tracking-widest uppercase mt-1">REGION ZÜRICH</div>
-            </div>
-          </div>
         </div>
 
         {/* Meta Data Grid */}

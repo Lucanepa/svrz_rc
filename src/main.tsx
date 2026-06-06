@@ -15,6 +15,16 @@ registerSW({
   },
 });
 
+// Auto-reload once a freshly deployed service worker takes control (no more stale builds).
+if ('serviceWorker' in navigator) {
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    refreshing = true;
+    window.location.reload();
+  });
+}
+
 // Simple hash route: #/admin -> admin console (own password gate)
 const isAdminRoute = () => window.location.hash.replace(/^#\/?/, '').toLowerCase() === 'admin';
 let _wasAdmin = isAdminRoute();

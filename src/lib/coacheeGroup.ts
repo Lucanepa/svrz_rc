@@ -59,15 +59,9 @@ function normalizeToken(token: string): string {
 }
 
 export function normalizeCoacheeGroup(value?: string): string {
-  if (!value) {
-    return '';
-  }
-  // Replace commas between digits with "/" to preserve season patterns like "2025,26"
-  const fixed = value.replace(/(\d),(\d)/g, '$1/$2');
-  const normalized = fixed
-    .split(',')
-    .map((part) => normalizeToken(part))
-    .filter(Boolean)
-    .join(', ');
-  return normalized;
+  // Groups are now managed full-word values — display them verbatim.
+  return (value || '').trim();
 }
+
+// Kept for backwards-compatible imports.
+void normalizeToken;

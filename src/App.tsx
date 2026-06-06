@@ -3441,11 +3441,12 @@ export default function App() {
       )}
 
       {viewMode === 'feedback' && detailCoachee && (
-        <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-40 no-print">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 max-h-[85vh] overflow-auto">
-            <h3 className="text-base font-bold text-stone-900 mb-4">
-              {t.coacheeDetails}
-            </h3>
+        <div onClick={() => setDetailCoachee(null)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-40 no-print">
+          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 max-h-[85vh] overflow-auto">
+            <div className="flex items-start justify-between mb-4">
+              <h3 className="text-base font-bold text-stone-900">{t.coacheeDetails}</h3>
+              <button onClick={() => setDetailCoachee(null)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
+            </div>
 
             <div className="space-y-2 text-sm mb-4">
               <div className="flex justify-between">

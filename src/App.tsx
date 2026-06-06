@@ -1250,63 +1250,44 @@ export default function App() {
       : choice === '2SR' ? [emptyForm2SRRef]
       : [emptyForm1SRRef, emptyForm2SRRef];
 
-    // A4 dimensions in pt
-    const a4W = 595.28;
-    const a4H = 841.89;
-    const margin = 20;
-
+    const a4W = 595.28, a4H = 841.89, margin = 18;
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+    const AcroForm = (jsPDF as unknown as { AcroForm: { TextField: new () => PdfField } }).AcroForm;
+    const addField = (pdf as unknown as { addField: (fld: PdfField) => void }).addField.bind(pdf);
+    let page = 0;
     for (const ref of refs) {
       if (!ref.current) continue;
-      const imageData = await toPng(ref.current, { pixelRatio: 2, backgroundColor: '#ffffff' });
+      if (page > 0) pdf.addPage();
+      page++;
+      const imageData = await toPng(ref.current, { pixelRatio: 1.5, backgroundColor: '#ffffff' });
       const img = new Image();
       await new Promise<void>((resolve) => { img.onload = () => resolve(); img.src = imageData; });
-      // Scale image to fit A4 with margins
-      const usableW = a4W - margin * 2;
-      const usableH = a4H - margin * 2;
+      const usableW = a4W - margin * 2, usableH = a4H - margin * 2;
       const scale = Math.min(usableW / img.width, usableH / img.height);
-      const imgW = img.width * scale;
-      const imgH = img.height * scale;
-      const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
-      pdf.addImage(imageData, 'PNG', margin, margin, imgW, imgH);
+      const imgW = img.width * scale, imgH = img.height * scale;
+      const ox = (a4W - imgW) / 2; // centre horizontally on A4
+      const oy = margin;
+      pdf.addImage(imageData, 'PNG', ox, oy, imgW, imgH);
       const role = ref === emptyForm1SRRef ? '1SR' : '2SR';
-      // Overlay real (fillable) form fields over the marked blank areas
       try {
         const cRect = ref.current.getBoundingClientRect();
-        const k = imgW / ref.current.offsetWidth; // PDF pt per CSS px
-        const AcroForm = (jsPDF as unknown as { AcroForm: { TextField: new () => PdfField; CheckBox: new () => PdfField } }).AcroForm;
-        const addField = (pdf as unknown as { addField: (fld: PdfField) => void }).addField.bind(pdf);
+        const k = imgW / ref.current.offsetWidth;
         ref.current.querySelectorAll<HTMLElement>('[data-pdf-field]').forEach((el) => {
           const fr = el.getBoundingClientRect();
-          const fx = margin + (fr.left - cRect.left) * k;
-          const fy = margin + (fr.top - cRect.top) * k;
-          const fw = fr.width * k;
-          const fh = fr.height * k;
+          const fx = ox + (fr.left - cRect.left) * k;
+          const fy = oy + (fr.top - cRect.top) * k;
+          const fw = fr.width * k, fh = fr.height * k;
           if (fw < 3 || fh < 3) return;
-          const name = `${role}_${el.getAttribute('data-pdf-field')}`;
-          if (el.getAttribute('data-pdf-type') === 'check') {
-            const cb = new AcroForm.CheckBox();
-            cb.fieldName = name;
-            const sz = Math.min(fw, fh);
-            cb.Rect = [fx + (fw - sz) / 2, fy + (fh - sz) / 2, sz, sz];
-            addField(cb);
-          } else {
-            const tf = new AcroForm.TextField();
-            tf.fieldName = name;
-            tf.Rect = [fx, fy, fw, fh];
-            tf.fontSize = el.getAttribute('data-pdf-multiline') ? 9 : 10;
-            if (el.getAttribute('data-pdf-multiline')) tf.multiline = true;
-            addField(tf);
-          }
+          const tf = new AcroForm.TextField();
+          tf.fieldName = `${role}_${el.getAttribute('data-pdf-field')}`;
+          tf.Rect = [fx, fy, fw, fh];
+          tf.fontSize = el.getAttribute('data-pdf-multiline') ? 9 : 10;
+          if (el.getAttribute('data-pdf-multiline')) tf.multiline = true;
+          addField(tf);
         });
       } catch (err) { console.warn('fillable fields skipped', err); }
-      const filename = `feedback-${role}-empty.pdf`;
-      const file = new File([pdf.output('blob')], filename, { type: 'application/pdf' });
-      if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
-        await navigator.share({ title: t.title, files: [file] });
-      } else {
-        pdf.save(filename);
-      }
     }
+    pdf.save(choice === 'both' ? 'feedback-empty.pdf' : `feedback-${choice}-empty.pdf`);
     setDownloadingEmptyForm(false);
   };
 
@@ -3328,35 +3309,12 @@ export default function App() {
           </div>
           <div className="p-3">
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.refGoal}</h4>
-            {(() => {
-              const cur = formData.results.srZiel || '';
-              const curLevel = SR_ZIEL_OPTIONS.find(o => cur === o || cur.startsWith(o + ' ')) || '';
-              const curGender = / M$/.test(cur) ? 'M' : / F$/.test(cur) ? 'F' : / A$/.test(cur) ? 'A' : '';
-              const setGoal = (lvl: string, gen: string) => setFormData(prev => ({ ...prev, results: { ...prev.results, srZiel: lvl ? (gen ? `${lvl} ${gen}` : lvl) : '' } }));
-              return (
-                <div className="space-y-1">
-                  <div className="flex gap-1">
-                    {(['M', 'F', 'A'] as const).map(g => (
-                      <button key={g} type="button" onClick={() => setGoal(curLevel, curGender === g ? '' : g)}
-                        className={cn("h-7 px-2 min-w-[2rem] border rounded text-xs font-bold transition-all", curGender === g ? "bg-stone-900 text-white border-stone-900" : "bg-white border-stone-300 hover:bg-stone-100")}>
-                        {g === 'A' ? (formData.lang === 'DE' ? 'Alle' : 'Any') : g}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {SR_ZIEL_OPTIONS.map(opt => {
-                      const lbl = (formData.lang === 'EN' && opt === 'Verbleib') ? 'Remain' : opt;
-                      return (
-                        <button key={opt} type="button" onClick={() => setGoal(curLevel === opt ? '' : opt, curGender)}
-                          className={cn("h-7 px-2 border rounded text-xs font-bold transition-all", curLevel === opt ? "bg-red-600 text-white border-red-600" : "bg-white border-stone-300 hover:bg-stone-100")}>
-                          {lbl}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })()}
+            <input
+              type="text"
+              className="w-full bg-white border border-stone-200 rounded text-xs p-1.5 outline-none focus:ring-2 focus:ring-red-500"
+              value={formData.results.srZiel}
+              onChange={e => setFormData(prev => ({ ...prev, results: { ...prev.results, srZiel: e.target.value } }))}
+            />
           </div>
         </div>
 
@@ -3367,14 +3325,14 @@ export default function App() {
             {t.remarks}
           </h3>
           <textarea
-            className="min-h-[3rem] text-xs leading-relaxed resize-y outline-none bg-transparent placeholder:text-stone-300"
+            className="w-full min-h-[3.5rem] text-xs leading-relaxed resize-y outline-none bg-white placeholder:text-stone-300 border border-stone-200 rounded p-2"
             placeholder={t.remarksPlaceholder}
             value={formData.results.bemerkungen}
-            onChange={e => updateResult('bemerkungen', e.target.value)}
+            onChange={e => setFormData(prev => ({ ...prev, results: { ...prev.results, bemerkungen: e.target.value } }))}
           />
           {(([['highlights', t.highlights], ['improvements', t.improvements], ['goals', t.goalsNext]]) as ['highlights' | 'improvements' | 'goals', string][]).map(([key, label]) => (
             <div key={key}>
-              <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{label} <span className="text-stone-300 font-normal normal-case">· optional</span></h4>
+              <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{label}</h4>
               <textarea
                 className="w-full min-h-[2.75rem] text-xs leading-relaxed resize-y outline-none bg-white placeholder:text-stone-300 border border-stone-200 rounded p-2"
                 value={formData.results[key] || ''}
@@ -4167,10 +4125,6 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
             </h1>
           </div>
         </div>
-        <div className="text-right">
-          <div className="text-red-600 font-black italic text-xl leading-none tracking-tighter">Swiss Volley</div>
-          <div className="text-[8px] font-bold text-stone-800 tracking-widest uppercase mt-0.5">REGION ZÜRICH</div>
-        </div>
       </div>
       {/* Meta grid */}
       <div className="grid grid-cols-[1fr_1fr_1fr_2fr] border-t border-l border-stone-900 mb-3">
@@ -4222,7 +4176,7 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
                   <tr key={item.id}>
                     <td className="p-1.5 text-[10px] border-b border-stone-900 leading-tight">{item.label}</td>
                     {RATINGS.map(r => (
-                      <td key={r} className={cn("w-8 border-l border-b border-stone-900 text-center", r === 'C' && "bg-stone-200/50")}><div data-pdf-field={`${item.id}__${r}`} data-pdf-type="check" className="mx-auto w-3.5 h-3.5" /></td>
+                      <td key={r} className={cn("w-8 border-l border-b border-stone-900 text-center", r === 'C' && "bg-stone-200/50")} />
                     ))}
                   </tr>
                 ))}
@@ -4249,12 +4203,33 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
       {/* Remarks + Signatures + QR */}
       <div className="border-x border-b border-stone-900 grid grid-cols-[1fr_auto]">
         {/* Remarks (left) */}
-        <div className="p-3 border-r border-stone-900 min-h-[7rem] flex flex-col">
-          <h3 className="font-bold border-b border-stone-900 mb-2 pb-1 flex items-center gap-1.5 text-stone-800 text-sm">
+        <div className="p-3 border-r border-stone-900 flex flex-col gap-2">
+          <h3 className="font-bold border-b border-stone-900 pb-1 flex items-center gap-1.5 text-stone-800 text-sm">
             <MessageSquare size={14} />
             {t.remarks}
           </h3>
-          <div data-pdf-field="remarks" data-pdf-type="text" data-pdf-multiline="1" className="flex-1 min-h-[80px]" />
+          <div data-pdf-field="remarks" data-pdf-type="text" data-pdf-multiline="1" className="min-h-[40px] border-b border-stone-200" />
+          <div>
+            <p className="text-[8px] font-black uppercase text-stone-400 mb-0.5">{t.highlights}</p>
+            <div data-pdf-field="highlights" data-pdf-type="text" data-pdf-multiline="1" className="min-h-[28px] border-b border-stone-200" />
+          </div>
+          <div>
+            <p className="text-[8px] font-black uppercase text-stone-400 mb-0.5">{t.improvements}</p>
+            <div data-pdf-field="improvements" data-pdf-type="text" data-pdf-multiline="1" className="min-h-[28px] border-b border-stone-200" />
+          </div>
+          <div>
+            <p className="text-[8px] font-black uppercase text-stone-400 mb-0.5">{t.goalsNext}</p>
+            <div data-pdf-field="goals" data-pdf-type="text" data-pdf-multiline="1" className="min-h-[28px] border-b border-stone-200" />
+          </div>
+          <div>
+            <p className="text-[8px] font-black uppercase text-stone-400 mb-0.5">{t.nailsNewTitle}</p>
+            {[0, 1, 2].map(i => (
+              <div key={i} className="flex items-center gap-1 mb-1">
+                <span className="text-[8px] font-bold text-stone-400">{i + 1}.</span>
+                <div data-pdf-field={`nail${i + 1}`} data-pdf-type="text" className="flex-1 min-h-[16px] border-b border-stone-200" />
+              </div>
+            ))}
+          </div>
         </div>
         {/* Signatures + QR (right) */}
         <div className="p-3 flex flex-col justify-between" style={{ width: 200 }}>
@@ -4334,22 +4309,26 @@ function ResultField({ label, value, onChange, readOnly = false, lang, className
   return (
     <div className={cn("border-r border-b border-stone-900 p-1.5 flex flex-col min-h-[48px]", className)}>
       <label className="block text-[8px] uppercase font-black text-stone-400 leading-none mb-1">{label}</label>
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <div className="flex flex-col gap-1.5">
         <div className="flex items-center gap-1">
           <input inputMode="numeric" maxLength={1} value={home} readOnly={readOnly} onChange={e => setScore(c1(e.target.value), away)} className={sbox} aria-label={lang === 'DE' ? 'Sätze Heim' : 'Home sets'} />
           <span className="text-stone-400 font-bold">:</span>
           <input inputMode="numeric" maxLength={1} value={away} readOnly={readOnly} onChange={e => setScore(home, c1(e.target.value))} className={sbox} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'} />
+          {bad && <span className="text-[9px] text-red-600 leading-tight ml-1 no-print">{lang === 'DE' ? 'Ein Satzstand muss 3 sein.' : 'One side must be 3.'}</span>}
         </div>
-        {!bad && n > 0 && <span className="text-[8px] uppercase font-semibold text-stone-400 self-center">+ {lang === 'DE' ? 'Sätze' : 'sets'}</span>}
-        {!bad && sets.map((s, i) => (
-          <div key={i} className="flex items-center gap-0.5">
-            <span className="text-[9px] font-semibold text-stone-400 mr-0.5">{ROMAN[i] ?? i + 1}</span>
-            <input inputMode="numeric" maxLength={2} value={s.h} readOnly={readOnly} onChange={e => setPoint(i, 'h', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Heim' : 'home'}`} />
-            <span className="text-stone-300 text-[10px]">:</span>
-            <input inputMode="numeric" maxLength={2} value={s.a} readOnly={readOnly} onChange={e => setPoint(i, 'a', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Gast' : 'away'}`} />
+        {!bad && n > 0 && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-[8px] uppercase font-semibold text-stone-400">+ {lang === 'DE' ? 'Sätze' : 'sets'}</span>
+            {sets.map((s, i) => (
+              <div key={i} className="flex items-center gap-0.5">
+                <span className="text-[9px] font-semibold text-stone-400 mr-0.5">{ROMAN[i] ?? i + 1}</span>
+                <input inputMode="numeric" maxLength={2} value={s.h} readOnly={readOnly} onChange={e => setPoint(i, 'h', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Heim' : 'home'}`} />
+                <span className="text-stone-300 text-[10px]">:</span>
+                <input inputMode="numeric" maxLength={2} value={s.a} readOnly={readOnly} onChange={e => setPoint(i, 'a', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Gast' : 'away'}`} />
+              </div>
+            ))}
           </div>
-        ))}
-        {bad && <span className="text-[9px] text-red-600 leading-tight ml-1 no-print">{lang === 'DE' ? 'Ein Satzstand muss 3 sein.' : 'One side must be 3.'}</span>}
+        )}
       </div>
     </div>
   );

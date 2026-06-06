@@ -1181,6 +1181,7 @@ export default function App() {
   };
 
   const handleDownloadEmptyForm = async (choice: '1SR' | '2SR' | 'both') => {
+    type PdfField = { fieldName: string; Rect: number[]; fontSize?: number; multiline?: boolean };
     setDownloadingEmptyForm(true);
     setShowEmptyFormModal(false);
     await new Promise(r => setTimeout(r, 100)); // let hidden forms render
@@ -1208,6 +1209,36 @@ export default function App() {
       const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
       pdf.addImage(imageData, 'PNG', margin, margin, imgW, imgH);
       const role = ref === emptyForm1SRRef ? '1SR' : '2SR';
+      // Overlay real (fillable) form fields over the marked blank areas
+      try {
+        const cRect = ref.current.getBoundingClientRect();
+        const k = imgW / ref.current.offsetWidth; // PDF pt per CSS px
+        const AcroForm = (jsPDF as unknown as { AcroForm: { TextField: new () => PdfField; CheckBox: new () => PdfField } }).AcroForm;
+        const addField = (pdf as unknown as { addField: (fld: PdfField) => void }).addField.bind(pdf);
+        ref.current.querySelectorAll<HTMLElement>('[data-pdf-field]').forEach((el) => {
+          const fr = el.getBoundingClientRect();
+          const fx = margin + (fr.left - cRect.left) * k;
+          const fy = margin + (fr.top - cRect.top) * k;
+          const fw = fr.width * k;
+          const fh = fr.height * k;
+          if (fw < 3 || fh < 3) return;
+          const name = `${role}_${el.getAttribute('data-pdf-field')}`;
+          if (el.getAttribute('data-pdf-type') === 'check') {
+            const cb = new AcroForm.CheckBox();
+            cb.fieldName = name;
+            const sz = Math.min(fw, fh);
+            cb.Rect = [fx + (fw - sz) / 2, fy + (fh - sz) / 2, sz, sz];
+            addField(cb);
+          } else {
+            const tf = new AcroForm.TextField();
+            tf.fieldName = name;
+            tf.Rect = [fx, fy, fw, fh];
+            tf.fontSize = el.getAttribute('data-pdf-multiline') ? 9 : 10;
+            if (el.getAttribute('data-pdf-multiline')) tf.multiline = true;
+            addField(tf);
+          }
+        });
+      } catch (err) { console.warn('fillable fields skipped', err); }
       const filename = `feedback-${role}-empty.pdf`;
       const file = new File([pdf.output('blob')], filename, { type: 'application/pdf' });
       if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
@@ -3956,21 +3987,25 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
       </div>
       {/* Meta grid */}
       <div className="grid grid-cols-[1fr_1fr_1fr_2fr] border-t border-l border-stone-900 mb-3">
-        {[t.matchNo, t.league, t.date, t.location].map((label, i) => (
+        {([[t.matchNo, 'matchNo'], [t.league, 'league'], [t.date, 'date'], [t.location, 'location']] as [string, string][]).map(([label, fn], i) => (
           <div key={i} className="border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
             <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{label}</span>
+            <div data-pdf-field={fn} data-pdf-type="text" className="flex-1 min-h-[18px]" />
           </div>
         ))}
         <div className="col-span-4 border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
           <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{t.teams}</span>
+          <div data-pdf-field="teams" data-pdf-type="text" className="flex-1 min-h-[18px]" />
         </div>
-        {[role, t.refLevel, t.group, t.rc].map((label, i) => (
+        {([[role, 'srRole'], [t.refLevel, 'refLevel'], [t.group, 'group'], [t.rc, 'rc']] as [string, string][]).map(([label, fn], i) => (
           <div key={i} className="border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
             <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{label}</span>
+            <div data-pdf-field={fn} data-pdf-type="text" className="flex-1 min-h-[18px]" />
           </div>
         ))}
         <div className="col-span-4 border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
           <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{t.result}</span>
+          <div data-pdf-field="result" data-pdf-type="text" className="flex-1 min-h-[18px]" />
         </div>
       </div>
       {/* Legend */}
@@ -4000,7 +4035,7 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
                   <tr key={item.id}>
                     <td className="p-1.5 text-[10px] border-b border-stone-900 leading-tight">{item.label}</td>
                     {RATINGS.map(r => (
-                      <td key={r} className={cn("w-8 border-l border-b border-stone-900 text-center", r === 'C' && "bg-stone-200/50")} />
+                      <td key={r} className={cn("w-8 border-l border-b border-stone-900 text-center", r === 'C' && "bg-stone-200/50")}><div data-pdf-field={`${item.id}__${r}`} data-pdf-type="check" className="mx-auto w-3.5 h-3.5" /></td>
                     ))}
                   </tr>
                 ))}
@@ -4012,11 +4047,11 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
       {/* Results row */}
       <div className="mt-4 border border-stone-900 bg-stone-50 grid grid-cols-5">
         {[
-          { label: t.matchLevel, content: <div className="h-5" /> },
+          { label: t.matchLevel, content: <div data-pdf-field="matchLevel" data-pdf-type="text" className="h-5" /> },
           { label: t.motivation, content: <div className="flex gap-1">{['↑', '✓', '↓'].map(v => <div key={v} className="w-6 h-6 border border-stone-300 rounded flex items-center justify-center text-sm font-bold text-stone-300">{v}</div>)}</div> },
           { label: t.rating, content: <div className="flex gap-1">{['↑', '✓', '↓'].map(v => <div key={v} className="w-6 h-6 border border-stone-300 rounded flex items-center justify-center text-sm font-bold text-stone-300">{v}</div>)}</div> },
           { label: t.secondVisit, content: <div className="flex gap-1">{['Y', 'N'].map(v => <div key={v} className="w-6 h-6 border border-stone-300 rounded flex items-center justify-center text-[9px] font-bold text-stone-300">{v}</div>)}</div> },
-          { label: t.refGoal, content: <div className="h-5" /> },
+          { label: t.refGoal, content: <div data-pdf-field="refGoal" data-pdf-type="text" className="h-5" /> },
         ].map((cell, i) => (
           <div key={i} className={cn("p-2", i > 0 && "border-l border-stone-900")}>
             <h4 className="text-[8px] font-bold uppercase text-stone-500 mb-0.5">{cell.label}</h4>
@@ -4032,6 +4067,7 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
             <MessageSquare size={14} />
             {t.remarks}
           </h3>
+          <div data-pdf-field="remarks" data-pdf-type="text" data-pdf-multiline="1" className="flex-1 min-h-[80px]" />
         </div>
         {/* Signatures + QR (right) */}
         <div className="p-3 flex flex-col justify-between" style={{ width: 200 }}>

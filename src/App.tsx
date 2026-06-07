@@ -666,10 +666,9 @@ export default function App() {
   // Season selector (Sep 1 -> Apr 30), persisted across reloads
   const curSeasonYear = new Date().getMonth() <= 7 ? new Date().getFullYear() - 1 : new Date().getFullYear();
   const [seasonStartYear, setSeasonStartYear] = useState<number>(() => {
-    try { const sv = localStorage.getItem('svrz_season'); const n = sv ? parseInt(sv, 10) : NaN; if (Number.isFinite(n)) return n; } catch { /* ignore */ }
+    try { const sv = localStorage.getItem('svrz_season_v2'); const n = sv ? parseInt(sv, 10) : NaN; if (Number.isFinite(n)) return n; } catch { /* ignore */ }
     return curSeasonYear;
   });
-  useEffect(() => { try { localStorage.setItem('svrz_season', String(seasonStartYear)); } catch { /* ignore */ } }, [seasonStartYear]);
   const seasonFrom = `${seasonStartYear}-09-01`;
   const seasonTo = `${seasonStartYear + 1}-04-30`;
   const seasonOptions = Array.from(new Set([seasonStartYear, curSeasonYear, curSeasonYear + 1, curSeasonYear + 2].filter((y) => y >= curSeasonYear))).sort((a, b) => a - b);
@@ -678,7 +677,7 @@ export default function App() {
   useEffect(() => {
     getSettings().then((s) => {
       setEmailTestMode(Boolean(s.test_mode));
-      try { if (!localStorage.getItem('svrz_season') && s.default_season) setSeasonStartYear(s.default_season); } catch { /* ignore */ }
+      try { if (!localStorage.getItem('svrz_season_v2') && s.default_season) setSeasonStartYear(s.default_season); } catch { /* ignore */ }
     }).catch(() => { /* ignore */ });
   }, []);
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
@@ -2022,7 +2021,7 @@ export default function App() {
                 </button>
                 <select
                   value={seasonStartYear}
-                  onChange={(e) => setSeasonStartYear(parseInt(e.target.value, 10))}
+                  onChange={(e) => { const v = parseInt(e.target.value, 10); setSeasonStartYear(v); try { localStorage.setItem('svrz_season_v2', String(v)); } catch { /* ignore */ } }}
                   className="h-9 ml-auto sm:ml-0 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5 hover:bg-stone-100 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-500"
                   title={formData.lang === 'DE' ? 'Saison' : 'Season'}
                   aria-label={formData.lang === 'DE' ? 'Saison wählen' : 'Select season'}

@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import cron from 'node-cron';
 import nodemailer from 'nodemailer';
 import helmet from 'helmet';
-import { createHmac, randomUUID, timingSafeEqual, scryptSync } from 'node:crypto';
+import { createHmac, randomUUID, randomBytes, timingSafeEqual, scryptSync } from 'node:crypto';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -39,7 +39,9 @@ type AnyRecord = Record<string, unknown> & { id: string };
 const app = express();
 const port = Number(process.env.PORT || 8787);
 
-app.set('trust proxy', true);
+// Trust exactly one proxy hop (the Cloudflare Tunnel in front of this origin),
+// not every upstream — so client-supplied X-Forwarded-For cannot be trusted blindly.
+app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false, crossOriginEmbedderPolicy: false, crossOriginOpenerPolicy: false }));
 const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || 'https://lucanepa.codeberg.page')
   .split(',').map((o) => o.trim()).filter(Boolean);
@@ -54,15 +56,24 @@ app.use(express.json({ limit: '8mb' }));
 
 const ADMIN_SESSION_COOKIE = 'svrz_admin_session';
 const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 1000 * 60 * 60 * 8);
-const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || process.env.POCKETBASE_ADMIN_PASSWORD || '';
+
+// Fail closed: never sign sessions with an empty (attacker-known) HMAC key.
+// If no secret is configured, generate a strong random per-process key so tokens
+// remain unforgeable. Sessions won't survive a restart until ADMIN_SESSION_SECRET is set.
+function resolveSessionSecret(): string {
+  const explicit = process.env.ADMIN_SESSION_SECRET || process.env.POCKETBASE_ADMIN_PASSWORD || '';
+  if (explicit) return explicit;
+  console.error(
+    '[startup] SECURITY: ADMIN_SESSION_SECRET is not set. Generated a random ephemeral key — '
+    + 'set ADMIN_SESSION_SECRET to keep sessions valid across restarts.',
+  );
+  return randomBytes(32).toString('hex');
+}
+const ADMIN_SESSION_SECRET = resolveSessionSecret();
 const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || '';
 const TEST_MODE = process.env.TEST_MODE === '1' || process.env.TEST_MODE === 'true';
 if (TEST_MODE) console.warn('[startup] TEST_MODE enabled — outbound emails are suppressed.');
 if (!ADMIN_UI_PASSWORD) console.warn('[startup] ADMIN_UI_PASSWORD not set — admin console login disabled.');
-
-if (!ADMIN_SESSION_SECRET) {
-  console.warn('[startup] Missing ADMIN_SESSION_SECRET (falling back to empty secret). Set ADMIN_SESSION_SECRET for secure admin sessions.');
-}
 
 // ── Auth gate (app-level password protection) ────────────────────────
 const GATE_COOKIE = 'svrz_gate_session';
@@ -81,21 +92,39 @@ const GATE_PASSWORD_HASH = GATE_PASSWORD
   ? scryptSync(GATE_PASSWORD, GATE_SALT, 64).toString('hex')
   : '';
 
-// In-memory rate limiter per IP
-const gateAttempts = new Map<string, { count: number; resetAt: number }>();
-
-function checkGateRateLimit(ip: string): { allowed: boolean; retryAfterMs: number } {
+// Generic in-memory fixed-window rate limiter, keyed by an arbitrary string.
+type RateLimitStore = Map<string, { count: number; resetAt: number }>;
+function checkRateLimit(
+  store: RateLimitStore,
+  key: string,
+  max: number,
+  windowMs: number,
+): { allowed: boolean; retryAfterMs: number } {
   const now = Date.now();
-  const entry = gateAttempts.get(ip);
+  const entry = store.get(key);
   if (!entry || now >= entry.resetAt) {
-    gateAttempts.set(ip, { count: 1, resetAt: now + GATE_RATE_LIMIT_WINDOW_MS });
+    store.set(key, { count: 1, resetAt: now + windowMs });
     return { allowed: true, retryAfterMs: 0 };
   }
-  if (entry.count >= GATE_RATE_LIMIT_MAX) {
+  if (entry.count >= max) {
     return { allowed: false, retryAfterMs: entry.resetAt - now };
   }
   entry.count++;
   return { allowed: true, retryAfterMs: 0 };
+}
+
+// Per-IP limiter for password endpoints (gate + admin login).
+const gateAttempts: RateLimitStore = new Map();
+function checkGateRateLimit(ip: string) {
+  return checkRateLimit(gateAttempts, ip, GATE_RATE_LIMIT_MAX, GATE_RATE_LIMIT_WINDOW_MS);
+}
+
+// Per-IP limiter for unauthenticated signature writes (capability-token endpoint).
+const signatureAttempts: RateLimitStore = new Map();
+const SIGNATURE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 min
+const SIGNATURE_RATE_LIMIT_MAX = 30;
+function checkSignatureRateLimit(ip: string) {
+  return checkRateLimit(signatureAttempts, ip, SIGNATURE_RATE_LIMIT_MAX, SIGNATURE_RATE_LIMIT_WINDOW_MS);
 }
 
 function verifyGatePassword(input: string): boolean {
@@ -135,8 +164,10 @@ function verifyGateSession(req: Request): boolean {
 // Periodic cleanup of stale rate-limit entries (every 10 min)
 setInterval(() => {
   const now = Date.now();
-  for (const [ip, entry] of gateAttempts) {
-    if (now >= entry.resetAt) gateAttempts.delete(ip);
+  for (const store of [gateAttempts, signatureAttempts]) {
+    for (const [ip, entry] of store) {
+      if (now >= entry.resetAt) store.delete(ip);
+    }
   }
 }, 10 * 60 * 1000);
 
@@ -256,9 +287,13 @@ function requireAdminSession(req: Request, res: ExpressResponse, next: () => voi
 }
 
 function clientIp(req: Request): string {
-  const xff = req.headers['x-forwarded-for'];
-  const fromXff = typeof xff === 'string' ? xff.split(',')[0]?.trim() : '';
-  return fromXff || req.socket.remoteAddress || 'unknown';
+  // Cloudflare sets CF-Connecting-IP at the edge and overwrites any client-supplied
+  // value, so it cannot be spoofed. Fall back to the direct socket address.
+  // The leftmost X-Forwarded-For entry is attacker-controlled and must NOT be trusted
+  // for security decisions (rate limiting).
+  const cf = req.headers['cf-connecting-ip'];
+  if (typeof cf === 'string' && cf.trim()) return cf.trim();
+  return req.socket.remoteAddress || 'unknown';
 }
 
 function safeError(error: unknown): string {
@@ -1650,30 +1685,17 @@ app.get('/api/health', async (_req: Request, res: ExpressResponse) => {
     }
 
     if (!reachable) {
-      res.status(500).json({
-        ok: false,
-        error: {
-          stage: 'connectivity',
-          pocketbaseUrl: pbUrl,
-          message: reachabilityError || 'PocketBase is not reachable from API process.',
-        },
-      });
+      // Log details server-side; expose only a coarse stage to unauthenticated callers.
+      console.error('[health] connectivity:', pbUrl, reachabilityError);
+      res.status(500).json({ ok: false, error: { stage: 'connectivity' } });
       return;
     }
 
     await ensureAdminAuth();
     res.json({ ok: true });
   } catch (error) {
-    const details = error && typeof error === 'object'
-      ? {
-          name: (error as { name?: string }).name,
-          message: (error as { message?: string }).message,
-          status: (error as { status?: number }).status,
-          response: (error as { response?: unknown }).response,
-          data: (error as { data?: unknown }).data,
-        }
-      : { message: String(error) };
-    res.status(500).json({ ok: false, error: details });
+    console.error('[health] auth:', error);
+    res.status(500).json({ ok: false, error: { stage: 'auth' } });
   }
 });
 
@@ -1856,10 +1878,17 @@ app.get('/api/auth/gate/status', (req: Request, res: ExpressResponse) => {
 });
 
 // ---- Signature sessions (cross-device signing via slug capability token) ----
+// Unsigned sessions expire so a leaked slug can't be (re)used indefinitely.
+const SIGNATURE_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
 async function getSignatureRecord(slug: string) {
   if (!slug || slug.length > 64) return null;
   try { return await pb.collection('signatures').getFirstListItem(`slug = "${escapeFilterValue(slug)}"`); }
   catch { return null; }
+}
+function isSignatureExpired(rec: AnyRecord): boolean {
+  if (Boolean(rec.signed)) return false; // signed records stay readable
+  const created = Date.parse(asText(rec.created));
+  return Number.isFinite(created) && (Date.now() - created) > SIGNATURE_TTL_MS;
 }
 app.post('/api/signature/start', requireGateSession, async (req: Request, res: ExpressResponse) => {
   try {
@@ -1872,18 +1901,24 @@ app.post('/api/signature/start', requireGateSession, async (req: Request, res: E
 });
 app.get('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
   try {
-    const rec = await getSignatureRecord(asText(req.params.slug));
+    const rec = await getSignatureRecord(asText(req.params.slug)) as AnyRecord | null;
     if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
+    if (isSignatureExpired(rec)) { res.status(410).json({ error: 'Signature session expired' }); return; }
     res.json({ context: asText(rec.context), signer: asText(rec.signer), signed: Boolean(rec.signed), data: rec.signed ? asText(rec.data) : '' });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
   try {
+    const rl = checkSignatureRateLimit(clientIp(req));
+    if (!rl.allowed) { res.status(429).json({ error: 'Too many attempts.', retryAfterMs: rl.retryAfterMs }); return; }
     const data = asText((req.body ?? {}).data);
     const signer = asText((req.body ?? {}).signer).slice(0, 120);
     if (!data.startsWith('data:image/') || data.length > 2_000_000) { res.status(400).json({ error: 'Invalid signature' }); return; }
-    const rec = await getSignatureRecord(asText(req.params.slug));
+    const rec = await getSignatureRecord(asText(req.params.slug)) as AnyRecord | null;
     if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
+    if (isSignatureExpired(rec)) { res.status(410).json({ error: 'Signature session expired' }); return; }
+    // Signatures are write-once: once signed, the capability can't overwrite it.
+    if (Boolean(rec.signed)) { res.status(409).json({ error: 'Signature already captured' }); return; }
     await pb.collection('signatures').update(rec.id, { data, signed: true, signer: signer || asText(rec.signer) });
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -1894,8 +1929,7 @@ app.post('/api/auth/gate', (req: Request, res: ExpressResponse) => {
     res.json({ ok: true }); // gate disabled
     return;
   }
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
-  const { allowed, retryAfterMs } = checkGateRateLimit(ip);
+  const { allowed, retryAfterMs } = checkGateRateLimit(clientIp(req));
   if (!allowed) {
     res.status(429).json({ error: 'Too many attempts. Try again later.', retryAfterMs });
     return;
@@ -1925,16 +1959,7 @@ app.get('/api/eligible-games', requireGateSession, async (_req: Request, res: Ex
     const games = await getEligibleGames();
     res.json(games);
   } catch (error) {
-    const details = error && typeof error === 'object'
-      ? {
-          name: (error as { name?: string }).name,
-          message: (error as { message?: string }).message,
-          status: (error as { status?: number }).status,
-          response: (error as { response?: unknown }).response,
-          data: (error as { data?: unknown }).data,
-        }
-      : { message: String(error) };
-    res.status(500).json({ error: details });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -2597,16 +2622,7 @@ app.get('/api/games/calendar-status', requireGateSession, async (_req: Request, 
 
     res.json(result);
   } catch (error) {
-    const details = error && typeof error === 'object'
-      ? {
-          name: (error as { name?: string }).name,
-          message: (error as { message?: string }).message,
-          status: (error as { status?: number }).status,
-          response: (error as { response?: unknown }).response,
-          data: (error as { data?: unknown }).data,
-        }
-      : { message: String(error) };
-    res.status(500).json({ error: details });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 

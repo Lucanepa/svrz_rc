@@ -2,7 +2,7 @@
 
 ## Startup Context
 
-At the start of each session, read `infrastructure.md` before giving infrastructure, deployment, networking, VPS, Nginx, PocketBase, or Tailscale guidance.
+At the start of each session, read `infrastructure.md` before giving infrastructure, deployment, networking, Docker, Cloudflare Tunnel, or PocketBase guidance.
 
 ## Maintenance Rule
 

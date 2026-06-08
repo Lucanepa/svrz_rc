@@ -8,6 +8,6 @@ alwaysApply: true
 Before proposing infra/network/deploy commands, read `infrastructure.md`.
 
 Requirements:
-- Treat `infrastructure.md` as the current source of truth for VPS, PocketBase, Nginx, and Tailscale setup.
+- Treat `infrastructure.md` as the current source of truth for the Docker, Cloudflare Tunnel, and PocketBase setup.
 - If a requested action changes infrastructure, update `infrastructure.md` in the same task.
 - Never print or commit secrets from local env files.

@@ -30,78 +30,36 @@ Vite proxy forwards `/api/*` to `http://localhost:8787` in local development.
 4. Games can be synced from Swiss Volley public data manually and on schedule.
 5. Feedback submit endpoint saves DB records + uploads PDF + sends email + closes role when applicable.
 
-## VPS + Network Context
+## Host + Network Context
 
-- Provider: Infomaniak
-- Host: `ubuntu@83.228.220.158`
-- SSH: `ssh -i ~/.ssh/id_ed25519 ubuntu@83.228.220.158`
-- Tailscale IP: `100.69.245.37`
-- OS: Ubuntu 24.04.3 LTS
-- Hostname: `ov-c45f75`
+The backend runs in Docker on a single host, fronted by a Cloudflare Tunnel —
+there is no public ingress IP, reverse proxy, or open port to document here.
 
-Public API domain:
+- Host / SSH target, tunnel name, and any private IPs: see `infrastructure.private.md` (gitignored).
+- Deployment manifests: `deploy/hetzner/` (`docker-compose.yml`, Dockerfiles, env example).
+- Public API domain: `https://rc-api.volleyball.lucanepa.com` (Cloudflare Tunnel → API container on `127.0.0.1:8787`).
+- PocketBase is **not** publicly exposed: it listens only on the internal Docker network and is reached by the API container at `http://pocketbase:8090`. Admin UI (`/_/`) is private — access it via an SSH/port-forward to the host, never over the internet.
 
-- API base URL (public): `https://rc-api.volleyball.lucanepa.com`
-- DNS: Cloudflare A record `rc-api.volleyball -> 83.228.220.158`
-- TLS: Let's Encrypt certificate installed via Certbot on VPS Nginx
-- Cloudflare proxy note: keep record as DNS-only unless edge certificate coverage is configured for this hostname
-
-PocketBase endpoints:
-
-- API base URL: `http://100.69.245.37`
-- Admin UI: `http://100.69.245.37/_/` (Tailscale-only)
-
-Important: use `POCKETBASE_URL` without `/_/`.
+Important: set `POCKETBASE_URL` to the internal service URL (e.g. `http://pocketbase:8090`), without `/_/`.
 
 ## Runtime Services
 
-PocketBase:
+Both services run via Docker Compose (`deploy/hetzner/docker-compose.yml`):
 
-- Binary: `/opt/pocketbase/pocketbase`
-- Systemd service: `pocketbase.service`
-- Internal bind: `127.0.0.1:8090`
-- Public entry: Nginx reverse proxy
+- `pocketbase` — built from `Dockerfile.pocketbase`, data persisted in `./pb_data`, reachable only on the internal `svrz` Docker network as `pocketbase:8090`.
+- `svrz-api` — built from `Dockerfile.api`, published on `127.0.0.1:8787` for the Cloudflare Tunnel to route. Reads secrets from `deploy/hetzner/svrz-api.env` (gitignored).
 
-Nginx:
+Public ingress is the external Cloudflare Tunnel (`rc-api.volleyball.lucanepa.com` → `http://localhost:8787`); there is no Nginx/Certbot on the host.
 
-- Config: `/etc/nginx/sites-available/pocketbase`
-- Proxies port 80 -> `127.0.0.1:8090`
-- Restricts `/_/` to localhost + Tailscale (`100.64.0.0/10`)
-- Keeps API routes public
-- `client_max_body_size 50m`
-
-PM2:
-
-- Existing process noted on VPS: `openvolley`
-- API process: `svrz-api` (runs `npm run start:api` with `PORT=8787`)
-
-Useful commands:
+Useful commands (run from `deploy/hetzner/` on the host):
 
 ```bash
-sudo systemctl status pocketbase
-sudo systemctl restart pocketbase
-journalctl -u pocketbase -f
-pm2 list
-pm2 logs openvolley
-pm2 logs svrz-api
+docker compose ps
+docker compose up -d --build
+docker compose logs -f svrz-api
+docker compose logs -f pocketbase
+docker compose restart svrz-api
 ```
-
-API process lifecycle (VPS):
-
-```bash
-cd ~/apps/svrz_rc
-pm2 delete svrz-api
-PORT=8787 pm2 start npm --name svrz-api -- run start:api
-pm2 save
-pm2 restart svrz-api --update-env
-```
-
-Nginx API site:
-
-- Config: `/etc/nginx/sites-available/svrz-api`
-- Enabled: `/etc/nginx/sites-enabled/svrz-api`
-- Server name: `rc-api.volleyball.lucanepa.com`
-- Upstream: `http://127.0.0.1:8787`
 
 ## Environment Variables
 
@@ -111,14 +69,14 @@ Store actual secret values in `infrastructure.private.md` (gitignored), not in t
 ### Frontend vars
 
 ```env
-VITE_POCKETBASE_URL="http://100.69.245.37"
+VITE_POCKETBASE_URL="" # not used by the browser; app talks to /api/* only
 VITE_API_BASE_URL="" # optional; set for static hosting that needs absolute API origin
 ```
 
 ### Backend vars (required)
 
 ```env
-POCKETBASE_URL="http://100.69.245.37"
+POCKETBASE_URL="http://pocketbase:8090"  # internal Docker service URL
 POCKETBASE_ADMIN_EMAIL="..."
 POCKETBASE_ADMIN_PASSWORD="..."
 VM_USERNAME="..."   # game sync credentials
@@ -359,22 +317,22 @@ Woodpecker CI requirement for static production builds:
 
 If `/api/health` fails:
 
-1. check `.env.local` exists and values are loaded
-2. verify `POCKETBASE_URL` is reachable from API host
+1. check the API container's env file is present and values are loaded
+2. verify `POCKETBASE_URL` (`http://pocketbase:8090`) is reachable from the API container
 3. verify PocketBase admin email/password
-4. verify Tailscale connectivity for private PB endpoint
-5. restart API process and retest
+4. confirm both containers are healthy on the `svrz` network (`docker compose ps`)
+5. restart the API container and retest
 
 Quick checks:
 
 ```bash
 curl "http://localhost:8787/api/health"
-curl "http://100.69.245.37/api/health"
+docker compose exec svrz-api wget -qO- http://pocketbase:8090/api/health
 ```
 
-## VPS Memory Baseline
+## Host Memory Baseline
 
-This VPS had previous OOM kills. Keep swap enabled as safety buffer.
+On small hosts, keep swap enabled as a safety buffer against OOM kills.
 
 ```bash
 sudo fallocate -l 2G /swapfile
@@ -390,8 +348,8 @@ swapon --show
 
 ## Security Rules
 
-- Never commit secrets from `.env*`.
-- Keep PocketBase admin UI private (Tailscale-only).
-- Set `ADMIN_SESSION_SECRET` to a strong random value.
+- Never commit secrets from `.env*` or `deploy/hetzner/svrz-api.env`.
+- Keep PocketBase off public ingress (internal Docker network only); reach the admin UI via SSH/port-forward.
+- Set `ADMIN_SESSION_SECRET` to a strong random value (the API now refuses to sign sessions with an empty key).
 - Rotate credentials immediately if exposed.
 - Use HTTPS for all public API/frontend routes where available.

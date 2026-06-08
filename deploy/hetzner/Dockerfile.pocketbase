@@ -1,7 +1,8 @@
-# Pinned PocketBase server. Set PB_VERSION to the value printed by the backup
-# step (`pocketbase --version` on the old VPS) so pb_data stays compatible.
+# Pinned PocketBase server. PB_VERSION must match the version that wrote pb_data
+# (`pocketbase --version`) so the existing database stays compatible — an older
+# binary refuses to open newer data. Production pins it via deploy/hetzner/.env.
 FROM alpine:3.20
-ARG PB_VERSION=0.22.21
+ARG PB_VERSION=0.26.6
 RUN apk add --no-cache ca-certificates unzip wget && \
     wget -O /tmp/pb.zip "https://github.com/pocketbase/pocketbase/releases/download/v${PB_VERSION}/pocketbase_${PB_VERSION}_linux_amd64.zip" && \
     unzip /tmp/pb.zip -d /pb

@@ -6,7 +6,7 @@ This project is a React PWA + Node/Express API + PocketBase backend:
 
 - Frontend app: `src/*` (main UI in `src/App.tsx`, API client in `src/lib/pocketbase.ts`)
 - Backend API: `server/index.ts`
-- Database/storage/auth backend: PocketBase on VPS
+- Database/storage/auth backend: PocketBase (Docker container)
 - External upstream data source: Swiss Volley public data (authenticated sync)
 
 Local dev command:
@@ -37,7 +37,7 @@ there is no public ingress IP, reverse proxy, or open port to document here.
 
 - Host / SSH target, tunnel name, and any private IPs: see `infrastructure.private.md` (gitignored).
 - Deployment manifests: `deploy/hetzner/` (`docker-compose.yml`, Dockerfiles, env example).
-- Public API domain: `https://rc-api.volleyball.lucanepa.com` (Cloudflare Tunnel → API container on `127.0.0.1:8787`).
+- Public API domain: `https://rc-api.lucanepa.com` (Cloudflare Tunnel → API container on `127.0.0.1:8787`).
 - PocketBase is **not** publicly exposed: it listens only on the internal Docker network and is reached by the API container at `http://pocketbase:8090`. Admin UI (`/_/`) is private — access it via an SSH/port-forward to the host, never over the internet.
 
 Important: set `POCKETBASE_URL` to the internal service URL (e.g. `http://pocketbase:8090`), without `/_/`.
@@ -49,7 +49,7 @@ Both services run via Docker Compose (`deploy/hetzner/docker-compose.yml`):
 - `pocketbase` — built from `Dockerfile.pocketbase`, data persisted in `./pb_data`, reachable only on the internal `svrz` Docker network as `pocketbase:8090`.
 - `svrz-api` — built from `Dockerfile.api`, published on `127.0.0.1:8787` for the Cloudflare Tunnel to route. Reads secrets from `deploy/hetzner/svrz-api.env` (gitignored).
 
-Public ingress is the external Cloudflare Tunnel (`rc-api.volleyball.lucanepa.com` → `http://localhost:8787`); there is no Nginx/Certbot on the host.
+Public ingress is the external Cloudflare Tunnel (`rc-api.lucanepa.com` → `http://localhost:8787`); there is no Nginx/Certbot on the host.
 
 Useful commands (run from `deploy/hetzner/` on the host):
 
@@ -63,7 +63,7 @@ docker compose restart svrz-api
 
 ## Environment Variables
 
-Use `.env.local` for local/prod runtime values (never commit secrets).
+Use `.env.local` for local dev runtime values; production secrets live in `deploy/hetzner/svrz-api.env` on the host (never commit either).
 Store actual secret values in `infrastructure.private.md` (gitignored), not in this tracked file.
 
 ### Frontend vars
@@ -287,7 +287,7 @@ Automatic sync runs inside `server/index.ts` using `node-cron`:
 - timezone default: `Europe/Zurich`
 - retries (cron path): configurable via env vars
 
-Production note: keep API process continuously running (PM2/systemd/container), otherwise scheduled sync will not run.
+Production note: the API container runs with `restart: unless-stopped` so the cron stays alive; if the container is stopped, scheduled sync will not run.
 
 ## Upstream Sync Troubleshooting
 
@@ -297,13 +297,13 @@ Game sync uses Swiss Volley public data with authenticated access. For detailed 
 
 - Local dev: frontend uses relative `/api/*` and Vite proxy.
 - Static hosting (e.g., Codeberg Pages): set `VITE_API_BASE_URL` to absolute API origin.
-- Current production API origin: `https://rc-api.volleyball.lucanepa.com`
+- Current production API origin: `https://rc-api.lucanepa.com`
 - Vite base in production is `/svrz_rc/`, so assets are generated for that subpath.
 
 Woodpecker CI requirement for static production builds:
 
 - Secret name: `vite_api_base_url`
-- Secret value: `https://rc-api.volleyball.lucanepa.com`
+- Secret value: `https://rc-api.lucanepa.com`
 - `.woodpecker/build.yml` injects this into `VITE_API_BASE_URL` during `npm run build`
 
 ## Data Import Status (Current Snapshot)

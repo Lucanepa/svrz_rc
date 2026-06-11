@@ -388,6 +388,16 @@ function LeagueLabel({ text }: { text: string }) {
   );
 }
 
+/** Referee name rendered with a clear coachee highlight (amber chip + badge). */
+function CoacheeName({ name }: { name: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-md bg-amber-100 border border-amber-300 px-1.5 py-0.5 font-bold text-amber-900">
+      {name}
+      <span className="rounded bg-amber-300/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-900">Coachee</span>
+    </span>
+  );
+}
+
 /** "Doppelturnhalle Feld 1, Gerlisbergstrasse 5, 8302 Kloter" → "Doppelturnhalle Feld 1, Kloter" */
 function shortenLocation(loc: string): string {
   const parts = loc.split(',').map(p => p.trim());
@@ -700,6 +710,8 @@ export default function App() {
     '1. SR': { formData: FeedbackFormData; tipsAndTricks: string } | null;
     '2. SR': { formData: FeedbackFormData; tipsAndTricks: string } | null;
   }>({ '1. SR': null, '2. SR': null });
+  // Which referee(s) of the selected game this observation covers — free choice, independent of who is a coachee
+  const [observationTarget, setObservationTarget] = useState<'1SR' | '2SR' | 'both'>('1SR');
   const [showJson, setShowJson] = useState(false);
   const [eligibleGames, setEligibleGames] = useState<EligibleGame[]>([]);
   const [rcPeople, setRcPeople] = useState<RefereeCoachPerson[]>([]);
@@ -770,6 +782,7 @@ export default function App() {
   const t = UI_STRINGS[formData.lang] || UI_STRINGS.DE;
   const selectedGame = eligibleGames.find((game) => game.id === selectedGameId) ?? null;
   const gameHas2SR = !!(selectedGame?.secondReferee);
+  const dualMode = gameHas2SR && observationTarget === 'both';
 
   const adjustSectionsFor2SR = (sections: typeof SECTIONS_1SR_DE, has2SR: boolean) =>
     sections.map(section => ({
@@ -820,18 +833,21 @@ export default function App() {
       return;
     }
     const srName = getRefereeForRole(selectedGame, formData.role);
-    // Try to find coachee by ID first, then by matching referee name (handles first/last name order)
+    // Match the coachee against the referee currently being observed (handles first/last name order)
     const coacheeById = coachees.find((c) => c.id === selectedCoacheeId);
     const normalizeName = (name: string) => name.toLowerCase().trim().split(/\s+/).sort().join(' ');
-    const srNorm = normalizeName(srName || '');
-    const coacheeByName = coachees.find((c) => {
-      if (normalizeName(c.full_name || '') === srNorm) return true;
-      if (c.first_name && c.last_name) {
-        if (normalizeName(`${c.first_name} ${c.last_name}`) === srNorm) return true;
-      }
+    const matchesNorm = (c: Coachee, norm: string) => {
+      if (!norm) return false;
+      if (normalizeName(c.full_name || '') === norm) return true;
+      if (c.first_name && c.last_name && normalizeName(`${c.first_name} ${c.last_name}`) === norm) return true;
       return false;
-    });
-    const coachee = coacheeById || coacheeByName;
+    };
+    const srNorm = normalizeName(srName || '');
+    const coacheeByName = coachees.find((c) => matchesNorm(c, srNorm));
+    // Fall back to the navigated-from coachee only if they aren't the *other* referee of this game
+    const otherRef = getRefereeForRole(selectedGame, formData.role === '1. SR' ? '2. SR' : '1. SR');
+    const otherNorm = normalizeName(otherRef || '');
+    const coachee = coacheeByName || (coacheeById && !matchesNorm(coacheeById, otherNorm) ? coacheeById : undefined);
     const has2SR = !!selectedGame.secondReferee;
     setFormData((prev) => ({
       ...prev,
@@ -995,19 +1011,30 @@ export default function App() {
     // Reset dual form storage
     setDualFormData({ '1. SR': null, '2. SR': null });
 
-    // Auto-detect coachee role
+    // Pre-select the observation target based on which referee(s) are coachees — freely changeable afterwards
     const g = game as EligibleGame;
     const r1 = g.firstReferee || '';
     const r2 = g.secondReferee || '';
     const r1IsC = coacheeNames.has(normName(r1));
     const r2IsC = !!(r2 && coacheeNames.has(normName(r2)));
+    const has2 = !!r2;
 
-    if (r1IsC && !r2IsC) {
-      setFormData(prev => ({ ...prev, role: '1. SR' }));
-    } else if (!r1IsC && r2IsC) {
-      setFormData(prev => ({ ...prev, role: '2. SR' }));
+    let target: '1SR' | '2SR' | 'both' = '1SR';
+    let role: FeedbackFormData['role'] = '1. SR';
+    if (has2 && r1IsC && r2IsC) {
+      target = 'both';
+    } else if (has2 && r2IsC && !r1IsC) {
+      target = '2SR';
+      role = '2. SR';
     }
-    // If both are coachees, keep default '1. SR'
+    setObservationTarget(target);
+    setFormData(prev => {
+      if (prev.role === role) return prev;
+      const newSections = role === '1. SR'
+        ? adjustSectionsFor2SR(prev.lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, has2)
+        : (prev.lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
+      return { ...prev, role, sections: newSections };
+    });
 
     // Carry over the 3 nails set in this coachee's most recent feedback (to review now)
     const cid = selectedCoacheeId;
@@ -1094,6 +1121,7 @@ export default function App() {
     const payload = record.feedback_json;
     if (payload) {
       setFormData(normalizeLoadedFeedback(payload));
+      setObservationTarget(payload.role === '2. SR' ? '2SR' : '1SR');
     }
     const expandedGame = record.expand?.game;
     if (expandedGame?.id) {
@@ -1424,7 +1452,7 @@ export default function App() {
     setSavingFeedback(true);
     setBackendNotice('');
     try {
-      if (bothRefereesAreCoachees) {
+      if (dualMode) {
         // Dual submit: submit both roles sequentially
         const notices: string[] = [];
         const roles = ['1. SR', '2. SR'] as const;
@@ -1525,7 +1553,7 @@ export default function App() {
     }
 
     // In dual mode, also validate the other role's form
-    if (bothRefereesAreCoachees) {
+    if (dualMode) {
       const otherRole = formData.role === '1. SR' ? '2. SR' : '1. SR';
       const otherClosed = selectedGame?.feedbackClosedRoles?.includes(otherRole);
       if (!otherClosed) {
@@ -1583,11 +1611,50 @@ export default function App() {
     setShowConfirmModal('reset');
   };
 
+  const changeObservationTarget = (target: '1SR' | '2SR' | 'both') => {
+    if (target === observationTarget) return;
+    setObservationTarget(target);
+    if (target === 'both') {
+      // Keep the current role's form on screen; the other role starts blank (or from its stash) when switched to
+      return;
+    }
+    const newRole: FeedbackFormData['role'] = target === '1SR' ? '1. SR' : '2. SR';
+    if (formData.role === newRole) return;
+    // Stash the current role's work so nothing is lost if the user returns to "both"
+    setDualFormData(prev => ({
+      ...prev,
+      [formData.role]: { formData: { ...formData }, tipsAndTricks },
+    }));
+    const saved = dualFormData[newRole];
+    if (saved) {
+      setFormData(saved.formData);
+      setTipsAndTricks(saved.tipsAndTricks);
+    } else {
+      const lang = formData.lang;
+      const newSections = newRole === '1. SR'
+        ? adjustSectionsFor2SR(lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, gameHas2SR)
+        : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
+      setFormData(prev => ({
+        ...INITIAL_DATA,
+        lang,
+        role: newRole,
+        sections: newSections,
+        meta: {
+          ...prev.meta,
+          srName: selectedGame ? getRefereeForRole(selectedGame, newRole) || '' : '',
+          srNiveau: '',
+          gruppe: '',
+        },
+      }));
+      setTipsAndTricks('');
+    }
+  };
+
   const toggleRole = () => {
     const currentRole = formData.role;
     const newRole = currentRole === '1. SR' ? '2. SR' : '1. SR';
 
-    if (bothRefereesAreCoachees) {
+    if (dualMode) {
       // Stash current role's form data
       setDualFormData(prev => ({
         ...prev,
@@ -1613,6 +1680,8 @@ export default function App() {
           meta: {
             ...prev.meta,
             srName: selectedGame ? getRefereeForRole(selectedGame, newRole) || '' : '',
+            srNiveau: '',
+            gruppe: '',
           },
         }));
         setTipsAndTricks('');
@@ -1685,22 +1754,6 @@ export default function App() {
     },
     [coachees],
   );
-  const bothRefereesAreCoachees = useMemo(() => {
-    if (!selectedGame) return false;
-    const r1 = selectedGame.firstReferee || '';
-    const r2 = selectedGame.secondReferee || '';
-    return !!(r1 && r2 && coacheeNames.has(normName(r1)) && coacheeNames.has(normName(r2)));
-  }, [selectedGame, coacheeNames]);
-
-  const onlyCoacheeRole = useMemo<'1. SR' | '2. SR' | null>(() => {
-    if (!selectedGame || bothRefereesAreCoachees) return null;
-    const r1 = selectedGame.firstReferee || '';
-    const r2 = selectedGame.secondReferee || '';
-    if (coacheeNames.has(normName(r1))) return '1. SR';
-    if (r2 && coacheeNames.has(normName(r2))) return '2. SR';
-    return null;
-  }, [selectedGame, coacheeNames, bothRefereesAreCoachees]);
-
   const coacheeLevels = useMemo(
     () => [...new Set(
       coachees
@@ -1876,23 +1929,54 @@ export default function App() {
           <Download size={18} />
           <span className="hidden sm:inline">{t.downloadPdf}</span>
         </button>
-        {bothRefereesAreCoachees && (
+        {gameHas2SR && (
           <div className="flex items-center gap-2">
-            <button
-              onClick={toggleRole}
-              className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-red-700 transition-colors"
+            <div
+              className="flex rounded-lg border border-stone-300 bg-white shadow-sm overflow-hidden"
+              role="group"
+              aria-label={formData.lang === 'DE' ? 'Beobachtung f\u00FCr' : 'Observation for'}
             >
-              <RefreshCw size={18} />
-              <span className="hidden sm:inline">{t.switchRole} {formData.role === '1. SR' ? '2. SR' : '1. SR'}</span>
-            </button>
-            <div className="flex gap-1.5 text-xs font-medium">
-              <span className={dualFormData['1. SR'] || formData.role === '1. SR' ? 'text-green-600' : 'text-stone-400'}>
-                1SR {dualFormData['1. SR'] ? '\u2713' : '\u25CB'}
-              </span>
-              <span className={dualFormData['2. SR'] || formData.role === '2. SR' ? 'text-green-600' : 'text-stone-400'}>
-                2SR {dualFormData['2. SR'] ? '\u2713' : '\u25CB'}
-              </span>
+              {(['1SR', '2SR', 'both'] as const).map((tg) => {
+                const refName = tg === 'both' || !selectedGame ? '' : getRefereeForRole(selectedGame, tg === '1SR' ? '1. SR' : '2. SR');
+                const isCoachee = !!refName && coacheeNames.has(normName(refName));
+                const active = observationTarget === tg;
+                return (
+                  <button
+                    key={tg}
+                    onClick={() => changeObservationTarget(tg)}
+                    title={tg === 'both'
+                      ? (formData.lang === 'DE' ? 'Beide Schiedsrichter beobachten' : 'Observe both referees')
+                      : `${refName}${isCoachee ? ' (Coachee)' : ''}`}
+                    className={cn(
+                      "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors",
+                      active ? "bg-slate-900 text-white" : "text-stone-600 hover:bg-stone-50"
+                    )}
+                  >
+                    {tg === 'both' ? (formData.lang === 'DE' ? 'Beide' : 'Both') : tg}
+                    {isCoachee && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title="Coachee" />}
+                  </button>
+                );
+              })}
             </div>
+            {dualMode && (
+              <>
+                <button
+                  onClick={toggleRole}
+                  className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-red-700 transition-colors"
+                >
+                  <RefreshCw size={18} />
+                  <span className="hidden sm:inline">{t.switchRole} {formData.role === '1. SR' ? '2. SR' : '1. SR'}</span>
+                </button>
+                <div className="flex gap-1.5 text-xs font-medium">
+                  <span className={dualFormData['1. SR'] || formData.role === '1. SR' ? 'text-green-600' : 'text-stone-400'}>
+                    1SR {dualFormData['1. SR'] ? '\u2713' : '\u25CB'}
+                  </span>
+                  <span className={dualFormData['2. SR'] || formData.role === '2. SR' ? 'text-green-600' : 'text-stone-400'}>
+                    2SR {dualFormData['2. SR'] ? '\u2713' : '\u25CB'}
+                  </span>
+                </div>
+              </>
+            )}
           </div>
         )}
         <button
@@ -1910,6 +1994,34 @@ export default function App() {
           <RefreshCw size={18} />
           <span className="hidden sm:inline">{t.reset}</span>
         </button>
+        {selectedGame && (
+          <div className="w-full flex flex-wrap items-center gap-2">
+            {(['1. SR', '2. SR'] as const).map((role) => {
+              const name = getRefereeForRole(selectedGame, role);
+              if (!name) return null;
+              const isCoachee = coacheeNames.has(normName(name));
+              const isObserved = dualMode || formData.role === role;
+              return (
+                <div
+                  key={role}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm",
+                    isObserved ? "border-slate-400 bg-white shadow-sm" : "border-stone-200 bg-stone-50 opacity-60"
+                  )}
+                >
+                  {isObserved && <Eye size={14} className="text-slate-700 shrink-0" />}
+                  <span className="font-medium text-stone-400">{role === '1. SR' ? '1SR' : '2SR'}</span>
+                  <span className={cn("font-semibold", isCoachee ? "text-amber-900" : "text-stone-800")}>{name}</span>
+                  {isCoachee && (
+                    <span className="inline-flex items-center rounded bg-amber-100 border border-amber-300 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
+                      Coachee
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
           </>
         )}
           </>
@@ -2559,7 +2671,7 @@ export default function App() {
                                     <Users size={14} className="w-3.5 text-stone-400 shrink-0" />
                                     <span className="font-medium text-stone-400">1SR</span>
                                     {r1 ? (
-                                      <span className={r1IsCoachee ? 'font-bold text-stone-900' : 'font-semibold text-stone-700'}>{r1}</span>
+                                      r1IsCoachee ? <CoacheeName name={r1} /> : <span className="font-semibold text-stone-700">{r1}</span>
                                     ) : (
                                       <span className="text-stone-300">–</span>
                                     )}
@@ -2568,7 +2680,7 @@ export default function App() {
                                     <div className="flex items-center gap-1.5">
                                       <span className="w-3.5 shrink-0" />
                                       <span className="font-medium text-stone-400">2SR</span>
-                                      <span className={r2IsCoachee ? 'font-bold text-stone-900' : 'font-semibold text-stone-700'}>{r2}</span>
+                                      {r2IsCoachee ? <CoacheeName name={r2} /> : <span className="font-semibold text-stone-700">{r2}</span>}
                                     </div>
                                   )}
                                 </div>
@@ -3460,7 +3572,7 @@ export default function App() {
                 <p>{formData.lang === 'DE'
                   ? 'Das Feedback wird gespeichert und eine E-Mail mit dem PDF wird gesendet:'
                   : 'The feedback will be saved and an email with the PDF will be sent:'}</p>
-                {bothRefereesAreCoachees ? (
+                {dualMode ? (
                   <div className="bg-stone-50 rounded-lg p-3 text-xs space-y-2">
                     {(['1. SR', '2. SR'] as const).map(role => {
                       const refName = selectedGame ? getRefereeForRole(selectedGame, role) : '';

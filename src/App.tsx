@@ -3140,20 +3140,26 @@ export default function App() {
                       })}
                     </div>
                   )}
-                  {/* Past games — only show if feedbacks exist */}
-                  {coacheeFeedbacks.length > 0 && (
+                  {/* Past games — always available (behind a toggle), regardless of feedback */}
+                  {allPastGames.length > 0 && (
                     <>
                       <div className="px-4 py-2 bg-stone-100 text-xs font-bold uppercase text-stone-500 border-b border-t border-stone-200 flex items-center justify-between">
-                        <span>{formData.lang === 'DE' ? 'Vergangene Spiele' : 'Past Games'} ({pastGames.length})</span>
+                        <span>{formData.lang === 'DE' ? 'Vergangene Spiele' : 'Past Games'} ({allPastGames.length})</span>
                         <button
                           onClick={() => setShowAllPastGames((v) => !v)}
                           className="text-[10px] normal-case font-normal px-2 py-0.5 border rounded border-stone-300 hover:bg-stone-200"
                         >
-                          {showAllPastGames ? (formData.lang === 'DE' ? 'Nur beobachtete' : 'Observed only') : (formData.lang === 'DE' ? 'Alle Spiele' : 'Show all games')}
+                          {coacheeFeedbacks.length > 0
+                            ? (showAllPastGames ? (formData.lang === 'DE' ? 'Nur beobachtete' : 'Observed only') : (formData.lang === 'DE' ? 'Alle Spiele' : 'Show all games'))
+                            : (showAllPastGames ? (formData.lang === 'DE' ? 'Ausblenden' : 'Hide') : (formData.lang === 'DE' ? 'Anzeigen' : 'Show'))}
                         </button>
                       </div>
                       {pastGames.length === 0 ? (
-                        <p className="text-sm text-stone-500 p-4">{formData.lang === 'DE' ? 'Keine vergangenen Spiele.' : 'No past games.'}</p>
+                        <p className="text-sm text-stone-500 p-4">
+                          {formData.lang === 'DE'
+                            ? `${allPastGames.length} vergangene Spiele — «${coacheeFeedbacks.length > 0 ? 'Alle Spiele' : 'Anzeigen'}» antippen, um sie zu sehen.`
+                            : `${allPastGames.length} past game(s) — tap "${coacheeFeedbacks.length > 0 ? 'Show all games' : 'Show'}" to view them.`}
+                        </p>
                       ) : (
                         <div className="divide-y divide-stone-100">
                           {pastGames.map((game) => {

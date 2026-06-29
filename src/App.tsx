@@ -33,6 +33,7 @@ import {
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
 import { cn } from './lib/utils';
 import { normalizeCoacheeGroup } from './lib/coacheeGroup';
+import { keepGame, levelKey, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
 
@@ -84,11 +85,6 @@ const UI_STRINGS = {
     highlights: "Highlights & Potenziale",
     improvements: "Bereiche / Potenzial zur Verbesserung",
     goalsNext: "Ziele für nächste Spiele",
-    nailsNewTitle: "3 Nägel (für nächstes Mal)",
-    nailsReviewTitle: "Vorherige Nägel — Bewertung",
-    nailAchieved: "Erreicht",
-    nailPartial: "Teilweise",
-    nailNot: "Nicht erreicht",
     required: "Pflicht",
     goalPlaceholder: "Ziele werden basierend auf dem gewählten Niveau und den Bemerkungen festgelegt.",
     version: "Stand",
@@ -213,11 +209,6 @@ const UI_STRINGS = {
     highlights: "Highlights & potential",
     improvements: "Areas / potential for improvement",
     goalsNext: "Goals for next games",
-    nailsNewTitle: "3 nails (for next time)",
-    nailsReviewTitle: "Previous nails — review",
-    nailAchieved: "Achieved",
-    nailPartial: "Partially",
-    nailNot: "Not achieved",
     required: "required",
     goalPlaceholder: "Goals are set based on the selected level and remarks.",
     version: "Version",
@@ -683,10 +674,15 @@ export default function App() {
   const seasonTo = `${seasonStartYear + 1}-04-30`;
   const seasonOptions = Array.from(new Set([seasonStartYear, curSeasonYear, curSeasonYear + 1, curSeasonYear + 2].filter((y) => y >= curSeasonYear))).sort((a, b) => a - b);
   const [emailTestMode, setEmailTestMode] = useState(false);
-  // Read admin settings: email test-mode banner + default season (if no saved pref)
+  // Per-coachee level/role targets (drives "watch at their level" game filtering).
+  const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
+  // When true, ignore Niveau targets and show every game (escape hatch).
+  const [showAllLevels, setShowAllLevels] = useState(false);
+  // Read admin settings: email test-mode banner + default season (if no saved pref) + coachee targets
   useEffect(() => {
     getSettings().then((s) => {
       setEmailTestMode(Boolean(s.test_mode));
+      setCoacheeTargets(s.coachee_targets ?? {});
       try { if (!localStorage.getItem('svrz_season_v2') && s.default_season) setSeasonStartYear(s.default_season); } catch { /* ignore */ }
     }).catch(() => { /* ignore */ });
   }, []);
@@ -1035,17 +1031,6 @@ export default function App() {
         : (prev.lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
       return { ...prev, role, sections: newSections };
     });
-
-    // Carry over the 3 nails set in this coachee's most recent feedback (to review now)
-    const cid = selectedCoacheeId;
-    if (cid) {
-      void listCoacheeFeedbacks(cid).then(records => {
-        const prevNew = records.map(r => r.feedback_json?.results?.nailsNew).find(n => Array.isArray(n) && n.some(x => x && String(x).trim()));
-        setFormData(prev => ({ ...prev, results: { ...prev.results, nailsNew: ['', '', ''], nailsReview: prevNew ? prevNew.map(text => ({ text: String(text), status: '' as const })) : [] } }));
-      }).catch(() => {});
-    } else {
-      setFormData(prev => ({ ...prev, results: { ...prev.results, nailsNew: ['', '', ''], nailsReview: [] } }));
-    }
   };
 
   const refreshCalendarGames = async () => {
@@ -1896,9 +1881,26 @@ export default function App() {
           if (!hasEligibleRef) return false;
         }
       }
+      // Niveau-target pruning: keep the game only if it matches the target of at least
+      // one of its coachee referees (at their level + role). Coachees with no active
+      // target never prune. The "show all levels" toggle bypasses this entirely.
+      if (!showAllLevels) {
+        const refRoles: Array<{ name: string; role: TargetRole }> = [];
+        if (g.firstReferee) refRoles.push({ name: g.firstReferee, role: '1SR' });
+        if (g.secondReferee) refRoles.push({ name: g.secondReferee, role: '2SR' });
+        const coacheeRefs = refRoles
+          .map((r) => ({ ...r, c: coacheeByName.get(normName(r.name)) }))
+          .filter((r): r is { name: string; role: TargetRole; c: Coachee } => Boolean(r.c));
+        const anyTargeted = coacheeRefs.some((r) => isTargetActive(coacheeTargets[r.c.id], levelKey(r.c.referee_level, r.c.stage)));
+        if (coacheeRefs.length > 0 && anyTargeted) {
+          const keep = coacheeRefs.some((r) =>
+            keepGame({ league: g.league || '', role: r.role, target: coacheeTargets[r.c.id], levelKey: levelKey(r.c.referee_level, r.c.stage) }));
+          if (!keep) return false;
+        }
+      }
       return true;
     });
-  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, coacheeByName, coacheeNames, seasonFrom, seasonTo]);
+  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
@@ -2567,6 +2569,24 @@ export default function App() {
                   >
                     <CalendarDays size={18} />
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAllLevels((v) => !v)}
+                    className={cn(
+                      "ml-auto inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium transition-colors",
+                      showAllLevels
+                        ? "border-stone-200 text-stone-500 hover:bg-stone-100"
+                        : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    )}
+                    title={formData.lang === 'DE'
+                      ? 'Nur Spiele, die zum Niveau/Ziel der Coachees passen (Standard). Antippen, um alle Spiele zu zeigen.'
+                      : "Only games matching the coachees' level/target (default). Tap to show all games."}
+                  >
+                    <Target size={14} />
+                    {showAllLevels
+                      ? (formData.lang === 'DE' ? 'Alle Spiele' : 'All games')
+                      : (formData.lang === 'DE' ? 'Nur passende' : 'Matching only')}
+                  </button>
                 </div>
 
                 {/* Games list view */}
@@ -3053,12 +3073,45 @@ export default function App() {
               <p className="text-sm text-stone-500 p-4">{t.noCoacheeGames}</p>
             ) : (() => {
               const now = new Date();
-              const upcomingGames = coacheeGames.filter((game) => new Date(game.date) >= now);
-              const allPastGames = coacheeGames.filter((game) => new Date(game.date) < now);
+              const viewCoachee = coachees.find((c) => c.id === selectedCoacheeId);
+              const lvlKey = levelKey(viewCoachee?.referee_level, viewCoachee?.stage);
+              const target = viewCoachee ? coacheeTargets[viewCoachee.id] : undefined;
+              const matchesTarget = (g: CoacheeGame): boolean => {
+                if (showAllLevels) return true;
+                const roles: TargetRole[] = [];
+                if (g.assignedRoles.includes('1. SR')) roles.push('1SR');
+                if (g.assignedRoles.includes('2. SR')) roles.push('2SR');
+                if (roles.length === 0) return true; // not an SR role (e.g. line judge) → keep
+                if (!isTargetActive(target, lvlKey)) return true;
+                return roles.some((role) => keepGame({ league: g.league || '', role, target, levelKey: lvlKey }));
+              };
+              const visibleGames = coacheeGames.filter(matchesTarget);
+              const hiddenByTarget = coacheeGames.length - visibleGames.length;
+              const upcomingGames = visibleGames.filter((game) => new Date(game.date) >= now);
+              const allPastGames = visibleGames.filter((game) => new Date(game.date) < now);
               const feedbackByGameId = new Set(coacheeFeedbacks.map((f) => f.game).filter(Boolean));
               const pastGames = showAllPastGames ? allPastGames : allPastGames.filter((game) => feedbackByGameId.has(game.id));
               return (
                 <div>
+                  {(hiddenByTarget > 0 || (showAllLevels && isTargetActive(target, lvlKey))) && (
+                    <div className="flex items-center justify-between gap-2 px-4 py-2 bg-emerald-50 border-b border-emerald-200 text-xs text-emerald-800">
+                      <span>
+                        {showAllLevels
+                          ? (formData.lang === 'DE' ? 'Alle Spiele werden angezeigt (Niveau-Filter aus).' : 'Showing all games (level filter off).')
+                          : (formData.lang === 'DE'
+                            ? `${hiddenByTarget} Spiel(e) ausserhalb des Niveaus ausgeblendet.`
+                            : `${hiddenByTarget} game(s) outside the level hidden.`)}
+                      </span>
+                      <button
+                        onClick={() => setShowAllLevels((v) => !v)}
+                        className="shrink-0 normal-case font-medium px-2 py-0.5 border rounded border-emerald-300 hover:bg-emerald-100"
+                      >
+                        {showAllLevels
+                          ? (formData.lang === 'DE' ? 'Nur passende' : 'Matching only')
+                          : (formData.lang === 'DE' ? 'Alle anzeigen' : 'Show all')}
+                      </button>
+                    </div>
+                  )}
                   {/* Upcoming games */}
                   <div className="px-4 py-2 bg-stone-100 text-xs font-bold uppercase text-stone-500 border-b border-stone-200">
                     {formData.lang === 'DE' ? 'Bevorstehende Spiele' : 'Upcoming Games'} ({upcomingGames.length})
@@ -3451,38 +3504,6 @@ export default function App() {
               />
             </div>
           ))}
-          {(formData.results.nailsReview && formData.results.nailsReview.length > 0) && (
-            <div className="border border-stone-200 rounded p-2.5 bg-stone-50/60">
-              <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-2">{t.nailsReviewTitle}</h4>
-              <div className="space-y-2">
-                {formData.results.nailsReview.map((nail, i) => (
-                  <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-1.5">
-                    <span className="flex-1 text-xs text-stone-700"><span className="font-semibold text-stone-400 mr-1">{i + 1}.</span>{nail.text || '—'}</span>
-                    <div className="flex gap-1 shrink-0">
-                      {(([['achieved', t.nailAchieved, 'bg-green-600'], ['partial', t.nailPartial, 'bg-amber-500'], ['not', t.nailNot, 'bg-red-600']]) as ['achieved' | 'partial' | 'not', string, string][]).map(([val, lbl, color]) => (
-                        <button key={val} type="button" onClick={() => setFormData(prev => { const nr = [...(prev.results.nailsReview || [])]; nr[i] = { ...nr[i], status: nr[i].status === val ? '' : val }; return { ...prev, results: { ...prev.results, nailsReview: nr } }; })}
-                          className={cn("h-7 px-2 rounded border text-[10px] font-bold transition-all", nail.status === val ? `${color} text-white border-transparent` : "bg-white border-stone-300 text-stone-500 hover:bg-stone-100")}>
-                          {lbl}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          <div>
-            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.nailsNewTitle} <span className="text-red-500 font-normal normal-case">· {t.required}</span></h4>
-            <div className="space-y-1.5">
-              {[0, 1, 2].map(i => (
-                <div key={i} className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-stone-400 w-4 shrink-0">{i + 1}.</span>
-                  <input type="text" value={(formData.results.nailsNew || [])[i] || ''} onChange={e => setFormData(prev => { const nn = [...(prev.results.nailsNew || ['', '', ''])]; while (nn.length < 3) nn.push(''); nn[i] = e.target.value; return { ...prev, results: { ...prev.results, nailsNew: nn } }; })}
-                    className="flex-1 h-8 text-xs rounded border border-stone-200 px-2 outline-none focus:ring-2 focus:ring-red-500" />
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
 
         {/* Signature */}
@@ -4331,15 +4352,6 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
           <div>
             <p className="text-[8px] font-black uppercase text-stone-400 mb-0.5">{t.goalsNext}</p>
             <div data-pdf-field="goals" data-pdf-type="text" data-pdf-multiline="1" className="min-h-[28px] border-b border-stone-200" />
-          </div>
-          <div>
-            <p className="text-[8px] font-black uppercase text-stone-400 mb-0.5">{t.nailsNewTitle}</p>
-            {[0, 1, 2].map(i => (
-              <div key={i} className="flex items-center gap-1 mb-1">
-                <span className="text-[8px] font-bold text-stone-400">{i + 1}.</span>
-                <div data-pdf-field={`nail${i + 1}`} data-pdf-type="text" className="flex-1 min-h-[16px] border-b border-stone-200" />
-              </div>
-            ))}
           </div>
         </div>
         {/* Signatures + QR (right) */}

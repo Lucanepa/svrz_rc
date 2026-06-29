@@ -29,8 +29,6 @@ export interface Results {
   highlights?: string;
   improvements?: string;
   goals?: string;
-  nailsNew?: string[];
-  nailsReview?: { text: string; status: '' | 'achieved' | 'partial' | 'not' }[];
   srZiel: string;
   spielniveau: 'leicht' | 'normal' | 'schwierig' | '';
   secondBesuch: 'Y' | 'N' | '';
@@ -311,8 +309,6 @@ export const INITIAL_DATA: FeedbackFormData = {
     highlights: '',
     improvements: '',
     goals: '',
-    nailsNew: ['', '', ''],
-    nailsReview: [],
     srZiel: '',
     spielniveau: '',
     secondBesuch: '',

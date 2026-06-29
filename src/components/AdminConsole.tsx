@@ -1,13 +1,18 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home } from 'lucide-react';
+import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
+import { cn } from '../lib/utils';
 import {
   getAdminAuthStatus, adminUiLogin, logoutAdmin,
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
-  getSettings, putSettings,
+  getSettings, putSettings, loadEligibleGames,
   type Coachee, type RcPerson, type ImportRow,
 } from '../lib/pocketbase';
+import {
+  levelKey, summarizeTarget, isTargetActive,
+  type CoacheeTarget, type CoacheeTargetMap, type TargetRole,
+} from '../lib/niveauTargets';
 
 type Lang = 'DE' | 'EN';
 const NOW = new Date();
@@ -49,6 +54,8 @@ const STR = {
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} neu, ${u} aktualisiert (von ${t}).`,
     importFail: (e: string) => `Import fehlgeschlagen: ${e}`,
     groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppen wählen', toApp: 'Zur App',
+    target: 'Ziel-Spiele', targetHint: 'Welche Spiele für diesen SR relevant sind. Standard: automatisch aus dem Niveau (offizielle SVRZ-Tabelle).',
+    targetAuto: 'Auto (Niveau)', targetAll: 'Alle Spiele', targetCustom: 'Eigen', targetRoles: 'Rolle(n)', targetLeagues: 'Ligen', chooseLeagues: 'Ligen wählen', edit: 'Bearbeiten', done: 'Fertig',
   },
   EN: {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminPw: 'Admin password', wrongPw: 'Wrong password',
@@ -67,6 +74,8 @@ const STR = {
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} new, ${u} updated (of ${t}).`,
     importFail: (e: string) => `Import failed: ${e}`,
     groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Choose groups', toApp: 'To app',
+    target: 'Target games', targetHint: 'Which games are relevant for this referee. Default: automatic from the Niveau (official SVRZ table).',
+    targetAuto: 'Auto (level)', targetAll: 'All games', targetCustom: 'Custom', targetRoles: 'Role(s)', targetLeagues: 'Leagues', chooseLeagues: 'Choose leagues', edit: 'Edit', done: 'Done',
   },
 } as const;
 type T = typeof STR['DE'];
@@ -105,6 +114,8 @@ export default function AdminConsole() {
   const [tab, setTab] = useState<'coachees' | 'rcs' | 'settings'>('coachees');
   const [testMode, setTestMode] = useState(false);
   const [groups, setGroups] = useState<string[]>([]);
+  const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
+  const [leagueOptions, setLeagueOptions] = useState<string[]>([]);
   const [defaultSeason, setDefaultSeason] = useState<number>(CUR_SEASON);
   const [lang, setLang] = useState<Lang>(() => {
     try { return (localStorage.getItem('svrz_admin_lang') as Lang) || 'DE'; } catch { return 'DE'; }
@@ -113,7 +124,9 @@ export default function AdminConsole() {
   const toggleLang = () => setLang((l) => { const n = l === 'DE' ? 'EN' : 'DE'; try { localStorage.setItem('svrz_admin_lang', n); } catch { /* ignore */ } return n; });
 
   useEffect(() => { getAdminAuthStatus().then((s) => setAuthed(Boolean(s.authenticated))).catch(() => {}).finally(() => setChecking(false)); }, []);
-  useEffect(() => { if (authed) getSettings().then((s) => { setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); if (s.default_season) setDefaultSeason(s.default_season); }).catch(() => {}); }, [authed]);
+  useEffect(() => { if (authed) getSettings().then((s) => { setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); setCoacheeTargets(s.coachee_targets || {}); if (s.default_season) setDefaultSeason(s.default_season); }).catch(() => {}); }, [authed]);
+  useEffect(() => { if (authed) loadEligibleGames().then((games) => { setLeagueOptions(Array.from(new Set(games.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort()); }).catch(() => {}); }, [authed]);
+  const saveTargets = useCallback(async (next: CoacheeTargetMap) => { setCoacheeTargets(next); try { await putSettings({ coachee_targets: next }); } catch { /* ignore */ } }, []);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault(); setSubmitting(true); setError('');
@@ -178,7 +191,7 @@ export default function AdminConsole() {
         </div>
       </header>
       <main className="max-w-4xl mx-auto px-4 pt-5">
-        {tab === 'coachees' && <CoacheesAdmin t={t} groups={groups} defaultSeason={defaultSeason} />}
+        {tab === 'coachees' && <CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} />}
         {tab === 'rcs' && <RcsAdmin t={t} />}
         {tab === 'settings' && <SettingsAdmin t={t} onTestMode={setTestMode} groups={groups} onGroups={setGroups} />}
       </main>
@@ -220,7 +233,70 @@ function GroupMultiSelect({ groups, value, onChange, placeholder }: { groups: st
   );
 }
 
-function CoacheesAdmin({ t, groups, defaultSeason }: { t: T; groups: string[]; defaultSeason: number }) {
+function CheckMultiSelect({ options, value, onChange, placeholder }: { options: string[]; value: string[]; onChange: (v: string[]) => void; placeholder: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h); return () => document.removeEventListener('mousedown', h);
+  }, []);
+  const toggle = (o: string) => onChange(value.includes(o) ? value.filter((x) => x !== o) : [...value, o]);
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button" onClick={() => setOpen((o) => !o)} className={`${input} text-left flex items-center justify-between gap-1`}>
+        <span className={value.length ? 'text-stone-800 truncate' : 'text-stone-400'}>{value.length ? value.join(', ') : placeholder}</span>
+        <ChevronDown size={14} className="text-stone-400 shrink-0" />
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-full max-h-52 overflow-auto rounded-lg border border-stone-200 bg-white shadow-lg p-1">
+          {options.length === 0 && <p className="px-2 py-2 text-xs text-stone-400">—</p>}
+          {options.map((o) => (
+            <label key={o} className="flex items-center gap-2 px-2 py-1.5 text-sm rounded hover:bg-stone-50 cursor-pointer">
+              <input type="checkbox" checked={value.includes(o)} onChange={() => toggle(o)} className="accent-red-600" />
+              <span className="truncate">{o}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TargetEditor({ t, target, onChange, leagueOptions }: { t: T; target: CoacheeTarget; onChange: (next: CoacheeTarget) => void; leagueOptions: string[] }) {
+  const mode = target.mode;
+  const roles = target.roles ?? [];
+  const leagues = target.leagues ?? [];
+  const toggleRole = (r: TargetRole) => onChange({ ...target, roles: roles.includes(r) ? roles.filter((x) => x !== r) : [...roles, r] });
+  return (
+    <div className="mt-2 rounded-lg border border-stone-200 bg-stone-50/60 p-2.5 space-y-2">
+      <p className="text-[11px] text-stone-400">{t.targetHint}</p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {(([['auto', t.targetAuto], ['all', t.targetAll], ['custom', t.targetCustom]]) as [CoacheeTarget['mode'], string][]).map(([m, lbl]) => (
+          <button key={m} type="button" onClick={() => onChange({ ...target, mode: m })} className={`h-7 px-2.5 rounded-md border text-xs font-medium ${mode === m ? 'bg-slate-900 text-white border-transparent' : 'bg-white border-stone-300 text-stone-600 hover:bg-stone-100'}`}>{lbl}</button>
+        ))}
+      </div>
+      {mode === 'custom' && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div>
+            <p className="text-[11px] font-semibold text-stone-500 mb-1">{t.targetRoles}</p>
+            <div className="flex gap-1.5">
+              {(['1SR', '2SR'] as TargetRole[]).map((r) => (
+                <button key={r} type="button" onClick={() => toggleRole(r)} className={`h-7 px-2.5 rounded-md border text-xs font-medium ${roles.includes(r) ? 'bg-red-600 text-white border-transparent' : 'bg-white border-stone-300 text-stone-600 hover:bg-stone-100'}`}>{r === '1SR' ? '1. SR' : '2. SR'}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="text-[11px] font-semibold text-stone-500 mb-1">{t.targetLeagues}</p>
+            <CheckMultiSelect options={leagueOptions} value={leagues} onChange={(v) => onChange({ ...target, leagues: v })} placeholder={t.chooseLeagues} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, leagueOptions }: { t: T; lang: Lang; groups: string[]; defaultSeason: number; targets: CoacheeTargetMap; onTargets: (next: CoacheeTargetMap) => void; leagueOptions: string[] }) {
+  const [targetEditId, setTargetEditId] = useState<string | null>(null);
   const [season, setSeason] = useState(defaultSeason);
   const seasonTouched = useRef(false);
   useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
@@ -284,10 +360,20 @@ function CoacheesAdmin({ t, groups, defaultSeason }: { t: T; groups: string[]; d
               <div className="flex gap-1.5"><button onClick={() => saveEdit(c.id)} className={btnPrimary}><Check size={15} /></button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
             </div>
           ) : (
-            <div key={c.id} className="py-2 flex items-center gap-3">
-              <div className="flex-1 min-w-0"><p className="text-sm font-medium text-stone-800 truncate">{c.full_name}</p><p className="text-xs text-stone-400 truncate">{[c.referee_level, c.stage].filter(Boolean).join('-')}{c.groups ? ` · ${c.groups}` : ''}</p></div>
-              <button onClick={() => { setEditId(c.id); setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '' }); }} className={btnGhost}><Pencil size={13} /></button>
-              <button onClick={() => remove(c)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+            <div key={c.id} className="py-2">
+              <div className="flex items-center gap-3">
+                <div className="flex-1 min-w-0"><p className="text-sm font-medium text-stone-800 truncate">{c.full_name}</p><p className="text-xs text-stone-400 truncate">{[c.referee_level, c.stage].filter(Boolean).join('-')}{c.groups ? ` · ${c.groups}` : ''}</p></div>
+                <button onClick={() => setTargetEditId(targetEditId === c.id ? null : c.id)} className={cn(btnGhost, targetEditId === c.id && 'bg-stone-100')} title={t.target}><Target size={13} /></button>
+                <button onClick={() => { setEditId(c.id); setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '' }); }} className={btnGhost}><Pencil size={13} /></button>
+                <button onClick={() => remove(c)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+              </div>
+              <div className="flex items-center gap-1.5 mt-1 pl-0.5">
+                <span className="text-[11px] text-stone-400">{t.target}:</span>
+                <span className={cn('text-[11px] font-medium', isTargetActive(targets[c.id], levelKey(c.referee_level, c.stage)) ? 'text-emerald-700' : 'text-stone-400')}>{summarizeTarget(targets[c.id], levelKey(c.referee_level, c.stage), lang)}</span>
+              </div>
+              {targetEditId === c.id && (
+                <TargetEditor t={t} target={targets[c.id] ?? { mode: 'auto' }} onChange={(next) => onTargets({ ...targets, [c.id]: next })} leagueOptions={leagueOptions} />
+              )}
             </div>
           ))}
           {!loading && rows.length === 0 && <p className="py-8 text-center text-sm text-stone-400">{t.noCoachees(seasonLabel(season))}</p>}

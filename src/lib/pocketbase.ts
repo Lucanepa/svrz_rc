@@ -1,4 +1,5 @@
 import type { EligibleGame, FeedbackFormData, RcOverviewEntry, rcCoachSummary } from '../types';
+import type { CoacheeTargetMap } from './niveauTargets';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
@@ -355,12 +356,12 @@ export async function importCoachees(coachees: ImportRow[], season: number): Pro
   return r.json();
 }
 
-export async function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[] }> {
+export async function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap }> {
   const r = await fetch(apiUrl('/api/settings'), { credentials: 'include' });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
-export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[] }): Promise<void> {
+export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap }): Promise<void> {
   const r = await fetch(apiUrl('/api/admin/settings'), {
     method: 'PUT', credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

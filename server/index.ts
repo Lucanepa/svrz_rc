@@ -1778,7 +1778,10 @@ app.get('/api/settings', requireGateSession, async (_req: Request, res: ExpressR
     const groupsRec = await getSettingRecord('groups');
     let groups: string[] = [];
     try { groups = groupsRec ? JSON.parse(asText(groupsRec.value)) : []; } catch { groups = []; }
-    res.json({ default_season: rec ? Number(asText(rec.value)) || null : null, test_mode: await isEmailTestMode(), groups });
+    const targetsRec = await getSettingRecord('coachee_targets');
+    let coachee_targets: Record<string, unknown> = {};
+    try { coachee_targets = targetsRec ? JSON.parse(asText(targetsRec.value)) : {}; } catch { coachee_targets = {}; }
+    res.json({ default_season: rec ? Number(asText(rec.value)) || null : null, test_mode: await isEmailTestMode(), groups, coachee_targets });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -1788,6 +1791,9 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
     if ('default_season' in body) await setSetting('default_season', asText(body.default_season));
     if ('test_mode' in body) await setSetting('test_mode', body.test_mode ? '1' : '0');
     if ('groups' in body && Array.isArray(body.groups)) await setSetting('groups', JSON.stringify((body.groups as unknown[]).map((g) => String(g).trim()).filter(Boolean)));
+    if ('coachee_targets' in body && body.coachee_targets && typeof body.coachee_targets === 'object') {
+      await setSetting('coachee_targets', JSON.stringify(body.coachee_targets));
+    }
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });

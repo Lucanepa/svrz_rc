@@ -3055,9 +3055,11 @@ export default function App() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-stone-800">
               {selectedCoacheeName || '-'}
-              {selectedCoacheeLevel && (
-                <span className="ml-2 text-xs font-normal text-stone-500">(Level: {selectedCoacheeLevel}{detailCoachee?.stage ? `-${detailCoachee.stage}` : ''})</span>
-              )}
+              {selectedCoacheeLevel && (() => {
+                const vc = coachees.find((c) => c.id === selectedCoacheeId);
+                const lvl = vc?.referee_level && vc?.stage ? `${vc.referee_level}-${vc.stage}` : (vc?.referee_level || selectedCoacheeLevel);
+                return <span className="ml-2 text-xs font-normal text-stone-500">(Level: {lvl})</span>;
+              })()}
             </h2>
             <button
               onClick={() => setFeedbackSubView('coachees')}

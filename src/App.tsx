@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X } from 'lucide-react';
+import { Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { QRCodeSVG } from 'qrcode.react';
@@ -771,6 +771,7 @@ export default function App() {
   const [loadingCoacheeFeedbacks, setLoadingCoacheeFeedbacks] = useState(false);
   const [showAllPastGames, setShowAllPastGames] = useState(false);
   const [savingFeedback, setSavingFeedback] = useState(false);
+  const [isOffline, setIsOffline] = useState(typeof navigator !== 'undefined' && !navigator.onLine);
   const [backendNotice, setBackendNotice] = useState('');
   const [adminAuthLoading, setAdminAuthLoading] = useState(false);
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
@@ -1076,6 +1077,15 @@ export default function App() {
     if (listTab === 'home' && rcAuth.rcName) void loadHome();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listTab, rcAuth.rcName, seasonStartYear]);
+
+  // Track connectivity for the offline banner and queued-submission messaging.
+  useEffect(() => {
+    const goOnline = () => setIsOffline(false);
+    const goOffline = () => setIsOffline(true);
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
+  }, []);
 
   // Give a taken game back: clears the RC assignment, so the game (and its
   // coachees' other games) reappear in the open games list.
@@ -1551,6 +1561,15 @@ export default function App() {
     }
     setSavingFeedback(true);
     setBackendNotice('');
+    // Offline: the submit still runs; the service worker queues the POST and
+    // replays it when connectivity returns. Treat the resulting network error
+    // as "queued", not a failure — the coach's work is safe.
+    const de = formData.lang === 'DE';
+    const queuedMsg = de
+      ? 'Offline gespeichert – wird automatisch gesendet, sobald du wieder online bist.'
+      : 'Saved offline – it will send automatically once you are back online.';
+    const isOfflineErr = (e: unknown) =>
+      !navigator.onLine || /failed to fetch|networkerror|network request failed|load failed/i.test(String(e instanceof Error ? e.message : e));
     try {
       if (dualMode) {
         // Dual submit: submit both roles sequentially
@@ -1564,7 +1583,12 @@ export default function App() {
           if (!stored) continue;
           const fd = 'formData' in stored ? stored.formData : stored as FeedbackFormData;
           const tips = 'tipsAndTricks' in stored ? stored.tipsAndTricks : '';
-          notices.push(await submitSingleFeedback(fd, tips));
+          try {
+            notices.push(await submitSingleFeedback(fd, tips));
+          } catch (err) {
+            if (isOfflineErr(err)) notices.push(`${role}: ${queuedMsg}`);
+            else throw err;
+          }
         }
         // Restore current role's form
         setFormData(formData);
@@ -1572,10 +1596,17 @@ export default function App() {
         setFeedbackLocked(true);
       } else {
         // Single submit (original logic)
-        const notice = await submitSingleFeedback(formData, tipsAndTricks);
-        setBackendNotice(notice.replace(`${formData.role}: `, ''));
-        if (formData.results.secondBesuch !== 'Y') {
-          setFeedbackLocked(true);
+        try {
+          const notice = await submitSingleFeedback(formData, tipsAndTricks);
+          setBackendNotice(notice.replace(`${formData.role}: `, ''));
+          if (formData.results.secondBesuch !== 'Y') {
+            setFeedbackLocked(true);
+          }
+        } catch (err) {
+          if (isOfflineErr(err)) {
+            setBackendNotice(queuedMsg);
+            if (formData.results.secondBesuch !== 'Y') setFeedbackLocked(true);
+          } else throw err;
         }
       }
     } catch (error) {
@@ -2249,6 +2280,14 @@ export default function App() {
 
           <div className="bg-white p-3 sm:p-6 rounded-2xl shadow-card border border-stone-200/70">
             {/* Top row: language toggle + empty form download */}
+            {isOffline && (
+              <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                <CloudOff size={14} className="shrink-0" />
+                {formData.lang === 'DE'
+                  ? 'Offline – du siehst die zuletzt geladenen Daten. Neue Feedbacks werden gespeichert und automatisch gesendet, sobald du wieder online bist.'
+                  : 'Offline – showing last-loaded data. New feedback is saved and sent automatically once you are back online.'}
+              </div>
+            )}
             <div className="mb-3 space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-2">
               <div className="flex items-center gap-2">
                 <button

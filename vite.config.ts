@@ -20,6 +20,38 @@ export default defineConfig(({mode}) => {
         workbox: {
           clientsClaim: true,
           skipWaiting: true,
+          // SPA shell precache already handles offline app loading. These runtime
+          // rules make the DATA work offline too:
+          runtimeCaching: [
+            {
+              // All API GETs (coachees, games, observations, rc-overview, auth/me,
+              // settings…) — NetworkFirst: fresh when online, last-synced when not.
+              urlPattern: /\/api\/.*/i,
+              method: 'GET',
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'svrz-api-get',
+                networkTimeoutSeconds: 6,
+                cacheableResponse: { statuses: [200] },
+                expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 30 },
+                matchOptions: { ignoreVary: true },
+              },
+            },
+            {
+              // Feedback submissions made offline are queued and replayed by the
+              // browser when connectivity returns (survives app close on browsers
+              // with Background Sync; otherwise replays on next app open online).
+              urlPattern: /\/api\/feedback\/submit$/i,
+              method: 'POST',
+              handler: 'NetworkOnly',
+              options: {
+                backgroundSync: {
+                  name: 'svrz-feedback-queue',
+                  options: { maxRetentionTime: 60 * 24 * 7 }, // minutes → 7 days
+                },
+              },
+            },
+          ],
         },
         manifest: {
           name: 'SR-Coaching Feedback',

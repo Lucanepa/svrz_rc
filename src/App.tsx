@@ -1851,7 +1851,9 @@ export default function App() {
       if (gameFilterLeagues.length > 0 && !gameFilterLeagues.includes(g.league || '')) return false;
       if (gameFilterRd && !g.isRdGame) return false;
       if (gameFilterLd && !g.isLdGame) return false;
-      if (gameFilterRcAssigned && !g.assignedRc) return false;
+      // Games a coach has taken are hidden by default (they live under the RC in
+      // the Referee Coaches tab); the toggle flips to showing only taken games.
+      if (gameFilterRcAssigned ? !g.assignedRc : g.assignedRc) return false;
       if (gameFilterDateFrom) {
         const from = new Date(gameFilterDateFrom);
         if (new Date(g.date) < from) return false;
@@ -2984,12 +2986,19 @@ export default function App() {
                                   {cs.plannedGames.map((g, i) => {
                                     const d = new Date(g.gameDate);
                                     const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : g.gameDate;
+                                    const eg = eligibleGames.find((x) => x.id === g.gameId);
                                     return (
-                                      <div key={i} className="flex items-center gap-3 text-xs text-stone-600 py-0.5">
+                                      <div
+                                        key={i}
+                                        onClick={eg ? () => handleSelectGame(eg) : undefined}
+                                        className={cn('flex items-center gap-3 text-xs text-stone-600 py-0.5', eg && 'cursor-pointer hover:bg-stone-50')}
+                                        title={eg ? (formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation') : undefined}
+                                      >
                                         <span className="font-medium text-stone-700 w-20">{dateStr}</span>
                                         <span className="text-stone-400 w-14">{g.league}</span>
                                         <span className="flex-1 truncate">{g.teams}</span>
                                         <span className="text-stone-500">{g.refereeName}</span>
+                                        {eg && <Eye size={12} className="text-stone-400 shrink-0" />}
                                       </div>
                                     );
                                   })}

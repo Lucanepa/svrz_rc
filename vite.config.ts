@@ -1,8 +1,13 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import { execSync } from 'node:child_process';
 import path from 'path';
 import {defineConfig} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+
+const buildSha = (() => {
+  try { return execSync('git rev-parse --short HEAD').toString().trim(); } catch { return 'dev'; }
+})();
 
 export default defineConfig(({mode}) => {
   return {
@@ -25,6 +30,8 @@ export default defineConfig(({mode}) => {
     ],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(''),
+      __BUILD_SHA__: JSON.stringify(buildSha),
+      __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     },
     resolve: {
       alias: {

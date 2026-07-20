@@ -37,6 +37,7 @@ import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap
 import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
 import LevelText from './components/LevelText';
+import { BUILD_INFO } from './lib/buildInfo';
 
 const RATINGS = ['A', 'B', 'C', 'D', 'E'];
 
@@ -3556,7 +3557,7 @@ export default function App() {
         </div>
 
         <div className="mt-6 pt-4 border-t border-stone-100 text-[9px] text-right text-stone-400 italic">
-          {t.version}: {t.versionDate} | SVRZ Referee Coaching Tool
+          {t.version}: {t.versionDate} | Build {BUILD_INFO} | SVRZ Referee Coaching Tool
         </div>
       </div>
 
@@ -3972,6 +3973,9 @@ export default function App() {
           onClose={() => { setManualUploadCoachee(null); setManualUploadNotice(''); }}
         />
       )}
+      <p className="mx-auto max-w-5xl mt-6 pb-2 text-center text-[10px] text-stone-400 no-print">
+        Build {BUILD_INFO}
+      </p>
     </div>
   );
 }
@@ -4395,7 +4399,7 @@ const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'
         </div>
       </div>
       <div className="mt-2 pt-1 border-t border-stone-100 text-[7px] text-right text-stone-400 italic">
-        {t.version}: {t.versionDate} | SVRZ Referee Coaching Tool
+        {t.version}: {t.versionDate} | Build {BUILD_INFO} | SVRZ Referee Coaching Tool
       </div>
     </div>
   );

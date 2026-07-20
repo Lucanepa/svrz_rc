@@ -14,6 +14,7 @@ import {
   type CoacheeTarget, type CoacheeTargetMap, type TargetRole,
 } from '../lib/niveauTargets';
 import LevelText from './LevelText';
+import { BUILD_INFO } from '../lib/buildInfo';
 
 type Lang = 'DE' | 'EN';
 const NOW = new Date();
@@ -197,6 +198,7 @@ export default function AdminConsole() {
         {tab === 'coachees' && <CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} />}
         {tab === 'rcs' && <RcsAdmin t={t} />}
         {tab === 'settings' && <SettingsAdmin t={t} onTestMode={setTestMode} groups={groups} onGroups={setGroups} />}
+        <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
       </main>
     </div>
   );

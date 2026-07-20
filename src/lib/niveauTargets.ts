@@ -54,6 +54,22 @@ export const NIVEAU_TABLE: Record<string, NiveauRule[]> = {
   'N1': [H1('NL'), H2('NL'), D1('NL'), D2('NL')],
 };
 
+// Display form of a coachee's Niveau/Stufe ("N4-2").
+// New referees have no Stufe yet (stage holds the 'active' placeholder) and may
+// even lack a Niveau: assume N4 and mark the unknown part as TBD. A Niveau that
+// isn't N1–N5 (e.g. "ITA" for a Quereinsteiger) can't be mapped at all → plain
+// TBD. N1 has no Stufen, so it never gets a suffix.
+export function levelDisplay(refereeLevel?: string, stage?: string, sep = '-'): { text: string; tbd: boolean } {
+  const lvl = (refereeLevel || '').trim();
+  const st = (stage || '').trim();
+  const stufe = /^\d+$/.test(st) ? st : '';
+  if (lvl && !/^N[1-5]$/i.test(lvl)) return { text: 'TBD', tbd: true };
+  const base = (lvl || 'N4').toUpperCase();
+  if (stufe) return { text: `${base}${sep}${stufe}`, tbd: false };
+  if (base === 'N1') return { text: base, tbd: false };
+  return { text: `${base}${sep}TBD`, tbd: true };
+}
+
 export function levelKey(refereeLevel?: string, stage?: string): string {
   const lvl = (refereeLevel || '').trim();
   if (!lvl) return '';

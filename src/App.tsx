@@ -33,9 +33,17 @@ import {
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
 import { cn } from './lib/utils';
 import { normalizeCoacheeGroup } from './lib/coacheeGroup';
-import { keepGame, levelKey, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
+import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
+
+// Renders a coachee's Niveau/Stufe, with the TBD part (unknown Stufe or
+// unmappable Niveau) highlighted in red.
+function LevelText({ level, stage, sep = '-' }: { level?: string; stage?: string; sep?: string }) {
+  const d = levelDisplay(level, stage, sep);
+  if (!d.tbd) return <>{d.text}</>;
+  return <>{d.text.slice(0, -3)}<span className="text-red-600 font-semibold">TBD</span></>;
+}
 
 const RATINGS = ['A', 'B', 'C', 'D', 'E'];
 
@@ -866,9 +874,7 @@ export default function App() {
         mannschaften: [selectedGame.homeTeam, selectedGame.awayTeam].filter(Boolean).join(' - '),
         ergebnis: selectedGame.game_result || prev.meta.ergebnis,
         srName: srName || prev.meta.srName,
-        srNiveau: (coachee?.referee_level && coachee?.stage
-          ? `${coachee.referee_level} - ${coachee.stage}`
-          : coachee?.referee_level) || prev.meta.srNiveau,
+        srNiveau: (coachee ? levelDisplay(coachee.referee_level, coachee.stage, ' - ').text : '') || prev.meta.srNiveau,
         gruppe: normalizeCoacheeGroup(coachee?.groups) || prev.meta.gruppe,
         rc: selectedGame.assignedRc || prev.meta.rc,
       },
@@ -1000,9 +1006,7 @@ export default function App() {
       meta: {
         ...prev.meta,
         srName: coachee.full_name || prev.meta.srName,
-        srNiveau: (coachee.referee_level && coachee.stage
-          ? `${coachee.referee_level} - ${coachee.stage}`
-          : coachee.referee_level) || prev.meta.srNiveau,
+        srNiveau: levelDisplay(coachee.referee_level, coachee.stage, ' - ').text || prev.meta.srNiveau,
         gruppe: normalizeCoacheeGroup(coachee.groups) || prev.meta.gruppe,
       },
     }));
@@ -1749,11 +1753,7 @@ export default function App() {
     [coachees],
   );
   const coacheeLevels = useMemo(
-    () => [...new Set(
-      coachees
-        .map((c) => (c.referee_level && c.stage ? `${c.referee_level}-${c.stage}` : c.referee_level || ''))
-        .filter(Boolean)
-    )].sort(),
+    () => [...new Set(coachees.map((c) => levelDisplay(c.referee_level, c.stage).text))].sort(),
     [coachees],
   );
   const gameLeagues = useMemo(
@@ -1784,9 +1784,9 @@ export default function App() {
     const q = listSearch.toLowerCase();
     const filtered = coachees.filter((c) => {
       if (typeof c.season === 'number' && c.season !== seasonStartYear) return false;
-      if (q && !(c.full_name || '').toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q)) return false;
+      if (q && !(c.full_name || '').toLowerCase().includes(q) && !levelDisplay(c.referee_level, c.stage).text.toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q)) return false;
       if (listFilterLevels.length > 0) {
-        const coacheeLevel = c.referee_level && c.stage ? `${c.referee_level}-${c.stage}` : c.referee_level || '';
+        const coacheeLevel = levelDisplay(c.referee_level, c.stage).text;
         if (!listFilterLevels.includes(coacheeLevel)) return false;
       }
       const isActive = (c.stage || 'active') !== 'inactive';
@@ -1805,7 +1805,7 @@ export default function App() {
     const dir = listSortAsc ? 1 : -1;
     filtered.sort((a, b) => {
       if (listSortBy === 'name') return dir * (a.full_name || '').localeCompare(b.full_name || '');
-      if (listSortBy === 'level') return dir * (`${a.referee_level || ''}${a.stage || ''}`).localeCompare(`${b.referee_level || ''}${b.stage || ''}`);
+      if (listSortBy === 'level') return dir * levelDisplay(a.referee_level, a.stage).text.localeCompare(levelDisplay(b.referee_level, b.stage).text);
       return dir * (statusPriority(a) - statusPriority(b));
     });
     return filtered;
@@ -1844,10 +1844,7 @@ export default function App() {
       if (gameFilterLevels.length > 0) {
         const refs = [g.firstReferee, g.secondReferee].filter(Boolean).map((r) => normName(r!));
         const refCoachees = refs.map((r) => coacheeByName.get(r)).filter(Boolean) as Coachee[];
-        const hasMatchingLevel = refCoachees.some((c) => {
-          const level = c.referee_level && c.stage ? `${c.referee_level}-${c.stage}` : c.referee_level || '';
-          return gameFilterLevels.includes(level);
-        });
+        const hasMatchingLevel = refCoachees.some((c) => gameFilterLevels.includes(levelDisplay(c.referee_level, c.stage).text));
         if (!hasMatchingLevel) return false;
       }
       if (gameFilterFunction.length > 0) {
@@ -2494,7 +2491,6 @@ export default function App() {
                     <div className="divide-y divide-stone-200">
                       {filteredCoachees.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((coachee) => {
                         const balls = coacheeBalls(coachee);
-                        const levelStr = coachee.referee_level ? `${coachee.referee_level}${coachee.stage ? `-${coachee.stage}` : ''}` : '';
                         const groupStr = normalizeCoacheeGroup(coachee.groups) || '';
                         const sr1 = games1SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
                         const sr2 = games2SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
@@ -2511,7 +2507,7 @@ export default function App() {
                               <div className="flex-1 min-w-0">
                                 <div className="font-semibold text-sm text-stone-900">{coachee.full_name}</div>
                                 <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-stone-500">
-                                  {levelStr && <span>{levelStr}</span>}
+                                  <span><LevelText level={coachee.referee_level} stage={coachee.stage} /></span>
                                   {groupStr && <span>{groupStr}</span>}
                                   {(sr1 > 0 || sr2 > 0) && (
                                     <span className="text-stone-400">
@@ -3064,10 +3060,10 @@ export default function App() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-stone-800">
               {selectedCoacheeName || '-'}
-              {selectedCoacheeLevel && (() => {
+              {(() => {
                 const vc = coachees.find((c) => c.id === selectedCoacheeId);
-                const lvl = vc?.referee_level && vc?.stage ? `${vc.referee_level}-${vc.stage}` : (vc?.referee_level || selectedCoacheeLevel);
-                return <span className="ml-2 text-xs font-normal text-stone-500">(Level: {lvl})</span>;
+                if (!vc && !selectedCoacheeLevel) return null;
+                return <span className="ml-2 text-xs font-normal text-stone-500">(Level: {vc ? <LevelText level={vc.referee_level} stage={vc.stage} /> : selectedCoacheeLevel})</span>;
               })()}
             </h2>
             <button
@@ -3804,18 +3800,10 @@ export default function App() {
                 <span className="text-stone-500">{formData.lang === 'DE' ? 'Name' : 'Name'}</span>
                 <span className="font-medium text-stone-900">{detailCoachee.full_name}</span>
               </div>
-              {detailCoachee.referee_level && (
-                <div className="flex justify-between">
-                  <span className="text-stone-500">{t.level}</span>
-                  <span className="font-medium text-stone-900">{detailCoachee.referee_level}</span>
-                </div>
-              )}
-              {detailCoachee.stage && (
-                <div className="flex justify-between">
-                  <span className="text-stone-500">Stage</span>
-                  <span className="font-medium text-stone-900">{detailCoachee.stage}</span>
-                </div>
-              )}
+              <div className="flex justify-between">
+                <span className="text-stone-500">{t.level}</span>
+                <span className="font-medium text-stone-900"><LevelText level={detailCoachee.referee_level} stage={detailCoachee.stage} /></span>
+              </div>
               {detailCoachee.groups && (
                 <div className="flex justify-between">
                   <span className="text-stone-500">{t.group}</span>
@@ -3996,18 +3984,11 @@ function ManualUploadModal({ coachee, coachees, rcPeople, notice, submitting, on
   // Derive unique levels from all coachees (level - stage format)
   const allLevels = useMemo(() => {
     const set = new Set<string>();
-    coachees.forEach(c => {
-      if (c.referee_level) {
-        const label = c.stage ? `${c.referee_level} - ${c.stage}` : c.referee_level;
-        set.add(label);
-      }
-    });
+    coachees.forEach(c => set.add(levelDisplay(c.referee_level, c.stage, ' - ').text));
     return Array.from(set).sort();
   }, [coachees]);
 
-  const defaultLevel = coachee.referee_level && coachee.stage
-    ? `${coachee.referee_level} - ${coachee.stage}`
-    : coachee.referee_level || '';
+  const defaultLevel = levelDisplay(coachee.referee_level, coachee.stage, ' - ').text;
 
   const sections = role === '1. SR' ? SECTIONS_1SR_DE : SECTIONS_2SR_DE;
 

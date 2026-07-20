@@ -36,14 +36,7 @@ import { normalizeCoacheeGroup } from './lib/coacheeGroup';
 import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
-
-// Renders a coachee's Niveau/Stufe, with the TBD part (unknown Stufe or
-// unmappable Niveau) highlighted in red.
-function LevelText({ level, stage, sep = '-' }: { level?: string; stage?: string; sep?: string }) {
-  const d = levelDisplay(level, stage, sep);
-  if (!d.tbd) return <>{d.text}</>;
-  return <>{d.text.slice(0, -3)}<span className="text-red-600 font-semibold">TBD</span></>;
-}
+import LevelText from './components/LevelText';
 
 const RATINGS = ['A', 'B', 'C', 'D', 'E'];
 

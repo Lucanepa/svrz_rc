@@ -10,9 +10,10 @@ import {
   type Coachee, type RcPerson, type ImportRow,
 } from '../lib/pocketbase';
 import {
-  levelKey, summarizeTarget, isTargetActive,
+  levelKey, levelDisplay, hasNiveauRules, summarizeTarget, isTargetActive,
   type CoacheeTarget, type CoacheeTargetMap, type TargetRole,
 } from '../lib/niveauTargets';
+import LevelText from './LevelText';
 
 type Lang = 'DE' | 'EN';
 const NOW = new Date();
@@ -364,14 +365,22 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
           ) : (
             <div key={c.id} className="py-2">
               <div className="flex items-center gap-3">
-                <div className="flex-1 min-w-0"><p className="text-sm font-medium text-stone-800 truncate">{c.full_name}</p><p className="text-xs text-stone-400 truncate">{[c.referee_level, c.stage].filter(Boolean).join('-')}{c.groups ? ` · ${c.groups}` : ''}</p></div>
+                <div className="flex-1 min-w-0"><p className="text-sm font-medium text-stone-800 truncate">{c.full_name}</p><p className="text-xs text-stone-400 truncate"><LevelText level={c.referee_level} stage={c.stage} />{c.groups ? ` · ${c.groups}` : ''}</p></div>
                 <button onClick={() => setTargetEditId(targetEditId === c.id ? null : c.id)} className={cn(btnGhost, targetEditId === c.id && 'bg-stone-100')} title={t.target}><Target size={13} /></button>
                 <button onClick={() => { setEditId(c.id); setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '' }); }} className={btnGhost}><Pencil size={13} /></button>
                 <button onClick={() => remove(c)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
               </div>
               <div className="flex items-center gap-1.5 mt-1 pl-0.5">
                 <span className="text-[11px] text-stone-400">{t.target}:</span>
-                <span className={cn('text-[11px] font-medium', isTargetActive(targets[c.id], levelKey(c.referee_level, c.stage)) ? 'text-emerald-700' : 'text-stone-400')}>{summarizeTarget(targets[c.id], levelKey(c.referee_level, c.stage), lang)}</span>
+                <span className={cn('text-[11px] font-medium', isTargetActive(targets[c.id], levelKey(c.referee_level, c.stage)) ? 'text-emerald-700' : 'text-stone-400')}>{(() => {
+                  const key = levelKey(c.referee_level, c.stage);
+                  const tgt = targets[c.id];
+                  // Auto mode with no derivable rules because the Niveau/Stufe is still TBD
+                  if ((!tgt || tgt.mode === 'auto') && !hasNiveauRules(key) && levelDisplay(c.referee_level, c.stage).tbd) {
+                    return <>Auto (<span className="text-red-600 font-semibold">TBD</span>)</>;
+                  }
+                  return summarizeTarget(tgt, key, lang);
+                })()}</span>
               </div>
               {targetEditId === c.id && (
                 <TargetEditor t={t} target={targets[c.id] ?? { mode: 'auto' }} onChange={(next) => onTargets({ ...targets, [c.id]: next })} leagueOptions={leagueOptions} />

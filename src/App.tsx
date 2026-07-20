@@ -995,7 +995,7 @@ export default function App() {
   const refreshRcOverview = async () => {
     setRcOverviewLoading(true);
     try {
-      const data = await loadRcOverview();
+      const data = await loadRcOverview(seasonStartYear);
       setRcOverviewData(data);
     } catch {
       setRcOverviewData([]);
@@ -1008,7 +1008,7 @@ export default function App() {
     setSelectedRcName(rcName);
     setrcCoachSummaryLoading(true);
     try {
-      const data = await loadrcCoachSummary(rcName);
+      const data = await loadrcCoachSummary(rcName, seasonStartYear);
       setrcCoachSummaryData(data);
       // Open on the first section that has games.
       const has = (pick: (cs: rcCoachSummary) => unknown[]) => data.some((cs) => pick(cs).length > 0);
@@ -1019,6 +1019,15 @@ export default function App() {
       setrcCoachSummaryLoading(false);
     }
   };
+
+  // RC overview/detail data is season-scoped on the server — re-fetch it when
+  // the user switches season (skip the initial mount, where nothing is loaded).
+  useEffect(() => {
+    if (rcOverviewData.length === 0 && !selectedRcName) return;
+    void refreshRcOverview();
+    if (selectedRcName) void handleSelectRc(selectedRcName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seasonStartYear]);
 
   // Give a taken game back: clears the RC assignment, so the game (and its
   // coachees' other games) reappear in the open games list.

@@ -279,16 +279,18 @@ export async function assignRcToGame(gameId: string, assignedRc: string): Promis
   }
 }
 
-export async function loadRcOverview(): Promise<RcOverviewEntry[]> {
-  const response = await fetch(apiUrl('/api/rc-overview'), { credentials: 'include' });
+export async function loadRcOverview(season?: number): Promise<RcOverviewEntry[]> {
+  const qs = season != null ? `?season=${season}` : '';
+  const response = await fetch(apiUrl(`/api/rc-overview${qs}`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
   return response.json() as Promise<RcOverviewEntry[]>;
 }
 
-export async function loadrcCoachSummary(rcName: string): Promise<rcCoachSummary[]> {
-  const response = await fetch(apiUrl(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees`), { credentials: 'include' });
+export async function loadrcCoachSummary(rcName: string, season?: number): Promise<rcCoachSummary[]> {
+  const qs = season != null ? `?season=${season}` : '';
+  const response = await fetch(apiUrl(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees${qs}`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }

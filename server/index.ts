@@ -2043,9 +2043,25 @@ app.put('/api/games/:id/assign-rc', requireGateSession, async (req: Request, res
 });
 
 // ── RC Overview ──────────────────────────────────────────────────────
-app.get('/api/rc-overview', requireGateSession, async (_req: Request, res: ExpressResponse) => {
+
+// Season "2026" spans 2026-09-01 → 2027-04-30 (same window convention as the
+// client-side games filter). Records without a parseable date are kept.
+function seasonDateFilter(seasonRaw: unknown): ((dateText: string) => boolean) | null {
+  const season = Number(asText(seasonRaw));
+  if (!Number.isFinite(season) || season < 2000 || season > 2100) return null;
+  const from = new Date(`${season}-09-01T00:00:00`);
+  const to = new Date(`${season + 1}-04-30T23:59:59`);
+  return (dateText: string) => {
+    const d = new Date(dateText);
+    if (Number.isNaN(d.getTime())) return true;
+    return d >= from && d <= to;
+  };
+}
+
+app.get('/api/rc-overview', requireGateSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
+    const inSeason = seasonDateFilter(req.query.season);
     // 1. RC people
     const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
       collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }),
@@ -2086,6 +2102,7 @@ app.get('/api/rc-overview', requireGateSession, async (_req: Request, res: Expre
       for (const game of allGames) {
         const assignedRc = normalizeName(game.assigned_rc);
         if (assignedRc !== rcKey) continue;
+        if (inSeason && !inSeason(asText(game.match_date))) continue;
         const gameDate = new Date(asText(game.match_date));
         const hasFeedback = fbGameIds.has(game.id);
 
@@ -2112,6 +2129,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireGateSession, async (req: Req
     await ensureAdminAuth();
     const rcName = decodeURIComponent(String(req.params.rcName));
     const rcKey = normalizeName(rcName);
+    const inSeason = seasonDateFilter(req.query.season);
 
     // Fetch all games assigned to this RC
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
@@ -2120,7 +2138,8 @@ app.get('/api/rc-overview/:rcName/coachees', requireGateSession, async (req: Req
         fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game',
       }),
     );
-    const rcGames = allGames.filter((g) => normalizeName(g.assigned_rc) === rcKey);
+    const rcGames = allGames.filter((g) =>
+      normalizeName(g.assigned_rc) === rcKey && (!inSeason || inSeason(asText(g.match_date))));
 
     // Fetch feedbacks for this RC
     const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -2162,6 +2181,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireGateSession, async (req: Req
       const coacheeName = asText(coacheeRec?.full_name || coacheeRec?.name);
       const coacheeId = String(coacheeRec?.id || '');
       if (!coacheeName) continue;
+      if (inSeason && !inSeason(asText(gameRec?.match_date))) continue;
       const entry = getOrCreate(coacheeName, coacheeId);
       entry.doneFeedbacks.push({
         gameDate: asText(gameRec?.match_date),

@@ -90,6 +90,60 @@ function hashPin(pin: string): string {
   return scryptSync(pin, PIN_SALT, 64).toString('hex');
 }
 
+// Generates a fresh 6-digit PIN unique against the given people (by hash),
+// stores its hash on the RC record, invalidates the people cache, and returns
+// the cleartext exactly once. Shared by the admin rotate and the OTP reset.
+async function rotateRcPin(rcId: string): Promise<string> {
+  const people = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+    c.getFullList<AnyRecord>({ fields: 'id,pin_hash' }));
+  const otherHashes = new Set(
+    people.filter((p) => p.id !== rcId).map((p) => asText(p.pin_hash)).filter(Boolean),
+  );
+  let pin = '';
+  for (let attempt = 0; attempt < 40 && !pin; attempt++) {
+    const candidate = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    if (!otherHashes.has(hashPin(candidate))) pin = candidate;
+  }
+  if (!pin) throw new Error('Could not generate a unique PIN');
+  await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+    c.update(rcId, { pin_hash: hashPin(pin) }));
+  rcPeopleCache = null;
+  return pin;
+}
+
+// Emails a freshly-issued PIN to the RC. Best-effort: returns whether it sent.
+// Suppressed (like feedback mail) when the email test mode is on.
+async function sendRcPinEmail(person: AnyRecord, pin: string): Promise<boolean> {
+  const to = asText(person.email);
+  if (!to) return false;
+  if (await isEmailTestMode()) {
+    console.log(`[rc-pin-email] TEST_MODE — suppressed (would send to ${to})`);
+    return false;
+  }
+  const name = `${asText(person.first_name)} ${asText(person.last_name)}`.trim();
+  const appUrl = process.env.APP_PUBLIC_URL || 'https://lucanepa.github.io/svrz_rc/';
+  await smtpTransport.sendMail({
+    from: process.env.SMTP_FROM || 'coaching-feedback@svrz.ch',
+    to,
+    subject: 'Dein persönlicher PIN – SVRZ Referee Coaching',
+    text: `Hallo ${name}\n\nDein persönlicher PIN für die SVRZ Referee-Coaching-App lautet:\n\n    ${pin}\n\nMelde dich damit unter ${appUrl} an. Ein zuvor gesetzter PIN ist ab sofort ungültig.\n\nBitte bewahre den PIN sicher auf und teile ihn nicht.\n\nSwiss Volley Region Zürich`,
+    html: `<p>Hallo ${name}</p><p>Dein persönlicher PIN für die SVRZ Referee-Coaching-App lautet:</p>`
+      + `<p style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:16px 0">${pin}</p>`
+      + `<p>Melde dich damit unter <a href="${appUrl}">${appUrl}</a> an. Ein zuvor gesetzter PIN ist ab sofort ungültig.</p>`
+      + `<p>Bitte bewahre den PIN sicher auf und teile ihn nicht.</p><p>Swiss Volley Region Zürich</p>`,
+  });
+  return true;
+}
+
+// ── Forgot-PIN OTP (email one-time code → issues a new PIN) ───────────
+// In-memory, single-container. A restart during the 10-min window just means
+// "request a new code". Keyed by normalized email; stores a scrypt hash.
+const RC_OTP_TTL_MS = 10 * 60 * 1000;
+const RC_OTP_MAX_ATTEMPTS = 5;
+const rcOtpStore = new Map<string, { hash: string; expiresAt: number; attempts: number }>();
+const rcOtpStartAttempts: RateLimitStore = new Map();
+const rcOtpGlobal: RateLimitStore = new Map();
+
 // Generic in-memory fixed-window rate limiter, keyed by an arbitrary string.
 type RateLimitStore = Map<string, { count: number; resetAt: number }>;
 function checkRateLimit(
@@ -165,10 +219,13 @@ function verifyRcSession(req: Request): { ok: boolean; rcId?: string } {
 // Periodic cleanup of stale rate-limit entries (every 10 min)
 setInterval(() => {
   const now = Date.now();
-  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal]) {
+  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal, rcOtpStartAttempts, rcOtpGlobal]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
+  }
+  for (const [email, entry] of rcOtpStore) {
+    if (now > entry.expiresAt) rcOtpStore.delete(email);
   }
 }, 10 * 60 * 1000);
 
@@ -1870,28 +1927,23 @@ app.get('/api/admin/rc-people', requireAdminSession, async (_req: Request, res: 
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-// Generates (or rotates) a unique 6-digit login PIN for one RC. The cleartext
-// PIN is returned exactly once in this response; only its hash is stored.
+// Generates (or rotates) a unique 6-digit login PIN for one RC, emails it to
+// the RC, and also returns the cleartext once (so the admin has a fallback if
+// mail delivery is unreliable). Only the hash is stored.
 app.post('/api/admin/rc-people/:id/pin', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const id = String(req.params.id);
-    const people = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
-      c.getFullList<AnyRecord>({ fields: 'id,pin_hash' }));
-    if (!people.some((p) => p.id === id)) { res.status(404).json({ error: 'RC not found' }); return; }
-    const otherHashes = new Set(
-      people.filter((p) => p.id !== id).map((p) => asText(p.pin_hash)).filter(Boolean),
-    );
-    let pin = '';
-    for (let attempt = 0; attempt < 25 && !pin; attempt++) {
-      const candidate = String(randomInt(0, 1_000_000)).padStart(6, '0');
-      if (!otherHashes.has(hashPin(candidate))) pin = candidate;
-    }
-    if (!pin) { res.status(500).json({ error: 'Could not generate a unique PIN' }); return; }
-    await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
-      c.update(id, { pin_hash: hashPin(pin) }));
-    rcPeopleCache = null;
-    res.json({ pin });
+    let person: AnyRecord;
+    try {
+      person = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+        c.getOne<AnyRecord>(id));
+    } catch { res.status(404).json({ error: 'RC not found' }); return; }
+    const pin = await rotateRcPin(id);
+    let emailed = false;
+    try { emailed = await sendRcPinEmail(person, pin); }
+    catch (mailErr) { console.error('[rc-pin-email] admin rotate send failed:', mailErr); }
+    res.json({ pin, emailed, email: asText(person.email) });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -2047,6 +2099,86 @@ app.post('/api/auth/rc/logout', (_req: Request, res: ExpressResponse) => {
     path: '/',
   });
   res.json({ ok: true });
+});
+
+// Forgot PIN, step 1: email a one-time code to a registered active RC. Always
+// answers {ok:true} (no account enumeration). Rate-limited per IP and globally.
+app.post('/api/auth/rc/forgot/start', async (req: Request, res: ExpressResponse) => {
+  const ipRl = checkGateRateLimit(clientIp(req));
+  if (!ipRl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: ipRl.retryAfterMs }); return; }
+  const globalRl = checkRateLimit(rcOtpGlobal, 'global', 100, 15 * 60 * 1000);
+  if (!globalRl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: globalRl.retryAfterMs }); return; }
+  const email = asText((req.body ?? {}).email).trim().toLowerCase();
+  // Respond OK regardless, but only actually send when the email matches.
+  const respondOk = () => res.json({ ok: true });
+  if (!email || !/\S+@\S+\.\S+/.test(email)) { respondOk(); return; }
+  // Per-email start limiter (independent of the per-IP one) to blunt targeted resets.
+  const perEmail = checkRateLimit(rcOtpStartAttempts, email, 3, RC_OTP_TTL_MS);
+  if (!perEmail.allowed) { respondOk(); return; }
+  try {
+    await ensureAdminAuth();
+    const people = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+      c.getFullList<AnyRecord>({ filter: 'active = true' }));
+    const person = people.find((p) => asText(p.email).trim().toLowerCase() === email);
+    if (person) {
+      const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+      rcOtpStore.set(email, { hash: hashPin(code), expiresAt: Date.now() + RC_OTP_TTL_MS, attempts: 0 });
+      if (!(await isEmailTestMode())) {
+        const appUrl = process.env.APP_PUBLIC_URL || 'https://lucanepa.github.io/svrz_rc/';
+        await smtpTransport.sendMail({
+          from: process.env.SMTP_FROM || 'coaching-feedback@svrz.ch',
+          to: asText(person.email),
+          subject: 'Bestätigungscode – SVRZ Referee Coaching',
+          text: `Dein Bestätigungscode lautet:\n\n    ${code}\n\nGib ihn in der App ein, um einen neuen PIN zu erhalten. Der Code ist 10 Minuten gültig.\n\nWenn du das nicht angefragt hast, ignoriere diese E-Mail — dein PIN bleibt unverändert.\n\n${appUrl}\nSwiss Volley Region Zürich`,
+          html: `<p>Dein Bestätigungscode lautet:</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:16px 0">${code}</p>`
+            + `<p>Gib ihn in der App ein, um einen neuen PIN zu erhalten. Der Code ist 10 Minuten gültig.</p>`
+            + `<p>Wenn du das nicht angefragt hast, ignoriere diese E-Mail — dein PIN bleibt unverändert.</p><p>Swiss Volley Region Zürich</p>`,
+        });
+      } else {
+        console.log(`[rc-otp] TEST_MODE — code for ${email} suppressed`);
+      }
+    }
+  } catch (error) {
+    console.error('[rc-otp] start failed:', error);
+  }
+  respondOk();
+});
+
+// Forgot PIN, step 2: verify the code, issue+email a new PIN. On success the
+// old PIN is invalidated. Generic errors so a wrong email can't be probed.
+app.post('/api/auth/rc/forgot/verify', async (req: Request, res: ExpressResponse) => {
+  const ipRl = checkGateRateLimit(clientIp(req));
+  if (!ipRl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: ipRl.retryAfterMs }); return; }
+  const email = asText((req.body ?? {}).email).trim().toLowerCase();
+  const code = asText((req.body ?? {}).code).trim();
+  const entry = rcOtpStore.get(email);
+  const fail = () => res.status(401).json({ error: 'Code ungültig oder abgelaufen.' });
+  if (!entry || Date.now() > entry.expiresAt) { rcOtpStore.delete(email); fail(); return; }
+  if (entry.attempts >= RC_OTP_MAX_ATTEMPTS) { rcOtpStore.delete(email); fail(); return; }
+  entry.attempts++;
+  const codeHash = Buffer.from(hashPin(code), 'hex');
+  const stored = Buffer.from(entry.hash, 'hex');
+  if (!/^\d{6}$/.test(code) || codeHash.length !== stored.length || !timingSafeEqual(codeHash, stored)) {
+    fail();
+    return;
+  }
+  rcOtpStore.delete(email); // single-use
+  try {
+    await ensureAdminAuth();
+    const people = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+      c.getFullList<AnyRecord>({ filter: 'active = true' }));
+    const person = people.find((p) => asText(p.email).trim().toLowerCase() === email);
+    if (!person) { fail(); return; }
+    const pin = await rotateRcPin(person.id);
+    let emailed = false;
+    try { emailed = await sendRcPinEmail(person, pin); }
+    catch (mailErr) { console.error('[rc-otp] new-pin send failed:', mailErr); }
+    // Only reveal the PIN in the response when we could NOT email it (test mode
+    // or missing address) — otherwise the durable copy is the email.
+    res.json({ ok: true, emailed, pin: emailed ? undefined : pin });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
 });
 
 // ---- Signature sessions (cross-device signing via slug capability token) ----

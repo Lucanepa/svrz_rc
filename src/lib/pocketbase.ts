@@ -165,6 +165,32 @@ export async function rcLogout(): Promise<void> {
   await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' });
 }
 
+// Forgot PIN, step 1: request an email OTP. Always resolves (no enumeration).
+export async function rcForgotStart(email: string): Promise<void> {
+  await fetch(apiUrl('/api/auth/rc/forgot/start'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+}
+
+// Forgot PIN, step 2: verify the code; server issues+emails a new PIN.
+// Returns { emailed, pin } — pin is only present if the server couldn't email it.
+export async function rcForgotVerify(email: string, code: string): Promise<{ emailed: boolean; pin?: string }> {
+  const r = await fetch(apiUrl('/api/auth/rc/forgot/verify'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, code }),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    const err = new Error((data as { error?: string }).error || 'Verification failed') as Error & { status?: number };
+    err.status = r.status;
+    throw err;
+  }
+  return r.json() as Promise<{ emailed: boolean; pin?: string }>;
+}
+
 export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
   const response = await fetch(apiUrl('/api/admin/auth/status'), { credentials: 'include' });
   if (!response.ok) {
@@ -354,10 +380,10 @@ export async function adminUiLogin(password: string): Promise<void> {
 
 export type RcPerson = { id: string; first_name?: string; last_name?: string; email?: string; phone?: string; active?: boolean; has_pin?: boolean };
 
-export async function generateRcPin(id: string): Promise<string> {
+export async function generateRcPin(id: string): Promise<{ pin: string; emailed: boolean; email: string }> {
   const r = await fetch(apiUrl(`/api/admin/rc-people/${id}/pin`), { method: 'POST', credentials: 'include' });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'PIN generation failed');
-  return ((await r.json()) as { pin: string }).pin;
+  return (await r.json()) as { pin: string; emailed: boolean; email: string };
 }
 
 export async function listRcPeopleFull(): Promise<RcPerson[]> {

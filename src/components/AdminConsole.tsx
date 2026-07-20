@@ -49,8 +49,10 @@ const STR = {
     delCoachee: (n: string) => `Coachee „${n}" löschen?`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
     noRcs: 'Keine Referee Coaches.', delRc: (n: string) => `RC „${n}" löschen?`, inactive: 'inaktiv',
     genPin: 'PIN erzeugen', hasPin: 'PIN gesetzt', noPin: 'kein PIN',
-    genPinConfirm: (n: string) => `Neuen PIN für „${n}" erzeugen? Ein bestehender PIN wird ungültig.`,
-    pinShownInfo: (p: string) => `PIN: ${p} — wird nur jetzt angezeigt. Bitte sicher an den RC übermitteln.`,
+    genPinConfirm: (n: string) => `Neuen PIN für „${n}" erzeugen? Ein bestehender PIN wird ungültig und der neue PIN wird per E-Mail zugestellt.`,
+    pinShownInfo: (p: string) => `PIN: ${p}`,
+    pinEmailed: (e: string) => `Per E-Mail an ${e} gesendet.`,
+    pinNotEmailed: 'Nicht per E-Mail gesendet (keine E-Mail/Testmodus) — bitte manuell übermitteln.',
     defaultSeason: 'Standard-Saison', defaultSeasonHint: 'Die Saison, in der die App standardmässig startet (für neue Nutzer).',
     save: 'Speichern', saved: 'Gespeichert ✓', testTitle: 'Test-Modus (E-Mail)',
     testHint: 'Wenn aktiv, werden keine E-Mails versendet (Feedback wird trotzdem gespeichert). Zum Live-Betrieb ausschalten.',
@@ -72,8 +74,10 @@ const STR = {
     delCoachee: (n: string) => `Delete coachee "${n}"?`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
     noRcs: 'No referee coaches.', delRc: (n: string) => `Delete RC "${n}"?`, inactive: 'inactive',
     genPin: 'Generate PIN', hasPin: 'PIN set', noPin: 'no PIN',
-    genPinConfirm: (n: string) => `Generate a new PIN for "${n}"? Any existing PIN stops working.`,
-    pinShownInfo: (p: string) => `PIN: ${p} — shown only now. Share it securely with the RC.`,
+    genPinConfirm: (n: string) => `Generate a new PIN for "${n}"? Any existing PIN stops working and the new PIN is emailed to the RC.`,
+    pinShownInfo: (p: string) => `PIN: ${p}`,
+    pinEmailed: (e: string) => `Emailed to ${e}.`,
+    pinNotEmailed: 'Not emailed (no address/test mode) — share it manually.',
     defaultSeason: 'Default season', defaultSeasonHint: 'The season the app opens to by default (for new users).',
     save: 'Save', saved: 'Saved ✓', testTitle: 'Test mode (email)',
     testHint: 'When on, no emails are sent (feedback is still saved). Turn off for live operation.',
@@ -410,7 +414,7 @@ function RcsAdmin({ t }: { t: T }) {
   const [editForm, setEditForm] = useState<RcPerson>({ id: '' });
   const reload = useCallback(async () => { setLoading(true); try { setRcs(await listRcPeopleFull()); } finally { setLoading(false); } }, []);
   useEffect(() => { void reload(); }, [reload]);
-  const [pinShown, setPinShown] = useState<{ id: string; pin: string } | null>(null);
+  const [pinShown, setPinShown] = useState<{ id: string; pin: string; emailed: boolean; email: string } | null>(null);
   const [pinBusy, setPinBusy] = useState<string | null>(null);
   const add = async () => { if (!form.first_name && !form.last_name) return; await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); };
   const saveEdit = async (id: string) => { await updateRcPerson(id, editForm); setEditId(null); await reload(); };
@@ -419,8 +423,8 @@ function RcsAdmin({ t }: { t: T }) {
     if (r.has_pin && !confirm(t.genPinConfirm(`${r.first_name} ${r.last_name}`))) return;
     setPinBusy(r.id);
     try {
-      const pin = await generateRcPin(r.id);
-      setPinShown({ id: r.id, pin });
+      const res = await generateRcPin(r.id);
+      setPinShown({ id: r.id, pin: res.pin, emailed: res.emailed, email: res.email });
       await reload();
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
@@ -469,7 +473,11 @@ function RcsAdmin({ t }: { t: T }) {
               </div>
               {pinShown?.id === r.id && (
                 <div className="mt-1.5 flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-                  <p className="text-xs text-amber-800 flex-1">{t.pinShownInfo(pinShown.pin)}</p>
+                  <p className="text-xs text-amber-800 flex-1">
+                    <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
+                    {' — '}
+                    {pinShown.emailed ? t.pinEmailed(pinShown.email) : t.pinNotEmailed}
+                  </p>
                   <button onClick={() => setPinShown(null)} className="text-amber-700 hover:text-amber-900"><X size={13} /></button>
                 </div>
               )}

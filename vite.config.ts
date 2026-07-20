@@ -37,20 +37,12 @@ export default defineConfig(({mode}) => {
                 matchOptions: { ignoreVary: true },
               },
             },
-            {
-              // Feedback submissions made offline are queued and replayed by the
-              // browser when connectivity returns (survives app close on browsers
-              // with Background Sync; otherwise replays on next app open online).
-              urlPattern: /\/api\/feedback\/submit$/i,
-              method: 'POST',
-              handler: 'NetworkOnly',
-              options: {
-                backgroundSync: {
-                  name: 'svrz-feedback-queue',
-                  options: { maxRetentionTime: 60 * 24 * 7 }, // minutes → 7 days
-                },
-              },
-            },
+            // NOTE: feedback POSTs are deliberately NOT handled here. Workbox
+            // Background Sync drops a queued request whenever its replay returns
+            // any non-2xx (expired session, closed role, validation), silently
+            // losing feedback. Offline submissions are instead held in an
+            // app-owned IndexedDB outbox (src/lib/offlineQueue.ts) that reports
+            // real per-item status and never drops on failure.
           ],
         },
         manifest: {

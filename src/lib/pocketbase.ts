@@ -124,7 +124,13 @@ export async function saveFeedbackToPocketBase(params: {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Failed to save feedback: ${text}`);
+    // Mark that the request reached the server (a real HTTP error, not a
+    // network failure) so the outbox can tell "retry when online" from
+    // "the server rejected this".
+    const err = new Error(`Failed to save feedback: ${text}`) as Error & { status?: number; reachedServer?: boolean };
+    err.status = response.status;
+    err.reachedServer = true;
+    throw err;
   }
   return response.json() as Promise<FeedbackSubmitResponse>;
 }
@@ -136,6 +142,16 @@ export function hasPocketBaseConfig(): boolean {
 // ── Per-RC PIN auth ───────────────────────────────────────────────────
 export type AuthMe = { rc: { id: string; name: string } | null; admin: { email: string } | null };
 
+// Purge the offline API response cache (see vite.config.ts runtimeCaching). Must
+// run on every identity change — login AND logout — so cached authenticated data
+// (auth/me, coachees, feedback history) from one RC is never served to another
+// on a shared device, and a logged-out session isn't served offline as authed.
+export async function clearApiCache(): Promise<void> {
+  try {
+    if (typeof caches !== 'undefined') await caches.delete('svrz-api-get');
+  } catch { /* cache API unavailable — nothing to clear */ }
+}
+
 export async function getAuthMe(): Promise<AuthMe> {
   const response = await fetch(apiUrl('/api/auth/me'), { credentials: 'include' });
   if (!response.ok) {
@@ -144,12 +160,12 @@ export async function getAuthMe(): Promise<AuthMe> {
   return response.json() as Promise<AuthMe>;
 }
 
-export async function rcLogin(email: string, pin: string): Promise<{ name: string }> {
+export async function rcLogin(email: string, password: string): Promise<{ name: string }> {
   const response = await fetch(apiUrl('/api/auth/rc/login'), {
     credentials: 'include',
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, pin }),
+    body: JSON.stringify({ email, password }),
   });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
@@ -158,11 +174,14 @@ export async function rcLogin(email: string, pin: string): Promise<{ name: strin
     err.retryAfterMs = (data as { retryAfterMs?: number }).retryAfterMs;
     throw err;
   }
+  // New identity — drop any previous user's cached responses.
+  await clearApiCache();
   return response.json() as Promise<{ name: string }>;
 }
 
 export async function rcLogout(): Promise<void> {
   await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' });
+  await clearApiCache();
 }
 
 // Forgot PIN, step 1: request an email OTP. Always resolves (no enumeration).
@@ -174,13 +193,12 @@ export async function rcForgotStart(email: string): Promise<void> {
   });
 }
 
-// Forgot PIN, step 2: verify the code; server issues+emails a new PIN.
-// Returns { emailed, pin } — pin is only present if the server couldn't email it.
-export async function rcForgotVerify(email: string, code: string): Promise<{ emailed: boolean; pin?: string }> {
+// Forgot password, step 2: verify the emailed code and set the chosen password.
+export async function rcForgotVerify(email: string, code: string, newPassword: string): Promise<void> {
   const r = await fetch(apiUrl('/api/auth/rc/forgot/verify'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, code }),
+    body: JSON.stringify({ email, code, newPassword }),
   });
   if (!r.ok) {
     const data = await r.json().catch(() => ({}));
@@ -188,7 +206,6 @@ export async function rcForgotVerify(email: string, code: string): Promise<{ ema
     err.status = r.status;
     throw err;
   }
-  return r.json() as Promise<{ emailed: boolean; pin?: string }>;
 }
 
 export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {

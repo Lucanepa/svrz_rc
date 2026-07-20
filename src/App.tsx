@@ -34,6 +34,7 @@ import {
   submitSignatureSession,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
+import { enqueueFeedback, flushOutbox, outboxCount, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import { cn } from './lib/utils';
 import { normalizeCoacheeGroup } from './lib/coacheeGroup';
 import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
@@ -772,6 +773,8 @@ export default function App() {
   const [showAllPastGames, setShowAllPastGames] = useState(false);
   const [savingFeedback, setSavingFeedback] = useState(false);
   const [isOffline, setIsOffline] = useState(typeof navigator !== 'undefined' && !navigator.onLine);
+  const [outboxPending, setOutboxPending] = useState(0);
+  const [flushing, setFlushing] = useState(false);
   const [backendNotice, setBackendNotice] = useState('');
   const [adminAuthLoading, setAdminAuthLoading] = useState(false);
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
@@ -1078,13 +1081,16 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listTab, rcAuth.rcName, seasonStartYear]);
 
-  // Track connectivity for the offline banner and queued-submission messaging.
+  // Track connectivity; flush the outbox when we come back online.
   useEffect(() => {
-    const goOnline = () => setIsOffline(false);
+    const goOnline = () => { setIsOffline(false); void flushOutboxNow(); };
     const goOffline = () => setIsOffline(true);
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
+    void refreshOutboxCount();
+    if (navigator.onLine) void flushOutboxNow();
     return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Give a taken game back: clears the RC assignment, so the game (and its
@@ -1538,20 +1544,70 @@ export default function App() {
     if (originalLang !== 'DE') {
       setFormData(prev => ({ ...prev, lang: originalLang }));
     }
-    const result = await saveFeedbackToPocketBase({
+    const payload = {
       gameId: selectedGame.id,
       role: fd.role,
       formData: deFormData,
       pdfBase64: base64,
       pdfFilename: pdfFilename(deFormData),
       tipsAndTricks: tips,
-    });
-    if (result.emailSent) {
-      return result.emailWarning
-        ? `${fd.role}: ${t.saveOkEmail} (${result.emailWarning})`
-        : `${fd.role}: ${t.saveOkEmail}`;
+    };
+    try {
+      const result = await saveFeedbackToPocketBase(payload);
+      if (result.emailSent) {
+        return result.emailWarning
+          ? `${fd.role}: ${t.saveOkEmail} (${result.emailWarning})`
+          : `${fd.role}: ${t.saveOkEmail}`;
+      }
+      return `${fd.role}: ${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}`;
+    } catch (err) {
+      // Reached the server but it rejected → a real error the coach must see.
+      if ((err as { reachedServer?: boolean }).reachedServer) throw err;
+      // Network failure / offline → hold it in the local outbox; it will be sent
+      // (with real status) when connectivity returns. Never silently lost.
+      const de = fd.lang === 'DE';
+      const label = `${selectedGame.homeTeam} vs ${selectedGame.awayTeam} · ${fd.role}`;
+      await enqueueFeedback(payload, label);
+      void refreshOutboxCount();
+      return `${fd.role}: ${de ? 'Offline gespeichert – wird gesendet, sobald du online bist.' : 'Saved offline – will send when you are back online.'}`;
     }
-    return `${fd.role}: ${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}`;
+  };
+
+  const refreshOutboxCount = async () => {
+    try { setOutboxPending(await outboxCount()); } catch { /* ignore */ }
+  };
+
+  // Classify a send attempt so the outbox knows to drop (sent/duplicate) or keep
+  // (retry on next flush / surface a server error) the item.
+  const sendOutbox = async (p: OutboxPayload): Promise<SendResult> => {
+    try {
+      await saveFeedbackToPocketBase(p as Parameters<typeof saveFeedbackToPocketBase>[0]);
+      return { outcome: 'sent' };
+    } catch (err) {
+      const e = err as Error & { status?: number; reachedServer?: boolean };
+      if (!e.reachedServer) return { outcome: 'retry', error: 'offline' };
+      if (e.status === 409) return { outcome: 'duplicate' }; // already recorded
+      return { outcome: 'failed', error: e.message };
+    }
+  };
+
+  const flushOutboxNow = async () => {
+    if (!navigator.onLine) return;
+    setFlushing(true);
+    try {
+      const { sent, remaining } = await flushOutbox(sendOutbox, () => void refreshOutboxCount());
+      setOutboxPending(remaining);
+      if (sent > 0) {
+        setBackendNotice(formData.lang === 'DE'
+          ? `${sent} ausstehende Übermittlung${sent > 1 ? 'en' : ''} gesendet.`
+          : `${sent} pending submission${sent > 1 ? 's' : ''} sent.`);
+        // Refresh data that a synced submission changes.
+        void refreshGames();
+        if (listTab === 'home' && rcAuth.rcName) void loadHome();
+      }
+    } finally {
+      setFlushing(false);
+    }
   };
 
   const handleSaveFeedback = async () => {
@@ -1561,18 +1617,12 @@ export default function App() {
     }
     setSavingFeedback(true);
     setBackendNotice('');
-    // Offline: the submit still runs; the service worker queues the POST and
-    // replays it when connectivity returns. Treat the resulting network error
-    // as "queued", not a failure — the coach's work is safe.
-    const de = formData.lang === 'DE';
-    const queuedMsg = de
-      ? 'Offline gespeichert – wird automatisch gesendet, sobald du wieder online bist.'
-      : 'Saved offline – it will send automatically once you are back online.';
-    const isOfflineErr = (e: unknown) =>
-      !navigator.onLine || /failed to fetch|networkerror|network request failed|load failed/i.test(String(e instanceof Error ? e.message : e));
+    // submitSingleFeedback either sends (returns a notice), or on a NETWORK
+    // failure stores the submission in the outbox and returns a "saved offline"
+    // notice; only a real SERVER error throws. Locking the form after a
+    // successful send/queue prevents accidental duplicate submissions.
     try {
       if (dualMode) {
-        // Dual submit: submit both roles sequentially
         const notices: string[] = [];
         const roles = ['1. SR', '2. SR'] as const;
         for (const role of roles) {
@@ -1583,31 +1633,15 @@ export default function App() {
           if (!stored) continue;
           const fd = 'formData' in stored ? stored.formData : stored as FeedbackFormData;
           const tips = 'tipsAndTricks' in stored ? stored.tipsAndTricks : '';
-          try {
-            notices.push(await submitSingleFeedback(fd, tips));
-          } catch (err) {
-            if (isOfflineErr(err)) notices.push(`${role}: ${queuedMsg}`);
-            else throw err;
-          }
+          notices.push(await submitSingleFeedback(fd, tips));
         }
-        // Restore current role's form
         setFormData(formData);
         setBackendNotice(notices.join(' | '));
         setFeedbackLocked(true);
       } else {
-        // Single submit (original logic)
-        try {
-          const notice = await submitSingleFeedback(formData, tipsAndTricks);
-          setBackendNotice(notice.replace(`${formData.role}: `, ''));
-          if (formData.results.secondBesuch !== 'Y') {
-            setFeedbackLocked(true);
-          }
-        } catch (err) {
-          if (isOfflineErr(err)) {
-            setBackendNotice(queuedMsg);
-            if (formData.results.secondBesuch !== 'Y') setFeedbackLocked(true);
-          } else throw err;
-        }
+        const notice = await submitSingleFeedback(formData, tipsAndTricks);
+        setBackendNotice(notice.replace(`${formData.role}: `, ''));
+        setFeedbackLocked(true);
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -2284,8 +2318,28 @@ export default function App() {
               <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
                 <CloudOff size={14} className="shrink-0" />
                 {formData.lang === 'DE'
-                  ? 'Offline – du siehst die zuletzt geladenen Daten. Neue Feedbacks werden gespeichert und automatisch gesendet, sobald du wieder online bist.'
-                  : 'Offline – showing last-loaded data. New feedback is saved and sent automatically once you are back online.'}
+                  ? 'Offline – du siehst die zuletzt geladenen Daten. Neue Feedbacks werden lokal gespeichert und gesendet, sobald du wieder online bist.'
+                  : 'Offline – showing last-loaded data. New feedback is saved locally and sent once you are back online.'}
+              </div>
+            )}
+            {outboxPending > 0 && (
+              <div className="mb-3 flex items-center gap-2 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800">
+                <Send size={14} className="shrink-0" />
+                <span className="flex-1">
+                  {formData.lang === 'DE'
+                    ? `${outboxPending} Feedback${outboxPending > 1 ? 's' : ''} wartet auf Übermittlung.`
+                    : `${outboxPending} feedback submission${outboxPending > 1 ? 's' : ''} waiting to send.`}
+                </span>
+                {!isOffline && (
+                  <button
+                    onClick={() => void flushOutboxNow()}
+                    disabled={flushing}
+                    className="inline-flex items-center gap-1 rounded-md border border-sky-300 bg-white px-2 py-1 font-semibold text-sky-700 hover:bg-sky-100 disabled:opacity-50"
+                  >
+                    {flushing ? <Loader2 size={12} className="animate-spin" /> : null}
+                    {formData.lang === 'DE' ? 'Jetzt senden' : 'Send now'}
+                  </button>
+                )}
               </div>
             )}
             <div className="mb-3 space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-2">

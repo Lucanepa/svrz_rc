@@ -2133,8 +2133,14 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
     try {
       const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
       if (person) { rc = { id: person.id, name: person.fullName }; rcIsAdmin = person.isAdmin; }
-    } catch {
-      // PB unreachable — report the RC as unauthenticated rather than failing.
+    } catch (error) {
+      // The session token is valid but PocketBase is unreachable. Fail with 503
+      // (Cache-Control: no-store) rather than a 200 {rc:null}: a cached "logged
+      // out" body would lock a valid session out of its own offline data.
+      console.error('[auth/me] backend unavailable:', error);
+      res.set('Cache-Control', 'no-store');
+      res.status(503).json({ error: 'Auth backend unavailable' });
+      return;
     }
   }
   // admin is set for a real admin session OR an admin-flagged RC session, so the
@@ -2158,9 +2164,9 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     return;
   }
   const email = asText((req.body ?? {}).email).trim().toLowerCase();
-  const pin = asText((req.body ?? {}).pin).trim();
-  if (!email || !/\S+@\S+\.\S+/.test(email) || !/^\d{6}$/.test(pin)) {
-    res.status(400).json({ error: 'E-Mail und 6-stelliger PIN erforderlich.' });
+  const password = asText((req.body ?? {}).password);
+  if (!email || !password) {
+    res.status(400).json({ error: 'E-Mail und Passwort erforderlich.' });
     return;
   }
   try {
@@ -2168,18 +2174,18 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
       collection.getFullList<AnyRecord>({ filter: 'active = true' }),
     );
-    // Login requires the email and PIN to belong to the SAME active RC.
-    const pinHash = Buffer.from(hashPin(pin), 'hex');
+    // Login with email + password; both must belong to the same active RC.
     const person = people.find((p) => asText(p.email).trim().toLowerCase() === email);
-    const pinOk = person ? (() => {
+    const pwOk = person ? (() => {
       const stored = asText(person.pin_hash);
       if (!stored) return false;
       const storedBuf = Buffer.from(stored, 'hex');
-      return storedBuf.length === pinHash.length && timingSafeEqual(storedBuf, pinHash);
+      const attempt = Buffer.from(hashPin(password), 'hex');
+      return storedBuf.length === attempt.length && timingSafeEqual(storedBuf, attempt);
     })() : false;
-    const match = pinOk ? person! : undefined;
+    const match = pwOk ? person! : undefined;
     if (!match) {
-      res.status(401).json({ error: 'Falsche E-Mail oder falscher PIN.' });
+      res.status(401).json({ error: 'Falsche E-Mail oder falsches Passwort.' });
       return;
     }
     const name = `${asText(match.first_name)} ${asText(match.last_name)}`.trim();
@@ -2255,13 +2261,20 @@ app.post('/api/auth/rc/forgot/start', async (req: Request, res: ExpressResponse)
   respondOk();
 });
 
-// Forgot PIN, step 2: verify the code, issue+email a new PIN. On success the
-// old PIN is invalidated. Generic errors so a wrong email can't be probed.
+// Forgot password, step 2: verify the emailed code and set the chosen new
+// password. Generic errors so a wrong email can't be probed.
 app.post('/api/auth/rc/forgot/verify', async (req: Request, res: ExpressResponse) => {
   const ipRl = checkGateRateLimit(clientIp(req));
   if (!ipRl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: ipRl.retryAfterMs }); return; }
   const email = asText((req.body ?? {}).email).trim().toLowerCase();
   const code = asText((req.body ?? {}).code).trim();
+  const newPassword = asText((req.body ?? {}).newPassword);
+  // Validate the new password BEFORE consuming the one-time code, so a rejected
+  // password doesn't force the user to request a fresh code.
+  if (newPassword.length < 6) {
+    res.status(400).json({ error: 'Passwort muss mindestens 6 Zeichen haben.' });
+    return;
+  }
   const entry = rcOtpStore.get(email);
   const fail = () => res.status(401).json({ error: 'Code ungültig oder abgelaufen.' });
   if (!entry || Date.now() > entry.expiresAt) { rcOtpStore.delete(email); fail(); return; }
@@ -2280,13 +2293,10 @@ app.post('/api/auth/rc/forgot/verify', async (req: Request, res: ExpressResponse
       c.getFullList<AnyRecord>({ filter: 'active = true' }));
     const person = people.find((p) => asText(p.email).trim().toLowerCase() === email);
     if (!person) { fail(); return; }
-    const pin = await rotateRcPin(person.id);
-    let emailed = false;
-    try { emailed = await sendRcPinEmail(person, pin); }
-    catch (mailErr) { console.error('[rc-otp] new-pin send failed:', mailErr); }
-    // Only reveal the PIN in the response when we could NOT email it (test mode
-    // or missing address) — otherwise the durable copy is the email.
-    res.json({ ok: true, emailed, pin: emailed ? undefined : pin });
+    await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+      c.update(person.id, { pin_hash: hashPin(newPassword) }));
+    rcPeopleCache = null;
+    res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

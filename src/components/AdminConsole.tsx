@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target } from 'lucide-react';
+import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, KeyRound } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
   getAdminAuthStatus, adminUiLogin, logoutAdmin,
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
-  listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
+  listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson, generateRcPin,
   getSettings, putSettings, loadEligibleGames,
   type Coachee, type RcPerson, type ImportRow,
 } from '../lib/pocketbase';
@@ -48,6 +48,9 @@ const STR = {
     noCoachees: (s: string) => `Keine Coachees für ${s} — importiere eine xlsx.`,
     delCoachee: (n: string) => `Coachee „${n}" löschen?`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
     noRcs: 'Keine Referee Coaches.', delRc: (n: string) => `RC „${n}" löschen?`, inactive: 'inaktiv',
+    genPin: 'PIN erzeugen', hasPin: 'PIN gesetzt', noPin: 'kein PIN',
+    genPinConfirm: (n: string) => `Neuen PIN für „${n}" erzeugen? Ein bestehender PIN wird ungültig.`,
+    pinShownInfo: (p: string) => `PIN: ${p} — wird nur jetzt angezeigt. Bitte sicher an den RC übermitteln.`,
     defaultSeason: 'Standard-Saison', defaultSeasonHint: 'Die Saison, in der die App standardmässig startet (für neue Nutzer).',
     save: 'Speichern', saved: 'Gespeichert ✓', testTitle: 'Test-Modus (E-Mail)',
     testHint: 'Wenn aktiv, werden keine E-Mails versendet (Feedback wird trotzdem gespeichert). Zum Live-Betrieb ausschalten.',
@@ -68,6 +71,9 @@ const STR = {
     noCoachees: (s: string) => `No coachees for ${s} — import an xlsx.`,
     delCoachee: (n: string) => `Delete coachee "${n}"?`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
     noRcs: 'No referee coaches.', delRc: (n: string) => `Delete RC "${n}"?`, inactive: 'inactive',
+    genPin: 'Generate PIN', hasPin: 'PIN set', noPin: 'no PIN',
+    genPinConfirm: (n: string) => `Generate a new PIN for "${n}"? Any existing PIN stops working.`,
+    pinShownInfo: (p: string) => `PIN: ${p} — shown only now. Share it securely with the RC.`,
     defaultSeason: 'Default season', defaultSeasonHint: 'The season the app opens to by default (for new users).',
     save: 'Save', saved: 'Saved ✓', testTitle: 'Test mode (email)',
     testHint: 'When on, no emails are sent (feedback is still saved). Turn off for live operation.',
@@ -404,9 +410,24 @@ function RcsAdmin({ t }: { t: T }) {
   const [editForm, setEditForm] = useState<RcPerson>({ id: '' });
   const reload = useCallback(async () => { setLoading(true); try { setRcs(await listRcPeopleFull()); } finally { setLoading(false); } }, []);
   useEffect(() => { void reload(); }, [reload]);
+  const [pinShown, setPinShown] = useState<{ id: string; pin: string } | null>(null);
+  const [pinBusy, setPinBusy] = useState<string | null>(null);
   const add = async () => { if (!form.first_name && !form.last_name) return; await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); };
   const saveEdit = async (id: string) => { await updateRcPerson(id, editForm); setEditId(null); await reload(); };
   const remove = async (r: RcPerson) => { if (!confirm(t.delRc(`${r.first_name} ${r.last_name}`))) return; await deleteRcPerson(r.id); await reload(); };
+  const genPin = async (r: RcPerson) => {
+    if (r.has_pin && !confirm(t.genPinConfirm(`${r.first_name} ${r.last_name}`))) return;
+    setPinBusy(r.id);
+    try {
+      const pin = await generateRcPin(r.id);
+      setPinShown({ id: r.id, pin });
+      await reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPinBusy(null);
+    }
+  };
   return (
     <>
       <Card>
@@ -431,10 +452,27 @@ function RcsAdmin({ t }: { t: T }) {
               <div className="flex gap-1.5"><button onClick={() => saveEdit(r.id)} className={btnPrimary}><Check size={15} /></button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
             </div>
           ) : (
-            <div key={r.id} className="py-2 flex items-center gap-3">
-              <div className="flex-1 min-w-0"><p className="text-sm font-medium text-stone-800 truncate">{r.first_name} {r.last_name}{r.active === false ? ` · ${t.inactive}` : ''}</p><p className="text-xs text-stone-400 truncate">{r.email}{r.phone ? ` · ${r.phone}` : ''}</p></div>
-              <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost}><Pencil size={13} /></button>
-              <button onClick={() => remove(r)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+            <div key={r.id} className="py-2">
+              <div className="flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-stone-800 truncate">{r.first_name} {r.last_name}{r.active === false ? ` · ${t.inactive}` : ''}</p>
+                  <p className="text-xs text-stone-400 truncate">
+                    {r.email}{r.phone ? ` · ${r.phone}` : ''}{(r.email || r.phone) ? ' · ' : ''}
+                    <span className={r.has_pin ? 'text-green-600' : 'text-amber-600'}>{r.has_pin ? t.hasPin : t.noPin}</span>
+                  </p>
+                </div>
+                <button onClick={() => genPin(r)} disabled={pinBusy === r.id} className={btnGhost} title={t.genPin}>
+                  {pinBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
+                </button>
+                <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost}><Pencil size={13} /></button>
+                <button onClick={() => remove(r)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+              </div>
+              {pinShown?.id === r.id && (
+                <div className="mt-1.5 flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+                  <p className="text-xs text-amber-800 flex-1">{t.pinShownInfo(pinShown.pin)}</p>
+                  <button onClick={() => setPinShown(null)} className="text-amber-700 hover:text-amber-900"><X size={13} /></button>
+                </div>
+              )}
             </div>
           ))}
           {!loading && rcs.length === 0 && <p className="py-8 text-center text-sm text-stone-400">{t.noRcs}</p>}

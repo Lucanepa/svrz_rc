@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import cron from 'node-cron';
 import nodemailer from 'nodemailer';
 import helmet from 'helmet';
-import { createHmac, randomUUID, randomBytes, timingSafeEqual, scryptSync } from 'node:crypto';
+import { createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scryptSync } from 'node:crypto';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -75,22 +75,20 @@ const TEST_MODE = process.env.TEST_MODE === '1' || process.env.TEST_MODE === 'tr
 if (TEST_MODE) console.warn('[startup] TEST_MODE enabled — outbound emails are suppressed.');
 if (!ADMIN_UI_PASSWORD) console.warn('[startup] ADMIN_UI_PASSWORD not set — admin console login disabled.');
 
-// ── Auth gate (app-level password protection) ────────────────────────
-const GATE_COOKIE = 'svrz_gate_session';
-const GATE_TTL_MS = 1000 * 60 * 60 * 24; // 24 h
-const GATE_PASSWORD = process.env.APP_PASSWORD || '';
+// ── Per-RC PIN auth (replaces the old shared APP_PASSWORD gate) ──────
+const RC_COOKIE = 'svrz_rc_session';
+const RC_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 const GATE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 min
 const GATE_RATE_LIMIT_MAX = 5;
 
-if (!GATE_PASSWORD) {
-  console.warn('[startup] APP_PASSWORD not set — auth gate is disabled.');
+// PINs are hashed with an app-wide salt derived from the session secret: one
+// scrypt per login attempt, and PIN uniqueness across RCs is checkable by
+// comparing stored hashes. Online brute force is handled by the per-IP and
+// global rate limiters; rotating ADMIN_SESSION_SECRET invalidates all PINs.
+const PIN_SALT = ADMIN_SESSION_SECRET.slice(0, 16).padEnd(16, '0');
+function hashPin(pin: string): string {
+  return scryptSync(pin, PIN_SALT, 64).toString('hex');
 }
-
-// Precompute scrypt hash of the gate password at startup (64-byte key, 16-byte salt derived from secret)
-const GATE_SALT = ADMIN_SESSION_SECRET ? ADMIN_SESSION_SECRET.slice(0, 16).padEnd(16, '0') : '0'.repeat(16);
-const GATE_PASSWORD_HASH = GATE_PASSWORD
-  ? scryptSync(GATE_PASSWORD, GATE_SALT, 64).toString('hex')
-  : '';
 
 // Generic in-memory fixed-window rate limiter, keyed by an arbitrary string.
 type RateLimitStore = Map<string, { count: number; resetAt: number }>;
@@ -127,44 +125,47 @@ function checkSignatureRateLimit(ip: string) {
   return checkRateLimit(signatureAttempts, ip, SIGNATURE_RATE_LIMIT_MAX, SIGNATURE_RATE_LIMIT_WINDOW_MS);
 }
 
-function verifyGatePassword(input: string): boolean {
-  const inputHash = scryptSync(input, GATE_SALT, 64);
-  const expectedBuffer = Buffer.from(GATE_PASSWORD_HASH, 'hex');
-  if (inputHash.length !== expectedBuffer.length) return false;
-  return timingSafeEqual(inputHash, expectedBuffer);
-}
+// App-wide limiter for PIN logins: the 6-digit PIN space is small, so total
+// attempts are capped across all IPs, not only per IP.
+const pinLoginGlobal: RateLimitStore = new Map();
+const PIN_GLOBAL_MAX = 150;
+const PIN_GLOBAL_WINDOW_MS = 15 * 60 * 1000;
 
-function createGateSessionToken(): string {
-  const body = JSON.stringify({ sub: randomUUID(), purpose: 'gate', exp: Date.now() + GATE_TTL_MS });
+function createRcSessionToken(rcId: string, name: string): string {
+  const body = JSON.stringify({ sub: randomUUID(), purpose: 'rc', rcId, name, exp: Date.now() + RC_TTL_MS });
   const payload = base64UrlEncode(body);
   const signature = signAdminSessionPayload(payload);
   return `${payload}.${signature}`;
 }
 
-function verifyGateSession(req: Request): boolean {
-  const token = getCookieValue(req, GATE_COOKIE);
-  if (!token) return false;
+function verifyRcSession(req: Request): { ok: boolean; rcId?: string } {
+  const token = getCookieValue(req, RC_COOKIE);
+  if (!token) return { ok: false };
   const [payload, signature] = token.split('.');
-  if (!payload || !signature) return false;
+  if (!payload || !signature) return { ok: false };
   const expectedSignature = signAdminSessionPayload(payload);
   const actualBuffer = Buffer.from(signature);
   const expectedBuffer = Buffer.from(expectedSignature);
   if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
-    return false;
+    return { ok: false };
   }
   try {
-    const parsed = JSON.parse(base64UrlDecode(payload)) as { exp?: unknown };
+    const parsed = JSON.parse(base64UrlDecode(payload)) as { purpose?: unknown; rcId?: unknown; exp?: unknown };
+    if (parsed.purpose !== 'rc') return { ok: false };
     const exp = Number(parsed.exp);
-    return Number.isFinite(exp) && exp > Date.now();
+    if (!Number.isFinite(exp) || exp < Date.now()) return { ok: false };
+    const rcId = asText(parsed.rcId);
+    if (!rcId) return { ok: false };
+    return { ok: true, rcId };
   } catch {
-    return false;
+    return { ok: false };
   }
 }
 
 // Periodic cleanup of stale rate-limit entries (every 10 min)
 setInterval(() => {
   const now = Date.now();
-  for (const store of [gateAttempts, signatureAttempts]) {
+  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
@@ -262,7 +263,12 @@ function verifyAdminSession(req: Request): { ok: boolean; email?: string } {
     return { ok: false };
   }
   try {
-    const parsed = JSON.parse(base64UrlDecode(payload)) as { email?: unknown; exp?: unknown };
+    const parsed = JSON.parse(base64UrlDecode(payload)) as { email?: unknown; exp?: unknown; purpose?: unknown };
+    // Admin tokens never carry a purpose field — reject RC/other-purpose tokens
+    // even if they somehow gained an email claim.
+    if (parsed.purpose !== undefined) {
+      return { ok: false };
+    }
     const exp = Number(parsed.exp);
     if (!Number.isFinite(exp) || exp < Date.now()) {
       return { ok: false };
@@ -301,10 +307,51 @@ function safeError(error: unknown): string {
   return 'Internal server error';
 }
 
-// Gate-level auth: requires the app gate cookie OR a valid admin session.
-function requireGateSession(req: Request, res: ExpressResponse, next: () => void) {
-  if (!GATE_PASSWORD) { next(); return; }
-  if (verifyGateSession(req) || verifyAdminSession(req).ok) { next(); return; }
+// ── RC identity session ──────────────────────────────────────────────
+// Cached list of active RC people; also consulted on every RC-authenticated
+// request so deactivating/deleting an RC revokes their session within the
+// cache TTL. Invalidated by the admin rc-people CRUD endpoints.
+let rcPeopleCache: { data: { id: string; fullName: string }[]; expiresAt: number } | null = null;
+
+async function getActiveRcPeople(): Promise<{ id: string; fullName: string }[]> {
+  if (rcPeopleCache && Date.now() < rcPeopleCache.expiresAt) return rcPeopleCache.data;
+  await ensureAdminAuth();
+  const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
+    collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }),
+  );
+  const mapped = people.map((p) => ({
+    id: p.id,
+    fullName: `${asText(p.first_name)} ${asText(p.last_name)}`.trim(),
+  }));
+  rcPeopleCache = { data: mapped, expiresAt: Date.now() + 10 * 60 * 1000 };
+  return mapped;
+}
+
+// Identity of the RC session that authorized a request. Absent for admin
+// sessions — enforcement code treats "no rcAuth" as full (admin) access.
+type RcAuthInfo = { rcId: string; name: string };
+const rcAuthByReq = new WeakMap<Request, RcAuthInfo>();
+
+// Fails CLOSED: unlike the old shared gate there is no "auth disabled" mode.
+async function requireRcSession(req: Request, res: ExpressResponse, next: () => void) {
+  if (verifyAdminSession(req).ok) { next(); return; }
+  const session = verifyRcSession(req);
+  if (session.ok && session.rcId) {
+    try {
+      const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
+      if (person) {
+        // Name comes from the live record, not the token, so ownership checks
+        // stay correct after an RC is renamed.
+        rcAuthByReq.set(req, { rcId: person.id, name: person.fullName });
+        next();
+        return;
+      }
+    } catch (error) {
+      console.error('[auth] RC session check failed:', error);
+      res.status(503).json({ error: 'Auth backend unavailable' });
+      return;
+    }
+  }
   res.status(401).json({ error: 'Unauthorized' });
 }
 
@@ -1102,17 +1149,9 @@ async function resolveRefereeCoachPersonId(rcName: string): Promise<string> {
     }
   }
 
-  const rawTokens = rcName.trim().split(/\s+/);
-  const fallbackFirstName = rawTokens.slice(0, -1).join(' ') || rawTokens[0] || rcName;
-  const fallbackLastName = rawTokens.length > 1 ? rawTokens[rawTokens.length - 1] : rcName;
-  const created = await withCollection<AnyRecord>(collectionCandidates.refereeCoachPeople, (collection) =>
-    collection.create({
-      first_name: fallbackFirstName,
-      last_name: fallbackLastName,
-      active: true,
-    }),
-  );
-  return created.id;
+  // No silent auto-create: a typo'd name would otherwise mint a phantom RC
+  // record (which could never log in). Only admin submits reach this resolver.
+  throw new Error(`Referee coach "${rcName}" not found — add them in the admin console first.`);
 }
 
 function extractRefereeName(item: Record<string, unknown>, convocationKey: string): string {
@@ -1780,7 +1819,7 @@ async function isEmailTestMode(): Promise<boolean> {
   if (rec) return asText(rec.value) === '1';
   return TEST_MODE;
 }
-app.get('/api/settings', requireGateSession, async (_req: Request, res: ExpressResponse) => {
+app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressResponse) => {
   try {
     const rec = await getSettingRecord('default_season');
     const groupsRec = await getSettingRecord('groups');
@@ -1826,7 +1865,33 @@ app.get('/api/admin/rc-people', requireAdminSession, async (_req: Request, res: 
     res.json(people.map((p) => ({
       id: p.id, first_name: asText(p.first_name), last_name: asText(p.last_name),
       email: asText(p.email), phone: asText(p.phone), active: p.active !== false,
+      has_pin: Boolean(asText(p.pin_hash)),
     })));
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// Generates (or rotates) a unique 6-digit login PIN for one RC. The cleartext
+// PIN is returned exactly once in this response; only its hash is stored.
+app.post('/api/admin/rc-people/:id/pin', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const id = String(req.params.id);
+    const people = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+      c.getFullList<AnyRecord>({ fields: 'id,pin_hash' }));
+    if (!people.some((p) => p.id === id)) { res.status(404).json({ error: 'RC not found' }); return; }
+    const otherHashes = new Set(
+      people.filter((p) => p.id !== id).map((p) => asText(p.pin_hash)).filter(Boolean),
+    );
+    let pin = '';
+    for (let attempt = 0; attempt < 25 && !pin; attempt++) {
+      const candidate = String(randomInt(0, 1_000_000)).padStart(6, '0');
+      if (!otherHashes.has(hashPin(candidate))) pin = candidate;
+    }
+    if (!pin) { res.status(500).json({ error: 'Could not generate a unique PIN' }); return; }
+    await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+      c.update(id, { pin_hash: hashPin(pin) }));
+    rcPeopleCache = null;
+    res.json({ pin });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -1911,13 +1976,77 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-// ── Auth gate endpoints ──────────────────────────────────────────────
-app.get('/api/auth/gate/status', (req: Request, res: ExpressResponse) => {
-  if (!GATE_PASSWORD) {
-    res.json({ authenticated: true }); // gate disabled
+// ── Auth endpoints (per-RC PIN sessions) ─────────────────────────────
+app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
+  const admin = verifyAdminSession(req);
+  let rc: { id: string; name: string } | null = null;
+  const session = verifyRcSession(req);
+  if (session.ok && session.rcId) {
+    try {
+      const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
+      if (person) rc = { id: person.id, name: person.fullName };
+    } catch {
+      // PB unreachable — report the RC as unauthenticated rather than failing.
+    }
+  }
+  res.json({ rc, admin: admin.ok ? { email: admin.email || '' } : null });
+});
+
+app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
+  const ipRl = checkGateRateLimit(clientIp(req));
+  if (!ipRl.allowed) {
+    res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: ipRl.retryAfterMs });
     return;
   }
-  res.json({ authenticated: verifyGateSession(req) });
+  const globalRl = checkRateLimit(pinLoginGlobal, 'global', PIN_GLOBAL_MAX, PIN_GLOBAL_WINDOW_MS);
+  if (!globalRl.allowed) {
+    res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: globalRl.retryAfterMs });
+    return;
+  }
+  const pin = asText((req.body ?? {}).pin).trim();
+  if (!/^\d{6}$/.test(pin)) {
+    res.status(400).json({ error: 'PIN muss aus 6 Ziffern bestehen.' });
+    return;
+  }
+  try {
+    await ensureAdminAuth();
+    const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
+      collection.getFullList<AnyRecord>({ filter: 'active = true' }),
+    );
+    const pinHash = Buffer.from(hashPin(pin), 'hex');
+    const match = people.find((p) => {
+      const stored = asText(p.pin_hash);
+      if (!stored) return false;
+      const storedBuf = Buffer.from(stored, 'hex');
+      return storedBuf.length === pinHash.length && timingSafeEqual(storedBuf, pinHash);
+    });
+    if (!match) {
+      res.status(401).json({ error: 'Falscher PIN.' });
+      return;
+    }
+    const name = `${asText(match.first_name)} ${asText(match.last_name)}`.trim();
+    res.cookie(RC_COOKIE, createRcSessionToken(match.id, name), {
+      httpOnly: true,
+      sameSite: 'none',
+      secure: true,
+      maxAge: RC_TTL_MS,
+      path: '/',
+    });
+    res.json({ ok: true, name });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.post('/api/auth/rc/logout', (_req: Request, res: ExpressResponse) => {
+  res.cookie(RC_COOKIE, '', {
+    httpOnly: true,
+    sameSite: 'none',
+    secure: true,
+    maxAge: 0,
+    path: '/',
+  });
+  res.json({ ok: true });
 });
 
 // ---- Signature sessions (cross-device signing via slug capability token) ----
@@ -1933,7 +2062,7 @@ function isSignatureExpired(rec: AnyRecord): boolean {
   const created = Date.parse(asText(rec.created));
   return Number.isFinite(created) && (Date.now() - created) > SIGNATURE_TTL_MS;
 }
-app.post('/api/signature/start', requireGateSession, async (req: Request, res: ExpressResponse) => {
+app.post('/api/signature/start', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     const slug = randomUUID().replace(/-/g, '');
     const context = asText((req.body ?? {}).context).slice(0, 300);
@@ -1967,37 +2096,7 @@ app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-app.post('/api/auth/gate', (req: Request, res: ExpressResponse) => {
-  if (!GATE_PASSWORD) {
-    res.json({ ok: true }); // gate disabled
-    return;
-  }
-  const { allowed, retryAfterMs } = checkGateRateLimit(clientIp(req));
-  if (!allowed) {
-    res.status(429).json({ error: 'Too many attempts. Try again later.', retryAfterMs });
-    return;
-  }
-  const password = asText((req.body ?? {}).password);
-  if (!password) {
-    res.status(400).json({ error: 'Password is required.' });
-    return;
-  }
-  if (!verifyGatePassword(password)) {
-    res.status(401).json({ error: 'Wrong password.' });
-    return;
-  }
-  const token = createGateSessionToken();
-  res.cookie(GATE_COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'none',
-    secure: true,
-    maxAge: GATE_TTL_MS,
-    path: '/',
-  });
-  res.json({ ok: true });
-});
-
-app.get('/api/eligible-games', requireGateSession, async (_req: Request, res: ExpressResponse) => {
+app.get('/api/eligible-games', requireRcSession, async (_req: Request, res: ExpressResponse) => {
   try {
     const games = await getEligibleGames();
     res.json(games);
@@ -2006,33 +2105,45 @@ app.get('/api/eligible-games', requireGateSession, async (_req: Request, res: Ex
   }
 });
 
-let rcPeopleCache: { data: unknown[]; expiresAt: number } | null = null;
-
-app.get('/api/referee-coach-people', requireGateSession, async (_req: Request, res: ExpressResponse) => {
+app.get('/api/referee-coach-people', requireRcSession, async (_req: Request, res: ExpressResponse) => {
   try {
-    if (rcPeopleCache && Date.now() < rcPeopleCache.expiresAt) {
-      return res.json(rcPeopleCache.data);
-    }
-    await ensureAdminAuth();
-    const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
-      collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }),
-    );
-    const mapped = people.map((p) => ({
-      id: p.id,
-      fullName: `${asText(p.first_name)} ${asText(p.last_name)}`.trim(),
-    }));
-    rcPeopleCache = { data: mapped, expiresAt: Date.now() + 10 * 60 * 1000 };
-    res.json(mapped);
+    res.json(await getActiveRcPeople());
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
 });
 
-app.put('/api/games/:id/assign-rc', requireGateSession, async (req: Request, res: ExpressResponse) => {
+app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const gameId = String(req.params.id);
-    const rcName = asText((req.body ?? {}).assignedRc);
+    let rcName = asText((req.body ?? {}).assignedRc);
+    const rcAuth = rcAuthByReq.get(req);
+    if (rcAuth) {
+      // Non-admin RCs may only take games for themselves, and only give back
+      // games they currently hold. Admin sessions have no rcAuth and skip this.
+      const current = await withCollection(collectionCandidates.games, (collection) =>
+        collection.getOne<AnyRecord>(gameId),
+      );
+      const currentRc = normalizeName(current.assigned_rc);
+      const self = normalizeName(rcAuth.name);
+      if (rcName === '') {
+        if (currentRc && currentRc !== self) {
+          res.status(403).json({ error: 'Nur eigene Spiele können abgegeben werden.' });
+          return;
+        }
+      } else {
+        if (normalizeName(rcName) !== self) {
+          res.status(403).json({ error: 'Spiele können nur für dich selbst übernommen werden.' });
+          return;
+        }
+        if (currentRc && currentRc !== self) {
+          res.status(409).json({ error: 'Dieses Spiel wurde bereits von einem anderen RC übernommen.' });
+          return;
+        }
+        rcName = rcAuth.name; // write the canonical name from the RC record
+      }
+    }
     const updated = await withCollection(collectionCandidates.games, (collection) =>
       collection.update(gameId, { assigned_rc: rcName }),
     );
@@ -2058,7 +2169,7 @@ function seasonDateFilter(seasonRaw: unknown): ((dateText: string) => boolean) |
   };
 }
 
-app.get('/api/rc-overview', requireGateSession, async (req: Request, res: ExpressResponse) => {
+app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const inSeason = seasonDateFilter(req.query.season);
@@ -2124,10 +2235,14 @@ app.get('/api/rc-overview', requireGateSession, async (req: Request, res: Expres
   }
 });
 
-app.get('/api/rc-overview/:rcName/coachees', requireGateSession, async (req: Request, res: ExpressResponse) => {
+app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    const rcName = decodeURIComponent(String(req.params.rcName));
+    const rcAuth = rcAuthByReq.get(req);
+    // A plain RC may only ever read their OWN detail. Rather than compare the
+    // (name-keyed, collision-prone) URL param, ignore it entirely for non-admins
+    // and pin the query to the session's own name — the id-backed identity.
+    const rcName = rcAuth ? rcAuth.name : decodeURIComponent(String(req.params.rcName));
     const rcKey = normalizeName(rcName);
     const inSeason = seasonDateFilter(req.query.season);
 
@@ -2255,7 +2370,7 @@ app.post('/api/vm/auth-check', requireAdminSession, async (req: Request, res: Ex
   }
 });
 
-app.get('/api/coachees', requireGateSession, async (_req: Request, res: ExpressResponse) => {
+app.get('/api/coachees', requireRcSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const rows = await listCoacheesWithFallbackSort();
@@ -2352,7 +2467,7 @@ app.delete('/api/coachees/:id', requireAdminSession, async (req: Request, res: E
   }
 });
 
-app.get('/api/coachees/:id/games', requireGateSession, async (req: Request, res: ExpressResponse) => {
+app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const coacheeId = asText(req.params.id);
@@ -2431,7 +2546,7 @@ app.get('/api/coachees/:id/games', requireGateSession, async (req: Request, res:
   }
 });
 
-app.get('/api/coachees/:id/feedbacks', requireGateSession, async (req: Request, res: ExpressResponse) => {
+app.get('/api/coachees/:id/feedbacks', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const coacheeId = asText(req.params.id);
@@ -2463,7 +2578,7 @@ app.get('/api/referee-coaches', requireAdminSession, async (_req: Request, res: 
   }
 });
 
-app.get('/api/observations', requireGateSession, async (req: Request, res: ExpressResponse) => {
+app.get('/api/observations', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const filterParts: string[] = [];
@@ -2512,7 +2627,7 @@ app.get('/api/observations', requireGateSession, async (req: Request, res: Expre
   }
 });
 
-app.get('/api/observations/summary', requireGateSession, async (req: Request, res: ExpressResponse) => {
+app.get('/api/observations/summary', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const coacheeId = asText(req.query.coacheeId);
@@ -2577,7 +2692,7 @@ app.get('/api/observations/summary', requireGateSession, async (req: Request, re
   }
 });
 
-app.get('/api/games/calendar-status', requireGateSession, async (_req: Request, res: ExpressResponse) => {
+app.get('/api/games/calendar-status', requireRcSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const listCalendarGamesWithFallback = async () => {
@@ -2736,12 +2851,18 @@ app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request,
   }
 });
 
-app.post('/api/feedback/submit', requireGateSession, async (req: Request, res: ExpressResponse) => {
+app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: ExpressResponse) => {
   const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks } = req.body ?? {};
 
   // Phase 1 — Validation
   if (!gameId || !role || !formData || !pdfBase64) {
     res.status(400).json({ error: 'gameId, role, formData and pdfBase64 are required.' });
+    return;
+  }
+  // formData must be a plain object — otherwise the identity override below is
+  // silently skipped and the stored rc_name would disagree with the observation.
+  if (typeof formData !== 'object' || Array.isArray(formData)) {
+    res.status(400).json({ error: 'formData must be an object.' });
     return;
   }
 
@@ -2755,10 +2876,30 @@ app.post('/api/feedback/submit', requireGateSession, async (req: Request, res: E
   try {
     await ensureAdminAuth();
 
+    // RC sessions submit under their own identity — the client-supplied RC
+    // name is overridden so rc_name, the observation link, and the email all
+    // carry the authenticated coach. Admin sessions may pass any name.
+    const rcAuth = rcAuthByReq.get(req);
+    if (rcAuth) {
+      formData.meta = { ...(formData.meta ?? {}), rc: rcAuth.name };
+    }
+
     // Fetch game and check closure
     const game = await withCollection(collectionCandidates.games, (collection) =>
       collection.getOne<AnyRecord>(String(gameId)),
     );
+
+    // Ownership: a plain RC may only submit for a game that is unassigned or
+    // already assigned to them — not one another RC has taken. This mirrors the
+    // take/give-back allocation model and prevents locking out the rightful RC
+    // (a submit closes the role) or emailing the coachee under a wrong RC.
+    if (rcAuth) {
+      const assigned = normalizeName(game.assigned_rc);
+      if (assigned && assigned !== normalizeName(rcAuth.name)) {
+        res.status(403).json({ error: 'Dieses Spiel ist einem anderen RC zugewiesen.' });
+        return;
+      }
+    }
 
     const closedRoles: string[] = Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [];
     if (closedRoles.includes(String(role))) {
@@ -2796,7 +2937,9 @@ app.post('/api/feedback/submit', requireGateSession, async (req: Request, res: E
 
     // Phase 2 — Save (existing logic)
     const submittedAt = new Date().toISOString();
-    const refereeCoachPersonId = await resolveRefereeCoachPersonId(asText(formData.meta?.rc));
+    const refereeCoachPersonId = rcAuth
+      ? rcAuth.rcId
+      : await resolveRefereeCoachPersonId(asText(formData.meta?.rc));
 
     const created = await withCollection<AnyRecord>(collectionCandidates.refereeCoaches, (collection) =>
       collection.create({

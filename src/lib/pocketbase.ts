@@ -133,6 +133,38 @@ export function hasPocketBaseConfig(): boolean {
   return true;
 }
 
+// ── Per-RC PIN auth ───────────────────────────────────────────────────
+export type AuthMe = { rc: { id: string; name: string } | null; admin: { email: string } | null };
+
+export async function getAuthMe(): Promise<AuthMe> {
+  const response = await fetch(apiUrl('/api/auth/me'), { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<AuthMe>;
+}
+
+export async function rcLogin(pin: string): Promise<{ name: string }> {
+  const response = await fetch(apiUrl('/api/auth/rc/login'), {
+    credentials: 'include',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    const err = new Error((data as { error?: string }).error || 'Login failed') as Error & { status?: number; retryAfterMs?: number };
+    err.status = response.status;
+    err.retryAfterMs = (data as { retryAfterMs?: number }).retryAfterMs;
+    throw err;
+  }
+  return response.json() as Promise<{ name: string }>;
+}
+
+export async function rcLogout(): Promise<void> {
+  await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' });
+}
+
 export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
   const response = await fetch(apiUrl('/api/admin/auth/status'), { credentials: 'include' });
   if (!response.ok) {
@@ -320,7 +352,13 @@ export async function adminUiLogin(password: string): Promise<void> {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Login failed');
 }
 
-export type RcPerson = { id: string; first_name?: string; last_name?: string; email?: string; phone?: string; active?: boolean };
+export type RcPerson = { id: string; first_name?: string; last_name?: string; email?: string; phone?: string; active?: boolean; has_pin?: boolean };
+
+export async function generateRcPin(id: string): Promise<string> {
+  const r = await fetch(apiUrl(`/api/admin/rc-people/${id}/pin`), { method: 'POST', credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'PIN generation failed');
+  return ((await r.json()) as { pin: string }).pin;
+}
 
 export async function listRcPeopleFull(): Promise<RcPerson[]> {
   const r = await fetch(apiUrl('/api/admin/rc-people'), { credentials: 'include' });

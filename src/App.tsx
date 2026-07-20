@@ -37,6 +37,7 @@ import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap
 import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
 import LevelText from './components/LevelText';
+import { useRcAuth } from './components/AuthGate';
 import { BUILD_INFO } from './lib/buildInfo';
 
 // Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
@@ -769,6 +770,11 @@ export default function App() {
   const [adminAuthLoading, setAdminAuthLoading] = useState(false);
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
   const [adminAuthEmail, setAdminAuthEmail] = useState('');
+  const rcAuth = useRcAuth();
+  // Admin via the admin-console session or the in-app database login: keeps
+  // the unrestricted RC picker and may open any RC's detail. Plain RC sessions
+  // act only as themselves (the server enforces this too).
+  const isPrivileged = rcAuth.isAdminSession || adminAuthenticated;
   const [adminLoginEmail, setAdminLoginEmail] = useState('');
   const [adminLoginPassword, setAdminLoginPassword] = useState('');
   const [adminAuthNotice, setAdminAuthNotice] = useState('');
@@ -893,7 +899,7 @@ export default function App() {
         srName: srName || prev.meta.srName,
         srNiveau: metaNiveau(coachee) || prev.meta.srNiveau,
         gruppe: normalizeCoacheeGroup(coachee?.groups) || prev.meta.gruppe,
-        rc: selectedGame.assignedRc || prev.meta.rc,
+        rc: (!isPrivileged && rcAuth.rcName) ? rcAuth.rcName : (selectedGame.assignedRc || prev.meta.rc),
       },
     }));
   }, [selectedGameId, selectedGame?.assignedRc, formData.role, coachees, selectedCoacheeId]);
@@ -2237,6 +2243,16 @@ export default function App() {
                     <option key={y} value={y}>{`${y}/${String((y + 1) % 100).padStart(2, '0')}`}</option>
                   ))}
                 </select>
+                {rcAuth.rcName && (
+                  <button
+                    onClick={rcAuth.logout}
+                    className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
+                    title={formData.lang === 'DE' ? `Abmelden (${rcAuth.rcName})` : `Log out (${rcAuth.rcName})`}
+                  >
+                    <LogOut size={14} />
+                    <span className="hidden sm:inline max-w-[9rem] truncate">{rcAuth.rcName}</span>
+                  </button>
+                )}
               </div>
               <button
                 onClick={() => setShowEmptyFormModal(true)}
@@ -2272,7 +2288,13 @@ export default function App() {
                 {t.gamePool}
               </button>
               <button
-                onClick={() => { setListTab('rcOverview'); setSelectedRcName(null); if (rcOverviewData.length === 0) void refreshRcOverview(); }}
+                onClick={() => {
+                  setListTab('rcOverview');
+                  // Plain RC sessions land directly on their own detail.
+                  if (!isPrivileged && rcAuth.rcName) void handleSelectRc(rcAuth.rcName);
+                  else setSelectedRcName(null);
+                  if (rcOverviewData.length === 0) void refreshRcOverview();
+                }}
                 className={cn(
                   "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
                   listTab === 'rcOverview'
@@ -2825,35 +2847,72 @@ export default function App() {
                                   {/* RC selector + actions */}
                                   <div className="flex flex-wrap items-center gap-3">
                                     <label className="text-xs font-medium text-stone-500">RC:</label>
-                                    <select
-                                      value={game.assignedRc || ''}
-                                      onClick={(e) => e.stopPropagation()}
-                                      onChange={async (e) => {
-                                        const rcName = e.target.value;
-                                        try {
-                                          await assignRcToGame(game.id, rcName);
-                                          setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
-                                          // Keep the Referee Coaches overview counts fresh.
-                                          if (rcOverviewData.length > 0) void refreshRcOverview();
-                                        } catch (err) {
-                                          setBackendNotice(err instanceof Error ? err.message : String(err));
-                                        }
-                                      }}
-                                      className="h-9 px-3 text-sm border border-stone-300 rounded-md bg-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-red-400 transition-colors hover:border-stone-400 flex-1 min-w-[14rem] max-w-sm cursor-pointer"
-                                    >
-                                      <option value="">-</option>
-                                      {rcPeople.map((rc) => (
-                                        <option key={rc.id} value={rc.fullName}>{rc.fullName}</option>
-                                      ))}
-                                    </select>
+                                    {isPrivileged ? (
+                                      <select
+                                        value={game.assignedRc || ''}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onChange={async (e) => {
+                                          const rcName = e.target.value;
+                                          try {
+                                            await assignRcToGame(game.id, rcName);
+                                            setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
+                                            // Keep the Referee Coaches overview counts fresh.
+                                            if (rcOverviewData.length > 0) void refreshRcOverview();
+                                          } catch (err) {
+                                            setBackendNotice(err instanceof Error ? err.message : String(err));
+                                          }
+                                        }}
+                                        className="h-9 px-3 text-sm border border-stone-300 rounded-md bg-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-red-400 transition-colors hover:border-stone-400 flex-1 min-w-[14rem] max-w-sm cursor-pointer"
+                                      >
+                                        <option value="">-</option>
+                                        {rcPeople.map((rc) => (
+                                          <option key={rc.id} value={rc.fullName}>{rc.fullName}</option>
+                                        ))}
+                                      </select>
+                                    ) : game.assignedRc && game.assignedRc === rcAuth.rcName ? (
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); void handleUnassignGame(game.id); }}
+                                        className="h-9 px-3 text-sm font-medium rounded-md border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 transition-colors"
+                                      >
+                                        <X size={14} className="inline mr-1 -mt-0.5" />
+                                        {formData.lang === 'DE' ? 'Abgeben' : 'Give back'}
+                                      </button>
+                                    ) : game.assignedRc ? (
+                                      <span className="text-sm font-medium text-stone-700">{game.assignedRc}</span>
+                                    ) : (
+                                      <button
+                                        onClick={async (e) => {
+                                          e.stopPropagation();
+                                          const rcName = rcAuth.rcName ?? '';
+                                          if (!rcName) return;
+                                          try {
+                                            await assignRcToGame(game.id, rcName);
+                                            setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
+                                            if (rcOverviewData.length > 0) void refreshRcOverview();
+                                          } catch (err) {
+                                            setBackendNotice(err instanceof Error ? err.message : String(err));
+                                          }
+                                        }}
+                                        className="h-9 px-3 text-sm font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
+                                      >
+                                        {formData.lang === 'DE' ? 'Spiel übernehmen' : 'Take game'}
+                                      </button>
+                                    )}
+                                    {(() => {
+                                      // A plain RC can only observe a game they hold; admins can observe
+                                      // any assigned game. The server enforces this too.
+                                      const canObserve = isPrivileged ? !!game.assignedRc : (!!game.assignedRc && game.assignedRc === rcAuth.rcName);
+                                      return (
                                     <button
                                       onClick={() => handleSelectGame(game)}
-                                      disabled={!game.assignedRc}
-                                      className={cn("h-9 px-3 text-sm font-medium rounded-md transition-colors", game.assignedRc ? "bg-slate-900 text-white hover:bg-slate-800 cursor-pointer" : "bg-stone-200 text-stone-400 cursor-not-allowed")}
+                                      disabled={!canObserve}
+                                      className={cn("h-9 px-3 text-sm font-medium rounded-md transition-colors", canObserve ? "bg-slate-900 text-white hover:bg-slate-800 cursor-pointer" : "bg-stone-200 text-stone-400 cursor-not-allowed")}
                                     >
                                       <Eye size={14} className="inline mr-1.5 -mt-0.5" />
                                       {formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation'}
                                     </button>
+                                      );
+                                    })()}
                                     <button
                                       onClick={(e) => { e.stopPropagation(); downloadIcal(game); }}
                                       className="h-9 w-9 flex items-center justify-center border border-stone-300 rounded-md bg-white shadow-sm hover:border-stone-400 hover:bg-stone-50 transition-colors cursor-pointer"
@@ -3122,11 +3181,13 @@ export default function App() {
                   <p className="text-sm text-stone-500 py-4">{t.rcNoData}</p>
                 ) : (
                   <div className="border border-stone-200 rounded divide-y divide-stone-200">
-                    {rcOverviewData.map((rc) => (
+                    {rcOverviewData.map((rc) => {
+                      const canOpen = isPrivileged || rc.fullName === rcAuth.rcName;
+                      return (
                       <div
                         key={rc.id}
-                        onClick={() => void handleSelectRc(rc.fullName)}
-                        className="px-4 py-3 hover:bg-stone-50 cursor-pointer transition-colors"
+                        onClick={canOpen ? () => void handleSelectRc(rc.fullName) : undefined}
+                        className={cn("px-4 py-3 transition-colors", canOpen ? "hover:bg-stone-50 cursor-pointer" : "opacity-75")}
                       >
                         <div className="font-medium text-sm text-stone-800">{rc.fullName}</div>
                         <div className="mt-1.5 flex items-center gap-2">
@@ -3141,7 +3202,8 @@ export default function App() {
                           </span>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -3404,7 +3466,7 @@ export default function App() {
           <MetaField label={t.refLevel} value={formData.meta.srNiveau} onChange={v => updateMeta('srNiveau', v)} />
           <MetaField label={t.group} value={formData.meta.gruppe} onChange={v => updateMeta('gruppe', v)} />
 
-          <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2" />
+          <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2" readOnly={!isPrivileged} />
           <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2" readOnly={!!selectedGame?.game_result} lang={formData.lang} />
         </div>
 
@@ -4066,6 +4128,7 @@ export default function App() {
           coachee={manualUploadCoachee}
           coachees={coachees}
           rcPeople={rcPeople}
+          fixedRcName={isPrivileged ? null : rcAuth.rcName}
           notice={manualUploadNotice}
           submitting={manualUploadSubmitting}
           onSubmit={handleManualUploadSubmit}
@@ -4080,10 +4143,11 @@ export default function App() {
 }
 
 /* ── Manual Upload Modal ── */
-function ManualUploadModal({ coachee, coachees, rcPeople, notice, submitting, onSubmit, onClose }: {
+function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, submitting, onSubmit, onClose }: {
   coachee: Coachee;
   coachees: Coachee[];
   rcPeople: RefereeCoachPerson[];
+  fixedRcName: string | null;
   notice: string;
   submitting: boolean;
   onSubmit: (form: HTMLFormElement) => void;
@@ -4211,10 +4275,17 @@ function ManualUploadModal({ coachee, coachees, rcPeople, notice, submitting, on
           <div className="grid grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs font-semibold text-stone-500 uppercase">Referee Coach</span>
-              <select name="rc" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
-                <option value="">—</option>
-                {rcPeople.map(p => <option key={p.id} value={p.fullName}>{p.fullName}</option>)}
-              </select>
+              {fixedRcName ? (
+                <>
+                  <input type="hidden" name="rc" value={fixedRcName} />
+                  <span className="h-9 flex items-center rounded border border-stone-200 bg-stone-50 px-2 text-sm text-stone-700">{fixedRcName}</span>
+                </>
+              ) : (
+                <select name="rc" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                  <option value="">—</option>
+                  {rcPeople.map(p => <option key={p.id} value={p.fullName}>{p.fullName}</option>)}
+                </select>
+              )}
             </label>
             <div className="flex flex-col gap-1">
               <span className="text-xs font-semibold text-stone-500 uppercase">Gruppe</span>

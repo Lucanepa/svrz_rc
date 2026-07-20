@@ -1,43 +1,50 @@
-import React, { useState, useEffect, type ReactNode } from 'react';
-import { Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, createContext, useContext, type ReactNode } from 'react';
+import { Lock, Loader2 } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
+import { getAuthMe, rcLogin, rcLogout } from '../lib/pocketbase';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
+// Identity of the session that passed the gate. rcName/rcId are null for
+// admin-only sessions (admin console login without a personal PIN).
+export type RcAuth = {
+  rcId: string | null;
+  rcName: string | null;
+  isAdminSession: boolean;
+  logout: () => void;
+};
 
-function apiUrl(path: string): string {
-  if (!API_BASE_URL) return path;
-  const normalizedBase = API_BASE_URL.replace(/\/+$/, '');
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  return `${normalizedBase}${normalizedPath}`;
+const RcAuthContext = createContext<RcAuth>({ rcId: null, rcName: null, isAdminSession: false, logout: () => {} });
+
+export function useRcAuth(): RcAuth {
+  return useContext(RcAuthContext);
 }
 
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [authed, setAuthed] = useState(false);
   const [checking, setChecking] = useState(true);
-  const [password, setPassword] = useState('');
+  const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
+  const [rcId, setRcId] = useState<string | null>(null);
+  const [rcName, setRcName] = useState<string | null>(null);
+  const [isAdminSession, setIsAdminSession] = useState(false);
 
   useEffect(() => {
     // Guard the status probe with a timeout + abort so an unreachable API
     // degrades to the login screen instead of an infinite blank page.
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
-    fetch(apiUrl('/api/auth/gate/status'), { credentials: 'include', signal: controller.signal })
-      .then(r => r.json())
-      .then((data: { authenticated: boolean }) => {
-        setAuthed(Boolean(data?.authenticated));
+    const timeout = setTimeout(() => setChecking(false), 6000);
+    getAuthMe()
+      .then((me) => {
+        setRcId(me.rc?.id ?? null);
+        setRcName(me.rc?.name ?? null);
+        setIsAdminSession(Boolean(me.admin));
+        setAuthed(Boolean(me.rc || me.admin));
       })
       .catch(() => {})
       .finally(() => {
         clearTimeout(timeout);
         setChecking(false);
       });
-    return () => {
-      clearTimeout(timeout);
-      controller.abort();
-    };
+    return () => clearTimeout(timeout);
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -45,30 +52,35 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setError('');
     setSubmitting(true);
     try {
-      const res = await fetch(apiUrl('/api/auth/gate'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ password: password.trim() }),
-      });
-      if (res.ok) {
-        setAuthed(true);
-        return;
-      }
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 429) {
-        const secs = Math.ceil((data.retryAfterMs || 60000) / 1000);
-        setError(`Zu viele Versuche. Bitte in ${secs}s erneut probieren.`);
-      } else {
-        setError('Falsches Passwort');
-      }
-      setPassword('');
+      const result = await rcLogin(pin.trim());
+      setRcName(result.name);
+      // The id isn't in the login response; fetch it so App can use it later.
+      getAuthMe().then((me) => { setRcId(me.rc?.id ?? null); setIsAdminSession(Boolean(me.admin)); }).catch(() => {});
+      setAuthed(true);
+      return;
     } catch (err) {
-      console.error('[AuthGate] Login fetch failed:', err);
-      setError('Verbindungsfehler. Bitte versuche es später erneut.');
+      const e2 = err as Error & { status?: number; retryAfterMs?: number };
+      if (e2.status === 429) {
+        const secs = Math.ceil((e2.retryAfterMs || 60000) / 1000);
+        setError(`Zu viele Versuche. Bitte in ${secs}s erneut probieren.`);
+      } else if (e2.status === 401 || e2.status === 400) {
+        setError('Falscher PIN');
+      } else {
+        setError('Verbindungsfehler. Bitte versuche es später erneut.');
+      }
+      setPin('');
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const logout = () => {
+    void rcLogout().finally(() => {
+      setAuthed(false);
+      setRcId(null);
+      setRcName(null);
+      setPin('');
+    });
   };
 
   if (checking) {
@@ -78,7 +90,13 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       </div>
     );
   }
-  if (authed) return <>{children}</>;
+  if (authed) {
+    return (
+      <RcAuthContext.Provider value={{ rcId, rcName, isAdminSession, logout }}>
+        {children}
+      </RcAuthContext.Provider>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-stone-100 via-stone-50 to-stone-100 flex items-center justify-center p-4">
@@ -96,30 +114,25 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label htmlFor="gate-password" className="sr-only">Passwort</label>
+              <label htmlFor="rc-pin" className="sr-only">Persönlicher PIN</label>
               <div className="relative">
                 <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
                 <input
-                  id="gate-password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="Passwort"
+                  id="rc-pin"
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  value={pin}
+                  onChange={e => setPin(e.target.value.replace(/\D/g, ''))}
+                  placeholder="Persönlicher PIN"
                   autoFocus
                   disabled={submitting}
-                  className={`w-full pl-10 pr-10 py-3 rounded-xl border text-sm bg-stone-50 focus:bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/70 focus:border-red-500 ${
+                  className={`w-full pl-10 pr-4 py-3 rounded-xl border text-sm tracking-[0.3em] bg-stone-50 focus:bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/70 focus:border-red-500 ${
                     error ? 'border-red-400 bg-red-50' : 'border-stone-300'
                   }`}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600 transition-colors"
-                  tabIndex={-1}
-                  aria-label={showPassword ? 'Passwort verbergen' : 'Passwort anzeigen'}
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
               </div>
               {error && (
                 <p className="text-red-600 text-xs mt-2 font-medium">{error}</p>
@@ -127,13 +140,17 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             </div>
             <button
               type="submit"
-              disabled={!password.trim() || submitting}
+              disabled={pin.trim().length !== 6 || submitting}
               className="w-full inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 active:scale-[0.99] disabled:bg-stone-300 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl text-sm transition-all shadow-sm shadow-red-600/20"
             >
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
               {submitting ? 'Prüfe…' : 'Anmelden'}
             </button>
           </form>
+          <p className="text-center text-[11px] text-stone-400 mt-5">
+            PIN vergessen? Wende dich an die RSK.{' '}
+            <a href="#/admin" className="underline hover:text-stone-600">Admin-Login</a>
+          </p>
         </div>
         <p className="text-center text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400 mt-5">
           Swiss Volley Region Zürich

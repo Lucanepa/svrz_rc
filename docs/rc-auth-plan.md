@@ -1,6 +1,39 @@
 # Plan: Per-RC authentication and row-based access
 
-Status: **proposal — not implemented** (2026-07-20)
+Status: **implemented** (2026-07-20) — with these decisions by Luca:
+- The shared `APP_PASSWORD` gate is removed **completely** (no dual mode).
+- Login is a personal **6-digit PIN per RC** (not the email one-time code
+  proposed in §2): the PIN alone identifies the RC (unique across RCs), is
+  generated/rotated by the admin in the admin console (`POST
+  /api/admin/rc-people/:id/pin`, cleartext returned exactly once), and stored
+  as a scrypt hash (`pin_hash` on the people collection, app-wide salt derived
+  from `ADMIN_SESSION_SECRET` — rotating that secret invalidates all PINs).
+- Access matrix of §3 as written. RC session cookie `svrz_rc_session`
+  (30 days, HMAC-signed `{purpose:'rc', rcId}`), revoked by deactivating the
+  RC. Admin bootstrap path: `#/admin` with `ADMIN_UI_PASSWORD`.
+- CSRF: covered by the existing CORS origin allowlist (requests with a
+  disallowed `Origin` header are rejected outright); no extra middleware.
+
+### Known residual risks (reviewed, accepted as low-impact)
+
+- **assign-rc is name-keyed, not id-keyed.** `games.assigned_rc` stores the RC's
+  display name; take/give-back ownership compares normalized names. Two active
+  RCs whose names collide under `normalizeName` could act on each other's game
+  assignments. Mitigation: the admin controls the RC roster and can avoid
+  colliding names. A full fix needs an id-backed `assigned_rc` relation (larger
+  data-model change). The **read** path (`rc-overview/:rcName/coachees`) was
+  hardened to ignore the URL name and pin to the session's own identity.
+- **assign-rc take has a TOCTOU window.** Read-check-write without a
+  compare-and-swap: two RCs taking the same free game concurrently → last write
+  wins, no privilege escalation. Pre-existing accepted risk.
+- **Admin submit with an unknown RC name → generic 500.** `resolveRefereeCoachPersonId`
+  now throws instead of auto-creating a phantom RC. Only reachable by an admin
+  crafting a name outside the dropdown; the message is swallowed to a generic
+  500. Acceptable.
+- **Old service-worker clients** briefly see the removed gate endpoints (404)
+  until the SW updates (~15 s poll, `skipWaiting`), then get the PIN screen.
+
+The sections below are the original proposal, kept for the rationale.
 
 ## 1. Current state
 

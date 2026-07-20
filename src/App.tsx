@@ -3,7 +3,10 @@ import { Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, 
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { QRCodeSVG } from 'qrcode.react';
-import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame, RcOverviewEntry, rcCoachSummary } from './types';
+import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
+
+// Season goal: each RC should complete at least this many observations.
+const OBSERVATION_GOAL = 8;
 import {
   CalendarGameStatus,
   Coachee,
@@ -649,7 +652,9 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder }: {
 export default function App() {
   const [viewMode, setViewMode] = useState<'feedback' | 'admin'>('feedback');
   const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>('coachees');
-  const [listTab, setListTab] = useState<'coachees' | 'games' | 'rcOverview'>('coachees');
+  const [listTab, setListTab] = useState<'home' | 'coachees' | 'games' | 'rcOverview'>('home');
+  const [homeData, setHomeData] = useState<{ done: number; planned: number; outstanding: number; nextGames: rcCoachSummaryGame[]; missingGames: rcCoachSummaryGame[] } | null>(null);
+  const [homeLoading, setHomeLoading] = useState(false);
   const [listPage, setListPage] = useState(0);
   const LIST_PAGE_SIZE = 50;
   const [listSearch, setListSearch] = useState('');
@@ -998,6 +1003,37 @@ export default function App() {
     }
   };
 
+  // Personal dashboard for the logged-in RC: counters from the overview row,
+  // upcoming + missing games from their own coachee summary.
+  const loadHome = async () => {
+    const myName = rcAuth.rcName;
+    if (!myName) { setHomeData(null); return; }
+    setHomeLoading(true);
+    try {
+      const norm = (s: string) => s.trim().toLowerCase();
+      const [overview, summary] = await Promise.all([
+        loadRcOverview(seasonStartYear),
+        loadrcCoachSummary(myName, seasonStartYear),
+      ]);
+      const myRow = overview.find((r) => norm(r.fullName) === norm(myName));
+      const byDate = (a: rcCoachSummaryGame, b: rcCoachSummaryGame) => a.gameDate.localeCompare(b.gameDate);
+      const nextGames = summary.flatMap((cs) => cs.plannedGames).sort(byDate);
+      const missingGames = summary.flatMap((cs) => cs.outstandingGames).sort(byDate);
+      const done = myRow?.done ?? summary.reduce((n, cs) => n + cs.doneFeedbacks.length, 0);
+      setHomeData({
+        done,
+        planned: myRow?.planned ?? nextGames.length,
+        outstanding: myRow?.outstanding ?? missingGames.length,
+        nextGames,
+        missingGames,
+      });
+    } catch {
+      setHomeData(null);
+    } finally {
+      setHomeLoading(false);
+    }
+  };
+
   const refreshRcOverview = async () => {
     setRcOverviewLoading(true);
     try {
@@ -1034,6 +1070,12 @@ export default function App() {
     if (selectedRcName) void handleSelectRc(selectedRcName);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seasonStartYear]);
+
+  // Load the Home dashboard when it's shown (default landing) and on season change.
+  useEffect(() => {
+    if (listTab === 'home' && rcAuth.rcName) void loadHome();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listTab, rcAuth.rcName, seasonStartYear]);
 
   // Give a taken game back: clears the RC assignment, so the game (and its
   // coachees' other games) reappear in the open games list.
@@ -2266,7 +2308,19 @@ export default function App() {
               </button>
             </div>
             {/* Toggle tabs */}
-            <div className="mb-3 grid grid-cols-3 gap-2">
+            <div className="mb-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <button
+                onClick={() => { setListTab('home'); if (rcAuth.rcName) void loadHome(); }}
+                className={cn(
+                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center gap-1.5",
+                  listTab === 'home'
+                    ? "bg-slate-900 text-white"
+                    : "bg-stone-100 text-stone-600 hover:bg-stone-200"
+                )}
+              >
+                <Home size={16} />
+                {formData.lang === 'DE' ? 'Start' : 'Home'}
+              </button>
               <button
                 onClick={() => { setListTab('coachees'); setListSearch(''); setListPage(0); }}
                 className={cn(
@@ -2307,6 +2361,104 @@ export default function App() {
                 {t.rcOverview}
               </button>
             </div>
+
+            {/* Home dashboard */}
+            {listTab === 'home' && (() => {
+              const de = formData.lang === 'DE';
+              const firstName = (rcAuth.rcName || '').split(' ')[0];
+              const fmtDate = (d: string) => {
+                const dt = new Date(d);
+                return Number.isNaN(dt.getTime()) ? d : dt.toLocaleDateString(de ? 'de-CH' : 'en-GB', { weekday: 'short', day: '2-digit', month: '2-digit' });
+              };
+              const startFromSummary = (g: rcCoachSummaryGame) => {
+                const eg = eligibleGames.find((e) => e.id === g.gameId);
+                if (eg) handleSelectGame(eg, g.refereeName);
+                else { setListTab('games'); setListSearch(g.teams); }
+              };
+              const gameRow = (g: rcCoachSummaryGame, key: string) => (
+                <button
+                  key={key}
+                  onClick={() => startFromSummary(g)}
+                  className="w-full text-left px-3 py-2.5 rounded-lg border border-stone-200 bg-white hover:border-red-300 hover:bg-red-50/40 transition-colors flex items-center gap-3"
+                >
+                  <div className="flex flex-col items-center justify-center w-12 shrink-0">
+                    <span className="text-[11px] font-semibold text-red-600 leading-tight">{fmtDate(g.gameDate)}</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-stone-800 truncate">{g.teams}</p>
+                    <p className="text-xs text-stone-500 truncate">{g.league} · {g.refereeName}</p>
+                  </div>
+                  <Eye size={15} className="text-stone-400 shrink-0" />
+                </button>
+              );
+              if (!rcAuth.rcName) {
+                return <p className="text-sm text-stone-500 py-6 text-center">{de ? 'Willkommen.' : 'Welcome.'}</p>;
+              }
+              const toGoal = homeData ? Math.max(0, OBSERVATION_GOAL - homeData.done) : 0;
+              return (
+                <div className="space-y-4">
+                  <div>
+                    <h2 className="text-xl font-bold text-stone-900">{de ? `Hallo ${firstName} 👋` : `Hello ${firstName} 👋`}</h2>
+                    <p className="text-sm text-stone-500">{de ? 'Deine Coaching-Übersicht' : 'Your coaching overview'}</p>
+                  </div>
+
+                  {homeLoading && !homeData ? (
+                    <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-stone-300" /></div>
+                  ) : homeData ? (
+                    <>
+                      {/* Counters */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="rounded-xl border border-green-200 bg-green-50 px-3 py-3 text-center">
+                          <div className="text-2xl font-bold text-green-700">{homeData.done}</div>
+                          <div className="text-[11px] font-medium text-green-700/80 uppercase tracking-wide">{de ? 'Erledigt' : 'Done'}</div>
+                        </div>
+                        <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-3 text-center">
+                          <div className="text-2xl font-bold text-sky-700">{homeData.planned}</div>
+                          <div className="text-[11px] font-medium text-sky-700/80 uppercase tracking-wide">{de ? 'Geplant' : 'Planned'}</div>
+                        </div>
+                        <div className={cn("rounded-xl border px-3 py-3 text-center", toGoal === 0 ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50")}>
+                          <div className={cn("text-2xl font-bold", toGoal === 0 ? "text-green-700" : "text-amber-700")}>{toGoal === 0 ? '✓' : toGoal}</div>
+                          <div className={cn("text-[11px] font-medium uppercase tracking-wide", toGoal === 0 ? "text-green-700/80" : "text-amber-700/80")}>{de ? `bis Ziel (${OBSERVATION_GOAL})` : `to goal (${OBSERVATION_GOAL})`}</div>
+                        </div>
+                      </div>
+
+                      {/* Missing observations warning */}
+                      {homeData.missingGames.length > 0 && (
+                        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3">
+                          <p className="text-sm font-semibold text-amber-800 flex items-center gap-1.5">
+                            <Clock size={15} />
+                            {de
+                              ? `${homeData.missingGames.length} Beobachtung${homeData.missingGames.length > 1 ? 'en' : ''} ausstehend`
+                              : `${homeData.missingGames.length} observation${homeData.missingGames.length > 1 ? 's' : ''} outstanding`}
+                          </p>
+                          <p className="text-xs text-amber-700 mt-0.5 mb-2">{de ? 'Vergangene Spiele ohne Feedback:' : 'Past games without feedback:'}</p>
+                          <div className="space-y-1.5">
+                            {homeData.missingGames.map((g, i) => gameRow(g, `miss-${g.gameId}-${i}`))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Next appointments */}
+                      <div>
+                        <h3 className="text-sm font-semibold text-stone-700 mb-2 flex items-center gap-1.5">
+                          <CalendarDays size={15} className="text-stone-400" />
+                          {de ? 'Nächste Termine' : 'Next appointments'}
+                        </h3>
+                        {homeData.nextGames.length === 0 ? (
+                          <p className="text-sm text-stone-400 py-3">{de ? 'Keine geplanten Spiele.' : 'No planned games.'}</p>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {homeData.nextGames.slice(0, 8).map((g, i) => gameRow(g, `next-${g.gameId}-${i}`))}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-sm text-stone-500 py-6 text-center">{de ? 'Übersicht konnte nicht geladen werden.' : 'Could not load overview.'}</p>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Coachees: Search & filters */}
             {listTab === 'coachees' && (

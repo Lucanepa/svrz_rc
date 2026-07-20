@@ -2157,9 +2157,10 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: globalRl.retryAfterMs });
     return;
   }
+  const email = asText((req.body ?? {}).email).trim().toLowerCase();
   const pin = asText((req.body ?? {}).pin).trim();
-  if (!/^\d{6}$/.test(pin)) {
-    res.status(400).json({ error: 'PIN muss aus 6 Ziffern bestehen.' });
+  if (!email || !/\S+@\S+\.\S+/.test(email) || !/^\d{6}$/.test(pin)) {
+    res.status(400).json({ error: 'E-Mail und 6-stelliger PIN erforderlich.' });
     return;
   }
   try {
@@ -2167,15 +2168,18 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
       collection.getFullList<AnyRecord>({ filter: 'active = true' }),
     );
+    // Login requires the email and PIN to belong to the SAME active RC.
     const pinHash = Buffer.from(hashPin(pin), 'hex');
-    const match = people.find((p) => {
-      const stored = asText(p.pin_hash);
+    const person = people.find((p) => asText(p.email).trim().toLowerCase() === email);
+    const pinOk = person ? (() => {
+      const stored = asText(person.pin_hash);
       if (!stored) return false;
       const storedBuf = Buffer.from(stored, 'hex');
       return storedBuf.length === pinHash.length && timingSafeEqual(storedBuf, pinHash);
-    });
+    })() : false;
+    const match = pinOk ? person! : undefined;
     if (!match) {
-      res.status(401).json({ error: 'Falscher PIN.' });
+      res.status(401).json({ error: 'Falsche E-Mail oder falscher PIN.' });
       return;
     }
     const name = `${asText(match.first_name)} ${asText(match.last_name)}`.trim();

@@ -21,6 +21,7 @@ export function useRcAuth(): RcAuth {
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [authed, setAuthed] = useState(false);
   const [checking, setChecking] = useState(true);
+  const [email, setEmail] = useState('');
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -57,7 +58,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setError('');
     setSubmitting(true);
     try {
-      const result = await rcLogin(pin.trim());
+      const result = await rcLogin(email.trim(), pin.trim());
       setRcName(result.name);
       // The id isn't in the login response; fetch it so App can use it later.
       getAuthMe().then((me) => { setRcId(me.rc?.id ?? null); setIsAdminSession(Boolean(me.admin)); }).catch(() => {});
@@ -69,7 +70,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         const secs = Math.ceil((e2.retryAfterMs || 60000) / 1000);
         setError(`Zu viele Versuche. Bitte in ${secs}s erneut probieren.`);
       } else if (e2.status === 401 || e2.status === 400) {
-        setError('Falscher PIN');
+        setError('Falsche E-Mail oder falscher PIN');
       } else {
         setError('Verbindungsfehler. Bitte versuche es später erneut.');
       }
@@ -161,7 +162,24 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
           {mode === 'login' && (
             <>
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <form onSubmit={handleSubmit} className="space-y-3">
+                <div className="relative">
+                  <label htmlFor="rc-email" className="sr-only">E-Mail</label>
+                  <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
+                  <input
+                    id="rc-email"
+                    type="email"
+                    autoComplete="email"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    placeholder="E-Mail"
+                    autoFocus
+                    disabled={submitting}
+                    className={`w-full pl-10 pr-4 py-3 rounded-xl border text-sm bg-stone-50 focus:bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/70 focus:border-red-500 ${
+                      error ? 'border-red-400 bg-red-50' : 'border-stone-300'
+                    }`}
+                  />
+                </div>
                 <div>
                   <label htmlFor="rc-pin" className="sr-only">Persönlicher PIN</label>
                   <div className="relative">
@@ -176,7 +194,6 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                       value={pin}
                       onChange={e => setPin(e.target.value.replace(/\D/g, ''))}
                       placeholder="Persönlicher PIN"
-                      autoFocus
                       disabled={submitting}
                       className={`w-full pl-10 pr-4 py-3 rounded-xl border text-sm tracking-[0.3em] bg-stone-50 focus:bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/70 focus:border-red-500 ${
                         error ? 'border-red-400 bg-red-50' : 'border-stone-300'
@@ -189,7 +206,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                 </div>
                 <button
                   type="submit"
-                  disabled={pin.trim().length !== 6 || submitting}
+                  disabled={!/\S+@\S+\.\S+/.test(email) || pin.trim().length !== 6 || submitting}
                   className="w-full inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 active:scale-[0.99] disabled:bg-stone-300 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl text-sm transition-all shadow-sm shadow-red-600/20"
                 >
                   {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -197,7 +214,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                 </button>
               </form>
               <p className="text-center text-[11px] text-stone-400 mt-5">
-                <button type="button" onClick={() => { setError(''); setMode('forgot-email'); }} className="underline hover:text-stone-600">
+                <button type="button" onClick={() => { setError(''); setForgotEmail(email); setMode('forgot-email'); }} className="underline hover:text-stone-600">
                   PIN vergessen?
                 </button>
                 {' · '}

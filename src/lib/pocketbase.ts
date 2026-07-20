@@ -144,12 +144,12 @@ export async function getAuthMe(): Promise<AuthMe> {
   return response.json() as Promise<AuthMe>;
 }
 
-export async function rcLogin(pin: string): Promise<{ name: string }> {
+export async function rcLogin(email: string, pin: string): Promise<{ name: string }> {
   const response = await fetch(apiUrl('/api/auth/rc/login'), {
     credentials: 'include',
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pin }),
+    body: JSON.stringify({ email, pin }),
   });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));

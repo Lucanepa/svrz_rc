@@ -6,6 +6,7 @@ import cron from 'node-cron';
 import nodemailer from 'nodemailer';
 import helmet from 'helmet';
 import { createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scryptSync } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -148,6 +149,7 @@ async function sendRcPinEmail(person: AnyRecord, pin: string): Promise<boolean> 
     subject: 'Dein persönlicher PIN – SVRZ Referee Coaching',
     text: `Hallo ${name}\n\nDein persönlicher PIN für die SVRZ Referee-Coaching-App lautet:\n\n    ${pin}\n\nMelde dich damit unter ${MAIL_APP_URL} an. Ein zuvor gesetzter PIN ist ab sofort ungültig.\n\nBitte bewahre den PIN sicher auf und teile ihn nicht.\n\nSwiss Volley Region Zürich`,
     html,
+    attachments: emailAttachments(),
   });
   return true;
 }
@@ -572,19 +574,43 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
-// Branded SVRZ email shell: red header band + white card + footer. Inline styles
-// and table-free layout so it renders across email clients. `bodyHtml` is the
-// card content (already-escaped/trusted markup).
+// Official SVRZ logo, loaded once and embedded inline (CID) so it renders even
+// when a client blocks remote images. null if the asset can't be read, in which
+// case emails fall back to a text wordmark header.
+const EMAIL_LOGO_CID = 'svrzlogo';
+let emailLogo: Buffer | null | undefined;
+function getEmailLogo(): Buffer | null {
+  if (emailLogo !== undefined) return emailLogo;
+  for (const p of ['server/assets/svrz-logo.png', 'src/assets/svrz-logo.png']) {
+    try { emailLogo = readFileSync(p); return emailLogo; } catch { /* try next candidate */ }
+  }
+  console.warn('[email] SVRZ logo asset not found — using text header.');
+  emailLogo = null;
+  return emailLogo;
+}
+function emailAttachments(extra: Array<Record<string, unknown>> = []): Array<Record<string, unknown>> {
+  const logo = getEmailLogo();
+  const logoAtt = logo ? [{ filename: 'svrz-logo.png', content: logo, cid: EMAIL_LOGO_CID }] : [];
+  return [...extra, ...logoAtt];
+}
+
+// Branded SVRZ email shell: white header with the logo, a red accent rule, then
+// the white card + footer. Inline styles + table-free layout so it renders
+// across email clients. `bodyHtml` is the card content (trusted markup).
 function emailShell(bodyHtml: string): string {
+  const header = getEmailLogo()
+    ? `<img src="cid:${EMAIL_LOGO_CID}" alt="Swiss Volley Region Zürich" width="150" style="display:block;width:150px;max-width:60%;height:auto;margin:0 auto;" />`
+    : `<div style="font-size:19px;font-weight:800;letter-spacing:-0.4px;color:#dc2626;">Swiss Volley <span style="color:#57534e;">Region Zürich</span></div>`;
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background-color:#f5f5f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <div style="max-width:600px;margin:0 auto;padding:32px 16px;">
-    <div style="background:linear-gradient(135deg,#dc2626,#b91c1c);border-radius:14px 14px 0 0;padding:22px 32px;">
-      <div style="font-size:19px;font-weight:800;letter-spacing:-0.4px;color:#ffffff;">Swiss Volley <span style="font-weight:600;color:#fecaca;">Region Zürich</span></div>
-      <div style="font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:#fca5a5;margin-top:3px;">Referee Coaching</div>
+    <div style="background:#ffffff;border:1px solid #e7e5e4;border-bottom:none;border-radius:14px 14px 0 0;padding:26px 32px 22px;text-align:center;">
+      ${header}
+      <div style="font-size:10px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;color:#a8a29e;margin-top:12px;">Referee Coaching</div>
     </div>
+    <div style="height:3px;background:linear-gradient(90deg,#dc2626,#b91c1c);"></div>
     <div style="background:#ffffff;border:1px solid #e7e5e4;border-top:none;border-radius:0 0 14px 14px;padding:32px;">
       ${bodyHtml}
     </div>
@@ -630,6 +656,7 @@ function buildFeedbackEmailHtml(params: {
 <body style="margin: 0; padding: 0; background-color: #f5f5f4; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
   <div style="max-width: 600px; margin: 0 auto; padding: 32px 16px;">
     <div style="background: #ffffff; border: 1px solid #e7e5e4; border-radius: 12px; padding: 32px; margin-bottom: 16px;">
+      ${getEmailLogo() ? `<div style="text-align:center;margin:0 0 20px;"><img src="cid:${EMAIL_LOGO_CID}" alt="Swiss Volley Region Zürich" width="140" style="display:inline-block;width:140px;max-width:55%;height:auto;" /></div>` : ''}
       <h1 style="margin: 0 0 24px; font-size: 20px; font-weight: 700; color: #1c1917;">SR-Coaching Feedback</h1>
       <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #44403c;">
         <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Spiel Nr.</td><td style="padding: 6px 0;">${e(params.matchNo)}</td></tr>
@@ -2212,6 +2239,7 @@ app.post('/api/auth/rc/forgot/start', async (req: Request, res: ExpressResponse)
           subject: 'Bestätigungscode – SVRZ Referee Coaching',
           text: `Dein Bestätigungscode lautet:\n\n    ${code}\n\nGib ihn in der App ein, um einen neuen PIN zu erhalten. Der Code ist 10 Minuten gültig.\n\nWenn du das nicht angefragt hast, ignoriere diese E-Mail — dein PIN bleibt unverändert.\n\n${MAIL_APP_URL}\nSwiss Volley Region Zürich`,
           html,
+          attachments: emailAttachments(),
         });
       } else {
         console.log(`[rc-otp] TEST_MODE — code for ${email} suppressed`);
@@ -3300,11 +3328,11 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           subject: mailSubject,
           html: buildFeedbackEmailHtml(emailParams),
           text: buildFeedbackEmailText(emailParams),
-          attachments: [{
+          attachments: emailAttachments([{
             filename: String(pdfFilename || 'feedback.pdf'),
             content: pdfBuffer,
             contentType: 'application/pdf',
-          }],
+          }]),
         });
         emailSent = true;
       }

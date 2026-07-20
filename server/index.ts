@@ -33,6 +33,14 @@ if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) 
   console.warn('[startup] SMTP not fully configured. Feedback email sending will fail at runtime.');
 }
 
+// Sender identity shown in recipients' inboxes: a friendly display name in front
+// of the configured address. Used by every outbound mail (feedback, PIN, OTP).
+const MAIL_FROM = {
+  name: process.env.SMTP_FROM_NAME || 'SVRZ Referee Coaching',
+  address: process.env.SMTP_FROM || 'rc_coaching@volleyball.lucanepa.com',
+};
+const MAIL_APP_URL = process.env.APP_PUBLIC_URL || 'https://lucanepa.github.io/svrz_rc/';
+
 process.on('unhandledRejection', (reason) => {
   console.error('[server] Unhandled rejection:', reason);
 });
@@ -127,16 +135,19 @@ async function sendRcPinEmail(person: AnyRecord, pin: string): Promise<boolean> 
     return false;
   }
   const name = `${asText(person.first_name)} ${asText(person.last_name)}`.trim();
-  const appUrl = process.env.APP_PUBLIC_URL || 'https://lucanepa.github.io/svrz_rc/';
+  const html = emailShell(
+    `<h1 style="margin:0 0 6px;font-size:20px;font-weight:700;color:#1c1917;">Dein persönlicher PIN</h1>`
+    + `<p style="margin:0 0 14px;font-size:14px;color:#44403c;">Hallo ${escapeHtml(name)}, mit diesem PIN meldest du dich in der Referee-Coaching-App an:</p>`
+    + emailCodeBox(pin)
+    + `<div style="text-align:center;margin:8px 0 4px;"><a href="${MAIL_APP_URL}" style="display:inline-block;padding:11px 28px;background:#dc2626;color:#ffffff;text-decoration:none;border-radius:9px;font-size:14px;font-weight:600;">Zur App</a></div>`
+    + `<p style="margin:22px 0 0;font-size:13px;color:#78716c;line-height:1.6;">Ein zuvor gesetzter PIN ist ab sofort ungültig. Bitte bewahre den PIN sicher auf und teile ihn mit niemandem.</p>`,
+  );
   await smtpTransport.sendMail({
-    from: process.env.SMTP_FROM || 'coaching-feedback@svrz.ch',
+    from: MAIL_FROM,
     to,
     subject: 'Dein persönlicher PIN – SVRZ Referee Coaching',
-    text: `Hallo ${name}\n\nDein persönlicher PIN für die SVRZ Referee-Coaching-App lautet:\n\n    ${pin}\n\nMelde dich damit unter ${appUrl} an. Ein zuvor gesetzter PIN ist ab sofort ungültig.\n\nBitte bewahre den PIN sicher auf und teile ihn nicht.\n\nSwiss Volley Region Zürich`,
-    html: `<p>Hallo ${name}</p><p>Dein persönlicher PIN für die SVRZ Referee-Coaching-App lautet:</p>`
-      + `<p style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:16px 0">${pin}</p>`
-      + `<p>Melde dich damit unter <a href="${appUrl}">${appUrl}</a> an. Ein zuvor gesetzter PIN ist ab sofort ungültig.</p>`
-      + `<p>Bitte bewahre den PIN sicher auf und teile ihn nicht.</p><p>Swiss Volley Region Zürich</p>`,
+    text: `Hallo ${name}\n\nDein persönlicher PIN für die SVRZ Referee-Coaching-App lautet:\n\n    ${pin}\n\nMelde dich damit unter ${MAIL_APP_URL} an. Ein zuvor gesetzter PIN ist ab sofort ungültig.\n\nBitte bewahre den PIN sicher auf und teile ihn nicht.\n\nSwiss Volley Region Zürich`,
+    html,
   });
   return true;
 }
@@ -559,6 +570,37 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// Branded SVRZ email shell: red header band + white card + footer. Inline styles
+// and table-free layout so it renders across email clients. `bodyHtml` is the
+// card content (already-escaped/trusted markup).
+function emailShell(bodyHtml: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="max-width:600px;margin:0 auto;padding:32px 16px;">
+    <div style="background:linear-gradient(135deg,#dc2626,#b91c1c);border-radius:14px 14px 0 0;padding:22px 32px;">
+      <div style="font-size:19px;font-weight:800;letter-spacing:-0.4px;color:#ffffff;">Swiss Volley <span style="font-weight:600;color:#fecaca;">Region Zürich</span></div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:#fca5a5;margin-top:3px;">Referee Coaching</div>
+    </div>
+    <div style="background:#ffffff;border:1px solid #e7e5e4;border-top:none;border-radius:0 0 14px 14px;padding:32px;">
+      ${bodyHtml}
+    </div>
+    <div style="text-align:center;padding:16px 0;">
+      <p style="margin:0;font-size:11px;color:#a8a29e;">Swiss Volley Region Zürich · Diese E-Mail wurde automatisch versendet.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+// Prominent monospace box for a PIN or one-time code.
+function emailCodeBox(value: string): string {
+  return `<div style="margin:24px 0;text-align:center;">
+    <span style="display:inline-block;padding:16px 30px;background:#f5f5f4;border:1px solid #e7e5e4;border-radius:12px;font-size:30px;font-weight:700;letter-spacing:9px;color:#1c1917;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;">${escapeHtml(value)}</span>
+  </div>`;
 }
 
 function buildFeedbackEmailHtml(params: {
@@ -2157,15 +2199,19 @@ app.post('/api/auth/rc/forgot/start', async (req: Request, res: ExpressResponse)
       const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
       rcOtpStore.set(email, { hash: hashPin(code), expiresAt: Date.now() + RC_OTP_TTL_MS, attempts: 0 });
       if (!(await isEmailTestMode())) {
-        const appUrl = process.env.APP_PUBLIC_URL || 'https://lucanepa.github.io/svrz_rc/';
+        const html = emailShell(
+          `<h1 style="margin:0 0 6px;font-size:20px;font-weight:700;color:#1c1917;">Bestätigungscode</h1>`
+          + `<p style="margin:0 0 14px;font-size:14px;color:#44403c;">Gib diesen Code in der App ein, um einen neuen PIN zu erhalten:</p>`
+          + emailCodeBox(code)
+          + `<p style="margin:0;font-size:13px;color:#78716c;text-align:center;">Der Code ist 10 Minuten gültig.</p>`
+          + `<p style="margin:22px 0 0;font-size:13px;color:#a8a29e;line-height:1.6;">Wenn du das nicht angefragt hast, ignoriere diese E-Mail — dein PIN bleibt unverändert.</p>`,
+        );
         await smtpTransport.sendMail({
-          from: process.env.SMTP_FROM || 'coaching-feedback@svrz.ch',
+          from: MAIL_FROM,
           to: asText(person.email),
           subject: 'Bestätigungscode – SVRZ Referee Coaching',
-          text: `Dein Bestätigungscode lautet:\n\n    ${code}\n\nGib ihn in der App ein, um einen neuen PIN zu erhalten. Der Code ist 10 Minuten gültig.\n\nWenn du das nicht angefragt hast, ignoriere diese E-Mail — dein PIN bleibt unverändert.\n\n${appUrl}\nSwiss Volley Region Zürich`,
-          html: `<p>Dein Bestätigungscode lautet:</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;margin:16px 0">${code}</p>`
-            + `<p>Gib ihn in der App ein, um einen neuen PIN zu erhalten. Der Code ist 10 Minuten gültig.</p>`
-            + `<p>Wenn du das nicht angefragt hast, ignoriere diese E-Mail — dein PIN bleibt unverändert.</p><p>Swiss Volley Region Zürich</p>`,
+          text: `Dein Bestätigungscode lautet:\n\n    ${code}\n\nGib ihn in der App ein, um einen neuen PIN zu erhalten. Der Code ist 10 Minuten gültig.\n\nWenn du das nicht angefragt hast, ignoriere diese E-Mail — dein PIN bleibt unverändert.\n\n${MAIL_APP_URL}\nSwiss Volley Region Zürich`,
+          html,
         });
       } else {
         console.log(`[rc-otp] TEST_MODE — code for ${email} suppressed`);
@@ -3246,7 +3292,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         emailSent = false;
       } else {
         await smtpTransport.sendMail({
-          from: process.env.SMTP_FROM || 'coaching-feedback@svrz.ch',
+          from: MAIL_FROM,
           replyTo: rcEmail || undefined,
           to: mailTo,
           cc: mailCc,

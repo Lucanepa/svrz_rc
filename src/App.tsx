@@ -678,12 +678,21 @@ export default function App() {
   const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
   // When true, ignore Niveau targets and show every game (escape hatch).
   const [showAllLevels, setShowAllLevels] = useState(false);
-  // Read admin settings: email test-mode banner + default season (if no saved pref) + coachee targets
+  // Read admin settings: email test-mode banner + default season + coachee targets.
+  // A saved season pref older than the admin default is stale (new season started) — snap forward.
   useEffect(() => {
     getSettings().then((s) => {
       setEmailTestMode(Boolean(s.test_mode));
       setCoacheeTargets(s.coachee_targets ?? {});
-      try { if (!localStorage.getItem('svrz_season_v2') && s.default_season) setSeasonStartYear(s.default_season); } catch { /* ignore */ }
+      try {
+        if (s.default_season) {
+          const saved = parseInt(localStorage.getItem('svrz_season_v2') || '', 10);
+          if (!Number.isFinite(saved) || saved < s.default_season) {
+            setSeasonStartYear(s.default_season);
+            localStorage.removeItem('svrz_season_v2');
+          }
+        }
+      } catch { /* ignore */ }
     }).catch(() => { /* ignore */ });
   }, []);
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');

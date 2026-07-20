@@ -1781,7 +1781,18 @@ app.get('/api/settings', requireGateSession, async (_req: Request, res: ExpressR
     const targetsRec = await getSettingRecord('coachee_targets');
     let coachee_targets: Record<string, unknown> = {};
     try { coachee_targets = targetsRec ? JSON.parse(asText(targetsRec.value)) : {}; } catch { coachee_targets = {}; }
-    res.json({ default_season: rec ? Number(asText(rec.value)) || null : null, test_mode: await isEmailTestMode(), groups, coachee_targets });
+    let default_season = rec ? Number(asText(rec.value)) || null : null;
+    if (default_season == null) {
+      // No explicit default set — fall back to the latest season that has coachee data.
+      try {
+        await ensureAdminAuth();
+        const seasons = await withCollection(collectionCandidates.coachees, (c) =>
+          c.getFullList<AnyRecord>({ fields: 'season' }));
+        const latest = Math.max(...seasons.map((s) => Number(s.season)).filter(Number.isFinite));
+        if (Number.isFinite(latest)) default_season = latest;
+      } catch { /* keep null */ }
+    }
+    res.json({ default_season, test_mode: await isEmailTestMode(), groups, coachee_targets });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -1864,11 +1875,16 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
       const payload = {
         full_name, first_name: asText(r.first_name), last_name: asText(r.last_name),
         referee_level: asText(r.referee_level), stage: asText(r.stage) || 'active',
-        groups: asText(r.groups), season,
+        groups: asText(r.groups), notes: asText(r.notes), season,
       };
       const ex = byKey.get(`${normalizeName(full_name)}|${season ?? ''}`);
       if (ex) { await withCollection(collectionCandidates.coachees, (c) => c.update(ex.id, payload)); updated++; }
       else { await withCollection(collectionCandidates.coachees, (c) => c.create({ ...payload, feedback_entries: [] })); created++; }
+    }
+    // Importing a newer season makes it the app-wide default ("latest season with data").
+    if (created > 0 && season != null && Number.isFinite(season)) {
+      const cur = Number(asText((await getSettingRecord('default_season'))?.value));
+      if (!Number.isFinite(cur) || season > cur) await setSetting('default_season', String(season));
     }
     res.json({ created, updated, total: rows.length });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -2247,6 +2263,7 @@ app.post('/api/coachees', requireAdminSession, async (req: Request, res: Express
         referee_level: asText(data.referee_level),
         stage: asText(data.stage) || 'active',
         groups: asText(data.groups),
+        notes: asText(data.notes),
         season: data.season == null || data.season === '' ? null : Number(data.season),
         feedback_entries: Array.isArray(data.feedback_entries) ? data.feedback_entries : [],
       }),
@@ -2270,6 +2287,7 @@ app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: Expr
     if ('referee_level' in raw) payload.referee_level = asText(raw.referee_level);
     if ('stage' in raw) payload.stage = asText(raw.stage);
     if ('groups' in raw) payload.groups = asText(raw.groups);
+    if ('notes' in raw) payload.notes = asText(raw.notes);
     if ('season' in raw) payload.season = raw.season == null || raw.season === '' ? null : Number(raw.season);
     if ('feedback_entries' in raw) payload.feedback_entries = raw.feedback_entries;
     const updated = await withCollection(collectionCandidates.coachees, (collection) =>

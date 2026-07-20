@@ -29,7 +29,7 @@ function splitStufe(v: string): { referee_level: string; stage: string } {
   const [lvl, st] = v.split('-'); return { referee_level: lvl, stage: st || '' };
 }
 
-const GROUP_MAP: Record<string, string> = { 'B': 'Beförderung', 'B?': 'Beförderung?', 'RC': 'Referee Coaching', '2.SR': '2. Schiedsrichter', '2. SR': '2. Schiedsrichter', '1.SR': '1. Schiedsrichter', '1. SR': '1. Schiedsrichter', 'Neu-SR 24/25': 'Neu-Schiedsrichter 24/25', 'Neu-SR 25/26': 'Neu-Schiedsrichter 25/26' };
+const GROUP_MAP: Record<string, string> = { 'B': 'Beförderung', 'B?': 'Beförderung?', 'RC': 'Referee Coaching', '2.SR': '2. Schiedsrichter', '2. SR': '2. Schiedsrichter', '1.SR': '1. Schiedsrichter', '1. SR': '1. Schiedsrichter', 'Neu-SR 24/25': 'Neu-Schiedsrichter 24/25', 'Neu-SR 25/26': 'Neu-Schiedsrichter 25/26', 'Neu-SR 26/27': 'Neu-Schiedsrichter 26/27', 'Neu26/27': 'Neu-Schiedsrichter 26/27' };
 function mapGroups(s: string): string {
   const out: string[] = [];
   for (const p of s.split('/').map((x) => x.trim()).filter(Boolean)) { if (/^\d{2}$/.test(p) && out.length) out[out.length - 1] += '/' + p; else out.push(p); }
@@ -92,14 +92,16 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
   if (!rows.length) return [];
   const header = (rows[0] as unknown[]).map((h) => String(h).trim().toLowerCase());
   const col = (names: string[]) => { for (const n of names) { const i = header.indexOf(n); if (i >= 0) return i; } return -1; };
-  const ci = { last: col(['nachname', 'last', 'lastname']), first: col(['vorname', 'first', 'firstname']), level: col(['niveau', 'level']), stage: col(['stufe', 'stage']), group: col(['gruppe', 'group', 'groups']) };
+  const ci = { last: col(['nachname', 'name', 'last', 'lastname']), first: col(['vorname', 'first', 'firstname']), level: col(['niveau', 'level']), stage: col(['stufe', 'stage']), group: col(['gruppe', 'group', 'groups']), notes: col(['bemerkung', 'bemerkungen', 'notizen', 'notes', 'note', 'kommentar']) };
+  // Notes often live in an unnamed column right after Gruppe.
+  if (ci.notes < 0 && ci.group >= 0 && !header[ci.group + 1]) ci.notes = ci.group + 1;
   const out: ImportRow[] = [];
   for (const raw of rows.slice(1)) {
     const r = raw as unknown[];
     const last = String(r[ci.last] ?? '').trim();
     const first = String(r[ci.first] ?? '').trim();
     if (!first && !last) continue;
-    out.push({ first_name: first, last_name: last, full_name: `${first} ${last}`.trim(), referee_level: String(r[ci.level] ?? '').trim(), stage: String(r[ci.stage] ?? '').trim().replace(/\.0$/, ''), groups: mapGroups(String(r[ci.group] ?? '').trim()) });
+    out.push({ first_name: first, last_name: last, full_name: `${first} ${last}`.trim(), referee_level: String(r[ci.level] ?? '').trim(), stage: String(r[ci.stage] ?? '').trim().replace(/\.0$/, ''), groups: mapGroups(String(r[ci.group] ?? '').trim()), notes: String(r[ci.notes] ?? '').trim() });
   }
   return out;
 }

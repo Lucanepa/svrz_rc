@@ -1,29 +1,15 @@
-// Official Swiss Volley Region Zürich mark as used on svrz.ch:
-// the red volleyball glyph (paths taken verbatim from the svrz.ch header)
-// plus the "Region Zürich" wordmark.
+import logoUrl from './assets/svrz-logo.png';
+
+// Official Swiss Volley Region Zürich logo (extracted from an official
+// SVRZ document at 200 DPI): grey volleyball swoosh, SwissVolley wordmark,
+// REGION ZÜRICH subtitle.
 export default function SvrzLogo({ className = 'h-16' }: { className?: string }) {
   return (
-    <svg
-      viewBox="0 0 148 25"
-      xmlns="http://www.w3.org/2000/svg"
-      className={className}
-      aria-label="Swiss Volley Region Zürich"
-    >
-      <g fill="#DC2626">
-        <path d="M36 4.00848C36 5.94574 34.3669 7.51669 32.352 7.51669C30.3372 7.51669 28.7045 5.94574 28.7045 4.00848C28.7046 2.07068 30.3372 0.5 32.352 0.5C34.3669 0.5 36 2.07068 36 4.00848Z" />
-        <path d="M22.1416 10.122C21.471 9.13984 20.4261 8.33951 19.0997 8.01449C16.5028 7.37896 13.9008 8.74161 13.2882 11.0563C12.9511 12.3311 13.1377 13.7542 14.0882 14.6422C14.3775 14.9119 15.5308 15.6421 16.5526 15.2561C16.9475 15.0896 16.7438 14.7664 16.6359 14.6588C16.1017 14.1244 14.8749 12.1675 16.764 10.5303C18.2129 9.27457 20.3627 9.26684 21.8995 10.147C21.9802 10.193 22.2653 10.3031 22.1416 10.122Z" />
-        <path d="M29.1487 14.2056C31.1105 13.2212 32.5303 12.4325 32.704 11.209C32.76 10.8147 32.4821 10.5463 32.2438 10.335C31.9786 10.1184 31.9388 9.78126 32.1346 9.58843C32.6347 9.09703 33.9692 9.27756 34.3217 9.40764C34.5477 9.49131 35.6731 9.85992 35.3862 11.1536C35.2448 11.7908 34.6027 12.5135 33.8804 13.1399C33.2029 13.7275 28.636 17.3486 19.6313 20.9303C11.2487 24.2644 1.69941 25.9301 0.248777 22.9452C-1.20158 19.9612 4.10463 15.554 5.46525 14.5237C6.82531 13.4941 9.57807 11.871 10.7282 11.5693C10.7282 11.5693 11.7968 11.2026 11.4848 12.6602C11.1725 14.1185 9.89664 14.6875 9.89664 14.6875C9.43762 14.9271 8.95968 14.6083 8.63636 14.8129C8.31195 15.0159 6.97061 15.9282 6.58369 17.536C6.19677 19.1428 6.34473 21.7782 13.822 19.7691C21.6385 17.6692 24.4215 16.5758 29.1487 14.2056Z" />
-      </g>
-      <text
-        x="42"
-        y="17.5"
-        fontFamily="Arial, Helvetica, sans-serif"
-        fontSize="13"
-        fontWeight="500"
-        fill="#3F3F3F"
-      >
-        Region Zürich
-      </text>
-    </svg>
+    <img
+      src={logoUrl}
+      alt="Swiss Volley Region Zürich"
+      className={`${className} w-auto`}
+      draggable={false}
+    />
   );
 }

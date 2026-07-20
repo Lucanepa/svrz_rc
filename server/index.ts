@@ -10,11 +10,17 @@ import { createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scrypt
 dotenv.config({ path: '.env.local' });
 dotenv.config();
 
-// SMTP transport for feedback emails
+// SMTP transport for feedback emails. Port 465 uses implicit TLS; any other
+// port (e.g. 587) connects plaintext then upgrades — requireTLS forces that
+// STARTTLS handshake so credentials are never sent in the clear. Hetzner blocks
+// outbound 25/465 by default, so 587 is the working port here.
+const smtpPort = Number(process.env.SMTP_PORT || 465);
+const smtpSecure = smtpPort === 465;
 const smtpTransport = nodemailer.createTransport({
   host: process.env.SMTP_HOST || 'smtp.migadu.com',
-  port: Number(process.env.SMTP_PORT || 465),
-  secure: Number(process.env.SMTP_PORT || 465) === 465,
+  port: smtpPort,
+  secure: smtpSecure,
+  requireTLS: !smtpSecure,
   auth: {
     user: process.env.SMTP_USER || '',
     pass: process.env.SMTP_PASS || '',

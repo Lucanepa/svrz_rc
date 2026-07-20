@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload } from 'lucide-react';
+import { Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { QRCodeSVG } from 'qrcode.react';
@@ -662,6 +662,7 @@ export default function App() {
   // RC Overview state
   const [rcOverviewData, setRcOverviewData] = useState<RcOverviewEntry[]>([]);
   const [rcOverviewLoading, setRcOverviewLoading] = useState(false);
+  const [rcDetailTab, setRcDetailTab] = useState<'planned' | 'outstanding' | 'done'>('planned');
   const [selectedRcName, setSelectedRcName] = useState<string | null>(null);
   const [rcCoachSummaryData, setrcCoachSummaryData] = useState<rcCoachSummary[]>([]);
   const [rcCoachSummaryLoading, setrcCoachSummaryLoading] = useState(false);
@@ -1009,10 +1010,30 @@ export default function App() {
     try {
       const data = await loadrcCoachSummary(rcName);
       setrcCoachSummaryData(data);
+      // Open on the first section that has games.
+      const has = (pick: (cs: rcCoachSummary) => unknown[]) => data.some((cs) => pick(cs).length > 0);
+      setRcDetailTab(has((cs) => cs.plannedGames) ? 'planned' : has((cs) => cs.outstandingGames) ? 'outstanding' : 'done');
     } catch {
       setrcCoachSummaryData([]);
     } finally {
       setrcCoachSummaryLoading(false);
+    }
+  };
+
+  // Give a taken game back: clears the RC assignment, so the game (and its
+  // coachees' other games) reappear in the open games list.
+  const handleUnassignGame = async (gameId: string) => {
+    try {
+      await assignRcToGame(gameId, '');
+      setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: '' } : g));
+      setrcCoachSummaryData((prev) => prev.map((cs) => ({
+        ...cs,
+        plannedGames: cs.plannedGames.filter((g) => g.gameId !== gameId),
+        outstandingGames: cs.outstandingGames.filter((g) => g.gameId !== gameId),
+      })));
+      void refreshRcOverview();
+    } catch (err) {
+      setBackendNotice(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -3019,29 +3040,45 @@ export default function App() {
                           for (const fb of cs.doneFeedbacks) collect(doneM, `${fb.gameDate}|${fb.teams}`, { gameDate: fb.gameDate, league: fb.league, teams: fb.teams }, fb.role ? `${cs.coacheeName} (${fb.role})` : cs.coacheeName);
                         }
                         const sections = [
-                          { key: 'planned', title: t.rcPlannedGames, cls: 'text-red-700', rows: [...plannedM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
-                          { key: 'outstanding', title: t.rcOutstandingGames, cls: 'text-amber-700', rows: [...outstandingM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
-                          { key: 'done', title: t.rcDoneFeedbacks, cls: 'text-green-700', rows: [...doneM.values()].sort((a, b) => b.gameDate.localeCompare(a.gameDate)), clickable: false },
-                        ].filter((s) => s.rows.length > 0);
-                        if (sections.length === 0) return <p className="text-sm text-stone-500">{t.rcNoFeedbacks}</p>;
+                          { key: 'planned' as const, title: t.rcPlannedGames, rows: [...plannedM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
+                          { key: 'outstanding' as const, title: t.rcOutstandingGames, rows: [...outstandingM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
+                          { key: 'done' as const, title: t.rcDoneFeedbacks, rows: [...doneM.values()].sort((a, b) => b.gameDate.localeCompare(a.gameDate)), clickable: false },
+                        ];
+                        const active = sections.find((s) => s.key === rcDetailTab) ?? sections[0];
                         return (
-                          <div className="space-y-4">
-                            {sections.map((s) => (
-                              <div key={s.key} className="border border-stone-200 rounded-lg overflow-hidden">
-                                <div className="bg-stone-50 px-4 py-2.5">
-                                  <span className={cn('text-xs font-semibold', s.cls)}>{s.title} ({s.rows.length})</span>
-                                </div>
+                          <div>
+                            <div className="flex items-center gap-2 mb-3" role="tablist">
+                              {sections.map((s) => (
+                                <button
+                                  key={s.key}
+                                  role="tab"
+                                  aria-selected={rcDetailTab === s.key}
+                                  onClick={() => setRcDetailTab(s.key)}
+                                  className={cn('h-8 px-3 rounded-lg text-xs font-medium transition-colors', rcDetailTab === s.key ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200')}
+                                >
+                                  {s.title} ({s.rows.length})
+                                </button>
+                              ))}
+                            </div>
+                            <div className="border border-stone-200 rounded-lg overflow-hidden">
+                              {active.rows.length === 0 ? (
+                                <p className="text-sm text-stone-500 px-4 py-6 text-center">{t.rcNoFeedbacks}</p>
+                              ) : (
                                 <div className="divide-y divide-stone-100 px-4 py-1">
-                                  {s.rows.map((g, i) => {
+                                  {active.rows.map((g, i) => {
                                     const d = new Date(g.gameDate);
                                     const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : g.gameDate;
-                                    const eg = s.clickable && g.gameId ? eligibleGames.find((x) => x.id === g.gameId) : undefined;
+                                    const eg = active.clickable && g.gameId ? eligibleGames.find((x) => x.id === g.gameId) : undefined;
+                                    const open = eg ? () => handleSelectGame(eg, g.names.length === 1 ? g.names[0] : undefined) : undefined;
                                     return (
                                       <div
                                         key={i}
-                                        onClick={eg ? () => handleSelectGame(eg, g.names.length === 1 ? g.names[0] : undefined) : undefined}
-                                        className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-600 py-1.5', eg && 'cursor-pointer hover:bg-stone-50')}
-                                        title={eg ? (formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation') : undefined}
+                                        onClick={open}
+                                        onKeyDown={open ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } } : undefined}
+                                        tabIndex={open ? 0 : undefined}
+                                        role={open ? 'button' : undefined}
+                                        className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-600 py-1.5', open && 'cursor-pointer hover:bg-stone-50 focus-visible:bg-stone-50 focus-visible:outline-none')}
+                                        title={open ? (formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation') : undefined}
                                       >
                                         <span className="font-medium text-stone-700 w-20">{dateStr}</span>
                                         <span className="text-stone-400 w-14">{g.league}</span>
@@ -3051,13 +3088,22 @@ export default function App() {
                                             <span key={n} className="inline-flex items-center px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">{n}</span>
                                           ))}
                                         </span>
-                                        {eg && <Eye size={12} className="text-stone-400 shrink-0" />}
+                                        {open && <Eye size={12} className="text-stone-400 shrink-0" />}
+                                        {active.clickable && g.gameId && (
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); void handleUnassignGame(g.gameId!); }}
+                                            className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded border border-stone-200 text-stone-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors"
+                                            title={formData.lang === 'DE' ? 'Spiel abgeben — wieder in der Spielliste sichtbar' : 'Give the game back — visible again in the games list'}
+                                          >
+                                            <X size={11} />{formData.lang === 'DE' ? 'Abgeben' : 'Give back'}
+                                          </button>
+                                        )}
                                       </div>
                                     );
                                   })}
                                 </div>
-                              </div>
-                            ))}
+                              )}
+                            </div>
                           </div>
                         );
                       })()

@@ -378,7 +378,7 @@ export async function adminUiLogin(password: string): Promise<void> {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Login failed');
 }
 
-export type RcPerson = { id: string; first_name?: string; last_name?: string; email?: string; phone?: string; active?: boolean; has_pin?: boolean };
+export type RcPerson = { id: string; first_name?: string; last_name?: string; email?: string; phone?: string; active?: boolean; has_pin?: boolean; is_admin?: boolean };
 
 export async function generateRcPin(id: string): Promise<{ pin: string; emailed: boolean; email: string }> {
   const r = await fetch(apiUrl(`/api/admin/rc-people/${id}/pin`), { method: 'POST', credentials: 'include' });

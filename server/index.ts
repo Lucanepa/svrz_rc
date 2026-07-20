@@ -340,15 +340,6 @@ function verifyAdminSession(req: Request): { ok: boolean; email?: string } {
   }
 }
 
-function requireAdminSession(req: Request, res: ExpressResponse, next: () => void) {
-  const session = verifyAdminSession(req);
-  if (!session.ok) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  next();
-}
-
 function clientIp(req: Request): string {
   // Cloudflare sets CF-Connecting-IP at the edge and overwrites any client-supplied
   // value, so it cannot be spoofed. Fall back to the direct socket address.
@@ -368,9 +359,10 @@ function safeError(error: unknown): string {
 // Cached list of active RC people; also consulted on every RC-authenticated
 // request so deactivating/deleting an RC revokes their session within the
 // cache TTL. Invalidated by the admin rc-people CRUD endpoints.
-let rcPeopleCache: { data: { id: string; fullName: string }[]; expiresAt: number } | null = null;
+type ActiveRcPerson = { id: string; fullName: string; email: string; isAdmin: boolean };
+let rcPeopleCache: { data: ActiveRcPerson[]; expiresAt: number } | null = null;
 
-async function getActiveRcPeople(): Promise<{ id: string; fullName: string }[]> {
+async function getActiveRcPeople(): Promise<ActiveRcPerson[]> {
   if (rcPeopleCache && Date.now() < rcPeopleCache.expiresAt) return rcPeopleCache.data;
   await ensureAdminAuth();
   const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
@@ -379,13 +371,39 @@ async function getActiveRcPeople(): Promise<{ id: string; fullName: string }[]> 
   const mapped = people.map((p) => ({
     id: p.id,
     fullName: `${asText(p.first_name)} ${asText(p.last_name)}`.trim(),
+    email: asText(p.email),
+    isAdmin: p.is_admin === true,
   }));
   rcPeopleCache = { data: mapped, expiresAt: Date.now() + 10 * 60 * 1000 };
   return mapped;
 }
 
+// Resolves admin privilege from either a real admin-console session OR an RC
+// PIN session whose person is flagged is_admin. This is the single source of
+// truth for "is this request an admin".
+async function resolveAdmin(req: Request): Promise<{ ok: boolean; email: string }> {
+  const a = verifyAdminSession(req);
+  if (a.ok) return { ok: true, email: a.email || '' };
+  const s = verifyRcSession(req);
+  if (s.ok && s.rcId) {
+    try {
+      const person = (await getActiveRcPeople()).find((p) => p.id === s.rcId);
+      if (person?.isAdmin) return { ok: true, email: person.email || person.fullName };
+    } catch (error) {
+      console.error('[auth] admin resolve failed:', error);
+    }
+  }
+  return { ok: false, email: '' };
+}
+
+async function requireAdminSession(req: Request, res: ExpressResponse, next: () => void) {
+  if ((await resolveAdmin(req)).ok) { next(); return; }
+  res.status(401).json({ error: 'Unauthorized' });
+}
+
 // Identity of the RC session that authorized a request. Absent for admin
-// sessions — enforcement code treats "no rcAuth" as full (admin) access.
+// sessions (real admins AND admin-flagged RCs) — enforcement code treats
+// "no rcAuth" as full (admin) access.
 type RcAuthInfo = { rcId: string; name: string };
 const rcAuthByReq = new WeakMap<Request, RcAuthInfo>();
 
@@ -397,9 +415,11 @@ async function requireRcSession(req: Request, res: ExpressResponse, next: () => 
     try {
       const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
       if (person) {
-        // Name comes from the live record, not the token, so ownership checks
-        // stay correct after an RC is renamed.
-        rcAuthByReq.set(req, { rcId: person.id, name: person.fullName });
+        // Admin-flagged RCs get NO rcAuth, so the enforcement sites grant them
+        // full access exactly like a real admin session. Plain RCs get their
+        // identity attached (name from the live record, so ownership checks
+        // stay correct after a rename).
+        if (!person.isAdmin) rcAuthByReq.set(req, { rcId: person.id, name: person.fullName });
         next();
         return;
       }
@@ -1803,12 +1823,11 @@ app.get('/api/health', async (_req: Request, res: ExpressResponse) => {
   }
 });
 
-app.get('/api/admin/auth/status', (req: Request, res: ExpressResponse) => {
-  const session = verifyAdminSession(req);
-  res.json({
-    authenticated: session.ok,
-    email: session.email || '',
-  });
+app.get('/api/admin/auth/status', async (req: Request, res: ExpressResponse) => {
+  // Admin-flagged RC PIN sessions count as admin here too, so they can use the
+  // admin console without the separate admin password.
+  const admin = await resolveAdmin(req);
+  res.json({ authenticated: admin.ok, email: admin.email });
 });
 
 app.post('/api/admin/auth/login', async (req: Request, res: ExpressResponse) => {
@@ -1922,7 +1941,7 @@ app.get('/api/admin/rc-people', requireAdminSession, async (_req: Request, res: 
     res.json(people.map((p) => ({
       id: p.id, first_name: asText(p.first_name), last_name: asText(p.last_name),
       email: asText(p.email), phone: asText(p.phone), active: p.active !== false,
-      has_pin: Boolean(asText(p.pin_hash)),
+      has_pin: Boolean(asText(p.pin_hash)), is_admin: p.is_admin === true,
     })));
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -1952,7 +1971,8 @@ app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: 
     const d = req.body ?? {};
     const created = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
       c.create({ first_name: asText(d.first_name), last_name: asText(d.last_name),
-        email: asText(d.email), phone: asText(d.phone), active: d.active !== false }));
+        email: asText(d.email), phone: asText(d.phone), active: d.active !== false,
+        is_admin: d.is_admin === true }));
     rcPeopleCache = null;
     res.status(201).json(created);
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -1967,6 +1987,7 @@ app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, re
     if ('email' in raw) payload.email = asText(raw.email);
     if ('phone' in raw) payload.phone = asText(raw.phone);
     if ('active' in raw) payload.active = Boolean(raw.active);
+    if ('is_admin' in raw) payload.is_admin = Boolean(raw.is_admin);
     const updated = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
       c.update(String(req.params.id), payload));
     rcPeopleCache = null;
@@ -2030,18 +2051,24 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
 
 // ── Auth endpoints (per-RC PIN sessions) ─────────────────────────────
 app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
-  const admin = verifyAdminSession(req);
   let rc: { id: string; name: string } | null = null;
+  let rcIsAdmin = false;
   const session = verifyRcSession(req);
   if (session.ok && session.rcId) {
     try {
       const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
-      if (person) rc = { id: person.id, name: person.fullName };
+      if (person) { rc = { id: person.id, name: person.fullName }; rcIsAdmin = person.isAdmin; }
     } catch {
       // PB unreachable — report the RC as unauthenticated rather than failing.
     }
   }
-  res.json({ rc, admin: admin.ok ? { email: admin.email || '' } : null });
+  // admin is set for a real admin session OR an admin-flagged RC session, so the
+  // client's `isPrivileged` unlocks the same UI in both cases.
+  const adminSession = verifyAdminSession(req);
+  const admin = adminSession.ok
+    ? { email: adminSession.email || '' }
+    : (rcIsAdmin && rc ? { email: rc.name } : null);
+  res.json({ rc, admin });
 });
 
 app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {

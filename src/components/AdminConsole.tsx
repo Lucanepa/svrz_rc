@@ -53,6 +53,7 @@ const STR = {
     pinShownInfo: (p: string) => `PIN: ${p}`,
     pinEmailed: (e: string) => `Per E-Mail an ${e} gesendet.`,
     pinNotEmailed: 'Nicht per E-Mail gesendet (keine E-Mail/Testmodus) — bitte manuell übermitteln.',
+    adminRole: 'Admin', toggleAdmin: 'Admin-Rechte umschalten',
     defaultSeason: 'Standard-Saison', defaultSeasonHint: 'Die Saison, in der die App standardmässig startet (für neue Nutzer).',
     save: 'Speichern', saved: 'Gespeichert ✓', testTitle: 'Test-Modus (E-Mail)',
     testHint: 'Wenn aktiv, werden keine E-Mails versendet (Feedback wird trotzdem gespeichert). Zum Live-Betrieb ausschalten.',
@@ -78,6 +79,7 @@ const STR = {
     pinShownInfo: (p: string) => `PIN: ${p}`,
     pinEmailed: (e: string) => `Emailed to ${e}.`,
     pinNotEmailed: 'Not emailed (no address/test mode) — share it manually.',
+    adminRole: 'Admin', toggleAdmin: 'Toggle admin rights',
     defaultSeason: 'Default season', defaultSeasonHint: 'The season the app opens to by default (for new users).',
     save: 'Save', saved: 'Saved ✓', testTitle: 'Test mode (email)',
     testHint: 'When on, no emails are sent (feedback is still saved). Turn off for live operation.',
@@ -419,6 +421,7 @@ function RcsAdmin({ t }: { t: T }) {
   const add = async () => { if (!form.first_name && !form.last_name) return; await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); };
   const saveEdit = async (id: string) => { await updateRcPerson(id, editForm); setEditId(null); await reload(); };
   const remove = async (r: RcPerson) => { if (!confirm(t.delRc(`${r.first_name} ${r.last_name}`))) return; await deleteRcPerson(r.id); await reload(); };
+  const toggleAdmin = async (r: RcPerson) => { await updateRcPerson(r.id, { is_admin: !r.is_admin }); await reload(); };
   const genPin = async (r: RcPerson) => {
     if (r.has_pin && !confirm(t.genPinConfirm(`${r.first_name} ${r.last_name}`))) return;
     setPinBusy(r.id);
@@ -459,12 +462,18 @@ function RcsAdmin({ t }: { t: T }) {
             <div key={r.id} className="py-2">
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-stone-800 truncate">{r.first_name} {r.last_name}{r.active === false ? ` · ${t.inactive}` : ''}</p>
+                  <p className="text-sm font-medium text-stone-800 truncate">
+                    {r.first_name} {r.last_name}{r.active === false ? ` · ${t.inactive}` : ''}
+                    {r.is_admin && <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5"><ShieldCheck size={10} />{t.adminRole}</span>}
+                  </p>
                   <p className="text-xs text-stone-400 truncate">
                     {r.email}{r.phone ? ` · ${r.phone}` : ''}{(r.email || r.phone) ? ' · ' : ''}
                     <span className={r.has_pin ? 'text-green-600' : 'text-amber-600'}>{r.has_pin ? t.hasPin : t.noPin}</span>
                   </p>
                 </div>
+                <button onClick={() => toggleAdmin(r)} className={cn(btnGhost, r.is_admin && 'text-red-600')} title={t.toggleAdmin}>
+                  <ShieldCheck size={13} />
+                </button>
                 <button onClick={() => genPin(r)} disabled={pinBusy === r.id} className={btnGhost} title={t.genPin}>
                   {pinBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
                 </button>

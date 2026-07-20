@@ -45,10 +45,23 @@ export default defineConfig(({mode}) => {
             // real per-item status and never drops on failure.
           ],
         },
+        includeAssets: ['favicon.png', 'apple-touch-icon.png'],
         manifest: {
           name: 'SR-Coaching Feedback',
           short_name: 'SR-Coaching',
-          theme_color: '#ffffff'
+          description: 'Swiss Volley Region Zürich – Schiedsrichter-Coaching',
+          lang: 'de',
+          theme_color: '#dc2626',
+          background_color: '#ffffff',
+          display: 'standalone',
+          orientation: 'portrait',
+          start_url: '.',
+          scope: '.',
+          icons: [
+            { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+            { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+            { src: 'pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          ],
         }
       })
     ],

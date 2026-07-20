@@ -1828,7 +1828,13 @@ export default function App() {
       if (!g.assignedRc) continue;
       const sd = new Date(g.date);
       if (!Number.isNaN(sd.getTime()) && (sd < new Date(seasonFrom) || sd > new Date(seasonTo + 'T23:59:59'))) continue;
-      for (const r of [g.firstReferee, g.secondReferee]) if (r) coveredRefs.add(normName(r));
+      for (const r of [g.firstReferee, g.secondReferee]) {
+        if (!r) continue;
+        // Resolve through the name map (handles "First Last" vs "Last First")
+        // so coverage is keyed by the coachee's canonical full name.
+        const cc = coacheeByName.get(normName(r));
+        coveredRefs.add(normName(cc?.full_name || r));
+      }
     }
     return eligibleGames.filter((g) => {
       if (q && !(

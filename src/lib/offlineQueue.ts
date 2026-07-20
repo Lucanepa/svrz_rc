@@ -1,9 +1,11 @@
 // Offline outbox for feedback submissions, backed by IndexedDB (PDFs are too
 // large for localStorage). The APP owns the send loop — not Workbox Background
-// Sync — so it can report ACCURATE status: an item is removed only on a real
-// 2xx (or a 409, meaning the server already recorded it); a network failure or
-// server error keeps the item queued and visible, so feedback is never silently
-// lost and the coach is never falsely told it was sent.
+// Sync — so it reports ACCURATE status: an item is removed only on a real 2xx
+// (or a 409 = server already recorded it); a network/transient failure keeps
+// the item queued for retry; a permanent server error marks it `terminal` so it
+// stops auto-retrying and is surfaced to the coach to discard or fix. Every item
+// is tagged with the RC id that created it and is only ever sent back under that
+// same identity — so a queued item can never be submitted as a different coach.
 
 export type OutboxPayload = {
   gameId: string;
@@ -16,9 +18,11 @@ export type OutboxPayload = {
 
 export type OutboxItem = {
   id: string;
+  ownerId: string;     // RC id (or 'admin') that created it; only this identity may send it
   createdAt: number;
-  label: string;       // human summary shown in the pending list
+  label: string;       // human summary shown in the pending/failed list
   payload: OutboxPayload;
+  terminal?: boolean;  // permanent failure — not auto-retried
   lastError?: string;
 };
 
@@ -39,73 +43,105 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
+// Resolve on transaction COMMIT (t.oncomplete), not request success, so a
+// commit/abort failure (e.g. QuotaExceeded) rejects rather than falsely
+// reporting success. The connection is closed on every terminal path.
 function run<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest): Promise<T> {
   return openDb().then((db) => new Promise<T>((resolve, reject) => {
+    let result: T;
+    let settled = false;
+    const done = (err?: unknown) => { if (settled) return; settled = true; db.close(); err ? reject(err) : resolve(result); };
     const t = db.transaction(STORE, mode);
     const req = fn(t.objectStore(STORE));
-    req.onsuccess = () => resolve(req.result as T);
-    req.onerror = () => reject(req.error);
-    t.oncomplete = () => db.close();
+    req.onsuccess = () => { result = req.result as T; };
+    req.onerror = () => done(req.error);
+    t.oncomplete = () => done();
+    t.onerror = () => done(t.error);
+    t.onabort = () => done(t.error || new Error('IndexedDB transaction aborted'));
   }));
 }
 
-// Time-ordered unique id. Math.random is fine here (not a security context).
 function genId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export async function enqueueFeedback(payload: OutboxPayload, label: string): Promise<void> {
-  const item: OutboxItem = { id: genId(), createdAt: Date.now(), label, payload };
+export async function enqueueFeedback(payload: OutboxPayload, label: string, ownerId: string): Promise<void> {
+  const item: OutboxItem = { id: genId(), ownerId, createdAt: Date.now(), label, payload };
   await run('readwrite', (s) => s.put(item));
 }
 
-export async function listOutbox(): Promise<OutboxItem[]> {
+async function allItems(): Promise<OutboxItem[]> {
   const all = (await run<OutboxItem[]>('readonly', (s) => s.getAll())) || [];
   return all.sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export async function outboxCount(): Promise<number> {
-  try { return (await run<number>('readonly', (s) => s.count())) || 0; }
-  catch { return 0; }
+// Items belonging to the current identity (owner). Others are left untouched —
+// they will only ever be sent when their own owner is logged in.
+export async function listOutbox(ownerId: string): Promise<OutboxItem[]> {
+  return (await allItems()).filter((i) => i.ownerId === ownerId);
+}
+
+export async function outboxCounts(ownerId: string): Promise<{ pending: number; failed: number }> {
+  try {
+    const mine = await listOutbox(ownerId);
+    return { pending: mine.filter((i) => !i.terminal).length, failed: mine.filter((i) => i.terminal).length };
+  } catch {
+    return { pending: 0, failed: 0 };
+  }
+}
+
+export async function discardOutboxItem(id: string): Promise<void> {
+  await run('readwrite', (s) => s.delete(id));
+}
+
+// Clear the terminal flag so a fixed-up item (e.g. after the admin adds the
+// coachee's email) is retried on the next flush.
+export async function retryOutboxItem(id: string): Promise<void> {
+  const item = (await run<OutboxItem | undefined>('readonly', (s) => s.get(id)));
+  if (item) await run('readwrite', (s) => s.put({ ...item, terminal: false, lastError: undefined }));
 }
 
 async function removeItem(id: string): Promise<void> {
   await run('readwrite', (s) => s.delete(id));
 }
-
 async function putItem(item: OutboxItem): Promise<void> {
   await run('readwrite', (s) => s.put(item));
 }
 
-// Outcome of trying to send one item. 'sent'/'duplicate' → remove; else keep.
+// Outcome of one send attempt: sent/duplicate → remove; retry → keep for the
+// next flush; failed → keep but mark terminal (permanent, stop retrying).
 export type SendResult = { outcome: 'sent' | 'duplicate' | 'retry' | 'failed'; error?: string };
 
 let flushing = false;
 
-// Serially send every queued item. Guarded by an in-process lock so overlapping
-// triggers (online event + interval + manual) can't double-send an item.
+// Send this owner's non-terminal items, oldest first. Guarded by a lock so
+// overlapping triggers (online event, mount, manual, interval) never double-send.
 export async function flushOutbox(
+  ownerId: string,
   send: (p: OutboxPayload) => Promise<SendResult>,
   onChange?: () => void,
-): Promise<{ sent: number; remaining: number }> {
-  if (flushing) return { sent: 0, remaining: await outboxCount() };
+): Promise<{ sent: number; pending: number }> {
+  if (flushing) return { sent: 0, pending: (await outboxCounts(ownerId)).pending };
   flushing = true;
   let sent = 0;
   try {
-    for (const item of await listOutbox()) {
+    for (const item of await listOutbox(ownerId)) {
+      if (item.terminal) continue; // permanent failure — needs manual discard
       let res: SendResult;
       try { res = await send(item.payload); }
       catch (e) { res = { outcome: 'retry', error: e instanceof Error ? e.message : String(e) }; }
       if (res.outcome === 'sent' || res.outcome === 'duplicate') {
         await removeItem(item.id);
         sent++;
+      } else if (res.outcome === 'failed') {
+        await putItem({ ...item, terminal: true, lastError: res.error });
       } else {
-        await putItem({ ...item, lastError: res.error || res.outcome });
+        await putItem({ ...item, lastError: res.error }); // retry: keep, try again next flush
       }
       onChange?.();
     }
   } finally {
     flushing = false;
   }
-  return { sent, remaining: await outboxCount() };
+  return { sent, pending: (await outboxCounts(ownerId)).pending };
 }

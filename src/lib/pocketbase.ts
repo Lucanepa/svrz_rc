@@ -180,8 +180,10 @@ export async function rcLogin(email: string, password: string): Promise<{ name: 
 }
 
 export async function rcLogout(): Promise<void> {
-  await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' });
-  await clearApiCache();
+  // Purge the cache even if the logout POST fails (offline), so the previous
+  // RC's cached data/identity can't be served to the next person on the device.
+  try { await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' }); }
+  finally { await clearApiCache(); }
 }
 
 // Forgot PIN, step 1: request an email OTP. Always resolves (no enumeration).
@@ -227,6 +229,8 @@ export async function loginAdmin(payload: { email: string; password: string }): 
     throw new Error(await response.text());
   }
   const result = await response.json() as { email?: string };
+  // Identity change — drop the previous identity's cached responses.
+  await clearApiCache();
   return {
     authenticated: true,
     email: result.email || payload.email,
@@ -234,6 +238,7 @@ export async function loginAdmin(payload: { email: string; password: string }): 
 }
 
 export async function logoutAdmin(): Promise<void> {
+  await clearApiCache();
   const response = await fetch(apiUrl('/api/admin/auth/logout'), {
     credentials: 'include',
     method: 'POST',

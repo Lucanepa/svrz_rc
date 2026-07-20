@@ -34,7 +34,7 @@ import {
   submitSignatureSession,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
-import { enqueueFeedback, flushOutbox, outboxCount, type OutboxPayload, type SendResult } from './lib/offlineQueue';
+import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import { cn } from './lib/utils';
 import { normalizeCoacheeGroup } from './lib/coacheeGroup';
 import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
@@ -774,6 +774,7 @@ export default function App() {
   const [savingFeedback, setSavingFeedback] = useState(false);
   const [isOffline, setIsOffline] = useState(typeof navigator !== 'undefined' && !navigator.onLine);
   const [outboxPending, setOutboxPending] = useState(0);
+  const [outboxFailed, setOutboxFailed] = useState<OutboxItem[]>([]);
   const [flushing, setFlushing] = useState(false);
   const [backendNotice, setBackendNotice] = useState('');
   const [adminAuthLoading, setAdminAuthLoading] = useState(false);
@@ -784,6 +785,9 @@ export default function App() {
   // the unrestricted RC picker and may open any RC's detail. Plain RC sessions
   // act only as themselves (the server enforces this too).
   const isPrivileged = rcAuth.isAdminSession || adminAuthenticated;
+  // Identity that owns any outbox item created now — a queued submission is only
+  // ever sent back under this same identity, never a different coach's.
+  const outboxOwnerId = rcAuth.rcId || (isPrivileged ? 'admin' : 'anon');
   const [adminLoginEmail, setAdminLoginEmail] = useState('');
   const [adminLoginPassword, setAdminLoginPassword] = useState('');
   const [adminAuthNotice, setAdminAuthNotice] = useState('');
@@ -1567,18 +1571,23 @@ export default function App() {
       // (with real status) when connectivity returns. Never silently lost.
       const de = fd.lang === 'DE';
       const label = `${selectedGame.homeTeam} vs ${selectedGame.awayTeam} · ${fd.role}`;
-      await enqueueFeedback(payload, label);
+      await enqueueFeedback(payload, label, outboxOwnerId);
       void refreshOutboxCount();
       return `${fd.role}: ${de ? 'Offline gespeichert – wird gesendet, sobald du online bist.' : 'Saved offline – will send when you are back online.'}`;
     }
   };
 
   const refreshOutboxCount = async () => {
-    try { setOutboxPending(await outboxCount()); } catch { /* ignore */ }
+    try {
+      const { pending } = await outboxCounts(outboxOwnerId);
+      setOutboxPending(pending);
+      setOutboxFailed((await listOutbox(outboxOwnerId)).filter((i) => i.terminal));
+    } catch { /* ignore */ }
   };
 
-  // Classify a send attempt so the outbox knows to drop (sent/duplicate) or keep
-  // (retry on next flush / surface a server error) the item.
+  // Classify a send attempt so the outbox knows to drop (sent/duplicate), retry
+  // (transient — network, expired session, server 5xx), or mark terminal
+  // (permanent — a validation/authorization error retrying won't fix).
   const sendOutbox = async (p: OutboxPayload): Promise<SendResult> => {
     try {
       await saveFeedbackToPocketBase(p as Parameters<typeof saveFeedbackToPocketBase>[0]);
@@ -1586,8 +1595,9 @@ export default function App() {
     } catch (err) {
       const e = err as Error & { status?: number; reachedServer?: boolean };
       if (!e.reachedServer) return { outcome: 'retry', error: 'offline' };
-      if (e.status === 409) return { outcome: 'duplicate' }; // already recorded
-      return { outcome: 'failed', error: e.message };
+      if (e.status === 409) return { outcome: 'duplicate' };          // already recorded
+      if (e.status === 401 || (e.status ?? 500) >= 500) return { outcome: 'retry', error: e.message }; // re-auth / transient
+      return { outcome: 'failed', error: e.message };                 // 400/403 — permanent
     }
   };
 
@@ -1595,8 +1605,8 @@ export default function App() {
     if (!navigator.onLine) return;
     setFlushing(true);
     try {
-      const { sent, remaining } = await flushOutbox(sendOutbox, () => void refreshOutboxCount());
-      setOutboxPending(remaining);
+      const { sent } = await flushOutbox(outboxOwnerId, sendOutbox, () => void refreshOutboxCount());
+      await refreshOutboxCount();
       if (sent > 0) {
         setBackendNotice(formData.lang === 'DE'
           ? `${sent} ausstehende Übermittlung${sent > 1 ? 'en' : ''} gesendet.`
@@ -1608,6 +1618,16 @@ export default function App() {
     } finally {
       setFlushing(false);
     }
+  };
+
+  const discardFailedOutbox = async (id: string) => {
+    try { await discardOutboxItem(id); } finally { void refreshOutboxCount(); }
+  };
+
+  const retryFailedOutbox = async (id: string) => {
+    await retryOutboxItem(id);
+    await refreshOutboxCount();
+    void flushOutboxNow();
   };
 
   const handleSaveFeedback = async () => {
@@ -1633,7 +1653,14 @@ export default function App() {
           if (!stored) continue;
           const fd = 'formData' in stored ? stored.formData : stored as FeedbackFormData;
           const tips = 'tipsAndTricks' in stored ? stored.tipsAndTricks : '';
-          notices.push(await submitSingleFeedback(fd, tips));
+          try {
+            notices.push(await submitSingleFeedback(fd, tips));
+          } catch (err) {
+            // A role already recorded on the server (e.g. after a partial retry)
+            // must not abort the other role — skip it and carry on.
+            if ((err as { status?: number }).status === 409) continue;
+            throw err;
+          }
         }
         setFormData(formData);
         setBackendNotice(notices.join(' | '));
@@ -2340,6 +2367,31 @@ export default function App() {
                     {formData.lang === 'DE' ? 'Jetzt senden' : 'Send now'}
                   </button>
                 )}
+              </div>
+            )}
+            {outboxFailed.length > 0 && (
+              <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs">
+                <p className="font-semibold text-red-800 mb-1">
+                  {formData.lang === 'DE'
+                    ? `${outboxFailed.length} Übermittlung${outboxFailed.length > 1 ? 'en' : ''} fehlgeschlagen`
+                    : `${outboxFailed.length} submission${outboxFailed.length > 1 ? 's' : ''} failed`}
+                </p>
+                <div className="space-y-1.5">
+                  {outboxFailed.map((item) => (
+                    <div key={item.id} className="flex items-center gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-red-800">{item.label}</p>
+                        <p className="truncate text-red-600">{item.lastError}</p>
+                      </div>
+                      <button onClick={() => void retryFailedOutbox(item.id)} disabled={isOffline || flushing} className="rounded border border-red-300 bg-white px-2 py-0.5 font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50">
+                        {formData.lang === 'DE' ? 'Erneut' : 'Retry'}
+                      </button>
+                      <button onClick={() => void discardFailedOutbox(item.id)} className="rounded border border-stone-300 bg-white px-2 py-0.5 font-medium text-stone-600 hover:bg-stone-100">
+                        {formData.lang === 'DE' ? 'Verwerfen' : 'Discard'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
             <div className="mb-3 space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-2">

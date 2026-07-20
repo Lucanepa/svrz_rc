@@ -198,10 +198,12 @@ function checkSignatureRateLimit(ip: string) {
   return checkRateLimit(signatureAttempts, ip, SIGNATURE_RATE_LIMIT_MAX, SIGNATURE_RATE_LIMIT_WINDOW_MS);
 }
 
-// App-wide limiter for PIN logins: the 6-digit PIN space is small, so total
-// attempts are capped across all IPs, not only per IP.
+// App-wide backstop limiter for logins. Credentials are now email + password
+// (scrypt), so single-account brute force is infeasible and the cap is generous
+// — high enough not to 429 legitimate coaches on a busy match weekend, low
+// enough to blunt a distributed credential-stuffing flood.
 const pinLoginGlobal: RateLimitStore = new Map();
-const PIN_GLOBAL_MAX = 150;
+const PIN_GLOBAL_MAX = 1000;
 const PIN_GLOBAL_WINDOW_MS = 15 * 60 * 1000;
 
 function createRcSessionToken(rcId: string, name: string): string {
@@ -2175,14 +2177,18 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
       collection.getFullList<AnyRecord>({ filter: 'active = true' }),
     );
     // Login with email + password; both must belong to the same active RC.
+    // hashPin runs unconditionally (uniform timing) so response latency doesn't
+    // reveal whether the email is a registered RC.
+    const attempt = Buffer.from(hashPin(password), 'hex');
     const person = people.find((p) => asText(p.email).trim().toLowerCase() === email);
-    const pwOk = person ? (() => {
+    let pwOk = false;
+    if (person) {
       const stored = asText(person.pin_hash);
-      if (!stored) return false;
-      const storedBuf = Buffer.from(stored, 'hex');
-      const attempt = Buffer.from(hashPin(password), 'hex');
-      return storedBuf.length === attempt.length && timingSafeEqual(storedBuf, attempt);
-    })() : false;
+      if (stored) {
+        const storedBuf = Buffer.from(stored, 'hex');
+        pwOk = storedBuf.length === attempt.length && timingSafeEqual(storedBuf, attempt);
+      }
+    }
     const match = pwOk ? person! : undefined;
     if (!match) {
       res.status(401).json({ error: 'Falsche E-Mail oder falsches Passwort.' });

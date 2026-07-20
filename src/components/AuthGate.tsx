@@ -1,5 +1,5 @@
 import React, { useState, useEffect, createContext, useContext, type ReactNode } from 'react';
-import { Lock, Loader2, Mail, ArrowLeft, KeyRound } from 'lucide-react';
+import { Lock, Loader2, Mail, ArrowLeft, KeyRound, Eye, EyeOff } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { getAuthMe, rcLogin, rcLogout, rcForgotStart, rcForgotVerify } from '../lib/pocketbase';
 
@@ -28,6 +28,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [rcId, setRcId] = useState<string | null>(null);
   const [rcName, setRcName] = useState<string | null>(null);
   const [isAdminSession, setIsAdminSession] = useState(false);
@@ -184,14 +185,23 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                     <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
                     <input
                       id="rc-password"
-                      type="password"
+                      type={showPassword ? 'text' : 'password'}
                       autoComplete="current-password"
                       value={password}
                       onChange={e => setPassword(e.target.value)}
                       placeholder="Passwort"
                       disabled={submitting}
-                      className={inputClass(error)}
+                      className={`${inputClass(error)} !pr-10`}
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(v => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600 transition-colors"
+                      tabIndex={-1}
+                      aria-label={showPassword ? 'Passwort verbergen' : 'Passwort anzeigen'}
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
                   </div>
                   {error && <p className="text-red-600 text-xs mt-2 font-medium">{error}</p>}
                 </div>
@@ -267,14 +277,23 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               <div className="relative">
                 <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   autoComplete="new-password"
                   value={forgotNewPassword}
                   onChange={e => setForgotNewPassword(e.target.value)}
                   placeholder="Neues Passwort (min. 6 Zeichen)"
                   disabled={submitting}
-                  className={inputClass(error)}
+                  className={`${inputClass(error)} !pr-10`}
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600 transition-colors"
+                  tabIndex={-1}
+                  aria-label={showPassword ? 'Passwort verbergen' : 'Passwort anzeigen'}
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
               </div>
               {error && <p className="text-red-600 text-xs font-medium">{error}</p>}
               <button

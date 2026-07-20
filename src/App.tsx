@@ -1821,6 +1821,15 @@ export default function App() {
 
   const filteredGames = useMemo(() => {
     const q = listSearch.toLowerCase();
+    // Referees already covered this season: an RC took one of their games, so
+    // none of their games need to stay on the open list.
+    const coveredRefs = new Set<string>();
+    for (const g of eligibleGames) {
+      if (!g.assignedRc) continue;
+      const sd = new Date(g.date);
+      if (!Number.isNaN(sd.getTime()) && (sd < new Date(seasonFrom) || sd > new Date(seasonTo + 'T23:59:59'))) continue;
+      for (const r of [g.firstReferee, g.secondReferee]) if (r) coveredRefs.add(normName(r));
+    }
     return eligibleGames.filter((g) => {
       if (q && !(
         (g.matchNo || '').toLowerCase().includes(q) ||
@@ -1877,6 +1886,9 @@ export default function App() {
             const isActive = (c.stage || 'active') !== 'inactive';
             if (!gameFilterShowInactive && !isActive) return false;
             if (gameFilterNeedsObs && !c.observation_status?.needsObservation) return false;
+            // Covered by a planned observation → all their games leave the open list
+            // (not when deliberately viewing taken games via the RC toggle).
+            if (gameFilterNeedsObs && !gameFilterRcAssigned && coveredRefs.has(normName(c.full_name || ''))) return false;
             return true;
           });
           if (!hasEligibleRef) return false;

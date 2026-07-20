@@ -1407,7 +1407,9 @@ async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<st
     const createdAt = asText(row.created ?? row.updated);
     if (existing) {
       existing.count += 1;
-      if (isSecond) existing.hasFurther = true;
+      // hasFurther is decided by the newest observation only (rows arrive sorted
+      // -created): a "further visit: no" on the latest visit closes the loop even
+      // if an earlier visit requested one.
       if (!isSecond) existing.hasCompleted = true;
     } else {
       stats.set(coacheeId, {

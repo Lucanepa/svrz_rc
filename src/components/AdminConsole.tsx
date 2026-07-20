@@ -332,7 +332,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
       <Card>
         <div className="flex flex-wrap items-center gap-2 mb-1">
           <h2 className="text-sm font-semibold text-stone-700">{t.coachees}</h2>
-          <select value={season} onChange={(e) => { seasonTouched.current = true; setSeason(Number(e.target.value)); }} className="ml-auto h-9 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5">{SEASONS.map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
+          <select value={season} onChange={(e) => { seasonTouched.current = true; setSeason(Number(e.target.value)); }} className="ml-auto h-9 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5">{[...new Set([season, ...SEASONS])].sort().map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
           <label className={`${btnPrimary} cursor-pointer ${importing ? 'opacity-60 pointer-events-none' : ''}`}>{importing ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}<span>{t.importXlsx}</span><input type="file" accept=".xlsx" className="hidden" onChange={onFile} /></label>
         </div>
         <p className="text-xs text-stone-400">{t.importHint(seasonLabel(season))}</p>
@@ -465,7 +465,7 @@ function SettingsAdmin({ t, onTestMode, groups, onGroups }: { t: T; onTestMode: 
         <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.defaultSeason}</h2>
         <p className="text-xs text-stone-400 mb-3">{t.defaultSeasonHint}</p>
         <div className="flex items-center gap-2">
-          <select value={season} disabled={loading} onChange={(e) => setSeason(Number(e.target.value))} className="h-9 rounded-lg border border-stone-300 bg-white text-sm px-3">{SEASONS.map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
+          <select value={season} disabled={loading} onChange={(e) => setSeason(Number(e.target.value))} className="h-9 rounded-lg border border-stone-300 bg-white text-sm px-3">{[...new Set([season, ...SEASONS])].sort().map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
           <button onClick={save} className={btnPrimary}><Check size={15} /> {t.save}</button>
           {saved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
         </div>

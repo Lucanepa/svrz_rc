@@ -39,6 +39,17 @@ import AdminPanel from './components/AdminPanel';
 import LevelText from './components/LevelText';
 import { BUILD_INFO } from './lib/buildInfo';
 
+// Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
+// "ITA" — never a fabricated or TBD value (the red TBD is a UI-only concept).
+// Empty when unknown so a stored or manually entered value is preserved.
+function metaNiveau(c?: { referee_level?: string; stage?: string } | null): string {
+  if (!c) return '';
+  const lvl = (c.referee_level || '').trim();
+  if (!lvl) return '';
+  const st = (c.stage || '').trim();
+  return /^\d+$/.test(st) ? `${lvl} - ${st}` : lvl;
+}
+
 const RATINGS = ['A', 'B', 'C', 'D', 'E'];
 
 const RATING_COLORS: Record<string, string> = {
@@ -668,13 +679,21 @@ export default function App() {
   const [gameFilterDateTo, setGameFilterDateTo] = useState('');
   // Season selector (Sep 1 -> Apr 30), persisted across reloads
   const curSeasonYear = new Date().getMonth() <= 7 ? new Date().getFullYear() - 1 : new Date().getFullYear();
+  // Season pref (v3) stores {s: chosen season, d: the default it was chosen under}:
+  // a new admin default (season rollover) snaps everyone forward exactly once,
+  // while a deliberate past-season choice survives reloads until the next rollover.
   const [seasonStartYear, setSeasonStartYear] = useState<number>(() => {
-    try { const sv = localStorage.getItem('svrz_season_v2'); const n = sv ? parseInt(sv, 10) : NaN; if (Number.isFinite(n)) return n; } catch { /* ignore */ }
+    try {
+      const v3 = JSON.parse(localStorage.getItem('svrz_season_v3') || 'null') as { s?: number } | null;
+      if (v3 && Number.isFinite(v3.s)) return v3.s as number;
+      const sv = localStorage.getItem('svrz_season_v2'); const n = sv ? parseInt(sv, 10) : NaN; if (Number.isFinite(n)) return n;
+    } catch { /* ignore */ }
     return curSeasonYear;
   });
+  const defaultSeasonRef = useRef<number | null>(null);
   const seasonFrom = `${seasonStartYear}-09-01`;
   const seasonTo = `${seasonStartYear + 1}-04-30`;
-  const seasonOptions = Array.from(new Set([seasonStartYear, curSeasonYear, curSeasonYear + 1, curSeasonYear + 2].filter((y) => y >= curSeasonYear))).sort((a, b) => a - b);
+  const seasonOptions = Array.from(new Set([seasonStartYear, curSeasonYear, curSeasonYear + 1, curSeasonYear + 2].filter((y) => y >= curSeasonYear || y === seasonStartYear))).sort((a, b) => a - b);
   const [emailTestMode, setEmailTestMode] = useState(false);
   // Per-coachee level/role targets (drives "watch at their level" game filtering).
   const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
@@ -688,9 +707,12 @@ export default function App() {
       setCoacheeTargets(s.coachee_targets ?? {});
       try {
         if (s.default_season) {
-          const saved = parseInt(localStorage.getItem('svrz_season_v2') || '', 10);
-          if (!Number.isFinite(saved) || saved < s.default_season) {
+          defaultSeasonRef.current = s.default_season;
+          const stored = JSON.parse(localStorage.getItem('svrz_season_v3') || 'null') as { s?: number; d?: number } | null;
+          if (!stored || stored.d !== s.default_season) {
+            // Default changed since the pref was saved (or no pref) → snap forward once.
             setSeasonStartYear(s.default_season);
+            localStorage.setItem('svrz_season_v3', JSON.stringify({ s: s.default_season, d: s.default_season }));
             localStorage.removeItem('svrz_season_v2');
           }
         }
@@ -868,7 +890,7 @@ export default function App() {
         mannschaften: [selectedGame.homeTeam, selectedGame.awayTeam].filter(Boolean).join(' - '),
         ergebnis: selectedGame.game_result || prev.meta.ergebnis,
         srName: srName || prev.meta.srName,
-        srNiveau: (coachee ? levelDisplay(coachee.referee_level, coachee.stage, ' - ').text : '') || prev.meta.srNiveau,
+        srNiveau: metaNiveau(coachee) || prev.meta.srNiveau,
         gruppe: normalizeCoacheeGroup(coachee?.groups) || prev.meta.gruppe,
         rc: selectedGame.assignedRc || prev.meta.rc,
       },
@@ -1000,19 +1022,22 @@ export default function App() {
       meta: {
         ...prev.meta,
         srName: coachee.full_name || prev.meta.srName,
-        srNiveau: levelDisplay(coachee.referee_level, coachee.stage, ' - ').text || prev.meta.srNiveau,
+        srNiveau: metaNiveau(coachee) || prev.meta.srNiveau,
         gruppe: normalizeCoacheeGroup(coachee.groups) || prev.meta.gruppe,
       },
     }));
   };
 
-  const handleSelectGame = (game: EligibleGame | CoacheeGame) => {
+  const handleSelectGame = (game: EligibleGame | CoacheeGame, preferredRef?: string) => {
+    const isNewGame = game.id !== selectedGameId;
     setSelectedGameId(game.id);
     setFeedbackLocked(false);
     setFeedbackSubView('feedbackForm');
 
-    // Reset dual form storage
+    // Reset dual form storage; a different game must not inherit the previous
+    // game's ratings, results, or tips.
     setDualFormData({ '1. SR': null, '2. SR': null });
+    if (isNewGame) setTipsAndTricks('');
 
     // Pre-select the observation target based on which referee(s) are coachees — freely changeable afterwards
     const g = game as EligibleGame;
@@ -1030,13 +1055,18 @@ export default function App() {
       target = '2SR';
       role = '2. SR';
     }
+    // Coming from the RC view we know whom the coach plans to observe — start there.
+    if (preferredRef && has2 && normName(preferredRef) === normName(r2)) role = '2. SR';
+    else if (preferredRef && normName(preferredRef) === normName(r1)) role = '1. SR';
     setObservationTarget(target);
     setFormData(prev => {
-      if (prev.role === role) return prev;
+      if (!isNewGame && prev.role === role) return prev;
       const newSections = role === '1. SR'
         ? adjustSectionsFor2SR(prev.lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, has2)
         : (prev.lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
-      return { ...prev, role, sections: newSections };
+      return isNewGame
+        ? { ...prev, role, sections: newSections, results: { ...INITIAL_DATA.results } }
+        : { ...prev, role, sections: newSections };
     });
   };
 
@@ -1778,7 +1808,7 @@ export default function App() {
     const q = listSearch.toLowerCase();
     const filtered = coachees.filter((c) => {
       if (typeof c.season === 'number' && c.season !== seasonStartYear) return false;
-      if (q && !(c.full_name || '').toLowerCase().includes(q) && !levelDisplay(c.referee_level, c.stage).text.toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q)) return false;
+      if (q && !(c.full_name || '').toLowerCase().includes(q) && !levelDisplay(c.referee_level, c.stage).text.toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q)) return false;
       if (listFilterLevels.length > 0) {
         const coacheeLevel = levelDisplay(c.referee_level, c.stage).text;
         if (!listFilterLevels.includes(coacheeLevel)) return false;
@@ -1807,7 +1837,11 @@ export default function App() {
   // Lookup coachee by normalized name for game filtering
   const coacheeByName = useMemo(() => {
     const map = new Map<string, Coachee>();
-    for (const c of coachees) {
+    // Coachees are per-season records; the same person can have one per season.
+    // Insert the selected season's records last so they win the name key.
+    const ordered = [...coachees].sort((a, b) =>
+      Number(a.season === seasonStartYear) - Number(b.season === seasonStartYear));
+    for (const c of ordered) {
       const fn = normName(c.full_name || '');
       if (fn) map.set(fn, c);
       const first = (c.first_name || '').trim();
@@ -1818,19 +1852,22 @@ export default function App() {
       }
     }
     return map;
-  }, [coachees]);
+  }, [coachees, seasonStartYear]);
 
   const filteredGames = useMemo(() => {
     const q = listSearch.toLowerCase();
-    // Referees already covered this season: an RC took one of their games, so
-    // none of their games need to stay on the open list.
+    // Referees already covered this season: an RC took one of their games and the
+    // observation is still pending (role not yet in feedbackClosedRoles), so none
+    // of their games need to stay on the open list. Once the feedback is filed,
+    // coverage lifts and needsObservation (latest "further visit" answer) governs.
     const coveredRefs = new Set<string>();
     for (const g of eligibleGames) {
       if (!g.assignedRc) continue;
       const sd = new Date(g.date);
       if (!Number.isNaN(sd.getTime()) && (sd < new Date(seasonFrom) || sd > new Date(seasonTo + 'T23:59:59'))) continue;
-      for (const r of [g.firstReferee, g.secondReferee]) {
-        if (!r) continue;
+      const closed = g.feedbackClosedRoles || [];
+      for (const [r, role] of [[g.firstReferee, '1. SR'], [g.secondReferee, '2. SR']] as Array<[string | undefined, string]>) {
+        if (!r || closed.includes(role)) continue;
         // Resolve through the name map (handles "First Last" vs "Last First")
         // so coverage is keyed by the coachee's canonical full name.
         const cc = coacheeByName.get(normName(r));
@@ -1869,7 +1906,10 @@ export default function App() {
       if (gameFilterLd && !g.isLdGame) return false;
       // Games a coach has taken are hidden by default (they live under the RC in
       // the Referee Coaches tab); the toggle flips to showing only taken games.
-      if (gameFilterRcAssigned ? !g.assignedRc : g.assignedRc) return false;
+      // The currently expanded game stays visible so assigning an RC doesn't rip
+      // the panel (and its "start observation" button) out from under the user.
+      if (gameFilterRcAssigned && !g.assignedRc) return false;
+      if (!gameFilterRcAssigned && g.assignedRc && g.id !== expandedGameId) return false;
       if (gameFilterDateFrom) {
         const from = new Date(gameFilterDateFrom);
         if (new Date(g.date) < from) return false;
@@ -1892,10 +1932,13 @@ export default function App() {
           const hasEligibleRef = refCoachees.some((c) => {
             const isActive = (c.stage || 'active') !== 'inactive';
             if (!gameFilterShowInactive && !isActive) return false;
-            if (gameFilterNeedsObs && !c.observation_status?.needsObservation) return false;
-            // Covered by a planned observation → all their games leave the open list
-            // (not when deliberately viewing taken games via the RC toggle).
-            if (gameFilterNeedsObs && !gameFilterRcAssigned && coveredRefs.has(normName(c.full_name || ''))) return false;
+            // The "taken games" view is an assignment audit — don't thin it out
+            // with the needs-observation state.
+            if (gameFilterNeedsObs && !gameFilterRcAssigned && !c.observation_status?.needsObservation) return false;
+            // Covered by a planned observation → all their games leave the open list.
+            // Skipped when viewing taken games, and when the user explicitly picked
+            // coachees in the filter (explicit intent beats the coverage default).
+            if (gameFilterNeedsObs && !gameFilterRcAssigned && gameFilterCoachees.length === 0 && coveredRefs.has(normName(c.full_name || ''))) return false;
             return true;
           });
           if (!hasEligibleRef) return false;
@@ -1920,7 +1963,7 @@ export default function App() {
       }
       return true;
     });
-  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
+  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
@@ -2155,7 +2198,7 @@ export default function App() {
                 </button>
                 <select
                   value={seasonStartYear}
-                  onChange={(e) => { const v = parseInt(e.target.value, 10); setSeasonStartYear(v); try { localStorage.setItem('svrz_season_v2', String(v)); } catch { /* ignore */ } }}
+                  onChange={(e) => { const v = parseInt(e.target.value, 10); setSeasonStartYear(v); try { localStorage.setItem('svrz_season_v3', JSON.stringify({ s: v, d: defaultSeasonRef.current ?? v })); } catch { /* ignore */ } }}
                   className="h-9 ml-auto sm:ml-0 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5 hover:bg-stone-100 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-500"
                   title={formData.lang === 'DE' ? 'Saison' : 'Season'}
                   aria-label={formData.lang === 'DE' ? 'Saison wählen' : 'Select season'}
@@ -2609,7 +2652,21 @@ export default function App() {
                 </div>
 
                 {/* Games list view */}
-                {gameViewMode === 'list' && (
+                {gameViewMode === 'list' && (<>
+                  {!gameFilterRcAssigned && (() => {
+                    const takenCount = eligibleGames.filter((g) => {
+                      if (!g.assignedRc) return false;
+                      const sd = new Date(g.date);
+                      return Number.isNaN(sd.getTime()) || (sd >= new Date(seasonFrom) && sd <= new Date(seasonTo + 'T23:59:59'));
+                    }).length;
+                    return takenCount > 0 ? (
+                      <p className="mb-2 text-[11px] text-stone-400">
+                        {formData.lang === 'DE'
+                          ? `${takenCount} übernommene Spiele ausgeblendet — Filter «RC zugewiesen» zeigt sie.`
+                          : `${takenCount} taken game(s) hidden — the "RC assigned" filter shows them.`}
+                      </p>
+                    ) : null;
+                  })()}
                   <div className="border border-stone-200 rounded">
                     {filteredGames.length === 0 ? (
                       <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><CalendarDays size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noGames}</p></div>
@@ -2746,6 +2803,8 @@ export default function App() {
                                         try {
                                           await assignRcToGame(game.id, rcName);
                                           setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
+                                          // Keep the Referee Coaches overview counts fresh.
+                                          if (rcOverviewData.length > 0) void refreshRcOverview();
                                         } catch (err) {
                                           setBackendNotice(err instanceof Error ? err.message : String(err));
                                         }
@@ -2792,7 +2851,7 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                )}
+                </>)}
 
                 {/* Games calendar view */}
                 {gameViewMode === 'calendar' && (() => {
@@ -2943,100 +3002,65 @@ export default function App() {
                     ) : rcCoachSummaryData.length === 0 ? (
                       <p className="text-sm text-stone-500">{t.rcNoData}</p>
                     ) : (
-                      <div className="space-y-4">
-                        {rcCoachSummaryData.map((cs) => (
-                          <div key={cs.coacheeName} className="border border-stone-200 rounded-lg overflow-hidden">
-                            <div className="bg-stone-50 px-4 py-2.5 flex items-center gap-3">
-                              <span className="font-semibold text-sm text-stone-800">{cs.coacheeName}</span>
-                              {cs.doneFeedbacks.length > 0 && (
-                                <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">
-                                  {cs.doneFeedbacks.length} {t.rcDone.toLowerCase()}
-                                </span>
-                              )}
-                              {cs.outstandingGames.length > 0 && (
-                                <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
-                                  {cs.outstandingGames.length} {t.rcOutstanding.toLowerCase()}
-                                </span>
-                              )}
-                              {cs.plannedGames.length > 0 && (
-                                <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">
-                                  {cs.plannedGames.length} {t.rcPlanned.toLowerCase()}
-                                </span>
-                              )}
-                            </div>
-                            <div className="divide-y divide-stone-100">
-                              {cs.doneFeedbacks.length > 0 && (
-                                <div className="px-4 py-2">
-                                  <p className="text-xs font-medium text-green-700 mb-1.5">{t.rcDoneFeedbacks}</p>
-                                  {cs.doneFeedbacks.map((fb, i) => {
-                                    const d = new Date(fb.gameDate);
-                                    const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : fb.gameDate;
-                                    return (
-                                      <div key={i} className="flex items-center gap-3 text-xs text-stone-600 py-0.5">
-                                        <span className="font-medium text-stone-700 w-20">{dateStr}</span>
-                                        <span className="text-stone-400 w-14">{fb.league}</span>
-                                        <span className="flex-1 truncate">{fb.teams}</span>
-                                        <span className="text-stone-400">{fb.role}</span>
-                                      </div>
-                                    );
-                                  })}
+                      (() => {
+                        // Game-centric view: one row per game, all its coachees merged onto it.
+                        type RcGameRow = { gameId?: string; gameDate: string; league: string; teams: string; names: string[] };
+                        const collect = (m: Map<string, RcGameRow>, key: string, base: Omit<RcGameRow, 'names'>, name: string) => {
+                          const row = m.get(key) ?? { ...base, names: [] };
+                          if (name && !row.names.includes(name)) row.names.push(name);
+                          m.set(key, row);
+                        };
+                        const plannedM = new Map<string, RcGameRow>();
+                        const outstandingM = new Map<string, RcGameRow>();
+                        const doneM = new Map<string, RcGameRow>();
+                        for (const cs of rcCoachSummaryData) {
+                          for (const g of cs.plannedGames) collect(plannedM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams }, g.refereeName);
+                          for (const g of cs.outstandingGames) collect(outstandingM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams }, g.refereeName);
+                          for (const fb of cs.doneFeedbacks) collect(doneM, `${fb.gameDate}|${fb.teams}`, { gameDate: fb.gameDate, league: fb.league, teams: fb.teams }, fb.role ? `${cs.coacheeName} (${fb.role})` : cs.coacheeName);
+                        }
+                        const sections = [
+                          { key: 'planned', title: t.rcPlannedGames, cls: 'text-red-700', rows: [...plannedM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
+                          { key: 'outstanding', title: t.rcOutstandingGames, cls: 'text-amber-700', rows: [...outstandingM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
+                          { key: 'done', title: t.rcDoneFeedbacks, cls: 'text-green-700', rows: [...doneM.values()].sort((a, b) => b.gameDate.localeCompare(a.gameDate)), clickable: false },
+                        ].filter((s) => s.rows.length > 0);
+                        if (sections.length === 0) return <p className="text-sm text-stone-500">{t.rcNoFeedbacks}</p>;
+                        return (
+                          <div className="space-y-4">
+                            {sections.map((s) => (
+                              <div key={s.key} className="border border-stone-200 rounded-lg overflow-hidden">
+                                <div className="bg-stone-50 px-4 py-2.5">
+                                  <span className={cn('text-xs font-semibold', s.cls)}>{s.title} ({s.rows.length})</span>
                                 </div>
-                              )}
-                              {cs.outstandingGames.length > 0 && (
-                                <div className="px-4 py-2">
-                                  <p className="text-xs font-medium text-amber-700 mb-1.5">{t.rcOutstandingGames}</p>
-                                  {cs.outstandingGames.map((g, i) => {
+                                <div className="divide-y divide-stone-100 px-4 py-1">
+                                  {s.rows.map((g, i) => {
                                     const d = new Date(g.gameDate);
                                     const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : g.gameDate;
-                                    const eg = eligibleGames.find((x) => x.id === g.gameId);
+                                    const eg = s.clickable && g.gameId ? eligibleGames.find((x) => x.id === g.gameId) : undefined;
                                     return (
                                       <div
                                         key={i}
-                                        onClick={eg ? () => handleSelectGame(eg) : undefined}
-                                        className={cn('flex items-center gap-3 text-xs text-stone-600 py-0.5', eg && 'cursor-pointer hover:bg-stone-50')}
+                                        onClick={eg ? () => handleSelectGame(eg, g.names.length === 1 ? g.names[0] : undefined) : undefined}
+                                        className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-600 py-1.5', eg && 'cursor-pointer hover:bg-stone-50')}
                                         title={eg ? (formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation') : undefined}
                                       >
                                         <span className="font-medium text-stone-700 w-20">{dateStr}</span>
                                         <span className="text-stone-400 w-14">{g.league}</span>
-                                        <span className="flex-1 truncate">{g.teams}</span>
-                                        <span className="text-stone-500">{g.refereeName}</span>
+                                        <span className="flex-1 min-w-[10rem] truncate">{g.teams}</span>
+                                        <span className="flex flex-wrap items-center gap-1.5">
+                                          {g.names.map((n) => (
+                                            <span key={n} className="inline-flex items-center px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">{n}</span>
+                                          ))}
+                                        </span>
                                         {eg && <Eye size={12} className="text-stone-400 shrink-0" />}
                                       </div>
                                     );
                                   })}
                                 </div>
-                              )}
-                              {cs.plannedGames.length > 0 && (
-                                <div className="px-4 py-2">
-                                  <p className="text-xs font-medium text-red-700 mb-1.5">{t.rcPlannedGames}</p>
-                                  {cs.plannedGames.map((g, i) => {
-                                    const d = new Date(g.gameDate);
-                                    const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : g.gameDate;
-                                    const eg = eligibleGames.find((x) => x.id === g.gameId);
-                                    return (
-                                      <div
-                                        key={i}
-                                        onClick={eg ? () => handleSelectGame(eg) : undefined}
-                                        className={cn('flex items-center gap-3 text-xs text-stone-600 py-0.5', eg && 'cursor-pointer hover:bg-stone-50')}
-                                        title={eg ? (formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation') : undefined}
-                                      >
-                                        <span className="font-medium text-stone-700 w-20">{dateStr}</span>
-                                        <span className="text-stone-400 w-14">{g.league}</span>
-                                        <span className="flex-1 truncate">{g.teams}</span>
-                                        <span className="text-stone-500">{g.refereeName}</span>
-                                        {eg && <Eye size={12} className="text-stone-400 shrink-0" />}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                              {cs.doneFeedbacks.length === 0 && cs.outstandingGames.length === 0 && cs.plannedGames.length === 0 && (
-                                <div className="px-4 py-2 text-xs text-stone-400">{t.rcNoFeedbacks}</div>
-                              )}
-                            </div>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
+                        );
+                      })()
                     )}
                   </div>
                 ) : rcOverviewData.length === 0 ? (
@@ -3164,8 +3188,15 @@ export default function App() {
                             onClick={() => handleSelectGame(game)}
                             className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
                           >
-                            <div className="font-semibold text-stone-900 text-sm">
-                              {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="font-semibold text-stone-900 text-sm">
+                                {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
+                              </div>
+                              {game.assignedRc && (
+                                <span className="shrink-0 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700" title={formData.lang === 'DE' ? 'Bereits von einem RC übernommen' : 'Already taken by an RC'}>
+                                  RC: {game.assignedRc}
+                                </span>
+                              )}
                             </div>
                             <div className="text-xs text-stone-500 mt-1">
                               {formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}
@@ -3832,6 +3863,12 @@ export default function App() {
                 <span className="text-stone-500">{t.level}</span>
                 <span className="font-medium text-stone-900"><LevelText level={detailCoachee.referee_level} stage={detailCoachee.stage} /></span>
               </div>
+              {detailCoachee.stage === 'inactive' && (
+                <div className="flex justify-between">
+                  <span className="text-stone-500">Status</span>
+                  <span className="font-medium text-red-600">{t.inactive}</span>
+                </div>
+              )}
               {detailCoachee.groups && (
                 <div className="flex justify-between">
                   <span className="text-stone-500">{t.group}</span>
@@ -4012,14 +4049,14 @@ function ManualUploadModal({ coachee, coachees, rcPeople, notice, submitting, on
     return Array.from(set).sort();
   }, [coachees]);
 
-  // Derive unique levels from all coachees (level - stage format)
+  // Derive unique levels from all coachees (level - stage format, raw values)
   const allLevels = useMemo(() => {
     const set = new Set<string>();
-    coachees.forEach(c => set.add(levelDisplay(c.referee_level, c.stage, ' - ').text));
+    coachees.forEach(c => { const v = metaNiveau(c); if (v) set.add(v); });
     return Array.from(set).sort();
   }, [coachees]);
 
-  const defaultLevel = levelDisplay(coachee.referee_level, coachee.stage, ' - ').text;
+  const defaultLevel = metaNiveau(coachee);
 
   const sections = role === '1. SR' ? SECTIONS_1SR_DE : SECTIONS_2SR_DE;
 

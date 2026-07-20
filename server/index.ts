@@ -1399,12 +1399,18 @@ async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<st
       }
     }
   })();
+  // The PB queries request sort '-created', but the last-resort fallback fetch
+  // has no sort, and pre-migration records may have an empty created. Re-sort
+  // here so "newest first" (which the latest-wins logic below depends on) holds
+  // on every path.
+  allObservations.sort((a, b) =>
+    (asText(b.created) || asText(b.updated)).localeCompare(asText(a.created) || asText(a.updated)));
   for (const row of allObservations) {
     const coacheeId = asText(row.coachee);
     if (!coacheeId) continue;
     const existing = stats.get(coacheeId);
     const isSecond = asBoolean(row.second_observation, false);
-    const createdAt = asText(row.created ?? row.updated);
+    const createdAt = asText(row.created) || asText(row.updated);
     if (existing) {
       existing.count += 1;
       // hasFurther is decided by the newest observation only (rows arrive sorted
@@ -1874,19 +1880,32 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
     for (const r of rows) {
       const full_name = asText(r.full_name) || `${asText(r.first_name)} ${asText(r.last_name)}`.trim();
       if (!full_name) continue;
-      const payload = {
+      const payload: Record<string, unknown> = {
         full_name, first_name: asText(r.first_name), last_name: asText(r.last_name),
         referee_level: asText(r.referee_level), stage: asText(r.stage) || 'active',
-        groups: asText(r.groups), notes: asText(r.notes), season,
+        groups: asText(r.groups), season,
       };
-      const ex = byKey.get(`${normalizeName(full_name)}|${season ?? ''}`);
+      // Only touch notes when the file actually provided a value — a re-import
+      // from a notes-less sheet must not wipe notes maintained in the app.
+      if (asText(r.notes)) payload.notes = asText(r.notes);
+      const key = `${normalizeName(full_name)}|${season ?? ''}`;
+      const ex = byKey.get(key);
       if (ex) { await withCollection(collectionCandidates.coachees, (c) => c.update(ex.id, payload)); updated++; }
-      else { await withCollection(collectionCandidates.coachees, (c) => c.create({ ...payload, feedback_entries: [] })); created++; }
+      else {
+        const rec = await withCollection(collectionCandidates.coachees, (c) => c.create({ notes: '', ...payload, feedback_entries: [] }));
+        byKey.set(key, rec as AnyRecord); // duplicate rows in one file update instead of duplicating
+        created++;
+      }
     }
-    // Importing a newer season makes it the app-wide default ("latest season with data").
+    // Importing a newer season makes it the app-wide default ("latest season with
+    // data"). Guarded so a historical backfill or typo season can't move it.
     if (created > 0 && season != null && Number.isFinite(season)) {
+      const now = new Date();
+      const curSeasonYear = now.getMonth() <= 7 ? now.getFullYear() - 1 : now.getFullYear();
       const cur = Number(asText((await getSettingRecord('default_season'))?.value));
-      if (!Number.isFinite(cur) || season > cur) await setSetting('default_season', String(season));
+      const newerThanCurrent = !Number.isFinite(cur) || season > cur;
+      const plausible = season >= curSeasonYear && season <= curSeasonYear + 2;
+      if (newerThanCurrent && plausible) await setSetting('default_season', String(season));
     }
     res.json({ created, updated, total: rows.length });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }

@@ -64,7 +64,9 @@ export function levelDisplay(refereeLevel?: string, stage?: string, sep = '-'): 
   const st = (stage || '').trim();
   const stufe = /^\d+$/.test(st) ? st : '';
   if (lvl && !/^N[1-5]$/i.test(lvl)) return { text: 'TBD', tbd: true };
-  const base = (lvl || 'N4').toUpperCase();
+  // No Niveau at all → never fabricate certainty, even if a Stufe is present.
+  if (!lvl) return { text: `N4${sep}TBD`, tbd: true };
+  const base = lvl.toUpperCase();
   if (stufe) return { text: `${base}${sep}${stufe}`, tbd: false };
   if (base === 'N1') return { text: base, tbd: false };
   return { text: `${base}${sep}TBD`, tbd: true };
@@ -74,7 +76,9 @@ export function levelKey(refereeLevel?: string, stage?: string): string {
   const lvl = (refereeLevel || '').trim();
   if (!lvl) return '';
   const st = (stage || '').trim();
-  return st ? `${lvl}-${st}` : lvl;
+  // stage also carries the 'active'/'inactive' placeholder — only a numeric
+  // Stufe belongs in the key (e.g. levelKey('N1','active') must be 'N1').
+  return /^\d+$/.test(st) ? `${lvl}-${st}` : lvl;
 }
 
 export function hasNiveauRules(key: string): boolean {

@@ -11,3 +11,6 @@ deploy/hetzner/seed/
 deploy/hetzner/svrz-api.env
 deploy/hetzner/pb_data/
 deploy/hetzner/.env
+
+# stray one-off scripts
+*.tmp.mjs

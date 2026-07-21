@@ -7,14 +7,42 @@
 export type SetScore = { h: string; a: string };
 export type ParsedResult = { home: string; away: string; sets: SetScore[] };
 
-/** First number pair is the match score; every pair after it is a set. */
+/**
+ * First number pair is the match score; every pair after it is a set.
+ * A side may be empty — a half-typed "25:" has to survive the round trip
+ * through this string, or the digit disappears from the box as it is typed.
+ */
 export function parseResult(value: string): ParsedResult {
-  const pairs = [...String(value ?? '').matchAll(/(\d{1,2})\s*[:\-]\s*(\d{1,2})/g)]
-    .map((m) => ({ h: m[1], a: m[2] }));
+  const pairs = [...String(value ?? '').matchAll(/(\d{1,2})?\s*[:\-]\s*(\d{1,2})?/g)]
+    .map((m) => ({ h: m[1] ?? '', a: m[2] ?? '' }))
+    .filter((p) => p.h !== '' || p.a !== '');
   if (pairs.length === 0) return { home: '', away: '', sets: [] };
   const [match, ...sets] = pairs;
   // The match score is a set count, so it is one digit; the sets are points.
   return { home: match.h.slice(0, 1), away: match.a.slice(0, 1), sets };
+}
+
+export function isSetComplete(set: SetScore): boolean {
+  return set.h !== '' && set.a !== '';
+}
+
+/** Who won how many sets, counting only the sets that are actually filled in. */
+export function tallyFromSets(sets: SetScore[]): { home: number; away: number } {
+  let home = 0;
+  let away = 0;
+  for (const set of sets) {
+    if (!isSetComplete(set)) continue;
+    const h = Number(set.h);
+    const a = Number(set.a);
+    if (h > a) home += 1;
+    else if (a > h) away += 1;
+  }
+  return { home, away };
+}
+
+/** A side needs three sets to win; some junior leagues play best-of-three. */
+export function isMatchDecided(tally: { home: number; away: number }): boolean {
+  return Math.max(tally.home, tally.away) >= 3;
 }
 
 export function formatResult(home: string, away: string, sets: SetScore[]): string {
@@ -48,6 +76,13 @@ export function validateResult(value: string, lang: 'DE' | 'EN'): string | null 
     return de
       ? `Ergebnis ${h}:${a} ist nicht möglich: Der Sieger braucht 3 Sätze (Best-of-3: 2).`
       : `A ${h}:${a} result is not possible: the winner needs 3 sets (best-of-3: 2).`;
+  }
+
+  // Checked before the count: a set caught half-typed ("25:") would otherwise
+  // be reported as one set too many, which reads like nonsense.
+  const halfTyped = sets.findIndex((s) => !isSetComplete(s));
+  if (halfTyped >= 0) {
+    return de ? `Satz ${halfTyped + 1}: Punkte fehlen.` : `Set ${halfTyped + 1}: points are missing.`;
   }
 
   const played = h + a;

@@ -44,7 +44,7 @@ import AdminPanel from './components/AdminPanel';
 import LevelText from './components/LevelText';
 import { Skeleton, SkeletonRows } from './components/Skeleton';
 import { useRcAuth } from './components/AuthGate';
-import { isDemoMode, getSentMail, type DemoEmail } from './lib/demo';
+import { isDemoMode, getSentMail, demoTips, type DemoEmail } from './lib/demo';
 import { BUILD_INFO } from './lib/buildInfo';
 
 // Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
@@ -60,14 +60,20 @@ function metaNiveau(c?: { referee_level?: string; stage?: string } | null): stri
 
 const RATINGS = ['A', 'B', 'C', 'D', 'E'];
 
+// A/B are the two greens (exemplary → mostly exceeded), C is the neutral
+// "fully achieved" standard, D/E warn and fail.
 const RATING_COLORS: Record<string, string> = {
   'A': 'bg-green-400 text-white',
   'B': 'bg-green-700 text-white',
-  'C': 'bg-red-600 text-white',
-  'D': 'bg-yellow-400 text-stone-900',
-  'E': 'bg-orange-500 text-white',
+  'C': 'bg-blue-600 text-white',
+  'D': 'bg-orange-500 text-white',
+  'E': 'bg-red-600 text-white',
   'N/A': 'bg-stone-400 text-white',
 };
+
+// Picked option in the results row (match level, motivation, outlook, further
+// visit) — the same blue as a "C", so the report reads as one scale.
+const SELECTED_RESULT = 'bg-blue-600 text-white border-blue-600 font-bold';
 
 const NA_ELIGIBLE_IDS = new Set(['1sr-lead-2', '2sr-lead-1']);
 
@@ -1303,7 +1309,7 @@ export default function App() {
     // Reset dual form storage; a different game must not inherit the previous
     // game's ratings, results, or tips.
     setDualFormData({ '1. SR': null, '2. SR': null });
-    if (isNewGame) setTipsAndTricks('');
+    if (isNewGame) setTipsAndTricks(demoTips());
 
     // Pre-select the observation target based on which referee(s) are coachees — freely changeable afterwards
     const g = game as EligibleGame;
@@ -1916,7 +1922,9 @@ export default function App() {
     }
   };
 
-  const [tipsAndTricks, setTipsAndTricks] = useState('');
+  // Pre-filled in the demo so the section — and the part of the feedback mail
+  // that carries it — is visible without typing; empty in the real app.
+  const [tipsAndTricks, setTipsAndTricks] = useState(demoTips);
   const [feedbackLocked, setFeedbackLocked] = useState(false);
   // Demo mode: emails aren't sent, they're shown. This holds the captured
   // preview(s) and controls the preview modal (auto-opened after a demo submit).
@@ -2043,7 +2051,7 @@ export default function App() {
           gruppe: '',
         },
       }));
-      setTipsAndTricks('');
+      setTipsAndTricks(demoTips());
     }
   };
 
@@ -2081,7 +2089,7 @@ export default function App() {
             gruppe: '',
           },
         }));
-        setTipsAndTricks('');
+        setTipsAndTricks(demoTips());
       }
     } else {
       // Single-coachee mode: original behavior
@@ -3805,24 +3813,35 @@ export default function App() {
                           for (const g of cs.outstandingGames) collect(outstandingM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams }, g.refereeName);
                           for (const fb of cs.doneFeedbacks) collect(doneM, `${fb.gameDate}|${fb.teams}`, { gameDate: fb.gameDate, league: fb.league, teams: fb.teams, coacheeId: cs.coacheeId, role: fb.role }, fb.role ? `${cs.coacheeName} (${fb.role})` : cs.coacheeName);
                         }
+                        const de2 = formData.lang === 'DE';
                         const sections = [
-                          { key: 'planned' as const, title: t.rcPlannedGames, rows: [...plannedM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
-                          { key: 'outstanding' as const, title: t.rcOutstandingGames, rows: [...outstandingM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
-                          { key: 'done' as const, title: t.rcDoneFeedbacks, rows: [...doneM.values()].sort((a, b) => b.gameDate.localeCompare(a.gameDate)), clickable: false, opensFeedback: true },
+                          { key: 'planned' as const, title: t.rcPlannedGames, short: de2 ? 'Geplant' : 'Planned', rows: [...plannedM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
+                          { key: 'outstanding' as const, title: t.rcOutstandingGames, short: de2 ? 'Offen' : 'Open', rows: [...outstandingM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
+                          { key: 'done' as const, title: t.rcDoneFeedbacks, short: de2 ? 'Erledigt' : 'Done', rows: [...doneM.values()].sort((a, b) => b.gameDate.localeCompare(a.gameDate)), clickable: false, opensFeedback: true },
                         ];
                         const active = sections.find((s) => s.key === rcDetailTab) ?? sections[0];
                         return (
                           <div>
-                            <div className="flex items-center gap-2 mb-3" role="tablist">
+                            {/* Equal-width tabs with the count on its own line: the full
+                                labels ("Outstanding Games (1)") wrapped to three ragged
+                                lines and gave tiny tap targets on a phone. */}
+                            <div className="grid grid-cols-3 gap-2 mb-3" role="tablist">
                               {sections.map((s) => (
                                 <button
                                   key={s.key}
                                   role="tab"
                                   aria-selected={rcDetailTab === s.key}
                                   onClick={() => setRcDetailTab(s.key)}
-                                  className={cn('h-8 px-3 rounded-lg text-xs font-medium transition-colors', rcDetailTab === s.key ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200')}
+                                  className={cn(
+                                    'flex flex-col items-center justify-center gap-0.5 h-14 px-2 rounded-xl font-medium transition-colors',
+                                    rcDetailTab === s.key ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200',
+                                  )}
                                 >
-                                  {s.title} ({s.rows.length})
+                                  <span className="text-base font-bold leading-none">{s.rows.length}</span>
+                                  <span className="text-[11px] leading-tight text-center">
+                                    <span className="sm:hidden">{s.short}</span>
+                                    <span className="hidden sm:inline">{s.title}</span>
+                                  </span>
                                 </button>
                               ))}
                             </div>
@@ -3848,31 +3867,39 @@ export default function App() {
                                         onKeyDown={open ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } } : undefined}
                                         tabIndex={open ? 0 : undefined}
                                         role={open ? 'button' : undefined}
-                                        className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-600 py-1.5', open && 'cursor-pointer hover:bg-stone-50 focus-visible:bg-stone-50 focus-visible:outline-none')}
+                                        className={cn('text-xs text-stone-600 py-2 sm:flex sm:flex-wrap sm:items-center sm:gap-x-3 sm:gap-y-1', open && 'cursor-pointer hover:bg-stone-50 focus-visible:bg-stone-50 focus-visible:outline-none')}
                                         title={open
                                           ? (active.key === 'done'
                                             ? (formData.lang === 'DE' ? 'Feedback öffnen' : 'Open feedback')
                                             : (formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation'))
                                           : undefined}
                                       >
-                                        <span className="font-medium text-stone-700 w-20">{dateStr}</span>
-                                        <span className="text-stone-400 w-14">{g.league}</span>
-                                        <span className="flex-1 min-w-[10rem] truncate">{g.teams}</span>
-                                        <span className="flex flex-wrap items-center gap-1.5">
-                                          {g.names.map((n) => (
-                                            <span key={n} className="inline-flex items-center px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">{n}</span>
-                                          ))}
-                                        </span>
-                                        {open && <Eye size={12} className="text-stone-400 shrink-0" />}
-                                        {active.clickable && g.gameId && (
-                                          <button
-                                            onClick={(e) => { e.stopPropagation(); void handleUnassignGame(g.gameId!); }}
-                                            className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded border border-stone-200 text-stone-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors"
-                                            title={formData.lang === 'DE' ? 'Spiel abgeben — wieder in der Spielliste sichtbar' : 'Give the game back — visible again in the games list'}
-                                          >
-                                            <X size={11} />{formData.lang === 'DE' ? 'Abgeben' : 'Give back'}
-                                          </button>
-                                        )}
+                                        {/* Phone: date+league, then the fixture, then people/actions.
+                                            `sm:contents` restores the original one-line desktop row. */}
+                                        <div className="flex items-center gap-2 sm:contents">
+                                          <span className="font-medium text-stone-700 sm:w-20">{dateStr}</span>
+                                          <span className="text-stone-400 sm:w-14">{g.league}</span>
+                                        </div>
+                                        <p className="mt-0.5 text-sm font-medium text-stone-800 sm:mt-0 sm:text-xs sm:font-normal sm:text-stone-600 sm:flex-1 sm:min-w-[10rem] sm:truncate">
+                                          {g.teams}
+                                        </p>
+                                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 sm:mt-0 sm:contents">
+                                          <span className="flex flex-wrap items-center gap-1.5">
+                                            {g.names.map((n) => (
+                                              <span key={n} className="inline-flex items-center px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">{n}</span>
+                                            ))}
+                                          </span>
+                                          {open && <Eye size={12} className="text-stone-400 shrink-0" />}
+                                          {active.clickable && g.gameId && (
+                                            <button
+                                              onClick={(e) => { e.stopPropagation(); void handleUnassignGame(g.gameId!); }}
+                                              className="shrink-0 inline-flex items-center gap-1 px-2 py-1 sm:py-0.5 rounded border border-stone-200 text-stone-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors"
+                                              title={formData.lang === 'DE' ? 'Spiel abgeben — wieder in der Spielliste sichtbar' : 'Give the game back — visible again in the games list'}
+                                            >
+                                              <X size={11} />{formData.lang === 'DE' ? 'Abgeben' : 'Give back'}
+                                            </button>
+                                          )}
+                                        </div>
                                       </div>
                                     );
                                   })}
@@ -4316,7 +4343,7 @@ export default function App() {
             <div className="flex flex-wrap gap-1">
               {([['leicht', t.easy], ['normal', t.normal], ['schwierig', t.difficult]] as [string, string][]).map(([v, lbl]) => (
                 <button key={v} type="button" onClick={() => updateResult('spielniveau', v)}
-                  className={cn("h-8 px-2.5 border rounded text-xs font-bold transition-all", formData.results.spielniveau === v ? "bg-red-600 text-white border-red-600" : "bg-white border-stone-300 hover:bg-stone-100")}>
+                  className={cn("h-8 px-2.5 border rounded text-xs font-bold transition-all", formData.results.spielniveau === v ? SELECTED_RESULT : "bg-white border-stone-300 hover:bg-stone-100")}>
                   {lbl}
                 </button>
               ))}
@@ -4331,7 +4358,7 @@ export default function App() {
                   onClick={() => updateResult('motivation', v)}
                   className={cn(
                     "w-8 h-8 border border-stone-300 rounded flex items-center justify-center text-lg font-bold transition-all",
-                    formData.results.motivation === v ? "bg-red-600 text-white border-red-600 font-bold" : "bg-white hover:bg-stone-100"
+                    formData.results.motivation === v ? SELECTED_RESULT : "bg-white hover:bg-stone-100"
                   )}
                 >
                   {v === 'up' ? '↑' : v === 'check' ? '✓' : '↓'}
@@ -4348,7 +4375,7 @@ export default function App() {
                   onClick={() => updateResult('einstufung', v)}
                   className={cn(
                     "w-8 h-8 border border-stone-300 rounded flex items-center justify-center text-lg font-bold transition-all",
-                    formData.results.einstufung === v ? "bg-red-600 text-white border-red-600 font-bold" : "bg-white hover:bg-stone-100"
+                    formData.results.einstufung === v ? SELECTED_RESULT : "bg-white hover:bg-stone-100"
                   )}
                 >
                   {v === 'up' ? '↑' : v === 'check' ? '✓' : '↓'}
@@ -4365,7 +4392,7 @@ export default function App() {
                   onClick={() => updateResult('secondBesuch', v)}
                   className={cn(
                     "w-8 h-8 border border-stone-300 rounded flex items-center justify-center text-xs font-bold transition-all",
-                    formData.results.secondBesuch === v ? "bg-red-600 text-white border-red-600 font-bold" : "bg-white hover:bg-stone-100"
+                    formData.results.secondBesuch === v ? SELECTED_RESULT : "bg-white hover:bg-stone-100"
                   )}
                 >
                   {v}

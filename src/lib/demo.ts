@@ -63,6 +63,20 @@ const MAIL_FROM = 'SVRZ Referee Coaching <rc_coaching@volleyball.lucanepa.com>';
 const COACHING_MAILBOX = 'rc_coaching@volleyball.lucanepa.com'; // real FEEDBACK_CC → BCC
 const SURVEY_URL = 'https://forms.svrz.ch/coaching-feedback';
 
+// Sample "Tipps & Tricks" — the free-text block an RC writes for the coachee.
+// Pre-filled in the demo so the section (and the part of the feedback mail that
+// carries it) is visible without the visitor having to type anything.
+export const DEMO_TIPS = `Positionierung beim Angriff: Stell dich einen halben Schritt weiter vom Netz weg — du siehst die Blockhand dann früher und musst den Kopf nicht mitdrehen.
+
+Handzeichen: Erst pfeifen, kurz absetzen, dann anzeigen. Das wirkt ruhiger und die Teams folgen dir besser.
+
+Zusammenarbeit 2. SR: Vor dem Spiel drei Punkte abmachen (Netzberührung, Aufstellung, Time-outs) — im Satz reicht dann ein Blick.`;
+
+// Empty outside the demo, so the same call site works in the real app.
+export function demoTips(): string {
+  return isDemoMode() ? DEMO_TIPS : '';
+}
+
 export type DemoEmail = {
   label: string;       // which mail this is (feedback / day-before reminder)
   from: string;
@@ -131,7 +145,7 @@ function makeFeedbackJson(game: DemoGame, refereeName: string, niveau: string): 
       datum: game.date,
       ort: game.location,
       mannschaften: `${game.homeTeam} – ${game.awayTeam}`,
-      ergebnis: game.game_result ?? '3:1',
+      ergebnis: game.game_result ?? '3:1 | 25:20, 22:25, 25:18, 25:22',
       srName: refereeName,
       srNiveau: niveau,
       rc: RC.name,
@@ -215,20 +229,22 @@ function buildStore(): DemoStore {
       id: 'demo-g1', coacheeId: 'demo-c-anna', role: '1. SR', kind: 'done',
       matchNo: '2140301', league: '3L ♂', date: seasonDate(9, 12), location: 'Sporthalle Buchholz, Uster',
       homeTeam: 'VBC Kanti Baden', awayTeam: 'Volley Smash 05', firstReferee: 'Anna Bühler', secondReferee: 'Nina Sutter',
-      assignedRc: RC.name, feedbackClosedRoles: ['1. SR'], game_result: '3:1',
+      // "sets | per-set points" — the format the games sync delivers, so the
+      // report's set boxes are filled the way a played game really looks.
+      assignedRc: RC.name, feedbackClosedRoles: ['1. SR'], game_result: '3:1 | 25:20, 22:25, 25:18, 25:22',
       maps_url: 'https://maps.google.com/?q=Sporthalle+Buchholz+Uster', isRdGame: true,
     },
     {
       id: 'demo-g6', coacheeId: 'demo-c-jan', role: '1. SR', kind: 'done',
       matchNo: '2140418', league: '1L ♂', date: seasonDate(9, 26), location: 'Saalsporthalle, Zürich',
       homeTeam: 'Volley Züri Unterland', awayTeam: 'TSV Jona', firstReferee: 'Jan Keller', secondReferee: 'Marco Rossi',
-      assignedRc: RC.name, feedbackClosedRoles: ['1. SR'], game_result: '3:2', isRdGame: true,
+      assignedRc: RC.name, feedbackClosedRoles: ['1. SR'], game_result: '3:2 | 25:22, 23:25, 25:19, 20:25, 15:12', isRdGame: true,
     },
     {
       id: 'demo-g4', coacheeId: 'demo-c-luca', role: '1. SR', kind: 'outstanding',
       matchNo: '2140355', league: '4L ♂', date: seasonDate(10, 9), location: 'Turnhalle Lindenmoos, Wallisellen',
       homeTeam: 'TV Wittenbach', awayTeam: 'VBC Kanti Schaffhausen', firstReferee: 'Luca Ferrari', secondReferee: 'Timo Weber',
-      assignedRc: RC.name, game_result: '2:3',
+      assignedRc: RC.name, game_result: '2:3 | 25:21, 19:25, 25:23, 22:25, 12:15',
     },
     {
       id: 'demo-g5', coacheeId: 'demo-c-sofia', role: '1. SR', kind: 'planned',
@@ -290,11 +306,20 @@ function buildStore(): DemoStore {
   // Admin-picked priorities: a couple of games we'd like observed.
   for (const g of games) if (g.id === 'demo-g7' || g.id === 'demo-g3') g.starred = true;
 
-  // Seed the mailbox with the day-before reminder for the next planned game, so
-  // the demo shows that mail too (nothing is ever actually sent).
+  // Seed the mailbox with both mails the system sends, so "Demo mail" shows
+  // them straight away instead of only after the visitor files a feedback:
+  // the day-before reminder for the next planned game, and the feedback mail
+  // that went out for the observation already on file. Nothing is ever sent.
+  const sentMail: DemoEmail[] = [];
   const nextPlanned = games.find((g) => g.kind === 'planned');
   const nextCoachee = nextPlanned ? coachees.find((c) => c.id === nextPlanned.coacheeId) : undefined;
-  const sentMail = nextPlanned && nextCoachee ? [buildDemoReminderEmail(nextPlanned, nextCoachee)] : [];
+  if (nextPlanned && nextCoachee) sentMail.push(buildDemoReminderEmail(nextPlanned, nextCoachee));
+  const filed = games.find((g) => g.kind === 'done');
+  const filedCoachee = filed ? coachees.find((c) => c.id === filed.coacheeId) : undefined;
+  if (filed && filedCoachee) {
+    const json = feedbacks[filedCoachee.id]?.[0]?.feedback_json;
+    if (json) sentMail.push(buildDemoEmail(filed, filedCoachee, json, DEMO_TIPS));
+  }
 
   return { coachees, games, feedbacks, siblings, sentMail, feedbackSeq: 1 };
 }

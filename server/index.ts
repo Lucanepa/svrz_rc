@@ -1292,6 +1292,97 @@ function buildVmSearchBody(csrfToken: string, offset: number, limit: number, fro
   return params.toString();
 }
 
+// ── Referee contact details from VolleyManager ───────────────────────
+// The SVRZ referee XLSX carries no email column, so imported coachees have no
+// address — and POST /api/feedback hard-fails without one, at the very end of
+// a filled-in form. VM's "Schiedsrichterliste" (refereeAddressViewer) holds an
+// email and phone for every licensed referee, so pull them from there as a
+// follow-up step to the import.
+type VmRefereeContact = { firstName: string; lastName: string; email: string; phone: string };
+
+const VM_CONTACT_COLUMNS = [
+  'person.lastName',
+  'person.firstName',
+  'person.primaryEmailAddress.emailAddress',
+  'person.primaryPhoneNumber.normalizedLocalNumber',
+];
+const VM_CONTACT_PAGE_SIZE = 400;
+
+async function fetchVmRefereeContacts(username: string, password: string): Promise<VmRefereeContact[]> {
+  const jar = new CookieJar();
+  jar.set('language', 'de');
+  const { body: loginHtml } = await followRedirects(`${VM_BASE}/login`, jar, {}, 10);
+  const hidden: Record<string, string> = {};
+  for (const m of loginHtml.matchAll(/name="([^"]+)"[^>]*value="([^"]*?)"/g)) hidden[m[1]] = m[2];
+  const authPrefix = '__authentication[Neos][Flow][Security][Authentication][Token][UsernamePassword]';
+  hidden[`${authPrefix}[username]`] = username;
+  hidden[`${authPrefix}[password]`] = password;
+  await followRedirects(`${VM_BASE}/sportmanager.security/authentication/authenticate`, jar, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(hidden).toString(),
+  }, 10);
+  await followRedirects(`${VM_BASE}/`, jar, {}, 10);
+
+  // The CSRF token comes from the address-viewer page itself. vmLogin() reads
+  // its token off the refadmin game list, which 403s for an account that only
+  // holds the Referee role — this page is readable by both.
+  const viewerUrl = `${VM_BASE}/sportmanager.indoorvolleyball/refereeaddressviewer/index`;
+  const { body: page } = await followRedirects(viewerUrl, jar, {
+    headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
+  }, 10);
+  const csrfToken = page.match(/data-csrf-token="([^"]+)"/)?.[1] ?? '';
+  const windowUniqueId = page.match(/data-window-unique-id="([^"]+)"/)?.[1] ?? '';
+  if (!csrfToken) {
+    const title = page.match(/<title>([^<]*)<\/title>/i)?.[1]?.trim() ?? 'unknown';
+    throw new Error(`Could not open the VolleyManager referee list (page: "${title.slice(0, 60)}").`);
+  }
+
+  const url = `${VM_BASE}/api/sportmanager.indoorvolleyball/api%5crefereeaddressviewer/search`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'text/plain;charset=UTF-8',
+    Accept: '*/*',
+    Origin: VM_BASE,
+    Referer: viewerUrl,
+    'Window-Unique-Id': windowUniqueId,
+    Cookie: jar.header(),
+  };
+  const body = (offset: number) => {
+    const params = new URLSearchParams();
+    params.set('searchConfiguration[customFilters]', '');
+    params.set('searchConfiguration[offset]', String(offset));
+    params.set('searchConfiguration[limit]', String(VM_CONTACT_PAGE_SIZE));
+    params.set('searchConfiguration[textSearchOperator]', 'AND');
+    VM_CONTACT_COLUMNS.forEach((property, index) => params.set(`propertyRenderConfiguration[${index}]`, property));
+    params.set('__csrfToken', csrfToken);
+    return params.toString();
+  };
+
+  const out: VmRefereeContact[] = [];
+  let total = Infinity;
+  while (out.length < total) {
+    const response = await fetch(url, { method: 'POST', headers, body: body(out.length) });
+    if (!response.ok) {
+      throw new Error(`VolleyManager referee list failed: ${response.status} ${(await response.text()).slice(0, 120)}`);
+    }
+    const payload = await response.json() as { items?: unknown[]; totalItemsCount?: number };
+    total = payload.totalItemsCount ?? 0;
+    const items = payload.items ?? [];
+    if (items.length === 0) break;
+    for (const raw of items) {
+      const person = (raw as AnyRecord)?.person as AnyRecord | undefined;
+      if (!person) continue;
+      out.push({
+        firstName: asText(person.firstName),
+        lastName: asText(person.lastName),
+        email: asText(deepGet(person, 'primaryEmailAddress', 'emailAddress')),
+        phone: asText(deepGet(person, 'primaryPhoneNumber', 'normalizedLocalNumber')),
+      });
+    }
+  }
+  return out;
+}
+
 async function fetchAllVmGames(
   jar: CookieJar,
   csrfToken: string,
@@ -2450,6 +2541,51 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
       if (newerThanCurrent && plausible) await setSetting('default_season', String(season));
     }
     res.json({ created, updated, total: rows.length });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// Fills in coachee email/phone from the VolleyManager referee list. Meant to
+// run right after an XLSX import, which carries neither.
+app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const username = asText(process.env.VM_USERNAME);
+    const password = asText(process.env.VM_PASSWORD);
+    if (!username || !password) { res.status(400).json({ error: 'VM_USERNAME / VM_PASSWORD sind nicht gesetzt.' }); return; }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const overwrite = Boolean(body.overwrite);
+    const season = body.season == null || body.season === '' ? null : Number(body.season);
+
+    const contacts = await fetchVmRefereeContacts(username, password);
+    // Index under both name orders — the XLSX and VM disagree on which comes
+    // first, and normalizeName already folds case and accents.
+    const byName = new Map<string, VmRefereeContact>();
+    for (const c of contacts) {
+      const first = `${c.firstName} ${c.lastName}`.trim();
+      const last = `${c.lastName} ${c.firstName}`.trim();
+      for (const key of [normalizeName(first), normalizeName(last)]) {
+        if (key && !byName.has(key)) byName.set(key, c);
+      }
+    }
+
+    const coachees = await listCoacheesWithFallbackSort();
+    const scoped = season == null ? coachees : coachees.filter((c) => Number(c.season) === season);
+    let updated = 0, alreadySet = 0, notFound = 0;
+    const missing: string[] = [];
+    for (const coachee of scoped) {
+      const name = asText(coachee.full_name) || `${asText(coachee.first_name)} ${asText(coachee.last_name)}`.trim();
+      const hit = byName.get(normalizeName(name))
+        ?? byName.get(normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`));
+      if (!hit) { notFound++; if (missing.length < 50) missing.push(name); continue; }
+      const patch: Record<string, unknown> = {};
+      // Never clobber a hand-corrected address unless explicitly asked to.
+      if (hit.email && (overwrite || !asText(coachee.email))) patch.email = hit.email;
+      if (hit.phone && (overwrite || !asText(coachee.phone))) patch.phone = hit.phone;
+      if (Object.keys(patch).length === 0) { alreadySet++; continue; }
+      await withCollection(collectionCandidates.coachees, (c) => c.update(coachee.id, patch));
+      updated++;
+    }
+    res.json({ refereesFetched: contacts.length, coachees: scoped.length, updated, alreadySet, notFound, missing });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 

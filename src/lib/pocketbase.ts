@@ -521,6 +521,20 @@ export async function deleteGame(id: string): Promise<void> {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not delete game');
 }
 
+export type ContactSyncResult = {
+  refereesFetched: number; coachees: number; updated: number;
+  alreadySet: number; notFound: number; missing: string[];
+};
+
+export async function syncCoacheeContacts(season: number, overwrite = false): Promise<ContactSyncResult> {
+  const r = await fetch(apiUrl('/api/admin/coachees/sync-contacts'), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season, overwrite }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not sync contacts');
+  return r.json();
+}
+
 export type ManualGame = { id: string; match_no: string; league: string; match_date: string; home_team: string; away_team: string; assigned_rc: string };
 
 export async function listManualGames(q = ''): Promise<ManualGame[]> {

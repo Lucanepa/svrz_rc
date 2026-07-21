@@ -8,7 +8,7 @@ import {
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson, generateRcPin,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame, listManualGames,
-  getAdminLogs, getAdminLogSessions, listSurveyResponses,
+  getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts,
   type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplates, type ReminderPreview, type ManualGame,
   type LogEntry, type LogSession, type SurveyResponse,
 } from '../lib/pocketbase';
@@ -82,6 +82,14 @@ const STR = {
     mgCreate: 'Spiel anlegen', mgDelete: 'Löschen',
     mgCreated: (n: string) => `Angelegt: ${n}`,
     noEmail: 'keine E-Mail',
+    syncTitle: 'Kontaktdaten aus VolleyManager',
+    syncHint: 'Holt E-Mail und Telefon aus der VolleyManager-Schiedsrichterliste. Ohne E-Mail lässt sich kein Feedback abschicken.',
+    syncBtn: 'Kontakte holen',
+    syncOverwrite: 'Vorhandene Einträge überschreiben (sonst werden nur leere Felder gefüllt)',
+    syncResult: (u: number, a: number, n: number, f: number) => `${u} aktualisiert, ${a} bereits vollständig, ${n} nicht gefunden (${f} SR in VolleyManager).`,
+    syncFail: (e: string) => `Kontakt-Abgleich fehlgeschlagen: ${e}`,
+    syncNotFoundList: 'Nicht in VolleyManager gefunden',
+    syncMissingEmail: (n: number, total: number) => `${n} von ${total} Coachees haben keine E-Mail — für diese kann kein Feedback abgeschickt werden.`,
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
@@ -142,6 +150,14 @@ const STR = {
     mgCreate: 'Create game', mgDelete: 'Delete',
     mgCreated: (n: string) => `Created: ${n}`,
     noEmail: 'no email',
+    syncTitle: 'Contact details from VolleyManager',
+    syncHint: 'Pulls email and phone from the VolleyManager referee list. Feedback cannot be submitted without an email.',
+    syncBtn: 'Fetch contacts',
+    syncOverwrite: 'Overwrite existing entries (otherwise only empty fields are filled)',
+    syncResult: (u: number, a: number, n: number, f: number) => `${u} updated, ${a} already complete, ${n} not found (${f} referees in VolleyManager).`,
+    syncFail: (e: string) => `Contact sync failed: ${e}`,
+    syncNotFoundList: 'Not found in VolleyManager',
+    syncMissingEmail: (n: number, total: number) => `${n} of ${total} coachees have no email — feedback cannot be submitted for them.`,
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
@@ -459,6 +475,10 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
   const [importing, setImporting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState('');
+  const [syncMissing, setSyncMissing] = useState<string[]>([]);
+  const [overwriteContacts, setOverwriteContacts] = useState(false);
   const [form, setForm] = useState({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' });
   const [editId, setEditId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' });
@@ -476,6 +496,17 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
     try { const parsed = await parseXlsx(file); if (!parsed.length) { setNotice(t.noRows); return; } const res = await importCoachees(parsed, season); setNotice(t.importResult(seasonLabel(season), res.created, res.updated, res.total)); await reload(); }
     catch (err) { setNotice(t.importFail(String(err))); } finally { setImporting(false); e.target.value = ''; }
   };
+  const syncContacts = async () => {
+    setSyncing(true); setNotice(''); setSyncNote('');
+    try {
+      const r = await syncCoacheeContacts(season, overwriteContacts);
+      setSyncNote(t.syncResult(r.updated, r.alreadySet, r.notFound, r.refereesFetched));
+      setSyncMissing(r.missing);
+      await reload();
+    } catch (err) { setNotice(t.syncFail(String(err))); } finally { setSyncing(false); }
+  };
+
+  const missingEmail = rows.filter((c) => !c.email).length;
 
   return (
     <>
@@ -487,6 +518,30 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
         </div>
         <p className="text-xs text-stone-400">{t.importHint(seasonLabel(season))}</p>
         {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}
+
+        {/* Step 2 of the import: the XLSX has no email column, and without an
+            address the feedback submit fails at the very end. */}
+        <div className="mt-3 pt-3 border-t border-stone-100">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-stone-700">{t.syncTitle}</h3>
+              <p className="text-xs text-stone-400">{t.syncHint}</p>
+            </div>
+            <button onClick={() => void syncContacts()} disabled={syncing} className={cn(btnPrimary, 'ml-auto')}>
+              {syncing ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
+              <span>{t.syncBtn}</span>
+            </button>
+          </div>
+          <label className="mt-2 flex items-center gap-2 text-xs text-stone-500">
+            <input type="checkbox" checked={overwriteContacts} onChange={(e) => setOverwriteContacts(e.target.checked)} className="accent-red-600" />
+            {t.syncOverwrite}
+          </label>
+          {missingEmail > 0 && <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">{t.syncMissingEmail(missingEmail, rows.length)}</p>}
+          {syncNote && <p className="mt-2 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{syncNote}</p>}
+          {syncMissing.length > 0 && (
+            <p className="mt-2 text-xs text-stone-500">{t.syncNotFoundList}: {syncMissing.join(', ')}</p>
+          )}
+        </div>
       </Card>
       <Card>
         <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">

@@ -201,6 +201,18 @@ const UI_STRINGS = {
     manualUploadError: "Hochladen fehlgeschlagen.",
     manualUploadFileRequired: "Bitte Formular-Datei hochladen.",
     manualUploadFieldsMissing: "Bitte alle Pflichtfelder ausfüllen.",
+    // Manual-upload form field labels (the dialog used to be hardcoded German).
+    muRole: "Rolle", muMatchNo: "Spiel-Nr.", muLeague: "Liga", muDate: "Datum",
+    muVenue: "Ort", muTeams: "Mannschaften",
+    muResultSets: "Ergebnis (Sätze)", muResultPoints: "Ergebnis (Punkte)",
+    muRefName: "SR-Name", muRefLevel: "SR-Niveau", muRc: "Referee Coach", muGroup: "Gruppe",
+    muPlusMinus: "+/- Noten", muPlusMinusOn: "A+ bis E- verfügbar", muPlusMinusOff: "A bis E",
+    muGameLevel: "Spielniveau", muEasy: "Leicht", muNormal: "Normal", muHard: "Schwierig",
+    muMotivation: "Motivation", muOutlook: "Ausblick",
+    muSecondVisit: "2. Besuch", muYes: "Ja", muNo: "Nein", muRefGoal: "SR-Ziel",
+    muHighlights: "Positiv / Stärken", muImprovements: "Verbesserungspotenzial",
+    muGoals: "Ziele / Nächste Schritte", muRemarks: "Bemerkungen",
+    muChooseFile: "Datei wählen", muNoFile: "Keine Datei ausgewählt", muUploading: "Lädt…",
   },
   EN: {
     title: "Referee Coaching Feedback",
@@ -325,6 +337,17 @@ const UI_STRINGS = {
     manualUploadError: "Upload failed.",
     manualUploadFileRequired: "Please upload a form file.",
     manualUploadFieldsMissing: "Please fill in all required fields.",
+    muRole: "Role", muMatchNo: "Match no.", muLeague: "League", muDate: "Date",
+    muVenue: "Venue", muTeams: "Teams",
+    muResultSets: "Result (sets)", muResultPoints: "Result (points)",
+    muRefName: "Referee name", muRefLevel: "Referee level", muRc: "Referee coach", muGroup: "Group",
+    muPlusMinus: "+/- grades", muPlusMinusOn: "A+ to E- available", muPlusMinusOff: "A to E",
+    muGameLevel: "Match level", muEasy: "Easy", muNormal: "Normal", muHard: "Difficult",
+    muMotivation: "Motivation", muOutlook: "Outlook",
+    muSecondVisit: "2nd visit", muYes: "Yes", muNo: "No", muRefGoal: "Referee goal",
+    muHighlights: "Strengths", muImprovements: "Room for improvement",
+    muGoals: "Goals / next steps", muRemarks: "Remarks",
+    muChooseFile: "Choose file", muNoFile: "No file selected", muUploading: "Uploading…",
   }
 };
 
@@ -4875,7 +4898,9 @@ export default function App() {
           coachees={coachees}
           rcPeople={rcPeople}
           fixedRcName={isPrivileged ? null : rcAuth.rcName}
+          lang={formData.lang}
           notice={manualUploadNotice}
+          noticeIsError={Boolean(manualUploadNotice) && manualUploadNotice !== t.manualUploadSuccess && !manualUploadNotice.startsWith(t.saveOkNoEmail)}
           submitting={manualUploadSubmitting}
           onSubmit={handleManualUploadSubmit}
           onClose={() => { setManualUploadCoachee(null); setManualUploadNotice(''); }}
@@ -4920,16 +4945,19 @@ function RatingPicker({ name, options, allowNA }: { name: string; options: reado
   );
 }
 
-function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, submitting, onSubmit, onClose }: {
+function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, notice, noticeIsError, submitting, onSubmit, onClose }: {
   coachee: Coachee;
   coachees: Coachee[];
   rcPeople: RefereeCoachPerson[];
   fixedRcName: string | null;
+  lang: 'DE' | 'EN';
   notice: string;
+  noticeIsError: boolean;
   submitting: boolean;
   onSubmit: (form: HTMLFormElement) => void;
   onClose: () => void;
 }) {
+  const t = UI_STRINGS[lang] || UI_STRINGS.DE;
   const [role, setRole] = useState<'1. SR' | '2. SR'>('1. SR');
   const [selectedGroups, setSelectedGroups] = useState<string[]>(
     () => (coachee.groups || '').split(',').map(g => g.trim()).filter(Boolean)
@@ -4982,7 +5010,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
         <div className="p-4 border-b border-stone-200 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-stone-900">
-            Manuelle Beobachtung: {coachee.full_name}
+            {t.manualUploadTitle}: {coachee.full_name}
           </h3>
           <button onClick={onClose} className="text-stone-400 hover:text-stone-600 text-lg leading-none">&times;</button>
         </div>
@@ -4996,14 +5024,14 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           {/* Rolle + Spiel-Nr. */}
           <div className="grid grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Rolle</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muRole}</span>
               <select name="role" value={role} onChange={e => setRole(e.target.value as '1. SR' | '2. SR')} className="h-9 rounded border border-stone-300 px-2 text-sm">
                 <option value="1. SR">1. SR</option>
                 <option value="2. SR">2. SR</option>
               </select>
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Spiel-Nr.</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muMatchNo}</span>
               <input name="spielNr" type="number" className="h-9 rounded border border-stone-300 px-2 text-sm [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none" />
             </label>
           </div>
@@ -5011,11 +5039,11 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           {/* Liga + Datum */}
           <div className="grid grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Liga</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muLeague}</span>
               <input name="liga" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Datum</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muDate}</span>
               <input name="datum" type="date" defaultValue={new Date().toISOString().split('T')[0]} className="h-9 rounded border border-stone-300 px-2 text-sm" />
             </label>
           </div>
@@ -5023,11 +5051,11 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           {/* Ort + Mannschaften */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Ort</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muVenue}</span>
               <input name="ort" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Mannschaften</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muTeams}</span>
               <input name="mannschaften" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
             </label>
           </div>
@@ -5035,11 +5063,11 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           {/* Ergebnis: Sätze + Punkte */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Ergebnis (Sätze)</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muResultSets}</span>
               <input name="ergebnisSets" type="text" placeholder="3:1" className="h-9 rounded border border-stone-300 px-2 text-sm" />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Ergebnis (Punkte)</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muResultPoints}</span>
               <input name="ergebnisPoints" type="text" placeholder="25:20, 22:25, 25:18, 25:23" className="h-9 rounded border border-stone-300 px-2 text-sm" />
             </label>
           </div>
@@ -5047,13 +5075,13 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           {/* SR-Name + SR-Niveau */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">SR-Name</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muRefName}</span>
               <select name="srName" defaultValue={coachee.full_name} className="h-9 rounded border border-stone-300 px-2 text-sm">
                 {coachees.map(c => <option key={c.id} value={c.full_name}>{c.full_name}</option>)}
               </select>
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">SR-Niveau</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muRefLevel}</span>
               <select name="srNiveau" defaultValue={defaultLevel} className="h-9 rounded border border-stone-300 px-2 text-sm">
                 <option value="">—</option>
                 {allLevels.map(l => <option key={l} value={l}>{l}</option>)}
@@ -5064,7 +5092,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           {/* Referee Coach + Gruppe */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Referee Coach</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muRc}</span>
               {fixedRcName ? (
                 <>
                   <input type="hidden" name="rc" value={fixedRcName} />
@@ -5078,7 +5106,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
               )}
             </label>
             <div className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Gruppe</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muGroup}</span>
               <div className="flex flex-wrap gap-1.5 min-h-[36px] p-1.5 rounded border border-stone-300">
                 {allGroups.map(g => (
                   <button
@@ -5111,9 +5139,9 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
                   : "bg-white text-stone-600 border-stone-300"
               )}
             >
-              +/- Noten
+              {t.muPlusMinus}
             </button>
-            <span className="text-xs text-stone-400">{usePlusMinus ? 'A+ bis E- verfügbar' : 'A bis E'}</span>
+            <span className="text-xs text-stone-400">{usePlusMinus ? t.muPlusMinusOn : t.muPlusMinusOff}</span>
           </div>
 
           {/* Assessment sections */}
@@ -5140,16 +5168,16 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           {/* Bottom fields */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Spielniveau</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muGameLevel}</span>
               <select name="spielniveau" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
                 <option value="" disabled>—</option>
-                <option value="leicht">Leicht</option>
-                <option value="normal">Normal</option>
-                <option value="schwierig">Schwierig</option>
+                <option value="leicht">{t.muEasy}</option>
+                <option value="normal">{t.muNormal}</option>
+                <option value="schwierig">{t.muHard}</option>
               </select>
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Motivation</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muMotivation}</span>
               <select name="motivation" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
                 <option value="" disabled>—</option>
                 <option value="up">↑</option>
@@ -5158,7 +5186,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
               </select>
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">Ausblick</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muOutlook}</span>
               <select name="einstufung" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
                 <option value="" disabled>—</option>
                 <option value="up">↑</option>
@@ -5169,15 +5197,15 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           </div>
           <div className="grid grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">2. Besuch</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muSecondVisit}</span>
               <select name="secondBesuch" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
                 <option value="" disabled>—</option>
-                <option value="Y">Ja</option>
-                <option value="N">Nein</option>
+                <option value="Y">{t.muYes}</option>
+                <option value="N">{t.muNo}</option>
               </select>
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-stone-500 uppercase">SR-Ziel</span>
+              <span className="text-xs font-semibold text-stone-500 uppercase">{t.muRefGoal}</span>
               <select name="srZiel" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
                 <option value="" disabled>—</option>
                 {SR_ZIEL_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
@@ -5188,19 +5216,19 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           {/* Same divisions as the main feedback form — the manual form only had
               a single "Bemerkungen" box, so those sections were lost on upload. */}
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-stone-500 uppercase">Positiv / Stärken</span>
+            <span className="text-xs font-semibold text-stone-500 uppercase">{t.muHighlights}</span>
             <textarea name="highlights" rows={2} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-stone-500 uppercase">Verbesserungspotenzial</span>
+            <span className="text-xs font-semibold text-stone-500 uppercase">{t.muImprovements}</span>
             <textarea name="improvements" rows={2} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-stone-500 uppercase">Ziele / Nächste Schritte</span>
+            <span className="text-xs font-semibold text-stone-500 uppercase">{t.muGoals}</span>
             <textarea name="goals" rows={2} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-stone-500 uppercase">Bemerkungen</span>
+            <span className="text-xs font-semibold text-stone-500 uppercase">{t.muRemarks}</span>
             <textarea name="bemerkungen" rows={3} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
           </label>
 
@@ -5208,13 +5236,13 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
               BROWSER's language — that's the English sitting in this German
               form. Hide it and drive it from our own labelled button instead. */}
           <div className="flex flex-col gap-1">
-            <span className="text-xs font-semibold text-stone-500 uppercase">Formular-Datei (PDF/Bild)</span>
+            <span className="text-xs font-semibold text-stone-500 uppercase">{t.manualUploadFile}</span>
             <label className="flex items-center gap-3 cursor-pointer">
               <span className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded border border-stone-300 bg-white text-sm font-medium text-stone-700 hover:bg-stone-50 transition-colors">
-                <Upload size={14} /> Datei wählen
+                <Upload size={14} /> {t.muChooseFile}
               </span>
               <span className={cn('text-sm truncate', fileName ? 'text-stone-700' : 'text-stone-400')}>
-                {fileName || 'Keine Datei ausgewählt'}
+                {fileName || t.muNoFile}
               </span>
               <input
                 name="formFile"
@@ -5228,7 +5256,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
 
           {/* Notice */}
           {notice && (
-            <p className={cn("text-sm font-medium", notice.includes('gespeichert') ? "text-green-600" : "text-red-600")}>
+            <p className={cn("text-sm font-medium", noticeIsError ? "text-red-600" : "text-green-600")}>
               {notice}
             </p>
           )}
@@ -5239,7 +5267,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
             disabled={submitting}
             className="w-full h-10 rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 text-sm font-medium flex items-center justify-center gap-2"
           >
-            {submitting ? 'Lädt...' : <><Send size={14} /> Hochladen und senden</>}
+            {submitting ? t.muUploading : <><Send size={14} /> {t.manualUploadSubmit}</>}
           </button>
         </form>
       </div>
@@ -5449,16 +5477,25 @@ function ResultField({ label, value, onChange, readOnly = false, lang, className
           {bad && <span className="text-[9px] text-red-600 leading-tight ml-1 no-print">{lang === 'DE' ? 'Ein Satzstand muss 3 sein.' : 'One side must be 3.'}</span>}
         </div>
         {!bad && n > 0 && (
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="text-[8px] uppercase font-semibold text-stone-400">+ {lang === 'DE' ? 'Sätze' : 'sets'}</span>
-            {sets.map((s, i) => (
-              <div key={i} className="flex items-center gap-0.5">
-                <span className="text-[9px] font-semibold text-stone-400 mr-0.5">{ROMAN[i] ?? i + 1}</span>
-                <input inputMode="numeric" maxLength={2} value={s.h} readOnly={readOnly} onChange={e => setPoint(i, 'h', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Heim' : 'home'}`} />
-                <span className="text-stone-300 text-[10px]">:</span>
-                <input inputMode="numeric" maxLength={2} value={s.a} readOnly={readOnly} onChange={e => setPoint(i, 'a', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Gast' : 'away'}`} />
-              </div>
-            ))}
+          // Each set gets its own boxed cell with the number on top. Laid out
+          // inline the digits ran together once they wrapped ("IV 22:25 V 12:15"),
+          // so it was hard to see which score belonged to which set.
+          <div className="rounded-md border border-stone-200 bg-stone-50/70 px-1.5 py-1">
+            <span className="block text-[8px] uppercase font-semibold text-stone-400 leading-none mb-1">
+              + {lang === 'DE' ? 'Sätze' : 'sets'}
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {sets.map((s, i) => (
+                <div key={i} className="flex flex-col items-center gap-0.5 rounded border border-stone-200 bg-white px-1 py-0.5">
+                  <span className="text-[9px] font-bold text-stone-400 leading-none">{ROMAN[i] ?? i + 1}</span>
+                  <div className="flex items-center gap-0.5">
+                    <input inputMode="numeric" maxLength={2} value={s.h} readOnly={readOnly} onChange={e => setPoint(i, 'h', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Heim' : 'home'}`} />
+                    <span className="text-stone-300 text-[10px]">:</span>
+                    <input inputMode="numeric" maxLength={2} value={s.a} readOnly={readOnly} onChange={e => setPoint(i, 'a', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Gast' : 'away'}`} />
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

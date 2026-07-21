@@ -86,7 +86,10 @@ const port = Number(process.env.PORT || 8787);
 // not every upstream — so client-supplied X-Forwarded-For cannot be trusted blindly.
 app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false, crossOriginEmbedderPolicy: false, crossOriginOpenerPolicy: false }));
-const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || 'https://lucanepa.codeberg.page')
+// Default is the live Pages origin. It used to be the Codeberg one, which was
+// retired — a fallback pointing at a dead domain rejects the real frontend and
+// surfaces in the browser as a bare "Failed to fetch" with no status.
+const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || 'https://lucanepa.github.io')
   .split(',').map((o) => o.trim()).filter(Boolean);
 app.use(cors({
   origin: (origin, cb) => {

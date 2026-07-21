@@ -571,6 +571,40 @@ function drawResultsRow(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
 }
 
 /**
+ * Draw one line of prose, optionally justified to `width`.
+ *
+ * jsPDF's own `align: 'justify'` is no use here: it deliberately leaves the
+ * last line of whatever text it is given ragged, and this flow hands it a
+ * single line at a time — so every line counts as the last and nothing is ever
+ * stretched. Placing the words individually is also the only way to keep the
+ * per-line page-break control the remarks block needs.
+ */
+function drawProseLine(sheet: Sheet, line: string, x: number, y: number, width: number, justify: boolean): void {
+  const { doc } = sheet;
+  const words = justify ? line.trim().split(/\s+/).filter(Boolean) : [];
+  if (words.length < 2) {
+    doc.text(line, x, y, { baseline: 'middle' });
+    return;
+  }
+
+  const wordsW = words.reduce((sum, w) => sum + doc.getTextWidth(w), 0);
+  const gap = (width - wordsW) / (words.length - 1);
+  // A line only a couple of words long would be pulled apart into a gappy mess;
+  // leave those ragged rather than "justified" in name only.
+  const space = doc.getTextWidth(' ');
+  if (gap <= 0 || gap > space * 4) {
+    doc.text(line, x, y, { baseline: 'middle' });
+    return;
+  }
+
+  let cx = x;
+  for (const word of words) {
+    doc.text(word, cx, y, { baseline: 'middle' });
+    cx += doc.getTextWidth(word) + gap;
+  }
+}
+
+/**
  * The remarks block, which is the one part of the form that can be any length.
  * It may span pages, so the enclosing rule is drawn per page segment once the
  * text has been laid out rather than as a single rectangle.
@@ -643,10 +677,7 @@ function drawRemarks(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
       const next = lines[i + 1];
       const endsParagraph = next === undefined || next.trim() === '';
       const justify = line.trim() !== '' && !endsParagraph;
-      doc.text(line, MARGIN + 10, sheet.y + 5, {
-        baseline: 'middle',
-        ...(justify ? { align: 'justify' as const, maxWidth: textW } : {}),
-      });
+      drawProseLine(sheet, line, MARGIN + 10, sheet.y + 5, textW, justify);
       sheet.y += 10.5;
     }
     // Keep a writable band even when the coach left the field empty, so the

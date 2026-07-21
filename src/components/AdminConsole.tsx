@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, KeyRound, Mail, RotateCcw, Send } from 'lucide-react';
+import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, KeyRound, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
@@ -8,7 +8,9 @@ import {
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson, generateRcPin,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, getReminderPreview,
+  getAdminLogs, getAdminLogSessions,
   type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplates, type ReminderPreview,
+  type LogEntry, type LogSession,
 } from '../lib/pocketbase';
 import {
   levelKey, levelDisplay, hasNiveauRules, summarizeTarget, isTargetActive,
@@ -45,7 +47,12 @@ const STR = {
     admin: 'Admin', logout: 'Abmelden', login: 'Anmelden', adminPw: 'Admin-Passwort', wrongPw: 'Falsches Passwort',
     noAdminRights: 'Dein Konto hat keine Admin-Rechte. Falls du Admin bist, melde dich mit dem Admin-Passwort an.',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Einstellungen', testBadge: 'Testmodus',
-    emails: 'E-Mails',
+    emails: 'E-Mails', logs: 'Protokoll',
+    logsHint: 'Alles, was passiert: jede Anfrage, jeder Klick in der App, jeder Fehler. Neueste zuletzt.',
+    logsSearch: 'Suchen (E-Mail, Pfad, Text…)', logsLevel: 'Stufe', logsSource: 'Quelle', logsAll: 'Alle',
+    logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'Keine Einträge.',
+    logsCopy: 'Kopieren', logsCopied: 'Kopiert ✓', logsSessions: 'Sitzungen', logsClear: 'Filter zurücksetzen',
+    logsErrorsOnly: 'Nur Probleme',
     tplFeedback: 'Feedback-E-Mail (nach dem Spiel)',
     tplFeedbackHint: 'Wird nach dem Absenden eines Feedbacks an den Coachee gesendet (RC in Kopie, PDF im Anhang).',
     tplReminder: 'Erinnerung (Tag vor dem Spiel)',
@@ -87,7 +94,12 @@ const STR = {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminPw: 'Admin password', wrongPw: 'Wrong password',
     noAdminRights: 'Your account has no admin rights. If you are an admin, sign in with the admin password.',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Settings', testBadge: 'Test mode',
-    emails: 'Emails',
+    emails: 'Emails', logs: 'Activity log',
+    logsHint: 'Everything that happens: every request, every click in the app, every error. Newest last.',
+    logsSearch: 'Search (email, path, text…)', logsLevel: 'Level', logsSource: 'Source', logsAll: 'All',
+    logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'No entries.',
+    logsCopy: 'Copy', logsCopied: 'Copied ✓', logsSessions: 'Sessions', logsClear: 'Reset filters',
+    logsErrorsOnly: 'Problems only',
     tplFeedback: 'Feedback email (after the match)',
     tplFeedbackHint: 'Sent to the coachee when a feedback is submitted (RC in CC, PDF attached).',
     tplReminder: 'Reminder (day before the match)',
@@ -156,7 +168,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 
 // Console tabs live in the URL as #/admin/<tab>, so each one is linkable and
 // the Back button steps between them.
-const ADMIN_TABS = ['coachees', 'rcs', 'emails', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'emails', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 const adminTabFromHash = (): AdminTab => {
   const m = /^#\/?admin\/([a-z]+)/i.exec(window.location.hash);
@@ -264,6 +276,7 @@ export default function AdminConsole() {
     { id: 'coachees', label: t.coachees, icon: <Users size={15} /> },
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
     { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
+    { id: 'logs', label: t.logs, icon: <ScrollText size={15} /> },
     { id: 'settings', label: t.settings, icon: <SettingsIcon size={15} /> },
   ];
 
@@ -278,19 +291,21 @@ export default function AdminConsole() {
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
-        <div className="max-w-4xl mx-auto px-4 pb-3 grid grid-cols-4 gap-2">
+        <div className="max-w-4xl mx-auto px-4 pb-3 grid grid-cols-5 gap-2">
           {tabs.map((tb) => (
             <button key={tb.id} onClick={() => setTab(tb.id)} className={`h-11 inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-xl transition-colors ${tab === tb.id ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}>{tb.icon}<span className="hidden sm:inline">{tb.label}</span></button>
           ))}
         </div>
       </header>
-      {/* All four tabs stay mounted: their data is fetched in one parallel
-          batch on the first render after login, so switching tabs shows the
-          finished page instead of starting that tab's request right then. */}
+      {/* Tabs stay mounted: their data is fetched in one parallel batch on the
+          first render after login, so switching tabs shows the finished page
+          instead of starting that tab's request right then. Logs are the
+          exception — they only poll while their tab is on screen. */}
       <main className="max-w-4xl mx-auto px-4 pt-5">
         <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} /></div>
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
+        <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}><SettingsAdmin t={t} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} /></div>
         <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
       </main>
@@ -531,6 +546,34 @@ function RcsAdmin({ t }: { t: T }) {
       setPinBusy(null);
     }
   };
+  // Shared by the desktop table and the mobile cards so the two can't drift.
+  const rowActions = (r: RcPerson) => (
+    <>
+      <button onClick={() => toggleAdmin(r)} className={cn(btnGhost, r.is_admin && 'text-red-600')} title={t.toggleAdmin}>
+        <ShieldCheck size={13} />
+      </button>
+      <button onClick={() => genPin(r)} disabled={pinBusy === r.id} className={btnGhost} title={t.genPin}>
+        {pinBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
+      </button>
+      <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost} title={t.edit}><Pencil size={13} /></button>
+      <button onClick={() => remove(r)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+    </>
+  );
+  const pinBanner = (r: RcPerson) => pinShown?.id === r.id ? (
+    <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+      <p className="text-xs text-amber-800 flex-1">
+        <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
+        {' — '}
+        {pinShown.emailed ? t.pinEmailed(pinShown.email) : t.pinNotEmailed}
+      </p>
+      <button onClick={() => setPinShown(null)} className="text-amber-700 hover:text-amber-900"><X size={13} /></button>
+    </div>
+  ) : null;
+  const adminBadge = (
+    <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 align-middle">
+      <ShieldCheck size={10} />{t.adminRole}
+    </span>
+  );
   return (
     <>
       <Card>
@@ -545,8 +588,45 @@ function RcsAdmin({ t }: { t: T }) {
       </Card>
       <Card>
         <p className="text-xs text-stone-400 mb-2">{loading ? t.loading : t.rcCount(rcs.length)}</p>
-        {/* Table so 12+ coaches stay scannable; scrolls sideways on narrow screens. */}
-        <div className="overflow-x-auto">
+        {/* Phones: one card per coach. The table needs ~720px, so on a phone it
+            clipped the e-mail and pushed the actions off-screen entirely. */}
+        <div className="sm:hidden space-y-2">
+          {rcs.map((r) => editId === r.id ? (
+            <div key={r.id} className="rounded-xl border border-stone-200 p-3 space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <input className={input} placeholder={t.firstName} value={editForm.first_name || ''} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
+                <input className={input} placeholder={t.lastName} value={editForm.last_name || ''} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
+              </div>
+              <input className={input} placeholder={t.email} value={editForm.email || ''} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
+              <input className={input} placeholder={t.phone} value={editForm.phone || ''} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
+              <div className="flex items-center gap-1.5">
+                <button onClick={() => saveEdit(r.id)} className={btnPrimary}><Check size={15} /></button>
+                <button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button>
+              </div>
+            </div>
+          ) : (
+            <div key={r.id} className="rounded-xl border border-stone-200 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-medium text-stone-800 break-words">
+                    {r.first_name} {r.last_name}
+                    {r.active === false && <span className="ml-1.5 text-xs font-normal text-stone-400">· {t.inactive}</span>}
+                  </p>
+                  {r.is_admin && <div className="mt-1">{adminBadge}</div>}
+                </div>
+                <span className={cn('shrink-0 text-xs font-medium whitespace-nowrap', r.has_pin ? 'text-green-600' : 'text-amber-600')}>
+                  {r.has_pin ? t.hasPin : t.noPin}
+                </span>
+              </div>
+              {r.email && <p className="mt-1.5 text-xs text-stone-500 break-all">{r.email}</p>}
+              {r.phone && <p className="text-xs text-stone-500">{r.phone}</p>}
+              <div className="mt-2.5 flex items-center justify-end gap-1.5">{rowActions(r)}</div>
+              {pinShown?.id === r.id && <div className="mt-2">{pinBanner(r)}</div>}
+            </div>
+          ))}
+        </div>
+        {/* Desktop: the table keeps 12+ coaches scannable at a glance. */}
+        <div className="hidden sm:block overflow-x-auto">
           <table className="w-full min-w-[720px] text-sm border-collapse">
             <thead>
               <tr className="text-[11px] font-bold uppercase tracking-wide text-stone-500 border-b border-stone-200">
@@ -582,11 +662,7 @@ function RcsAdmin({ t }: { t: T }) {
                     <td className="py-2.5 pr-3">
                       <span className="font-medium text-stone-800 whitespace-nowrap">{r.first_name} {r.last_name}</span>
                       {r.active === false && <span className="ml-1.5 text-xs text-stone-400">· {t.inactive}</span>}
-                      {r.is_admin && (
-                        <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 align-middle">
-                          <ShieldCheck size={10} />{t.adminRole}
-                        </span>
-                      )}
+                      {r.is_admin && <span className="ml-2">{adminBadge}</span>}
                     </td>
                     <td className="py-2.5 pr-3 text-stone-500">{r.email}</td>
                     <td className="py-2.5 pr-3 text-stone-500 whitespace-nowrap">{r.phone}</td>
@@ -777,6 +853,143 @@ function EmailsAdmin({ t }: { t: T }) {
         </div>
       </Card>
     </>
+  );
+}
+
+// ── Activity log ──────────────────────────────────────────────────────
+// Reads the API's in-memory ring: server request lines and browser events
+// (clicks, fetches, crashes) shipped by every session, interleaved in time.
+// This is the tab you open when someone reports something you can't reproduce.
+const LEVEL_STYLE: Record<string, string> = {
+  error: 'bg-red-50 text-red-700 border-red-200',
+  warn: 'bg-amber-50 text-amber-800 border-amber-200',
+  info: 'bg-stone-50 text-stone-600 border-stone-200',
+  debug: 'bg-stone-50 text-stone-400 border-stone-200',
+};
+
+function logLine(e: LogEntry): string {
+  return `${e.t} ${e.lvl.toUpperCase()} ${e.src} ${e.evt} ${e.msg || ''}${e.user ? ` user=${e.user}` : ''}${e.ip ? ` ip=${e.ip}` : ''}${e.data ? ` ${JSON.stringify(e.data)}` : ''}`;
+}
+
+function LogsAdmin({ t, active }: { t: T; active: boolean }) {
+  const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [sessions, setSessions] = useState<LogSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [live, setLive] = useState(true);
+  const [q, setQ] = useState('');
+  const [level, setLevel] = useState('');
+  const [src, setSrc] = useState('');
+  const [sid, setSid] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await getAdminLogs({ limit: 800, q, level, src, sid });
+      setEntries(res.entries);
+      setErr('');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [q, level, src, sid]);
+
+  // Poll only while the tab is visible and Live is on — an admin console left
+  // open on another tab shouldn't hit the API every 3 seconds forever.
+  useEffect(() => {
+    if (!active) return;
+    void load();
+    if (!live) return;
+    const id = setInterval(() => { if (document.visibilityState === 'visible') void load(); }, 3000);
+    return () => clearInterval(id);
+  }, [active, live, load]);
+
+  useEffect(() => { if (active) getAdminLogSessions().then(setSessions).catch(() => {}); }, [active, entries.length]);
+
+  // Newest at the bottom, like a terminal — stick to it unless the reader has
+  // scrolled up to look at something.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el || !live) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
+  }, [entries, live]);
+
+  const copyAll = async () => {
+    try { await navigator.clipboard.writeText(entries.map(logLine).join('\n')); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    catch { /* clipboard unavailable */ }
+  };
+
+  const reset = () => { setQ(''); setLevel(''); setSrc(''); setSid(''); };
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 flex-wrap mb-1">
+        <h2 className="text-sm font-semibold text-stone-800 mr-auto">{t.logs}</h2>
+        <button onClick={() => setLive((v) => !v)} className={cn('inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium border transition-colors', live ? 'bg-green-50 border-green-200 text-green-700' : 'bg-stone-100 border-stone-200 text-stone-500')}>
+          {live ? <Pause size={13} /> : <Play size={13} />}{t.logsLive}
+        </button>
+        <button onClick={copyAll} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium border border-stone-200 text-stone-600 hover:bg-stone-100 transition-colors">
+          <Copy size={13} />{copied ? t.logsCopied : t.logsCopy}
+        </button>
+      </div>
+      <p className="text-xs text-stone-500 mb-3">{t.logsHint}</p>
+
+      <div className="flex flex-wrap gap-2 mb-3">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t.logsSearch} className={cn(input, 'flex-1 min-w-[180px]')} />
+        <select value={level} onChange={(e) => setLevel(e.target.value)} className={cn(input, 'w-auto')}>
+          {/* The API treats level as a MINIMUM, so each option widens/narrows. */}
+          <option value="">{t.logsLevel}: {t.logsAll}</option>
+          <option value="info">info+</option>
+          <option value="warn">{t.logsErrorsOnly}</option>
+          <option value="error">error</option>
+        </select>
+        <select value={src} onChange={(e) => setSrc(e.target.value)} className={cn(input, 'w-auto')}>
+          <option value="">{t.logsSource}: {t.logsAll}</option>
+          <option value="server">{t.logsServer}</option>
+          <option value="client">{t.logsClient}</option>
+        </select>
+        <select value={sid} onChange={(e) => setSid(e.target.value)} className={cn(input, 'w-auto max-w-[220px]')}>
+          <option value="">{t.logsSessions}: {t.logsAll}</option>
+          {sessions.map((s) => (
+            <option key={s.sid} value={s.sid}>
+              {(s.user || 'anonym')} · {new Date(s.last).toLocaleTimeString()} · {s.count}{s.errors ? ` ⚠${s.errors}` : ''}
+            </option>
+          ))}
+        </select>
+        {(q || level || src || sid) && (
+          <button onClick={reset} className="h-9 px-3 rounded-lg text-xs font-medium border border-stone-200 text-stone-600 hover:bg-stone-100">{t.logsClear}</button>
+        )}
+      </div>
+
+      {err && <p className="text-xs text-red-600 mb-2">{err}</p>}
+      {loading ? <SkeletonRows rows={8} /> : entries.length === 0 ? (
+        <p className="text-sm text-stone-400 py-6 text-center">{t.logsEmpty}</p>
+      ) : (
+        <div ref={scroller} className="max-h-[62vh] overflow-y-auto rounded-xl border border-stone-200 divide-y divide-stone-100 bg-white">
+          {entries.map((e) => (
+            <div key={e.seq} className="px-2.5 py-1.5 hover:bg-stone-50 cursor-pointer" onClick={() => setExpanded(expanded === e.seq ? null : e.seq)}>
+              <div className="flex items-start gap-2 font-mono text-[11px] leading-relaxed">
+                <span className="text-stone-400 shrink-0 tabular-nums">{new Date(e.t).toLocaleTimeString('de-CH', { hour12: false })}</span>
+                <span className={cn('shrink-0 px-1.5 rounded border text-[10px] font-semibold uppercase', LEVEL_STYLE[e.lvl] || LEVEL_STYLE.info)}>{e.lvl}</span>
+                <span className={cn('shrink-0 text-[10px] uppercase font-semibold', e.src === 'client' ? 'text-indigo-500' : 'text-stone-400')}>{e.src === 'client' ? 'app' : 'srv'}</span>
+                <span className="shrink-0 text-stone-500">{e.evt}</span>
+                <span className="text-stone-800 break-all">{e.msg}</span>
+                {e.user && <span className="ml-auto shrink-0 text-stone-400">{e.user}</span>}
+              </div>
+              {expanded === e.seq && (
+                <pre className="mt-1.5 p-2 rounded-lg bg-stone-900 text-stone-100 text-[10px] leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">
+                  {JSON.stringify({ ...e }, null, 2)}
+                </pre>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 

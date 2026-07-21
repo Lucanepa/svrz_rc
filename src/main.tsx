@@ -5,6 +5,7 @@ import App from './App.tsx';
 import AuthGate from './components/AuthGate.tsx';
 import AdminConsole from './components/AdminConsole.tsx';
 import SignaturePage from './components/SignaturePage.tsx';
+import { enableDemo } from './lib/demo';
 import './index.css';
 
 registerSW({
@@ -24,6 +25,14 @@ if ('serviceWorker' in navigator) {
     refreshing = true;
     window.location.reload();
   });
+}
+
+// Hidden demo entry: #/demo turns on throwaway client-side demo mode, then drops
+// the hash (via replaceState, which doesn't fire hashchange) so the normal app
+// renders as the demo coach — and a reload stays in the demo (flag in sessionStorage).
+if (/^#\/?demo\/?$/i.test(window.location.hash)) {
+  enableDemo();
+  history.replaceState(null, '', window.location.pathname + window.location.search);
 }
 
 // Hash routes: #/admin -> admin console; #/sign/<slug> -> public signature page

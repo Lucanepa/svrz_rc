@@ -42,6 +42,7 @@ import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
 import LevelText from './components/LevelText';
 import { useRcAuth } from './components/AuthGate';
+import { isDemoMode, getSentMail, type DemoEmail } from './lib/demo';
 import { BUILD_INFO } from './lib/buildInfo';
 
 // Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
@@ -1670,6 +1671,12 @@ export default function App() {
         setBackendNotice(notice.replace(`${formData.role}: `, ''));
         setFeedbackLocked(true);
       }
+      // In the demo nothing is emailed — show the message(s) that would have gone out.
+      if (isDemoMode()) {
+        const mail = getSentMail();
+        setDemoMail(mail);
+        if (mail.length > 0) setDemoMailOpen(true);
+      }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(`${t.saveError} ${localizeRuntimeError(reason, formData.lang)}`);
@@ -1717,6 +1724,10 @@ export default function App() {
 
   const [tipsAndTricks, setTipsAndTricks] = useState('');
   const [feedbackLocked, setFeedbackLocked] = useState(false);
+  // Demo mode: emails aren't sent, they're shown. This holds the captured
+  // preview(s) and controls the preview modal (auto-opened after a demo submit).
+  const [demoMail, setDemoMail] = useState<DemoEmail[]>([]);
+  const [demoMailOpen, setDemoMailOpen] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState<'reset' | 'save' | null>(null);
   const [validationError, setValidationError] = useState('');
 
@@ -2137,6 +2148,85 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
+      {isDemoMode() && (
+        <div className="max-w-5xl mx-auto mb-3 no-print">
+          <div className="flex items-center justify-between gap-3 rounded-xl bg-red-600 text-white text-xs font-semibold px-3 py-2 shadow-sm">
+            <span className="flex items-center gap-2">
+              <Info size={14} />
+              {formData.lang === 'DE'
+                ? 'DEMO — Testdaten. Nichts wird gespeichert oder versendet.'
+                : 'DEMO — sample data. Nothing is saved or emailed.'}
+            </span>
+            <span className="shrink-0 flex items-center gap-1.5">
+              <button
+                onClick={() => { setDemoMail(getSentMail()); setDemoMailOpen(true); }}
+                className="inline-flex items-center gap-1 rounded-lg bg-white/15 hover:bg-white/25 px-2.5 py-1 transition-colors"
+                title={formData.lang === 'DE' ? 'E-Mails, die gesendet würden' : 'Emails that would be sent'}
+              >
+                <Send size={12} />
+                {formData.lang === 'DE' ? 'Demo-Mails' : 'Demo mail'}
+                {demoMail.length > 0 && (
+                  <span className="ml-0.5 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-white text-red-600 text-[10px] font-bold leading-none">{demoMail.length}</span>
+                )}
+              </button>
+              <button
+                onClick={rcAuth.logout}
+                className="inline-flex items-center gap-1 rounded-lg bg-white/15 hover:bg-white/25 px-2.5 py-1 transition-colors"
+              >
+                <LogOut size={12} />
+                {formData.lang === 'DE' ? 'Demo verlassen' : 'Exit demo'}
+              </button>
+            </span>
+          </div>
+        </div>
+      )}
+      {demoMailOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 no-print" onClick={() => setDemoMailOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-stone-200">
+              <div className="flex items-center gap-2">
+                <Send size={16} className="text-red-600" />
+                <h2 className="text-sm font-bold text-stone-800">{formData.lang === 'DE' ? 'E-Mail-Vorschau (Demo)' : 'Email preview (demo)'}</h2>
+              </div>
+              <button onClick={() => setDemoMailOpen(false)} className="text-stone-400 hover:text-stone-600" aria-label="Close"><X size={18} /></button>
+            </div>
+            <div className="px-5 py-2.5 bg-amber-50 border-b border-amber-200 text-[12px] text-amber-800 font-medium flex items-center gap-2">
+              <Info size={14} className="shrink-0" />
+              {formData.lang === 'DE'
+                ? 'Diese E-Mail(s) wurden NICHT gesendet — nur zur Ansicht.'
+                : 'These emails were NOT sent — preview only.'}
+            </div>
+            <div className="overflow-y-auto px-5 py-4 space-y-4">
+              {demoMail.length === 0 ? (
+                <p className="text-sm text-stone-400 text-center py-8">
+                  {formData.lang === 'DE'
+                    ? 'Noch keine E-Mails. Reiche ein Feedback ein, um zu sehen, was gesendet würde.'
+                    : 'No emails yet. Submit a feedback to see what would be sent.'}
+                </p>
+              ) : demoMail.map((m, i) => (
+                <div key={i} className="rounded-xl border border-stone-200 overflow-hidden">
+                  <div className="bg-stone-50 px-3 py-2 text-[12px] text-stone-600 space-y-0.5 border-b border-stone-200">
+                    <div><span className="font-semibold text-stone-500">{formData.lang === 'DE' ? 'Von' : 'From'}:</span> {m.from}</div>
+                    <div><span className="font-semibold text-stone-500">{formData.lang === 'DE' ? 'An' : 'To'}:</span> {m.to}</div>
+                    {m.cc.length > 0 && <div><span className="font-semibold text-stone-500">Cc:</span> {m.cc.join(', ')}</div>}
+                    {m.bcc.length > 0 && <div><span className="font-semibold text-stone-500">Bcc:</span> {m.bcc.join(', ')}</div>}
+                    <div><span className="font-semibold text-stone-500">{formData.lang === 'DE' ? 'Betreff' : 'Subject'}:</span> {m.subject}</div>
+                  </div>
+                  <pre className="px-3 py-2.5 text-[12px] text-stone-700 whitespace-pre-wrap font-sans leading-relaxed">{m.body}</pre>
+                  <div className="px-3 py-2 border-t border-stone-200 flex items-center gap-2 text-[12px] text-stone-500">
+                    <Download size={13} className="shrink-0" /> {m.attachment}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="px-5 py-3 border-t border-stone-200 text-right">
+              <button onClick={() => setDemoMailOpen(false)} className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800">
+                {formData.lang === 'DE' ? 'Schliessen' : 'Close'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {emailTestMode && (
         <div className="max-w-5xl mx-auto mb-3 no-print">
           <div className="flex items-center gap-2 rounded-xl bg-amber-100 border border-amber-300 text-amber-800 text-xs font-semibold px-3 py-2">

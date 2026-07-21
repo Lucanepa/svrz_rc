@@ -1,5 +1,7 @@
 import type { EligibleGame, FeedbackFormData, RcOverviewEntry, rcCoachSummary } from '../types';
 import type { CoacheeTargetMap } from './niveauTargets';
+import * as demo from './demo';
+import { isDemoMode } from './demo';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
@@ -86,6 +88,7 @@ export type AdminAuthStatus = {
 };
 
 export async function loadEligibleGames(): Promise<EligibleGame[]> {
+  if (isDemoMode()) return demo.loadEligibleGames();
   const response = await fetch(apiUrl('/api/eligible-games'), { credentials: 'include' });
   if (!response.ok) {
     const text = await response.text();
@@ -109,6 +112,7 @@ export async function saveFeedbackToPocketBase(params: {
   pdfFilename: string;
   tipsAndTricks: string;
 }): Promise<FeedbackSubmitResponse> {
+  if (isDemoMode()) return demo.saveFeedbackToPocketBase(params);
   const response = await fetch(apiUrl('/api/feedback/submit'), {
     credentials: 'include',
     method: 'POST',
@@ -153,6 +157,7 @@ export async function clearApiCache(): Promise<void> {
 }
 
 export async function getAuthMe(): Promise<AuthMe> {
+  if (isDemoMode()) return demo.getAuthMe();
   const response = await fetch(apiUrl('/api/auth/me'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -180,6 +185,8 @@ export async function rcLogin(email: string, password: string): Promise<{ name: 
 }
 
 export async function rcLogout(): Promise<void> {
+  // Leaving the demo is a pure client action — never touch the server.
+  if (isDemoMode()) { demo.disableDemo(); await clearApiCache(); return; }
   // Purge the cache even if the logout POST fails (offline), so the previous
   // RC's cached data/identity can't be served to the next person on the device.
   try { await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' }); }
@@ -211,6 +218,7 @@ export async function rcForgotVerify(email: string, code: string, newPassword: s
 }
 
 export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
+  if (isDemoMode()) return demo.getAdminAuthStatus();
   const response = await fetch(apiUrl('/api/admin/auth/status'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -249,6 +257,7 @@ export async function logoutAdmin(): Promise<void> {
 }
 
 export async function listCoachees(): Promise<Coachee[]> {
+  if (isDemoMode()) return demo.listCoachees();
   const response = await fetch(apiUrl('/api/coachees'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -270,6 +279,7 @@ export async function createCoachee(payload: Partial<Coachee>) {
 }
 
 export async function updateCoachee(id: string, payload: Partial<Coachee>) {
+  if (isDemoMode()) return demo.updateCoachee(id, payload);
   const response = await fetch(apiUrl(`/api/coachees/${id}`), {
     credentials: 'include',
     method: 'PUT',
@@ -301,6 +311,7 @@ export async function listRefereeCoaches() {
 }
 
 export async function listCoacheeGames(coacheeId: string): Promise<CoacheeGame[]> {
+  if (isDemoMode()) return demo.listCoacheeGames(coacheeId);
   const response = await fetch(apiUrl(`/api/coachees/${coacheeId}/games`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -309,6 +320,7 @@ export async function listCoacheeGames(coacheeId: string): Promise<CoacheeGame[]
 }
 
 export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackRecord[]> {
+  if (isDemoMode()) return demo.listCoacheeFeedbacks(coacheeId);
   const response = await fetch(apiUrl(`/api/coachees/${coacheeId}/feedbacks`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -317,6 +329,7 @@ export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackR
 }
 
 export async function loadCalendarGames(): Promise<CalendarGameStatus[]> {
+  if (isDemoMode()) return demo.loadCalendarGames();
   const response = await fetch(apiUrl('/api/games/calendar-status'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -340,6 +353,7 @@ export type RefereeCoachPerson = {
 };
 
 export async function listRefereeCoachPeople(): Promise<RefereeCoachPerson[]> {
+  if (isDemoMode()) return demo.listRefereeCoachPeople();
   const response = await fetch(apiUrl('/api/referee-coach-people'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -348,6 +362,7 @@ export async function listRefereeCoachPeople(): Promise<RefereeCoachPerson[]> {
 }
 
 export async function assignRcToGame(gameId: string, assignedRc: string): Promise<void> {
+  if (isDemoMode()) return demo.assignRcToGame(gameId, assignedRc);
   const response = await fetch(apiUrl(`/api/games/${gameId}/assign-rc`), {
     credentials: 'include',
     method: 'PUT',
@@ -360,6 +375,7 @@ export async function assignRcToGame(gameId: string, assignedRc: string): Promis
 }
 
 export async function loadRcOverview(season?: number): Promise<RcOverviewEntry[]> {
+  if (isDemoMode()) return demo.loadRcOverview();
   const qs = season != null ? `?season=${season}` : '';
   const response = await fetch(apiUrl(`/api/rc-overview${qs}`), { credentials: 'include' });
   if (!response.ok) {
@@ -369,6 +385,7 @@ export async function loadRcOverview(season?: number): Promise<RcOverviewEntry[]
 }
 
 export async function loadrcCoachSummary(rcName: string, season?: number): Promise<rcCoachSummary[]> {
+  if (isDemoMode()) return demo.loadrcCoachSummary(rcName);
   const qs = season != null ? `?season=${season}` : '';
   const response = await fetch(apiUrl(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees${qs}`), { credentials: 'include' });
   if (!response.ok) {
@@ -445,6 +462,7 @@ export async function importCoachees(coachees: ImportRow[], season: number): Pro
 }
 
 export async function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap }> {
+  if (isDemoMode()) return demo.getSettings();
   const r = await fetch(apiUrl('/api/settings'), { credentials: 'include' });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -460,16 +478,19 @@ export async function putSettings(payload: { default_season?: number; test_mode?
 
 // ---- Signature sessions ----
 export async function startSignature(context: string, signer?: string): Promise<{ slug: string }> {
+  if (isDemoMode()) return demo.startSignature();
   const res = await fetch(apiUrl('/api/signature/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ context, signer }) });
   if (!res.ok) throw new Error('Could not start signature');
   return res.json();
 }
 export async function getSignatureSession(slug: string): Promise<{ context: string; signer: string; signed: boolean; data: string }> {
+  if (isDemoMode()) return demo.getSignatureSession();
   const res = await fetch(apiUrl(`/api/signature/${encodeURIComponent(slug)}`));
   if (!res.ok) throw new Error('Signature not found');
   return res.json();
 }
 export async function submitSignatureSession(slug: string, data: string, signer?: string): Promise<void> {
+  if (isDemoMode()) return demo.submitSignatureSession();
   const res = await fetch(apiUrl(`/api/signature/${encodeURIComponent(slug)}`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data, signer }) });
   if (!res.ok) throw new Error('Could not save signature');
 }

@@ -95,6 +95,14 @@ VM_SYNC_TIMEZONE="Europe/Zurich"
 VM_SYNC_MAX_RETRIES="10"
 VM_SYNC_RETRY_DELAY_MS="15000"
 
+# Absolute base the calendar subscription links are built from. Unset => derived
+# from the request (X-Forwarded-Proto/Host through the tunnel), which is right
+# in this setup; set it only if a client ever receives a wrong host.
+API_PUBLIC_URL="https://rc-api.lucanepa.com"
+# Change this string to invalidate every existing calendar subscription at once
+# (everyone then has to re-subscribe). Normally left alone.
+ICAL_TOKEN_VERSION="1"
+
 PB_GAMES_COLLECTION="games"
 PB_COACHEES_COLLECTION="coachees"
 PB_OBSERVATIONS_COLLECTION="observations"
@@ -229,6 +237,8 @@ Read endpoints used by app are generally open, but still depend on valid server-
 - `GET /api/observations`: paginated observations list with filters.
 - `GET /api/observations/summary`: aggregated KPIs.
 - `GET /api/games/calendar-status`: game statuses (`outstanding|completed|none`).
+- `GET /api/ical/me`: the calling RC's subscription links (`url`, `webcalUrl`, `downloadUrl`). RC session required; an admin-only session gets 403, because the feed belongs to a person and an admin console session is not one.
+- `GET /api/ical/:token.ics`: **public** — the RC's assigned games as iCalendar, past and future. No login is possible for a calendar client, so the token in the path is the whole credential: an HMAC of the RC's id under `ADMIN_SESSION_SECRET`, stable per person, and only honoured for RCs that are still active. `?lang=de|en` picks the event language, `?download=1` flips the response to an attachment. The request log redacts the token. Rendered per request but memoised for 5 min, so a badly-behaved poller cannot pull the games collection repeatedly.
 - `POST /api/feedback/submit`: main workflow submit (save + PDF + email + closure).
 - `POST /api/admin/migrate-source-payload`: one-time migration utility.
 

@@ -115,8 +115,10 @@ function bodySummary(body: unknown): unknown {
 
 // A calendar token never expires and is the only credential its feed has, so
 // the URL carrying it must not sit readable in the log the admin console shows.
+// `me` is spared so the log still distinguishes the app asking for its own
+// link from a calendar client polling the feed — the same line otherwise.
 function redactIcalToken(url: string): string {
-  return url.replace(/(\/api\/ical\/)[^/?]+/, '$1<token>');
+  return url.replace(/(\/api\/ical\/)(?!me(?:[/?]|$))[^/?]+/, '$1<token>');
 }
 
 app.use((req: Request, res: ExpressResponse, next: () => void) => {
@@ -3043,6 +3045,9 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
     const updated = await withCollection(collectionCandidates.games, (collection) =>
       collection.update(gameId, { assigned_rc: rcName }),
     );
+    // Both sides of a handover change: clearing the lot beats working out who
+    // the previous holder was, and the map holds one entry per RC.
+    icalGamesCache.clear();
     res.json({ ok: true, id: (updated as AnyRecord).id, assignedRc: asText((updated as AnyRecord).assigned_rc) });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
@@ -3706,13 +3711,14 @@ app.get('/api/games/calendar-status', requireRcSession, async (_req: Request, re
 
 // ── Calendar feed (iCal) ──────────────────────────────────────────────
 // An RC subscribes once and the games they have taken — past and future — show
-// up in whatever calendar they already live in. The feed is rendered per
-// request, so it is never staler than the nightly VolleyManager sync behind it.
-// How often a subscriber re-reads it is the calendar client's decision, not
-// ours: Google and Apple both treat a publisher's refresh interval as a hint
-// and poll on their own schedule. That is also why there is a plain download
-// next to the subscription — a one-off file is the honest option for anyone who
-// doesn't want to think about subscriptions at all.
+// up in whatever calendar they already live in. The feed is built from the live
+// games table on request (behind the short cache below), so it never trails the
+// nightly VolleyManager sync by more than a few minutes. How often a subscriber
+// actually re-reads it is the calendar client's decision and not ours: Google
+// and Apple both treat a publisher's refresh interval as a hint and poll on
+// their own schedule. That is also why a plain download sits next to the
+// subscription — a one-off file is the honest option for anyone who would
+// rather not think about subscriptions at all.
 
 const ICAL_TOKEN_VERSION = process.env.ICAL_TOKEN_VERSION || '1';
 const ICAL_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -3954,17 +3960,19 @@ function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLa
 
 // A subscription URL is public and polled by machines. Without this, every poll
 // would drag the whole games collection out of PocketBase. Five minutes is far
-// below any client's refresh interval, so nobody ever sees a staler feed than
-// they would have seen anyway.
-const icalCache = new Map<string, { body: string; expiresAt: number }>();
+// below any client's refresh interval, so nobody sees a staler feed than they
+// would have anyway — and the one moment the set really does change, taking or
+// giving back a game, drops the cache outright rather than waiting it out.
+// Cached as the game list, not as the rendered body, so the count the dialog
+// shows and the events the file contains can never disagree.
+const icalGamesCache = new Map<string, { games: CalendarFeedGame[]; expiresAt: number }>();
 
-async function renderRcCalendar(person: ActiveRcPerson, lang: IcalLang): Promise<string> {
-  const cacheKey = `${person.id}|${lang}`;
-  const cached = icalCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.body;
-  const body = buildRcCalendar(person.fullName, await getGamesAssignedToRc(person.fullName), lang);
-  icalCache.set(cacheKey, { body, expiresAt: Date.now() + ICAL_CACHE_TTL_MS });
-  return body;
+async function getCachedGamesForRc(person: ActiveRcPerson): Promise<CalendarFeedGame[]> {
+  const cached = icalGamesCache.get(person.id);
+  if (cached && cached.expiresAt > Date.now()) return cached.games;
+  const games = await getGamesAssignedToRc(person.fullName);
+  icalGamesCache.set(person.id, { games, expiresAt: Date.now() + ICAL_CACHE_TTL_MS });
+  return games;
 }
 
 // The URL has to be absolute and has to be the one the outside world can reach:
@@ -3997,7 +4005,7 @@ app.get('/api/ical/me', requireRcSession, async (req: Request, res: ExpressRespo
     const path = `/api/ical/${icalTokenFor(person.id)}.ics?lang=${lang.toLowerCase()}`;
     res.json({
       name: person.fullName,
-      count: (await getGamesAssignedToRc(person.fullName)).length,
+      count: (await getCachedGamesForRc(person)).length,
       url: `${base}${path}`,
       // webcal:// is what makes a phone or desktop offer "subscribe" instead of
       // downloading the file once and never looking at it again.
@@ -4019,7 +4027,7 @@ app.get('/api/ical/:token', async (req: Request, res: ExpressResponse) => {
       return;
     }
     const lang: IcalLang = asText(req.query.lang).toUpperCase() === 'EN' ? 'EN' : 'DE';
-    const body = await renderRcCalendar(person, lang);
+    const body = buildRcCalendar(person.fullName, await getCachedGamesForRc(person), lang);
     const disposition = asText(req.query.download) === '1' ? 'attachment' : 'inline';
     res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
     res.setHeader('Content-Disposition', `${disposition}; filename="${icalFileSlug(person.fullName)}.ics"`);

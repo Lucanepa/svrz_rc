@@ -2850,7 +2850,9 @@ export default function App() {
               </div>
             )}
             <div className="mb-3 space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-2">
-              <div className="flex items-center gap-2">
+              {/* Wraps rather than overflows: with Admin, season, calendar and
+                  the logout name all present, this row runs out of phone. */}
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={toggleLang}
                   className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
@@ -4835,6 +4837,105 @@ export default function App() {
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Info size={15} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showCalendarModal && (
+        <div onClick={() => setShowCalendarModal(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
+          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 max-h-[85vh] overflow-auto">
+            <div className="flex items-start justify-between mb-3">
+              <h3 className="text-base font-bold text-stone-900 flex items-center gap-2">
+                <CalendarDays size={17} className="text-red-600" />
+                {formData.lang === 'DE' ? 'Kalender-Abo' : 'Calendar subscription'}
+              </h3>
+              <button onClick={() => setShowCalendarModal(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
+            </div>
+
+            <p className="text-sm text-stone-600 mb-4">
+              {formData.lang === 'DE'
+                ? 'Deine übernommenen Spiele – vergangene und künftige – in deinem eigenen Kalender. Der Link bleibt gültig; neu übernommene Spiele erscheinen von selbst.'
+                : 'The games you have taken — past and future — in the calendar you already use. The link stays valid; games you take later show up on their own.'}
+            </p>
+
+            {icalError && (
+              <p className="mb-4 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">{icalError}</p>
+            )}
+
+            {!icalInfo && !icalError && (
+              <div className="flex items-center gap-2 text-sm text-stone-500"><Loader2 size={15} className="animate-spin" /> {t.loading}</div>
+            )}
+
+            {icalInfo && (
+              <div className="flex flex-col gap-3">
+                <a
+                  href={icalInfo.webcalUrl}
+                  className="h-11 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800 transition-colors"
+                >
+                  <CalendarPlus size={16} />
+                  {formData.lang === 'DE' ? 'Zum Kalender hinzufügen' : 'Add to calendar'}
+                </a>
+
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wide text-stone-500 mb-1">
+                    {formData.lang === 'DE' ? 'Oder Link kopieren' : 'Or copy the link'}
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      readOnly
+                      value={icalInfo.url}
+                      onFocus={(e) => e.currentTarget.select()}
+                      className="min-w-0 flex-1 h-9 rounded-lg border border-stone-200 bg-stone-50 px-2.5 font-mono text-[11px] text-stone-600"
+                    />
+                    <button
+                      onClick={() => void copyIcalUrl()}
+                      className="h-9 shrink-0 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 bg-stone-50 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"
+                    >
+                      {icalCopied ? <ClipboardCheck size={14} className="text-green-600" /> : <Copy size={14} />}
+                      {/* Not t.copied — that one is a full sentence, and this
+                          is a button that has to stay next to the field. */}
+                      {icalCopied ? (formData.lang === 'DE' ? 'Kopiert' : 'Copied') : t.copy}
+                    </button>
+                  </div>
+                </div>
+
+                {/* New tab, not this one: the response is a download that the
+                    browser hands off without navigating, but if the feed ever
+                    answers with an error instead, a half-filled feedback form
+                    must not be the thing that gets unloaded. A cross-origin
+                    `download` attribute is ignored, so the attachment header on
+                    the response is what actually makes this a file. */}
+                <a
+                  href={icalInfo.downloadUrl}
+                  target="_blank"
+                  rel="noopener"
+                  className="h-10 inline-flex items-center justify-center gap-2 rounded-xl border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50 transition-colors"
+                >
+                  <Download size={15} />
+                  {formData.lang === 'DE'
+                    ? `Alle ${icalInfo.count} Spiele als .ics herunterladen`
+                    : `Download all ${icalInfo.count} games as .ics`}
+                </a>
+
+                <div className="rounded-lg bg-stone-50 border border-stone-200 px-3 py-2.5 text-[11px] leading-relaxed text-stone-500 space-y-1.5">
+                  <p>
+                    {formData.lang === 'DE'
+                      ? 'Wie oft dein Kalender nachschaut, bestimmt dein Kalender-Programm selbst – meist zwischen ein paar Stunden und einmal täglich. Der Link liefert immer den aktuellen Stand.'
+                      : 'How often your calendar checks back is your calendar app’s decision — usually somewhere between a few hours and once a day. The link always serves the current state.'}
+                  </p>
+                  <p>
+                    {formData.lang === 'DE'
+                      ? 'Die heruntergeladene .ics-Datei ist eine Momentaufnahme und aktualisiert sich nicht mehr.'
+                      : 'The downloaded .ics file is a snapshot and never updates itself.'}
+                  </p>
+                  <p>
+                    {formData.lang === 'DE'
+                      ? 'Behalte den Link für dich – wer ihn hat, sieht deine Spiele.'
+                      : 'Keep the link to yourself — anyone who has it can see your games.'}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

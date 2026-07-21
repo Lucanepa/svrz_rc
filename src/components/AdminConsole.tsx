@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, KeyRound } from 'lucide-react';
+import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, KeyRound, Mail, RotateCcw, Send } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
@@ -7,7 +7,8 @@ import {
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson, generateRcPin,
   getSettings, putSettings, loadEligibleGames,
-  type Coachee, type RcPerson, type ImportRow,
+  getEmailTemplates, putEmailTemplates, getReminderPreview,
+  type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplates, type ReminderPreview,
 } from '../lib/pocketbase';
 import {
   levelKey, levelDisplay, hasNiveauRules, summarizeTarget, isTargetActive,
@@ -42,6 +43,17 @@ const STR = {
   DE: {
     admin: 'Admin', logout: 'Abmelden', login: 'Anmelden', adminPw: 'Admin-Passwort', wrongPw: 'Falsches Passwort',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Einstellungen', testBadge: 'Testmodus',
+    emails: 'E-Mails',
+    tplFeedback: 'Feedback-E-Mail (nach dem Spiel)',
+    tplFeedbackHint: 'Wird nach dem Absenden eines Feedbacks an den Coachee gesendet (RC in Kopie, PDF im Anhang).',
+    tplReminder: 'Erinnerung (Tag vor dem Spiel)',
+    tplReminderHint: 'Wird am Vortag an jeden Coachee gesendet, dessen Spiel ein RC übernommen hat (RC in Kopie). Sind beide SR Coachees, erhält jeder eine eigene E-Mail.',
+    tplSubject: 'Betreff', tplHeading: 'Titel (optional)', tplIntro: 'Text', tplOutro: 'Schluss / Grussformel',
+    tplPlaceholders: 'Platzhalter (werden automatisch ersetzt):',
+    tplReset: 'Standard wiederherstellen', tplSaved: 'Gespeichert ✓',
+    reminderEnabled: 'Erinnerungen aktiv', reminderEnabledHint: 'Wenn aus, wird am Vortag nichts versendet. Der Testmodus unterdrückt den Versand zusätzlich.',
+    reminderPreview: 'Vorschau: morgen', reminderPreviewHint: 'Zeigt exakt, was morgen versendet würde — es wird nichts gesendet.',
+    reminderNone: 'Für morgen stehen keine Erinnerungen an.',
     importXlsx: 'xlsx importieren', importHint: (s: string) => `Import setzt die Saison ${s}. Bestehende (gleicher Name + Saison) werden aktualisiert.`,
     firstName: 'Vorname', lastName: 'Nachname', level: 'Niveau', stage: 'Stufe', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
@@ -54,6 +66,9 @@ const STR = {
     pinEmailed: (e: string) => `Per E-Mail an ${e} gesendet.`,
     pinNotEmailed: 'Nicht per E-Mail gesendet (keine E-Mail/Testmodus) — bitte manuell übermitteln.',
     adminRole: 'Admin', toggleAdmin: 'Admin-Rechte umschalten',
+    toggleAdminConfirm: (n: string, on: boolean) => on
+      ? `„${n}" zum Admin machen? Admins haben vollen Zugriff — auch der PIN-Login gibt dann Admin-Rechte.`
+      : `Admin-Rechte von „${n}" entfernen?`,
     defaultSeason: 'Standard-Saison', defaultSeasonHint: 'Die Saison, in der die App standardmässig startet (für neue Nutzer).',
     save: 'Speichern', saved: 'Gespeichert ✓', testTitle: 'Test-Modus (E-Mail)',
     testHint: 'Wenn aktiv, werden keine E-Mails versendet (Feedback wird trotzdem gespeichert). Zum Live-Betrieb ausschalten.',
@@ -68,6 +83,17 @@ const STR = {
   EN: {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminPw: 'Admin password', wrongPw: 'Wrong password',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Settings', testBadge: 'Test mode',
+    emails: 'Emails',
+    tplFeedback: 'Feedback email (after the match)',
+    tplFeedbackHint: 'Sent to the coachee when a feedback is submitted (RC in CC, PDF attached).',
+    tplReminder: 'Reminder (day before the match)',
+    tplReminderHint: 'Sent the day before to every coachee whose game an RC has taken (RC in CC). If both referees are coachees, each gets their own email.',
+    tplSubject: 'Subject', tplHeading: 'Title (optional)', tplIntro: 'Body', tplOutro: 'Closing / sign-off',
+    tplPlaceholders: 'Placeholders (filled in automatically):',
+    tplReset: 'Restore default', tplSaved: 'Saved ✓',
+    reminderEnabled: 'Reminders active', reminderEnabledHint: 'When off, nothing is sent the day before. Test mode suppresses sending as well.',
+    reminderPreview: 'Preview: tomorrow', reminderPreviewHint: 'Shows exactly what would be sent tomorrow — nothing is sent.',
+    reminderNone: 'No reminders due for tomorrow.',
     importXlsx: 'Import xlsx', importHint: (s: string) => `Import targets season ${s}. Existing (same name + season) are updated.`,
     firstName: 'First name', lastName: 'Last name', level: 'Level', stage: 'Stage', group: 'Group', email: 'Email', phone: 'Phone',
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
@@ -80,6 +106,9 @@ const STR = {
     pinEmailed: (e: string) => `Emailed to ${e}.`,
     pinNotEmailed: 'Not emailed (no address/test mode) — share it manually.',
     adminRole: 'Admin', toggleAdmin: 'Toggle admin rights',
+    toggleAdminConfirm: (n: string, on: boolean) => on
+      ? `Make "${n}" an admin? Admins get full access — their PIN login also grants admin.`
+      : `Remove admin rights from "${n}"?`,
     defaultSeason: 'Default season', defaultSeasonHint: 'The season the app opens to by default (for new users).',
     save: 'Save', saved: 'Saved ✓', testTitle: 'Test mode (email)',
     testHint: 'When on, no emails are sent (feedback is still saved). Turn off for live operation.',
@@ -127,7 +156,7 @@ export default function AdminConsole() {
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [tab, setTab] = useState<'coachees' | 'rcs' | 'settings'>('coachees');
+  const [tab, setTab] = useState<'coachees' | 'rcs' | 'emails' | 'settings'>('coachees');
   const [testMode, setTestMode] = useState(false);
   const [groups, setGroups] = useState<string[]>([]);
   const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
@@ -186,6 +215,7 @@ export default function AdminConsole() {
   const tabs: { id: typeof tab; label: string; icon: React.ReactNode }[] = [
     { id: 'coachees', label: t.coachees, icon: <Users size={15} /> },
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
+    { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
     { id: 'settings', label: t.settings, icon: <SettingsIcon size={15} /> },
   ];
 
@@ -200,7 +230,7 @@ export default function AdminConsole() {
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
-        <div className="max-w-4xl mx-auto px-4 pb-3 grid grid-cols-3 gap-2">
+        <div className="max-w-4xl mx-auto px-4 pb-3 grid grid-cols-4 gap-2">
           {tabs.map((tb) => (
             <button key={tb.id} onClick={() => setTab(tb.id)} className={`h-11 inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-xl transition-colors ${tab === tb.id ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}>{tb.icon}<span className="hidden sm:inline">{tb.label}</span></button>
           ))}
@@ -209,6 +239,7 @@ export default function AdminConsole() {
       <main className="max-w-4xl mx-auto px-4 pt-5">
         {tab === 'coachees' && <CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} />}
         {tab === 'rcs' && <RcsAdmin t={t} />}
+        {tab === 'emails' && <EmailsAdmin t={t} />}
         {tab === 'settings' && <SettingsAdmin t={t} onTestMode={setTestMode} groups={groups} onGroups={setGroups} />}
         <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
       </main>
@@ -421,7 +452,12 @@ function RcsAdmin({ t }: { t: T }) {
   const add = async () => { if (!form.first_name && !form.last_name) return; await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); };
   const saveEdit = async (id: string) => { await updateRcPerson(id, editForm); setEditId(null); await reload(); };
   const remove = async (r: RcPerson) => { if (!confirm(t.delRc(`${r.first_name} ${r.last_name}`))) return; await deleteRcPerson(r.id); await reload(); };
-  const toggleAdmin = async (r: RcPerson) => { await updateRcPerson(r.id, { is_admin: !r.is_admin }); await reload(); };
+  const toggleAdmin = async (r: RcPerson) => {
+    const makingAdmin = !r.is_admin;
+    if (!confirm(t.toggleAdminConfirm(`${r.first_name ?? ''} ${r.last_name ?? ''}`.trim(), makingAdmin))) return;
+    await updateRcPerson(r.id, { is_admin: makingAdmin });
+    await reload();
+  };
   const genPin = async (r: RcPerson) => {
     if (r.has_pin && !confirm(t.genPinConfirm(`${r.first_name} ${r.last_name}`))) return;
     setPinBusy(r.id);
@@ -493,6 +529,141 @@ function RcsAdmin({ t }: { t: T }) {
             </div>
           ))}
           {!loading && rcs.length === 0 && <p className="py-8 text-center text-sm text-stone-400">{t.noRcs}</p>}
+        </div>
+      </Card>
+    </>
+  );
+}
+
+// Guided template editor: admins edit subject/title/body/closing with
+// {{placeholders}}; the branded layout, detail rows and attachments are fixed,
+// so an edit can never break rendering.
+function EmailsAdmin({ t }: { t: T }) {
+  const [data, setData] = useState<EmailTemplates | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState('');
+  const [preview, setPreview] = useState<ReminderPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  useEffect(() => { getEmailTemplates().then(setData).catch((e) => setErr(e instanceof Error ? e.message : String(e))); }, []);
+
+  const patch = (kind: 'feedback' | 'reminder', p: Partial<EmailTemplate>) =>
+    setData((d) => (d ? { ...d, [kind]: { ...d[kind], ...p } } : d));
+
+  const save = async () => {
+    if (!data) return;
+    setSaving(true); setErr(''); setSaved(false);
+    try {
+      await putEmailTemplates({ feedback: data.feedback, reminder: data.reminder, reminder_enabled: data.reminder_enabled });
+      setSaved(true); window.setTimeout(() => setSaved(false), 2500);
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setSaving(false); }
+  };
+
+  const loadPreview = async () => {
+    setPreviewLoading(true); setErr('');
+    try { setPreview(await getReminderPreview()); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setPreviewLoading(false); }
+  };
+
+  if (!data) return <Card><p className="text-sm text-stone-400">{err || t.loading}</p></Card>;
+
+  const editor = (kind: 'feedback' | 'reminder', title: string, hint: string) => {
+    const tpl = data[kind];
+    return (
+      <Card>
+        <div className="flex items-start justify-between gap-3 mb-1">
+          <h2 className="text-sm font-semibold text-stone-700">{title}</h2>
+          <button
+            onClick={() => patch(kind, data.defaults[kind])}
+            className={cn(btnGhost, 'shrink-0')}
+            title={t.tplReset}
+          ><RotateCcw size={13} /> <span className="hidden sm:inline">{t.tplReset}</span></button>
+        </div>
+        <p className="text-xs text-stone-400 mb-3">{hint}</p>
+        <div className="space-y-2.5">
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-wide text-stone-500 mb-1">{t.tplSubject}</label>
+            <input className={input + ' w-full'} value={tpl.subject} onChange={(e) => patch(kind, { subject: e.target.value })} />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-wide text-stone-500 mb-1">{t.tplHeading}</label>
+            <input className={input + ' w-full'} value={tpl.heading} onChange={(e) => patch(kind, { heading: e.target.value })} />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-wide text-stone-500 mb-1">{t.tplIntro}</label>
+            <textarea
+              className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-red-400"
+              rows={kind === 'reminder' ? 14 : 6}
+              value={tpl.intro}
+              onChange={(e) => patch(kind, { intro: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold uppercase tracking-wide text-stone-500 mb-1">{t.tplOutro}</label>
+            <textarea
+              className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-red-400"
+              rows={3}
+              value={tpl.outro}
+              onChange={(e) => patch(kind, { outro: e.target.value })}
+            />
+          </div>
+        </div>
+        <p className="mt-3 text-[11px] text-stone-400">
+          {t.tplPlaceholders}{' '}
+          {data.placeholders.map((p) => (
+            <code key={p} className="inline-block mx-0.5 rounded bg-stone-100 border border-stone-200 px-1 py-0.5 text-[10px] text-stone-600">{`{{${p}}}`}</code>
+          ))}
+        </p>
+      </Card>
+    );
+  };
+
+  return (
+    <>
+      {editor('reminder', t.tplReminder, t.tplReminderHint)}
+      <Card>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input type="checkbox" className="mt-0.5 h-4 w-4 accent-red-600" checked={data.reminder_enabled}
+            onChange={(e) => setData({ ...data, reminder_enabled: e.target.checked })} />
+          <span>
+            <span className="block text-sm font-medium text-stone-700">{t.reminderEnabled}</span>
+            <span className="block text-xs text-stone-400">{t.reminderEnabledHint}</span>
+          </span>
+        </label>
+        <div className="mt-3 flex items-center gap-2">
+          <button onClick={loadPreview} disabled={previewLoading} className={btnGhost}>
+            {previewLoading ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />} {t.reminderPreview}
+          </button>
+          <span className="text-[11px] text-stone-400">{t.reminderPreviewHint}</span>
+        </div>
+        {preview && (
+          <div className="mt-3 space-y-2">
+            {preview.reminders.length === 0 ? (
+              <p className="text-sm text-stone-400">{t.reminderNone}</p>
+            ) : preview.reminders.map((r, i) => (
+              <div key={i} className="rounded-lg border border-stone-200 overflow-hidden">
+                <div className="bg-stone-50 px-3 py-2 text-[11px] text-stone-600 border-b border-stone-200">
+                  <div><span className="font-semibold">An:</span> {r.to} <span className="font-semibold ml-2">Cc:</span> {r.cc.join(', ') || '—'}</div>
+                  <div><span className="font-semibold">Betreff:</span> {r.subject}</div>
+                  <div className="text-stone-400">{r.match} · {r.role} · {r.coachee} · RC {r.rc}</div>
+                </div>
+                <pre className="px-3 py-2 text-[11px] text-stone-700 whitespace-pre-wrap font-sans leading-relaxed">{r.text}</pre>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+      {editor('feedback', t.tplFeedback, t.tplFeedbackHint)}
+      <Card>
+        <div className="flex items-center gap-3">
+          <button onClick={save} disabled={saving} className={btnPrimary}>
+            {saving ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} {t.save}
+          </button>
+          {saved && <span className="text-sm text-green-600 font-medium">{t.tplSaved}</span>}
+          {err && <span className="text-sm text-red-600">{err}</span>}
         </div>
       </Card>
     </>

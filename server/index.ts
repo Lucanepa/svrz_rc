@@ -624,93 +624,163 @@ function emailShell(bodyHtml: string): string {
 </html>`;
 }
 
+// ── Editable email templates (guided fields, admin-managed) ───────────
+// Admins edit subject/heading/intro/outro (each supporting {{placeholders}});
+// the branded shell, the data-driven detail rows and the attachments stay
+// fixed, so a bad edit can never break rendering or leak raw HTML. Stored in
+// app_settings as JSON under `email_template_<kind>`.
+type EmailTemplateKind = 'feedback' | 'reminder';
+type EmailTemplate = { subject: string; heading: string; intro: string; outro: string };
+
+const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
+  feedback: {
+    subject: 'SR-Coaching Feedback – Spiel {{matchNo}} ({{date}})',
+    heading: 'SR-Coaching Feedback',
+    intro: 'Hallo {{coachee}}\n\nHier ist das Feedback zu deinem Einsatz als {{role}}. Der vollständige Bericht ist als PDF angehängt.',
+    outro: 'Wir freuen uns über dein Feedback zum Coaching-Erlebnis:',
+  },
+  reminder: {
+    subject: 'Coaching-Begleitung bei deinem nächsten Einsatz',
+    heading: '',
+    intro: `Liebe/r {{vorname}},
+
+bei deinem nächsten Einsatz wirst du im Rahmen unseres Schiedsrichter-Coachings begleitet: {{coach}} ist als Coach vor Ort, um dich zu unterstützen und gemeinsam mit dir an deiner Weiterentwicklung zu arbeiten.
+
+Einsatz-Details:
+
+Datum: {{datum}}
+Zeit: {{uhrzeit}}
+Spiel: {{heim}} – {{gast}} ({{liga}})
+Ort/Halle: {{halle}}
+
+{{coachVorname}} meldet sich vor Ort kurz bei dir. Das Coaching ist keine Prüfung – im Anschluss nehmt ihr euch gemeinsam Zeit für ein Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen.
+
+Bei Fragen oder falls sich am Einsatz etwas ändert, melde dich bitte rechtzeitig.`,
+    outro: 'Sportliche Grüsse\n{{coach}}',
+  },
+};
+
+// Replace {{placeholders}}; unknown keys render empty rather than leaking braces.
+function renderPlaceholders(text: string, vars: Record<string, string>): string {
+  return String(text ?? '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k: string) => vars[k] ?? '');
+}
+
+async function getEmailTemplate(kind: EmailTemplateKind): Promise<EmailTemplate> {
+  const def = DEFAULT_EMAIL_TEMPLATES[kind];
+  const rec = await getSettingRecord(`email_template_${kind}`);
+  if (!rec) return def;
+  try {
+    const p = JSON.parse(asText(rec.value)) as Partial<EmailTemplate>;
+    const str = (v: unknown, d: string) => (typeof v === 'string' ? v : d);
+    // Subject must never be blank (a blank subject is a broken mail); heading is
+    // optional — blank simply renders no title line.
+    const req = (v: unknown, d: string) => (typeof v === 'string' && v.trim() ? v : d);
+    return {
+      subject: req(p.subject, def.subject),
+      heading: str(p.heading, def.heading),
+      intro: str(p.intro, def.intro),
+      outro: str(p.outro, def.outro),
+    };
+  } catch { return def; }
+}
+
+function fmtDateDe(value: string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return asText(value);
+  return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
+}
+
+function fmtTimeDe(value: string): string {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+// Values available as {{placeholders}} in the templates. The German names are
+// the documented ones (listed in the admin editor); English aliases are kept so
+// a template written either way keeps working.
+function emailVars(o: {
+  refereeName: string; rcName: string; matchNo: string; league: string;
+  date: string; time: string; location: string; homeTeam: string; awayTeam: string; role: string;
+}): Record<string, string> {
+  const first = (n: string) => n.trim().split(/\s+/)[0] || '';
+  return {
+    vorname: first(o.refereeName), name: o.refereeName,
+    coach: o.rcName, coachVorname: first(o.rcName),
+    datum: o.date, uhrzeit: o.time,
+    heim: o.homeTeam, gast: o.awayTeam, liga: o.league, halle: o.location,
+    spielNr: o.matchNo, rolle: o.role,
+    // English aliases
+    coachee: o.refereeName, rc: o.rcName, date: o.date, time: o.time,
+    location: o.location, homeTeam: o.homeTeam, awayTeam: o.awayTeam,
+    match: `${o.homeTeam} – ${o.awayTeam}`, league: o.league, matchNo: o.matchNo, role: o.role,
+  };
+}
+
+// Admin-edited prose → escaped HTML paragraphs (blank line = new paragraph).
+function textBlockHtml(text: string): string {
+  const t = String(text ?? '').trim();
+  if (!t) return '';
+  return t.split(/\n{2,}/).map((p) =>
+    `<p style="margin:0 0 14px;font-size:14px;color:#44403c;line-height:1.6;">${escapeHtml(p).replace(/\n/g, '<br />')}</p>`,
+  ).join('');
+}
+
+function detailRowsHtml(rows: Array<[string, string]>): string {
+  const body = rows.filter(([, v]) => v).map(([k, v]) =>
+    `<tr><td style="padding:6px 12px 6px 0;font-weight:600;white-space:nowrap;vertical-align:top;color:#57534e;">${escapeHtml(k)}</td><td style="padding:6px 0;color:#1c1917;">${escapeHtml(v)}</td></tr>`,
+  ).join('');
+  return body ? `<table style="width:100%;border-collapse:collapse;font-size:14px;margin:0 0 18px;">${body}</table>` : '';
+}
+
+// Render a template + data into the branded shell. Used by BOTH the post-match
+// feedback mail and the day-before reminder, so they stay visually consistent.
+function buildTemplatedEmail(opts: {
+  tpl: EmailTemplate;
+  vars: Record<string, string>;
+  rows: Array<[string, string]>;
+  tips?: string;
+  surveyUrl?: string;
+  footerNote?: string;
+}): { subject: string; html: string; text: string } {
+  const r = (s: string) => renderPlaceholders(s, opts.vars);
+  const heading = r(opts.tpl.heading);
+  const intro = r(opts.tpl.intro);
+  const outro = r(opts.tpl.outro);
+  const tips = (opts.tips || '').trim();
+  const tipsHtml = tips
+    ? `<div style="margin:18px 0;padding:14px 18px;border-left:4px solid #059669;background:#ecfdf5;border-radius:0 8px 8px 0;"><h2 style="margin:0 0 6px;font-size:14px;font-weight:600;color:#059669;">Tipps &amp; Tricks</h2><p style="margin:0;font-size:14px;color:#1e293b;white-space:pre-wrap;line-height:1.6;">${escapeHtml(tips)}</p></div>`
+    : '';
+  const surveyHtml = opts.surveyUrl
+    ? `<div style="margin-top:20px;"><a href="${escapeHtml(opts.surveyUrl)}" style="display:inline-block;padding:10px 24px;background:#059669;color:#ffffff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;">Feedback geben</a></div>`
+    : '';
+  const footerHtml = opts.footerNote
+    ? `<p style="margin:18px 0 0;font-size:12px;color:#a8a29e;">${escapeHtml(opts.footerNote)}</p>`
+    : '';
+  const html = emailShell(
+    (heading.trim() ? `<h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#1c1917;">${escapeHtml(heading)}</h1>` : '')
+    + textBlockHtml(intro)
+    + detailRowsHtml(opts.rows)
+    + tipsHtml
+    + textBlockHtml(outro)
+    + surveyHtml
+    + footerHtml,
+  );
+  let text = heading.trim() ? `${heading}\n\n` : '';
+  if (intro.trim()) text += `${intro.trim()}\n\n`;
+  for (const [k, v] of opts.rows) if (v) text += `${k}: ${v}\n`;
+  if (tips) text += `\n--- Tipps & Tricks ---\n${tips}\n`;
+  if (outro.trim()) text += `\n${outro.trim()}\n`;
+  if (opts.surveyUrl) text += `\n${opts.surveyUrl}\n`;
+  if (opts.footerNote) text += `\n${opts.footerNote}\n`;
+  return { subject: r(opts.tpl.subject), html, text };
+}
+
 // Prominent monospace box for a PIN or one-time code.
 function emailCodeBox(value: string): string {
   return `<div style="margin:24px 0;text-align:center;">
     <span style="display:inline-block;padding:16px 30px;background:#f5f5f4;border:1px solid #e7e5e4;border-radius:12px;font-size:30px;font-weight:700;letter-spacing:9px;color:#1c1917;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;">${escapeHtml(value)}</span>
   </div>`;
-}
-
-function buildFeedbackEmailHtml(params: {
-  matchNo: string;
-  league: string;
-  date: string;
-  location: string;
-  homeTeam: string;
-  awayTeam: string;
-  role: string;
-  rcName: string;
-  tipsAndTricks: string;
-  surveyUrl: string;
-}): string {
-  const e = (s: string) => escapeHtml(s);
-  const tipsSection = params.tipsAndTricks.trim()
-    ? `
-    <div style="margin: 24px 0; padding: 16px 20px; border-left: 4px solid #059669; background: #ecfdf5; border-radius: 0 8px 8px 0;">
-      <h2 style="margin: 0 0 8px; font-size: 15px; font-weight: 600; color: #059669;">Tips &amp; Tricks</h2>
-      <p style="margin: 0; font-size: 14px; color: #1e293b; white-space: pre-wrap; line-height: 1.6;">${e(params.tipsAndTricks)}</p>
-    </div>`
-    : '';
-
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin: 0; padding: 0; background-color: #f5f5f4; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-  <div style="max-width: 600px; margin: 0 auto; padding: 32px 16px;">
-    <div style="background: #ffffff; border: 1px solid #e7e5e4; border-radius: 12px; padding: 32px; margin-bottom: 16px;">
-      ${getEmailLogo() ? `<div style="text-align:center;margin:0 0 20px;"><img src="cid:${EMAIL_LOGO_CID}" alt="Swiss Volley Region Zürich" width="140" style="display:inline-block;width:140px;max-width:55%;height:auto;" /></div>` : ''}
-      <h1 style="margin: 0 0 24px; font-size: 20px; font-weight: 700; color: #1c1917;">SR-Coaching Feedback</h1>
-      <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #44403c;">
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Spiel Nr.</td><td style="padding: 6px 0;">${e(params.matchNo)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Liga</td><td style="padding: 6px 0;">${e(params.league)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Datum</td><td style="padding: 6px 0;">${e(params.date)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Ort</td><td style="padding: 6px 0;">${e(params.location)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Mannschaften</td><td style="padding: 6px 0;">${e(params.homeTeam)} vs ${e(params.awayTeam)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Beurteilte Rolle</td><td style="padding: 6px 0;">${e(params.role)}</td></tr>
-        <tr><td style="padding: 6px 12px 6px 0; font-weight: 600; white-space: nowrap; vertical-align: top;">Schiedsrichter-Coach</td><td style="padding: 6px 0;">${e(params.rcName)}</td></tr>
-      </table>
-      ${tipsSection}
-      <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e7e5e4;">
-        <p style="margin: 0 0 12px; font-size: 14px; color: #44403c;">Wir freuen uns über Ihr Feedback zum Coaching-Erlebnis:</p>
-        <a href="${e(params.surveyUrl)}" style="display: inline-block; padding: 10px 24px; background: #059669; color: #ffffff; text-decoration: none; border-radius: 8px; font-size: 14px; font-weight: 600;">Feedback geben</a>
-      </div>
-    </div>
-    <div style="text-align: center; padding: 8px 0;">
-      <p style="margin: 0 0 4px; font-size: 13px; color: #78716c;">Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt.</p>
-      <p style="margin: 0; font-size: 11px; color: #a8a29e;">Diese E-Mail wurde automatisch vom SR-Coaching-System versendet.</p>
-    </div>
-  </div>
-</body>
-</html>`;
-}
-
-function buildFeedbackEmailText(params: {
-  matchNo: string;
-  league: string;
-  date: string;
-  location: string;
-  homeTeam: string;
-  awayTeam: string;
-  role: string;
-  rcName: string;
-  tipsAndTricks: string;
-  surveyUrl: string;
-}): string {
-  let text = `SR-Coaching Feedback\n\n`;
-  text += `Spiel Nr.: ${params.matchNo}\n`;
-  text += `Liga: ${params.league}\n`;
-  text += `Datum: ${params.date}\n`;
-  text += `Ort: ${params.location}\n`;
-  text += `Mannschaften: ${params.homeTeam} vs ${params.awayTeam}\n`;
-  text += `Beurteilte Rolle: ${params.role}\n`;
-  text += `Schiedsrichter-Coach: ${params.rcName}\n`;
-  if (params.tipsAndTricks.trim()) {
-    text += `\n--- Tipps & Tricks ---\n${params.tipsAndTricks}\n`;
-  }
-  text += `\nWir freuen uns über Ihr Feedback zum Coaching-Erlebnis:\n${params.surveyUrl}\n`;
-  text += `\nDer vollständige Coaching-Feedback-Bericht ist als PDF angehängt.\n`;
-  text += `Diese E-Mail wurde automatisch vom SR-Coaching-System versendet.\n`;
-  return text;
 }
 
 async function withCollection<T>(
@@ -3292,21 +3362,35 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       }
 
       const matchNo = asText(game.match_no);
-      const subject = `SR-Coaching Feedback – Spiel ${matchNo} (${formattedDate})`;
-
       const surveyUrl = process.env.FEEDBACK_SURVEY_URL || '';
-      const emailParams = {
-        matchNo,
-        league: asText(game.league),
-        date: formattedDate,
-        location: asText(game.location),
-        homeTeam: asText(game.home_team),
-        awayTeam: asText(game.away_team),
-        role: String(role),
-        rcName: asText(formData.meta?.rc),
-        tipsAndTricks: String(tipsAndTricks || ''),
+      const built = buildTemplatedEmail({
+        tpl: await getEmailTemplate('feedback'),
+        vars: emailVars({
+          refereeName,
+          rcName: asText(formData.meta?.rc),
+          matchNo,
+          league: asText(game.league),
+          date: formattedDate,
+          time: fmtTimeDe(asText(game.match_date)),
+          location: asText(game.location),
+          homeTeam: asText(game.home_team),
+          awayTeam: asText(game.away_team),
+          role: String(role),
+        }),
+        rows: [
+          ['Spiel Nr.', matchNo],
+          ['Liga', asText(game.league)],
+          ['Datum', formattedDate],
+          ['Ort', asText(game.location)],
+          ['Mannschaften', `${asText(game.home_team)} vs ${asText(game.away_team)}`],
+          ['Beurteilte Rolle', String(role)],
+          ['Schiedsrichter-Coach', asText(formData.meta?.rc)],
+        ],
+        tips: String(tipsAndTricks || ''),
         surveyUrl,
-      };
+        footerNote: 'Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt.',
+      });
+      const subject = built.subject;
 
       const isTestMode = process.env.FEEDBACK_EMAIL_TEST === '1';
       const testRecipient = process.env.FEEDBACK_TEST_RECIPIENT || '';
@@ -3346,8 +3430,8 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           cc: mailCc,
           bcc: mailBcc,
           subject: mailSubject,
-          html: buildFeedbackEmailHtml(emailParams),
-          text: buildFeedbackEmailText(emailParams),
+          html: built.html,
+          text: built.text,
           attachments: emailAttachments([{
             filename: String(pdfFilename || 'feedback.pdf'),
             content: pdfBuffer,
@@ -3434,9 +3518,199 @@ app.post('/api/admin/migrate-source-payload', requireAdminSession, async (_req: 
   }
 });
 
+// ── Day-before match reminder ─────────────────────────────────────────
+// Once a day, mail every coachee who referees a game TOMORROW that an RC has
+// already taken: "your next assignment will be coached". Sent TO the coachee
+// with the RC in CC. If both referees of a game are coachees, each gets their
+// own mail. Off by default (`reminder_enabled` setting) and additionally
+// suppressed by email test mode, so it can never surprise anyone after deploy.
+// 10:00 the day before the match (Europe/Zurich, see VM_SYNC_TIMEZONE).
+const REMINDER_CRON = process.env.REMINDER_CRON || '0 10 * * *';
+
+function getTomorrowRange(): { from: string; to: string } {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  const dateStr = d.toISOString().slice(0, 10);
+  return { from: `${dateStr}T00:00:00.000Z`, to: `${dateStr}T23:59:59.999Z` };
+}
+
+// Resolve a game's referee name to a coachee record (handles "First Last" vs
+// "Last First"), mirroring the lookup the feedback submit uses.
+async function findCoacheeByRefereeName(refereeName: string): Promise<AnyRecord | null> {
+  const esc = escapeFilterValue(refereeName);
+  const parts = refereeName.trim().split(/\s+/);
+  const reversed = parts.length >= 2 ? [...parts].reverse().join(' ') : '';
+  const escRev = reversed ? escapeFilterValue(reversed) : '';
+  const revClause = escRev
+    ? ` || full_name = "${escRev}" || name = "${escRev}" || coachee_name = "${escRev}" || referee_name = "${escRev}"`
+    : '';
+  try {
+    return await withCollection(collectionCandidates.coachees, (c) =>
+      c.getFirstListItem<AnyRecord>(
+        `full_name = "${esc}" || name = "${esc}" || coachee_name = "${esc}" || referee_name = "${esc}"${revClause}`));
+  } catch { return null; }
+}
+
+type ReminderPlan = {
+  gameId: string; role: string; to: string; cc: string[];
+  subject: string; text: string; html: string; coachee: string; rc: string; match: string;
+};
+
+// Build the reminders due for tomorrow. Sends nothing — so the admin UI can
+// preview exactly what would go out (same contract as the demo's mail preview).
+async function buildDueReminders(): Promise<ReminderPlan[]> {
+  const { from, to } = getTomorrowRange();
+  await ensureAdminAuth();
+  const games = await withCollection(collectionCandidates.games, (c) =>
+    c.getFullList<AnyRecord>({ filter: `match_date >= "${from}" && match_date <= "${to}"`, sort: 'match_date' }));
+  const tpl = await getEmailTemplate('reminder');
+  const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
+  const plans: ReminderPlan[] = [];
+  for (const game of games) {
+    const rcName = asText(game.assigned_rc);
+    if (!rcName) continue; // only games an RC has actually taken
+    const rcEmail = people.find((p) => normalizeName(p.fullName) === normalizeName(rcName))?.email || '';
+    for (const [roleLabel, refField] of [['1. SR', 'first_referee'], ['2. SR', 'second_referee']] as const) {
+      const refereeName = asText(game[refField]);
+      if (!refereeName) continue;
+      const coachee = await findCoacheeByRefereeName(refereeName);
+      const email = coachee ? asText(coachee.email) : '';
+      if (!coachee || !email) continue; // not a coachee, or no address on file
+      const built = buildTemplatedEmail({
+        tpl,
+        vars: emailVars({
+          refereeName: asText(coachee.full_name) || refereeName,
+          rcName,
+          matchNo: asText(game.match_no),
+          league: asText(game.league),
+          date: fmtDateDe(asText(game.match_date)),
+          time: fmtTimeDe(asText(game.match_date)),
+          location: asText(game.location),
+          homeTeam: asText(game.home_team),
+          awayTeam: asText(game.away_team),
+          role: roleLabel,
+        }),
+        rows: [], // the reminder carries its details inline in the template text
+      });
+      plans.push({
+        gameId: String(game.id), role: roleLabel, to: email, cc: rcEmail ? [rcEmail] : [],
+        subject: built.subject, text: built.text, html: built.html,
+        coachee: asText(coachee.full_name) || refereeName, rc: rcName,
+        match: `${asText(game.home_team)} – ${asText(game.away_team)}`,
+      });
+    }
+  }
+  return plans;
+}
+
+async function runMatchReminders(): Promise<{ sent: number; skipped: number; suppressed: boolean; due: number }> {
+  const enabled = asText((await getSettingRecord('reminder_enabled'))?.value) === '1';
+  if (!enabled) return { sent: 0, skipped: 0, suppressed: true, due: 0 };
+  const plans = await buildDueReminders();
+  const testMode = await isEmailTestMode();
+  if (testMode) {
+    console.log(`[reminder] TEST_MODE — ${plans.length} reminder(s) suppressed`);
+    return { sent: 0, skipped: plans.length, suppressed: true, due: plans.length };
+  }
+  const sentRec = await getSettingRecord('reminder_sent');
+  let already: string[] = [];
+  try { already = sentRec ? JSON.parse(asText(sentRec.value)) as string[] : []; } catch { already = []; }
+  const seen = new Set(already);
+  const stamp = getTomorrowRange().from.slice(0, 10);
+  const fresh: string[] = [];
+  let sent = 0, skipped = 0;
+  for (const p of plans) {
+    const key = `${stamp}:${p.gameId}:${p.role}`;
+    if (seen.has(key)) { skipped++; continue; } // already reminded — never double-send
+    try {
+      await smtpTransport.sendMail({
+        from: MAIL_FROM,
+        to: p.to,
+        cc: p.cc.length ? p.cc : undefined,
+        replyTo: p.cc[0] || undefined,
+        subject: p.subject,
+        html: p.html,
+        text: p.text,
+        attachments: emailAttachments(),
+      });
+      fresh.push(key);
+      sent++;
+    } catch (err) {
+      console.error('[reminder] send failed:', err instanceof Error ? err.message : err);
+    }
+  }
+  if (fresh.length) {
+    // Keep only current/future stamps so the setting can't grow without bound.
+    const keep = [...already, ...fresh].filter((k) => k.slice(0, 10) >= stamp);
+    await setSetting('reminder_sent', JSON.stringify(keep));
+  }
+  return { sent, skipped, suppressed: false, due: plans.length };
+}
+
+// ── Email templates + reminder admin API ──────────────────────────────
+app.get('/api/admin/email-templates', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    res.json({
+      feedback: await getEmailTemplate('feedback'),
+      reminder: await getEmailTemplate('reminder'),
+      defaults: DEFAULT_EMAIL_TEMPLATES,
+      reminder_enabled: asText((await getSettingRecord('reminder_enabled'))?.value) === '1',
+      placeholders: ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'uhrzeit', 'heim', 'gast', 'liga', 'halle', 'spielNr', 'rolle'],
+    });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    for (const kind of ['feedback', 'reminder'] as EmailTemplateKind[]) {
+      const tpl = body[kind];
+      if (!tpl || typeof tpl !== 'object') continue;
+      const t = tpl as Partial<EmailTemplate>;
+      const clean: EmailTemplate = {
+        subject: String(t.subject ?? '').slice(0, 300),
+        heading: String(t.heading ?? '').slice(0, 300),
+        intro: String(t.intro ?? '').slice(0, 8000),
+        outro: String(t.outro ?? '').slice(0, 4000),
+      };
+      if (!clean.subject.trim()) { res.status(400).json({ error: `Betreff darf nicht leer sein (${kind}).` }); return; }
+      await setSetting(`email_template_${kind}`, JSON.stringify(clean));
+    }
+    if ('reminder_enabled' in body) await setSetting('reminder_enabled', body.reminder_enabled ? '1' : '0');
+    res.json({ ok: true });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// Preview (never sends) the reminders that tomorrow would produce.
+app.get('/api/admin/reminders/preview', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    const plans = await buildDueReminders();
+    res.json({
+      enabled: asText((await getSettingRecord('reminder_enabled'))?.value) === '1',
+      testMode: await isEmailTestMode(),
+      reminders: plans.map(({ html: _html, ...rest }) => rest),
+    });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
 app.listen(port, () => {
   console.log(`API server listening on http://localhost:${port}`);
   console.log(`[scheduler] games sync cron: "${VM_SYNC_CRON}" (${VM_SYNC_TIMEZONE})`);
+  console.log(`[scheduler] match reminder cron: "${REMINDER_CRON}" (${VM_SYNC_TIMEZONE})`);
+
+  cron.schedule(
+    REMINDER_CRON,
+    async () => {
+      try {
+        const r = await runMatchReminders();
+        if (r.suppressed) console.log('[reminder] disabled or test mode — nothing sent');
+        else console.log(`[reminder] ${r.sent} sent, ${r.skipped} skipped (of ${r.due} due)`);
+      } catch (error) {
+        console.error('[reminder] Daily reminder run failed:', error);
+      }
+    },
+    { timezone: VM_SYNC_TIMEZONE },
+  );
 
   cron.schedule(
     VM_SYNC_CRON,

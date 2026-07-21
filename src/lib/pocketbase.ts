@@ -451,6 +451,39 @@ export async function deleteRcPerson(id: string) {
   if (!r.ok) throw new Error(await r.text());
 }
 
+// ── Editable email templates (admin) ──────────────────────────────────
+export type EmailTemplate = { subject: string; heading: string; intro: string; outro: string };
+export type EmailTemplates = {
+  feedback: EmailTemplate;
+  reminder: EmailTemplate;
+  defaults: { feedback: EmailTemplate; reminder: EmailTemplate };
+  reminder_enabled: boolean;
+  placeholders: string[];
+};
+export type ReminderPreview = {
+  enabled: boolean;
+  testMode: boolean;
+  reminders: Array<{ gameId: string; role: string; to: string; cc: string[]; subject: string; text: string; coachee: string; rc: string; match: string }>;
+};
+
+export async function getEmailTemplates(): Promise<EmailTemplates> {
+  const r = await fetch(apiUrl('/api/admin/email-templates'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+export async function putEmailTemplates(payload: { feedback?: EmailTemplate; reminder?: EmailTemplate; reminder_enabled?: boolean }): Promise<void> {
+  const r = await fetch(apiUrl('/api/admin/email-templates'), {
+    method: 'PUT', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Save failed');
+}
+export async function getReminderPreview(): Promise<ReminderPreview> {
+  const r = await fetch(apiUrl('/api/admin/reminders/preview'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export type ImportRow = { full_name?: string; first_name?: string; last_name?: string; referee_level?: string; stage?: string; groups?: string; notes?: string };
 export async function importCoachees(coachees: ImportRow[], season: number): Promise<{ created: number; updated: number; total: number }> {
   const r = await fetch(apiUrl('/api/coachees/import'), {

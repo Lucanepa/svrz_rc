@@ -787,6 +787,8 @@ export default function App() {
   const defaultSeasonRef = useRef<number | null>(null);
   const seasonFrom = `${seasonStartYear}-09-01`;
   const seasonTo = `${seasonStartYear + 1}-04-30`;
+  // Admins can move between seasons; for everyone else the season is fixed to
+  // the admin default, so the picker collapses to a plain label.
   const seasonOptions = Array.from(new Set([seasonStartYear, curSeasonYear, curSeasonYear + 1, curSeasonYear + 2].filter((y) => y >= curSeasonYear || y === seasonStartYear))).sort((a, b) => a - b);
   const [emailTestMode, setEmailTestMode] = useState(false);
   // Per-coachee level/role targets (drives "watch at their level" game filtering).
@@ -803,6 +805,18 @@ export default function App() {
       setCoacheeTargets(s.coachee_targets ?? {});
       if (!s.default_season) return;
       defaultSeasonRef.current = s.default_season;
+      // Coaches have no season picker, so a stale stored preference would
+      // strand them in a finished season (people were landing in 25/26).
+      // Only admins keep a deliberate choice; everyone else follows the
+      // admin's default season.
+      if (!rcAuth.isAdminSession) {
+        setSeasonStartYear(s.default_season);
+        try {
+          localStorage.setItem('svrz_season_v3', JSON.stringify({ s: s.default_season, d: s.default_season }));
+          localStorage.removeItem('svrz_season_v2');
+        } catch { /* storage unavailable */ }
+        return;
+      }
       const stored = JSON.parse(localStorage.getItem('svrz_season_v3') || 'null') as { s?: number; d?: number } | null;
       if (!stored || stored.d !== s.default_season) {
         // Default changed since the pref was saved (or no pref) → snap forward once.
@@ -2745,17 +2759,28 @@ export default function App() {
                 >
                   <Info size={14} />
                 </button>
-                <select
-                  value={seasonStartYear}
-                  onChange={(e) => { const v = parseInt(e.target.value, 10); setSeasonStartYear(v); try { localStorage.setItem('svrz_season_v3', JSON.stringify({ s: v, d: defaultSeasonRef.current ?? v })); } catch { /* ignore */ } }}
-                  className="h-9 ml-auto sm:ml-0 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5 hover:bg-stone-100 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-500"
-                  title={formData.lang === 'DE' ? 'Saison' : 'Season'}
-                  aria-label={formData.lang === 'DE' ? 'Saison wählen' : 'Select season'}
-                >
-                  {seasonOptions.map((y) => (
-                    <option key={y} value={y}>{`${y}/${String((y + 1) % 100).padStart(2, '0')}`}</option>
-                  ))}
-                </select>
+                {isPrivileged ? (
+                  <select
+                    value={seasonStartYear}
+                    onChange={(e) => { const v = parseInt(e.target.value, 10); setSeasonStartYear(v); try { localStorage.setItem('svrz_season_v3', JSON.stringify({ s: v, d: defaultSeasonRef.current ?? v })); } catch { /* ignore */ } }}
+                    className="h-9 ml-auto sm:ml-0 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5 hover:bg-stone-100 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-500"
+                    title={formData.lang === 'DE' ? 'Saison' : 'Season'}
+                    aria-label={formData.lang === 'DE' ? 'Saison wählen' : 'Select season'}
+                  >
+                    {seasonOptions.map((y) => (
+                      <option key={y} value={y}>{`${y}/${String((y + 1) % 100).padStart(2, '0')}`}</option>
+                    ))}
+                  </select>
+                ) : (
+                  // Fixed to the admin's default season — switching seasons is an
+                  // admin decision, so coaches see the season, not a picker.
+                  <span
+                    className="h-9 ml-auto sm:ml-0 inline-flex items-center rounded-lg border border-stone-200 bg-stone-50 text-stone-600 text-xs font-medium px-2.5"
+                    title={formData.lang === 'DE' ? 'Saison' : 'Season'}
+                  >
+                    {`${seasonStartYear}/${String((seasonStartYear + 1) % 100).padStart(2, '0')}`}
+                  </span>
+                )}
                 {rcAuth.rcName && (
                   <button
                     onClick={rcAuth.logout}

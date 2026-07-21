@@ -39,6 +39,7 @@ import {
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import { cn } from './lib/utils';
+import { parseResult, formatResult, validateResult } from './lib/matchResult';
 import { normalizeCoacheeGroup, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
@@ -2129,6 +2130,17 @@ export default function App() {
       return fd.lang === 'DE'
         ? 'Bitte alle Felder im unteren Bereich ausfüllen (Spielniveau, Motivation, Ausblick, 2. Besuch, SR-Ziel).'
         : 'Please fill in all bottom fields (Match Level, Motivation, Outlook, 2nd Visit, Referee Goal).';
+    }
+    // The result is on the form and in the mail the coachee gets, so a missing
+    // or impossible one (3:0 with a set the winner lost) has to stop the send.
+    const resultError = validateResult(fd.meta.ergebnis, fd.lang);
+    if (resultError) return resultError;
+    // The signature is the referee confirming the feedback was discussed with
+    // them; without it the PDF is just an unacknowledged assessment.
+    if (!fd.signature) {
+      return fd.lang === 'DE'
+        ? 'Bitte die Unterschrift des Schiedsrichters einholen.'
+        : 'Please capture the referee’s signature.';
     }
     return null;
   };
@@ -5750,10 +5762,12 @@ function MetaField({ label, value, onChange, type = "text", className = "", read
 }
 
 function ResultField({ label, value, onChange, readOnly = false, onUnlock, lang, className = "" }: { label: string; value: string; onChange: (v: string) => void; readOnly?: boolean; onUnlock?: () => void; lang: 'DE' | 'EN'; className?: string }) {
-  const segs = (value || '').split('|');
-  const sp = (segs[0] || '').split(/[:\-]/);
-  const home = (sp[0] || '').replace(/\D/g, '').slice(0, 1);
-  const away = (sp[1] || '').replace(/\D/g, '').slice(0, 1);
+  // parseResult reads both the "3:1 | 25:20, …" this field writes and the
+  // "3:1 (25:20 / …)" the VolleyManager sync writes — every synced game uses
+  // the latter, whose set scores the old split-on-"|" parser dropped silently.
+  const parsed = parseResult(value);
+  const home = parsed.home;
+  const away = parsed.away;
   const both = home !== '' && away !== '';
   // Best-of-5 (first to 3) is the normal case, but some competitions — U18
   // finals, several junior leagues — play best-of-3, where 2:0 / 2:1 is a
@@ -5764,15 +5778,12 @@ function ResultField({ label, value, onChange, readOnly = false, onUnlock, lang,
   const valid = (w === 3 && l <= 2) || (w === 2 && l <= 1);
   const bad = both && !valid;
   const n = both ? Math.min(5, Number(home) + Number(away)) : 0;
-  const existing = (segs[1] || '').trim() ? segs[1].split(',').map(x => x.trim()) : [];
-  const sets = Array.from({ length: n }, (_, i) => {
-    const p = (existing[i] || '').split(/[:\-]/);
-    return { h: (p[0] || '').replace(/\D/g, '').slice(0, 2), a: (p[1] || '').replace(/\D/g, '').slice(0, 2) };
-  });
+  const sets = Array.from({ length: n }, (_, i) => ({
+    h: (parsed.sets[i]?.h ?? '').slice(0, 2),
+    a: (parsed.sets[i]?.a ?? '').slice(0, 2),
+  }));
   const build = (h: string, a: string, arr: { h: string; a: string }[]) => {
-    const ss = (h || a) ? `${h}:${a}` : '';
-    const ps = arr.map(s => (s.h || s.a) ? `${s.h}:${s.a}` : '').filter(Boolean).join(', ');
-    onChange([ss, ps].filter(Boolean).join(' | '));
+    onChange(formatResult(h, a, arr));
   };
   const c1 = (v: string) => v.replace(/[^0-3]/g, '').slice(0, 1);
   const c2 = (v: string) => v.replace(/\D/g, '').slice(0, 2);

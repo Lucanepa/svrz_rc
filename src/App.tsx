@@ -5774,7 +5774,7 @@ function ResultField({ label, value, onChange, readOnly = false, onUnlock, lang,
   const counted = tally.home + tally.away > 0;
   const home = counted ? String(tally.home) : parsed.home;
   const away = counted ? String(tally.away) : parsed.away;
-  const decided = isMatchDecided(tally);
+  const decided = isMatchDecided(tally, parsed.sets);
   const completed = parsed.sets.filter(isSetComplete).length;
   // One set to start; finishing a set opens the next, up to the fifth, and the
   // match being won closes the rest. 2:2 opens the decider, 3:1 does not.

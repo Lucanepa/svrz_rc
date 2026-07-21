@@ -40,9 +40,24 @@ export function tallyFromSets(sets: SetScore[]): { home: number; away: number } 
   return { home, away };
 }
 
-/** A side needs three sets to win; some junior leagues play best-of-three. */
-export function isMatchDecided(tally: { home: number; away: number }): boolean {
-  return Math.max(tally.home, tally.away) >= 3;
+/**
+ * A side needs three sets to win — except in the best-of-three the junior
+ * competitions play (SM Quali, Finalissima: 22 such games in production),
+ * where two is the match. Two sets alone stay open, because 2:0 is equally a
+ * finished best-of-three and a best-of-five halfway through. A *third* set
+ * settles it: a decider is played to 15, so a third set won with fewer than 25
+ * points is a best-of-three decider and there is no fourth set to offer. Every
+ * real 2:1 in production agrees (5:15, 15:13, 16:14, 17:15).
+ */
+export function isMatchDecided(tally: { home: number; away: number }, sets: SetScore[] = []): boolean {
+  if (Math.max(tally.home, tally.away) >= 3) return true;
+  if (tally.home + tally.away === 3 && Math.max(tally.home, tally.away) === 2) {
+    const third = sets[2];
+    if (third && isSetComplete(third)) {
+      return Math.max(Number(third.h), Number(third.a)) < REGULAR_SET_TARGET;
+    }
+  }
+  return false;
 }
 
 export function formatResult(home: string, away: string, sets: SetScore[]): string {

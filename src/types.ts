@@ -282,6 +282,9 @@ export interface rcCoachSummaryGame {
   league: string;
   teams: string;
   refereeName: string;
+  /** Assigned to the coach, but no referee on it is a coachee — so no
+   *  observation can be filed and the row is not clickable. */
+  noCoachee?: boolean;
 }
 
 export interface rcCoachSummary {

@@ -521,6 +521,14 @@ export async function deleteGame(id: string): Promise<void> {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not delete game');
 }
 
+export type ManualGame = { id: string; match_no: string; league: string; match_date: string; home_team: string; away_team: string; assigned_rc: string };
+
+export async function listManualGames(q = ''): Promise<ManualGame[]> {
+  const r = await fetch(apiUrl(`/api/admin/games/manual${q ? `?q=${encodeURIComponent(q)}` : ''}`), { credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not load games');
+  return r.json();
+}
+
 // ── Editable email templates (admin) ──────────────────────────────────
 export type EmailTemplate = { subject: string; heading: string; intro: string; outro: string };
 export type EmailTemplates = {

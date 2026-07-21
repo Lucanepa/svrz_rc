@@ -3984,7 +3984,7 @@ export default function App() {
                         // Game-centric view: one row per game, all its coachees merged onto it.
                         // `coacheeId`/`role` are only set for done rows — they let a filed
                         // observation be reopened (the summary carries no feedback id).
-                        type RcGameRow = { gameId?: string; gameDate: string; league: string; teams: string; names: string[]; coacheeId?: string; role?: string };
+                        type RcGameRow = { gameId?: string; gameDate: string; league: string; teams: string; names: string[]; coacheeId?: string; role?: string; noCoachee?: boolean };
                         const collect = (m: Map<string, RcGameRow>, key: string, base: Omit<RcGameRow, 'names'>, name: string) => {
                           const row = m.get(key) ?? { ...base, names: [] };
                           if (name && !row.names.includes(name)) row.names.push(name);
@@ -3994,15 +3994,17 @@ export default function App() {
                         const outstandingM = new Map<string, RcGameRow>();
                         const doneM = new Map<string, RcGameRow>();
                         for (const cs of rcCoachSummaryData) {
-                          for (const g of cs.plannedGames) collect(plannedM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams }, g.refereeName);
-                          for (const g of cs.outstandingGames) collect(outstandingM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams }, g.refereeName);
+                          for (const g of cs.plannedGames) collect(plannedM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams, noCoachee: g.noCoachee }, g.refereeName);
+                          for (const g of cs.outstandingGames) collect(outstandingM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams, noCoachee: g.noCoachee }, g.refereeName);
                           for (const fb of cs.doneFeedbacks) collect(doneM, `${fb.gameDate}|${fb.teams}`, { gameDate: fb.gameDate, league: fb.league, teams: fb.teams, coacheeId: cs.coacheeId, role: fb.role }, fb.role ? `${cs.coacheeName} (${fb.role})` : cs.coacheeName);
                         }
                         const de2 = formData.lang === 'DE';
                         const sections = [
-                          { key: 'planned' as const, title: t.rcPlannedGames, short: de2 ? 'Geplant' : 'Planned', rows: [...plannedM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
-                          { key: 'outstanding' as const, title: t.rcOutstandingGames, short: de2 ? 'Offen' : 'Open', rows: [...outstandingM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
-                          { key: 'done' as const, title: t.rcDoneFeedbacks, short: de2 ? 'Erledigt' : 'Done', rows: [...doneM.values()].sort((a, b) => b.gameDate.localeCompare(a.gameDate)), clickable: false, opensFeedback: true },
+                          // Chip colours match the overview counters: planned is
+                          // blue (nothing to do yet), open amber, done green.
+                          { key: 'planned' as const, title: t.rcPlannedGames, short: de2 ? 'Geplant' : 'Planned', chip: 'bg-blue-100 text-blue-700', rows: [...plannedM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
+                          { key: 'outstanding' as const, title: t.rcOutstandingGames, short: de2 ? 'Offen' : 'Open', chip: 'bg-amber-100 text-amber-700', rows: [...outstandingM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
+                          { key: 'done' as const, title: t.rcDoneFeedbacks, short: de2 ? 'Erledigt' : 'Done', chip: 'bg-green-100 text-green-700', rows: [...doneM.values()].sort((a, b) => b.gameDate.localeCompare(a.gameDate)), clickable: false, opensFeedback: true },
                         ];
                         const active = sections.find((s) => s.key === rcDetailTab) ?? sections[0];
                         return (
@@ -4071,7 +4073,11 @@ export default function App() {
                                         <div className="mt-1.5 flex flex-wrap items-center gap-1.5 sm:mt-0 sm:contents">
                                           <span className="flex flex-wrap items-center gap-1.5">
                                             {g.names.map((n) => (
-                                              <span key={n} className="inline-flex items-center px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">{n}</span>
+                                              <span
+                                                key={n}
+                                                className={cn('inline-flex items-center px-2 py-0.5 rounded-full', g.noCoachee ? 'border border-dashed border-stone-300 text-stone-500' : active.chip)}
+                                                title={g.noCoachee ? (formData.lang === 'DE' ? 'Kein Coachee — dieses Spiel kann nicht beobachtet werden' : 'Not a coachee — this game cannot be observed') : undefined}
+                                              >{n}</span>
                                             ))}
                                           </span>
                                           {open && <Eye size={12} className="text-stone-400 shrink-0" />}
@@ -4119,7 +4125,7 @@ export default function App() {
                             <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700" title={t.rcOutstanding}>
                               {rc.outstanding} {formData.lang === 'DE' ? 'offen' : 'open'}
                             </span>
-                            <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-red-100 text-red-700" title={t.rcPlanned}>
+                            <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-700" title={t.rcPlanned}>
                               {rc.planned} {formData.lang === 'DE' ? 'geplant' : 'planned'}
                             </span>
                           </div>

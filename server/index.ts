@@ -2967,6 +2967,30 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
+// Lists the throwaway fixtures so they can be cleaned up later — the create
+// form only knows about the one game it just made. `q` widens the search for a
+// manual game that was given a real-looking match number.
+app.get('/api/admin/games/manual', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const q = normalizeName(req.query.q);
+    const all = await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
+      sort: '-match_date',
+      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc',
+    }));
+    const hit = (g: AnyRecord) => {
+      if (normalizeName(g.match_no).startsWith('test-')) return true;
+      if (!q) return false;
+      return [g.match_no, g.home_team, g.away_team, g.assigned_rc, g.first_referee, g.second_referee]
+        .some((v) => normalizeName(v).includes(q));
+    };
+    res.json(all.filter(hit).slice(0, 50).map((g) => ({
+      id: g.id, match_no: asText(g.match_no), league: asText(g.league), match_date: asText(g.match_date),
+      home_team: asText(g.home_team), away_team: asText(g.away_team), assigned_rc: asText(g.assigned_rc),
+    })));
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
 // Deleting a game leaves any feedback that referenced it dangling, so this is
 // meant for cleaning up a throwaway fixture, not for pruning real history.
 app.delete('/api/admin/games/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -3177,8 +3201,8 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       coacheeName: string;
       coacheeId: string;
       doneFeedbacks: { gameDate: string; league: string; teams: string; role: string; submittedAt: string }[];
-      outstandingGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string }[];
-      plannedGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string }[];
+      outstandingGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; noCoachee?: boolean }[];
+      plannedGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; noCoachee?: boolean }[];
     }>();
 
     const getOrCreate = (name: string, id: string) => {
@@ -3217,12 +3241,30 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       const league = asText(game.league);
 
       // Match referees to coachees
+      let matched = false;
       for (const ref of [game.first_referee, game.second_referee]) {
         const refName = asText(ref);
         if (!refName) continue;
         if (!coacheeNameSet.has(normalizeName(refName))) continue;
+        matched = true;
         const entry = getOrCreate(refName, '');
         const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: refName };
+        if (gameDate < now) {
+          entry.outstandingGames.push(gameEntry);
+        } else {
+          entry.plannedGames.push(gameEntry);
+        }
+      }
+      // A game assigned to this RC whose referees are not (yet) coachees still
+      // belongs on their list: /api/rc-overview counts it, so dropping it here
+      // left the coach staring at "no data" while the badge promised a game.
+      // Listed under the raw referee name — not clickable, since there is no
+      // coachee to file an observation against.
+      if (!matched) {
+        const refNames = [game.first_referee, game.second_referee].map(asText).filter(Boolean);
+        const label = refNames.join(' / ') || '?';
+        const entry = getOrCreate(label, '');
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: label, noCoachee: true };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {

@@ -7,9 +7,9 @@ import {
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson, generateRcPin,
   getSettings, putSettings, loadEligibleGames,
-  getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame,
+  getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame, listManualGames,
   getAdminLogs, getAdminLogSessions, listSurveyResponses,
-  type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplates, type ReminderPreview,
+  type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplates, type ReminderPreview, type ManualGame,
   type LogEntry, type LogSession, type SurveyResponse,
 } from '../lib/pocketbase';
 import {
@@ -79,8 +79,12 @@ const STR = {
     mgHint: 'Für Spiele, die nicht aus VolleyManager kommen. Die SR-Namen müssen exakt einem Coachee entsprechen, sonst findet das Feedback keinen Empfänger. Testspiele danach wieder löschen.',
     mgDate: 'Datum', mgMatchNo: 'Spiel-Nr. (optional)', mgLeague: 'Liga', mgLocation: 'Ort',
     mgHome: 'Heim', mgAway: 'Gast', mgRef1: '1. SR (= Coachee)', mgRef2: '2. SR', mgRc: 'Referee Coach',
-    mgCreate: 'Spiel anlegen', mgDelete: 'Spiel löschen',
+    mgCreate: 'Spiel anlegen', mgDelete: 'Löschen',
     mgCreated: (n: string) => `Angelegt: ${n}`,
+    email: 'E-Mail', noEmail: 'keine E-Mail',
+    mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
+    mgNone: 'Keine Testspiele vorhanden.',
+    mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
     genPinConfirm: (n: string) => `Neuen PIN für „${n}" erzeugen? Ein bestehender PIN wird ungültig und der neue PIN wird per E-Mail zugestellt.`,
     pinShownInfo: (p: string) => `PIN: ${p}`,
     pinEmailed: (e: string) => `Per E-Mail an ${e} gesendet.`,
@@ -135,8 +139,12 @@ const STR = {
     mgHint: 'For games VolleyManager does not carry. Referee names must match a coachee exactly, otherwise the feedback has no recipient. Delete test games afterwards.',
     mgDate: 'Date', mgMatchNo: 'Match no. (optional)', mgLeague: 'League', mgLocation: 'Venue',
     mgHome: 'Home', mgAway: 'Away', mgRef1: '1st referee (= coachee)', mgRef2: '2nd referee', mgRc: 'Referee coach',
-    mgCreate: 'Create game', mgDelete: 'Delete game',
+    mgCreate: 'Create game', mgDelete: 'Delete',
     mgCreated: (n: string) => `Created: ${n}`,
+    email: 'Email', noEmail: 'no email',
+    mgExisting: 'Test games created', mgSearch: 'Search game …',
+    mgNone: 'No test games.',
+    mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
     genPinConfirm: (n: string) => `Generate a new PIN for "${n}"? Any existing PIN stops working and the new PIN is emailed to the RC.`,
     pinShownInfo: (p: string) => `PIN: ${p}`,
     pinEmailed: (e: string) => `Emailed to ${e}.`,
@@ -336,7 +344,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}>
           <SettingsAdmin t={t} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} />
-          <ManualGameAdmin t={t} />
+          <ManualGameAdmin t={t} lang={lang} />
         </div>
         <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
       </main>
@@ -449,15 +457,15 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState('');
   const [importing, setImporting] = useState(false);
-  const [form, setForm] = useState({ first_name: '', last_name: '', referee_level: '', stage: '', groups: '' });
+  const [form, setForm] = useState({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' });
   const [editId, setEditId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ first_name: '', last_name: '', referee_level: '', stage: '', groups: '' });
+  const [editForm, setEditForm] = useState({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' });
 
   const reload = useCallback(async () => { setLoading(true); try { setAll(await listCoachees()); } catch (e) { setNotice(String(e)); } finally { setLoading(false); } }, []);
   useEffect(() => { void reload(); }, [reload]);
   const rows = all.filter((c) => (typeof c.season === 'number' ? c.season === season : false)).sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
 
-  const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm({ first_name: '', last_name: '', referee_level: '', stage: '', groups: '' }); await reload(); };
+  const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' }); await reload(); };
   const saveEdit = async (id: string) => { const full_name = `${editForm.first_name} ${editForm.last_name}`.trim(); await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>); setEditId(null); await reload(); };
   const remove = async (c: Coachee) => { if (!confirm(t.delCoachee(c.full_name))) return; await deleteCoachee(c.id); await reload(); };
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -479,9 +487,10 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
         {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}
       </Card>
       <Card>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
           <input className={input} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
           <input className={input} placeholder={t.lastName} value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
+          <input type="email" className={input} placeholder={t.email} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
           <select
             className={cn(input, !joinStufe(form.referee_level, form.stage) && 'text-stone-400')}
             value={joinStufe(form.referee_level, form.stage)}
@@ -498,9 +507,10 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
         <p className="text-xs text-stone-400 mb-2">{loading ? t.loading : t.count(rows.length, seasonLabel(season))}</p>
         <div className="divide-y divide-stone-100">
           {rows.map((c) => editId === c.id ? (
-            <div key={c.id} className="py-2 grid grid-cols-2 sm:grid-cols-5 gap-2 items-center">
+            <div key={c.id} className="py-2 grid grid-cols-2 sm:grid-cols-6 gap-2 items-center">
               <input className={input} value={editForm.first_name} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
               <input className={input} value={editForm.last_name} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
+              <input type="email" className={input} placeholder={t.email} value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
               <select
                 className={cn(input, !joinStufe(editForm.referee_level, editForm.stage) && 'text-stone-400')}
                 value={joinStufe(editForm.referee_level, editForm.stage)}
@@ -515,9 +525,15 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
           ) : (
             <div key={c.id} className="py-2">
               <div className="flex items-center gap-3">
-                <div className="flex-1 min-w-0"><p className="text-sm font-medium text-stone-800 truncate">{c.full_name}</p><p className="text-xs text-stone-400 truncate"><LevelText level={c.referee_level} stage={c.stage} />{c.groups ? ` · ${c.groups}` : ''}</p></div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-stone-800 truncate">{c.full_name}</p>
+                  <p className="text-xs text-stone-400 truncate"><LevelText level={c.referee_level} stage={c.stage} />{c.groups ? ` · ${c.groups}` : ''}</p>
+                  {/* Without an address the feedback submit fails at the very
+                      end, after the whole form is filled in — flag it early. */}
+                  <p className={cn('text-xs truncate', c.email ? 'text-stone-400' : 'text-amber-600 font-medium')}>{c.email || t.noEmail}</p>
+                </div>
                 <button onClick={() => setTargetEditId(targetEditId === c.id ? null : c.id)} className={cn(btnGhost, targetEditId === c.id && 'bg-stone-100')} title={t.target}><Target size={13} /></button>
-                <button onClick={() => { setEditId(c.id); setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '' }); }} className={btnGhost}><Pencil size={13} /></button>
+                <button onClick={() => { setEditId(c.id); setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', email: c.email || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '' }); }} className={btnGhost}><Pencil size={13} /></button>
                 <button onClick={() => remove(c)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
               </div>
               <div className="flex items-center gap-1.5 mt-1 pl-0.5">
@@ -1078,14 +1094,21 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
 // Create (and delete) a one-off game. VolleyManager is the normal source; this
 // covers fixtures it doesn't carry and throwaway games used to exercise the
 // whole observation → PDF → e-mail flow against the real backend.
-function ManualGameAdmin({ t }: { t: T }) {
+function ManualGameAdmin({ t, lang }: { t: T; lang: Lang }) {
   const today = new Date().toISOString().slice(0, 10);
   const empty = { match_no: '', league: '', match_date: today, location: '', home_team: '', away_team: '', first_referee: '', second_referee: '', assigned_rc: '' };
   const [f, setF] = useState(empty);
   const [busy, setBusy] = useState(false);
   const [made, setMade] = useState<{ id: string; match_no?: string } | null>(null);
   const [err, setErr] = useState('');
+  const [list, setList] = useState<ManualGame[]>([]);
+  const [q, setQ] = useState('');
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
+
+  const reload = useCallback(async (search = '') => {
+    try { setList(await listManualGames(search)); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+  }, []);
+  useEffect(() => { void reload(); }, [reload]);
 
   const create = async () => {
     setBusy(true); setErr('');
@@ -1094,13 +1117,14 @@ function ManualGameAdmin({ t }: { t: T }) {
       const created = await createGame({ ...f, match_date: `${f.match_date} 20:00:00.000Z` });
       setMade({ id: created.id, match_no: created.match_no });
       setF(empty);
+      await reload(q);
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   };
-  const remove = async () => {
-    if (!made) return;
+  const remove = async (id: string, label: string) => {
+    if (!confirm(t.mgConfirmDelete(label))) return;
     setBusy(true); setErr('');
-    try { await deleteGame(made.id); setMade(null); }
+    try { await deleteGame(id); if (made?.id === id) setMade(null); await reload(q); }
     catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   };
@@ -1133,15 +1157,48 @@ function ManualGameAdmin({ t }: { t: T }) {
         <button onClick={create} disabled={busy || !f.match_date} className={btnPrimary}>
           {busy ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />} {t.mgCreate}
         </button>
-        {made && (
-          <>
-            <span className="text-sm text-green-600 font-medium">{t.mgCreated(made.match_no || made.id)}</span>
-            <button onClick={remove} disabled={busy} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors">
-              <Trash2 size={13} /> {t.mgDelete}
-            </button>
-          </>
-        )}
+        {made && <span className="text-sm text-green-600 font-medium">{t.mgCreated(made.match_no || made.id)}</span>}
         {err && <span className="text-sm text-red-600">{err}</span>}
+      </div>
+
+      {/* Cleanup list — a throwaway fixture is only obvious right after it is
+          created, so keep every TEST- game reachable for deletion. */}
+      <div className="mt-5 pt-4 border-t border-stone-100">
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <h3 className="text-sm font-semibold text-stone-700">{t.mgExisting}</h3>
+          <input
+            className={cn(input, 'ml-auto w-full sm:w-56')}
+            placeholder={t.mgSearch}
+            value={q}
+            onChange={(e) => { setQ(e.target.value); void reload(e.target.value); }}
+          />
+        </div>
+        {list.length === 0 ? (
+          <p className="text-xs text-stone-400">{t.mgNone}</p>
+        ) : (
+          <div className="divide-y divide-stone-100">
+            {list.map((g) => (
+              <div key={g.id} className="py-2 flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-stone-800 truncate">
+                    {g.match_no}{g.home_team || g.away_team ? ` · ${g.home_team} vs ${g.away_team}` : ''}
+                  </p>
+                  <p className="text-xs text-stone-400 truncate">
+                    {g.match_date ? new Date(g.match_date).toLocaleDateString(lang === 'DE' ? 'de-CH' : 'en-GB') : ''}
+                    {g.league ? ` · ${g.league}` : ''}{g.assigned_rc ? ` · ${g.assigned_rc}` : ''}
+                  </p>
+                </div>
+                <button
+                  onClick={() => void remove(g.id, g.match_no || g.id)}
+                  disabled={busy}
+                  className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  <Trash2 size={13} /> {t.mgDelete}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </Card>
   );

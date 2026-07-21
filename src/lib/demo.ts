@@ -64,6 +64,7 @@ const COACHING_MAILBOX = 'rc_coaching@volleyball.lucanepa.com'; // real FEEDBACK
 const SURVEY_URL = 'https://forms.svrz.ch/coaching-feedback';
 
 export type DemoEmail = {
+  label: string;       // which mail this is (feedback / day-before reminder)
   from: string;
   to: string;
   cc: string[];
@@ -71,7 +72,7 @@ export type DemoEmail = {
   replyTo: string;
   subject: string;
   body: string;        // plain-text body, verbatim to the real mail
-  attachment: string;  // PDF filename
+  attachment: string;  // PDF filename ('' = no attachment)
   sentAt: string;
 };
 
@@ -286,7 +287,16 @@ function buildStore(): DemoStore {
     { id: 'demo-rc-3', fullName: 'Reto Widmer', done: 1, outstanding: 2, planned: 1 },
   ];
 
-  return { coachees, games, feedbacks, siblings, sentMail: [], feedbackSeq: 1 };
+  // Admin-picked priorities: a couple of games we'd like observed.
+  for (const g of games) if (g.id === 'demo-g7' || g.id === 'demo-g3') g.starred = true;
+
+  // Seed the mailbox with the day-before reminder for the next planned game, so
+  // the demo shows that mail too (nothing is ever actually sent).
+  const nextPlanned = games.find((g) => g.kind === 'planned');
+  const nextCoachee = nextPlanned ? coachees.find((c) => c.id === nextPlanned.coacheeId) : undefined;
+  const sentMail = nextPlanned && nextCoachee ? [buildDemoReminderEmail(nextPlanned, nextCoachee)] : [];
+
+  return { coachees, games, feedbacks, siblings, sentMail, feedbackSeq: 1 };
 }
 
 // Format a YYYY-MM-DD date as dd.MM.yyyy, exactly like the server does.
@@ -315,6 +325,7 @@ function buildDemoEmail(game: DemoGame, coachee: Coachee | undefined, form: Feed
   body += `\nDer vollständige Coaching-Feedback-Bericht ist als PDF angehängt.\n`;
   body += `Diese E-Mail wurde automatisch vom SR-Coaching-System versendet.\n`;
   return {
+    label: 'Feedback-E-Mail (nach dem Spiel)',
     from: MAIL_FROM,
     to: coachee?.email || '(Coachee ohne E-Mail)',
     cc: [RC.email],
@@ -323,6 +334,43 @@ function buildDemoEmail(game: DemoGame, coachee: Coachee | undefined, form: Feed
     subject: `SR-Coaching Feedback – Spiel ${game.matchNo} (${date})`,
     body,
     attachment: `SR-Coaching_${game.matchNo}_${(coachee?.full_name || 'SR').replace(/\s+/g, '-')}.pdf`,
+    sentAt: new Date().toISOString(),
+  };
+}
+
+// The day-before reminder the server sends at 10:00 — same default template as
+// DEFAULT_EMAIL_TEMPLATES.reminder in server/index.ts, placeholders filled.
+// Seeded into the demo mailbox so the demo shows this mail too.
+function buildDemoReminderEmail(game: DemoGame, coachee: Coachee): DemoEmail {
+  const first = (n: string) => n.trim().split(/\s+/)[0] || '';
+  const body = `Liebe/r ${first(coachee.full_name)},
+
+bei deinem nächsten Einsatz wirst du im Rahmen unseres Schiedsrichter-Coachings begleitet: ${RC.name} ist als Coach vor Ort, um dich zu unterstützen und gemeinsam mit dir an deiner Weiterentwicklung zu arbeiten.
+
+Einsatz-Details:
+
+Datum: ${fmtDate(game.date)}
+Zeit: 20:00
+Spiel: ${game.homeTeam} – ${game.awayTeam} (${game.league})
+Ort/Halle: ${game.location}
+
+${first(RC.name)} meldet sich vor Ort kurz bei dir. Das Coaching ist keine Prüfung – im Anschluss nehmt ihr euch gemeinsam Zeit für ein Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen.
+
+Bei Fragen oder falls sich am Einsatz etwas ändert, melde dich bitte rechtzeitig.
+
+Sportliche Grüsse
+${RC.name}
+`;
+  return {
+    label: 'Erinnerung (Tag vor dem Spiel, 10:00)',
+    from: MAIL_FROM,
+    to: coachee.email || '',
+    cc: [RC.email],
+    bcc: [],
+    replyTo: RC.email,
+    subject: 'Coaching-Begleitung bei deinem nächsten Einsatz',
+    body,
+    attachment: '',
     sentAt: new Date().toISOString(),
   };
 }
@@ -470,6 +518,12 @@ export function saveFeedbackToPocketBase(params: {
     }
   }
   return ok({ id: `demo-submit-${s.feedbackSeq}`, emailSent: true });
+}
+
+export function setGameStarred(gameId: string, starred: boolean): Promise<void> {
+  const g = store().games.find((x) => x.id === gameId);
+  if (g) g.starred = starred;
+  return ok(undefined);
 }
 
 export function assignRcToGame(gameId: string, assignedRc: string): Promise<void> {

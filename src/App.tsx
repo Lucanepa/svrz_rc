@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff } from 'lucide-react';
+import { Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { QRCodeSVG } from 'qrcode.react';
@@ -25,6 +25,7 @@ import {
   updateCoachee,
   listRefereeCoachPeople,
   assignRcToGame,
+  setGameStarred,
   RefereeCoachPerson,
   loadRcOverview,
   loadrcCoachSummary,
@@ -736,6 +737,8 @@ export default function App() {
   const [gameFilterRd, setGameFilterRd] = useState(false);
   const [gameFilterLd, setGameFilterLd] = useState(false);
   const [gameFilterRcAssigned, setGameFilterRcAssigned] = useState(false);
+  // Show only games an admin flagged as "we'd like this one observed".
+  const [gameFilterStarred, setGameFilterStarred] = useState(false);
   const [formData, setFormData] = useState<FeedbackFormData>(() => {
     const lang = detectInitialLang();
     return {
@@ -2085,6 +2088,7 @@ export default function App() {
       if (gameFilterLeagues.length > 0 && !gameFilterLeagues.includes(g.league || '')) return false;
       if (gameFilterRd && !g.isRdGame) return false;
       if (gameFilterLd && !g.isLdGame) return false;
+      if (gameFilterStarred && !g.starred) return false;
       // Games a coach has taken are hidden by default (they live under the RC in
       // the Referee Coaches tab); the toggle flips to showing only taken games.
       // The currently expanded game stays visible so assigning an RC doesn't rip
@@ -2144,7 +2148,7 @@ export default function App() {
       }
       return true;
     });
-  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
+  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
@@ -2205,6 +2209,9 @@ export default function App() {
                 </p>
               ) : demoMail.map((m, i) => (
                 <div key={i} className="rounded-xl border border-stone-200 overflow-hidden">
+                  {m.label && (
+                    <div className="px-3 py-1.5 bg-red-50 border-b border-red-100 text-[11px] font-semibold text-red-700">{m.label}</div>
+                  )}
                   <div className="bg-stone-50 px-3 py-2 text-[12px] text-stone-600 space-y-0.5 border-b border-stone-200">
                     <div><span className="font-semibold text-stone-500">{formData.lang === 'DE' ? 'Von' : 'From'}:</span> {m.from}</div>
                     <div><span className="font-semibold text-stone-500">{formData.lang === 'DE' ? 'An' : 'To'}:</span> {m.to}</div>
@@ -2213,9 +2220,11 @@ export default function App() {
                     <div><span className="font-semibold text-stone-500">{formData.lang === 'DE' ? 'Betreff' : 'Subject'}:</span> {m.subject}</div>
                   </div>
                   <pre className="px-3 py-2.5 text-[12px] text-stone-700 whitespace-pre-wrap font-sans leading-relaxed">{m.body}</pre>
-                  <div className="px-3 py-2 border-t border-stone-200 flex items-center gap-2 text-[12px] text-stone-500">
-                    <Download size={13} className="shrink-0" /> {m.attachment}
-                  </div>
+                  {m.attachment && (
+                    <div className="px-3 py-2 border-t border-stone-200 flex items-center gap-2 text-[12px] text-stone-500">
+                      <Download size={13} className="shrink-0" /> {m.attachment}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -3074,9 +3083,25 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setShowAllLevels((v) => !v)}
+                    onClick={() => setGameFilterStarred((v) => !v)}
                     className={cn(
                       "ml-auto inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium transition-colors",
+                      gameFilterStarred
+                        ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                        : "border-stone-200 text-stone-500 hover:bg-stone-100",
+                    )}
+                    title={formData.lang === 'DE'
+                      ? 'Nur Spiele zeigen, die für eine Beobachtung vorgemerkt sind.'
+                      : 'Show only games flagged for observation.'}
+                  >
+                    <Star size={14} className={cn(gameFilterStarred && 'fill-amber-500 text-amber-500')} />
+                    {formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAllLevels((v) => !v)}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium transition-colors",
                       showAllLevels
                         ? "border-stone-200 text-stone-500 hover:bg-stone-100"
                         : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
@@ -3159,6 +3184,15 @@ export default function App() {
                                   {game.matchNo && <span>#{game.matchNo}</span>}
                                   {game.isRdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>}
                                   {game.isLdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>}
+                                  {game.starred && (
+                                    <span
+                                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300"
+                                      title={formData.lang === 'DE' ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation'}
+                                    >
+                                      <Star size={11} className="fill-amber-500 text-amber-500" />
+                                      {formData.lang === 'DE' ? 'Gewünscht' : 'Priority'}
+                                    </span>
+                                  )}
                                 </div>
                                 {/* Teams + result */}
                                 {(() => {
@@ -3285,6 +3319,32 @@ export default function App() {
                                         className="h-9 px-3 text-sm font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
                                       >
                                         {formData.lang === 'DE' ? 'Spiel übernehmen' : 'Take game'}
+                                      </button>
+                                    )}
+                                    {isPrivileged && (
+                                      <button
+                                        onClick={async (e) => {
+                                          e.stopPropagation();
+                                          const next = !game.starred;
+                                          try {
+                                            await setGameStarred(game.id, next);
+                                            setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, starred: next } : g));
+                                          } catch (err) {
+                                            setBackendNotice(err instanceof Error ? err.message : String(err));
+                                          }
+                                        }}
+                                        className={cn(
+                                          'h-9 px-3 text-sm font-medium rounded-md border transition-colors inline-flex items-center gap-1.5',
+                                          game.starred
+                                            ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                            : 'border-stone-300 bg-white text-stone-600 hover:bg-stone-50',
+                                        )}
+                                        title={formData.lang === 'DE' ? 'Für eine Beobachtung vormerken' : 'Flag for observation'}
+                                      >
+                                        <Star size={14} className={cn(game.starred && 'fill-amber-500 text-amber-500')} />
+                                        {game.starred
+                                          ? (formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged')
+                                          : (formData.lang === 'DE' ? 'Vormerken' : 'Flag')}
                                       </button>
                                     )}
                                     {(() => {

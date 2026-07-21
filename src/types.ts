@@ -57,6 +57,8 @@ export interface EligibleGame {
   feedbackClosedRoles?: string[];
   isRdGame?: boolean;
   isLdGame?: boolean;
+  // Admin-picked "we want this one observed" highlight (see starred_games).
+  starred?: boolean;
   maps_url?: string;
   game_result?: string;
 }

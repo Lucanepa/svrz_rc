@@ -2425,13 +2425,36 @@ app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
+// ── Games starred for observation (admin-picked priorities) ───────────
+// Stored as a plain id list in app_settings, so highlighting a game needs no
+// schema change. RCs see the star (and can filter by it); only admins set it.
+async function getStarredGameIds(): Promise<Set<string>> {
+  const rec = await getSettingRecord('starred_games');
+  if (!rec) return new Set();
+  try {
+    const arr = JSON.parse(asText(rec.value)) as unknown;
+    return new Set(Array.isArray(arr) ? arr.map((v) => String(v)) : []);
+  } catch { return new Set(); }
+}
+
 app.get('/api/eligible-games', requireRcSession, async (_req: Request, res: ExpressResponse) => {
   try {
-    const games = await getEligibleGames();
-    res.json(games);
+    const [games, starred] = await Promise.all([getEligibleGames(), getStarredGameIds()]);
+    res.json(games.map((g) => ({ ...g, starred: starred.has(String(g.id)) })));
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
+});
+
+app.put('/api/admin/games/:id/star', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const id = String(req.params.id);
+    const on = Boolean((req.body ?? {}).starred);
+    const set = await getStarredGameIds();
+    if (on) set.add(id); else set.delete(id);
+    await setSetting('starred_games', JSON.stringify([...set]));
+    res.json({ ok: true, starred: on });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
 app.get('/api/referee-coach-people', requireRcSession, async (_req: Request, res: ExpressResponse) => {
@@ -2842,6 +2865,7 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
       }),
     );
 
+    const starredIds = await getStarredGameIds();
     const result = games.map((game) => {
       const assigned = getAssignedPeopleFromGameRecord(game);
       const roleMap: Array<[string, string]> = [
@@ -2866,6 +2890,7 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
         firstLineJudge: assigned.firstLineJudge,
         secondLineJudge: assigned.secondLineJudge,
         assignedRoles,
+        starred: starredIds.has(String(game.id)),
       };
     });
 

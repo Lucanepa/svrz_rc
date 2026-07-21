@@ -374,6 +374,16 @@ export async function assignRcToGame(gameId: string, assignedRc: string): Promis
   }
 }
 
+// Admin-only: highlight (or un-highlight) a game as one we want observed.
+export async function setGameStarred(gameId: string, starred: boolean): Promise<void> {
+  if (isDemoMode()) return demo.setGameStarred(gameId, starred);
+  const r = await fetch(apiUrl(`/api/admin/games/${gameId}/star`), {
+    method: 'PUT', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ starred }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
 export async function loadRcOverview(season?: number): Promise<RcOverviewEntry[]> {
   if (isDemoMode()) return demo.loadRcOverview();
   const qs = season != null ? `?season=${season}` : '';

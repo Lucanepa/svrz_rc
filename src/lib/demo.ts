@@ -531,6 +531,10 @@ export function saveFeedbackToPocketBase(params: {
     // the game's "done" state, and the Home/overview counters all update live.
     if (!g.feedbackClosedRoles) g.feedbackClosedRoles = [];
     if (!g.feedbackClosedRoles.includes(params.role)) g.feedbackClosedRoles.push(params.role);
+    // Mirrors the API: the typed score sticks to the game, so filing the other
+    // referee later starts from it instead of a blank field.
+    const typedResult = params.formData.meta.ergebnis;
+    if (typedResult) g.game_result = typedResult;
     g.kind = 'done';
     const submittedAt = new Date().toISOString();
     const record: FeedbackRecord = {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Maximize2, Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star } from 'lucide-react';
+import { Maximize2, Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { QRCodeSVG } from 'qrcode.react';
@@ -931,6 +931,9 @@ export default function App() {
   }>({ '1. SR': null, '2. SR': null });
   // Which referee(s) of the selected game this observation covers — free choice, independent of who is a coachee
   const [observationTarget, setObservationTarget] = useState<'1SR' | '2SR' | 'both'>('1SR');
+  // A score carried by the game is read-only, but correctable on request — it
+  // may have been typed by the coach who filed the other referee.
+  const [resultUnlocked, setResultUnlocked] = useState(false);
   const [showJson, setShowJson] = useState(false);
   const [eligibleGames, setEligibleGames] = useState<EligibleGame[]>([]);
   const [rcPeople, setRcPeople] = useState<RefereeCoachPerson[]>([]);
@@ -1172,6 +1175,20 @@ export default function App() {
       ...prev,
       meta: { ...prev.meta, [key]: value }
     }));
+    // The score belongs to the match, not to a referee. With two referees the
+    // coach types it into whichever form happens to be open, so keep the
+    // stashed one in step — otherwise switching back restores the stale score.
+    if (key === 'ergebnis') mirrorErgebnisToStash(value);
+  };
+
+  const mirrorErgebnisToStash = (value: string) => {
+    setDualFormData(prev => {
+      const withErgebnis = (stored: typeof prev['1. SR']) => stored && ({
+        ...stored,
+        formData: { ...stored.formData, meta: { ...stored.formData.meta, ergebnis: value } },
+      });
+      return { '1. SR': withErgebnis(prev['1. SR']), '2. SR': withErgebnis(prev['2. SR']) };
+    });
   };
 
   const updateRating = (sectionIdx: number, itemIdx: number, columnRating: string) => {
@@ -1454,6 +1471,7 @@ export default function App() {
     // Reset dual form storage; a different game must not inherit the previous
     // game's ratings, results, or tips.
     setDualFormData({ '1. SR': null, '2. SR': null });
+    if (isNewGame) setResultUnlocked(false);
     if (isNewGame) setTipsAndTricks(demoTips());
 
     // Pre-select the observation target based on which referee(s) are coachees — freely changeable afterwards
@@ -4398,7 +4416,7 @@ export default function App() {
           <MetaField label={t.group} value={formData.meta.gruppe} onChange={v => updateMeta('gruppe', v)} />
 
           <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2" readOnly={!isPrivileged} />
-          <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2" readOnly={!!selectedGame?.game_result} lang={formData.lang} />
+          <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2" readOnly={!!selectedGame?.game_result && !resultUnlocked} onUnlock={() => setResultUnlocked(true)} lang={formData.lang} />
         </div>
 
         {/* Legend */}
@@ -5714,7 +5732,7 @@ function MetaField({ label, value, onChange, type = "text", className = "", read
   );
 }
 
-function ResultField({ label, value, onChange, readOnly = false, lang, className = "" }: { label: string; value: string; onChange: (v: string) => void; readOnly?: boolean; lang: 'DE' | 'EN'; className?: string }) {
+function ResultField({ label, value, onChange, readOnly = false, onUnlock, lang, className = "" }: { label: string; value: string; onChange: (v: string) => void; readOnly?: boolean; onUnlock?: () => void; lang: 'DE' | 'EN'; className?: string }) {
   const segs = (value || '').split('|');
   const sp = (segs[0] || '').split(/[:\-]/);
   const home = (sp[0] || '').replace(/\D/g, '').slice(0, 1);
@@ -5760,6 +5778,20 @@ function ResultField({ label, value, onChange, readOnly = false, lang, className
           <span className="text-stone-400 font-bold">:</span>
           <input inputMode="numeric" maxLength={1} value={away} readOnly={readOnly} onChange={e => setScore(home, c1(e.target.value))} className={sbox} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'} />
           {bad && <span className="text-[9px] text-red-600 leading-tight ml-1 no-print">{lang === 'DE' ? 'Sieger: 3 Sätze (Best-of-3: 2).' : 'Winner: 3 sets (best-of-3: 2).'}</span>}
+          {/* A score already on the game may have come from the coach who filed
+              the other referee — so it can be wrong, and locking it would leave
+              nobody able to fix it. */}
+          {readOnly && onUnlock && (
+            <button
+              type="button"
+              onClick={onUnlock}
+              title={lang === 'DE' ? 'Ergebnis korrigieren' : 'Correct the result'}
+              aria-label={lang === 'DE' ? 'Ergebnis korrigieren' : 'Correct the result'}
+              className="no-print ml-1 p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
+            >
+              <Pencil size={12} />
+            </button>
+          )}
         </div>
         {!bad && n > 0 && (
           // Each set gets its own boxed cell with the number on top. Laid out

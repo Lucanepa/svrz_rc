@@ -113,6 +113,12 @@ function bodySummary(body: unknown): unknown {
   return { _summary: true, bytes: size, keys };
 }
 
+// A calendar token never expires and is the only credential its feed has, so
+// the URL carrying it must not sit readable in the log the admin console shows.
+function redactIcalToken(url: string): string {
+  return url.replace(/(\/api\/ical\/)[^/?]+/, '$1<token>');
+}
+
 app.use((req: Request, res: ExpressResponse, next: () => void) => {
   const ctx = reqCtx(req);
   const sid = asText(req.headers['x-svrz-session']) || undefined;
@@ -123,9 +129,9 @@ app.use((req: Request, res: ExpressResponse, next: () => void) => {
   // would generate the traffic it is there to report.
   const noisy = req.path === '/api/client-logs' || req.path.startsWith('/api/admin/logs');
   if (!noisy) {
-    log.info('req.in', `${req.method} ${req.originalUrl}`, {
+    log.info('req.in', `${req.method} ${redactIcalToken(req.originalUrl)}`, {
       method: req.method,
-      path: req.path,
+      path: redactIcalToken(req.path),
       query: Object.keys(req.query || {}).length ? req.query : undefined,
       body: bodySummary(req.body),
       ua: asText(req.headers['user-agent']) || undefined,
@@ -138,9 +144,9 @@ app.use((req: Request, res: ExpressResponse, next: () => void) => {
     if (noisy) return;
     const ms = Date.now() - ctx.startedAt;
     const lvl: LogLevel = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
-    log[lvl]('req.out', `${req.method} ${req.originalUrl} → ${res.statusCode} (${ms}ms)`, {
+    log[lvl]('req.out', `${req.method} ${redactIcalToken(req.originalUrl)} → ${res.statusCode} (${ms}ms)`, {
       method: req.method,
-      path: req.path,
+      path: redactIcalToken(req.path),
       status: res.statusCode,
       ms,
     }, { reqId: ctx.reqId, ip: ctx.ip, sid, did, user: ctx.user });
@@ -3698,6 +3704,335 @@ app.get('/api/games/calendar-status', requireRcSession, async (_req: Request, re
   }
 });
 
+// ── Calendar feed (iCal) ──────────────────────────────────────────────
+// An RC subscribes once and the games they have taken — past and future — show
+// up in whatever calendar they already live in. The feed is rendered per
+// request, so it is never staler than the nightly VolleyManager sync behind it.
+// How often a subscriber re-reads it is the calendar client's decision, not
+// ours: Google and Apple both treat a publisher's refresh interval as a hint
+// and poll on their own schedule. That is also why there is a plain download
+// next to the subscription — a one-off file is the honest option for anyone who
+// doesn't want to think about subscriptions at all.
+
+const ICAL_TOKEN_VERSION = process.env.ICAL_TOKEN_VERSION || '1';
+const ICAL_CACHE_TTL_MS = 5 * 60 * 1000;
+// Nothing in the data says how long a match runs; two hours covers a five-set
+// game and is the least surprising thing to see occupying a calendar slot.
+const ICAL_EVENT_DURATION_MS = 2 * 60 * 60 * 1000;
+
+// The subscription URL carries no cookie, so the token in it IS the credential.
+// Derived rather than stored, so it is stable: a URL that changed each time the
+// dialog opened would silently strand every calendar already subscribed to the
+// previous one. Deriving it from the RC's id also means deactivating an RC
+// revokes their feed, since the lookup below only walks active people. Set
+// ICAL_TOKEN_VERSION to something else to invalidate every feed at once.
+function icalTokenFor(rcId: string): string {
+  return createHmac('sha256', ADMIN_SESSION_SECRET)
+    .update(`ical:v${ICAL_TOKEN_VERSION}:${rcId}`)
+    .digest('base64url');
+}
+
+async function rcByIcalToken(token: string): Promise<ActiveRcPerson | null> {
+  if (!token || token.length > 128) return null;
+  const given = Buffer.from(token);
+  let found: ActiveRcPerson | null = null;
+  for (const person of await getActiveRcPeople()) {
+    const expected = Buffer.from(icalTokenFor(person.id));
+    // No early exit: every candidate is compared either way, so how long the
+    // answer takes says nothing about which RC — or how many — nearly matched.
+    if (expected.length === given.length && timingSafeEqual(expected, given)) found = person;
+  }
+  return found;
+}
+
+// match_date arrives in three shapes: an instant with a zone (VolleyManager),
+// a bare wall-clock string, and a bare date (manually entered fixtures). Only
+// the first is unambiguous — the other two mean local time to whoever wrote
+// them, so they are read in the region's zone rather than in whatever zone the
+// server happens to run in. VM_SYNC_TIMEZONE already names that zone for the
+// cron schedules; a second setting could only drift out of step with it.
+const ICAL_ZONED_RE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+const ICAL_DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const ICAL_WALL_CLOCK_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/;
+
+function localZoneOffsetMs(instant: number): number {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: VM_SYNC_TIMEZONE,
+    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(new Date(instant));
+  const at = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+  // Some ICU builds render midnight as hour 24 under hour12:false.
+  return Date.UTC(at('year'), at('month') - 1, at('day'), at('hour') % 24, at('minute'), at('second')) - instant;
+}
+
+// Wall clock in VM_SYNC_TIMEZONE -> the instant it names. Two passes, because
+// the offset depends on the instant we are still solving for; the second pass
+// settles the hours either side of a daylight-saving switch.
+function wallClockToInstant(y: number, mo: number, d: number, h: number, mi: number, s: number): number {
+  const naive = Date.UTC(y, mo - 1, d, h, mi, s);
+  return naive - localZoneOffsetMs(naive - localZoneOffsetMs(naive));
+}
+
+// Deliberately flat rather than a `{allDay: true} | {allDay: false}` union:
+// this tsconfig runs without strictNullChecks, and TypeScript will not narrow a
+// false-valued discriminant there. `instant` is always the start; `date` is set
+// only when the source gave a bare date and the event has no clock time.
+type IcalMoment = { allDay: boolean; date: string; instant: number };
+
+function icalMoment(value: string): IcalMoment | null {
+  const text = asText(value);
+  if (!text) return null;
+  const dateOnly = ICAL_DATE_ONLY_RE.exec(text);
+  if (dateOnly) {
+    const [, y, mo, d] = dateOnly;
+    return { allDay: true, date: `${y}${mo}${d}`, instant: Date.UTC(+y, +mo - 1, +d) };
+  }
+  const timed = (instant: number): IcalMoment | null =>
+    Number.isNaN(instant) ? null : { allDay: false, date: '', instant };
+  if (ICAL_ZONED_RE.test(text)) {
+    // PocketBase hands back "2026-03-21 14:00:00.000Z"; the T keeps that off
+    // the engine's lenient fallback parser.
+    return timed(new Date(text.replace(' ', 'T')).getTime());
+  }
+  const wall = ICAL_WALL_CLOCK_RE.exec(text);
+  if (wall) {
+    return timed(wallClockToInstant(+wall[1], +wall[2], +wall[3], +wall[4], +wall[5], Number(wall[6] || 0)));
+  }
+  return timed(new Date(text).getTime());
+}
+
+function icsStamp(instant: number): string {
+  return new Date(instant).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+}
+
+function icsEscape(value: string): string {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\r?\n/g, '\\n');
+}
+
+// RFC 5545 caps a content line at 75 octets and continues it with CRLF + one
+// space. The limit counts bytes, so folding walks back off any continuation
+// byte rather than splitting a hall name mid-umlaut.
+function icsFold(line: string): string {
+  const bytes = Buffer.from(line, 'utf8');
+  if (bytes.length <= 75) return line;
+  const chunks: string[] = [];
+  let start = 0;
+  let limit = 75;
+  while (start < bytes.length) {
+    let end = Math.min(start + limit, bytes.length);
+    while (end > start && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end -= 1;
+    chunks.push(bytes.subarray(start, end).toString('utf8'));
+    start = end;
+    limit = 74; // a continuation line spends one octet on its leading space
+  }
+  return chunks.join('\r\n ');
+}
+
+type CalendarFeedGame = {
+  id: string;
+  matchNo: string;
+  league: string;
+  date: string;
+  location: string;
+  homeTeam: string;
+  awayTeam: string;
+  firstReferee: string;
+  secondReferee: string;
+  result: string;
+  updated: string;
+};
+
+async function getGamesAssignedToRc(rcName: string): Promise<CalendarFeedGame[]> {
+  const key = normalizeName(rcName);
+  if (!key) return [];
+  await ensureAdminAuth();
+  // Same shape as the other game reads: one full list, filtered in memory, so
+  // PocketBase never sees a URI-length or rate-limit problem.
+  const allGames = await (async () => {
+    try {
+      return await withCollection(collectionCandidates.games, (collection) =>
+        collection.getFullList<AnyRecord>({
+          sort: 'match_date',
+          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,game_result,updated',
+        }),
+      );
+    } catch (error) {
+      if (!isPocketBaseBadRequest(error)) throw error;
+      // Older schemas may not expose every projected field.
+      return withCollection(collectionCandidates.games, (collection) =>
+        collection.getFullList<AnyRecord>({}),
+      );
+    }
+  })();
+
+  return allGames
+    .filter((game) => normalizeName(game.assigned_rc) === key)
+    .map((game) => ({
+      id: String(game.id),
+      matchNo: asText(game.match_no),
+      league: asText(game.league),
+      date: asText(game.match_date),
+      location: asText(game.location),
+      homeTeam: asText(game.home_team),
+      awayTeam: asText(game.away_team),
+      firstReferee: asText(game.first_referee),
+      secondReferee: asText(game.second_referee),
+      result: asText(game.game_result),
+      updated: asText(game.updated),
+    }));
+}
+
+type IcalLang = 'DE' | 'EN';
+
+function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLang): string {
+  const de = lang === 'DE';
+  const now = icsStamp(Date.now());
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    `PRODID:-//Swiss Volley Region Zürich//Referee Coaching//${lang}`,
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    `X-WR-CALNAME:${icsEscape(`SVRZ RC – ${rcName}`)}`,
+    `X-WR-CALDESC:${icsEscape(de ? 'Von dir übernommene Spiele (Referee Coaching)' : 'Games you have taken as referee coach')}`,
+    `X-WR-TIMEZONE:${VM_SYNC_TIMEZONE}`,
+    // Both spellings of the same request. Clients are free to ignore them, and
+    // the popular ones do — this is a hint, never a guarantee.
+    'X-PUBLISHED-TTL:PT12H',
+    'REFRESH-INTERVAL;VALUE=DURATION:PT12H',
+  ];
+
+  for (const game of games) {
+    const moment = icalMoment(game.date);
+    // An event with no placeable start is not an event. Dropping it beats
+    // parking the game at the epoch in someone's calendar.
+    if (!moment) continue;
+
+    const teams = [game.homeTeam, game.awayTeam].filter(Boolean).join(' – ');
+    const description = [
+      [de ? 'Spiel' : 'Match', [game.matchNo, game.league].filter(Boolean).join(' · ')]
+        .filter((part) => part).join(' '),
+      game.firstReferee ? `${de ? '1. SR' : '1st ref'}: ${game.firstReferee}` : '',
+      game.secondReferee ? `${de ? '2. SR' : '2nd ref'}: ${game.secondReferee}` : '',
+      game.result ? `${de ? 'Resultat' : 'Result'}: ${game.result}` : '',
+    ].filter(Boolean).join('\n');
+    const modified = icalMoment(game.updated);
+
+    lines.push('BEGIN:VEVENT');
+    lines.push(`UID:game-${game.id}@svrz-rc`);
+    // DTSTAMP tracks the record, not the render: re-serving an unchanged feed
+    // must not look to a client like every event just changed.
+    lines.push(`DTSTAMP:${modified ? icsStamp(modified.instant) : now}`);
+    if (modified) lines.push(`LAST-MODIFIED:${icsStamp(modified.instant)}`);
+    if (moment.allDay) {
+      const dayAfter = new Date(moment.instant + 24 * 60 * 60 * 1000);
+      lines.push(`DTSTART;VALUE=DATE:${moment.date}`);
+      lines.push(`DTEND;VALUE=DATE:${dayAfter.toISOString().slice(0, 10).replace(/-/g, '')}`);
+    } else {
+      lines.push(`DTSTART:${icsStamp(moment.instant)}`);
+      lines.push(`DTEND:${icsStamp(moment.instant + ICAL_EVENT_DURATION_MS)}`);
+    }
+    lines.push(`SUMMARY:${icsEscape(`RC: ${teams || game.matchNo || (de ? 'Spiel' : 'Match')}`)}`);
+    if (game.location) lines.push(`LOCATION:${icsEscape(game.location)}`);
+    if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
+    lines.push(`URL:${icsEscape(MAIL_APP_URL)}`);
+    lines.push('CATEGORIES:SVRZ Referee Coaching');
+    lines.push('STATUS:CONFIRMED');
+    lines.push('TRANSP:OPAQUE');
+    lines.push('END:VEVENT');
+  }
+
+  lines.push('END:VCALENDAR');
+  return `${lines.map(icsFold).join('\r\n')}\r\n`;
+}
+
+// A subscription URL is public and polled by machines. Without this, every poll
+// would drag the whole games collection out of PocketBase. Five minutes is far
+// below any client's refresh interval, so nobody ever sees a staler feed than
+// they would have seen anyway.
+const icalCache = new Map<string, { body: string; expiresAt: number }>();
+
+async function renderRcCalendar(person: ActiveRcPerson, lang: IcalLang): Promise<string> {
+  const cacheKey = `${person.id}|${lang}`;
+  const cached = icalCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.body;
+  const body = buildRcCalendar(person.fullName, await getGamesAssignedToRc(person.fullName), lang);
+  icalCache.set(cacheKey, { body, expiresAt: Date.now() + ICAL_CACHE_TTL_MS });
+  return body;
+}
+
+// The URL has to be absolute and has to be the one the outside world can reach:
+// a calendar client fetches it from anywhere except here.
+function publicApiBase(req: Request): string {
+  const configured = asText(process.env.API_PUBLIC_URL);
+  if (configured) return configured.replace(/\/+$/, '');
+  const forwardedProto = asText(req.headers['x-forwarded-proto']).split(',')[0].trim();
+  const forwardedHost = asText(req.headers['x-forwarded-host']).split(',')[0].trim();
+  return `${forwardedProto || req.protocol || 'https'}://${forwardedHost || asText(req.headers.host)}`;
+}
+
+function icalFileSlug(name: string): string {
+  const slug = normalizeName(name).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return slug ? `svrz-rc-${slug}` : 'svrz-rc';
+}
+
+app.get('/api/ical/me', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const session = verifyRcSession(req);
+    // A pure admin-console session has no RC record behind it, so there is no
+    // "my games" to hand out: the feed belongs to a person, not to a role.
+    const person = session.rcId ? (await getActiveRcPeople()).find((p) => p.id === session.rcId) : undefined;
+    if (!person) {
+      res.status(403).json({ error: 'Kalender-Abo gibt es nur für angemeldete RC.' });
+      return;
+    }
+    const lang: IcalLang = asText(req.query.lang).toUpperCase() === 'EN' ? 'EN' : 'DE';
+    const base = publicApiBase(req);
+    const path = `/api/ical/${icalTokenFor(person.id)}.ics?lang=${lang.toLowerCase()}`;
+    res.json({
+      name: person.fullName,
+      count: (await getGamesAssignedToRc(person.fullName)).length,
+      url: `${base}${path}`,
+      // webcal:// is what makes a phone or desktop offer "subscribe" instead of
+      // downloading the file once and never looking at it again.
+      webcalUrl: `${base.replace(/^https?:/i, 'webcal:')}${path}`,
+      downloadUrl: `${base}${path}&download=1`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+// Public by design — a calendar client cannot log in. The token is the whole
+// gate, which is why it is unguessable and why the request log redacts it.
+app.get('/api/ical/:token', async (req: Request, res: ExpressResponse) => {
+  try {
+    const person = await rcByIcalToken(String(req.params.token || '').replace(/\.ics$/i, ''));
+    if (!person) {
+      res.status(404).type('text/plain').send('Unknown calendar.');
+      return;
+    }
+    const lang: IcalLang = asText(req.query.lang).toUpperCase() === 'EN' ? 'EN' : 'DE';
+    const body = await renderRcCalendar(person, lang);
+    const disposition = asText(req.query.download) === '1' ? 'attachment' : 'inline';
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${icalFileSlug(person.fullName)}.ics"`);
+    res.setHeader('Cache-Control', 'private, max-age=900');
+    res.send(body);
+  } catch (error) {
+    log.error('ical.feed', 'Calendar feed failed', { error });
+    // Calendar clients retry on 5xx and give up on a malformed body, so an
+    // error must not come back dressed as JSON under a text/calendar promise.
+    res.status(503).type('text/plain').send('Calendar temporarily unavailable.');
+  }
+});
+
 app.post('/api/referee-coaches', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
@@ -4274,7 +4609,7 @@ app.use((err: unknown, req: Request, res: ExpressResponse, _next: (e?: unknown) 
   const message = err instanceof Error ? err.message : String(err);
   const corsBlocked = message.includes('CORS');
   const badJson = err instanceof SyntaxError && 'body' in (err as object);
-  log.error('req.fail', `${req.method} ${req.originalUrl} threw`, {
+  log.error('req.fail', `${req.method} ${redactIcalToken(req.originalUrl)} threw`, {
     error: err,
     origin: asText(req.headers.origin) || undefined,
     kind: corsBlocked ? 'cors' : badJson ? 'bad-json' : 'unhandled',

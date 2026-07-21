@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Maximize2, Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star } from 'lucide-react';
+import { Maximize2, Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { QRCodeSVG } from 'qrcode.react';
@@ -33,6 +33,8 @@ import {
   startSignature,
   getSignatureSession,
   submitSignatureSession,
+  getIcalSubscription,
+  type IcalSubscription,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
@@ -979,6 +981,33 @@ export default function App() {
   const emptyForm2SRRef = useRef<HTMLDivElement | null>(null);
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showInfoModal, setShowInfoModal] = useState(false);
+  const [showCalendarModal, setShowCalendarModal] = useState(false);
+  const [icalInfo, setIcalInfo] = useState<IcalSubscription | null>(null);
+  const [icalError, setIcalError] = useState('');
+  const [icalCopied, setIcalCopied] = useState(false);
+  // Fetched when the dialog opens rather than on load — nobody pays for a
+  // feature they never open. Re-runs on a language switch because the event
+  // texts inside the feed follow the language the link was taken in.
+  useEffect(() => {
+    if (!showCalendarModal) return;
+    let cancelled = false;
+    setIcalError('');
+    getIcalSubscription(formData.lang)
+      .then(info => { if (!cancelled) setIcalInfo(info); })
+      .catch(err => { if (!cancelled) setIcalError(err instanceof Error ? err.message : String(err)); });
+    return () => { cancelled = true; };
+  }, [showCalendarModal, formData.lang]);
+  const copyIcalUrl = async () => {
+    if (!icalInfo) return;
+    try {
+      await navigator.clipboard.writeText(icalInfo.url);
+      setIcalCopied(true);
+      window.setTimeout(() => setIcalCopied(false), 2000);
+    } catch {
+      // Clipboard access denied (or no secure context). The URL sits in a
+      // selectable field right there, so there is nothing to recover from.
+    }
+  };
   const [sigModalOpen, setSigModalOpen] = useState(false);
   const [sigSlug, setSigSlug] = useState('');
   const [sigError, setSigError] = useState('');
@@ -2855,6 +2884,18 @@ export default function App() {
                 >
                   {`${seasonStartYear}/${String((seasonStartYear + 1) % 100).padStart(2, '0')}`}
                 </span>
+                {/* The feed is per RC and served by the API, so it needs a real
+                    session — the demo has neither. */}
+                {rcAuth.rcName && !isDemoMode() && (
+                  <button
+                    onClick={() => setShowCalendarModal(true)}
+                    className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
+                    title={formData.lang === 'DE' ? 'Kalender-Abo' : 'Calendar subscription'}
+                  >
+                    <CalendarPlus size={14} />
+                    <span className="hidden sm:inline">{formData.lang === 'DE' ? 'Kalender' : 'Calendar'}</span>
+                  </button>
+                )}
                 {rcAuth.rcName && (
                   <button
                     onClick={rcAuth.logout}

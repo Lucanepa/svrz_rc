@@ -348,6 +348,26 @@ export async function loadCalendarGames(): Promise<CalendarGameStatus[]> {
   return response.json() as Promise<CalendarGameStatus[]>;
 }
 
+export type IcalSubscription = {
+  name: string;
+  count: number;
+  url: string;
+  webcalUrl: string;
+  downloadUrl: string;
+};
+
+// The feed lives on the API host, not on the app host, and its token is minted
+// per RC — so the URLs are handed out by the server rather than assembled here.
+// No demo branch: the demo makes zero backend calls, and a subscription link
+// that resolves to nothing would be worse than not offering one.
+export async function getIcalSubscription(lang: 'DE' | 'EN'): Promise<IcalSubscription> {
+  const response = await fetch(apiUrl(`/api/ical/me?lang=${lang.toLowerCase()}`), { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json() as Promise<IcalSubscription>;
+}
+
 export async function deleteRefereeCoach(id: string) {
   const response = await fetch(apiUrl(`/api/referee-coaches/${id}`), {
     credentials: 'include',

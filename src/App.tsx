@@ -324,6 +324,49 @@ const UI_STRINGS = {
 
 type FeedbackSubView = 'coachees' | 'coacheeGames' | 'calendar' | 'feedbackForm';
 
+// ── URL routing ───────────────────────────────────────────────────────
+// The hash mirrors what is on screen, so every tab is linkable, bookmarkable
+// and reachable with the browser/Android Back button. `#/admin` and `#/sign/…`
+// belong to other roots and are handled in main.tsx.
+type AppRoute = {
+  subView: FeedbackSubView;
+  listTab: 'home' | 'coachees' | 'games' | 'rcOverview';
+  rc: string | null;
+};
+
+const DEFAULT_ROUTE: AppRoute = { subView: 'coachees', listTab: 'home', rc: null };
+
+// Hashes owned by another root (main.tsx swaps the whole tree and reloads for
+// these). The app must neither read nor rewrite them, or it would fight that
+// router mid-navigation.
+const isForeignHash = (hash: string) => /^#\/?(admin|sign)(\/|$)/i.test(hash);
+
+function routeToHash(r: AppRoute): string {
+  if (r.subView === 'feedbackForm') return '#/form';
+  if (r.subView === 'coacheeGames') return '#/coachee-games';
+  if (r.subView === 'calendar') return '#/calendar';
+  if (r.listTab === 'rcOverview') return r.rc ? `#/rc/${encodeURIComponent(r.rc)}` : '#/rc';
+  return `#/${r.listTab}`;
+}
+
+// `restorable` is false on a cold load: views that only make sense with a
+// selection carried from the previous screen (the feedback form, a coachee's
+// game list) resolve to their parent list instead of an empty shell.
+function parseHash(hash: string, restorable: boolean): AppRoute {
+  const path = hash.replace(/^#\/?/, '').replace(/\/+$/, '');
+  const [head, ...rest] = path.split('/');
+  const tail = rest.length ? decodeURIComponent(rest.join('/')) : '';
+  switch (head) {
+    case 'calendar': return { ...DEFAULT_ROUTE, subView: 'calendar' };
+    case 'form': return restorable ? { ...DEFAULT_ROUTE, subView: 'feedbackForm' } : { ...DEFAULT_ROUTE, listTab: 'games' };
+    case 'coachee-games': return restorable ? { ...DEFAULT_ROUTE, subView: 'coacheeGames' } : { ...DEFAULT_ROUTE, listTab: 'coachees' };
+    case 'rc': return { ...DEFAULT_ROUTE, listTab: 'rcOverview', rc: tail || null };
+    case 'coachees': return { ...DEFAULT_ROUTE, listTab: 'coachees' };
+    case 'games': return { ...DEFAULT_ROUTE, listTab: 'games' };
+    default: return DEFAULT_ROUTE;
+  }
+}
+
 function getRefereeForRole(game: EligibleGame, role: FeedbackFormData['role']) {
   return role === '1. SR' ? game.firstReferee : game.secondReferee;
 }
@@ -654,10 +697,18 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder }: {
 }
 
 export default function App() {
-  const [viewMode, setViewMode] = useState<'feedback' | 'admin'>('feedback');
-  const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>('coachees');
-  const [listTab, setListTab] = useState<'home' | 'coachees' | 'games' | 'rcOverview'>('home');
-  const [homeData, setHomeData] = useState<{ done: number; planned: number; outstanding: number; nextGames: rcCoachSummaryGame[]; missingGames: rcCoachSummaryGame[] } | null>(null);
+  // Deep link the app was opened with — read once, before the first paint, so
+  // a shared/bookmarked tab renders directly instead of flashing Home first.
+  const initialRoute = useRef(parseHash(window.location.hash, false)).current;
+  // Legacy in-app database panel: no control switches to it any more, so it
+  // stays out of the URL scheme.
+  const [viewMode] = useState<'feedback' | 'admin'>('feedback');
+  const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>(initialRoute.subView);
+  const [listTab, setListTab] = useState<'home' | 'coachees' | 'games' | 'rcOverview'>(initialRoute.listTab);
+  // `doneList` powers the "already observed" list at the bottom of Home; each
+  // entry keeps its coachee id so the row can open the filed feedback.
+  type HomeDone = { gameDate: string; league: string; teams: string; role: string; submittedAt: string; coacheeName: string; coacheeId: string };
+  const [homeData, setHomeData] = useState<{ done: number; planned: number; outstanding: number; nextGames: rcCoachSummaryGame[]; missingGames: rcCoachSummaryGame[]; doneList: HomeDone[] } | null>(null);
   const [homeLoading, setHomeLoading] = useState(false);
   const [listPage, setListPage] = useState(0);
   const LIST_PAGE_SIZE = 50;
@@ -673,7 +724,7 @@ export default function App() {
   const [rcOverviewData, setRcOverviewData] = useState<RcOverviewEntry[]>([]);
   const [rcOverviewLoading, setRcOverviewLoading] = useState(false);
   const [rcDetailTab, setRcDetailTab] = useState<'planned' | 'outstanding' | 'done'>('planned');
-  const [selectedRcName, setSelectedRcName] = useState<string | null>(null);
+  const [selectedRcName, setSelectedRcName] = useState<string | null>(initialRoute.rc);
   const [rcCoachSummaryData, setrcCoachSummaryData] = useState<rcCoachSummary[]>([]);
   const [rcCoachSummaryLoading, setrcCoachSummaryLoading] = useState(false);
   // Which `${rcName}|${season}` the loaded summary belongs to — lets the Home
@@ -868,6 +919,36 @@ export default function App() {
     document.title = formData.lang === 'DE' ? 'SR-Coaching Plattform' : 'Referee Coaching Platform';
   }, [formData.lang]);
 
+  // ── URL ↔ view sync ────────────────────────────────────────────────
+  // State → URL. pushState (not location.hash) so this never fires the
+  // hashchange listener in main.tsx, and each view becomes a Back step.
+  const currentHash = routeToHash({ subView: feedbackSubView, listTab, rc: selectedRcName });
+  const didSyncHashRef = useRef(false);
+  useEffect(() => {
+    if (isForeignHash(window.location.hash)) return; // main.tsx is switching roots
+    if (window.location.hash !== currentHash) {
+      // The very first sync only names the landing view — it must not become a
+      // Back step of its own (Back from the landing tab should leave the app).
+      if (didSyncHashRef.current) window.history.pushState(null, '', currentHash);
+      else window.history.replaceState(null, '', currentHash);
+    }
+    didSyncHashRef.current = true;
+  }, [currentHash]);
+
+  // URL → state, for Back/Forward. Registered once; the handler only calls
+  // setters, so it needs no fresh render values.
+  useEffect(() => {
+    const onPop = () => {
+      if (isForeignHash(window.location.hash)) return;
+      const r = parseHash(window.location.hash, true);
+      setFeedbackSubView(r.subView);
+      setListTab(r.listTab);
+      setSelectedRcName(r.rc);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
   // First-run bootstrap. Every screen's data is requested in ONE parallel batch
   // on mount — not chained, and not deferred until its tab is opened — so no
   // page can be reached before its own request was even started. Runs once:
@@ -978,6 +1059,9 @@ export default function App() {
   const reqGen = useRef<Record<string, number>>({});
   const beginLoad = (key: string) => (reqGen.current[key] = (reqGen.current[key] ?? 0) + 1);
   const isCurrentLoad = (key: string, gen: number) => reqGen.current[key] === gen;
+  // `${rcName}|${season}` whose summary fetch has already been started, so the
+  // RC-detail effect never re-runs a request that is in flight or has failed.
+  const rcSummaryAttemptRef = useRef<string | null>(null);
 
   const refreshGames = async () => {
     if (!hasPocketBaseConfig()) {
@@ -1062,6 +1146,9 @@ export default function App() {
     if (!myName) { setHomeData(null); return; }
     const gen = beginLoad('home');
     const season = seasonStartYear;
+    // This request also covers the RC detail view for the logged-in coach —
+    // claim it so the detail effect below doesn't fetch the same thing again.
+    rcSummaryAttemptRef.current = `${myName}|${season}`;
     setHomeLoading(true);
     try {
       const norm = (s: string) => s.trim().toLowerCase();
@@ -1075,12 +1162,21 @@ export default function App() {
       const nextGames = summary.flatMap((cs) => cs.plannedGames).sort(byDate);
       const missingGames = summary.flatMap((cs) => cs.outstandingGames).sort(byDate);
       const done = myRow?.done ?? summary.reduce((n, cs) => n + cs.doneFeedbacks.length, 0);
+      // Observations already filed, newest first — shown at the bottom of Home.
+      const doneList: HomeDone[] = summary
+        .flatMap((cs) => cs.doneFeedbacks.map((fb) => ({
+          gameDate: fb.gameDate, league: fb.league, teams: fb.teams,
+          role: fb.role, submittedAt: fb.submittedAt,
+          coacheeName: cs.coacheeName, coacheeId: cs.coacheeId,
+        })))
+        .sort((a, b) => (b.submittedAt || b.gameDate).localeCompare(a.submittedAt || a.gameDate));
       setHomeData({
         done,
         planned: myRow?.planned ?? nextGames.length,
         outstanding: myRow?.outstanding ?? missingGames.length,
         nextGames,
         missingGames,
+        doneList,
       });
       // Same payload the RC detail view needs — hand it over so opening that
       // tab is instant instead of triggering an identical fetch.
@@ -1114,13 +1210,7 @@ export default function App() {
     setRcDetailTab(has((cs) => cs.plannedGames) ? 'planned' : has((cs) => cs.outstandingGames) ? 'outstanding' : 'done');
   };
 
-  const handleSelectRc = async (rcName: string) => {
-    setSelectedRcName(rcName);
-    // Already loaded for this RC and season (bootstrap, or a previous visit).
-    if (rcSummaryKey === `${rcName}|${seasonStartYear}`) {
-      pickRcDetailTab(rcCoachSummaryData);
-      return;
-    }
+  const loadRcSummary = async (rcName: string) => {
     const gen = beginLoad('rcSummary');
     setrcCoachSummaryLoading(true);
     try {
@@ -1128,7 +1218,6 @@ export default function App() {
       if (!isCurrentLoad('rcSummary', gen)) return;
       setrcCoachSummaryData(data);
       setRcSummaryKey(`${rcName}|${seasonStartYear}`);
-      pickRcDetailTab(data);
     } catch {
       if (!isCurrentLoad('rcSummary', gen)) return;
       setrcCoachSummaryData([]);
@@ -1140,17 +1229,29 @@ export default function App() {
 
   // Overview / summary / dashboard are season-scoped on the server, so a season
   // switch re-fetches exactly that slice — in parallel, and only on a real
-  // change (the initial values come from the mount bootstrap).
+  // change (the initial values come from the mount bootstrap). Declared before
+  // the RC-detail effect below so loadHome can claim the summary fetch first.
   const loadedSeasonRef = useRef(seasonStartYear);
   useEffect(() => {
     if (loadedSeasonRef.current === seasonStartYear) return;
     loadedSeasonRef.current = seasonStartYear;
     const overview = refreshRcOverview();
     void loadHome(overview);
-    // loadHome already re-fetches the logged-in RC's own summary.
-    if (selectedRcName && selectedRcName !== rcAuth.rcName) void handleSelectRc(selectedRcName);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seasonStartYear]);
+
+  // Selecting an RC — by click, by deep link (#/rc/Name) or via Back — drives
+  // the detail view. One place decides whether a fetch is needed, so no path
+  // can double-load and none can leave the view without data.
+  useEffect(() => {
+    if (!selectedRcName) return;
+    const key = `${selectedRcName}|${seasonStartYear}`;
+    if (rcSummaryKey === key) { pickRcDetailTab(rcCoachSummaryData); return; }
+    if (rcSummaryAttemptRef.current === key) return; // in flight, or already failed
+    rcSummaryAttemptRef.current = key;
+    void loadRcSummary(selectedRcName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRcName, rcSummaryKey, seasonStartYear]);
 
   // Track connectivity; flush the outbox when we come back online.
   useEffect(() => {
@@ -1330,6 +1431,25 @@ export default function App() {
     setFeedbackPickerCoachee(null);
     setActionTargetCoachee(null);
     setFeedbackSubView('feedbackForm');
+  };
+
+  // Open an already-filed observation from a summary row. The summary carries no
+  // feedback id, so we fetch that coachee's records and match on the game date
+  // (plus role when the row names one) — then reuse the normal record viewer.
+  const openDoneObservation = async (row: { coacheeId: string; gameDate: string; role?: string }) => {
+    if (!row.coacheeId) return;
+    setBackendNotice('');
+    try {
+      const records = await listCoacheeFeedbacks(row.coacheeId);
+      const day = (s: string) => (s || '').slice(0, 10);
+      const sameDay = records.filter((r) => day(r.expand?.game?.match_date || '') === day(row.gameDate));
+      const match = (row.role && sameDay.find((r) => r.role_assessed === row.role)) || sameDay[0] || records[0];
+      if (match) openFeedbackRecord(match);
+      else setBackendNotice(formData.lang === 'DE' ? 'Beobachtung nicht gefunden.' : 'Observation not found.');
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setBackendNotice(localizeRuntimeError(reason, formData.lang));
+    }
   };
 
   const openFeedbackPicker = async (coachee: Coachee) => {
@@ -2663,8 +2783,7 @@ export default function App() {
                   setListTab('rcOverview');
                   // Plain RC sessions land directly on their own detail — whose
                   // data the bootstrap already fetched, so this is instant.
-                  if (!isPrivileged && rcAuth.rcName) void handleSelectRc(rcAuth.rcName);
-                  else setSelectedRcName(null);
+                  setSelectedRcName(!isPrivileged && rcAuth.rcName ? rcAuth.rcName : null);
                 }}
                 className={cn(
                   "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
@@ -2778,6 +2897,42 @@ export default function App() {
                         ) : (
                           <div className="space-y-1.5">
                             {homeData.nextGames.slice(0, 8).map((g, i) => gameRow(g, `next-${g.gameId}-${i}`))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Observations already filed — tap one to reopen its feedback. */}
+                      <div>
+                        <h3 className="text-sm font-semibold text-stone-700 mb-2 flex items-center gap-1.5">
+                          <ClipboardCheck size={15} className="text-stone-400" />
+                          {de ? 'Erledigte Beobachtungen' : 'Completed observations'}
+                          {homeData.doneList.length > 0 && (
+                            <span className="text-xs font-normal text-stone-400">({homeData.doneList.length})</span>
+                          )}
+                        </h3>
+                        {homeData.doneList.length === 0 ? (
+                          <p className="text-sm text-stone-400 py-3">{de ? 'Noch keine Beobachtung erfasst.' : 'No observations filed yet.'}</p>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {homeData.doneList.slice(0, 8).map((f, i) => (
+                              <button
+                                key={`done-${f.coacheeId}-${f.gameDate}-${i}`}
+                                onClick={() => void openDoneObservation(f)}
+                                className="w-full text-left px-3 py-2.5 rounded-lg border border-stone-200 bg-white hover:border-emerald-300 hover:bg-emerald-50/40 transition-colors flex items-center gap-3"
+                                title={de ? 'Feedback öffnen' : 'Open feedback'}
+                              >
+                                <div className="flex flex-col items-center justify-center w-12 shrink-0">
+                                  <span className="text-[11px] font-semibold text-emerald-600 leading-tight">{fmtDate(f.gameDate)}</span>
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-sm font-medium text-stone-800 truncate">{f.teams}</p>
+                                  <p className="text-xs text-stone-500 truncate">
+                                    {f.league} · {f.coacheeName}{f.role ? ` (${f.role})` : ''}
+                                  </p>
+                                </div>
+                                <Eye size={15} className="text-stone-400 shrink-0" />
+                              </button>
+                            ))}
                           </div>
                         )}
                       </div>
@@ -3634,7 +3789,9 @@ export default function App() {
                     ) : (
                       (() => {
                         // Game-centric view: one row per game, all its coachees merged onto it.
-                        type RcGameRow = { gameId?: string; gameDate: string; league: string; teams: string; names: string[] };
+                        // `coacheeId`/`role` are only set for done rows — they let a filed
+                        // observation be reopened (the summary carries no feedback id).
+                        type RcGameRow = { gameId?: string; gameDate: string; league: string; teams: string; names: string[]; coacheeId?: string; role?: string };
                         const collect = (m: Map<string, RcGameRow>, key: string, base: Omit<RcGameRow, 'names'>, name: string) => {
                           const row = m.get(key) ?? { ...base, names: [] };
                           if (name && !row.names.includes(name)) row.names.push(name);
@@ -3646,12 +3803,12 @@ export default function App() {
                         for (const cs of rcCoachSummaryData) {
                           for (const g of cs.plannedGames) collect(plannedM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams }, g.refereeName);
                           for (const g of cs.outstandingGames) collect(outstandingM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams }, g.refereeName);
-                          for (const fb of cs.doneFeedbacks) collect(doneM, `${fb.gameDate}|${fb.teams}`, { gameDate: fb.gameDate, league: fb.league, teams: fb.teams }, fb.role ? `${cs.coacheeName} (${fb.role})` : cs.coacheeName);
+                          for (const fb of cs.doneFeedbacks) collect(doneM, `${fb.gameDate}|${fb.teams}`, { gameDate: fb.gameDate, league: fb.league, teams: fb.teams, coacheeId: cs.coacheeId, role: fb.role }, fb.role ? `${cs.coacheeName} (${fb.role})` : cs.coacheeName);
                         }
                         const sections = [
                           { key: 'planned' as const, title: t.rcPlannedGames, rows: [...plannedM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
                           { key: 'outstanding' as const, title: t.rcOutstandingGames, rows: [...outstandingM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
-                          { key: 'done' as const, title: t.rcDoneFeedbacks, rows: [...doneM.values()].sort((a, b) => b.gameDate.localeCompare(a.gameDate)), clickable: false },
+                          { key: 'done' as const, title: t.rcDoneFeedbacks, rows: [...doneM.values()].sort((a, b) => b.gameDate.localeCompare(a.gameDate)), clickable: false, opensFeedback: true },
                         ];
                         const active = sections.find((s) => s.key === rcDetailTab) ?? sections[0];
                         return (
@@ -3678,7 +3835,12 @@ export default function App() {
                                     const d = new Date(g.gameDate);
                                     const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : g.gameDate;
                                     const eg = active.clickable && g.gameId ? eligibleGames.find((x) => x.id === g.gameId) : undefined;
-                                    const open = eg ? () => handleSelectGame(eg, g.names.length === 1 ? g.names[0] : undefined) : undefined;
+                                    // Planned/outstanding start an observation; done rows reopen the filed feedback.
+                                    const open = eg
+                                      ? () => handleSelectGame(eg, g.names.length === 1 ? g.names[0] : undefined)
+                                      : ('opensFeedback' in active && active.opensFeedback && g.coacheeId)
+                                        ? () => void openDoneObservation({ coacheeId: g.coacheeId!, gameDate: g.gameDate, role: g.role })
+                                        : undefined;
                                     return (
                                       <div
                                         key={i}
@@ -3687,7 +3849,11 @@ export default function App() {
                                         tabIndex={open ? 0 : undefined}
                                         role={open ? 'button' : undefined}
                                         className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-600 py-1.5', open && 'cursor-pointer hover:bg-stone-50 focus-visible:bg-stone-50 focus-visible:outline-none')}
-                                        title={open ? (formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation') : undefined}
+                                        title={open
+                                          ? (active.key === 'done'
+                                            ? (formData.lang === 'DE' ? 'Feedback öffnen' : 'Open feedback')
+                                            : (formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation'))
+                                          : undefined}
                                       >
                                         <span className="font-medium text-stone-700 w-20">{dateStr}</span>
                                         <span className="text-stone-400 w-14">{g.league}</span>
@@ -3727,21 +3893,25 @@ export default function App() {
                       return (
                       <div
                         key={rc.id}
-                        onClick={canOpen ? () => void handleSelectRc(rc.fullName) : undefined}
+                        onClick={canOpen ? () => setSelectedRcName(rc.fullName) : undefined}
                         className={cn("px-4 py-3 transition-colors", canOpen ? "hover:bg-stone-50 cursor-pointer" : "opacity-75")}
                       >
                         <div className="font-medium text-sm text-stone-800">{rc.fullName}</div>
-                        <div className="mt-1.5 flex items-center gap-2">
-                          <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-green-100 text-green-700" title={t.rcDone}>
-                            {rc.done} {formData.lang === 'DE' ? 'erledigt' : 'done'}
-                          </span>
-                          <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700" title={t.rcOutstanding}>
-                            {rc.outstanding} {formData.lang === 'DE' ? 'offen' : 'open'}
-                          </span>
-                          <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-red-100 text-red-700" title={t.rcPlanned}>
-                            {rc.planned} {formData.lang === 'DE' ? 'geplant' : 'planned'}
-                          </span>
-                        </div>
+                        {/* Another coach's workload is their business — only admins
+                            (and the coach themselves) see the counters. */}
+                        {canOpen && (
+                          <div className="mt-1.5 flex items-center gap-2">
+                            <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-green-100 text-green-700" title={t.rcDone}>
+                              {rc.done} {formData.lang === 'DE' ? 'erledigt' : 'done'}
+                            </span>
+                            <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700" title={t.rcOutstanding}>
+                              {rc.outstanding} {formData.lang === 'DE' ? 'offen' : 'open'}
+                            </span>
+                            <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-red-100 text-red-700" title={t.rcPlanned}>
+                              {rc.planned} {formData.lang === 'DE' ? 'geplant' : 'planned'}
+                            </span>
+                          </div>
+                        )}
                       </div>
                       );
                     })}

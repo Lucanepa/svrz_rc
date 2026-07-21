@@ -43,6 +43,7 @@ function mapGroups(s: string): string {
 const STR = {
   DE: {
     admin: 'Admin', logout: 'Abmelden', login: 'Anmelden', adminPw: 'Admin-Passwort', wrongPw: 'Falsches Passwort',
+    noAdminRights: 'Dein Konto hat keine Admin-Rechte. Falls du Admin bist, melde dich mit dem Admin-Passwort an.',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Einstellungen', testBadge: 'Testmodus',
     emails: 'E-Mails',
     tplFeedback: 'Feedback-E-Mail (nach dem Spiel)',
@@ -56,7 +57,7 @@ const STR = {
     reminderPreview: 'Vorschau: morgen', reminderPreviewHint: 'Zeigt exakt, was morgen versendet würde — es wird nichts gesendet.',
     reminderNone: 'Für morgen stehen keine Erinnerungen an.',
     importXlsx: 'xlsx importieren', importHint: (s: string) => `Import setzt die Saison ${s}. Bestehende (gleicher Name + Saison) werden aktualisiert.`,
-    firstName: 'Vorname', lastName: 'Nachname', level: 'Niveau', stage: 'Stufe', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
+    firstName: 'Vorname', lastName: 'Nachname', level: 'Niveau', stage: 'Niveau/Stufe', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
     noCoachees: (s: string) => `Keine Coachees für ${s} — importiere eine xlsx.`,
     delCoachee: (n: string) => `Coachee „${n}" löschen?`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
@@ -84,6 +85,7 @@ const STR = {
   },
   EN: {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminPw: 'Admin password', wrongPw: 'Wrong password',
+    noAdminRights: 'Your account has no admin rights. If you are an admin, sign in with the admin password.',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Settings', testBadge: 'Test mode',
     emails: 'Emails',
     tplFeedback: 'Feedback email (after the match)',
@@ -97,7 +99,7 @@ const STR = {
     reminderPreview: 'Preview: tomorrow', reminderPreviewHint: 'Shows exactly what would be sent tomorrow — nothing is sent.',
     reminderNone: 'No reminders due for tomorrow.',
     importXlsx: 'Import xlsx', importHint: (s: string) => `Import targets season ${s}. Existing (same name + season) are updated.`,
-    firstName: 'First name', lastName: 'Last name', level: 'Level', stage: 'Stage', group: 'Group', email: 'Email', phone: 'Phone',
+    firstName: 'First name', lastName: 'Last name', level: 'Level', stage: 'Niveau/Stufe (level)', group: 'Group', email: 'Email', phone: 'Phone',
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
     noCoachees: (s: string) => `No coachees for ${s} — import an xlsx.`,
     delCoachee: (n: string) => `Delete coachee "${n}"?`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
@@ -152,6 +154,16 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
   return out;
 }
 
+// Console tabs live in the URL as #/admin/<tab>, so each one is linkable and
+// the Back button steps between them.
+const ADMIN_TABS = ['coachees', 'rcs', 'emails', 'settings'] as const;
+type AdminTab = (typeof ADMIN_TABS)[number];
+const adminTabFromHash = (): AdminTab => {
+  const m = /^#\/?admin\/([a-z]+)/i.exec(window.location.hash);
+  const found = ADMIN_TABS.find((x) => x === m?.[1]?.toLowerCase());
+  return found ?? 'coachees';
+};
+
 export default function AdminConsole() {
   const [checking, setChecking] = useState(true);
   const [authed, setAuthed] = useState(false);
@@ -159,7 +171,7 @@ export default function AdminConsole() {
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [tab, setTab] = useState<'coachees' | 'rcs' | 'emails' | 'settings'>('coachees');
+  const [tab, setTab] = useState<AdminTab>(adminTabFromHash);
   const [testMode, setTestMode] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [groups, setGroups] = useState<string[]>([]);
@@ -187,6 +199,25 @@ export default function AdminConsole() {
   }, [authed]);
   const saveTargets = useCallback(async (next: CoacheeTargetMap) => { setCoacheeTargets(next); try { await putSettings({ coachee_targets: next }); } catch { /* ignore */ } }, []);
 
+  // Tab ↔ URL. pushState keeps the hashchange listener in main.tsx (which
+  // reloads on a root change) out of it; popstate handles Back/Forward.
+  const didSyncHash = useRef(false);
+  const isAdminHash = () => /^#\/?admin(\/|$)/i.test(window.location.hash);
+  useEffect(() => {
+    if (!isAdminHash()) return; // leaving the console — main.tsx takes over
+    const target = `#/admin/${tab}`;
+    if (window.location.hash !== target) {
+      if (didSyncHash.current) window.history.pushState(null, '', target);
+      else window.history.replaceState(null, '', target);
+    }
+    didSyncHash.current = true;
+  }, [tab]);
+  useEffect(() => {
+    const onPop = () => { if (isAdminHash()) setTab(adminTabFromHash()); };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
   const login = async (e: React.FormEvent) => {
     e.preventDefault(); setSubmitting(true); setError('');
     try { await adminUiLogin(password.trim()); setAuthed(true); setPassword(''); }
@@ -208,6 +239,9 @@ export default function AdminConsole() {
               <SvrzLogo className="h-11 w-auto" />
               <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400 mt-4">{t.admin}</p>
             </div>
+            {/* Reaching this means you ARE signed in but your account has no
+                admin rights — the password below is the bootstrap fallback. */}
+            <p className="text-xs text-stone-500 text-center mb-4">{t.noAdminRights}</p>
             <form onSubmit={login} className="space-y-4">
               <div className="relative">
                 <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />

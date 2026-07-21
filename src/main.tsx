@@ -35,10 +35,11 @@ if (/^#\/?demo\/?$/i.test(window.location.hash)) {
   history.replaceState(null, '', window.location.pathname + window.location.search);
 }
 
-// Hash routes: #/admin -> admin console; #/sign/<slug> -> public signature page
+// Hash routes: #/admin[/tab] -> admin console; #/sign/<slug> -> public
+// signature page; anything else -> the app, which routes its own tabs.
 const routeKind = (): 'admin' | 'sign' | 'app' => {
   const h = window.location.hash;
-  if (/^#\/?admin$/i.test(h)) return 'admin';
+  if (/^#\/?admin(\/|$)/i.test(h)) return 'admin';
   if (/^#\/sign\//i.test(h)) return 'sign';
   return 'app';
 };
@@ -49,7 +50,13 @@ const kind = routeKind();
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {kind === 'admin' ? (
-      <AdminConsole />
+      // Admin sits behind the SAME login as the app: hitting #/admin while
+      // logged out shows the normal e-mail/password screen and lands on the
+      // console afterwards (an is_admin PIN session already counts as admin,
+      // so no second password prompt appears).
+      <AuthGate>
+        <AdminConsole />
+      </AuthGate>
     ) : kind === 'sign' ? (
       <SignaturePage />
     ) : (

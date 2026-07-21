@@ -6,7 +6,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 
 // Season goal: each RC should complete at least this many observations.
-const OBSERVATION_GOAL = 8;
+const OBSERVATION_GOAL = 10;
 import {
   CalendarGameStatus,
   Coachee,

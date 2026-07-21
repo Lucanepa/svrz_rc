@@ -5572,7 +5572,13 @@ function ResultField({ label, value, onChange, readOnly = false, lang, className
   const home = (sp[0] || '').replace(/\D/g, '').slice(0, 1);
   const away = (sp[1] || '').replace(/\D/g, '').slice(0, 1);
   const both = home !== '' && away !== '';
-  const valid = (home === '3' && ['0', '1', '2'].includes(away)) || (away === '3' && ['0', '1', '2'].includes(home));
+  // Best-of-5 (first to 3) is the normal case, but some competitions — U18
+  // finals, several junior leagues — play best-of-3, where 2:0 / 2:1 is a
+  // complete result. VolleyManager sends those verbatim and the field is
+  // read-only once it does, so rejecting them left an unfixable error.
+  const w = Math.max(Number(home), Number(away));
+  const l = Math.min(Number(home), Number(away));
+  const valid = (w === 3 && l <= 2) || (w === 2 && l <= 1);
   const bad = both && !valid;
   const n = both ? Math.min(5, Number(home) + Number(away)) : 0;
   const existing = (segs[1] || '').trim() ? segs[1].split(',').map(x => x.trim()) : [];
@@ -5605,7 +5611,7 @@ function ResultField({ label, value, onChange, readOnly = false, lang, className
           <input inputMode="numeric" maxLength={1} value={home} readOnly={readOnly} onChange={e => setScore(c1(e.target.value), away)} className={sbox} aria-label={lang === 'DE' ? 'Sätze Heim' : 'Home sets'} />
           <span className="text-stone-400 font-bold">:</span>
           <input inputMode="numeric" maxLength={1} value={away} readOnly={readOnly} onChange={e => setScore(home, c1(e.target.value))} className={sbox} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'} />
-          {bad && <span className="text-[9px] text-red-600 leading-tight ml-1 no-print">{lang === 'DE' ? 'Ein Satzstand muss 3 sein.' : 'One side must be 3.'}</span>}
+          {bad && <span className="text-[9px] text-red-600 leading-tight ml-1 no-print">{lang === 'DE' ? 'Sieger: 3 Sätze (Best-of-3: 2).' : 'Winner: 3 sets (best-of-3: 2).'}</span>}
         </div>
         {!bad && n > 0 && (
           // Each set gets its own boxed cell with the number on top. Laid out

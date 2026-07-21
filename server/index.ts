@@ -299,6 +299,16 @@ function checkSignatureRateLimit(ip: string) {
   return checkRateLimit(signatureAttempts, ip, SIGNATURE_RATE_LIMIT_MAX, SIGNATURE_RATE_LIMIT_WINDOW_MS);
 }
 
+// Survey writes get their OWN bucket. Sharing the signature one would let a
+// burst of survey submits lock a hall's shared IP out of signing — two
+// unrelated features failing together is exactly the bug that's hardest to see.
+const surveyAttempts: RateLimitStore = new Map();
+const SURVEY_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 min
+const SURVEY_RATE_LIMIT_MAX = 20;
+function checkSurveyRateLimit(ip: string) {
+  return checkRateLimit(surveyAttempts, ip, SURVEY_RATE_LIMIT_MAX, SURVEY_RATE_LIMIT_WINDOW_MS);
+}
+
 // App-wide backstop limiter for logins. Credentials are now email + password
 // (scrypt), so single-account brute force is infeasible and the cap is generous
 // — high enough not to 429 legitimate coaches on a busy match weekend, low
@@ -2423,7 +2433,9 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
   const admin = adminSession.ok
     ? { email: adminSession.email || '' }
     : (rcIsAdmin && rc ? { email: rc.name } : null);
-  res.json({ rc, admin });
+  // Lets the console hide the RC-feedback tab from everyone else. The server
+  // enforces it independently — this flag only saves a pointless 403.
+  res.json({ rc, admin, surveyReader: await isSurveyReader(req) });
 });
 
 app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
@@ -2664,6 +2676,163 @@ app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
     if (Boolean(rec.signed)) { res.status(409).json({ error: 'Signature already captured' }); return; }
     await pb.collection('signatures').update(rec.id, { data, signed: true, signer: signer || asText(rec.signer) });
     res.json({ ok: true });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// ---- Post-visit survey (the coachee's feedback ON the RC) ----
+// Ported from the SVRZ Google Form "Feedback zu RC-Besuch". The link rides in
+// the feedback mail as a capability token, so the coachee — a referee, not an
+// app user — needs no login, and no name or match number travels in the URL:
+// the token resolves all of it here.
+//
+// Identity keeps the original form's bargain. The name is prefilled for
+// convenience, but "anonym absenden" drops it before it is ever stored, and no
+// coachee relation is written either way. Match, date and RC always stay — a
+// response nobody can place is a response nobody can act on.
+const SURVEY_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 d — a season's worth of slack
+const SURVEY_COLLECTION = 'rc_visit_feedback';
+
+// Who may READ the responses. Server env on purpose, never an app setting: the
+// form promises "Einsicht hat nur die RC-Vorsitzende", and an admin who could
+// name the reader from the admin console would simply be naming themselves.
+// Admin rights are not enough here — this is the one view the role doesn't open.
+const SURVEY_READER_EMAIL = (process.env.SURVEY_READER_EMAIL || '').trim().toLowerCase();
+
+// The caller's own email, from whichever session they hold.
+async function callerEmail(req: Request): Promise<string> {
+  const session = verifyRcSession(req);
+  if (session.ok && session.rcId) {
+    const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
+    if (person) return person.email.trim().toLowerCase();
+  }
+  const admin = verifyAdminSession(req);
+  return admin.ok ? (admin.email || '').trim().toLowerCase() : '';
+}
+
+async function requireSurveyReader(req: Request, res: ExpressResponse, next: () => void) {
+  // Unconfigured fails CLOSED. "Nobody can read them yet" is a recoverable
+  // mistake; "every admin can" is the exact thing this gate exists to prevent.
+  if (!SURVEY_READER_EMAIL) { res.status(403).json({ error: 'Forbidden' }); return; }
+  try {
+    if (await callerEmail(req) === SURVEY_READER_EMAIL) { next(); return; }
+  } catch (error) {
+    console.error('[survey] reader check failed:', error);
+    res.status(503).json({ error: 'Auth backend unavailable' });
+    return;
+  }
+  res.status(403).json({ error: 'Forbidden' });
+}
+
+async function isSurveyReader(req: Request): Promise<boolean> {
+  if (!SURVEY_READER_EMAIL) return false;
+  try { return await callerEmail(req) === SURVEY_READER_EMAIL; } catch { return false; }
+}
+const SURVEY_MAX_ANSWERS = 50;
+const SURVEY_MAX_ANSWER_LEN = 5000;
+
+async function getSurveyRecord(token: string) {
+  if (!token || token.length > 64) return null;
+  try { return await pb.collection(SURVEY_COLLECTION).getFirstListItem(`token = "${escapeFilterValue(token)}"`); }
+  catch { return null; }
+}
+function isSurveyExpired(rec: AnyRecord): boolean {
+  if (Boolean(rec.submitted)) return false; // answered records stay readable
+  const created = Date.parse(asText(rec.created));
+  return Number.isFinite(created) && (Date.now() - created) > SURVEY_TTL_MS;
+}
+
+// Mints the row the mailed link points at. Deliberately never throws: a survey
+// link is a nice-to-have, and failing to create one must not cost the coachee
+// the feedback mail it was going to be attached to.
+async function createSurveyToken(v: { referee: string; date: string; matchNo: string; rc: string }): Promise<string> {
+  try {
+    const token = randomUUID().replace(/-/g, '');
+    await pb.collection(SURVEY_COLLECTION).create({
+      token, referee_name: v.referee, match_date: v.date, match_no: v.matchNo,
+      rc_name: v.rc, lang: '', anonymous: false, answers: {}, submitted: false,
+    });
+    return token;
+  } catch (error) {
+    log.warn('survey.mint_failed', 'could not mint survey token — mail goes out without the link', { error: safeError(error) });
+    return '';
+  }
+}
+
+app.get('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
+  try {
+    const rec = await getSurveyRecord(asText(req.params.token)) as AnyRecord | null;
+    if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
+    if (isSurveyExpired(rec)) { res.status(410).json({ error: 'Survey link expired' }); return; }
+    res.json({
+      referee: asText(rec.referee_name),
+      date: asText(rec.match_date),
+      matchNo: asText(rec.match_no),
+      rc: asText(rec.rc_name),
+      submitted: Boolean(rec.submitted),
+    });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
+  try {
+    const rl = checkSurveyRateLimit(clientIp(req));
+    if (!rl.allowed) { denyRateLimited(req, res, 'survey', rl.retryAfterMs); return; }
+    const rec = await getSurveyRecord(asText(req.params.token)) as AnyRecord | null;
+    if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
+    if (isSurveyExpired(rec)) { res.status(410).json({ error: 'Survey link expired' }); return; }
+    // Write-once, like signatures: the capability answers, it doesn't edit.
+    if (Boolean(rec.submitted)) { res.status(409).json({ error: 'Survey already submitted' }); return; }
+
+    const body = (req.body ?? {}) as AnyRecord;
+    const anonymous = Boolean(body.anonymous);
+    const lang = asText(body.lang) === 'EN' ? 'EN' : 'DE';
+    // Only the question ids we ship, capped in count and length — the answers
+    // blob is written by an unauthenticated caller.
+    const raw = (body.answers ?? {}) as Record<string, unknown>;
+    const answers: Record<string, string> = {};
+    for (const key of Object.keys(raw).slice(0, SURVEY_MAX_ANSWERS)) {
+      if (!/^[a-z_]{1,40}$/.test(key)) continue;
+      const value = asText(raw[key]).slice(0, SURVEY_MAX_ANSWER_LEN);
+      if (value) answers[key] = value;
+    }
+
+    await pb.collection(SURVEY_COLLECTION).update(rec.id, {
+      // Anonymous means the name is gone from the record, not merely hidden in
+      // the UI — the row must not be able to betray them later.
+      referee_name: anonymous ? '' : asText(rec.referee_name),
+      anonymous, lang, answers,
+      submitted: true, submitted_at: new Date().toISOString(),
+    });
+    res.json({ ok: true });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// Not under /api/admin on purpose — an admin session does NOT open this. Only
+// the configured reader does, mirroring the promise the form makes the coachee.
+// Its own path, not /api/survey/responses: that would be swallowed by the
+// /api/survey/:token route above as token="responses".
+app.get('/api/survey-responses', requireSurveyReader, async (_req: Request, res: ExpressResponse) => {
+  try {
+    const rows = await pb.collection(SURVEY_COLLECTION).getFullList<AnyRecord>({
+      filter: 'submitted = true', sort: '-submitted_at',
+    });
+    res.json(rows.map((r) => {
+      // A `json` field comes back as an object already (same as feedback_json).
+      const answers = (r.answers && typeof r.answers === 'object' && !Array.isArray(r.answers))
+        ? r.answers as Record<string, string>
+        : {};
+      return {
+        id: asText(r.id),
+        referee: asText(r.referee_name),
+        anonymous: Boolean(r.anonymous),
+        date: asText(r.match_date),
+        matchNo: asText(r.match_no),
+        rc: asText(r.rc_name),
+        lang: asText(r.lang) || 'DE',
+        submittedAt: asText(r.submitted_at),
+        answers,
+      };
+    }));
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -3653,7 +3822,16 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       }
 
       const matchNo = asText(game.match_no);
-      const surveyUrl = process.env.FEEDBACK_SURVEY_URL || '';
+      // Our own survey page, not a Google Form: one token per visit, so the
+      // page can prefill the match details without putting them in the link.
+      // An empty token (mint failed) simply drops the button from the mail.
+      const surveyToken = await createSurveyToken({
+        referee: refereeName,
+        date: formattedDate,
+        matchNo,
+        rc: asText(formData.meta?.rc),
+      });
+      const surveyUrl = surveyToken ? `${MAIL_APP_URL}#/survey/${surveyToken}` : '';
       const built = buildTemplatedEmail({
         tpl: await getEmailTemplate('feedback'),
         vars: emailVars({

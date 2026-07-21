@@ -5,6 +5,7 @@ import App from './App.tsx';
 import AuthGate from './components/AuthGate.tsx';
 import AdminConsole from './components/AdminConsole.tsx';
 import SignaturePage from './components/SignaturePage.tsx';
+import SurveyPage from './components/SurveyPage.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { enableDemo, isDemoMode } from './lib/demo';
 import { installLogging, clientLog } from './lib/logger';
@@ -49,11 +50,13 @@ if (/^#\/?demo\/?$/i.test(window.location.hash)) {
 }
 
 // Hash routes: #/admin[/tab] -> admin console; #/sign/<slug> -> public
-// signature page; anything else -> the app, which routes its own tabs.
-const routeKind = (): 'admin' | 'sign' | 'app' => {
+// signature page; #/survey/<token> -> public post-visit survey; anything else
+// -> the app, which routes its own tabs.
+const routeKind = (): 'admin' | 'sign' | 'survey' | 'app' => {
   const h = window.location.hash;
   if (/^#\/?admin(\/|$)/i.test(h)) return 'admin';
   if (/^#\/sign\//i.test(h)) return 'sign';
+  if (/^#\/survey\//i.test(h)) return 'survey';
   return 'app';
 };
 let _route = routeKind();
@@ -74,6 +77,10 @@ createRoot(document.getElementById('root')!).render(
       </AuthGate>
     ) : kind === 'sign' ? (
       <SignaturePage />
+    ) : kind === 'survey' ? (
+      // Public and unauthenticated: the coachee who receives the feedback mail
+      // is a referee, not an app user — the token in the link is the whole key.
+      <SurveyPage />
     ) : (
       <AuthGate>
         <App />

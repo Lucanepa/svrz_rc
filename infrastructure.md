@@ -113,10 +113,18 @@ SMTP_PASS="..."
 SMTP_FROM="coaching-feedback@svrz.ch"
 
 FEEDBACK_CC="rc_coaching@volleyball.lucanepa.com"
-FEEDBACK_SURVEY_URL="https://docs.google.com/forms/..."
 FEEDBACK_EMAIL_TEST="1"              # 1 => redirect all emails to test recipient
 FEEDBACK_TEST_RECIPIENT="you@..."
+
+# Who may READ the post-visit survey responses. Admin rights do NOT open that
+# view — only this address does. Deliberately env, not an app setting, so no
+# admin can name themselves the reader. Unset => nobody can read them.
+SURVEY_READER_EMAIL="rc-praesidium@example.com"
 ```
+
+`FEEDBACK_SURVEY_URL` is gone: the post-visit survey is now a page in this app
+(`#/survey/<token>`), not a Google Form, so the link is minted per feedback mail
+instead of configured.
 
 ## PocketBase Collections (Current Model)
 
@@ -149,6 +157,19 @@ Common fields: `game` (relation), `coachee` (relation), `rc_name`, `role_assesse
 Normalized reporting records derived from feedback.
 
 Common fields: `coachee`, `referee_coach`, `game`, `coachee_function`, `grades`, `game_level`, `promotion`, `motivation`, `sr_goal`, `game_result`, `remarks`, `second_observation`.
+
+### `rc_visit_feedback` (post-visit survey)
+
+The coachee's feedback **on the RC** — the mirror of `referee_coach_feedbacks`.
+Filled in on the public `#/survey/<token>` page linked from the feedback mail.
+
+Common fields: `token`, `referee_name`, `match_date`, `match_no`, `rc_name`, `lang`, `anonymous`, `answers`, `submitted`, `submitted_at`.
+
+Deliberately has **no relation to `coachees`**: "anonym absenden" has to mean the
+row cannot point back at a person. On an anonymous submit `referee_name` is
+cleared before it is stored, not merely hidden in the UI. Match, date and RC
+always stay — a response nobody can place is a response nobody can act on.
+Created by `deploy/hetzner/seed/setup-schema.mjs` (gitignored, lives on the host).
 
 ## API Authentication Model
 
@@ -185,6 +206,9 @@ Read endpoints used by app are generally open, but still depend on valid server-
 - `POST /api/games/sync`: run game sync from Swiss Volley data.
 - `POST /api/games/sync/debug`: run sync with debug trace payload.
 - `POST /api/vm/auth-check`: validate upstream auth/session.
+- `GET /api/survey/:token`: **public** — prefill data for the post-visit survey page. No login; the token is the capability, so no name or match number rides in the URL.
+- `POST /api/survey/:token`: **public** — submit the survey. Write-once (409 if already answered), own per-IP rate-limit bucket.
+- `GET /api/survey-responses`: read the responses. Gated on `SURVEY_READER_EMAIL`, **not** on admin rights — an admin session gets 403. Not under `/api/admin/` for that reason, and not `/api/survey/responses`, which the `:token` route above would swallow.
 - `GET /api/coachees`: list coachees + observation status summary.
 - `POST /api/coachees`: create coachee.
 - `PUT /api/coachees/:id`: update coachee.

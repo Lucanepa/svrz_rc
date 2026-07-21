@@ -368,7 +368,7 @@ const DEFAULT_ROUTE: AppRoute = { subView: 'coachees', listTab: 'home', rc: null
 // Hashes owned by another root (main.tsx swaps the whole tree and reloads for
 // these). The app must neither read nor rewrite them, or it would fight that
 // router mid-navigation.
-const isForeignHash = (hash: string) => /^#\/?(admin|sign)(\/|$)/i.test(hash);
+const isForeignHash = (hash: string) => /^#\/?(admin|sign|survey)(\/|$)/i.test(hash);
 
 function routeToHash(r: AppRoute): string {
   if (r.subView === 'feedbackForm') return '#/form';
@@ -4749,12 +4749,26 @@ export default function App() {
                   <button onClick={() => sigPadRef.current?.clear()} className="h-9 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100">{formData.lang === 'DE' ? 'Löschen' : 'Clear'}</button>
                   <button onClick={saveSignatureHere} className="flex-1 h-9 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700">{formData.lang === 'DE' ? 'Unterschrift speichern' : 'Save signature'}</button>
                 </div>
-                <div className="flex items-center gap-2 my-3"><div className="flex-1 h-px bg-stone-200" /><span className="text-[10px] uppercase text-stone-400 font-semibold">{formData.lang === 'DE' ? 'oder' : 'or'}</span><div className="flex-1 h-px bg-stone-200" /></div>
-                <div className="flex flex-col items-center gap-2">
-                  <div className="p-2 bg-white border border-stone-200 rounded-lg"><QRCodeSVG value={`${window.location.origin}${window.location.pathname}#/sign/${sigSlug}`} size={116} level="M" /></div>
-                  <p className="text-[11px] text-stone-500 text-center">{formData.lang === 'DE' ? 'Mit dem Handy scannen und dort unterschreiben.' : 'Scan with a phone and sign there.'}</p>
-                  <p className="text-[11px] text-amber-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> {formData.lang === 'DE' ? 'Warte auf Unterschrift…' : 'Waiting for signature…'}</p>
-                </div>
+                {/* Signing on a second device needs the server to relay the
+                    signature back, so the QR can't work in the demo — scanning
+                    it lands on a device with no demo session and no session
+                    record, i.e. "link invalid or expired". Offer only what works. */}
+                {isDemoMode() ? (
+                  <p className="mt-3 pt-3 border-t border-stone-200 text-[11px] text-stone-500 text-center">
+                    {formData.lang === 'DE'
+                      ? 'Im Demo-Modus kannst du nur hier unterschreiben. Der QR-Code zum Unterschreiben auf dem Handy braucht den Server.'
+                      : 'In the demo you can only sign here. The QR code for signing on a phone needs the server.'}
+                  </p>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2 my-3"><div className="flex-1 h-px bg-stone-200" /><span className="text-[10px] uppercase text-stone-400 font-semibold">{formData.lang === 'DE' ? 'oder' : 'or'}</span><div className="flex-1 h-px bg-stone-200" /></div>
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="p-2 bg-white border border-stone-200 rounded-lg"><QRCodeSVG value={`${window.location.origin}${window.location.pathname}#/sign/${sigSlug}`} size={116} level="M" /></div>
+                      <p className="text-[11px] text-stone-500 text-center">{formData.lang === 'DE' ? 'Mit dem Handy scannen und dort unterschreiben.' : 'Scan with a phone and sign there.'}</p>
+                      <p className="text-[11px] text-amber-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> {formData.lang === 'DE' ? 'Warte auf Unterschrift…' : 'Waiting for signature…'}</p>
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>

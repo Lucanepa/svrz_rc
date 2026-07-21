@@ -144,7 +144,7 @@ export function hasPocketBaseConfig(): boolean {
 }
 
 // ── Per-RC PIN auth ───────────────────────────────────────────────────
-export type AuthMe = { rc: { id: string; name: string } | null; admin: { email: string } | null };
+export type AuthMe = { rc: { id: string; name: string } | null; admin: { email: string } | null; surveyReader?: boolean };
 
 // Purge the offline API response cache (see vite.config.ts runtimeCaching). Must
 // run on every identity change — login AND logout — so cached authenticated data
@@ -579,4 +579,32 @@ export async function submitSignatureSession(slug: string, data: string, signer?
   if (isDemoMode()) return demo.submitSignatureSession();
   const res = await fetch(apiUrl(`/api/signature/${encodeURIComponent(slug)}`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data, signer }) });
   if (!res.ok) throw new Error('Could not save signature');
+}
+
+// ---- Post-visit survey (coachee's feedback on the RC) ----
+// No demo branch: #/survey/<token> mounts its own root, which the demo never
+// reaches, and a token only exists once a real feedback mail has gone out.
+export async function getSurveySession(token: string): Promise<{ referee: string; date: string; matchNo: string; rc: string; submitted: boolean }> {
+  const res = await fetch(apiUrl(`/api/survey/${encodeURIComponent(token)}`));
+  if (!res.ok) throw new Error('Survey not found');
+  return res.json();
+}
+// The survey GET is served by the offline API cache like every other /api GET,
+// so a returning coachee can be shown a form the server already considers
+// answered. Distinguish that from a real failure instead of telling them to
+// "try again" at something that will never succeed.
+export class SurveyAlreadySubmitted extends Error {}
+export async function submitSurvey(token: string, payload: { lang: string; anonymous: boolean; answers: Record<string, string> }): Promise<void> {
+  const res = await fetch(apiUrl(`/api/survey/${encodeURIComponent(token)}`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  if (res.status === 409) throw new SurveyAlreadySubmitted('Survey already submitted');
+  if (!res.ok) throw new Error('Could not save survey');
+}
+export type SurveyResponse = {
+  id: string; referee: string; anonymous: boolean; date: string; matchNo: string;
+  rc: string; lang: string; submittedAt: string; answers: Record<string, string>;
+};
+export async function listSurveyResponses(): Promise<SurveyResponse[]> {
+  const res = await fetch(apiUrl('/api/survey-responses'), { credentials: 'include' });
+  if (!res.ok) throw new Error('Could not load survey responses');
+  return res.json();
 }

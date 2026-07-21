@@ -1,21 +1,22 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, KeyRound, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy } from 'lucide-react';
+import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, KeyRound, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
-  getAdminAuthStatus, adminUiLogin, logoutAdmin,
+  getAdminAuthStatus, adminUiLogin, logoutAdmin, getAuthMe,
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson, generateRcPin,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, getReminderPreview,
-  getAdminLogs, getAdminLogSessions,
+  getAdminLogs, getAdminLogSessions, listSurveyResponses,
   type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplates, type ReminderPreview,
-  type LogEntry, type LogSession,
+  type LogEntry, type LogSession, type SurveyResponse,
 } from '../lib/pocketbase';
 import {
   levelKey, levelDisplay, hasNiveauRules, summarizeTarget, isTargetActive,
   type CoacheeTarget, type CoacheeTargetMap, type TargetRole,
 } from '../lib/niveauTargets';
+import { SURVEY_QUESTIONS, questionLabel, type SurveyQuestion } from '../lib/survey';
 import LevelText from './LevelText';
 import { Skeleton, SkeletonRows } from './Skeleton';
 import { BUILD_INFO } from '../lib/buildInfo';
@@ -47,7 +48,10 @@ const STR = {
     admin: 'Admin', logout: 'Abmelden', login: 'Anmelden', adminPw: 'Admin-Passwort', wrongPw: 'Falsches Passwort',
     noAdminRights: 'Dein Konto hat keine Admin-Rechte. Falls du Admin bist, melde dich mit dem Admin-Passwort an.',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Einstellungen', testBadge: 'Testmodus',
-    emails: 'E-Mails', logs: 'Protokoll',
+    emails: 'E-Mails', logs: 'Protokoll', survey: 'RC-Feedback',
+    surveyHint: 'Rückmeldungen der Schiedsrichter:innen zum RC-Besuch — nur hier sichtbar. Alle Fragen sind freiwillig, leere Antworten fehlen entsprechend.',
+    surveyEmpty: 'Noch keine Rückmeldungen.',
+    surveyAnon: 'Anonym',
     logsHint: 'Alles, was passiert: jede Anfrage, jeder Klick in der App, jeder Fehler. Neueste zuletzt.',
     logsSearch: 'Suchen (E-Mail, Pfad, Text…)', logsLevel: 'Stufe', logsSource: 'Quelle', logsAll: 'Alle',
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'Keine Einträge.',
@@ -94,7 +98,10 @@ const STR = {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminPw: 'Admin password', wrongPw: 'Wrong password',
     noAdminRights: 'Your account has no admin rights. If you are an admin, sign in with the admin password.',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Settings', testBadge: 'Test mode',
-    emails: 'Emails', logs: 'Activity log',
+    emails: 'Emails', logs: 'Activity log', survey: 'RC feedback',
+    surveyHint: 'Referees’ feedback on the RC visit — visible only here. Every question is optional, so blank answers are simply missing.',
+    surveyEmpty: 'No responses yet.',
+    surveyAnon: 'Anonymous',
     logsHint: 'Everything that happens: every request, every click in the app, every error. Newest last.',
     logsSearch: 'Search (email, path, text…)', logsLevel: 'Level', logsSource: 'Source', logsAll: 'All',
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'No entries.',
@@ -168,7 +175,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 
 // Console tabs live in the URL as #/admin/<tab>, so each one is linkable and
 // the Back button steps between them.
-const ADMIN_TABS = ['coachees', 'rcs', 'emails', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'emails', 'survey', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 const adminTabFromHash = (): AdminTab => {
   const m = /^#\/?admin\/([a-z]+)/i.exec(window.location.hash);
@@ -184,6 +191,9 @@ export default function AdminConsole() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [tab, setTab] = useState<AdminTab>(adminTabFromHash);
+  // null while unknown: a deep link to #/admin/survey must not bounce the one
+  // person allowed to be there just because the check hasn't come back yet.
+  const [surveyReader, setSurveyReader] = useState<boolean | null>(null);
   const [testMode, setTestMode] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [groups, setGroups] = useState<string[]>([]);
@@ -197,6 +207,10 @@ export default function AdminConsole() {
   const toggleLang = () => setLang((l) => { const n = l === 'DE' ? 'EN' : 'DE'; try { localStorage.setItem('svrz_admin_lang', n); } catch { /* ignore */ } return n; });
 
   useEffect(() => { getAdminAuthStatus().then((s) => setAuthed(Boolean(s.authenticated))).catch(() => {}).finally(() => setChecking(false)); }, []);
+  // The RC-feedback tab is not an admin-role tab: only the reader named in the
+  // server env sees it, so being an admin here tells us nothing.
+  useEffect(() => { getAuthMe().then((m) => setSurveyReader(Boolean(m.surveyReader))).catch(() => setSurveyReader(false)); }, []);
+  useEffect(() => { if (surveyReader === false && tab === 'survey') setTab('coachees'); }, [surveyReader, tab]);
   // Console-wide data, fetched once and in parallel as soon as the session is
   // known; each tab loads its own rows at the same time (all tabs are mounted).
   useEffect(() => {
@@ -276,6 +290,7 @@ export default function AdminConsole() {
     { id: 'coachees', label: t.coachees, icon: <Users size={15} /> },
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
     { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
+    ...(surveyReader ? [{ id: 'survey' as const, label: t.survey, icon: <MessageSquare size={15} /> }] : []),
     { id: 'logs', label: t.logs, icon: <ScrollText size={15} /> },
     { id: 'settings', label: t.settings, icon: <SettingsIcon size={15} /> },
   ];
@@ -291,7 +306,7 @@ export default function AdminConsole() {
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
-        <div className="max-w-4xl mx-auto px-4 pb-3 grid grid-cols-5 gap-2">
+        <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', surveyReader ? 'grid-cols-6' : 'grid-cols-5')}>
           {tabs.map((tb) => (
             <button key={tb.id} onClick={() => setTab(tb.id)} className={`h-11 inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-xl transition-colors ${tab === tb.id ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}>{tb.icon}<span className="hidden sm:inline">{tb.label}</span></button>
           ))}
@@ -305,6 +320,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} /></div>
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
+        {surveyReader && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}><SettingsAdmin t={t} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} /></div>
         <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
@@ -869,6 +885,55 @@ const LEVEL_STYLE: Record<string, string> = {
 
 function logLine(e: LogEntry): string {
   return `${e.t} ${e.lvl.toUpperCase()} ${e.src} ${e.evt} ${e.msg || ''}${e.user ? ` user=${e.user}` : ''}${e.ip ? ` ip=${e.ip}` : ''}${e.data ? ` ${JSON.stringify(e.data)}` : ''}`;
+}
+
+// The coachee's side of a visit. Read-only by design: this is somebody's candid
+// opinion of their RC, not a record to be tidied up.
+function SurveyAdmin({ t, lang }: { t: T; lang: Lang }) {
+  const [rows, setRows] = useState<SurveyResponse[] | null>(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    listSurveyResponses().then(setRows).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  // Answers are stored as stable values, so a response written in English still
+  // reads in the admin's chosen language — only free text stays as typed.
+  const label = (q: SurveyQuestion, value: string): string => {
+    if (q.kind !== 'choice') return value;
+    return q.options.find((o) => o.value === value)?.[lang] ?? value;
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-xs text-stone-500 leading-snug">{t.surveyHint}</p>
+      {err && <p className="text-sm text-red-600">{err}</p>}
+      {!rows && !err && <SkeletonRows />}
+      {rows?.length === 0 && <p className="text-sm text-stone-400 py-8 text-center">{t.surveyEmpty}</p>}
+      {rows?.map((r) => (
+        <div key={r.id} className="bg-white rounded-2xl shadow-card border border-stone-200/70 p-5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pb-3 mb-3 border-b border-stone-100">
+            {r.anonymous ? (
+              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-stone-400"><UserX size={14} /> {t.surveyAnon}</span>
+            ) : (
+              <span className="text-sm font-semibold text-stone-800">{r.referee}</span>
+            )}
+            <span className="text-xs text-stone-400">{r.date}</span>
+            <span className="text-xs text-stone-400">#{r.matchNo}</span>
+            <span className="ml-auto text-xs text-stone-500">{r.rc}</span>
+          </div>
+          <dl className="flex flex-col gap-3">
+            {SURVEY_QUESTIONS.filter((q) => r.answers[q.id]).map((q) => (
+              <div key={q.id}>
+                <dt className="text-xs text-stone-400 leading-snug">{questionLabel(q, lang)}</dt>
+                <dd className="text-sm text-stone-800 whitespace-pre-wrap mt-0.5">{label(q, r.answers[q.id])}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function LogsAdmin({ t, active }: { t: T; active: boolean }) {

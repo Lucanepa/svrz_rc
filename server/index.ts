@@ -890,12 +890,26 @@ function detailRowsHtml(rows: Array<[string, string]>): string {
   return body ? `<table style="width:100%;border-collapse:collapse;font-size:14px;margin:0 0 18px;">${body}</table>` : '';
 }
 
+// Question above, answer below. Survey questions are full sentences — in the
+// two-column layout of detailRowsHtml they squeezed the answer into a sliver
+// on the right, so these get a row each.
+function qaBlocksHtml(qa: Array<[string, string]>): string {
+  const body = qa.filter(([, v]) => v).map(([q, a]) =>
+    `<div style="margin:0 0 14px;">`
+    + `<p style="margin:0 0 3px;font-size:13px;font-weight:600;color:#57534e;line-height:1.4;">${escapeHtml(q)}</p>`
+    + `<p style="margin:0;font-size:14px;color:#1c1917;white-space:pre-wrap;line-height:1.5;">${escapeHtml(a)}</p>`
+    + `</div>`,
+  ).join('');
+  return body ? `<div style="margin:0 0 18px;padding:14px 16px;background:#fafaf9;border:1px solid #e7e5e4;border-radius:8px;">${body}</div>` : '';
+}
+
 // Render a template + data into the branded shell. Used by BOTH the post-match
 // feedback mail and the day-before reminder, so they stay visually consistent.
 function buildTemplatedEmail(opts: {
   tpl: EmailTemplate;
   vars: Record<string, string>;
   rows: Array<[string, string]>;
+  qa?: Array<[string, string]>;
   tips?: string;
   surveyUrl?: string;
   footerNote?: string;
@@ -918,6 +932,7 @@ function buildTemplatedEmail(opts: {
     (heading.trim() ? `<h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#1c1917;">${escapeHtml(heading)}</h1>` : '')
     + textBlockHtml(intro)
     + detailRowsHtml(opts.rows)
+    + qaBlocksHtml(opts.qa ?? [])
     + tipsHtml
     + textBlockHtml(outro)
     + surveyHtml
@@ -926,6 +941,7 @@ function buildTemplatedEmail(opts: {
   let text = heading.trim() ? `${heading}\n\n` : '';
   if (intro.trim()) text += `${intro.trim()}\n\n`;
   for (const [k, v] of opts.rows) if (v) text += `${k}: ${v}\n`;
+  for (const [q, a] of opts.qa ?? []) if (a) text += `\n${q}\n${a}\n`;
   if (tips) text += `\n--- Tipps & Tricks ---\n${tips}\n`;
   if (outro.trim()) text += `\n${outro.trim()}\n`;
   if (opts.surveyUrl) text += `\n${opts.surveyUrl}\n`;
@@ -1114,7 +1130,13 @@ async function upsertGame(gameData: ReturnType<typeof mapIncomingGame>) {
     // so a column added here only lands once it exists in the schema too
     // (deploy/hetzner/seed/setup-schema.mjs).
     if (existing) {
-      return games.update(existing.id, gameData);
+      // VolleyManager publishes the score days after the match, so a sync that
+      // runs before it does carries an empty one. That absence is not news —
+      // blanking the record would throw away a score already on it, whether an
+      // earlier sync or a coach typing it into the feedback form put it there.
+      return games.update(existing.id, gameData.game_result
+        ? gameData
+        : { ...gameData, game_result: asText(existing.game_result) });
     }
     return games.create(gameData);
   });
@@ -2927,13 +2949,20 @@ async function sendSurveyNotification(rec: AnyRecord, answers: Record<string, st
       ['Spiel Nr.', matchNo],
       ['Referee Coach', asText(rec.rc_name)],
     ];
+    // Always German, whatever language the coachee answered in: this mail goes
+    // to the RC commission, not back to the respondent. Only a free-text answer
+    // stays in the words it was written in — `lang` just records which form was
+    // used. Choice answers are stored as a stable value, so the German label is
+    // always available.
+    if (lang === 'EN') rows.push(['Sprache', 'auf Englisch ausgefüllt']);
+    const qa: Array<[string, string]> = [];
     for (const q of SURVEY_QUESTIONS) {
       const value = answers[q.id];
       if (!value) continue; // unanswered: the form requires nothing
       const label = q.kind === 'choice'
-        ? (q.options.find((o) => o.value === value)?.[lang] ?? value)
+        ? (q.options.find((o) => o.value === value)?.DE ?? value)
         : value;
-      rows.push([questionLabel(q, lang), label]);
+      qa.push([questionLabel(q, 'DE'), label]);
     }
     const built = buildTemplatedEmail({
       tpl: {
@@ -2946,6 +2975,7 @@ async function sendSurveyNotification(rec: AnyRecord, answers: Record<string, st
       },
       vars: {},
       rows,
+      qa,
       footerNote: 'Automatisch vom SR-Coaching-System versendet.',
     });
     // Test mode redirects this like every other mail. Without it, testing the
@@ -4606,14 +4636,27 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     }
 
     // Phase 4 — Closure
+    const gamePatch: Record<string, unknown> = {};
     if (formData.results?.secondBesuch !== 'Y') {
+      gamePatch.feedback_closed_roles = [...closedRoles, String(role)];
+    }
+    // The score belongs to the match, not to the referee being observed, so the
+    // coach who files the other role — possibly weeks later, from a different
+    // session — should not have to type it in again. Keep whatever this form
+    // carries: it is either filling the gap VolleyManager has not published yet,
+    // or a deliberate correction (the field is read-only until unlocked). A
+    // later sync re-asserts VolleyManager's own score if it ever has one.
+    const typedResult = asText(formData.meta?.ergebnis);
+    if (typedResult && typedResult !== asText(game.game_result)) {
+      gamePatch.game_result = typedResult;
+    }
+    if (Object.keys(gamePatch).length > 0) {
       try {
-        const updatedClosedRoles = [...closedRoles, String(role)];
         await withCollection(collectionCandidates.games, (collection) =>
-          collection.update(game.id, { feedback_closed_roles: updatedClosedRoles }),
+          collection.update(game.id, gamePatch),
         );
       } catch (closeErr) {
-        console.error('[feedback-closure] Failed to close game role:', closeErr);
+        console.error('[feedback-closure] Failed to update game after feedback:', closeErr);
       }
     }
 

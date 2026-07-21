@@ -35,11 +35,13 @@ const CONTENT_W = PAGE_W - MARGIN * 2;
 const FOOTER_H = 16;
 const RULE = 0.75; // weight of the structural borders
 const SIGNATURE_H = 62;
+// Height the blank form keeps below its criteria grid for the remarks bands,
+// the two signature lines and the survey QR.
+const BLANK_TAIL_H = 120;
 const CONTENT_BOTTOM = PAGE_H - MARGIN - FOOTER_H;
 
 const RATINGS = ['A', 'B', 'C', 'D', 'E'] as const;
-const RATING_COL_W = 26;
-const RATINGS_W = RATING_COL_W * RATINGS.length;
+const RATING_COL_W = 26; // default cell width; the filled page 1 widens it to a square
 
 const LOGO_ASPECT = 351 / 175;
 
@@ -158,6 +160,14 @@ class Sheet {
   reserve = 0;
   /** Run after a page break, to re-establish the banner on the new page. */
   onNewPage?: (sheet: Sheet) => void;
+  /** Width of one A–E rating cell. Widened on the filled page so it is square. */
+  ratingColW = RATING_COL_W;
+  /** When set, every criterion row is this tall — a uniform grid of squares. */
+  criterionRowH: number | null = null;
+
+  get ratingsW(): number {
+    return this.ratingColW * RATINGS.length;
+  }
   /** Fields collected while drawing the blank form; empty otherwise. */
   readonly fields: BlankField[] = [];
 
@@ -405,36 +415,47 @@ function drawSectionHeader(sheet: Sheet, title: string, t: Labels): void {
 
   // Column heads: criteria, then A–E with C shaded as the expected default.
   const headH = 11;
-  const criteriaW = CONTENT_W - RATINGS_W;
+  const colW = sheet.ratingColW;
+  const criteriaW = CONTENT_W - sheet.ratingsW;
   sheet.fill(WASH).stroke(INK, RULE);
   doc.rect(MARGIN, sheet.y, criteriaW, headH, 'FD');
   sheet.font('bold', 5.6, MUTED);
   doc.text(t.criteria.toUpperCase(), MARGIN + 6, sheet.y + headH / 2, { baseline: 'middle', charSpace: 0.2 });
   RATINGS.forEach((r, i) => {
-    const x = MARGIN + criteriaW + i * RATING_COL_W;
+    const x = MARGIN + criteriaW + i * colW;
     sheet.fill(r === 'C' ? HAIR : WASH).stroke(INK, RULE);
-    doc.rect(x, sheet.y, RATING_COL_W, headH, 'FD');
+    doc.rect(x, sheet.y, colW, headH, 'FD');
     sheet.font('bold', 6.4, MUTED);
-    doc.text(r, x + RATING_COL_W / 2, sheet.y + headH / 2, { baseline: 'middle', align: 'center' });
+    doc.text(r, x + colW / 2, sheet.y + headH / 2, { baseline: 'middle', align: 'center' });
   });
   sheet.y += headH;
 }
 
 function drawCriterionRow(sheet: Sheet, label: string, rating: string): void {
   const { doc } = sheet;
-  const criteriaW = CONTENT_W - RATINGS_W;
+  const colW = sheet.ratingColW;
+  const criteriaW = CONTENT_W - sheet.ratingsW;
+
+  // Filled page 1 runs a fixed row height (see planRatingGrid): the A–E cells
+  // become a uniform grid of squares. Elsewhere the row grows with its label.
+  const uniform = sheet.criterionRowH;
   sheet.font('normal', sheet.blank ? 7.2 : 7.4, INK);
-  const lines = sheet.wrap(label, criteriaW - 12);
-  const rowH = Math.max(sheet.blank ? 13.5 : 15, lines.length * 8.4 + 6);
+  const lines = uniform ? [label] : sheet.wrap(label, criteriaW - 12);
+  const rowH = uniform ?? Math.max(sheet.blank ? 13.5 : 15, lines.length * 8.4 + 6);
 
   sheet.stroke(INK, RULE).fill(WHITE);
   doc.rect(MARGIN, sheet.y, criteriaW, rowH, 'FD');
-  doc.text(lines, MARGIN + 6, sheet.y + rowH / 2, { baseline: 'middle' });
+  if (uniform) {
+    // One line, shrunk to fit — a wrapped label would break the square grid.
+    sheet.fitText(label, MARGIN + 6, sheet.y + rowH / 2, criteriaW - 12, 7.4);
+  } else {
+    doc.text(lines, MARGIN + 6, sheet.y + rowH / 2, { baseline: 'middle' });
+  }
 
   if (rating === 'N/A') {
     // Struck through, exactly as the on-screen row renders it.
     sheet.stroke(INK, RULE).fill(WHITE);
-    doc.rect(MARGIN + criteriaW, sheet.y, RATINGS_W, rowH, 'FD');
+    doc.rect(MARGIN + criteriaW, sheet.y, sheet.ratingsW, rowH, 'FD');
     sheet.stroke(INK, 1);
     doc.line(MARGIN + criteriaW + 6, sheet.y + rowH / 2, MARGIN + CONTENT_W - 6, sheet.y + rowH / 2);
     sheet.y += rowH;
@@ -442,28 +463,29 @@ function drawCriterionRow(sheet: Sheet, label: string, rating: string): void {
   }
 
   RATINGS.forEach((r, i) => {
-    const x = MARGIN + criteriaW + i * RATING_COL_W;
+    const x = MARGIN + criteriaW + i * colW;
     const selected = rating.startsWith(r);
     if (selected) sheet.fill(RATING_FILL[r]);
     else if (r === 'C' && !rating) sheet.fill(C_HINT);
     else sheet.fill(WHITE);
     sheet.stroke(INK, RULE);
-    doc.rect(x, sheet.y, RATING_COL_W, rowH, 'FD');
+    doc.rect(x, sheet.y, colW, rowH, 'FD');
     if (selected) {
       sheet.font('bold', 8.5, WHITE);
-      doc.text(rating, x + RATING_COL_W / 2, sheet.y + rowH / 2, { baseline: 'middle', align: 'center' });
+      doc.text(rating, x + colW / 2, sheet.y + rowH / 2, { baseline: 'middle', align: 'center' });
     }
   });
   sheet.y += rowH;
 }
 
 function drawSections(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
+  const rowH = sheet.criterionRowH ?? 15;
   for (const section of data.sections) {
     // Never leave a section heading stranded at the foot of a page.
-    sheet.ensure(14 + 11 + 15 + 6);
+    sheet.ensure(14 + 11 + rowH + 6);
     drawSectionHeader(sheet, section.title, t);
     for (const item of section.items) {
-      if (sheet.ensure(15)) drawSectionHeader(sheet, `${section.title} (…)`, t);
+      if (sheet.ensure(rowH)) drawSectionHeader(sheet, `${section.title} (…)`, t);
       drawCriterionRow(sheet, item.label, sheet.blank ? '' : item.rating);
     }
     sheet.y += sheet.blank ? 4 : 7;
@@ -607,14 +629,24 @@ function drawRemarks(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
     }
 
     sheet.font('normal', 8, INK);
+    const textW = CONTENT_W - 20;
     let blockTop = sheet.y;
-    for (const line of lines) {
+    for (const [i, line] of lines.entries()) {
       if (breakIfNeeded(11)) {
         // The band restarts on the new page, so the fillable rectangle does too.
         sheet.field({ name: block.name, x: MARGIN + 8, y: blockTop - 2, w: CONTENT_W - 16, h: floor() - blockTop, multiline: true });
         blockTop = sheet.y;
       }
-      doc.text(line, MARGIN + 10, sheet.y + 5, { baseline: 'middle' });
+      // Justified prose, except where a line ends its paragraph — stretching a
+      // short closing line to the full column is exactly what justification
+      // should not do. A blank line is the paragraph separator.
+      const next = lines[i + 1];
+      const endsParagraph = next === undefined || next.trim() === '';
+      const justify = line.trim() !== '' && !endsParagraph;
+      doc.text(line, MARGIN + 10, sheet.y + 5, {
+        baseline: 'middle',
+        ...(justify ? { align: 'justify' as const, maxWidth: textW } : {}),
+      });
       sheet.y += 10.5;
     }
     // Keep a writable band even when the coach left the field empty, so the
@@ -749,10 +781,14 @@ function drawSignatures(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
   sheet.stroke(INK, RULE);
   doc.rect(MARGIN, top, CONTENT_W, h, 'S');
 
-  // The blank form carries both signature lines; a filed one only the referee's.
+  // Both parties sign: the referee that the feedback was discussed with them,
+  // the coach for what it says. A blank form carries the same two lines, empty.
   const columns = sheet.blank
     ? [{ label: t.refSignature, image: '' }, { label: t.coachSignature, image: '' }]
-    : [{ label: t.refSignature, image: data.signature || '' }];
+    : [
+        { label: t.refSignature, image: data.signature || '' },
+        { label: t.coachSignature, image: data.rcSignature || '' },
+      ];
   const colW = signW / columns.length;
 
   columns.forEach((column, i) => {
@@ -874,15 +910,40 @@ function addBlankFields(sheet: Sheet, prefix: string): void {
 
 // ---------------------------------------------------------------- entry points
 
-/** Sign the foot of every page, so no sheet is loose paper on its own. */
-function drawSignatureOnEveryPage(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
-  // The band this fills is exactly the one the flow was reserving, so the
-  // reserve has to be released first — otherwise the block does not "fit" and
-  // every signature spawns a fresh page to sit on.
+/**
+ * Size the criteria rows so they are a uniform grid of squares filling whatever
+ * page-1 height is left below the meta and legend. The A–E cell is square —
+ * `ratingColW` is set equal to the row height — and every row is the same
+ * height, so the boxes line up in a clean lattice. Freeing page 1 of the
+ * signature block is what makes room for cells this size.
+ */
+function planRatingGrid(
+  sheet: Sheet,
+  data: FeedbackFormData,
+  opts: { below?: number; min?: number; max?: number } = {},
+): void {
+  // `below` is the height that still has to fit under the grid on this page —
+  // the results row always, plus the remarks/signature tail on the blank form.
+  const { below = 48, min = 16, max = 34 } = opts;
+  const numRows = data.sections.reduce((n, s) => n + s.items.length, 0) || 1;
+  const numSections = data.sections.length;
+  const headerBlockH = numSections * (14 + 11); // section bar + column head
+  const gapH = numSections * 7; // the gap drawSections leaves after each section
+  const avail = CONTENT_BOTTOM - sheet.y - headerBlockH - gapH - below;
+
+  // Square cells (col width = row height), kept in range: too short and the mark
+  // is cramped, too tall and a short list looks sparse.
+  const rowH = Math.max(min, Math.min(max, avail / numRows));
+  sheet.criterionRowH = rowH;
+  sheet.ratingColW = rowH;
+}
+
+/** Sign the foot of the written-feedback pages (2..N); page 1 carries none. */
+function signRemarksPages(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
   sheet.reserve = 0;
   sheet.onNewPage = undefined;
   const total = sheet.doc.getNumberOfPages();
-  for (let page = 1; page <= total; page++) {
+  for (let page = 2; page <= total; page++) {
     sheet.doc.setPage(page);
     sheet.y = CONTENT_BOTTOM - SIGNATURE_H;
     drawSignatures(sheet, data, t);
@@ -891,28 +952,33 @@ function drawSignatureOnEveryPage(sheet: Sheet, data: FeedbackFormData, t: Label
 
 /**
  * Page 1 carries the assessment — match details, the graded criteria and the
- * summary row. The written feedback then starts on its own page, which gives the
- * remarks room to breathe instead of being squeezed into whatever the criteria
- * tables left over, and it runs onto further pages when a coach writes at length.
- *
- * The signature band is reserved across the whole document, so nothing can flow
- * underneath it, and every page is signed.
+ * summary row — with no signature, so the freed height goes to a uniform grid of
+ * square A–E cells. The written feedback then starts on its own page, which
+ * gives the remarks room to breathe, and runs onto further pages when a coach
+ * writes at length. Every feedback page is signed at the foot.
  */
 function draw(sheet: Sheet, data: FeedbackFormData): void {
   const t = LABELS[data.lang];
-  sheet.reserve = SIGNATURE_H + 10;
   sheet.onNewPage = (s) => drawContinuationHeader(s, data, t);
 
+  // Page 1: no reserved signature band, so the criteria can fill the sheet.
+  sheet.reserve = 0;
   drawHeader(sheet, data, t);
   drawMetaGrid(sheet, data, t);
   drawLegend(sheet, data.lang);
+  planRatingGrid(sheet, data);
   drawSections(sheet, data, t);
   drawResultsRow(sheet, data, t);
+  sheet.criterionRowH = null;
+  sheet.ratingColW = RATING_COL_W;
 
+  // Written feedback on its own page(s), each signed at the foot.
   sheet.newPage();
+  sheet.reserve = SIGNATURE_H + 10;
   drawRemarks(sheet, data, t);
+  sheet.reserve = 0;
+  signRemarksPages(sheet, data, t);
 
-  drawSignatureOnEveryPage(sheet, data, t);
   drawFooters(sheet, t);
 }
 
@@ -959,6 +1025,10 @@ export function buildEmptyFeedbackPdf(roles: FeedbackFormData['role'][], lang: F
     drawHeader(sheet, blank, t);
     drawMetaGrid(sheet, blank, t);
     drawLegend(sheet, lang);
+    // Square A–E cells here too, but compact: unlike the filled page 1 this
+    // sheet still has to carry the remarks bands, both signature lines and the
+    // QR below the grid, and stay a single printable page per role.
+    planRatingGrid(sheet, blank, { below: 48 + BLANK_TAIL_H, min: 13, max: 20 });
     drawSections(sheet, blank, t);
     drawResultsRow(sheet, blank, t);
     drawBlankTail(sheet, t);

@@ -40,7 +40,10 @@ export interface FeedbackFormData {
   meta: MetaData;
   sections: AssessmentSection[];
   results: Results;
+  // Both signatures ride inside feedback_json: the referee acknowledging the
+  // feedback was discussed, and the coach standing behind what it says.
   signature?: string;
+  rcSignature?: string;
 }
 
 export interface EligibleGame {

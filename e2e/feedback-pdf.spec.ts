@@ -144,7 +144,10 @@ test.describe('Feedback PDF builder', () => {
       };
     });
 
-    // Criteria on page 1, written feedback on page 2 — however little is written.
+    // The whole assessment — criteria grid and summary row — stays on page 1,
+    // with the written feedback on page 2, however little is written. A grid
+    // that overflowed its page (the square-cell layout must fit) would push this
+    // to 3.
     expect(pages.empty).toBe(2);
     expect(pages.typical).toBe(2);
     // A coach who writes at length gets more sheets rather than clipped text.

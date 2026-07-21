@@ -611,6 +611,13 @@ const RENDER_PROPERTIES = [
   'game.gameResultReportFromChampionshipOwner',
 ];
 
+// Requested on top of the list above, but dropped automatically if upstream
+// rejects the search with them (see fetchAllVmGames). Keeps a property VM might
+// not expose to every role from taking the whole nightly sync down.
+const OPTIONAL_RENDER_PROPERTIES = [
+  'game.refereeSupervisorNeeded', // "RSV-Markierung" — game marked for a Referee Supervisor
+];
+
 function normalizeName(value: unknown): string {
   return String(value ?? '')
     .trim()
@@ -1024,6 +1031,7 @@ function mapIncomingGame(raw: Record<string, unknown>) {
     second_line_judge: asText(raw.second_line_judge ?? raw.lj2),
     is_rd_game: Boolean(raw.is_rd_game),
     is_ld_game: Boolean(raw.is_ld_game),
+    is_rsv_game: Boolean(raw.is_rsv_game),
     maps_url: asText(raw.maps_url),
     game_result: asText(raw.game_result),
   };
@@ -1050,10 +1058,20 @@ async function upsertGame(gameData: ReturnType<typeof mapIncomingGame>) {
       }
     }
 
-    if (existing) {
-      return games.update(existing.id, gameData);
+    const write = (data: Record<string, unknown>) =>
+      (existing ? games.update(existing.id, data) : games.create(data));
+
+    try {
+      return await write(gameData);
+    } catch (error) {
+      // A PocketBase collection that predates a newly written column rejects the
+      // whole record. Drop the newest optional column and keep the game — the
+      // flag comes back once the schema is updated (deploy/hetzner/seed).
+      if (!isPocketBaseBadRequest(error)) throw error;
+      const { is_rsv_game: _dropped, ...withoutOptional } = gameData;
+      console.warn('[sync] games write rejected — retrying without is_rsv_game (add the field in PocketBase).');
+      return write(withoutOptional);
     }
-    return games.create(gameData);
   });
 }
 
@@ -1210,7 +1228,14 @@ async function vmLoginWithTrace(
   throw new Error(`Could not extract CSRF token after login (${csrfRetries} attempts). Page title: "${lastTitle}". ${lastLoginHint}`);
 }
 
-function buildVmSearchBody(csrfToken: string, offset: number, limit: number, from: string, to: string): string {
+function buildVmSearchBody(
+  csrfToken: string,
+  offset: number,
+  limit: number,
+  from: string,
+  to: string,
+  properties: string[] = [...RENDER_PROPERTIES, ...OPTIONAL_RENDER_PROPERTIES],
+): string {
   const params = new URLSearchParams();
   params.set('searchConfiguration[propertyFilters][0][propertyName]', 'game.startingDateTime');
   params.set('searchConfiguration[propertyFilters][0][dateRange][from]', from);
@@ -1222,7 +1247,7 @@ function buildVmSearchBody(csrfToken: string, offset: number, limit: number, fro
   params.set('searchConfiguration[offset]', String(offset));
   params.set('searchConfiguration[limit]', String(limit));
   params.set('searchConfiguration[textSearchOperator]', 'AND');
-  RENDER_PROPERTIES.forEach((property, index) => {
+  properties.forEach((property, index) => {
     params.set(`propertyRenderConfiguration[${index}]`, property);
   });
   params.set('__csrfToken', csrfToken);
@@ -1254,11 +1279,23 @@ async function fetchAllVmGames(
   }
 
   console.log(`[vm] Fetching games from ${from} to ${to} — first batch...`);
-  const firstResponse = await fetch(url, {
+  let properties = [...RENDER_PROPERTIES, ...OPTIONAL_RENDER_PROPERTIES];
+  let firstResponse = await fetch(url, {
     method: 'POST',
     headers,
-    body: buildVmSearchBody(csrfToken, 0, VM_BATCH_SIZE, from, to),
+    body: buildVmSearchBody(csrfToken, 0, VM_BATCH_SIZE, from, to, properties),
   });
+  if (!firstResponse.ok && OPTIONAL_RENDER_PROPERTIES.length > 0) {
+    // Upstream may not know (or may not expose) an optional property. Retry
+    // without them so the sync degrades to "flag missing" instead of failing.
+    console.warn(`[vm] First batch failed with optional properties (${firstResponse.status}) — retrying without ${OPTIONAL_RENDER_PROPERTIES.join(', ')}`);
+    properties = RENDER_PROPERTIES;
+    firstResponse = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: buildVmSearchBody(csrfToken, 0, VM_BATCH_SIZE, from, to, properties),
+    });
+  }
   console.log(`[vm] First batch response: ${firstResponse.status}`);
   if (!firstResponse.ok) {
     const body = await firstResponse.text();
@@ -1275,7 +1312,7 @@ async function fetchAllVmGames(
     const response = await fetch(url, {
       method: 'POST',
       headers,
-      body: buildVmSearchBody(csrfToken, items.length, VM_BATCH_SIZE, from, to),
+      body: buildVmSearchBody(csrfToken, items.length, VM_BATCH_SIZE, from, to, properties),
     });
     console.log(`[vm] Batch response: ${response.status}`);
     if (!response.ok) {
@@ -1545,6 +1582,11 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     || item.isLinesmanThreeSupervised
     || item.isLinesmanFourSupervised,
   );
+  // VM's "RSV-Markierung" (game.refereeSupervisorNeeded): the game was marked
+  // for a Referee Supervisor assignment. Same intent as the RD markings above,
+  // just the other VM role — both mean "somebody wants this game observed", so
+  // both auto-flag the game for us (see /api/eligible-games).
+  const isRsvGame = Boolean(game.refereeSupervisorNeeded ?? item.refereeSupervisorNeeded);
 
   // Extract geo data for maps link
   const geo = (address.geographicalLocation ?? {}) as Record<string, unknown>;
@@ -1599,6 +1641,7 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     second_line_judge: secondLineJudge,
     is_rd_game: isRdGame,
     is_ld_game: isLdGame,
+    is_rsv_game: isRsvGame,
     maps_url: mapsUrl,
     game_result: gameResult,
     _assigned_people: [firstReferee, secondReferee, firstLineJudge, secondLineJudge],
@@ -1666,7 +1709,7 @@ async function getEligibleGames() {
       return await withCollection(collectionCandidates.games, (collection) =>
         collection.getFullList<AnyRecord>({
           sort: '-match_date',
-          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game,game_result',
+          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result',
         }),
       );
     } catch (error) {
@@ -1701,6 +1744,7 @@ async function getEligibleGames() {
     feedbackClosedRoles: Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [],
     isRdGame: Boolean(game.is_rd_game),
     isLdGame: Boolean(game.is_ld_game),
+    isRsvGame: Boolean(game.is_rsv_game),
     game_result: asText(game.game_result),
   }));
 }
@@ -2652,6 +2696,15 @@ app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
 // ── Games starred for observation (admin-picked priorities) ───────────
 // Stored as a plain id list in app_settings, so highlighting a game needs no
 // schema change. RCs see the star (and can filter by it); only admins set it.
+//
+// On top of that list, VolleyManager's own markings auto-flag a game: the RD
+// markings ("RD-Spiel" / "SR zu beobachten") and the RSV one ("RSV-Markierung").
+// VM wins — a game VM marked stays flagged and the admin star can only add to
+// the set, never take away.
+function isVmFlagged(game: { isRdGame?: boolean; isRsvGame?: boolean }): boolean {
+  return Boolean(game.isRdGame || game.isRsvGame);
+}
+
 async function getStarredGameIds(): Promise<Set<string>> {
   const rec = await getSettingRecord('starred_games');
   if (!rec) return new Set();
@@ -2664,7 +2717,10 @@ async function getStarredGameIds(): Promise<Set<string>> {
 app.get('/api/eligible-games', requireRcSession, async (_req: Request, res: ExpressResponse) => {
   try {
     const [games, starred] = await Promise.all([getEligibleGames(), getStarredGameIds()]);
-    res.json(games.map((g) => ({ ...g, starred: starred.has(String(g.id)) })));
+    res.json(games.map((g) => {
+      const vmFlagged = isVmFlagged(g);
+      return { ...g, vmFlagged, starred: vmFlagged || starred.has(String(g.id)) };
+    }));
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
@@ -2677,7 +2733,19 @@ app.put('/api/admin/games/:id/star', requireAdminSession, async (req: Request, r
     const set = await getStarredGameIds();
     if (on) set.add(id); else set.delete(id);
     await setSetting('starred_games', JSON.stringify([...set]));
-    res.json({ ok: true, starred: on });
+    // Un-starring only drops the manual entry — a game VM marked stays flagged,
+    // so report the effective state rather than what was asked for.
+    let vmFlagged = false;
+    if (!on) {
+      try {
+        await ensureAdminAuth();
+        const game = await withCollection(collectionCandidates.games, (collection) =>
+          collection.getOne<AnyRecord>(id, { fields: 'is_rd_game,is_rsv_game' }),
+        );
+        vmFlagged = isVmFlagged({ isRdGame: Boolean(game.is_rd_game), isRsvGame: Boolean(game.is_rsv_game) });
+      } catch { /* game gone or field missing — fall back to the manual state */ }
+    }
+    res.json({ ok: true, starred: on || vmFlagged, vmFlagged });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 

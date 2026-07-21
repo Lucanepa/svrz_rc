@@ -57,8 +57,12 @@ export interface EligibleGame {
   feedbackClosedRoles?: string[];
   isRdGame?: boolean;
   isLdGame?: boolean;
-  // Admin-picked "we want this one observed" highlight (see starred_games).
+  isRsvGame?: boolean;
+  // "We want this one observed" highlight: set by an admin (see starred_games)
+  // or derived from VolleyManager's RD/RSV markings.
   starred?: boolean;
+  // True when the flag comes from VolleyManager — it can't be removed here.
+  vmFlagged?: boolean;
   maps_url?: string;
   game_result?: string;
 }

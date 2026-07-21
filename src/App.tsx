@@ -3560,7 +3560,11 @@ export default function App() {
                                   {game.starred && (
                                     <span
                                       className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300"
-                                      title={formData.lang === 'DE' ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation'}
+                                      title={game.vmFlagged
+                                        ? (formData.lang === 'DE'
+                                          ? 'In VolleyManager für eine Beobachtung markiert (RD/RSV)'
+                                          : 'Marked for observation in VolleyManager (RD/RSV)')
+                                        : (formData.lang === 'DE' ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation')}
                                     >
                                       <Star size={11} className="fill-amber-500 text-amber-500" />
                                       {formData.lang === 'DE' ? 'Gewünscht' : 'Priority'}
@@ -3696,6 +3700,9 @@ export default function App() {
                                     )}
                                     {isPrivileged && (
                                       <button
+                                        // Flags coming from VolleyManager are read-only here — the
+                                        // marking lives in VM and comes back on the next sync.
+                                        disabled={game.vmFlagged}
                                         onClick={async (e) => {
                                           e.stopPropagation();
                                           const next = !game.starred;
@@ -3709,15 +3716,22 @@ export default function App() {
                                         className={cn(
                                           'h-9 px-3 text-sm font-medium rounded-md border transition-colors inline-flex items-center gap-1.5',
                                           game.starred
-                                            ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
-                                            : 'border-stone-300 bg-white text-stone-600 hover:bg-stone-50',
+                                            ? 'border-amber-300 bg-amber-50 text-amber-700'
+                                            : 'border-stone-300 bg-white text-stone-600',
+                                          game.vmFlagged ? 'cursor-default opacity-90' : game.starred ? 'hover:bg-amber-100' : 'hover:bg-stone-50',
                                         )}
-                                        title={formData.lang === 'DE' ? 'Für eine Beobachtung vormerken' : 'Flag for observation'}
+                                        title={game.vmFlagged
+                                          ? (formData.lang === 'DE'
+                                            ? 'Aus VolleyManager übernommen (RD/RSV-Markierung) — hier nicht änderbar.'
+                                            : 'Taken from VolleyManager (RD/RSV marking) — not editable here.')
+                                          : (formData.lang === 'DE' ? 'Für eine Beobachtung vormerken' : 'Flag for observation')}
                                       >
                                         <Star size={14} className={cn(game.starred && 'fill-amber-500 text-amber-500')} />
-                                        {game.starred
-                                          ? (formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged')
-                                          : (formData.lang === 'DE' ? 'Vormerken' : 'Flag')}
+                                        {game.vmFlagged
+                                          ? (formData.lang === 'DE' ? 'Vorgemerkt (VM)' : 'Flagged (VM)')
+                                          : game.starred
+                                            ? (formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged')
+                                            : (formData.lang === 'DE' ? 'Vormerken' : 'Flag')}
                                       </button>
                                     )}
                                     {(() => {

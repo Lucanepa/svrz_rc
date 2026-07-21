@@ -305,6 +305,9 @@ function buildStore(): DemoStore {
 
   // Admin-picked priorities: a couple of games we'd like observed.
   for (const g of games) if (g.id === 'demo-g7' || g.id === 'demo-g3') g.starred = true;
+  // …plus the ones VolleyManager already marked (RD/RSV) — those flag themselves
+  // and can't be un-flagged here, exactly like in the real app.
+  for (const g of games) if (g.isRdGame || g.isRsvGame) { g.starred = true; g.vmFlagged = true; }
 
   // Seed the mailbox with both mails the system sends, so "Demo mail" shows
   // them straight away instead of only after the visitor files a feedback:
@@ -547,7 +550,7 @@ export function saveFeedbackToPocketBase(params: {
 
 export function setGameStarred(gameId: string, starred: boolean): Promise<void> {
   const g = store().games.find((x) => x.id === gameId);
-  if (g) g.starred = starred;
+  if (g && !g.vmFlagged) g.starred = starred;
   return ok(undefined);
 }
 

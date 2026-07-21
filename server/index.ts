@@ -610,13 +610,10 @@ const RENDER_PROPERTIES = [
   'game.gameResultReportFromReferee',
   'game.gameResultReportFromChampionshipOwner',
 ];
-
-// Requested on top of the list above, but dropped automatically if upstream
-// rejects the search with them (see fetchAllVmGames). Keeps a property VM might
-// not expose to every role from taking the whole nightly sync down.
-const OPTIONAL_RENDER_PROPERTIES = [
-  'game.refereeSupervisorNeeded', // "RSV-Markierung" — game marked for a Referee Supervisor
-];
+// Note: this list only drives the columns VM renders — the search response
+// carries every property of the object either way (verified against a captured
+// browser session), which is why fields like `refereeSupervisorNeeded` can be
+// read without asking for them.
 
 function normalizeName(value: unknown): string {
   return String(value ?? '')
@@ -1058,20 +1055,13 @@ async function upsertGame(gameData: ReturnType<typeof mapIncomingGame>) {
       }
     }
 
-    const write = (data: Record<string, unknown>) =>
-      (existing ? games.update(existing.id, data) : games.create(data));
-
-    try {
-      return await write(gameData);
-    } catch (error) {
-      // A PocketBase collection that predates a newly written column rejects the
-      // whole record. Drop the newest optional column and keep the game — the
-      // flag comes back once the schema is updated (deploy/hetzner/seed).
-      if (!isPocketBaseBadRequest(error)) throw error;
-      const { is_rsv_game: _dropped, ...withoutOptional } = gameData;
-      console.warn('[sync] games write rejected — retrying without is_rsv_game (add the field in PocketBase).');
-      return write(withoutOptional);
+    // PocketBase drops keys the collection doesn't declare instead of erroring,
+    // so a column added here only lands once it exists in the schema too
+    // (deploy/hetzner/seed/setup-schema.mjs).
+    if (existing) {
+      return games.update(existing.id, gameData);
     }
+    return games.create(gameData);
   });
 }
 
@@ -1228,14 +1218,7 @@ async function vmLoginWithTrace(
   throw new Error(`Could not extract CSRF token after login (${csrfRetries} attempts). Page title: "${lastTitle}". ${lastLoginHint}`);
 }
 
-function buildVmSearchBody(
-  csrfToken: string,
-  offset: number,
-  limit: number,
-  from: string,
-  to: string,
-  properties: string[] = [...RENDER_PROPERTIES, ...OPTIONAL_RENDER_PROPERTIES],
-): string {
+function buildVmSearchBody(csrfToken: string, offset: number, limit: number, from: string, to: string): string {
   const params = new URLSearchParams();
   params.set('searchConfiguration[propertyFilters][0][propertyName]', 'game.startingDateTime');
   params.set('searchConfiguration[propertyFilters][0][dateRange][from]', from);
@@ -1247,7 +1230,7 @@ function buildVmSearchBody(
   params.set('searchConfiguration[offset]', String(offset));
   params.set('searchConfiguration[limit]', String(limit));
   params.set('searchConfiguration[textSearchOperator]', 'AND');
-  properties.forEach((property, index) => {
+  RENDER_PROPERTIES.forEach((property, index) => {
     params.set(`propertyRenderConfiguration[${index}]`, property);
   });
   params.set('__csrfToken', csrfToken);
@@ -1279,23 +1262,11 @@ async function fetchAllVmGames(
   }
 
   console.log(`[vm] Fetching games from ${from} to ${to} — first batch...`);
-  let properties = [...RENDER_PROPERTIES, ...OPTIONAL_RENDER_PROPERTIES];
-  let firstResponse = await fetch(url, {
+  const firstResponse = await fetch(url, {
     method: 'POST',
     headers,
-    body: buildVmSearchBody(csrfToken, 0, VM_BATCH_SIZE, from, to, properties),
+    body: buildVmSearchBody(csrfToken, 0, VM_BATCH_SIZE, from, to),
   });
-  if (!firstResponse.ok && OPTIONAL_RENDER_PROPERTIES.length > 0) {
-    // Upstream may not know (or may not expose) an optional property. Retry
-    // without them so the sync degrades to "flag missing" instead of failing.
-    console.warn(`[vm] First batch failed with optional properties (${firstResponse.status}) — retrying without ${OPTIONAL_RENDER_PROPERTIES.join(', ')}`);
-    properties = RENDER_PROPERTIES;
-    firstResponse = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: buildVmSearchBody(csrfToken, 0, VM_BATCH_SIZE, from, to, properties),
-    });
-  }
   console.log(`[vm] First batch response: ${firstResponse.status}`);
   if (!firstResponse.ok) {
     const body = await firstResponse.text();
@@ -1312,7 +1283,7 @@ async function fetchAllVmGames(
     const response = await fetch(url, {
       method: 'POST',
       headers,
-      body: buildVmSearchBody(csrfToken, items.length, VM_BATCH_SIZE, from, to, properties),
+      body: buildVmSearchBody(csrfToken, items.length, VM_BATCH_SIZE, from, to),
     });
     console.log(`[vm] Batch response: ${response.status}`);
     if (!response.ok) {
@@ -1582,11 +1553,11 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     || item.isLinesmanThreeSupervised
     || item.isLinesmanFourSupervised,
   );
-  // VM's "RSV-Markierung" (game.refereeSupervisorNeeded): the game was marked
-  // for a Referee Supervisor assignment. Same intent as the RD markings above,
-  // just the other VM role — both mean "somebody wants this game observed", so
-  // both auto-flag the game for us (see /api/eligible-games).
-  const isRsvGame = Boolean(game.refereeSupervisorNeeded ?? item.refereeSupervisorNeeded);
+  // VM's "RSV-Markierung": the game was marked for a Referee Supervisor
+  // assignment. Same intent as the RD markings above, just the other VM role —
+  // both mean "somebody wants this game observed", so both auto-flag the game
+  // for us (see /api/eligible-games). Sits on the refereeGame, not the game.
+  const isRsvGame = Boolean(item.refereeSupervisorNeeded);
 
   // Extract geo data for maps link
   const geo = (address.geographicalLocation ?? {}) as Record<string, unknown>;

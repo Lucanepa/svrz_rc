@@ -64,8 +64,13 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setSubmitting(true);
     try {
       const result = await rcLogin(email.trim(), password);
-      setRcName(result.name);
-      getAuthMe().then((me) => { setRcId(me.rc?.id ?? null); setIsAdminSession(Boolean(me.admin)); }).catch(() => {});
+      // Resolve the full identity BEFORE letting the app mount: it bootstraps
+      // its data from rcId/rcName/admin, so handing it a half-known session
+      // would make it load once as an anonymous user and again as itself.
+      const me = await getAuthMe().catch(() => null);
+      setRcId(me?.rc?.id ?? null);
+      setRcName(me?.rc?.name ?? result.name);
+      setIsAdminSession(Boolean(me?.admin));
       setAuthed(true);
       return;
     } catch (err) {

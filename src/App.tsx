@@ -42,6 +42,7 @@ import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap
 import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
 import LevelText from './components/LevelText';
+import { Skeleton, SkeletonRows } from './components/Skeleton';
 import { useRcAuth } from './components/AuthGate';
 import { isDemoMode, getSentMail, type DemoEmail } from './lib/demo';
 import { BUILD_INFO } from './lib/buildInfo';
@@ -675,6 +676,9 @@ export default function App() {
   const [selectedRcName, setSelectedRcName] = useState<string | null>(null);
   const [rcCoachSummaryData, setrcCoachSummaryData] = useState<rcCoachSummary[]>([]);
   const [rcCoachSummaryLoading, setrcCoachSummaryLoading] = useState(false);
+  // Which `${rcName}|${season}` the loaded summary belongs to — lets the Home
+  // dashboard and the RC detail view share one fetch instead of racing two.
+  const [rcSummaryKey, setRcSummaryKey] = useState<string | null>(null);
   const toggleListSort = (col: 'name' | 'level' | 'status') => {
     if (listSortBy === col) setListSortAsc((v) => !v);
     else { setListSortBy(col); setListSortAsc(true); }
@@ -711,24 +715,23 @@ export default function App() {
   const [showAllLevels, setShowAllLevels] = useState(false);
   // Read admin settings: email test-mode banner + default season + coachee targets.
   // A saved season pref older than the admin default is stale (new season started) — snap forward.
-  useEffect(() => {
-    getSettings().then((s) => {
+  // Part of the mount bootstrap below, not an effect of its own.
+  const loadSettings = async () => {
+    try {
+      const s = await getSettings();
       setEmailTestMode(Boolean(s.test_mode));
       setCoacheeTargets(s.coachee_targets ?? {});
-      try {
-        if (s.default_season) {
-          defaultSeasonRef.current = s.default_season;
-          const stored = JSON.parse(localStorage.getItem('svrz_season_v3') || 'null') as { s?: number; d?: number } | null;
-          if (!stored || stored.d !== s.default_season) {
-            // Default changed since the pref was saved (or no pref) → snap forward once.
-            setSeasonStartYear(s.default_season);
-            localStorage.setItem('svrz_season_v3', JSON.stringify({ s: s.default_season, d: s.default_season }));
-            localStorage.removeItem('svrz_season_v2');
-          }
-        }
-      } catch { /* ignore */ }
-    }).catch(() => { /* ignore */ });
-  }, []);
+      if (!s.default_season) return;
+      defaultSeasonRef.current = s.default_season;
+      const stored = JSON.parse(localStorage.getItem('svrz_season_v3') || 'null') as { s?: number; d?: number } | null;
+      if (!stored || stored.d !== s.default_season) {
+        // Default changed since the pref was saved (or no pref) → snap forward once.
+        setSeasonStartYear(s.default_season);
+        localStorage.setItem('svrz_season_v3', JSON.stringify({ s: s.default_season, d: s.default_season }));
+        localStorage.removeItem('svrz_season_v2');
+      }
+    } catch { /* keep the local season pref and defaults */ }
+  };
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });
@@ -767,6 +770,9 @@ export default function App() {
   const [coacheeGames, setCoacheeGames] = useState<CoacheeGame[]>([]);
   const [loadingCoacheeGames, setLoadingCoacheeGames] = useState(false);
   const [loadingCoachees, setLoadingCoachees] = useState(false);
+  // True until the one parallel first-run batch below settles. While it is up,
+  // lists render skeletons instead of their "nothing found" empty states.
+  const [booting, setBooting] = useState(true);
   const [actionTargetCoachee, setActionTargetCoachee] = useState<Coachee | null>(null);
   const [detailCoachee, setDetailCoachee] = useState<Coachee | null>(null);
   const [detailNotes, setDetailNotes] = useState('');
@@ -862,23 +868,31 @@ export default function App() {
     document.title = formData.lang === 'DE' ? 'SR-Coaching Plattform' : 'Referee Coaching Platform';
   }, [formData.lang]);
 
+  // First-run bootstrap. Every screen's data is requested in ONE parallel batch
+  // on mount — not chained, and not deferred until its tab is opened — so no
+  // page can be reached before its own request was even started. Runs once:
+  // language is a pure client-side concern and must not refetch anything.
   useEffect(() => {
     if (!hasPocketBaseConfig()) {
       setBackendNotice(t.pbMissing);
+      setBooting(false);
       return;
     }
     setBackendNotice('');
-    // Load sequentially to avoid overwhelming PocketBase with concurrent requests (429)
-    const loadAll = async () => {
-      await refreshGames();
-      await refreshCoachees();
-      await refreshCalendarGames();
-    };
-    void loadAll();
-  }, [formData.lang]);
-
-  useEffect(() => {
-    void refreshAdminAuthStatus();
+    // The Home dashboard and the RC Overview tab read the same overview
+    // endpoint — fetch it once and share the promise.
+    const overview = refreshRcOverview();
+    void Promise.allSettled([
+      loadSettings(),
+      refreshGames(),
+      refreshCoachees(),
+      refreshCalendarGames(),
+      refreshRcPeople(),
+      refreshAdminAuthStatus(),
+      overview,
+      loadHome(overview),
+    ]).then(() => setBooting(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -958,42 +972,63 @@ export default function App() {
     }));
   };
 
+  // Every load runs under a per-resource generation token. A response from a
+  // superseded load (season switch, manual refresh, a second click) is dropped
+  // instead of racing the newer one into state.
+  const reqGen = useRef<Record<string, number>>({});
+  const beginLoad = (key: string) => (reqGen.current[key] = (reqGen.current[key] ?? 0) + 1);
+  const isCurrentLoad = (key: string, gen: number) => reqGen.current[key] === gen;
+
   const refreshGames = async () => {
     if (!hasPocketBaseConfig()) {
       setBackendNotice(t.pbMissing);
       return;
     }
+    const gen = beginLoad('games');
     setLoadingGames(true);
     setBackendNotice('');
     try {
       const games = await loadEligibleGames();
+      if (!isCurrentLoad('games', gen)) return;
       setEligibleGames(games);
-      listRefereeCoachPeople().then((people) => setRcPeople(people)).catch(() => {});
       if (games.length > 0 && !selectedGameId) {
         setSelectedGameId(games[0].id);
       }
     } catch (error) {
+      if (!isCurrentLoad('games', gen)) return;
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(localizeRuntimeError(reason, formData.lang));
     } finally {
-      setLoadingGames(false);
+      if (isCurrentLoad('games', gen)) setLoadingGames(false);
     }
   };
 
+  // Fills the "assign a coach" picker; a failure just leaves it empty.
+  const refreshRcPeople = async () => {
+    const gen = beginLoad('rcPeople');
+    try {
+      const people = await listRefereeCoachPeople();
+      if (isCurrentLoad('rcPeople', gen)) setRcPeople(people);
+    } catch { /* picker stays empty */ }
+  };
+
   const refreshAdminAuthStatus = async () => {
+    const gen = beginLoad('adminAuth');
     setAdminAuthLoading(true);
     try {
       const status = await getAdminAuthStatus();
+      if (!isCurrentLoad('adminAuth', gen)) return;
       setAdminAuthenticated(status.authenticated);
       setAdminAuthEmail(status.email || '');
       if (status.authenticated) {
         setAdminLoginPassword('');
       }
     } catch {
+      if (!isCurrentLoad('adminAuth', gen)) return;
       setAdminAuthenticated(false);
       setAdminAuthEmail('');
     } finally {
-      setAdminAuthLoading(false);
+      if (isCurrentLoad('adminAuth', gen)) setAdminAuthLoading(false);
     }
   };
 
@@ -1002,31 +1037,39 @@ export default function App() {
       setBackendNotice(t.pbMissing);
       return;
     }
+    const gen = beginLoad('coachees');
     setLoadingCoachees(true);
     setBackendNotice('');
     try {
       const items = await listCoachees();
+      if (!isCurrentLoad('coachees', gen)) return;
       setCoachees(items);
     } catch (error) {
+      if (!isCurrentLoad('coachees', gen)) return;
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(localizeRuntimeError(reason, formData.lang));
     } finally {
-      setLoadingCoachees(false);
+      if (isCurrentLoad('coachees', gen)) setLoadingCoachees(false);
     }
   };
 
   // Personal dashboard for the logged-in RC: counters from the overview row,
-  // upcoming + missing games from their own coachee summary.
-  const loadHome = async () => {
+  // upcoming + missing games from their own coachee summary. Takes the overview
+  // promise from the caller when one is already in flight, so the dashboard and
+  // the RC Overview tab never issue the same request twice.
+  const loadHome = async (overviewInFlight?: Promise<RcOverviewEntry[]>) => {
     const myName = rcAuth.rcName;
     if (!myName) { setHomeData(null); return; }
+    const gen = beginLoad('home');
+    const season = seasonStartYear;
     setHomeLoading(true);
     try {
       const norm = (s: string) => s.trim().toLowerCase();
       const [overview, summary] = await Promise.all([
-        loadRcOverview(seasonStartYear),
-        loadrcCoachSummary(myName, seasonStartYear),
+        overviewInFlight ?? loadRcOverview(season),
+        loadrcCoachSummary(myName, season),
       ]);
+      if (!isCurrentLoad('home', gen)) return;
       const myRow = overview.find((r) => norm(r.fullName) === norm(myName));
       const byDate = (a: rcCoachSummaryGame, b: rcCoachSummaryGame) => a.gameDate.localeCompare(b.gameDate);
       const nextGames = summary.flatMap((cs) => cs.plannedGames).sort(byDate);
@@ -1039,55 +1082,75 @@ export default function App() {
         nextGames,
         missingGames,
       });
+      // Same payload the RC detail view needs — hand it over so opening that
+      // tab is instant instead of triggering an identical fetch.
+      setrcCoachSummaryData(summary);
+      setRcSummaryKey(`${myName}|${season}`);
     } catch {
-      setHomeData(null);
+      if (isCurrentLoad('home', gen)) setHomeData(null);
     } finally {
-      setHomeLoading(false);
+      if (isCurrentLoad('home', gen)) setHomeLoading(false);
     }
   };
 
-  const refreshRcOverview = async () => {
+  const refreshRcOverview = async (): Promise<RcOverviewEntry[]> => {
+    const gen = beginLoad('rcOverview');
     setRcOverviewLoading(true);
     try {
       const data = await loadRcOverview(seasonStartYear);
-      setRcOverviewData(data);
+      if (isCurrentLoad('rcOverview', gen)) setRcOverviewData(data);
+      return data;
     } catch {
-      setRcOverviewData([]);
+      if (isCurrentLoad('rcOverview', gen)) setRcOverviewData([]);
+      return [];
     } finally {
-      setRcOverviewLoading(false);
+      if (isCurrentLoad('rcOverview', gen)) setRcOverviewLoading(false);
     }
+  };
+
+  // Open on the first section that actually has games.
+  const pickRcDetailTab = (data: rcCoachSummary[]) => {
+    const has = (pick: (cs: rcCoachSummary) => unknown[]) => data.some((cs) => pick(cs).length > 0);
+    setRcDetailTab(has((cs) => cs.plannedGames) ? 'planned' : has((cs) => cs.outstandingGames) ? 'outstanding' : 'done');
   };
 
   const handleSelectRc = async (rcName: string) => {
     setSelectedRcName(rcName);
+    // Already loaded for this RC and season (bootstrap, or a previous visit).
+    if (rcSummaryKey === `${rcName}|${seasonStartYear}`) {
+      pickRcDetailTab(rcCoachSummaryData);
+      return;
+    }
+    const gen = beginLoad('rcSummary');
     setrcCoachSummaryLoading(true);
     try {
       const data = await loadrcCoachSummary(rcName, seasonStartYear);
+      if (!isCurrentLoad('rcSummary', gen)) return;
       setrcCoachSummaryData(data);
-      // Open on the first section that has games.
-      const has = (pick: (cs: rcCoachSummary) => unknown[]) => data.some((cs) => pick(cs).length > 0);
-      setRcDetailTab(has((cs) => cs.plannedGames) ? 'planned' : has((cs) => cs.outstandingGames) ? 'outstanding' : 'done');
+      setRcSummaryKey(`${rcName}|${seasonStartYear}`);
+      pickRcDetailTab(data);
     } catch {
+      if (!isCurrentLoad('rcSummary', gen)) return;
       setrcCoachSummaryData([]);
+      setRcSummaryKey(null);
     } finally {
-      setrcCoachSummaryLoading(false);
+      if (isCurrentLoad('rcSummary', gen)) setrcCoachSummaryLoading(false);
     }
   };
 
-  // RC overview/detail data is season-scoped on the server — re-fetch it when
-  // the user switches season (skip the initial mount, where nothing is loaded).
+  // Overview / summary / dashboard are season-scoped on the server, so a season
+  // switch re-fetches exactly that slice — in parallel, and only on a real
+  // change (the initial values come from the mount bootstrap).
+  const loadedSeasonRef = useRef(seasonStartYear);
   useEffect(() => {
-    if (rcOverviewData.length === 0 && !selectedRcName) return;
-    void refreshRcOverview();
-    if (selectedRcName) void handleSelectRc(selectedRcName);
+    if (loadedSeasonRef.current === seasonStartYear) return;
+    loadedSeasonRef.current = seasonStartYear;
+    const overview = refreshRcOverview();
+    void loadHome(overview);
+    // loadHome already re-fetches the logged-in RC's own summary.
+    if (selectedRcName && selectedRcName !== rcAuth.rcName) void handleSelectRc(selectedRcName);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seasonStartYear]);
-
-  // Load the Home dashboard when it's shown (default landing) and on season change.
-  useEffect(() => {
-    if (listTab === 'home' && rcAuth.rcName) void loadHome();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listTab, rcAuth.rcName, seasonStartYear]);
 
   // Track connectivity; flush the outbox when we come back online.
   useEffect(() => {
@@ -1617,7 +1680,9 @@ export default function App() {
           : `${sent} pending submission${sent > 1 ? 's' : ''} sent.`);
         // Refresh data that a synced submission changes.
         void refreshGames();
-        if (listTab === 'home' && rcAuth.rcName) void loadHome();
+        // Refresh the dashboard/summary regardless of the visible tab, so
+        // switching back to Home never shows counters from before the sync.
+        void loadHome();
       }
     } finally {
       setFlushing(false);
@@ -1680,6 +1745,12 @@ export default function App() {
         setDemoMail(mail);
         if (mail.length > 0) setDemoMailOpen(true);
       }
+      // A filed observation changes the games list, the coachee statuses, the
+      // RC overview and the dashboard counters. Refresh them together in the
+      // background (one shared overview request) so every other tab is already
+      // up to date when the coach navigates back to it.
+      const overview = refreshRcOverview();
+      void Promise.allSettled([refreshGames(), refreshCoachees(), overview, loadHome(overview)]);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(`${t.saveError} ${localizeRuntimeError(reason, formData.lang)}`);
@@ -2554,7 +2625,7 @@ export default function App() {
             {/* Toggle tabs */}
             <div className="mb-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
               <button
-                onClick={() => { setListTab('home'); if (rcAuth.rcName) void loadHome(); }}
+                onClick={() => setListTab('home')}
                 className={cn(
                   "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center gap-1.5",
                   listTab === 'home'
@@ -2590,10 +2661,10 @@ export default function App() {
               <button
                 onClick={() => {
                   setListTab('rcOverview');
-                  // Plain RC sessions land directly on their own detail.
+                  // Plain RC sessions land directly on their own detail — whose
+                  // data the bootstrap already fetched, so this is instant.
                   if (!isPrivileged && rcAuth.rcName) void handleSelectRc(rcAuth.rcName);
                   else setSelectedRcName(null);
-                  if (rcOverviewData.length === 0) void refreshRcOverview();
                 }}
                 className={cn(
                   "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
@@ -2646,8 +2717,22 @@ export default function App() {
                     <p className="text-sm text-stone-500">{de ? 'Deine Coaching-Übersicht' : 'Your coaching overview'}</p>
                   </div>
 
-                  {homeLoading && !homeData ? (
-                    <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-stone-300" /></div>
+                  {(homeLoading || booting) && !homeData ? (
+                    // Same shape as the loaded dashboard — counters, then a list.
+                    <div className="space-y-4" role="status" aria-busy="true">
+                      <div className="grid grid-cols-3 gap-2">
+                        <Skeleton className="h-[76px] rounded-xl" />
+                        <Skeleton className="h-[76px] rounded-xl" />
+                        <Skeleton className="h-[76px] rounded-xl" />
+                      </div>
+                      <Skeleton className="h-4 w-40" />
+                      <div className="space-y-1.5">
+                        <Skeleton className="h-[58px] rounded-lg" />
+                        <Skeleton className="h-[58px] rounded-lg" />
+                        <Skeleton className="h-[58px] rounded-lg" />
+                        <Skeleton className="h-[58px] rounded-lg" />
+                      </div>
+                    </div>
                   ) : homeData ? (
                     <>
                       {/* Counters */}
@@ -2987,7 +3072,10 @@ export default function App() {
             {/* Coachees table */}
             {listTab === 'coachees' && (
               <div className="border border-stone-200 rounded">
-                {filteredCoachees.length === 0 ? (
+                {coachees.length === 0 && (booting || loadingCoachees) ? (
+                  // Still loading — a skeleton, never the "nothing found" state.
+                  <SkeletonRows rows={8} />
+                ) : filteredCoachees.length === 0 ? (
                   <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><Users size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noCoachees}</p></div>
                 ) : (
                   <>
@@ -3134,7 +3222,9 @@ export default function App() {
                     ) : null;
                   })()}
                   <div className="border border-stone-200 rounded">
-                    {filteredGames.length === 0 ? (
+                    {eligibleGames.length === 0 && (booting || loadingGames) ? (
+                      <SkeletonRows rows={8} />
+                    ) : filteredGames.length === 0 ? (
                       <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><CalendarDays size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noGames}</p></div>
                     ) : (
                       <>
@@ -3523,8 +3613,10 @@ export default function App() {
                     </button>
                   </div>
                 )}
-                {rcOverviewLoading ? (
-                  <p className="text-sm text-stone-500 py-4">{t.loading}</p>
+                {(booting || rcOverviewLoading) && rcOverviewData.length === 0 && !selectedRcName ? (
+                  // Only when there is nothing to show yet — a background
+                  // refresh keeps the current table on screen.
+                  <div className="border border-stone-200 rounded"><SkeletonRows rows={6} /></div>
                 ) : selectedRcName ? (
                   <div>
                     <button
@@ -3535,8 +3627,8 @@ export default function App() {
                       {t.rcBackToOverview}
                     </button>
                     <h3 className="text-base font-semibold text-stone-800 mb-4">{selectedRcName}</h3>
-                    {rcCoachSummaryLoading ? (
-                      <p className="text-sm text-stone-500">{t.loading}</p>
+                    {(booting || rcCoachSummaryLoading) && rcCoachSummaryData.length === 0 ? (
+                      <div className="border border-stone-200 rounded"><SkeletonRows rows={5} pill={false} /></div>
                     ) : rcCoachSummaryData.length === 0 ? (
                       <p className="text-sm text-stone-500">{t.rcNoData}</p>
                     ) : (
@@ -3693,7 +3785,7 @@ export default function App() {
           </div>
           <div className="border border-stone-200 rounded">
             {loadingCoacheeGames ? (
-              <p className="text-sm text-stone-500 p-4">{t.loading}</p>
+              <SkeletonRows rows={5} />
             ) : coacheeGames.length === 0 ? (
               <p className="text-sm text-stone-500 p-4">{t.noCoacheeGames}</p>
             ) : (() => {
@@ -3852,7 +3944,9 @@ export default function App() {
             </div>
           </div>
           <div className="space-y-4 max-h-[70vh] overflow-auto">
-            {sortedCalendarDays.length === 0 ? (
+            {sortedCalendarDays.length === 0 && (booting || loadingCalendar) ? (
+              <div className="border border-stone-200 rounded"><SkeletonRows rows={5} /></div>
+            ) : sortedCalendarDays.length === 0 ? (
               <p className="text-sm text-stone-500">{t.noGames}</p>
             ) : (
               sortedCalendarDays.map((day) => (

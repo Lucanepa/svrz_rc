@@ -15,6 +15,7 @@ import {
   type CoacheeTarget, type CoacheeTargetMap, type TargetRole,
 } from '../lib/niveauTargets';
 import LevelText from './LevelText';
+import { Skeleton, SkeletonRows } from './Skeleton';
 import { BUILD_INFO } from '../lib/buildInfo';
 
 type Lang = 'DE' | 'EN';
@@ -61,6 +62,7 @@ const STR = {
     delCoachee: (n: string) => `Coachee „${n}" löschen?`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
     noRcs: 'Keine Referee Coaches.', delRc: (n: string) => `RC „${n}" löschen?`, inactive: 'inaktiv',
     genPin: 'PIN erzeugen', hasPin: 'PIN gesetzt', noPin: 'kein PIN',
+    colName: 'Name', colPin: 'PIN', colActions: 'Aktionen',
     genPinConfirm: (n: string) => `Neuen PIN für „${n}" erzeugen? Ein bestehender PIN wird ungültig und der neue PIN wird per E-Mail zugestellt.`,
     pinShownInfo: (p: string) => `PIN: ${p}`,
     pinEmailed: (e: string) => `Per E-Mail an ${e} gesendet.`,
@@ -101,6 +103,7 @@ const STR = {
     delCoachee: (n: string) => `Delete coachee "${n}"?`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
     noRcs: 'No referee coaches.', delRc: (n: string) => `Delete RC "${n}"?`, inactive: 'inactive',
     genPin: 'Generate PIN', hasPin: 'PIN set', noPin: 'no PIN',
+    colName: 'Name', colPin: 'PIN', colActions: 'Actions',
     genPinConfirm: (n: string) => `Generate a new PIN for "${n}"? Any existing PIN stops working and the new PIN is emailed to the RC.`,
     pinShownInfo: (p: string) => `PIN: ${p}`,
     pinEmailed: (e: string) => `Emailed to ${e}.`,
@@ -158,6 +161,7 @@ export default function AdminConsole() {
   const [submitting, setSubmitting] = useState(false);
   const [tab, setTab] = useState<'coachees' | 'rcs' | 'emails' | 'settings'>('coachees');
   const [testMode, setTestMode] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(true);
   const [groups, setGroups] = useState<string[]>([]);
   const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
   const [leagueOptions, setLeagueOptions] = useState<string[]>([]);
@@ -169,8 +173,18 @@ export default function AdminConsole() {
   const toggleLang = () => setLang((l) => { const n = l === 'DE' ? 'EN' : 'DE'; try { localStorage.setItem('svrz_admin_lang', n); } catch { /* ignore */ } return n; });
 
   useEffect(() => { getAdminAuthStatus().then((s) => setAuthed(Boolean(s.authenticated))).catch(() => {}).finally(() => setChecking(false)); }, []);
-  useEffect(() => { if (authed) getSettings().then((s) => { setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); setCoacheeTargets(s.coachee_targets || {}); if (s.default_season) setDefaultSeason(s.default_season); }).catch(() => {}); }, [authed]);
-  useEffect(() => { if (authed) loadEligibleGames().then((games) => { setLeagueOptions(Array.from(new Set(games.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort()); }).catch(() => {}); }, [authed]);
+  // Console-wide data, fetched once and in parallel as soon as the session is
+  // known; each tab loads its own rows at the same time (all tabs are mounted).
+  useEffect(() => {
+    if (!authed) return;
+    getSettings()
+      .then((s) => { setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); setCoacheeTargets(s.coachee_targets || {}); if (s.default_season) setDefaultSeason(s.default_season); })
+      .catch(() => {})
+      .finally(() => setSettingsLoading(false));
+    loadEligibleGames()
+      .then((games) => { setLeagueOptions(Array.from(new Set(games.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort()); })
+      .catch(() => {});
+  }, [authed]);
   const saveTargets = useCallback(async (next: CoacheeTargetMap) => { setCoacheeTargets(next); try { await putSettings({ coachee_targets: next }); } catch { /* ignore */ } }, []);
 
   const login = async (e: React.FormEvent) => {
@@ -236,11 +250,14 @@ export default function AdminConsole() {
           ))}
         </div>
       </header>
+      {/* All four tabs stay mounted: their data is fetched in one parallel
+          batch on the first render after login, so switching tabs shows the
+          finished page instead of starting that tab's request right then. */}
       <main className="max-w-4xl mx-auto px-4 pt-5">
-        {tab === 'coachees' && <CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} />}
-        {tab === 'rcs' && <RcsAdmin t={t} />}
-        {tab === 'emails' && <EmailsAdmin t={t} />}
-        {tab === 'settings' && <SettingsAdmin t={t} onTestMode={setTestMode} groups={groups} onGroups={setGroups} />}
+        <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} /></div>
+        <div hidden={tab !== 'rcs'}><RcsAdmin t={t} /></div>
+        <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
+        <div hidden={tab !== 'settings'}><SettingsAdmin t={t} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} /></div>
         <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
       </main>
     </div>
@@ -432,6 +449,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
               )}
             </div>
           ))}
+          {loading && all.length === 0 && <SkeletonRows rows={6} />}
           {!loading && rows.length === 0 && <p className="py-8 text-center text-sm text-stone-400">{t.noCoachees(seasonLabel(season))}</p>}
         </div>
       </Card>
@@ -485,51 +503,90 @@ function RcsAdmin({ t }: { t: T }) {
       </Card>
       <Card>
         <p className="text-xs text-stone-400 mb-2">{loading ? t.loading : t.rcCount(rcs.length)}</p>
-        <div className="divide-y divide-stone-100">
-          {rcs.map((r) => editId === r.id ? (
-            <div key={r.id} className="py-2 grid grid-cols-2 sm:grid-cols-5 gap-2 items-center">
-              <input className={input} value={editForm.first_name || ''} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
-              <input className={input} value={editForm.last_name || ''} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
-              <input className={input} value={editForm.email || ''} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
-              <input className={input} value={editForm.phone || ''} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
-              <div className="flex gap-1.5"><button onClick={() => saveEdit(r.id)} className={btnPrimary}><Check size={15} /></button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
-            </div>
-          ) : (
-            <div key={r.id} className="py-2">
-              <div className="flex items-center gap-3">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-stone-800 truncate">
-                    {r.first_name} {r.last_name}{r.active === false ? ` · ${t.inactive}` : ''}
-                    {r.is_admin && <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5"><ShieldCheck size={10} />{t.adminRole}</span>}
-                  </p>
-                  <p className="text-xs text-stone-400 truncate">
-                    {r.email}{r.phone ? ` · ${r.phone}` : ''}{(r.email || r.phone) ? ' · ' : ''}
-                    <span className={r.has_pin ? 'text-green-600' : 'text-amber-600'}>{r.has_pin ? t.hasPin : t.noPin}</span>
-                  </p>
-                </div>
-                <button onClick={() => toggleAdmin(r)} className={cn(btnGhost, r.is_admin && 'text-red-600')} title={t.toggleAdmin}>
-                  <ShieldCheck size={13} />
-                </button>
-                <button onClick={() => genPin(r)} disabled={pinBusy === r.id} className={btnGhost} title={t.genPin}>
-                  {pinBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
-                </button>
-                <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost}><Pencil size={13} /></button>
-                <button onClick={() => remove(r)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
-              </div>
-              {pinShown?.id === r.id && (
-                <div className="mt-1.5 flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-                  <p className="text-xs text-amber-800 flex-1">
-                    <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
-                    {' — '}
-                    {pinShown.emailed ? t.pinEmailed(pinShown.email) : t.pinNotEmailed}
-                  </p>
-                  <button onClick={() => setPinShown(null)} className="text-amber-700 hover:text-amber-900"><X size={13} /></button>
-                </div>
-              )}
-            </div>
-          ))}
-          {!loading && rcs.length === 0 && <p className="py-8 text-center text-sm text-stone-400">{t.noRcs}</p>}
+        {/* Table so 12+ coaches stay scannable; scrolls sideways on narrow screens. */}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] text-sm border-collapse">
+            <thead>
+              <tr className="text-[11px] font-bold uppercase tracking-wide text-stone-500 border-b border-stone-200">
+                <th className="text-left font-bold py-2 pr-3">{t.colName}</th>
+                <th className="text-left font-bold py-2 pr-3">{t.email}</th>
+                <th className="text-left font-bold py-2 pr-3">{t.phone}</th>
+                <th className="text-left font-bold py-2 pr-3">{t.colPin}</th>
+                <th className="text-right font-bold py-2">{t.colActions}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone-100">
+              {rcs.map((r) => editId === r.id ? (
+                <tr key={r.id}>
+                  <td className="py-2 pr-3">
+                    <div className="flex gap-1.5">
+                      <input className={`${input} w-full`} placeholder={t.firstName} value={editForm.first_name || ''} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
+                      <input className={`${input} w-full`} placeholder={t.lastName} value={editForm.last_name || ''} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
+                    </div>
+                  </td>
+                  <td className="py-2 pr-3"><input className={`${input} w-full`} value={editForm.email || ''} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} /></td>
+                  <td className="py-2 pr-3"><input className={`${input} w-full`} value={editForm.phone || ''} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} /></td>
+                  <td className="py-2 pr-3 text-stone-400 text-xs">{r.has_pin ? t.hasPin : t.noPin}</td>
+                  <td className="py-2">
+                    <div className="flex items-center justify-end gap-1.5">
+                      <button onClick={() => saveEdit(r.id)} className={btnPrimary}><Check size={15} /></button>
+                      <button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                <React.Fragment key={r.id}>
+                  <tr className="hover:bg-stone-50/70 transition-colors">
+                    <td className="py-2.5 pr-3">
+                      <span className="font-medium text-stone-800 whitespace-nowrap">{r.first_name} {r.last_name}</span>
+                      {r.active === false && <span className="ml-1.5 text-xs text-stone-400">· {t.inactive}</span>}
+                      {r.is_admin && (
+                        <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 align-middle">
+                          <ShieldCheck size={10} />{t.adminRole}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-2.5 pr-3 text-stone-500">{r.email}</td>
+                    <td className="py-2.5 pr-3 text-stone-500 whitespace-nowrap">{r.phone}</td>
+                    <td className="py-2.5 pr-3 whitespace-nowrap">
+                      <span className={cn('text-xs font-medium', r.has_pin ? 'text-green-600' : 'text-amber-600')}>
+                        {r.has_pin ? t.hasPin : t.noPin}
+                      </span>
+                    </td>
+                    <td className="py-2.5">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button onClick={() => toggleAdmin(r)} className={cn(btnGhost, r.is_admin && 'text-red-600')} title={t.toggleAdmin}>
+                          <ShieldCheck size={13} />
+                        </button>
+                        <button onClick={() => genPin(r)} disabled={pinBusy === r.id} className={btnGhost} title={t.genPin}>
+                          {pinBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
+                        </button>
+                        <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost} title={t.edit}><Pencil size={13} /></button>
+                        <button onClick={() => remove(r)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                  {pinShown?.id === r.id && (
+                    <tr>
+                      <td colSpan={5} className="pb-2">
+                        <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+                          <p className="text-xs text-amber-800 flex-1">
+                            <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
+                            {' — '}
+                            {pinShown.emailed ? t.pinEmailed(pinShown.email) : t.pinNotEmailed}
+                          </p>
+                          <button onClick={() => setPinShown(null)} className="text-amber-700 hover:text-amber-900"><X size={13} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
         </div>
+        {loading && rcs.length === 0 && <SkeletonRows rows={6} />}
+        {!loading && rcs.length === 0 && <p className="py-8 text-center text-sm text-stone-400">{t.noRcs}</p>}
       </Card>
     </>
   );
@@ -568,7 +625,18 @@ function EmailsAdmin({ t }: { t: T }) {
     finally { setPreviewLoading(false); }
   };
 
-  if (!data) return <Card><p className="text-sm text-stone-400">{err || t.loading}</p></Card>;
+  if (!data) return (
+    <Card>
+      {err ? <p className="text-sm text-red-600">{err}</p> : (
+        <div className="space-y-3" role="status" aria-busy="true">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-9 w-full rounded-lg" />
+          <Skeleton className="h-9 w-full rounded-lg" />
+          <Skeleton className="h-48 w-full rounded-lg" />
+        </div>
+      )}
+    </Card>
+  );
 
   const editor = (kind: 'feedback' | 'reminder', title: string, hint: string) => {
     const tpl = data[kind];
@@ -670,21 +738,23 @@ function EmailsAdmin({ t }: { t: T }) {
   );
 }
 
-function SettingsAdmin({ t, onTestMode, groups, onGroups }: { t: T; onTestMode: (v: boolean) => void; groups: string[]; onGroups: (g: string[]) => void }) {
-  const [season, setSeason] = useState<number>(CUR_SEASON);
-  const [testMode, setTm] = useState(false);
+// Settings are fetched once by the console shell and handed down — this tab
+// never issues its own /api/settings request.
+function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups }: { t: T; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void }) {
+  const [season, setSeason] = useState<number>(defaultSeason);
+  const seasonTouched = useRef(false);
+  useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
   const [saved, setSaved] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const loading = settingsLoading;
   const [ng, setNg] = useState('');
   const [gi, setGi] = useState<number | null>(null);
   const [gv, setGv] = useState('');
-  useEffect(() => { getSettings().then((s) => { if (s.default_season) setSeason(s.default_season); setTm(Boolean(s.test_mode)); onTestMode(Boolean(s.test_mode)); }).catch(() => {}).finally(() => setLoading(false)); }, [onTestMode]);
   const saveGroups = async (next: string[]) => { onGroups(next); try { await putSettings({ groups: next }); } catch { /* ignore */ } };
   const addGroup = () => { const v = ng.trim(); if (!v || groups.includes(v)) return; setNg(''); void saveGroups([...groups, v].sort()); };
   const delGroup = (i: number) => void saveGroups(groups.filter((_, idx) => idx !== i));
   const saveEditGroup = (i: number) => { const v = gv.trim(); if (v) { const next = groups.slice(); next[i] = v; void saveGroups(Array.from(new Set(next)).sort()); } setGi(null); };
   const save = async () => { await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
-  const toggleTest = async () => { const next = !testMode; setTm(next); onTestMode(next); try { await putSettings({ test_mode: next }); } catch { setTm(!next); onTestMode(!next); } };
+  const toggleTest = async () => { const next = !testMode; onTestMode(next); try { await putSettings({ test_mode: next }); } catch { onTestMode(!next); } };
   return (
     <>
       <Card>

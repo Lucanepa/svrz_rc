@@ -105,7 +105,23 @@ app.use(cors({
   // OPTIONS instead of sending one per request.
   maxAge: 86_400,
 }));
-app.use(express.json({ limit: '8mb' }));
+// A submitted feedback carries the finished PDF as base64 in the body, and that
+// PDF is a raster of the form as it was laid out on the coach's screen — so a
+// wide monitor produces a far bigger upload than a laptop for the very same
+// form. The client now bounds the raster (see generatePdfBase64), but keep real
+// headroom here: hitting this limit costs a coach the whole filled-in form.
+app.use(express.json({ limit: '32mb' }));
+
+// body-parser rejects an oversized body by throwing, which the generic handler
+// reports as a bare 500 "Internal server error" — after a long upload, with no
+// hint that the size was the problem. Name it.
+app.use((err: unknown, _req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
+  if ((err as { type?: string })?.type === 'entity.too.large') {
+    res.status(413).json({ error: 'Das Formular ist zu gross zum Senden (PDF). Bitte im Support melden.' });
+    return;
+  }
+  next(err);
+});
 
 // ── Request logging ───────────────────────────────────────────────────
 // Every request gets an id that ties together each line emitted while handling

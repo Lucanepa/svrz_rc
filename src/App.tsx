@@ -595,9 +595,26 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
 const dropScreenOnly = (node: HTMLElement): boolean =>
   !(node instanceof HTMLElement && node.classList?.contains('no-print'));
 
+// html-to-image rasterises the element exactly as it sits on screen, so the PNG
+// — and with it the upload — grows with the coach's window. The same form is a
+// couple of MB on a laptop and blows the request body limit on a wide monitor,
+// which cost a filled-in form a 500 after a 17-second upload. Bound the raster
+// instead of trusting the viewport: 12 MP still prints crisply at A4.
+const PDF_MAX_RASTER_PIXELS = 12_000_000;
+
+function boundedPixelRatio(element: HTMLElement, requested: number): number {
+  const width = element.offsetWidth || element.getBoundingClientRect().width;
+  const height = element.scrollHeight || element.getBoundingClientRect().height;
+  if (!width || !height) return requested;
+  const fits = Math.sqrt(PDF_MAX_RASTER_PIXELS / (width * height));
+  // Never upscale past what was asked for, and never below 1: downsampling the
+  // form below its own CSS pixels makes the small print unreadable.
+  return Math.max(1, Math.min(requested, fits));
+}
+
 async function generatePdfBase64(element: HTMLElement, pixelRatio: number): Promise<string> {
   const imageData = await toPng(element, {
-    pixelRatio,
+    pixelRatio: boundedPixelRatio(element, pixelRatio),
     backgroundColor: '#ffffff',
     filter: dropScreenOnly,
   });

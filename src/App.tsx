@@ -586,15 +586,18 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
   );
 }
 
+// `.no-print` only hides things through a @media print rule, which
+// html-to-image does NOT apply — it rasterises the on-screen DOM. Every capture
+// must pass this, or screen-only controls (the signature button, the Tips &
+// Tricks box, the "edit larger" buttons) get baked into the PDF.
+const dropScreenOnly = (node: HTMLElement): boolean =>
+  !(node instanceof HTMLElement && node.classList?.contains('no-print'));
+
 async function generatePdfBase64(element: HTMLElement, pixelRatio: number): Promise<string> {
   const imageData = await toPng(element, {
     pixelRatio,
     backgroundColor: '#ffffff',
-    // `.no-print` only hides things via a @media print rule, which html-to-image
-    // does NOT apply — it rasterises the on-screen DOM. Without this filter the
-    // screen-only controls inside the form (the "Unterschrift einholen" button
-    // and the whole Tips & Tricks box) were baked into the emailed PDF.
-    filter: (node) => !(node instanceof HTMLElement && node.classList?.contains('no-print')),
+    filter: dropScreenOnly,
   });
 
   const img = new Image();
@@ -1667,6 +1670,7 @@ export default function App() {
     const imageData = await toPng(printableRef.current, {
       pixelRatio: 2,
       backgroundColor: '#ffffff',
+      filter: dropScreenOnly,
     });
 
     // Decode image dimensions for PDF sizing
@@ -1712,7 +1716,7 @@ export default function App() {
       if (!ref.current) continue;
       if (page > 0) pdf.addPage();
       page++;
-      const imageData = await toPng(ref.current, { pixelRatio: 1.5, backgroundColor: '#ffffff' });
+      const imageData = await toPng(ref.current, { pixelRatio: 1.5, backgroundColor: '#ffffff', filter: dropScreenOnly });
       const img = new Image();
       await new Promise<void>((resolve) => { img.onload = () => resolve(); img.src = imageData; });
       const usableW = a4W - margin * 2, usableH = a4H - margin * 2;

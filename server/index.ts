@@ -1037,21 +1037,24 @@ function mapIncomingGame(raw: Record<string, unknown>) {
 async function upsertGame(gameData: ReturnType<typeof mapIncomingGame>) {
   await ensureAdminAuth();
   return withCollection(collectionCandidates.games, async (games) => {
-    const externalId = gameData.external_id;
+    // Try every key in turn instead of committing to the first one. Filtering on
+    // a column the collection doesn't declare *throws*, and `external_id` has
+    // never existed in this schema — so that branch used to swallow the error
+    // and fall through to create(), duplicating every game a sync re-touched.
+    // match_no (VM's game number) is the real identity; match_date must stay out
+    // of the key because a postponed game changes date and would duplicate.
+    const filters = [
+      gameData.external_id ? `external_id = "${escapeFilterValue(gameData.external_id)}"` : '',
+      gameData.match_no ? `match_no = "${escapeFilterValue(gameData.match_no)}"` : '',
+    ].filter(Boolean);
+
     let existing: AnyRecord | null = null;
-    if (externalId) {
-      const filter = `external_id = "${escapeFilterValue(externalId)}"`;
+    for (const filter of filters) {
       try {
         existing = await games.getFirstListItem<AnyRecord>(filter);
+        break;
       } catch {
-        existing = null;
-      }
-    } else if (gameData.match_no && gameData.match_date) {
-      const filter = `match_no = "${escapeFilterValue(gameData.match_no)}" && match_date = "${escapeFilterValue(gameData.match_date)}"`;
-      try {
-        existing = await games.getFirstListItem<AnyRecord>(filter);
-      } catch {
-        existing = null;
+        existing = null; // no match, or the column doesn't exist — try the next key
       }
     }
 

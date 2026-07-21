@@ -112,14 +112,19 @@ SMTP_USER="..."
 SMTP_PASS="..."
 SMTP_FROM="coaching-feedback@svrz.ch"
 
-FEEDBACK_CC="rc_coaching@volleyball.lucanepa.com"
+# Who gets the feedback report (PDF) in BCC. Comma-separated for more than one.
+FEEDBACK_CC="rc_coaching@volleyball.lucanepa.com,rekom.zuerich@gmail.com"
 FEEDBACK_EMAIL_TEST="1"              # 1 => redirect all emails to test recipient
 FEEDBACK_TEST_RECIPIENT="you@..."
 
-# Who may READ the post-visit survey responses. Admin rights do NOT open that
-# view — only this address does. Deliberately env, not an app setting, so no
-# admin can name themselves the reader. Unset => nobody can read them.
+# Who may READ the post-visit survey responses in the tool. Admin rights do NOT
+# open that view — only this address does. Deliberately env, not an app setting,
+# so no admin can name themselves the reader. Must match the address she LOGS IN
+# with (her referee_coaches record). Unset => nobody can read them.
 SURVEY_READER_EMAIL="rc-praesidium@example.com"
+
+# Where each submitted survey is mailed as it arrives. Unset => stored only.
+SURVEY_NOTIFY_EMAIL="rekom.zuerich@gmail.com"
 ```
 
 `FEEDBACK_SURVEY_URL` is gone: the post-visit survey is now a page in this app

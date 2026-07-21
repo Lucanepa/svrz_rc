@@ -8,6 +8,9 @@ import helmet from 'helmet';
 import { createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scryptSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { log, query as queryLogs, sessions as logSessions, ringStats, pruneLogFiles, record as recordLog, type LogLevel, type LogSource } from './logstore.ts';
+// Shared with the survey page so the mailed copy can never drift from the form
+// the coachee actually filled in. Pure data — no browser dependencies.
+import { SURVEY_QUESTIONS, questionLabel, type SurveyLang } from '../src/lib/survey.ts';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -2696,7 +2699,16 @@ const SURVEY_COLLECTION = 'rc_visit_feedback';
 // form promises "Einsicht hat nur die RC-Vorsitzende", and an admin who could
 // name the reader from the admin console would simply be naming themselves.
 // Admin rights are not enough here — this is the one view the role doesn't open.
-const SURVEY_READER_EMAIL = (process.env.SURVEY_READER_EMAIL || '').trim().toLowerCase();
+// Comma-separated, because the gate matches the address the reader LOGS IN
+// with — her referee_coaches record — which is not necessarily the role mailbox
+// the responses are thought of as belonging to. Listing both beats a silent 403
+// that looks exactly like "not configured yet".
+const SURVEY_READER_EMAILS = new Set(
+  (process.env.SURVEY_READER_EMAIL || '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+);
 
 // The caller's own email, from whichever session they hold.
 async function callerEmail(req: Request): Promise<string> {
@@ -2712,9 +2724,9 @@ async function callerEmail(req: Request): Promise<string> {
 async function requireSurveyReader(req: Request, res: ExpressResponse, next: () => void) {
   // Unconfigured fails CLOSED. "Nobody can read them yet" is a recoverable
   // mistake; "every admin can" is the exact thing this gate exists to prevent.
-  if (!SURVEY_READER_EMAIL) { res.status(403).json({ error: 'Forbidden' }); return; }
+  if (SURVEY_READER_EMAILS.size === 0) { res.status(403).json({ error: 'Forbidden' }); return; }
   try {
-    if (await callerEmail(req) === SURVEY_READER_EMAIL) { next(); return; }
+    if (SURVEY_READER_EMAILS.has(await callerEmail(req))) { next(); return; }
   } catch (error) {
     console.error('[survey] reader check failed:', error);
     res.status(503).json({ error: 'Auth backend unavailable' });
@@ -2723,9 +2735,64 @@ async function requireSurveyReader(req: Request, res: ExpressResponse, next: () 
   res.status(403).json({ error: 'Forbidden' });
 }
 
+// Where a submitted survey is mailed. Separate from SURVEY_READER_EMAIL on
+// purpose: reading the collected responses in the tool and receiving them as
+// they arrive are different jobs for different people.
+const SURVEY_NOTIFY_EMAILS = (process.env.SURVEY_NOTIFY_EMAIL || '')
+  .split(',').map((e) => e.trim()).filter(Boolean);
+
+// Mails one submitted survey. Never throws: the coachee has already answered,
+// and losing their response because SMTP hiccuped would be the worst outcome
+// here — the tool stays the canonical copy either way.
+async function sendSurveyNotification(rec: AnyRecord, answers: Record<string, string>, lang: SurveyLang): Promise<void> {
+  if (SURVEY_NOTIFY_EMAILS.length === 0) return;
+  try {
+    const anonymous = Boolean(rec.anonymous);
+    const matchNo = asText(rec.match_no);
+    const date = asText(rec.match_date);
+    const rows: Array<[string, string]> = [
+      ['Schiedsrichter:in', anonymous ? '(anonym)' : asText(rec.referee_name)],
+      ['Datum', date],
+      ['Spiel Nr.', matchNo],
+      ['Referee Coach', asText(rec.rc_name)],
+    ];
+    for (const q of SURVEY_QUESTIONS) {
+      const value = answers[q.id];
+      if (!value) continue; // unanswered: the form requires nothing
+      const label = q.kind === 'choice'
+        ? (q.options.find((o) => o.value === value)?.[lang] ?? value)
+        : value;
+      rows.push([questionLabel(q, lang), label]);
+    }
+    const built = buildTemplatedEmail({
+      tpl: {
+        subject: `Feedback zu RC-Besuch – Spiel ${matchNo} (${date})`,
+        heading: 'Feedback zu RC-Besuch',
+        intro: anonymous
+          ? 'Eine anonyme Rückmeldung ist eingegangen.'
+          : 'Eine Rückmeldung ist eingegangen.',
+        outro: '',
+      },
+      vars: {},
+      rows,
+      footerNote: 'Automatisch vom SR-Coaching-System versendet.',
+    });
+    await smtpTransport.sendMail({
+      from: MAIL_FROM,
+      to: SURVEY_NOTIFY_EMAILS.join(','),
+      subject: built.subject,
+      html: built.html,
+      text: built.text,
+      attachments: emailAttachments(),
+    });
+  } catch (error) {
+    log.warn('survey.notify_failed', 'survey stored but could not be mailed', { error: safeError(error) });
+  }
+}
+
 async function isSurveyReader(req: Request): Promise<boolean> {
-  if (!SURVEY_READER_EMAIL) return false;
-  try { return await callerEmail(req) === SURVEY_READER_EMAIL; } catch { return false; }
+  if (SURVEY_READER_EMAILS.size === 0) return false;
+  try { return SURVEY_READER_EMAILS.has(await callerEmail(req)); } catch { return false; }
 }
 const SURVEY_MAX_ANSWERS = 50;
 const SURVEY_MAX_ANSWER_LEN = 5000;
@@ -2803,6 +2870,9 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
       anonymous, lang, answers,
       submitted: true, submitted_at: new Date().toISOString(),
     });
+    // Built from what was STORED, not from the request, so an anonymous
+    // submission cannot leak a name into the mail.
+    await sendSurveyNotification({ ...rec, anonymous, referee_name: anonymous ? '' : asText(rec.referee_name) }, answers, lang);
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -2867,6 +2937,46 @@ app.get('/api/eligible-games', requireRcSession, async (_req: Request, res: Expr
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
+});
+
+// ── Manual games (admin) ──────────────────────────────────────────────
+// VolleyManager is the normal source of games; this is the escape hatch for
+// fixtures it doesn't carry — friendlies, ad-hoc entries, and throwaway games
+// used to test the full observation → PDF → e-mail flow end to end.
+app.post('/api/admin/games', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const d = (req.body ?? {}) as Record<string, unknown>;
+    const matchDate = asText(d.match_date);
+    if (!matchDate) { res.status(400).json({ error: 'match_date ist erforderlich.' }); return; }
+    if (Number.isNaN(new Date(matchDate).getTime())) { res.status(400).json({ error: 'match_date ist kein gültiges Datum.' }); return; }
+    const created = await withCollection(collectionCandidates.games, (c) => c.create({
+      // A recognisable default so a manual game is obvious in any list.
+      match_no: asText(d.match_no) || `TEST-${Date.now().toString().slice(-6)}`,
+      league: asText(d.league),
+      match_date: matchDate,
+      location: asText(d.location),
+      home_team: asText(d.home_team),
+      away_team: asText(d.away_team),
+      first_referee: asText(d.first_referee),
+      second_referee: asText(d.second_referee),
+      assigned_rc: asText(d.assigned_rc),
+    }));
+    res.status(201).json(created);
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// Deleting a game leaves any feedback that referenced it dangling, so this is
+// meant for cleaning up a throwaway fixture, not for pruning real history.
+app.delete('/api/admin/games/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const id = String(req.params.id);
+    const set = await getStarredGameIds();
+    if (set.delete(id)) await setSetting('starred_games', JSON.stringify([...set]));
+    await withCollection(collectionCandidates.games, (c) => c.delete(id));
+    res.json({ ok: true });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
 app.put('/api/admin/games/:id/star', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -3853,7 +3963,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           ['Ort', asText(game.location)],
           ['Mannschaften', `${asText(game.home_team)} vs ${asText(game.away_team)}`],
           ['Beurteilte Rolle', String(role)],
-          ['Schiedsrichter-Coach', asText(formData.meta?.rc)],
+          ['Referee Coach', asText(formData.meta?.rc)],
         ],
         tips: String(tipsAndTricks || ''),
         surveyUrl,
@@ -3881,8 +3991,10 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         // RC email in CC
         const ccList = rcEmail ? [rcEmail] : [];
         mailCc = ccList.length > 0 ? ccList : undefined;
-        // Coaching address (FEEDBACK_CC) in BCC
-        const bccList = [process.env.FEEDBACK_CC].filter(Boolean) as string[];
+        // Coaching address(es) (FEEDBACK_CC) in BCC. Comma-separated, so the
+        // report can reach more than one mailbox — e.g. the coaching inbox and
+        // the RC commission — without a code change.
+        const bccList = asText(process.env.FEEDBACK_CC).split(',').map((e) => e.trim()).filter(Boolean);
         mailBcc = bccList.length > 0 ? bccList : undefined;
         mailSubject = subject;
       }

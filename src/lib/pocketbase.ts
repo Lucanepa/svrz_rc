@@ -472,6 +472,35 @@ export async function deleteRcPerson(id: string) {
   if (!r.ok) throw new Error(await r.text());
 }
 
+// ── Manual games (admin) ──────────────────────────────────────────────
+// For fixtures VolleyManager doesn't carry, and for throwaway games used to
+// test the whole observation → PDF → e-mail flow against real infrastructure.
+export type NewGame = {
+  match_date: string;   // required, ISO
+  match_no?: string;
+  league?: string;
+  location?: string;
+  home_team?: string;
+  away_team?: string;
+  first_referee?: string;
+  second_referee?: string;
+  assigned_rc?: string;
+};
+
+export async function createGame(game: NewGame): Promise<{ id: string; match_no?: string }> {
+  const r = await fetch(apiUrl('/api/admin/games'), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(game),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not create game');
+  return r.json();
+}
+
+export async function deleteGame(id: string): Promise<void> {
+  const r = await fetch(apiUrl(`/api/admin/games/${id}`), { method: 'DELETE', credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not delete game');
+}
+
 // ── Editable email templates (admin) ──────────────────────────────────
 export type EmailTemplate = { subject: string; heading: string; intro: string; outro: string };
 export type EmailTemplates = {

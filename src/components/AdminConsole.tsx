@@ -7,7 +7,7 @@ import {
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson, generateRcPin,
   getSettings, putSettings, loadEligibleGames,
-  getEmailTemplates, putEmailTemplates, getReminderPreview,
+  getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame,
   getAdminLogs, getAdminLogSessions, listSurveyResponses,
   type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplates, type ReminderPreview,
   type LogEntry, type LogSession, type SurveyResponse,
@@ -75,6 +75,12 @@ const STR = {
     noRcs: 'Keine Referee Coaches.', delRc: (n: string) => `RC „${n}" löschen?`, inactive: 'inaktiv',
     genPin: 'PIN erzeugen', hasPin: 'PIN gesetzt', noPin: 'kein PIN',
     colName: 'Name', colPin: 'PIN', colActions: 'Aktionen',
+    mgTitle: 'Manuelles Spiel / Testspiel',
+    mgHint: 'Für Spiele, die nicht aus VolleyManager kommen. Die SR-Namen müssen exakt einem Coachee entsprechen, sonst findet das Feedback keinen Empfänger. Testspiele danach wieder löschen.',
+    mgDate: 'Datum', mgMatchNo: 'Spiel-Nr. (optional)', mgLeague: 'Liga', mgLocation: 'Ort',
+    mgHome: 'Heim', mgAway: 'Gast', mgRef1: '1. SR (= Coachee)', mgRef2: '2. SR', mgRc: 'Referee Coach',
+    mgCreate: 'Spiel anlegen', mgDelete: 'Spiel löschen',
+    mgCreated: (n: string) => `Angelegt: ${n}`,
     genPinConfirm: (n: string) => `Neuen PIN für „${n}" erzeugen? Ein bestehender PIN wird ungültig und der neue PIN wird per E-Mail zugestellt.`,
     pinShownInfo: (p: string) => `PIN: ${p}`,
     pinEmailed: (e: string) => `Per E-Mail an ${e} gesendet.`,
@@ -125,6 +131,12 @@ const STR = {
     noRcs: 'No referee coaches.', delRc: (n: string) => `Delete RC "${n}"?`, inactive: 'inactive',
     genPin: 'Generate PIN', hasPin: 'PIN set', noPin: 'no PIN',
     colName: 'Name', colPin: 'PIN', colActions: 'Actions',
+    mgTitle: 'Manual game / test game',
+    mgHint: 'For games VolleyManager does not carry. Referee names must match a coachee exactly, otherwise the feedback has no recipient. Delete test games afterwards.',
+    mgDate: 'Date', mgMatchNo: 'Match no. (optional)', mgLeague: 'League', mgLocation: 'Venue',
+    mgHome: 'Home', mgAway: 'Away', mgRef1: '1st referee (= coachee)', mgRef2: '2nd referee', mgRc: 'Referee coach',
+    mgCreate: 'Create game', mgDelete: 'Delete game',
+    mgCreated: (n: string) => `Created: ${n}`,
     genPinConfirm: (n: string) => `Generate a new PIN for "${n}"? Any existing PIN stops working and the new PIN is emailed to the RC.`,
     pinShownInfo: (p: string) => `PIN: ${p}`,
     pinEmailed: (e: string) => `Emailed to ${e}.`,
@@ -322,7 +334,10 @@ export default function AdminConsole() {
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         {surveyReader && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
-        <div hidden={tab !== 'settings'}><SettingsAdmin t={t} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} /></div>
+        <div hidden={tab !== 'settings'}>
+          <SettingsAdmin t={t} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} />
+          <ManualGameAdmin t={t} />
+        </div>
         <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
       </main>
     </div>
@@ -1060,6 +1075,78 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
 
 // Settings are fetched once by the console shell and handed down — this tab
 // never issues its own /api/settings request.
+// Create (and delete) a one-off game. VolleyManager is the normal source; this
+// covers fixtures it doesn't carry and throwaway games used to exercise the
+// whole observation → PDF → e-mail flow against the real backend.
+function ManualGameAdmin({ t }: { t: T }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const empty = { match_no: '', league: '', match_date: today, location: '', home_team: '', away_team: '', first_referee: '', second_referee: '', assigned_rc: '' };
+  const [f, setF] = useState(empty);
+  const [busy, setBusy] = useState(false);
+  const [made, setMade] = useState<{ id: string; match_no?: string } | null>(null);
+  const [err, setErr] = useState('');
+  const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
+
+  const create = async () => {
+    setBusy(true); setErr('');
+    try {
+      // The games collection stores a datetime — pin a plausible kick-off.
+      const created = await createGame({ ...f, match_date: `${f.match_date} 20:00:00.000Z` });
+      setMade({ id: created.id, match_no: created.match_no });
+      setF(empty);
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+  const remove = async () => {
+    if (!made) return;
+    setBusy(true); setErr('');
+    try { await deleteGame(made.id); setMade(null); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.mgTitle}</h2>
+      <p className="text-xs text-stone-400 mb-3">{t.mgHint}</p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgDate}</span>
+          <input type="date" className={input} value={f.match_date} onChange={set('match_date')} /></label>
+        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgLeague}</span>
+          <input className={input} placeholder="3L ♂" value={f.league} onChange={set('league')} /></label>
+        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgMatchNo}</span>
+          <input className={input} value={f.match_no} onChange={set('match_no')} /></label>
+        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgHome}</span>
+          <input className={input} value={f.home_team} onChange={set('home_team')} /></label>
+        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgAway}</span>
+          <input className={input} value={f.away_team} onChange={set('away_team')} /></label>
+        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgLocation}</span>
+          <input className={input} value={f.location} onChange={set('location')} /></label>
+        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRef1}</span>
+          <input className={input} value={f.first_referee} onChange={set('first_referee')} /></label>
+        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRef2}</span>
+          <input className={input} value={f.second_referee} onChange={set('second_referee')} /></label>
+        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRc}</span>
+          <input className={input} value={f.assigned_rc} onChange={set('assigned_rc')} /></label>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button onClick={create} disabled={busy || !f.match_date} className={btnPrimary}>
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />} {t.mgCreate}
+        </button>
+        {made && (
+          <>
+            <span className="text-sm text-green-600 font-medium">{t.mgCreated(made.match_no || made.id)}</span>
+            <button onClick={remove} disabled={busy} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors">
+              <Trash2 size={13} /> {t.mgDelete}
+            </button>
+          </>
+        )}
+        {err && <span className="text-sm text-red-600">{err}</span>}
+      </div>
+    </Card>
+  );
+}
+
 function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups }: { t: T; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void }) {
   const [season, setSeason] = useState<number>(defaultSeason);
   const seasonTouched = useRef(false);

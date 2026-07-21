@@ -88,7 +88,8 @@ export const SURVEY_UI = {
   fieldReferee: { DE: 'Schiedsrichter:in', EN: 'Referee' },
   fieldDate: { DE: 'Datum', EN: 'Date' },
   fieldMatchNo: { DE: 'Spiel-Nr.', EN: 'Match no.' },
-  fieldRc: { DE: 'Schiedsrichter-Coach', EN: 'Referee coach' },
+  // "Referee Coach" in both languages — it is what SVRZ calls the role.
+  fieldRc: { DE: 'Referee Coach', EN: 'Referee Coach' },
   anonTitle: { DE: 'Anonym absenden', EN: 'Submit anonymously' },
   anonHelp: {
     DE: 'Dein Name wird nicht mitgeschickt. Spiel, Datum und RC bleiben sichtbar — sonst liesse sich die Rückmeldung nicht zuordnen.',

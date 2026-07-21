@@ -88,6 +88,7 @@ export type DemoEmail = {
   replyTo: string;
   subject: string;
   body: string;        // plain-text body, verbatim to the real mail
+  surveyUrl: string;   // rendered as the mail's button, not as body text ('' = none)
   attachment: string;  // PDF filename ('' = no attachment)
   sentAt: string;
 };
@@ -349,9 +350,11 @@ function buildDemoEmail(game: DemoGame, coachee: Coachee | undefined, form: Feed
   body += `Ort: ${game.location}\n`;
   body += `Mannschaften: ${game.homeTeam} vs ${game.awayTeam}\n`;
   body += `Beurteilte Rolle: ${form.role}\n`;
-  body += `Schiedsrichter-Coach: ${rcName}\n`;
+  body += `Referee Coach: ${rcName}\n`;
   if (tips.trim()) body += `\n--- Tipps & Tricks ---\n${tips}\n`;
-  body += `\nWir freuen uns über Ihr Feedback zum Coaching-Erlebnis:\n${SURVEY_URL}\n`;
+  // The URL itself stays out of the body: the real mail renders it as a button
+  // in the HTML part, and a bare token URL is unreadable in a preview.
+  body += `\nWir freuen uns über Ihr Feedback zum Coaching-Erlebnis:\n`;
   body += `\nDer vollständige Coaching-Feedback-Bericht ist als PDF angehängt.\n`;
   body += `Diese E-Mail wurde automatisch vom SR-Coaching-System versendet.\n`;
   return {
@@ -363,6 +366,7 @@ function buildDemoEmail(game: DemoGame, coachee: Coachee | undefined, form: Feed
     replyTo: RC.email,
     subject: `SR-Coaching Feedback – Spiel ${game.matchNo} (${date})`,
     body,
+    surveyUrl: SURVEY_URL,
     attachment: `SR-Coaching_${game.matchNo}_${(coachee?.full_name || 'SR').replace(/\s+/g, '-')}.pdf`,
     sentAt: new Date().toISOString(),
   };
@@ -400,6 +404,7 @@ ${RC.name}
     replyTo: RC.email,
     subject: 'Coaching-Begleitung bei deinem nächsten Einsatz',
     body,
+    surveyUrl: '', // the reminder goes out before the game — nothing to review yet
     attachment: '',
     sentAt: new Date().toISOString(),
   };

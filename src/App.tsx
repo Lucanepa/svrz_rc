@@ -2538,7 +2538,15 @@ export default function App() {
                     {m.bcc.length > 0 && <div><span className="font-semibold text-stone-500">Bcc:</span> {m.bcc.join(', ')}</div>}
                     <div><span className="font-semibold text-stone-500">{formData.lang === 'DE' ? 'Betreff' : 'Subject'}:</span> {m.subject}</div>
                   </div>
-                  <pre className="px-3 py-2.5 text-[12px] text-stone-700 whitespace-pre-wrap font-sans leading-relaxed">{m.body}</pre>
+                  <pre className="px-3 py-2.5 text-[12px] text-stone-700 whitespace-pre-wrap break-words font-sans leading-relaxed">{m.body}</pre>
+                  {/* The real mail carries this as a button in its HTML part, so the
+                      preview shows a button too — a raw token URL is unreadable and
+                      overflows the box. Inert on purpose: nothing here was sent. */}
+                  {m.surveyUrl && (
+                    <div className="px-3 pb-3 -mt-1">
+                      <span className="inline-block px-5 py-2 rounded-lg bg-emerald-600 text-white text-[12px] font-semibold">Feedback geben</span>
+                    </div>
+                  )}
                   {m.attachment && (
                     <div className="px-3 py-2 border-t border-stone-200 flex items-center gap-2 text-[12px] text-stone-500">
                       <Download size={13} className="shrink-0" /> {m.attachment}

@@ -37,7 +37,7 @@ import {
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import { cn } from './lib/utils';
-import { normalizeCoacheeGroup } from './lib/coacheeGroup';
+import { normalizeCoacheeGroup, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
@@ -1682,6 +1682,9 @@ export default function App() {
         einstufung: einstufung as FeedbackFormData['results']['einstufung'],
         secondBesuch: secondBesuch as FeedbackFormData['results']['secondBesuch'],
         bemerkungen: (fd.get('bemerkungen') as string) || '',
+        highlights: (fd.get('highlights') as string) || '',
+        improvements: (fd.get('improvements') as string) || '',
+        goals: (fd.get('goals') as string) || '',
         srZiel,
       },
     };
@@ -3261,7 +3264,10 @@ export default function App() {
                               selectedCoacheeId === coachee.id ? "bg-red-50" : "hover:bg-stone-50"
                             )}
                           >
-                            <div className="flex items-start gap-2">
+                            {/* Two long status pills used to squeeze the name column
+                                to nothing and overlap it. Stack them under the name
+                                on phones; cap their width beside it on desktop. */}
+                            <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-2">
                               <div className="flex-1 min-w-0">
                                 <div className="font-semibold text-sm text-stone-900">{coachee.full_name}</div>
                                 <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-stone-500">
@@ -3276,7 +3282,7 @@ export default function App() {
                                   )}
                                 </div>
                               </div>
-                              <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                              <div className="flex flex-wrap items-center gap-1 sm:pt-0.5 sm:shrink-0 sm:justify-end sm:max-w-[45%]">
                                 {balls.length > 0 ? balls.map((ball) => (
                                   <span
                                     key={ball.key}
@@ -4883,6 +4889,37 @@ export default function App() {
 }
 
 /* ── Manual Upload Modal ── */
+// Grade picker for the manual-upload form. Buttons instead of a <select>, so a
+// grade is one tap instead of a 16-entry list covering the screen; the value
+// still reaches the form via a hidden input, so FormData is unchanged.
+function RatingPicker({ name, options, allowNA }: { name: string; options: readonly string[]; allowNA: boolean }) {
+  const [value, setValue] = useState('');
+  const pick = (v: string) => setValue((cur) => (cur === v ? '' : v)); // tap again to clear
+  const btn = (v: string, selectedClass: string) => (
+    <button
+      key={v}
+      type="button"
+      onClick={() => pick(v)}
+      aria-pressed={value === v}
+      className={cn(
+        'h-8 min-w-[2.1rem] px-1.5 rounded border text-xs font-bold transition-colors',
+        value === v ? cn(selectedClass, 'border-transparent') : 'bg-white border-stone-300 text-stone-600 hover:bg-stone-100',
+      )}
+    >
+      {v}
+    </button>
+  );
+  return (
+    <>
+      <input type="hidden" name={name} value={value} />
+      <div className="flex flex-wrap gap-1">
+        {options.map((r) => btn(r, RATING_COLORS[r[0]] ?? 'bg-stone-800 text-white'))}
+        {allowNA && btn('N/A', RATING_COLORS['N/A'])}
+      </div>
+    </>
+  );
+}
+
 function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, submitting, onSubmit, onClose }: {
   coachee: Coachee;
   coachees: Coachee[];
@@ -4900,11 +4937,22 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
   const [usePlusMinus, setUsePlusMinus] = useState(false);
 
   // Derive unique groups from all coachees
+  // Coachee groups are stored joined with "/" ("Befördert/2. SR"), so splitting
+  // on "," left whole combinations in the picker — you got one button per
+  // observed COMBINATION instead of one per group. Split on "/" instead, but
+  // keep season suffixes ("Neu-SR 2025/26") intact, and always offer the
+  // canonical list so a group is pickable even if nobody has it yet.
   const allGroups = useMemo(() => {
-    const set = new Set<string>();
-    coachees.forEach(c => {
-      (normalizeCoacheeGroup(c.groups) || '').split(',').map(g => g.trim()).filter(Boolean).forEach(g => set.add(g));
-    });
+    const splitGroups = (value: string) => {
+      const out: string[] = [];
+      for (const part of value.split(/[/,]/).map(s => s.trim()).filter(Boolean)) {
+        if (/^\d{2}(\d{2})?$/.test(part) && out.length) out[out.length - 1] += `/${part}`;
+        else out.push(part);
+      }
+      return out;
+    };
+    const set = new Set<string>(COACHEE_GROUP_OPTIONS);
+    coachees.forEach(c => splitGroups(normalizeCoacheeGroup(c.groups) || '').forEach(g => set.add(g)));
     return Array.from(set).sort();
   }, [coachees]);
 
@@ -4926,6 +4974,8 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
   const toggleGroup = (g: string) => {
     setSelectedGroups(prev => prev.includes(g) ? prev.filter(x => x !== g) : [...prev, g]);
   };
+  // Shown next to our own "Datei wählen" button (the native control is hidden).
+  const [fileName, setFileName] = useState('');
 
   return (
     <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
@@ -4971,7 +5021,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           </div>
 
           {/* Ort + Mannschaften */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs font-semibold text-stone-500 uppercase">Ort</span>
               <input name="ort" type="text" className="h-9 rounded border border-stone-300 px-2 text-sm" />
@@ -4983,7 +5033,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           </div>
 
           {/* Ergebnis: Sätze + Punkte */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs font-semibold text-stone-500 uppercase">Ergebnis (Sätze)</span>
               <input name="ergebnisSets" type="text" placeholder="3:1" className="h-9 rounded border border-stone-300 px-2 text-sm" />
@@ -4995,7 +5045,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           </div>
 
           {/* SR-Name + SR-Niveau */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs font-semibold text-stone-500 uppercase">SR-Name</span>
               <select name="srName" defaultValue={coachee.full_name} className="h-9 rounded border border-stone-300 px-2 text-sm">
@@ -5012,7 +5062,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           </div>
 
           {/* Referee Coach + Gruppe */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs font-semibold text-stone-500 uppercase">Referee Coach</span>
               {fixedRcName ? (
@@ -5072,17 +5122,15 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
               <p className="text-xs font-bold text-stone-700 mb-1">{section.title}</p>
               <div className="space-y-1">
                 {section.items.map((item) => (
-                  <div key={item.id} className="flex items-center gap-2">
-                    <select
+                  <div key={item.id} className="py-1.5 border-b border-stone-100 last:border-b-0">
+                    {/* Criterion first, grades as tap targets underneath: the old
+                        14px select opened a 16-entry list over the whole screen. */}
+                    <p className="text-xs text-stone-700 leading-snug mb-1.5">{item.label}</p>
+                    <RatingPicker
                       name={`rating-${item.id}`}
-                      defaultValue=""
-                      className="w-14 h-7 rounded border border-stone-300 px-1 text-xs text-center"
-                    >
-                      <option value="" disabled>—</option>
-                      {ratingOptions.map(r => <option key={r} value={r}>{r}</option>)}
-                      {NA_ELIGIBLE_IDS.has(item.id) && <option value="N/A">N/A</option>}
-                    </select>
-                    <span className="text-xs text-stone-700">{item.label}</span>
+                      options={ratingOptions}
+                      allowNA={NA_ELIGIBLE_IDS.has(item.id)}
+                    />
                   </div>
                 ))}
               </div>
@@ -5090,7 +5138,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
           ))}
 
           {/* Bottom fields */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs font-semibold text-stone-500 uppercase">Spielniveau</span>
               <select name="spielniveau" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
@@ -5137,17 +5185,46 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, notice, s
             </label>
           </div>
 
-          {/* Bemerkungen */}
+          {/* Same divisions as the main feedback form — the manual form only had
+              a single "Bemerkungen" box, so those sections were lost on upload. */}
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-stone-500 uppercase">Positiv / Stärken</span>
+            <textarea name="highlights" rows={2} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-stone-500 uppercase">Verbesserungspotenzial</span>
+            <textarea name="improvements" rows={2} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-stone-500 uppercase">Ziele / Nächste Schritte</span>
+            <textarea name="goals" rows={2} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
+          </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs font-semibold text-stone-500 uppercase">Bemerkungen</span>
             <textarea name="bemerkungen" rows={3} className="rounded border border-stone-300 px-2 py-1 text-sm resize-y" />
           </label>
 
-          {/* Formular-Datei */}
-          <label className="flex flex-col gap-1">
+          {/* The native file input renders "Choose file / No file chosen" in the
+              BROWSER's language — that's the English sitting in this German
+              form. Hide it and drive it from our own labelled button instead. */}
+          <div className="flex flex-col gap-1">
             <span className="text-xs font-semibold text-stone-500 uppercase">Formular-Datei (PDF/Bild)</span>
-            <input name="formFile" type="file" accept=".pdf,image/*" className="text-sm" />
-          </label>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <span className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded border border-stone-300 bg-white text-sm font-medium text-stone-700 hover:bg-stone-50 transition-colors">
+                <Upload size={14} /> Datei wählen
+              </span>
+              <span className={cn('text-sm truncate', fileName ? 'text-stone-700' : 'text-stone-400')}>
+                {fileName || 'Keine Datei ausgewählt'}
+              </span>
+              <input
+                name="formFile"
+                type="file"
+                accept=".pdf,image/*"
+                className="sr-only"
+                onChange={(e) => setFileName(e.target.files?.[0]?.name ?? '')}
+              />
+            </label>
+          </div>
 
           {/* Notice */}
           {notice && (

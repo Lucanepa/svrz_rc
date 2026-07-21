@@ -1405,6 +1405,73 @@ async function fetchVmRefereeContacts(username: string, password: string): Promi
   return out;
 }
 
+// Both name orders, because the XLSX and VolleyManager disagree on which comes
+// first and nothing downstream knows which one it is holding.
+function nameKeyVariants(name: string): string[] {
+  const norm = normalizeName(name);
+  if (!norm) return [];
+  const parts = norm.split(' ').filter(Boolean);
+  if (parts.length < 2) return [norm];
+  const reversed = [...parts].reverse().join(' ');
+  return reversed === norm ? [norm] : [norm, reversed];
+}
+
+// Second source for the same contact details: the games themselves. Every
+// referee convocation on a game carries the referee's email and phone, so once
+// the season's games are published they cover anyone the Schiedsrichterliste
+// missed. VM exposes the contact twice — flat on the convocation (that is what
+// "SR E-Mail" is in the convocation list) and nested under the referee's person,
+// as in the address viewer — and which one a given response fills is not
+// documented, so read both and take whichever is there.
+const VM_CONVOCATION_KEYS = [
+  'activeRefereeConvocationFirstHeadReferee',
+  'activeRefereeConvocationSecondHeadReferee',
+  'activeRefereeConvocationFirstLineJudge',
+  'activeRefereeConvocationSecondLineJudge',
+];
+
+type VmContact = { email: string; phone: string };
+
+function convocationContact(convocation: Record<string, unknown>): { name: string; contact: VmContact } | null {
+  const person = deepGet(convocation, 'indoorAssociationReferee', 'indoorReferee', 'person') as AnyRecord | undefined;
+  const name = asText(person?.displayName)
+    || [asText(person?.firstName), asText(person?.lastName)].filter(Boolean).join(' ');
+  const email = asText(convocation.emailAddress) || asText(deepGet(person ?? {}, 'primaryEmailAddress', 'emailAddress'));
+  const phone = asText(convocation.phoneNumber) || asText(deepGet(person ?? {}, 'primaryPhoneNumber', 'normalizedLocalNumber'));
+  if (!name || (!email && !phone)) return null;
+  return { name, contact: { email, phone } };
+}
+
+async function fetchVmGameRefereeContacts(
+  username: string,
+  password: string,
+  from: string,
+  to: string,
+): Promise<Map<string, VmContact>> {
+  const { jar, csrfToken, windowUniqueId } = await vmLogin(username, password);
+  const { items } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
+  const byName = new Map<string, VmContact>();
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    for (const key of VM_CONVOCATION_KEYS) {
+      const convocation = (item as Record<string, unknown>)[key];
+      if (!convocation || typeof convocation !== 'object') continue;
+      const hit = convocationContact(convocation as Record<string, unknown>);
+      if (!hit) continue;
+      for (const variant of nameKeyVariants(hit.name)) {
+        // A later game can fill a gap an earlier one left, so merge per field
+        // instead of letting the first game seen win outright.
+        const prev = byName.get(variant);
+        byName.set(variant, {
+          email: hit.contact.email || prev?.email || '',
+          phone: hit.contact.phone || prev?.phone || '',
+        });
+      }
+    }
+  }
+  return byName;
+}
+
 async function fetchAllVmGames(
   jar: CookieJar,
   csrfToken: string,
@@ -2592,22 +2659,77 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
 
     const coachees = await listCoacheesWithFallbackSort();
     const scoped = season == null ? coachees : coachees.filter((c) => Number(c.season) === season);
-    let updated = 0, alreadySet = 0, notFound = 0;
+    let updated = 0, alreadySet = 0, notFound = 0, updatedFromGames = 0;
     const missing: string[] = [];
-    for (const coachee of scoped) {
-      const name = asText(coachee.full_name) || `${asText(coachee.first_name)} ${asText(coachee.last_name)}`.trim();
-      const hit = byName.get(normalizeName(name))
-        ?? byName.get(normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`));
-      if (!hit) { notFound++; if (missing.length < 50) missing.push(name); continue; }
+
+    const coacheeName = (coachee: AnyRecord) =>
+      asText(coachee.full_name) || `${asText(coachee.first_name)} ${asText(coachee.last_name)}`.trim();
+    const lookup = <T,>(index: Map<string, T>, coachee: AnyRecord): T | undefined =>
+      index.get(normalizeName(coacheeName(coachee)))
+      ?? index.get(normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`));
+    // Never clobber a hand-corrected address unless explicitly asked to.
+    const applyContact = async (coachee: AnyRecord, hit: VmContact) => {
       const patch: Record<string, unknown> = {};
-      // Never clobber a hand-corrected address unless explicitly asked to.
       if (hit.email && (overwrite || !asText(coachee.email))) patch.email = hit.email;
       if (hit.phone && (overwrite || !asText(coachee.phone))) patch.phone = hit.phone;
-      if (Object.keys(patch).length === 0) { alreadySet++; continue; }
+      if (Object.keys(patch).length === 0) { alreadySet++; return false; }
       await withCollection(collectionCandidates.coachees, (c) => c.update(coachee.id, patch));
       updated++;
+      return true;
+    };
+
+    const unresolved: AnyRecord[] = [];
+    for (const coachee of scoped) {
+      const hit = lookup(byName, coachee);
+      if (!hit) { unresolved.push(coachee); continue; }
+      await applyContact(coachee, hit);
     }
-    res.json({ refereesFetched: contacts.length, coachees: scoped.length, updated, alreadySet, notFound, missing });
+
+    // Whoever the referee list did not cover gets a second pass over the games,
+    // which carry the same contact on each convocation. Only fetched when there
+    // is actually a gap to fill: it is a second login and a season of games.
+    // Before the season's games are published this finds nothing, which is the
+    // expected outcome, not a failure.
+    let gamesSearched = 0;
+    let gamesError = '';
+    if (unresolved.length > 0) {
+      const seasonForGames = season ?? Number(asText((await getSettingRecord('default_season'))?.value));
+      try {
+        if (!Number.isFinite(seasonForGames)) throw new Error('Keine Saison bestimmbar.');
+        const gameContacts = await fetchVmGameRefereeContacts(
+          username,
+          password,
+          `${seasonForGames}-09-01T00:00:00`,
+          `${seasonForGames + 1}-04-30T23:59:59`,
+        );
+        gamesSearched = gameContacts.size;
+        for (const coachee of unresolved) {
+          const hit = lookup(gameContacts, coachee);
+          if (!hit) { notFound++; if (missing.length < 50) missing.push(coacheeName(coachee)); continue; }
+          if (await applyContact(coachee, hit)) updatedFromGames++;
+        }
+      } catch (gamesErr) {
+        // The referee-list pass already ran and its updates are saved; report
+        // the failure instead of throwing all of that away.
+        gamesError = gamesErr instanceof Error ? gamesErr.message : String(gamesErr);
+        notFound += unresolved.length;
+        for (const coachee of unresolved) {
+          if (missing.length < 50) missing.push(coacheeName(coachee));
+        }
+      }
+    }
+
+    res.json({
+      refereesFetched: contacts.length,
+      coachees: scoped.length,
+      updated,
+      updatedFromGames,
+      gameRefereesFound: gamesSearched,
+      gamesError,
+      alreadySet,
+      notFound,
+      missing,
+    });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 

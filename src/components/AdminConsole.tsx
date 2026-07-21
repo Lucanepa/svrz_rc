@@ -83,10 +83,12 @@ const STR = {
     mgCreated: (n: string) => `Angelegt: ${n}`,
     noEmail: 'keine E-Mail',
     syncTitle: 'Kontaktdaten aus VolleyManager',
-    syncHint: 'Holt E-Mail und Telefon aus der VolleyManager-Schiedsrichterliste. Ohne E-Mail lässt sich kein Feedback abschicken.',
+    syncHint: 'Holt E-Mail und Telefon aus der VolleyManager-Schiedsrichterliste. Wer dort fehlt, wird auf den Spielen des Saison gesucht (sobald diese aufgeschaltet sind). Ohne E-Mail lässt sich kein Feedback abschicken.',
     syncBtn: 'Kontakte holen',
     syncOverwrite: 'Vorhandene Einträge überschreiben (sonst werden nur leere Felder gefüllt)',
     syncResult: (u: number, a: number, n: number, f: number) => `${u} aktualisiert, ${a} bereits vollständig, ${n} nicht gefunden (${f} SR in VolleyManager).`,
+    syncFromGames: (u: number, f: number) => `Davon ${u} aus den Spielen (${f} SR auf Aufgeboten gefunden).`,
+    syncGamesFailed: (e: string) => `Suche über die Spiele nicht möglich: ${e}`,
     syncFail: (e: string) => `Kontakt-Abgleich fehlgeschlagen: ${e}`,
     syncNotFoundList: 'Nicht in VolleyManager gefunden',
     syncMissingEmail: (n: number, total: number) => `${n} von ${total} Coachees haben keine E-Mail — für diese kann kein Feedback abgeschickt werden.`,
@@ -151,10 +153,12 @@ const STR = {
     mgCreated: (n: string) => `Created: ${n}`,
     noEmail: 'no email',
     syncTitle: 'Contact details from VolleyManager',
-    syncHint: 'Pulls email and phone from the VolleyManager referee list. Feedback cannot be submitted without an email.',
+    syncHint: 'Pulls email and phone from the VolleyManager referee list. Anyone missing there is looked up on the season\'s games (once those are published). Feedback cannot be submitted without an email.',
     syncBtn: 'Fetch contacts',
     syncOverwrite: 'Overwrite existing entries (otherwise only empty fields are filled)',
     syncResult: (u: number, a: number, n: number, f: number) => `${u} updated, ${a} already complete, ${n} not found (${f} referees in VolleyManager).`,
+    syncFromGames: (u: number, f: number) => `${u} of those came from the games (${f} referees found on convocations).`,
+    syncGamesFailed: (e: string) => `Could not search the games: ${e}`,
     syncFail: (e: string) => `Contact sync failed: ${e}`,
     syncNotFoundList: 'Not found in VolleyManager',
     syncMissingEmail: (n: number, total: number) => `${n} of ${total} coachees have no email — feedback cannot be submitted for them.`,
@@ -500,7 +504,11 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
     setSyncing(true); setNotice(''); setSyncNote('');
     try {
       const r = await syncCoacheeContacts(season, overwriteContacts);
-      setSyncNote(t.syncResult(r.updated, r.alreadySet, r.notFound, r.refereesFetched));
+      setSyncNote([
+        t.syncResult(r.updated, r.alreadySet, r.notFound, r.refereesFetched),
+        r.updatedFromGames > 0 ? t.syncFromGames(r.updatedFromGames, r.gameRefereesFound) : '',
+        r.gamesError ? t.syncGamesFailed(r.gamesError) : '',
+      ].filter(Boolean).join(' '));
       setSyncMissing(r.missing);
       await reload();
     } catch (err) { setNotice(t.syncFail(String(err))); } finally { setSyncing(false); }

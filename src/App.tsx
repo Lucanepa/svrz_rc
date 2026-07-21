@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star } from 'lucide-react';
+import { Maximize2, Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { QRCodeSVG } from 'qrcode.react';
@@ -497,6 +497,93 @@ function pdfFilename(formData: FeedbackFormData): string {
   const match = formData.meta.spielNr || 'feedback';
   const role = formData.role.replace('.', '').replace(/\s+/g, '');
   return `${match}-${role}.pdf`;
+}
+
+// Long-form field: the inline box grows with its content, and the expand button
+// opens a full-screen editor. On a phone the fixed 3-row box was unusable — the
+// keyboard covers the page and the form scrolls away under you while typing.
+// The value stays plain text, so the PDF and the e-mail need no HTML handling.
+function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeight, className }: {
+  value: string;
+  onChange: (v: string) => void;
+  label: string;
+  placeholder?: string;
+  lang: 'DE' | 'EN';
+  minHeight: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const inlineRef = useRef<HTMLTextAreaElement | null>(null);
+  const grow = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  };
+  useEffect(() => { grow(inlineRef.current); }, [value]);
+  // Plain-text bullets: renders correctly in the PDF and the e-mail as-is.
+  const addBullet = () => onChange(value ? `${value.replace(/\s+$/, '')}\n• ` : '• ');
+  const de = lang === 'DE';
+  return (
+    <>
+      <div className="relative">
+        <textarea
+          ref={inlineRef}
+          className={cn('w-full text-xs leading-relaxed resize-none overflow-hidden outline-none bg-white placeholder:text-stone-300 border border-stone-200 rounded p-2 pr-8', className)}
+          style={{ minHeight }}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => { onChange(e.target.value); grow(e.target); }}
+        />
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="no-print absolute right-1 top-1 h-6 w-6 inline-flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
+          title={de ? 'Grösser bearbeiten' : 'Edit larger'}
+          aria-label={de ? 'Grösser bearbeiten' : 'Edit larger'}
+        >
+          <Maximize2 size={12} />
+        </button>
+      </div>
+      {open && (
+        <div className="no-print fixed inset-0 z-50 bg-stone-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4">
+          <div className="bg-white w-full sm:max-w-2xl h-[92dvh] sm:h-auto sm:max-h-[85vh] rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-stone-200">
+              <h3 className="text-sm font-semibold text-stone-800">{label}</h3>
+              <button type="button" onClick={() => setOpen(false)} className="text-stone-400 hover:text-stone-600" aria-label={de ? 'Schliessen' : 'Close'}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-stone-100">
+              <button
+                type="button"
+                onClick={addBullet}
+                className="h-8 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"
+              >
+                • {de ? 'Aufzählung' : 'Bullet'}
+              </button>
+              <span className="ml-auto text-[11px] text-stone-400">{value.length}</span>
+            </div>
+            <textarea
+              autoFocus
+              value={value}
+              placeholder={placeholder}
+              onChange={(e) => onChange(e.target.value)}
+              className="flex-1 w-full resize-none outline-none px-4 py-3 text-sm leading-relaxed placeholder:text-stone-300"
+            />
+            <div className="px-4 py-3 border-t border-stone-200 text-right">
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="h-10 px-5 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors"
+              >
+                {de ? 'Fertig' : 'Done'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 async function generatePdfBase64(element: HTMLElement, pixelRatio: number): Promise<string> {
@@ -4446,19 +4533,23 @@ export default function App() {
             <MessageSquare size={16} />
             {t.remarks}
           </h3>
-          <textarea
-            className="w-full min-h-[3.5rem] text-xs leading-relaxed resize-y outline-none bg-white placeholder:text-stone-300 border border-stone-200 rounded p-2"
+          <ExpandableTextarea
+            label={t.remarks}
+            lang={formData.lang}
+            minHeight="3.5rem"
             placeholder={t.remarksPlaceholder}
             value={formData.results.bemerkungen}
-            onChange={e => setFormData(prev => ({ ...prev, results: { ...prev.results, bemerkungen: e.target.value } }))}
+            onChange={(v) => setFormData(prev => ({ ...prev, results: { ...prev.results, bemerkungen: v } }))}
           />
           {(([['highlights', t.highlights], ['improvements', t.improvements], ['goals', t.goalsNext]]) as ['highlights' | 'improvements' | 'goals', string][]).map(([key, label]) => (
             <div key={key}>
               <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{label}</h4>
-              <textarea
-                className="w-full min-h-[2.75rem] text-xs leading-relaxed resize-y outline-none bg-white placeholder:text-stone-300 border border-stone-200 rounded p-2"
+              <ExpandableTextarea
+                label={label}
+                lang={formData.lang}
+                minHeight="2.75rem"
                 value={formData.results[key] || ''}
-                onChange={e => setFormData(prev => ({ ...prev, results: { ...prev.results, [key]: e.target.value } }))}
+                onChange={(v) => setFormData(prev => ({ ...prev, results: { ...prev.results, [key]: v } }))}
               />
             </div>
           ))}

@@ -494,7 +494,7 @@ function safeError(error: unknown): string {
 // Cached list of active RC people; also consulted on every RC-authenticated
 // request so deactivating/deleting an RC revokes their session within the
 // cache TTL. Invalidated by the admin rc-people CRUD endpoints.
-type ActiveRcPerson = { id: string; fullName: string; email: string; isAdmin: boolean };
+type ActiveRcPerson = { id: string; fullName: string; email: string; isAdmin: boolean; isRcPresident: boolean };
 let rcPeopleCache: { data: ActiveRcPerson[]; expiresAt: number } | null = null;
 
 async function getActiveRcPeople(): Promise<ActiveRcPerson[]> {
@@ -508,6 +508,10 @@ async function getActiveRcPeople(): Promise<ActiveRcPerson[]> {
     fullName: `${asText(p.first_name)} ${asText(p.last_name)}`.trim(),
     email: asText(p.email),
     isAdmin: p.is_admin === true,
+    // Reads the post-visit surveys. Deliberately absent from the admin console's
+    // RC editor: a flag an admin can tick is a flag an admin can tick for
+    // themselves, and this is the one view admin rights must not open.
+    isRcPresident: p.is_rc_president === true,
   }));
   rcPeopleCache = { data: mapped, expiresAt: Date.now() + 10 * 60 * 1000 };
   return mapped;
@@ -2415,11 +2419,12 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
 app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
   let rc: { id: string; name: string } | null = null;
   let rcIsAdmin = false;
+  let surveyReader = false;
   const session = verifyRcSession(req);
   if (session.ok && session.rcId) {
     try {
       const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
-      if (person) { rc = { id: person.id, name: person.fullName }; rcIsAdmin = person.isAdmin; }
+      if (person) { rc = { id: person.id, name: person.fullName }; rcIsAdmin = person.isAdmin; surveyReader = person.isRcPresident; }
     } catch (error) {
       // The session token is valid but PocketBase is unreachable. Fail with 503
       // (Cache-Control: no-store) rather than a 200 {rc:null}: a cached "logged
@@ -2436,9 +2441,10 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
   const admin = adminSession.ok
     ? { email: adminSession.email || '' }
     : (rcIsAdmin && rc ? { email: rc.name } : null);
-  // Lets the console hide the RC-feedback tab from everyone else. The server
-  // enforces it independently — this flag only saves a pointless 403.
-  res.json({ rc, admin, surveyReader: await isSurveyReader(req) });
+  // Lets the console hide the RC-feedback tab from everyone else. Read off the
+  // person already loaded above; the server enforces the same flag on the
+  // endpoint independently, so this only saves a pointless 403.
+  res.json({ rc, admin, surveyReader });
 });
 
 app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
@@ -2699,34 +2705,25 @@ const SURVEY_COLLECTION = 'rc_visit_feedback';
 // form promises "Einsicht hat nur die RC-Vorsitzende", and an admin who could
 // name the reader from the admin console would simply be naming themselves.
 // Admin rights are not enough here — this is the one view the role doesn't open.
-// Comma-separated, because the gate matches the address the reader LOGS IN
-// with — her referee_coaches record — which is not necessarily the role mailbox
-// the responses are thought of as belonging to. Listing both beats a silent 403
-// that looks exactly like "not configured yet".
-const SURVEY_READER_EMAILS = new Set(
-  (process.env.SURVEY_READER_EMAIL || '')
-    .split(',')
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean),
-);
-
-// The caller's own email, from whichever session they hold.
-async function callerEmail(req: Request): Promise<string> {
+// Reading is gated on the person, not on an address: matching a configured
+// email against the one she happens to log in with fails silently and looks
+// exactly like "not configured yet". The flag on her referee_coaches record IS
+// the identity, so there is nothing to keep in sync.
+//
+// An admin session does NOT pass. Admin rights open every other view in this
+// app; this is the one they must not, so the check is the flag alone.
+async function isSurveyReader(req: Request): Promise<boolean> {
   const session = verifyRcSession(req);
-  if (session.ok && session.rcId) {
-    const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
-    if (person) return person.email.trim().toLowerCase();
-  }
-  const admin = verifyAdminSession(req);
-  return admin.ok ? (admin.email || '').trim().toLowerCase() : '';
+  if (!session.ok || !session.rcId) return false;
+  const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
+  return Boolean(person?.isRcPresident);
 }
 
 async function requireSurveyReader(req: Request, res: ExpressResponse, next: () => void) {
-  // Unconfigured fails CLOSED. "Nobody can read them yet" is a recoverable
-  // mistake; "every admin can" is the exact thing this gate exists to prevent.
-  if (SURVEY_READER_EMAILS.size === 0) { res.status(403).json({ error: 'Forbidden' }); return; }
   try {
-    if (SURVEY_READER_EMAILS.has(await callerEmail(req))) { next(); return; }
+    // Nobody flagged yet fails CLOSED — a recoverable mistake, unlike the
+    // alternative of defaulting open to everyone with admin rights.
+    if (await isSurveyReader(req)) { next(); return; }
   } catch (error) {
     console.error('[survey] reader check failed:', error);
     res.status(503).json({ error: 'Auth backend unavailable' });
@@ -2735,9 +2732,9 @@ async function requireSurveyReader(req: Request, res: ExpressResponse, next: () 
   res.status(403).json({ error: 'Forbidden' });
 }
 
-// Where a submitted survey is mailed. Separate from SURVEY_READER_EMAIL on
-// purpose: reading the collected responses in the tool and receiving them as
-// they arrive are different jobs for different people.
+// Where a submitted survey is mailed. Separate from is_rc_president on purpose:
+// reading the collected responses in the tool and receiving them as they
+// arrive are different jobs for different people.
 const SURVEY_NOTIFY_EMAILS = (process.env.SURVEY_NOTIFY_EMAIL || '')
   .split(',').map((e) => e.trim()).filter(Boolean);
 
@@ -2790,10 +2787,6 @@ async function sendSurveyNotification(rec: AnyRecord, answers: Record<string, st
   }
 }
 
-async function isSurveyReader(req: Request): Promise<boolean> {
-  if (SURVEY_READER_EMAILS.size === 0) return false;
-  try { return SURVEY_READER_EMAILS.has(await callerEmail(req)); } catch { return false; }
-}
 const SURVEY_MAX_ANSWERS = 50;
 const SURVEY_MAX_ANSWER_LEN = 5000;
 

@@ -117,13 +117,8 @@ FEEDBACK_CC="rc_coaching@volleyball.lucanepa.com,rekom.zuerich@gmail.com"
 FEEDBACK_EMAIL_TEST="1"              # 1 => redirect all emails to test recipient
 FEEDBACK_TEST_RECIPIENT="you@..."
 
-# Who may READ the post-visit survey responses in the tool. Admin rights do NOT
-# open that view — only this address does. Deliberately env, not an app setting,
-# so no admin can name themselves the reader. Must match the address she LOGS IN
-# with (her referee_coaches record). Unset => nobody can read them.
-SURVEY_READER_EMAIL="rc-praesidium@example.com"
-
 # Where each submitted survey is mailed as it arrives. Unset => stored only.
+# (Who may READ them in the tool is NOT an env var — see is_rc_president below.)
 SURVEY_NOTIFY_EMAIL="rekom.zuerich@gmail.com"
 ```
 
@@ -149,7 +144,14 @@ Common fields: `full_name`, `first_name`, `last_name`, `email`, `phone`, `refere
 
 Directory of RC persons.
 
-Common fields: `first_name`, `last_name`, `email`, `phone`, `active`.
+Common fields: `first_name`, `last_name`, `email`, `phone`, `active`, `is_admin`, `is_rc_president`.
+
+`is_rc_president` is the sole key to the post-visit survey responses
+(`GET /api/survey-responses` and the console's RC-feedback tab). An admin
+session does **not** open that view — admin rights open every other one, so this
+is the deliberate exception. Set the flag directly in PocketBase: it is
+intentionally absent from the admin console's RC editor, because a flag an admin
+can tick is a flag an admin can tick for themselves.
 
 ### `referee_coach_feedbacks` (feedback records)
 
@@ -213,7 +215,7 @@ Read endpoints used by app are generally open, but still depend on valid server-
 - `POST /api/vm/auth-check`: validate upstream auth/session.
 - `GET /api/survey/:token`: **public** — prefill data for the post-visit survey page. No login; the token is the capability, so no name or match number rides in the URL.
 - `POST /api/survey/:token`: **public** — submit the survey. Write-once (409 if already answered), own per-IP rate-limit bucket.
-- `GET /api/survey-responses`: read the responses. Gated on `SURVEY_READER_EMAIL`, **not** on admin rights — an admin session gets 403. Not under `/api/admin/` for that reason, and not `/api/survey/responses`, which the `:token` route above would swallow.
+- `GET /api/survey-responses`: read the responses. Gated on the `is_rc_president` flag, **not** on admin rights — an admin session gets 403. Not under `/api/admin/` for that reason, and not `/api/survey/responses`, which the `:token` route above would swallow.
 - `GET /api/coachees`: list coachees + observation status summary.
 - `POST /api/coachees`: create coachee.
 - `PUT /api/coachees/:id`: update coachee.

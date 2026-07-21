@@ -594,7 +594,7 @@ export async function getAdminLogSessions(): Promise<LogSession[]> {
   return (await r.json() as { sessions: LogSession[] }).sessions;
 }
 
-export type ImportRow = { full_name?: string; first_name?: string; last_name?: string; referee_level?: string; stage?: string; groups?: string; notes?: string };
+export type ImportRow = { full_name?: string; first_name?: string; last_name?: string; email?: string; referee_level?: string; stage?: string; groups?: string; notes?: string };
 export async function importCoachees(coachees: ImportRow[], season: number): Promise<{ created: number; updated: number; total: number }> {
   const r = await fetch(apiUrl('/api/coachees/import'), {
     method: 'POST', credentials: 'include',

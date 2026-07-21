@@ -81,7 +81,7 @@ const STR = {
     mgHome: 'Heim', mgAway: 'Gast', mgRef1: '1. SR (= Coachee)', mgRef2: '2. SR', mgRc: 'Referee Coach',
     mgCreate: 'Spiel anlegen', mgDelete: 'Löschen',
     mgCreated: (n: string) => `Angelegt: ${n}`,
-    email: 'E-Mail', noEmail: 'keine E-Mail',
+    noEmail: 'keine E-Mail',
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
@@ -100,7 +100,7 @@ const STR = {
     noRows: 'Keine Zeilen in der Datei gefunden.',
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} neu, ${u} aktualisiert (von ${t}).`,
     importFail: (e: string) => `Import fehlgeschlagen: ${e}`,
-    groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppen wählen', toApp: 'Zur App',
+    groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppe(n)', toApp: 'Zur App',
     target: 'Ziel-Spiele', targetHint: 'Welche Spiele für diesen SR relevant sind. Standard: automatisch aus dem Niveau (offizielle SVRZ-Tabelle).',
     targetAuto: 'Auto (Niveau)', targetAll: 'Alle Spiele', targetCustom: 'Eigen', targetRoles: 'Rolle(n)', targetLeagues: 'Ligen', chooseLeagues: 'Ligen wählen', edit: 'Bearbeiten', done: 'Fertig',
   },
@@ -141,7 +141,7 @@ const STR = {
     mgHome: 'Home', mgAway: 'Away', mgRef1: '1st referee (= coachee)', mgRef2: '2nd referee', mgRc: 'Referee coach',
     mgCreate: 'Create game', mgDelete: 'Delete',
     mgCreated: (n: string) => `Created: ${n}`,
-    email: 'Email', noEmail: 'no email',
+    noEmail: 'no email',
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
@@ -160,7 +160,7 @@ const STR = {
     noRows: 'No rows found in the file.',
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} new, ${u} updated (of ${t}).`,
     importFail: (e: string) => `Import failed: ${e}`,
-    groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Choose groups', toApp: 'To app',
+    groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Group(s)', toApp: 'To app',
     target: 'Target games', targetHint: 'Which games are relevant for this referee. Default: automatic from the Niveau (official SVRZ table).',
     targetAuto: 'Auto (level)', targetAll: 'All games', targetCustom: 'Custom', targetRoles: 'Role(s)', targetLeagues: 'Leagues', chooseLeagues: 'Choose leagues', edit: 'Edit', done: 'Done',
   },
@@ -179,7 +179,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
   if (!rows.length) return [];
   const header = (rows[0] as unknown[]).map((h) => String(h).trim().toLowerCase());
   const col = (names: string[]) => { for (const n of names) { const i = header.indexOf(n); if (i >= 0) return i; } return -1; };
-  const ci = { last: col(['nachname', 'name', 'last', 'lastname']), first: col(['vorname', 'first', 'firstname']), level: col(['niveau', 'level']), stage: col(['stufe', 'stage']), group: col(['gruppe', 'group', 'groups']), notes: col(['bemerkung', 'bemerkungen', 'notizen', 'notes', 'note', 'kommentar']) };
+  const ci = { last: col(['nachname', 'name', 'last', 'lastname']), first: col(['vorname', 'first', 'firstname']), email: col(['email', 'e-mail', 'mail', 'e-mail-adresse', 'emailadresse', 'e mail']), level: col(['niveau', 'level']), stage: col(['stufe', 'stage']), group: col(['gruppe', 'group', 'groups']), notes: col(['bemerkung', 'bemerkungen', 'notizen', 'notes', 'note', 'kommentar']) };
   // Notes often live in an unnamed column right after Gruppe.
   if (ci.notes < 0 && ci.group >= 0 && !header[ci.group + 1]) ci.notes = ci.group + 1;
   const out: ImportRow[] = [];
@@ -188,7 +188,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
     const last = String(r[ci.last] ?? '').trim();
     const first = String(r[ci.first] ?? '').trim();
     if (!first && !last) continue;
-    out.push({ first_name: first, last_name: last, full_name: `${first} ${last}`.trim(), referee_level: String(r[ci.level] ?? '').trim(), stage: String(r[ci.stage] ?? '').trim().replace(/\.0$/, ''), groups: mapGroups(String(r[ci.group] ?? '').trim()), notes: String(r[ci.notes] ?? '').trim() });
+    out.push({ first_name: first, last_name: last, full_name: `${first} ${last}`.trim(), email: String(r[ci.email] ?? '').trim(), referee_level: String(r[ci.level] ?? '').trim(), stage: String(r[ci.stage] ?? '').trim().replace(/\.0$/, ''), groups: mapGroups(String(r[ci.group] ?? '').trim()), notes: String(r[ci.notes] ?? '').trim() });
   }
   return out;
 }
@@ -368,7 +368,9 @@ function GroupMultiSelect({ groups, value, onChange, placeholder }: { groups: st
   return (
     <div className="relative" ref={ref}>
       <button type="button" onClick={() => setOpen((o) => !o)} className={`${input} text-left flex items-center justify-between gap-1`}>
-        <span className={selected.length ? 'text-stone-800 truncate' : 'text-stone-400'}>{selected.length ? selected.join('/') : placeholder}</span>
+        {/* `truncate` on both branches — a selected value ellipsized but the
+            placeholder wrapped to two lines and pushed the row out of line. */}
+        <span className={cn('truncate', selected.length ? 'text-stone-800' : 'text-stone-400')}>{selected.length ? selected.join('/') : placeholder}</span>
         <ChevronDown size={14} className="text-stone-400 shrink-0" />
       </button>
       {open && (

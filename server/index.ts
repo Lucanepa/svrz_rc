@@ -2397,9 +2397,12 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
         referee_level: asText(r.referee_level), stage: asText(r.stage) || 'active',
         groups: asText(r.groups), season,
       };
-      // Only touch notes when the file actually provided a value — a re-import
-      // from a notes-less sheet must not wipe notes maintained in the app.
+      // Only touch notes/email when the file actually provided a value — a
+      // re-import from a sheet without those columns must not wipe what is
+      // maintained in the app. Losing the email silently breaks submission:
+      // the feedback POST hard-fails without one.
       if (asText(r.notes)) payload.notes = asText(r.notes);
+      if (asText(r.email)) payload.email = asText(r.email);
       const key = `${normalizeName(full_name)}|${season ?? ''}`;
       const ex = byKey.get(key);
       if (ex) { await withCollection(collectionCandidates.coachees, (c) => c.update(ex.id, payload)); updated++; }
@@ -2928,6 +2931,18 @@ async function getStarredGameIds(): Promise<Set<string>> {
   } catch { return new Set(); }
 }
 
+// Manually created games are tracked by id: guessing from the match number
+// only works while the number is left blank (it defaults to TEST-nnnnnn), and
+// a game given a real-looking number became impossible to find again.
+async function getManualGameIds(): Promise<Set<string>> {
+  const rec = await getSettingRecord('manual_games');
+  if (!rec) return new Set();
+  try {
+    const arr = JSON.parse(asText(rec.value)) as unknown;
+    return new Set(Array.isArray(arr) ? arr.map((v) => String(v)) : []);
+  } catch { return new Set(); }
+}
+
 app.get('/api/eligible-games', requireRcSession, async (_req: Request, res: ExpressResponse) => {
   try {
     const [games, starred] = await Promise.all([getEligibleGames(), getStarredGameIds()]);
@@ -2951,7 +2966,7 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
     const matchDate = asText(d.match_date);
     if (!matchDate) { res.status(400).json({ error: 'match_date ist erforderlich.' }); return; }
     if (Number.isNaN(new Date(matchDate).getTime())) { res.status(400).json({ error: 'match_date ist kein gültiges Datum.' }); return; }
-    const created = await withCollection(collectionCandidates.games, (c) => c.create({
+    const created = await withCollection(collectionCandidates.games, (c) => c.create<AnyRecord>({
       // A recognisable default so a manual game is obvious in any list.
       match_no: asText(d.match_no) || `TEST-${Date.now().toString().slice(-6)}`,
       league: asText(d.league),
@@ -2963,6 +2978,9 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
       second_referee: asText(d.second_referee),
       assigned_rc: asText(d.assigned_rc),
     }));
+    const manual = await getManualGameIds();
+    manual.add(created.id);
+    await setSetting('manual_games', JSON.stringify([...manual]));
     res.status(201).json(created);
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -2974,14 +2992,18 @@ app.get('/api/admin/games/manual', requireAdminSession, async (req: Request, res
   try {
     await ensureAdminAuth();
     const q = normalizeName(req.query.q);
+    const manual = await getManualGameIds();
     const all = await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
       sort: '-match_date',
       fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc',
     }));
     const hit = (g: AnyRecord) => {
+      if (manual.has(g.id)) return true;
+      // Games created before ids were tracked, plus anything the operator
+      // searches for by hand.
       if (normalizeName(g.match_no).startsWith('test-')) return true;
       if (!q) return false;
-      return [g.match_no, g.home_team, g.away_team, g.assigned_rc, g.first_referee, g.second_referee]
+      return [g.match_no, g.home_team, g.away_team, g.assigned_rc, g.first_referee, g.second_referee, g.match_date, g.league]
         .some((v) => normalizeName(v).includes(q));
     };
     res.json(all.filter(hit).slice(0, 50).map((g) => ({
@@ -2999,6 +3021,8 @@ app.delete('/api/admin/games/:id', requireAdminSession, async (req: Request, res
     const id = String(req.params.id);
     const set = await getStarredGameIds();
     if (set.delete(id)) await setSetting('starred_games', JSON.stringify([...set]));
+    const manual = await getManualGameIds();
+    if (manual.delete(id)) await setSetting('manual_games', JSON.stringify([...manual]));
     await withCollection(collectionCandidates.games, (c) => c.delete(id));
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }

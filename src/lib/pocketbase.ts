@@ -1,4 +1,4 @@
-import type { EligibleGame, FeedbackFormData, RcOverviewEntry, rcCoachSummary } from '../types';
+import type { EligibleGame, FeedbackFormData, RcMandateMap, RcOverviewEntry, rcCoachSummary } from '../types';
 import type { CoacheeTargetMap } from './niveauTargets';
 import * as demo from './demo';
 import { isDemoMode } from './demo';
@@ -621,13 +621,23 @@ export async function importCoachees(coachees: ImportRow[], season: number): Pro
   return r.json();
 }
 
-export async function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap }> {
+// default_goal: observations a full mandate owes per season. rc_mandates lists
+// the RCs (by RC person id) on a half mandate; everyone else is on a full one.
+export type Settings = {
+  default_season: number | null;
+  test_mode?: boolean;
+  groups?: string[];
+  coachee_targets?: CoacheeTargetMap;
+  rc_mandates?: RcMandateMap;
+  default_goal?: number | null;
+};
+export async function getSettings(): Promise<Settings> {
   if (isDemoMode()) return demo.getSettings();
   const r = await fetch(apiUrl('/api/settings'), { credentials: 'include' });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
-export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap }): Promise<void> {
+export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number }): Promise<void> {
   const r = await fetch(apiUrl('/api/admin/settings'), {
     method: 'PUT', credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

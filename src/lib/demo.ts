@@ -15,6 +15,7 @@ import { SECTIONS_1SR_DE } from '../types';
 import type {
   EligibleGame,
   FeedbackFormData,
+  RcMandateMap,
   RcOverviewEntry,
   rcCoachSummary,
   rcCoachSummaryGame,
@@ -431,8 +432,8 @@ export function getAdminAuthStatus(): Promise<AdminAuthStatus> {
   return ok({ authenticated: false, email: '' });
 }
 
-export function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap }> {
-  return ok({ default_season: seasonStartYear(), test_mode: false, groups: ['RD', 'LD'], coachee_targets: {} });
+export function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number | null }> {
+  return ok({ default_season: seasonStartYear(), test_mode: false, groups: ['RD', 'LD'], coachee_targets: {}, rc_mandates: {}, default_goal: null });
 }
 
 export function listCoachees(): Promise<Coachee[]> {

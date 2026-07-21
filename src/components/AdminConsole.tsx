@@ -17,6 +17,7 @@ import {
   type CoacheeTarget, type CoacheeTargetMap, type TargetRole,
 } from '../lib/niveauTargets';
 import { SURVEY_QUESTIONS, questionLabel, type SurveyQuestion } from '../lib/survey';
+import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap } from '../types';
 import LevelText from './LevelText';
 import { Skeleton, SkeletonRows } from './Skeleton';
 import { BUILD_INFO } from '../lib/buildInfo';
@@ -113,6 +114,11 @@ const STR = {
     groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppe(n)', toApp: 'Zur App',
     target: 'Ziel-Spiele', targetHint: 'Welche Spiele für diesen SR relevant sind. Standard: automatisch aus dem Niveau (offizielle SVRZ-Tabelle).',
     targetAuto: 'Auto (Niveau)', targetAll: 'Alle Spiele', targetCustom: 'Eigen', targetRoles: 'Rolle(n)', targetLeagues: 'Ligen', chooseLeagues: 'Ligen wählen', edit: 'Bearbeiten', done: 'Fertig',
+    colMandate: 'Mandat', mandateLabel: 'Mandat',
+    mandateFull: (n: number) => `Ganz · ${n}`, mandateHalf: (n: number) => `Halb · ${n}`,
+    mandateHint: (full: number, half: number) => `Ganzes Mandat = ${full} Beobachtungen pro Saison, halbes Mandat = ${half}.`,
+    defaultGoal: 'Beobachtungsziel (ganzes Mandat)',
+    defaultGoalHint: (half: number) => `Wie viele Beobachtungen ein ganzes Mandat pro Saison umfasst. Ein halbes Mandat ist die Hälfte davon (${half}) — wer ein halbes Mandat hat, wird im Tab „Referee Coaches" markiert.`,
   },
   EN: {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminPw: 'Admin password', wrongPw: 'Wrong password',
@@ -183,6 +189,11 @@ const STR = {
     groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Group(s)', toApp: 'To app',
     target: 'Target games', targetHint: 'Which games are relevant for this referee. Default: automatic from the Niveau (official SVRZ table).',
     targetAuto: 'Auto (level)', targetAll: 'All games', targetCustom: 'Custom', targetRoles: 'Role(s)', targetLeagues: 'Leagues', chooseLeagues: 'Choose leagues', edit: 'Edit', done: 'Done',
+    colMandate: 'Mandate', mandateLabel: 'Mandate',
+    mandateFull: (n: number) => `Full · ${n}`, mandateHalf: (n: number) => `Half · ${n}`,
+    mandateHint: (full: number, half: number) => `A full mandate is ${full} observations per season, a half mandate ${half}.`,
+    defaultGoal: 'Observation goal (full mandate)',
+    defaultGoalHint: (half: number) => `How many observations a full mandate covers per season. A half mandate is half of that (${half}) — mark who is on one in the "Referee Coaches" tab.`,
   },
 } as const;
 type T = typeof STR['DE'];
@@ -238,6 +249,10 @@ export default function AdminConsole() {
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [groups, setGroups] = useState<string[]>([]);
   const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
+  // Season observation goal: the number a full mandate owes, plus the RCs (by
+  // id) who are on a half mandate and owe half of it.
+  const [rcMandates, setRcMandates] = useState<RcMandateMap>({});
+  const [defaultGoal, setDefaultGoal] = useState<number>(OBSERVATION_GOAL);
   const [leagueOptions, setLeagueOptions] = useState<string[]>([]);
   const [defaultSeason, setDefaultSeason] = useState<number>(CUR_SEASON);
   const [lang, setLang] = useState<Lang>(() => {
@@ -256,7 +271,11 @@ export default function AdminConsole() {
   useEffect(() => {
     if (!authed) return;
     getSettings()
-      .then((s) => { setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); setCoacheeTargets(s.coachee_targets || {}); if (s.default_season) setDefaultSeason(s.default_season); })
+      .then((s) => {
+        setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); setCoacheeTargets(s.coachee_targets || {});
+        setRcMandates(s.rc_mandates || {}); if (s.default_goal) setDefaultGoal(s.default_goal);
+        if (s.default_season) setDefaultSeason(s.default_season);
+      })
       .catch(() => {})
       .finally(() => setSettingsLoading(false));
     loadEligibleGames()
@@ -264,6 +283,8 @@ export default function AdminConsole() {
       .catch(() => {});
   }, [authed]);
   const saveTargets = useCallback(async (next: CoacheeTargetMap) => { setCoacheeTargets(next); try { await putSettings({ coachee_targets: next }); } catch { /* ignore */ } }, []);
+  const saveMandates = useCallback(async (next: RcMandateMap) => { setRcMandates(next); try { await putSettings({ rc_mandates: next }); } catch { /* ignore */ } }, []);
+  const saveDefaultGoal = useCallback(async (next: number) => { setDefaultGoal(next); await putSettings({ default_goal: next }); }, []);
 
   // Tab ↔ URL. pushState keeps the hashchange listener in main.tsx (which
   // reloads on a root change) out of it; popstate handles Back/Forward.
@@ -358,12 +379,12 @@ export default function AdminConsole() {
           exception — they only poll while their tab is on screen. */}
       <main className="max-w-4xl mx-auto px-4 pt-5">
         <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} /></div>
-        <div hidden={tab !== 'rcs'}><RcsAdmin t={t} /></div>
+        <div hidden={tab !== 'rcs'}><RcsAdmin t={t} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         {surveyReader && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}>
-          <SettingsAdmin t={t} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} />
+          <SettingsAdmin t={t} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} />
           <ManualGameAdmin t={t} lang={lang} />
         </div>
         <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
@@ -626,7 +647,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
   );
 }
 
-function RcsAdmin({ t }: { t: T }) {
+function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: RcMandateMap; defaultGoal: number; onMandates: (next: RcMandateMap) => void }) {
   const [rcs, setRcs] = useState<RcPerson[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({ first_name: '', last_name: '', email: '', phone: '' });
@@ -657,6 +678,29 @@ function RcsAdmin({ t }: { t: T }) {
     } finally {
       setPinBusy(null);
     }
+  };
+  // Full or half mandate per RC — the season goal follows from it. Only the
+  // half mandates are stored, so switching back to full drops the entry.
+  const halfGoal = goalForMandate(defaultGoal, 'half');
+  const setMandate = (id: string, mandate: RcMandate) => {
+    if ((mandates[id] ?? 'full') === mandate) return;
+    const next = { ...mandates };
+    if (mandate === 'half') next[id] = 'half';
+    else delete next[id];
+    onMandates(next);
+  };
+  const mandateToggle = (r: RcPerson) => {
+    const half = mandates[r.id] === 'half';
+    const btn = (on: boolean) => cn(
+      'h-8 px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
+      on ? 'bg-slate-900 text-white' : 'bg-white text-stone-600 hover:bg-stone-100',
+    );
+    return (
+      <div className="inline-flex rounded-lg border border-stone-200 overflow-hidden" role="group" aria-label={t.mandateLabel} title={t.mandateHint(defaultGoal, halfGoal)}>
+        <button onClick={() => setMandate(r.id, 'full')} aria-pressed={!half} className={btn(!half)}>{t.mandateFull(defaultGoal)}</button>
+        <button onClick={() => setMandate(r.id, 'half')} aria-pressed={half} className={cn(btn(half), 'border-l border-stone-200')}>{t.mandateHalf(halfGoal)}</button>
+      </div>
+    );
   };
   // Shared by the desktop table and the mobile cards so the two can't drift.
   const rowActions = (r: RcPerson) => (
@@ -732,6 +776,10 @@ function RcsAdmin({ t }: { t: T }) {
               </div>
               {r.email && <p className="mt-1.5 text-xs text-stone-500 break-all">{r.email}</p>}
               {r.phone && <p className="text-xs text-stone-500">{r.phone}</p>}
+              <div className="mt-2.5 flex items-center gap-2">
+                <span className="text-xs text-stone-500">{t.mandateLabel}</span>
+                {mandateToggle(r)}
+              </div>
               <div className="mt-2.5 flex items-center justify-end gap-1.5">{rowActions(r)}</div>
               {pinShown?.id === r.id && <div className="mt-2">{pinBanner(r)}</div>}
             </div>
@@ -739,13 +787,14 @@ function RcsAdmin({ t }: { t: T }) {
         </div>
         {/* Desktop: the table keeps 12+ coaches scannable at a glance. */}
         <div className="hidden sm:block overflow-x-auto">
-          <table className="w-full min-w-[720px] text-sm border-collapse">
+          <table className="w-full min-w-[800px] text-sm border-collapse">
             <thead>
               <tr className="text-[11px] font-bold uppercase tracking-wide text-stone-500 border-b border-stone-200">
                 <th className="text-left font-bold py-2 pr-3">{t.colName}</th>
                 <th className="text-left font-bold py-2 pr-3">{t.email}</th>
                 <th className="text-left font-bold py-2 pr-3">{t.phone}</th>
                 <th className="text-left font-bold py-2 pr-3">{t.colPin}</th>
+                <th className="text-left font-bold py-2 pr-3" title={t.mandateHint(defaultGoal, halfGoal)}>{t.colMandate}</th>
                 <th className="text-right font-bold py-2">{t.colActions}</th>
               </tr>
             </thead>
@@ -761,6 +810,7 @@ function RcsAdmin({ t }: { t: T }) {
                   <td className="py-2 pr-3"><input className={`${input} w-full`} value={editForm.email || ''} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} /></td>
                   <td className="py-2 pr-3"><input className={`${input} w-full`} value={editForm.phone || ''} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} /></td>
                   <td className="py-2 pr-3 text-stone-400 text-xs">{r.has_pin ? t.hasPin : t.noPin}</td>
+                  <td className="py-2 pr-3">{mandateToggle(r)}</td>
                   <td className="py-2">
                     <div className="flex items-center justify-end gap-1.5">
                       <button onClick={() => saveEdit(r.id)} className={btnPrimary}><Check size={15} /></button>
@@ -783,6 +833,7 @@ function RcsAdmin({ t }: { t: T }) {
                         {r.has_pin ? t.hasPin : t.noPin}
                       </span>
                     </td>
+                    <td className="py-2.5 pr-3">{mandateToggle(r)}</td>
                     <td className="py-2.5">
                       <div className="flex items-center justify-end gap-1.5">
                         <button onClick={() => toggleAdmin(r)} className={cn(btnGhost, r.is_admin && 'text-red-600')} title={t.toggleAdmin}>
@@ -798,7 +849,7 @@ function RcsAdmin({ t }: { t: T }) {
                   </tr>
                   {pinShown?.id === r.id && (
                     <tr>
-                      <td colSpan={5} className="pb-2">
+                      <td colSpan={6} className="pb-2">
                         <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
                           <p className="text-xs text-amber-800 flex-1">
                             <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
@@ -1269,11 +1320,21 @@ function ManualGameAdmin({ t, lang }: { t: T; lang: Lang }) {
   );
 }
 
-function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups }: { t: T; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void }) {
+function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups, defaultGoal, onDefaultGoal }: { t: T; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void; defaultGoal: number; onDefaultGoal: (n: number) => Promise<void> }) {
   const [season, setSeason] = useState<number>(defaultSeason);
   const seasonTouched = useRef(false);
   useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
   const [saved, setSaved] = useState(false);
+  const [goal, setGoal] = useState<string>(String(defaultGoal));
+  const goalTouched = useRef(false);
+  useEffect(() => { if (!goalTouched.current) setGoal(String(defaultGoal)); }, [defaultGoal]);
+  const [goalSaved, setGoalSaved] = useState(false);
+  const saveGoal = async () => {
+    const n = Math.round(Number(goal));
+    if (!Number.isFinite(n) || n <= 0) { setGoal(String(defaultGoal)); return; }
+    await onDefaultGoal(n);
+    setGoalSaved(true); setTimeout(() => setGoalSaved(false), 2500);
+  };
   const loading = settingsLoading;
   const [ng, setNg] = useState('');
   const [gi, setGi] = useState<number | null>(null);
@@ -1293,6 +1354,23 @@ function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading
           <select value={season} disabled={loading} onChange={(e) => setSeason(Number(e.target.value))} className="h-9 rounded-lg border border-stone-300 bg-white text-sm px-3">{[...new Set([season, ...SEASONS])].sort().map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
           <button onClick={save} className={btnPrimary}><Check size={15} /> {t.save}</button>
           {saved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
+        </div>
+      </Card>
+      <Card>
+        <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.defaultGoal}</h2>
+        {/* The saved goal drives the hint, not the field being typed in — the
+            half only becomes real once it is saved. */}
+        <p className="text-xs text-stone-400 mb-3">{t.defaultGoalHint(goalForMandate(defaultGoal, 'half'))}</p>
+        <div className="flex items-center gap-2">
+          <input
+            type="number" min={1} inputMode="numeric" disabled={loading}
+            className="h-9 w-20 px-3 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
+            value={goal}
+            onChange={(e) => { goalTouched.current = true; setGoal(e.target.value); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') void saveGoal(); }}
+          />
+          <button onClick={() => void saveGoal()} className={btnPrimary}><Check size={15} /> {t.save}</button>
+          {goalSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
         </div>
       </Card>
       <Card>

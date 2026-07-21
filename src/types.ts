@@ -74,6 +74,17 @@ export const LEGEND = {
 
 export const SR_ZIEL_OPTIONS = ['4L', '3L', '2L', '1L', 'NL', 'Verbleib'];
 
+// Season goal: how many observations a full mandate owes. The admin console can
+// change the number; this is what applies until it does.
+export const OBSERVATION_GOAL = 10;
+
+// An RC on a half mandate owes half as many (10 → 5). Rounded up, so an odd
+// season goal never leaves a half mandate below half.
+export type RcMandate = 'full' | 'half';
+export type RcMandateMap = Record<string, RcMandate>;
+export const goalForMandate = (fullGoal: number, mandate?: RcMandate): number =>
+  mandate === 'half' ? Math.ceil(fullGoal / 2) : fullGoal;
+
 export const SECTIONS_1SR_DE: AssessmentSection[] = [
   {
     title: 'Spielvorbereitung / Formalitäten',

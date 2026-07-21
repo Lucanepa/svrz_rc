@@ -1,12 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Maximize2, Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil } from 'lucide-react';
-import { toPng } from 'html-to-image';
-import { jsPDF } from 'jspdf';
 import { QRCodeSVG } from 'qrcode.react';
-import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
-
-// Season goal: each RC should complete at least this many observations.
-const OBSERVATION_GOAL = 10;
+import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
   CalendarGameStatus,
   Coachee,
@@ -426,7 +421,8 @@ function formatDisplayDate(value: string): string {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const hh = String(d.getHours()).padStart(2, '0');
   const min = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}/${mm}/${d.getFullYear()} ${hh}:${min}`;
+  // dd.mm.yyyy is the Swiss convention, and it is what the filed PDF shows.
+  return `${dd}.${mm}.${d.getFullYear()} ${hh}:${min}`;
 }
 
 function downloadIcal(game: EligibleGame) {
@@ -589,56 +585,10 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
   );
 }
 
-// `.no-print` only hides things through a @media print rule, which
-// html-to-image does NOT apply — it rasterises the on-screen DOM. Every capture
-// must pass this, or screen-only controls (the signature button, the Tips &
-// Tricks box, the "edit larger" buttons) get baked into the PDF.
-const dropScreenOnly = (node: HTMLElement): boolean =>
-  !(node instanceof HTMLElement && node.classList?.contains('no-print'));
-
-// html-to-image rasterises the element exactly as it sits on screen, so the PNG
-// — and with it the upload — grows with the coach's window. The same form is a
-// couple of MB on a laptop and blows the request body limit on a wide monitor,
-// which cost a filled-in form a 500 after a 17-second upload. Bound the raster
-// instead of trusting the viewport: 12 MP still prints crisply at A4.
-const PDF_MAX_RASTER_PIXELS = 12_000_000;
-
-function boundedPixelRatio(element: HTMLElement, requested: number): number {
-  const width = element.offsetWidth || element.getBoundingClientRect().width;
-  const height = element.scrollHeight || element.getBoundingClientRect().height;
-  if (!width || !height) return requested;
-  const fits = Math.sqrt(PDF_MAX_RASTER_PIXELS / (width * height));
-  // Never upscale past what was asked for, and never below 1: downsampling the
-  // form below its own CSS pixels makes the small print unreadable.
-  return Math.max(1, Math.min(requested, fits));
-}
-
-async function generatePdfBase64(element: HTMLElement, pixelRatio: number): Promise<string> {
-  const imageData = await toPng(element, {
-    pixelRatio: boundedPixelRatio(element, pixelRatio),
-    backgroundColor: '#ffffff',
-    filter: dropScreenOnly,
-  });
-
-  const img = new Image();
-  await new Promise<void>((resolve) => { img.onload = () => resolve(); img.src = imageData; });
-  const pdfWidth = img.width * 0.75;
-  const pdfHeight = img.height * 0.75;
-  const pdf = new jsPDF({
-    orientation: pdfWidth > pdfHeight ? 'l' : 'p',
-    unit: 'pt',
-    format: [pdfWidth, pdfHeight],
-  });
-  pdf.addImage(imageData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-
-  const arrayBuffer = pdf.output('arraybuffer');
-  const bytes = new Uint8Array(arrayBuffer);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
+// jsPDF, the embedded font subsets and the PDF layout only matter the moment a
+// coach asks for a document, so they load on demand rather than at startup.
+// Workbox precaches the chunk with everything else, so this still works offline.
+const loadPdfBuilder = () => import('./lib/feedbackPdf');
 
 function detectInitialLang(): FeedbackFormData['lang'] {
   if (typeof window === 'undefined' || !window.navigator?.language) {
@@ -904,6 +854,10 @@ export default function App() {
   const [emailTestMode, setEmailTestMode] = useState(false);
   // Per-coachee level/role targets (drives "watch at their level" game filtering).
   const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
+  // Season observation goal: what a full mandate owes, halved for the RCs the
+  // admin has marked as being on a half mandate.
+  const [rcMandates, setRcMandates] = useState<RcMandateMap>({});
+  const [defaultGoal, setDefaultGoal] = useState<number>(OBSERVATION_GOAL);
   // When true, ignore Niveau targets and show every game (escape hatch).
   const [showAllLevels, setShowAllLevels] = useState(false);
   // Read admin settings: email test-mode banner + default season + coachee targets.
@@ -914,6 +868,8 @@ export default function App() {
       const s = await getSettings();
       setEmailTestMode(Boolean(s.test_mode));
       setCoacheeTargets(s.coachee_targets ?? {});
+      setRcMandates(s.rc_mandates ?? {});
+      if (s.default_goal) setDefaultGoal(s.default_goal);
       if (!s.default_season) return;
       // The season is no longer pickable in the app — it is set once in the
       // admin console and everyone follows it. A stored preference used to win
@@ -997,9 +953,6 @@ export default function App() {
   const [adminLoginEmail, setAdminLoginEmail] = useState('');
   const [adminLoginPassword, setAdminLoginPassword] = useState('');
   const [adminAuthNotice, setAdminAuthNotice] = useState('');
-  const printableRef = useRef<HTMLDivElement | null>(null);
-  const emptyForm1SRRef = useRef<HTMLDivElement | null>(null);
-  const emptyForm2SRRef = useRef<HTMLDivElement | null>(null);
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showInfoModal, setShowInfoModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
@@ -1729,27 +1682,8 @@ export default function App() {
   };
 
   const handleDownloadPdf = async () => {
-    if (!printableRef.current) {
-      return;
-    }
-    const imageData = await toPng(printableRef.current, {
-      pixelRatio: 2,
-      backgroundColor: '#ffffff',
-      filter: dropScreenOnly,
-    });
-
-    // Decode image dimensions for PDF sizing
-    const img = new Image();
-    await new Promise<void>((resolve) => { img.onload = () => resolve(); img.src = imageData; });
-    // Custom page size so everything fits on a single page
-    const pdfWidth = img.width * 0.75;
-    const pdfHeight = img.height * 0.75;
-    const pdf = new jsPDF({
-      orientation: pdfWidth > pdfHeight ? 'l' : 'p',
-      unit: 'pt',
-      format: [pdfWidth, pdfHeight],
-    });
-    pdf.addImage(imageData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+    const { buildFeedbackPdf } = await loadPdfBuilder();
+    const pdf = buildFeedbackPdf(formData);
 
     const file = new File([pdf.output('blob')], pdfFilename(formData), { type: 'application/pdf' });
     if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
@@ -1763,54 +1697,17 @@ export default function App() {
   };
 
   const handleDownloadEmptyForm = async (choice: '1SR' | '2SR' | 'both') => {
-    type PdfField = { fieldName: string; Rect: number[]; fontSize?: number; multiline?: boolean };
     setDownloadingEmptyForm(true);
     setShowEmptyFormModal(false);
-    await new Promise(r => setTimeout(r, 100)); // let hidden forms render
-
-    const refs = choice === '1SR' ? [emptyForm1SRRef]
-      : choice === '2SR' ? [emptyForm2SRRef]
-      : [emptyForm1SRRef, emptyForm2SRRef];
-
-    const a4W = 595.28, a4H = 841.89, margin = 6;
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
-    const AcroForm = (jsPDF as unknown as { AcroForm: { TextField: new () => PdfField } }).AcroForm;
-    const addField = (pdf as unknown as { addField: (fld: PdfField) => void }).addField.bind(pdf);
-    let page = 0;
-    for (const ref of refs) {
-      if (!ref.current) continue;
-      if (page > 0) pdf.addPage();
-      page++;
-      const imageData = await toPng(ref.current, { pixelRatio: 1.5, backgroundColor: '#ffffff', filter: dropScreenOnly });
-      const img = new Image();
-      await new Promise<void>((resolve) => { img.onload = () => resolve(); img.src = imageData; });
-      const usableW = a4W - margin * 2, usableH = a4H - margin * 2;
-      const scale = Math.min(usableW / img.width, usableH / img.height);
-      const imgW = img.width * scale, imgH = img.height * scale;
-      const ox = (a4W - imgW) / 2; // centre horizontally on A4
-      const oy = margin;
-      pdf.addImage(imageData, 'PNG', ox, oy, imgW, imgH);
-      const role = ref === emptyForm1SRRef ? '1SR' : '2SR';
-      try {
-        const cRect = ref.current.getBoundingClientRect();
-        const k = imgW / ref.current.offsetWidth;
-        ref.current.querySelectorAll<HTMLElement>('[data-pdf-field]').forEach((el) => {
-          const fr = el.getBoundingClientRect();
-          const fx = ox + (fr.left - cRect.left) * k;
-          const fy = oy + (fr.top - cRect.top) * k;
-          const fw = fr.width * k, fh = fr.height * k;
-          if (fw < 3 || fh < 3) return;
-          const tf = new AcroForm.TextField();
-          tf.fieldName = `${role}_${el.getAttribute('data-pdf-field')}`;
-          tf.Rect = [fx, fy, fw, fh];
-          tf.fontSize = el.getAttribute('data-pdf-multiline') ? 9 : 10;
-          if (el.getAttribute('data-pdf-multiline')) tf.multiline = true;
-          addField(tf);
-        });
-      } catch (err) { console.warn('fillable fields skipped', err); }
+    try {
+      const { buildEmptyFeedbackPdf } = await loadPdfBuilder();
+      const roles: FeedbackFormData['role'][] = choice === '1SR' ? ['1. SR']
+        : choice === '2SR' ? ['2. SR']
+        : ['1. SR', '2. SR'];
+      buildEmptyFeedbackPdf(roles).save(choice === 'both' ? 'feedback-empty.pdf' : `feedback-${choice}-empty.pdf`);
+    } finally {
+      setDownloadingEmptyForm(false);
     }
-    pdf.save(choice === 'both' ? 'feedback-empty.pdf' : `feedback-${choice}-empty.pdf`);
-    setDownloadingEmptyForm(false);
   };
 
   const handleManualUploadSubmit = async (form: HTMLFormElement) => {
@@ -1910,22 +1807,35 @@ export default function App() {
     }
   };
 
+  /**
+   * The filed document and the e-mail are always German, whatever language the
+   * coach worked in. The criteria wording therefore has to come from the German
+   * catalogue rather than from `fd.sections`, which carries whichever language
+   * was on screen; ratings travel with the item id.
+   */
+  const toGermanFormData = (fd: FeedbackFormData): FeedbackFormData => {
+    const catalogue = adjustSectionsFor2SR(
+      fd.role === '1. SR' ? SECTIONS_1SR_DE : SECTIONS_2SR_DE,
+      gameHas2SR,
+    );
+    const ratings = new Map(fd.sections.flatMap(s => s.items.map(i => [i.id, i.rating] as const)));
+    return {
+      ...fd,
+      lang: 'DE' as const,
+      sections: catalogue.map(section => ({
+        ...section,
+        items: section.items.map(item => ({ ...item, rating: ratings.get(item.id) ?? '' })),
+      })),
+    };
+  };
+
   const submitSingleFeedback = async (fd: FeedbackFormData, tips: string): Promise<string> => {
-    if (!selectedGame || !printableRef.current) throw new Error(t.noGames);
-    // Force German for PDF screenshot and server-side email
-    const originalLang = fd.lang;
-    if (originalLang !== 'DE') {
-      setFormData({ ...fd, lang: 'DE' as const });
-      await new Promise(r => setTimeout(r, 200));
-    } else {
-      setFormData(fd);
-      await new Promise(r => setTimeout(r, 100));
-    }
-    const base64 = await generatePdfBase64(printableRef.current, 1.5);
-    const deFormData = { ...fd, lang: 'DE' as const };
-    if (originalLang !== 'DE') {
-      setFormData(prev => ({ ...prev, lang: originalLang }));
-    }
+    if (!selectedGame) throw new Error(t.noGames);
+    // Built straight from the data, so the on-screen form no longer has to be
+    // switched to German and re-rendered before the attachment can be made.
+    const deFormData = toGermanFormData(fd);
+    const { feedbackPdfBase64 } = await loadPdfBuilder();
+    const base64 = feedbackPdfBase64(deFormData);
     const payload = {
       gameId: selectedGame.id,
       role: fd.role,
@@ -2011,7 +1921,7 @@ export default function App() {
   };
 
   const handleSaveFeedback = async () => {
-    if (!selectedGame || !printableRef.current) {
+    if (!selectedGame) {
       setBackendNotice(t.noGames);
       return;
     }
@@ -3051,12 +2961,19 @@ export default function App() {
               if (!rcAuth.rcName) {
                 return <p className="text-sm text-stone-500 py-6 text-center">{de ? 'Willkommen.' : 'Welcome.'}</p>;
               }
-              const toGoal = homeData ? Math.max(0, OBSERVATION_GOAL - homeData.done) : 0;
+              const myMandate = rcAuth.rcId ? rcMandates[rcAuth.rcId] : undefined;
+              const myGoal = goalForMandate(defaultGoal, myMandate);
+              const toGoal = homeData ? Math.max(0, myGoal - homeData.done) : 0;
               return (
                 <div className="space-y-4">
                   <div>
                     <h2 className="text-xl font-bold text-stone-900">{de ? `Hallo ${firstName} 👋` : `Hello ${firstName} 👋`}</h2>
-                    <p className="text-sm text-stone-500">{de ? 'Deine Coaching-Übersicht' : 'Your coaching overview'}</p>
+                    {/* The half mandate is named here rather than squeezed into
+                        the goal tile, where "(5 ½)" would read as five and a half. */}
+                    <p className="text-sm text-stone-500">
+                      {de ? 'Deine Coaching-Übersicht' : 'Your coaching overview'}
+                      {myMandate === 'half' && (de ? ' · halbes Mandat' : ' · half mandate')}
+                    </p>
                   </div>
 
                   {(homeLoading || booting) && !homeData ? (
@@ -3087,9 +3004,14 @@ export default function App() {
                           <div className="text-2xl font-bold text-sky-700">{homeData.planned}</div>
                           <div className="text-[11px] font-medium text-sky-700/80 uppercase tracking-wide">{de ? 'Geplant' : 'Planned'}</div>
                         </div>
-                        <div className={cn("rounded-xl border px-3 py-3 text-center", toGoal === 0 ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50")}>
+                        <div
+                          className={cn("rounded-xl border px-3 py-3 text-center", toGoal === 0 ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50")}
+                          title={myMandate === 'half'
+                            ? (de ? `Halbes Mandat: ${myGoal} Beobachtungen pro Saison.` : `Half mandate: ${myGoal} observations per season.`)
+                            : (de ? `${myGoal} Beobachtungen pro Saison.` : `${myGoal} observations per season.`)}
+                        >
                           <div className={cn("text-2xl font-bold", toGoal === 0 ? "text-green-700" : "text-amber-700")}>{toGoal === 0 ? '✓' : toGoal}</div>
-                          <div className={cn("text-[11px] font-medium uppercase tracking-wide", toGoal === 0 ? "text-green-700/80" : "text-amber-700/80")}>{de ? `bis Ziel (${OBSERVATION_GOAL})` : `to goal (${OBSERVATION_GOAL})`}</div>
+                          <div className={cn("text-[11px] font-medium uppercase tracking-wide", toGoal === 0 ? "text-green-700/80" : "text-amber-700/80")}>{de ? `bis Ziel (${myGoal})` : `to goal (${myGoal})`}</div>
                         </div>
                       </div>
 
@@ -4415,7 +4337,7 @@ export default function App() {
       {viewMode === 'feedback' && feedbackSubView === 'feedbackForm' && (
       <>
       {/* Main Form Container */}
-      <div ref={printableRef} className="max-w-4xl mx-auto bg-white p-4 md:p-8 shadow-xl border border-stone-200 print:shadow-none print:border-none print:p-0 print:max-w-none print:mx-0">
+      <div className="max-w-4xl mx-auto bg-white p-4 md:p-8 shadow-xl border border-stone-200 print:shadow-none print:border-none print:p-0 print:max-w-none print:mx-0">
         
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start gap-4 mb-6 print:flex-row">
@@ -5018,12 +4940,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Hidden empty form renderers for PDF capture (always DE) */}
-      <div className="fixed left-[-9999px] top-0">
-        <EmptyFormPage ref={emptyForm1SRRef} role="1. SR" lang="DE" />
-        <EmptyFormPage ref={emptyForm2SRRef} role="2. SR" lang="DE" />
-      </div>
-
       {/* JSON Modal */}
       {viewMode === 'feedback' && showJson && (
         <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
@@ -5600,151 +5516,6 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
     </div>
   );
 }
-
-const EmptyFormPage = React.forwardRef<HTMLDivElement, { role: '1. SR' | '2. SR'; lang: 'DE' | 'EN' }>(({ role, lang }, ref) => {
-  const t = UI_STRINGS[lang];
-  const sections = role === '1. SR'
-    ? (lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN)
-    : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
-  return (
-    <div ref={ref} className="bg-white flex flex-col" style={{ width: 794, minHeight: 1128, padding: '10px 14px' }}>
-      {/* Header */}
-      <div className="flex justify-between items-start gap-3 mb-4">
-        <div className="flex gap-3 items-start">
-          <SvrzLogo className="h-12" />
-          <div>
-            <p className="text-[8px] text-stone-500 uppercase tracking-wider font-semibold">SVRZ | SR-Wesen | Referee Coaching | schiricoaching@svrz.ch</p>
-            <h1 className="text-xl font-bold mt-0.5 text-stone-900 flex items-center gap-2">
-              {t.title}
-              <span className="bg-stone-900 text-white px-2 py-0.5 rounded text-sm whitespace-nowrap shrink-0">{role}</span>
-            </h1>
-          </div>
-        </div>
-      </div>
-      {/* Meta grid */}
-      <div className="grid grid-cols-[1fr_1fr_1fr_2fr] border-t border-l border-stone-900 mb-3">
-        {([[t.matchNo, 'matchNo'], [t.league, 'league'], [t.date, 'date'], [t.location, 'location']] as [string, string][]).map(([label, fn], i) => (
-          <div key={i} className="border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
-            <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{label}</span>
-            <div data-pdf-field={fn} data-pdf-type="text" className="flex-1 min-h-[18px]" />
-          </div>
-        ))}
-        <div className="col-span-4 border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
-          <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{t.teams}</span>
-          <div data-pdf-field="teams" data-pdf-type="text" className="flex-1 min-h-[18px]" />
-        </div>
-        {([[role, 'srRole'], [t.refLevel, 'refLevel'], [t.group, 'group'], [t.rc, 'rc']] as [string, string][]).map(([label, fn], i) => (
-          <div key={i} className="border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
-            <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{label}</span>
-            <div data-pdf-field={fn} data-pdf-type="text" className="flex-1 min-h-[18px]" />
-          </div>
-        ))}
-        <div className="col-span-4 border-r border-b border-stone-900 p-1 flex flex-col min-h-[36px]">
-          <span className="block text-[7px] uppercase font-black text-stone-400 leading-none mb-0.5">{t.result}</span>
-          <div data-pdf-field="result" data-pdf-type="text" className="flex-1 min-h-[18px]" />
-        </div>
-      </div>
-      {/* Legend */}
-      <div className="mb-3 p-1.5 bg-stone-50 border border-stone-200 rounded flex items-center gap-1.5 text-[8px] text-stone-600 italic">
-        <Info size={10} className="text-red-500 shrink-0" />
-        {LEGEND[lang]}
-      </div>
-      {/* Assessment sections */}
-      <div className="space-y-3">
-        {sections.map((section) => (
-          <div key={section.title}>
-            <div className="bg-stone-100 border-x border-t border-stone-900 px-2 py-1 font-bold text-[9px] uppercase tracking-wider text-stone-700 flex items-center gap-1.5">
-              <ClipboardCheck size={10} />
-              {section.title}
-            </div>
-            <table className="w-full border-collapse border border-stone-900">
-              <thead>
-                <tr className="bg-stone-50 text-[8px] uppercase font-bold text-stone-500">
-                  <th className="p-1.5 text-left border-b border-stone-900">{t.criteria}</th>
-                  {RATINGS.map(r => (
-                    <th key={r} className={cn("w-8 border-l border-b border-stone-900 text-center", r === 'C' && "bg-stone-200")}>{r}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {section.items.map((item) => (
-                  <tr key={item.id}>
-                    <td className="p-1.5 text-[10px] border-b border-stone-900 leading-tight">{item.label}</td>
-                    {RATINGS.map(r => (
-                      <td key={r} className={cn("w-8 border-l border-b border-stone-900 text-center", r === 'C' && "bg-stone-200/50")} />
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ))}
-      </div>
-      {/* Results row */}
-      <div className="mt-4 border border-stone-900 bg-stone-50 grid grid-cols-5">
-        {[
-          { label: t.matchLevel, content: <div data-pdf-field="matchLevel" data-pdf-type="text" className="h-5" /> },
-          { label: t.motivation, content: <div className="flex gap-1">{['↑', '✓', '↓'].map(v => <div key={v} className="w-6 h-6 border border-stone-300 rounded flex items-center justify-center text-sm font-bold text-stone-300">{v}</div>)}</div> },
-          { label: t.rating, content: <div className="flex gap-1">{['↑', '✓', '↓'].map(v => <div key={v} className="w-6 h-6 border border-stone-300 rounded flex items-center justify-center text-sm font-bold text-stone-300">{v}</div>)}</div> },
-          { label: t.secondVisit, content: <div className="flex gap-1">{['Y', 'N'].map(v => <div key={v} className="w-6 h-6 border border-stone-300 rounded flex items-center justify-center text-[9px] font-bold text-stone-300">{v}</div>)}</div> },
-          { label: t.refGoal, content: <div data-pdf-field="refGoal" data-pdf-type="text" className="h-5" /> },
-        ].map((cell, i) => (
-          <div key={i} className={cn("p-2", i > 0 && "border-l border-stone-900")}>
-            <h4 className="text-[8px] font-bold uppercase text-stone-500 mb-0.5">{cell.label}</h4>
-            {cell.content}
-          </div>
-        ))}
-      </div>
-      {/* Remarks + Signatures + QR */}
-      <div className="border-x border-b border-stone-900 grid grid-cols-[1fr_auto] flex-1">
-        {/* Remarks (left) */}
-        <div className="p-3 border-r border-stone-900 flex flex-col gap-2">
-          <h3 className="font-bold border-b border-stone-900 pb-1 flex items-center gap-1.5 text-stone-800 text-sm">
-            <MessageSquare size={14} />
-            {t.remarks}
-          </h3>
-          <div data-pdf-field="remarks" data-pdf-type="text" data-pdf-multiline="1" className="min-h-[40px] border-b border-stone-200" />
-          <div>
-            <p className="text-[8px] font-black uppercase text-stone-400 mb-0.5">{t.highlights}</p>
-            <div data-pdf-field="highlights" data-pdf-type="text" data-pdf-multiline="1" className="min-h-[28px] border-b border-stone-200" />
-          </div>
-          <div>
-            <p className="text-[8px] font-black uppercase text-stone-400 mb-0.5">{t.improvements}</p>
-            <div data-pdf-field="improvements" data-pdf-type="text" data-pdf-multiline="1" className="min-h-[28px] border-b border-stone-200" />
-          </div>
-          <div>
-            <p className="text-[8px] font-black uppercase text-stone-400 mb-0.5">{t.goalsNext}</p>
-            <div data-pdf-field="goals" data-pdf-type="text" data-pdf-multiline="1" className="min-h-[28px] border-b border-stone-200" />
-          </div>
-        </div>
-        {/* Signatures + QR (right) */}
-        <div className="p-3 flex flex-col justify-between" style={{ width: 200 }}>
-          <div className="space-y-4">
-            <div>
-              <p className="text-[8px] font-bold uppercase text-stone-500 mb-6">Unterschrift Schiedsrichter</p>
-              <div className="border-b border-stone-400" />
-            </div>
-            <div>
-              <p className="text-[8px] font-bold uppercase text-stone-500 mb-6">Unterschrift Referee Coach</p>
-              <div className="border-b border-stone-400" />
-            </div>
-          </div>
-          <div className="flex items-end gap-2 mt-3">
-            <QRCodeSVG
-              value="https://docs.google.com/forms/d/e/1FAIpQLSe-UY2EknI02mkGwoPlFso9pcigGV5ceSt2Q3CKJaT6PQzzpA/viewform?usp=sf_link"
-              size={48}
-              level="L"
-            />
-            <p className="text-[7px] text-stone-400 leading-tight">Feedback-<br/>Umfrage</p>
-          </div>
-        </div>
-      </div>
-      <div className="mt-2 pt-1 border-t border-stone-100 text-[7px] text-right text-stone-400 italic">
-        {t.version}: {t.versionDate} | Build {BUILD_INFO} | SVRZ Referee Coaching Tool
-      </div>
-    </div>
-  );
-});
 
 function MetaField({ label, value, onChange, type = "text", className = "", readOnly = false }: { label: string, value: string, onChange: (v: string) => void, type?: string, className?: string, readOnly?: boolean }) {
   return (

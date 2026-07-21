@@ -105,11 +105,11 @@ app.use(cors({
   // OPTIONS instead of sending one per request.
   maxAge: 86_400,
 }));
-// A submitted feedback carries the finished PDF as base64 in the body, and that
-// PDF is a raster of the form as it was laid out on the coach's screen — so a
-// wide monitor produces a far bigger upload than a laptop for the very same
-// form. The client now bounds the raster (see generatePdfBase64), but keep real
-// headroom here: hitting this limit costs a coach the whole filled-in form.
+// A submitted feedback carries the finished PDF as base64 in the body. It is now
+// drawn as vector text (see src/lib/feedbackPdf.ts) and lands around 100 KB
+// whatever the coach's screen, rather than the multi-megabyte screenshot it used
+// to be — but keep real headroom: hitting this limit costs a coach the whole
+// filled-in form, and manual uploads still carry arbitrary scanned files.
 app.use(express.json({ limit: '32mb' }));
 
 // body-parser rejects an oversized body by throwing, which the generic handler
@@ -2480,6 +2480,18 @@ async function getSettingRecord(key: string): Promise<AnyRecord | null> {
   } catch { return null; }
 }
 
+// Only the RCs on a half mandate are stored; everyone else follows the full
+// season goal, so "not in the map" is the normal case and the only two values
+// that survive a write are 'half' and (dropped) 'full'.
+function sanitizeMandates(raw: unknown): Record<string, 'half'> {
+  const out: Record<string, 'half'> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (id && value === 'half') out[id] = 'half';
+  }
+  return out;
+}
+
 async function setSetting(key: string, value: string): Promise<void> {
   const existing = await getSettingRecord(key);
   if (existing) await withCollection(['app_settings'], (c) => c.update(existing.id, { value }));
@@ -2501,6 +2513,13 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
     const targetsRec = await getSettingRecord('coachee_targets');
     let coachee_targets: Record<string, unknown> = {};
     try { coachee_targets = targetsRec ? JSON.parse(asText(targetsRec.value)) : {}; } catch { coachee_targets = {}; }
+    // Season observation goal: default_goal is what a full mandate owes; the
+    // RCs listed in rc_mandates (by RC id) are on a half mandate.
+    const mandatesRec = await getSettingRecord('rc_mandates');
+    let rc_mandates: Record<string, 'half'> = {};
+    try { rc_mandates = sanitizeMandates(mandatesRec ? JSON.parse(asText(mandatesRec.value)) : {}); } catch { rc_mandates = {}; }
+    const defaultGoalRec = await getSettingRecord('default_goal');
+    const default_goal = defaultGoalRec ? Number(asText(defaultGoalRec.value)) || null : null;
     let default_season = rec ? Number(asText(rec.value)) || null : null;
     if (default_season == null) {
       // No explicit default set — fall back to the latest season that has coachee data.
@@ -2512,7 +2531,7 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
         if (Number.isFinite(latest)) default_season = latest;
       } catch { /* keep null */ }
     }
-    res.json({ default_season, test_mode: await isEmailTestMode(), groups, coachee_targets });
+    res.json({ default_season, test_mode: await isEmailTestMode(), groups, coachee_targets, rc_mandates, default_goal });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -2524,6 +2543,13 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
     if ('groups' in body && Array.isArray(body.groups)) await setSetting('groups', JSON.stringify((body.groups as unknown[]).map((g) => String(g).trim()).filter(Boolean)));
     if ('coachee_targets' in body && body.coachee_targets && typeof body.coachee_targets === 'object') {
       await setSetting('coachee_targets', JSON.stringify(body.coachee_targets));
+    }
+    if ('rc_mandates' in body && body.rc_mandates && typeof body.rc_mandates === 'object') {
+      await setSetting('rc_mandates', JSON.stringify(sanitizeMandates(body.rc_mandates)));
+    }
+    if ('default_goal' in body) {
+      const n = Math.round(Number(body.default_goal));
+      await setSetting('default_goal', Number.isFinite(n) && n > 0 ? String(n) : '');
     }
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }

@@ -32,7 +32,31 @@ const smtpTransport = nodemailer.createTransport({
   },
   connectionTimeout: 10_000,
   greetingTimeout: 10_000,
+  // Reuse connections instead of dialling per message. Sending several mails in
+  // quick succession (a feedback batch, or a survey landing right after one)
+  // was tripping "Greeting never received" — a fresh TCP+TLS handshake per mail
+  // is exactly what a provider throttles.
+  pool: true,
+  maxConnections: 3,
 });
+
+// One retry on the transport-level failures — the connection never got a
+// greeting, timed out, or was reset. A survey response is stored before this
+// runs, so without a retry a single hiccup silently costs the notification and
+// leaves only a log line behind. Never retries a rejection (bad address, auth):
+// those fail the same way twice and the second attempt is just noise.
+async function sendMailResilient(message: Parameters<typeof smtpTransport.sendMail>[0]) {
+  try {
+    return await smtpTransport.sendMail(message);
+  } catch (error) {
+    const code = String((error as { code?: string })?.code || '');
+    const retriable = ['ETIMEDOUT', 'ECONNECTION', 'ECONNRESET', 'ESOCKET', 'EGREETING'].includes(code)
+      || /greeting never received|timeout/i.test(String((error as Error)?.message || ''));
+    if (!retriable) throw error;
+    log.warn('smtp.retry', 'transport-level send failure — retrying once', { code });
+    return await smtpTransport.sendMail(message);
+  }
+}
 
 if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
   console.warn('[startup] SMTP not fully configured. Feedback email sending will fail at runtime.');
@@ -2785,16 +2809,30 @@ async function sendSurveyNotification(rec: AnyRecord, answers: Record<string, st
       rows,
       footerNote: 'Automatisch vom SR-Coaching-System versendet.',
     });
-    await smtpTransport.sendMail({
+    // Test mode redirects this like every other mail. Without it, testing the
+    // survey flow quietly mails the real RC commission.
+    const testMode = await isEmailTestMode();
+    const testRecipient = process.env.FEEDBACK_TEST_RECIPIENT || '';
+    if (testMode && !testRecipient) {
+      log.warn('survey.notify_skipped', 'test mode on but no FEEDBACK_TEST_RECIPIENT — not mailing');
+      return;
+    }
+    await sendMailResilient({
       from: MAIL_FROM,
-      to: SURVEY_NOTIFY_EMAILS.join(','),
-      subject: built.subject,
+      to: testMode ? testRecipient : SURVEY_NOTIFY_EMAILS.join(','),
+      subject: testMode ? `[TEST] ${built.subject}` : built.subject,
       html: built.html,
       text: built.text,
       attachments: emailAttachments(),
     });
   } catch (error) {
-    log.warn('survey.notify_failed', 'survey stored but could not be mailed', { error: safeError(error) });
+    // The RAW error, not safeError(): this is our own log, and sanitising it is
+    // how "Greeting never received" became an unhelpful "Internal server error"
+    // that cost an afternoon to track down.
+    log.warn('survey.notify_failed', 'survey stored but could not be mailed', {
+      error: error instanceof Error ? error.message : String(error),
+      code: String((error as { code?: string })?.code || ''),
+    });
   }
 }
 

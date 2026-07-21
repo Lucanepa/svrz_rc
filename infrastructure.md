@@ -120,8 +120,11 @@ SMTP_USER="..."
 SMTP_PASS="..."
 SMTP_FROM="coaching-feedback@svrz.ch"
 
-# Who gets the feedback report (PDF) in BCC. Comma-separated for more than one.
-FEEDBACK_CC="rc_coaching@volleyball.lucanepa.com,rekom.zuerich@gmail.com"
+# Who gets the coaching report (PDF) in BCC. Comma-separated for more than one.
+# NOT the survey address — the survey goes to SURVEY_NOTIFY_EMAIL below, and
+# that mailbox is deliberately not on this list: this one carries every
+# referee's full written assessment.
+FEEDBACK_CC="rc_coaching@volleyball.lucanepa.com"
 FEEDBACK_EMAIL_TEST="1"              # 1 => redirect all emails to test recipient
 FEEDBACK_TEST_RECIPIENT="you@..."
 

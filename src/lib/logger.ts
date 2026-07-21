@@ -79,7 +79,8 @@ function redact(value: unknown, depth = 0): unknown {
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>).slice(0, 40)) {
-      out[k] = SECRET_KEY.test(k) ? '[redacted]' : redact(v, depth + 1);
+      // Booleans can't leak a secret and are usually the point (hasPassword…).
+      out[k] = SECRET_KEY.test(k) && typeof v !== 'boolean' ? '[redacted]' : redact(v, depth + 1);
     }
     return out;
   }
@@ -129,7 +130,10 @@ export async function flush(beacon = false): Promise<void> {
   const url = `${apiBase}/api/client-logs`;
   try {
     if (beacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
-      navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }));
+      // text/plain keeps this a CORS-simple request. A beacon fired on pagehide
+      // has no chance to complete a preflight, and this is the flush that
+      // captures the moment someone gave up and closed the app.
+      navigator.sendBeacon(url, new Blob([payload], { type: 'text/plain;charset=UTF-8' }));
       return;
     }
     // Raw fetch, NOT the instrumented one: shipping logs must not generate logs.
@@ -193,15 +197,34 @@ function installClickLogging(): void {
   }, { capture: true, passive: true });
 }
 
+// Stamps our session/device ids on API calls so a server-side request log line
+// can be joined to the browser session that made it. Only for plain
+// (string/URL) API requests — a caller-built Request object is passed through
+// untouched rather than risking a rebuild. The extra headers make these
+// requests preflighted; the API sets a long Access-Control-Max-Age so the
+// browser caches that OPTIONS instead of repeating it.
+function withTraceHeaders(url: string, init?: RequestInit): RequestInit | undefined {
+  if (!url.includes('/api/')) return init;
+  try {
+    const headers = new Headers(init?.headers || {});
+    headers.set('X-Svrz-Session', sid);
+    headers.set('X-Svrz-Device', did);
+    return { ...init, headers };
+  } catch {
+    return init;
+  }
+}
+
 function installFetchLogging(): void {
   window.fetch = async function loggedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const method = (init?.method || (input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     // The log-shipping endpoint would recurse.
     if (url.includes('/api/client-logs')) return originalFetch(input as RequestInfo, init);
+    const traced = input instanceof Request ? init : withTraceHeaders(url, init);
     const started = performance.now();
     try {
-      const res = await originalFetch(input as RequestInfo, init);
+      const res = await originalFetch(input as RequestInfo, traced);
       const ms = Math.round(performance.now() - started);
       const lvl: ClientLevel = res.status >= 500 ? 'error' : res.status >= 400 ? 'warn' : 'debug';
       logEvent(lvl, 'net.fetch', `${method} ${url} → ${res.status} (${ms}ms)`, {

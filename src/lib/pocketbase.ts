@@ -193,13 +193,23 @@ export async function rcLogout(): Promise<void> {
   finally { await clearApiCache(); }
 }
 
-// Forgot PIN, step 1: request an email OTP. Always resolves (no enumeration).
+// Forgot password, step 1: request an email OTP. The 200 body carries no signal
+// (the server never reveals whether the address is registered), but the STATUS
+// does — a 429 means no code was sent. Ignoring that told people "check your
+// inbox" for a mail that was never going to arrive.
 export async function rcForgotStart(email: string): Promise<void> {
-  await fetch(apiUrl('/api/auth/rc/forgot/start'), {
+  const r = await fetch(apiUrl('/api/auth/rc/forgot/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email }),
   });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    const err = new Error((data as { error?: string }).error || 'Reset start failed') as Error & { status?: number; retryAfterMs?: number };
+    err.status = r.status;
+    err.retryAfterMs = (data as { retryAfterMs?: number }).retryAfterMs;
+    throw err;
+  }
 }
 
 // Forgot password, step 2: verify the emailed code and set the chosen password.
@@ -211,8 +221,9 @@ export async function rcForgotVerify(email: string, code: string, newPassword: s
   });
   if (!r.ok) {
     const data = await r.json().catch(() => ({}));
-    const err = new Error((data as { error?: string }).error || 'Verification failed') as Error & { status?: number };
+    const err = new Error((data as { error?: string }).error || 'Verification failed') as Error & { status?: number; retryAfterMs?: number };
     err.status = r.status;
+    err.retryAfterMs = (data as { retryAfterMs?: number }).retryAfterMs;
     throw err;
   }
 }
@@ -492,6 +503,38 @@ export async function getReminderPreview(): Promise<ReminderPreview> {
   const r = await fetch(apiUrl('/api/admin/reminders/preview'), { credentials: 'include' });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+// ── Activity log (admin) ──────────────────────────────────────────────
+export type LogEntry = {
+  seq: number;
+  t: string;
+  lvl: 'debug' | 'info' | 'warn' | 'error';
+  src: 'server' | 'client';
+  evt: string;
+  msg?: string;
+  reqId?: string;
+  sid?: string;
+  did?: string;
+  ip?: string;
+  user?: string;
+  data?: Record<string, unknown>;
+};
+export type LogSession = { sid: string; did?: string; user?: string; first: string; last: string; count: number; errors: number; ua?: string };
+export type LogQuery = { limit?: number; since?: number; level?: string; src?: string; q?: string; sid?: string; evt?: string };
+
+export async function getAdminLogs(opts: LogQuery = {}): Promise<{ entries: LogEntry[]; total: number; lastSeq: number; stats: { size: number; max: number; fileSink: boolean; dir: string } }> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(opts)) if (v !== undefined && v !== '') qs.set(k, String(v));
+  const r = await fetch(apiUrl(`/api/admin/logs?${qs}`), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getAdminLogSessions(): Promise<LogSession[]> {
+  const r = await fetch(apiUrl('/api/admin/logs/sessions'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json() as { sessions: LogSession[] }).sessions;
 }
 
 export type ImportRow = { full_name?: string; first_name?: string; last_name?: string; referee_level?: string; stage?: string; groups?: string; notes?: string };

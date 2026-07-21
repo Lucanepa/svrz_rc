@@ -2,6 +2,34 @@ import React, { useState, useEffect, createContext, useContext, type ReactNode }
 import { Lock, Loader2, Mail, ArrowLeft, KeyRound, Eye, EyeOff } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { getAuthMe, rcLogin, rcLogout, rcForgotStart, rcForgotVerify } from '../lib/pocketbase';
+import { clientLog, setLogUser, flush } from '../lib/logger';
+
+type ApiError = Error & { status?: number; retryAfterMs?: number };
+
+// One place that turns a failure into German. The distinction that matters:
+// "Verbindungsfehler" is reserved for a request that never got a response
+// (offline / DNS / CORS). Anything with a status says what the status means —
+// a rate limit used to fall through to "Verbindungsfehler", which sent people
+// looking for network problems they didn't have.
+function errorMessage(err: unknown, fallback = 'Etwas ist schiefgelaufen. Bitte versuche es erneut.'): string {
+  const e = err as ApiError;
+  if (e?.status === 429) {
+    const secs = Math.ceil((e.retryAfterMs || 60_000) / 1000);
+    const mins = Math.ceil(secs / 60);
+    return secs > 90
+      ? `Zu viele Versuche. Bitte in ca. ${mins} Minuten erneut probieren.`
+      : `Zu viele Versuche. Bitte in ${secs}s erneut probieren.`;
+  }
+  if (e?.status === 503) return 'Server vorübergehend nicht erreichbar. Bitte in einer Minute erneut probieren.';
+  if (e?.status && e.status >= 500) return 'Serverfehler. Bitte versuche es später erneut.';
+  // No status at all == fetch itself rejected == genuinely a connection problem.
+  if (e?.status === undefined) {
+    return navigator.onLine
+      ? 'Verbindungsfehler. Bitte versuche es später erneut.'
+      : 'Keine Internetverbindung. Bitte prüfe dein Netz und versuche es erneut.';
+  }
+  return fallback;
+}
 
 // Identity of the session that passed the gate. rcName/rcId are null for
 // admin-only sessions (admin console login without a personal RC record).
@@ -42,15 +70,22 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     // Guard the status probe with a timeout so an unreachable API degrades to
     // the login screen instead of an infinite blank page.
-    const timeout = setTimeout(() => setChecking(false), 6000);
+    const timeout = setTimeout(() => {
+      clientLog.warn('auth.probe', 'auth/me did not answer within 6s — falling back to the login screen');
+      setChecking(false);
+    }, 6000);
     getAuthMe()
       .then((me) => {
+        clientLog.info('auth.probe', me.rc || me.admin ? 'existing session' : 'no session', {
+          rc: me.rc?.name, admin: Boolean(me.admin),
+        });
+        setLogUser(me.rc?.name || me.admin?.email);
         setRcId(me.rc?.id ?? null);
         setRcName(me.rc?.name ?? null);
         setIsAdminSession(Boolean(me.admin));
         setAuthed(Boolean(me.rc || me.admin));
       })
-      .catch(() => {})
+      .catch((error) => { clientLog.warn('auth.probe', 'auth/me failed — showing the login screen', { error }); })
       .finally(() => {
         clearTimeout(timeout);
         setChecking(false);
@@ -62,27 +97,27 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     e.preventDefault();
     setError('');
     setSubmitting(true);
+    clientLog.info('auth.login', 'login submitted', { email: email.trim() });
     try {
       const result = await rcLogin(email.trim(), password);
       // Resolve the full identity BEFORE letting the app mount: it bootstraps
       // its data from rcId/rcName/admin, so handing it a half-known session
       // would make it load once as an anonymous user and again as itself.
       const me = await getAuthMe().catch(() => null);
+      clientLog.info('auth.login', 'login ok', { name: me?.rc?.name ?? result.name, admin: Boolean(me?.admin) });
+      setLogUser(me?.rc?.name ?? result.name);
       setRcId(me?.rc?.id ?? null);
       setRcName(me?.rc?.name ?? result.name);
       setIsAdminSession(Boolean(me?.admin));
       setAuthed(true);
       return;
     } catch (err) {
-      const e2 = err as Error & { status?: number; retryAfterMs?: number };
-      if (e2.status === 429) {
-        const secs = Math.ceil((e2.retryAfterMs || 60000) / 1000);
-        setError(`Zu viele Versuche. Bitte in ${secs}s erneut probieren.`);
-      } else if (e2.status === 401 || e2.status === 400) {
-        setError('Falsche E-Mail oder falsches Passwort');
-      } else {
-        setError('Verbindungsfehler. Bitte versuche es später erneut.');
-      }
+      const e2 = err as ApiError;
+      const message = (e2.status === 401 || e2.status === 400)
+        ? 'Falsche E-Mail oder falsches Passwort'
+        : errorMessage(err);
+      clientLog.warn('auth.login', `login failed: ${message}`, { email: email.trim(), status: e2.status, retryAfterMs: e2.retryAfterMs, error: err });
+      setError(message);
       setPassword('');
     } finally {
       setSubmitting(false);
@@ -90,7 +125,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    clientLog.info('auth.logout', 'logout');
+    void flush();
     void rcLogout().finally(() => {
+      setLogUser(null);
       setAuthed(false);
       setRcId(null);
       setRcName(null);
@@ -102,13 +140,17 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     e.preventDefault();
     setError('');
     setSubmitting(true);
+    clientLog.info('auth.reset.start', 'requested a reset code', { email: forgotEmail.trim() });
     try {
       await rcForgotStart(forgotEmail.trim());
-      // Always advance — the server never reveals whether the email exists.
+      // Advance without confirming anything — the server never reveals whether
+      // the address is registered.
       setMode('forgot-code');
       setForgotInfo('Falls die E-Mail hinterlegt ist, wurde ein Bestätigungscode gesendet.');
-    } catch {
-      setError('Verbindungsfehler. Bitte versuche es später erneut.');
+    } catch (err) {
+      const message = errorMessage(err);
+      clientLog.warn('auth.reset.start', `reset request failed: ${message}`, { email: forgotEmail.trim(), status: (err as ApiError).status, error: err });
+      setError(message);
     } finally {
       setSubmitting(false);
     }
@@ -118,13 +160,20 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     e.preventDefault();
     setError('');
     setSubmitting(true);
+    clientLog.info('auth.reset.verify', 'submitting code + new password', { email: forgotEmail.trim() });
     try {
       await rcForgotVerify(forgotEmail.trim(), forgotCode.trim(), forgotNewPassword);
+      clientLog.info('auth.reset.verify', 'password set');
       setForgotInfo('Passwort gesetzt. Du kannst dich jetzt anmelden.');
       setMode('forgot-done');
     } catch (err) {
-      const e2 = err as Error & { status?: number };
-      setError(e2.status === 401 ? 'Code ungültig oder abgelaufen.' : e2.status === 400 ? 'Passwort muss mindestens 6 Zeichen haben.' : 'Verbindungsfehler. Bitte versuche es später erneut.');
+      const e2 = err as ApiError;
+      const message = e2.status === 401
+        ? 'Code ungültig oder abgelaufen. Fordere bitte einen neuen Code an.'
+        : e2.status === 400 ? 'Passwort muss mindestens 6 Zeichen haben.'
+        : errorMessage(err);
+      clientLog.warn('auth.reset.verify', `verify failed: ${message}`, { email: forgotEmail.trim(), status: e2.status, retryAfterMs: e2.retryAfterMs, error: err });
+      setError(message);
     } finally {
       setSubmitting(false);
     }
@@ -308,6 +357,16 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               >
                 {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                 {submitting ? 'Prüfe…' : 'Passwort setzen'}
+              </button>
+              {/* Codes expire after 10 minutes and are single-use, so "request a
+                  new one" has to be reachable from here — not only by starting
+                  the whole flow over from the login screen. */}
+              <button
+                type="button"
+                onClick={() => { setError(''); setForgotCode(''); setForgotInfo(''); setMode('forgot-email'); }}
+                className="w-full text-[11px] text-stone-500 hover:text-stone-700 underline"
+              >
+                Neuen Code anfordern
               </button>
               <button type="button" onClick={backToLogin} className="w-full text-[11px] text-stone-400 hover:text-stone-600 inline-flex items-center justify-center gap-1">
                 <ArrowLeft className="h-3 w-3" /> Zurück zur Anmeldung

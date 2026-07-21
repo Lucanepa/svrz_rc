@@ -289,6 +289,38 @@ Automatic sync runs inside `server/index.ts` using `node-cron`:
 
 Production note: the API container runs with `restart: unless-stopped` so the cron stays alive; if the container is stopped, scheduled sync will not run.
 
+## Activity Log (Debugging What Users Actually Did)
+
+`server/logstore.ts` collects everything the system does, from both sides:
+
+- **Server** — one `req.in` / `req.out` pair per request (method, path, status,
+  duration, IP, identity, correlation id), every auth decision with its *reason*,
+  every rate-limit denial with the bucket that tripped, every unhandled error.
+- **Browser** — the app (`src/lib/logger.ts`) records clicks, form submits, all
+  fetches with their status, JS errors, React crashes, online/offline, and ships
+  them to `POST /api/client-logs` (also on `pagehide`, via `sendBeacon`).
+
+Three sinks: stdout (`docker compose logs -f svrz-api`), a 20k-entry in-memory
+ring (what the admin console reads), and daily JSONL files.
+
+Read it in **Admin → Protokoll** (`#/admin/logs`): live tail, filter by
+level/source/session, click a line for the full record. Or on the host:
+
+```bash
+cd deploy/hetzner
+docker compose logs -f svrz-api                      # live
+tail -f logs/svrz-$(date +%F).jsonl                  # structured, survives restarts
+grep '"evt":"auth' logs/svrz-*.jsonl | tail -50      # every login / reset decision
+```
+
+Passwords, PINs, OTP codes, tokens and cookies are redacted at the log-store
+boundary (`redact()`), on both sides — boolean flags under those key names are
+kept, since they carry no secret and are usually the diagnostic bit.
+
+Env: `LOG_DIR` (default `./logs`, `/app/logs` in the container via a bind
+mount), `LOG_LEVEL` (default `debug`), `LOG_RING_MAX` (20000),
+`LOG_RETENTION_DAYS` (30), `LOG_TO_FILE=0` to disable the file sink.
+
 ## Upstream Sync Troubleshooting
 
 Game sync uses Swiss Volley public data with authenticated access. For detailed implementation notes (auth flow, headers, API properties, troubleshooting runbook), see `infrastructure.private.md`.

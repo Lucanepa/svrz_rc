@@ -25,6 +25,12 @@ services:
     environment:
       POCKETBASE_URL: http://pocketbase:8090
       PORT: "8787"
+      # Activity log (see server/logstore.ts). Bind-mounted so the JSONL files
+      # outlive the container — a redeploy is exactly when you lose the logs you
+      # were about to read.
+      LOG_DIR: /app/logs
+    volumes:
+      - ./logs:/app/logs
     ports:
       - "127.0.0.1:8787:8787"
     depends_on: [pocketbase]

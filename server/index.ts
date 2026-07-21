@@ -7,6 +7,7 @@ import nodemailer from 'nodemailer';
 import helmet from 'helmet';
 import { createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scryptSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { log, query as queryLogs, sessions as logSessions, ringStats, pruneLogFiles, record as recordLog, type LogLevel, type LogSource } from './logstore.ts';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -43,10 +44,10 @@ const MAIL_FROM = {
 const MAIL_APP_URL = process.env.APP_PUBLIC_URL || 'https://lucanepa.github.io/svrz_rc/';
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[server] Unhandled rejection:', reason);
+  log.error('process.unhandledRejection', 'Unhandled promise rejection', { error: reason });
 });
 process.on('uncaughtException', (err) => {
-  console.error('[server] Uncaught exception:', err);
+  log.error('process.uncaughtException', 'Uncaught exception', { error: err });
 });
 
 type AnyRecord = Record<string, unknown> & { id: string };
@@ -63,11 +64,86 @@ const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || 'https://lucanepa.c
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    // A blocked origin surfaces in the browser as a bare "Failed to fetch" with
+    // no status, so the server side is the only place it is diagnosable.
+    log.error('cors.blocked', 'Origin not allowed by CORS', { origin, allowed: ALLOWED_ORIGINS });
     return cb(new Error('Origin not allowed by CORS'));
   },
   credentials: true,
+  // The app stamps X-Svrz-Session/Device on API calls (log correlation), which
+  // makes every request preflighted. A long max-age lets the browser cache that
+  // OPTIONS instead of sending one per request.
+  maxAge: 86_400,
 }));
 app.use(express.json({ limit: '8mb' }));
+
+// ── Request logging ───────────────────────────────────────────────────
+// Every request gets an id that ties together each line emitted while handling
+// it (`req.in` → any handler logs → `req.out`). Handlers reach their context
+// through reqCtx(req).
+type ReqCtx = { reqId: string; ip: string; user?: string; sid?: string; startedAt: number };
+const reqCtxByReq = new WeakMap<Request, ReqCtx>();
+
+function reqCtx(req: Request): ReqCtx {
+  const existing = reqCtxByReq.get(req);
+  if (existing) return existing;
+  const fresh: ReqCtx = { reqId: randomBytes(4).toString('hex'), ip: clientIp(req), startedAt: Date.now() };
+  reqCtxByReq.set(req, fresh);
+  return fresh;
+}
+
+/** Names the identity a later handler resolved, so `req.out` can report it. */
+function tagReqUser(req: Request, user: string): void {
+  reqCtx(req).user = user;
+}
+
+// Bodies are logged, because "what exactly did the client send" is the question
+// we actually need answered. Small ones inline (secrets stripped by redact());
+// large ones (feedback PDFs) collapse to their shape so the log stays readable.
+function bodySummary(body: unknown): unknown {
+  if (body == null || typeof body !== 'object') return undefined;
+  const keys = Object.keys(body as Record<string, unknown>);
+  if (!keys.length) return undefined;
+  let size = 0;
+  try { size = JSON.stringify(body).length; } catch { size = -1; }
+  if (size >= 0 && size <= 4_000) return body;
+  return { _summary: true, bytes: size, keys };
+}
+
+app.use((req: Request, res: ExpressResponse, next: () => void) => {
+  const ctx = reqCtx(req);
+  const sid = asText(req.headers['x-svrz-session']) || undefined;
+  const did = asText(req.headers['x-svrz-device']) || undefined;
+  if (sid) ctx.sid = sid;
+  // The logging endpoints must not log themselves: the ingest fires on every
+  // batch, and the admin console polls the reader every few seconds — each
+  // would generate the traffic it is there to report.
+  const noisy = req.path === '/api/client-logs' || req.path.startsWith('/api/admin/logs');
+  if (!noisy) {
+    log.info('req.in', `${req.method} ${req.originalUrl}`, {
+      method: req.method,
+      path: req.path,
+      query: Object.keys(req.query || {}).length ? req.query : undefined,
+      body: bodySummary(req.body),
+      ua: asText(req.headers['user-agent']) || undefined,
+      referer: asText(req.headers.referer) || undefined,
+      origin: asText(req.headers.origin) || undefined,
+      hasRcCookie: Boolean(asText(req.headers.cookie).includes(RC_COOKIE)),
+    }, { reqId: ctx.reqId, ip: ctx.ip, sid, did });
+  }
+  res.on('finish', () => {
+    if (noisy) return;
+    const ms = Date.now() - ctx.startedAt;
+    const lvl: LogLevel = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
+    log[lvl]('req.out', `${req.method} ${req.originalUrl} → ${res.statusCode} (${ms}ms)`, {
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      ms,
+    }, { reqId: ctx.reqId, ip: ctx.ip, sid, did, user: ctx.user });
+  });
+  next();
+});
 
 const ADMIN_SESSION_COOKIE = 'svrz_admin_session';
 const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 1000 * 60 * 60 * 8);
@@ -94,7 +170,15 @@ if (!ADMIN_UI_PASSWORD) console.warn('[startup] ADMIN_UI_PASSWORD not set — ad
 const RC_COOKIE = 'svrz_rc_session';
 const RC_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 const GATE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 min
-const GATE_RATE_LIMIT_MAX = 5;
+const GATE_RATE_LIMIT_MAX = 10;
+// Password reset gets its own per-IP budget. It used to share the login bucket,
+// which meant the very people who need a reset — the ones who just burned their
+// attempts guessing — were locked out of the recovery flow too, and the 429 that
+// came back rendered in the UI as "Verbindungsfehler". Brute force is still
+// bounded here by the per-email start limiter (3 / 10 min), the 5-guess cap per
+// issued code, and the global limiter.
+const RESET_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 min
+const RESET_RATE_LIMIT_MAX = 20;
 
 // PINs are hashed with an app-wide salt derived from the session secret: one
 // scrypt per login attempt, and PIN uniqueness across RCs is checkable by
@@ -184,10 +268,27 @@ function checkRateLimit(
   return { allowed: true, retryAfterMs: 0 };
 }
 
-// Per-IP limiter for password endpoints (gate + admin login).
+// Per-IP limiter for login endpoints (RC login + admin login).
 const gateAttempts: RateLimitStore = new Map();
 function checkGateRateLimit(ip: string) {
   return checkRateLimit(gateAttempts, ip, GATE_RATE_LIMIT_MAX, GATE_RATE_LIMIT_WINDOW_MS);
+}
+
+// Per-IP limiter for the password-reset flow — deliberately separate from the
+// login bucket (see RESET_RATE_LIMIT_MAX).
+const resetAttempts: RateLimitStore = new Map();
+function checkResetRateLimit(ip: string) {
+  return checkRateLimit(resetAttempts, ip, RESET_RATE_LIMIT_MAX, RESET_RATE_LIMIT_WINDOW_MS);
+}
+
+// Single exit for every 429: sets Retry-After (so the client can say how long),
+// and logs which bucket tripped — the detail that made this class of bug so hard
+// to see from the outside.
+function denyRateLimited(req: Request, res: ExpressResponse, bucket: string, retryAfterMs: number, extra?: Record<string, unknown>): void {
+  const ctx = reqCtx(req);
+  log.warn('ratelimit.deny', `${bucket} limit hit for ${ctx.ip}`, { bucket, retryAfterMs, path: req.path, ...extra }, { reqId: ctx.reqId, ip: ctx.ip, sid: ctx.sid });
+  res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+  res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs });
 }
 
 // Per-IP limiter for unauthenticated signature writes (capability-token endpoint).
@@ -372,7 +473,7 @@ function clientIp(req: Request): string {
 }
 
 function safeError(error: unknown): string {
-  console.error('[api-error]', error);
+  log.error('api.error', 'unhandled error in a request handler', { error });
   return 'Internal server error';
 }
 
@@ -1978,11 +2079,13 @@ app.get('/api/admin/auth/status', async (req: Request, res: ExpressResponse) => 
 });
 
 app.post('/api/admin/auth/login', async (req: Request, res: ExpressResponse) => {
-  const rl = checkGateRateLimit(clientIp(req));
-  if (!rl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: rl.retryAfterMs }); return; }
+  const ctx = reqCtx(req);
+  const rl = checkGateRateLimit(ctx.ip);
+  if (!rl.allowed) { denyRateLimited(req, res, 'login:ip', rl.retryAfterMs, { kind: 'admin' }); return; }
   const email = asText((req.body ?? {}).email);
   const password = asText((req.body ?? {}).password);
   if (!email || !password) {
+    log.warn('auth.admin-login', 'missing email or password', { email }, ctx);
     res.status(400).json({ error: 'email and password are required.' });
     return;
   }
@@ -1990,13 +2093,17 @@ app.post('/api/admin/auth/login', async (req: Request, res: ExpressResponse) => 
     await verifyAdminCredentials(email, password);
     const token = createAdminSessionToken(email);
     setAdminSessionCookie(res, token);
+    tagReqUser(req, email);
+    log.info('auth.admin-login', 'ok', { email }, ctx);
     res.json({ ok: true, email });
   } catch (error) {
     clearAdminSessionCookie(res);
     if (error instanceof Error && error.message === 'INVALID_ADMIN_CREDENTIALS') {
+      log.warn('auth.admin-login', 'rejected: invalid credentials', { email }, ctx);
       res.status(401).json({ error: 'Invalid credentials.' });
       return;
     }
+    log.error('auth.admin-login', 'PocketBase auth unavailable', { email, error }, ctx);
     res.status(503).json({ error: 'PocketBase auth unavailable. Please try again.' });
   }
 });
@@ -2008,18 +2115,95 @@ app.post('/api/admin/auth/logout', (_req: Request, res: ExpressResponse) => {
 
 // ── Admin UI password gate (single password -> admin session) ─────────
 app.post('/api/admin/ui-login', (req: Request, res: ExpressResponse) => {
-  const rl = checkGateRateLimit(clientIp(req));
-  if (!rl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: rl.retryAfterMs }); return; }
+  const ctx = reqCtx(req);
+  const rl = checkGateRateLimit(ctx.ip);
+  if (!rl.allowed) { denyRateLimited(req, res, 'login:ip', rl.retryAfterMs, { kind: 'admin-ui' }); return; }
   const password = asText((req.body ?? {}).password);
   const ok = Boolean(ADMIN_UI_PASSWORD) && password.length === ADMIN_UI_PASSWORD.length
     && timingSafeEqual(Buffer.from(password), Buffer.from(ADMIN_UI_PASSWORD));
   if (!ok) {
     clearAdminSessionCookie(res);
+    log.warn('auth.admin-ui-login', 'rejected', { configured: Boolean(ADMIN_UI_PASSWORD) }, ctx);
     res.status(401).json({ error: 'Invalid password.' });
     return;
   }
   setAdminSessionCookie(res, createAdminSessionToken('admin-ui'));
+  tagReqUser(req, 'admin-ui');
+  log.info('auth.admin-ui-login', 'ok', undefined, ctx);
   res.json({ ok: true });
+});
+
+// ── Logging: browser ingest + admin read ──────────────────────────────
+// Deliberately unauthenticated: the failures worth capturing (a login that
+// won't go through, a password reset that dead-ends) all happen before there is
+// a session. Abuse is bounded by a per-IP budget and hard caps on batch size.
+const clientLogRl: RateLimitStore = new Map();
+const CLIENT_LOG_MAX_BATCH = 200;
+const CLIENT_LOG_EVENTS_PER_WINDOW = 3_000;
+const CLIENT_LOG_WINDOW_MS = 5 * 60 * 1000;
+const CLIENT_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+
+// text/plain is parsed only here, never globally: a global text parser would
+// turn every state-changing POST into a CORS-simple request and hand away the
+// preflight that protects them from cross-site forgery. This endpoint only
+// writes to the log, and sendBeacon can't preflight.
+app.post('/api/client-logs', express.text({ type: 'text/plain', limit: '256kb' }), (req: Request, res: ExpressResponse) => {
+  const ip = clientIp(req);
+  const rl = checkRateLimit(clientLogRl, ip, CLIENT_LOG_EVENTS_PER_WINDOW, CLIENT_LOG_WINDOW_MS);
+  // Silently accept when over budget: a client that can't ship logs must never
+  // start showing the user errors about logging.
+  if (!rl.allowed) { res.status(202).json({ ok: true, dropped: true }); return; }
+  // Either the JSON parser or the text parser produced req.body, depending on
+  // whether this arrived as a fetch or as a beacon.
+  const parsed = typeof req.body === 'string'
+    ? (() => { try { return JSON.parse(req.body as string); } catch { return {}; } })()
+    : req.body;
+  const body = (parsed ?? {}) as { sid?: unknown; did?: unknown; user?: unknown; entries?: unknown };
+  const entries = Array.isArray(body.entries) ? body.entries.slice(0, CLIENT_LOG_MAX_BATCH) : [];
+  const sid = asText(body.sid).slice(0, 64) || undefined;
+  const did = asText(body.did).slice(0, 64) || undefined;
+  const user = asText(body.user).slice(0, 120) || undefined;
+  for (const raw of entries) {
+    const e = (raw ?? {}) as Record<string, unknown>;
+    const lvl = asText(e.lvl);
+    recordLog({
+      lvl: (CLIENT_LEVELS.has(lvl) ? lvl : 'info') as LogLevel,
+      src: 'client',
+      evt: asText(e.evt).slice(0, 60) || 'client',
+      msg: asText(e.msg).slice(0, 2_000) || undefined,
+      // The browser's own timestamp, so ordering survives batching and offline
+      // buffering; falls back to arrival time.
+      t: asText(e.t) || undefined,
+      data: (e.data && typeof e.data === 'object' ? e.data : undefined) as Record<string, unknown> | undefined,
+      sid,
+      did,
+      user,
+      ip,
+    });
+  }
+  res.json({ ok: true, accepted: entries.length });
+});
+
+app.get('/api/admin/logs', requireAdminSession, (req: Request, res: ExpressResponse) => {
+  const q = req.query as Record<string, string | undefined>;
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    ...queryLogs({
+      limit: q.limit ? Number(q.limit) : undefined,
+      since: q.since ? Number(q.since) : undefined,
+      level: q.level as LogLevel | undefined,
+      src: q.src as LogSource | undefined,
+      q: q.q,
+      sid: q.sid,
+      evt: q.evt,
+    }),
+    stats: ringStats(),
+  });
+});
+
+app.get('/api/admin/logs/sessions', requireAdminSession, (_req: Request, res: ExpressResponse) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ sessions: logSessions() });
 });
 
 // ── App settings (default season, ...) ───────────────────────────────
@@ -2225,19 +2409,21 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
 });
 
 app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
-  const ipRl = checkGateRateLimit(clientIp(req));
+  const ctx = reqCtx(req);
+  const ipRl = checkGateRateLimit(ctx.ip);
   if (!ipRl.allowed) {
-    res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: ipRl.retryAfterMs });
+    denyRateLimited(req, res, 'login:ip', ipRl.retryAfterMs, { email: asText((req.body ?? {}).email).trim().toLowerCase() });
     return;
   }
   const globalRl = checkRateLimit(pinLoginGlobal, 'global', PIN_GLOBAL_MAX, PIN_GLOBAL_WINDOW_MS);
   if (!globalRl.allowed) {
-    res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: globalRl.retryAfterMs });
+    denyRateLimited(req, res, 'login:global', globalRl.retryAfterMs);
     return;
   }
   const email = asText((req.body ?? {}).email).trim().toLowerCase();
   const password = asText((req.body ?? {}).password);
   if (!email || !password) {
+    log.warn('auth.login', 'missing email or password', { email, hasPassword: Boolean(password) }, ctx);
     res.status(400).json({ error: 'E-Mail und Passwort erforderlich.' });
     return;
   }
@@ -2261,10 +2447,19 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     }
     const match = pwOk ? person! : undefined;
     if (!match) {
+      // Distinguishing these two in the log (never in the response) is what
+      // turns "she can't log in" into an answerable question.
+      log.warn('auth.login', 'rejected', {
+        email,
+        reason: !person ? 'no-active-rc-with-this-email' : !asText(person.pin_hash) ? 'rc-has-no-password-set' : 'wrong-password',
+        activeRcCount: people.length,
+      }, ctx);
       res.status(401).json({ error: 'Falsche E-Mail oder falsches Passwort.' });
       return;
     }
     const name = `${asText(match.first_name)} ${asText(match.last_name)}`.trim();
+    tagReqUser(req, name);
+    log.info('auth.login', 'ok', { email, rcId: match.id, name }, ctx);
     res.cookie(RC_COOKIE, createRcSessionToken(match.id, name), {
       httpOnly: true,
       sameSite: 'none',
@@ -2274,6 +2469,7 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     });
     res.json({ ok: true, name });
   } catch (error) {
+    log.error('auth.login', 'backend failure during login', { email, error }, ctx);
     res.status(500).json({ error: safeError(error) });
   }
 });
@@ -2292,22 +2488,36 @@ app.post('/api/auth/rc/logout', (_req: Request, res: ExpressResponse) => {
 // Forgot PIN, step 1: email a one-time code to a registered active RC. Always
 // answers {ok:true} (no account enumeration). Rate-limited per IP and globally.
 app.post('/api/auth/rc/forgot/start', async (req: Request, res: ExpressResponse) => {
-  const ipRl = checkGateRateLimit(clientIp(req));
-  if (!ipRl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: ipRl.retryAfterMs }); return; }
+  const ctx = reqCtx(req);
+  const ipRl = checkResetRateLimit(ctx.ip);
+  if (!ipRl.allowed) { denyRateLimited(req, res, 'reset:ip', ipRl.retryAfterMs); return; }
   const globalRl = checkRateLimit(rcOtpGlobal, 'global', 100, 15 * 60 * 1000);
-  if (!globalRl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: globalRl.retryAfterMs }); return; }
+  if (!globalRl.allowed) { denyRateLimited(req, res, 'reset:global', globalRl.retryAfterMs); return; }
   const email = asText((req.body ?? {}).email).trim().toLowerCase();
   // Respond OK regardless, but only actually send when the email matches.
-  const respondOk = () => res.json({ ok: true });
-  if (!email || !/\S+@\S+\.\S+/.test(email)) { respondOk(); return; }
+  // The log records what actually happened — the response deliberately cannot.
+  const respondOk = (outcome: string, data?: Record<string, unknown>) => {
+    log.info('auth.reset.start', outcome, { email, ...data }, ctx);
+    res.json({ ok: true });
+  };
+  if (!email || !/\S+@\S+\.\S+/.test(email)) { respondOk('ignored: malformed email'); return; }
   // Per-email start limiter (independent of the per-IP one) to blunt targeted resets.
   const perEmail = checkRateLimit(rcOtpStartAttempts, email, 3, RC_OTP_TTL_MS);
-  if (!perEmail.allowed) { respondOk(); return; }
+  if (!perEmail.allowed) {
+    // Silent to the caller (no enumeration), but a very real reason for "I never
+    // got the code" — so it must be loud in the log.
+    log.warn('ratelimit.deny', 'reset:email limit hit (no code sent, client sees success)', { bucket: 'reset:email', email, retryAfterMs: perEmail.retryAfterMs }, ctx);
+    respondOk('suppressed: per-email limit');
+    return;
+  }
   try {
     await ensureAdminAuth();
     const people = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
       c.getFullList<AnyRecord>({ filter: 'active = true' }));
     const person = people.find((p) => asText(p.email).trim().toLowerCase() === email);
+    if (!person) {
+      log.warn('auth.reset.start', 'no active RC with this email — nothing sent', { email, activeRcCount: people.length }, ctx);
+    }
     if (person) {
       const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
       rcOtpStore.set(email, { hash: hashPin(code), expiresAt: Date.now() + RC_OTP_TTL_MS, attempts: 0 });
@@ -2327,39 +2537,50 @@ app.post('/api/auth/rc/forgot/start', async (req: Request, res: ExpressResponse)
           html,
           attachments: emailAttachments(),
         });
+        log.info('auth.reset.start', 'code emailed', { email, rcId: person.id, expiresInMs: RC_OTP_TTL_MS }, ctx);
       } else {
-        console.log(`[rc-otp] TEST_MODE — code for ${email} suppressed`);
+        log.warn('auth.reset.start', 'TEST_MODE — code generated but email suppressed', { email, rcId: person.id }, ctx);
       }
     }
   } catch (error) {
-    console.error('[rc-otp] start failed:', error);
+    // Includes SMTP failures: the user is told "code sent" either way, so this
+    // log line is the only trace that the mail never left the building.
+    log.error('auth.reset.start', 'failed before/while sending the code', { email, error }, ctx);
   }
-  respondOk();
+  respondOk('done');
 });
 
 // Forgot password, step 2: verify the emailed code and set the chosen new
 // password. Generic errors so a wrong email can't be probed.
 app.post('/api/auth/rc/forgot/verify', async (req: Request, res: ExpressResponse) => {
-  const ipRl = checkGateRateLimit(clientIp(req));
-  if (!ipRl.allowed) { res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs: ipRl.retryAfterMs }); return; }
+  const ctx = reqCtx(req);
+  const ipRl = checkResetRateLimit(ctx.ip);
+  if (!ipRl.allowed) { denyRateLimited(req, res, 'reset:ip', ipRl.retryAfterMs); return; }
   const email = asText((req.body ?? {}).email).trim().toLowerCase();
   const code = asText((req.body ?? {}).code).trim();
   const newPassword = asText((req.body ?? {}).newPassword);
   // Validate the new password BEFORE consuming the one-time code, so a rejected
   // password doesn't force the user to request a fresh code.
   if (newPassword.length < 6) {
+    log.warn('auth.reset.verify', 'rejected: password too short', { email, length: newPassword.length }, ctx);
     res.status(400).json({ error: 'Passwort muss mindestens 6 Zeichen haben.' });
     return;
   }
   const entry = rcOtpStore.get(email);
-  const fail = () => res.status(401).json({ error: 'Code ungültig oder abgelaufen.' });
-  if (!entry || Date.now() > entry.expiresAt) { rcOtpStore.delete(email); fail(); return; }
-  if (entry.attempts >= RC_OTP_MAX_ATTEMPTS) { rcOtpStore.delete(email); fail(); return; }
+  // The response is deliberately one generic message; `reason` in the log is how
+  // we tell "typed it wrong" from "we restarted and dropped the in-memory code".
+  const fail = (reason: string, data?: Record<string, unknown>) => {
+    log.warn('auth.reset.verify', `rejected: ${reason}`, { email, reason, ...data }, ctx);
+    res.status(401).json({ error: 'Code ungültig oder abgelaufen.' });
+  };
+  if (!entry) { fail('no code on file (never requested, already used, or the server restarted since)'); return; }
+  if (Date.now() > entry.expiresAt) { rcOtpStore.delete(email); fail('code expired', { ageMs: Date.now() - (entry.expiresAt - RC_OTP_TTL_MS) }); return; }
+  if (entry.attempts >= RC_OTP_MAX_ATTEMPTS) { rcOtpStore.delete(email); fail('too many wrong codes for this one', { attempts: entry.attempts }); return; }
   entry.attempts++;
   const codeHash = Buffer.from(hashPin(code), 'hex');
   const stored = Buffer.from(entry.hash, 'hex');
   if (!/^\d{6}$/.test(code) || codeHash.length !== stored.length || !timingSafeEqual(codeHash, stored)) {
-    fail();
+    fail(/^\d{6}$/.test(code) ? 'wrong code' : 'malformed code', { attempts: entry.attempts, codeLength: code.length });
     return;
   }
   rcOtpStore.delete(email); // single-use
@@ -2368,12 +2589,15 @@ app.post('/api/auth/rc/forgot/verify', async (req: Request, res: ExpressResponse
     const people = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
       c.getFullList<AnyRecord>({ filter: 'active = true' }));
     const person = people.find((p) => asText(p.email).trim().toLowerCase() === email);
-    if (!person) { fail(); return; }
+    if (!person) { fail('code was valid but the RC is no longer active'); return; }
     await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
       c.update(person.id, { pin_hash: hashPin(newPassword) }));
     rcPeopleCache = null;
+    tagReqUser(req, `${asText(person.first_name)} ${asText(person.last_name)}`.trim());
+    log.info('auth.reset.verify', 'password set', { email, rcId: person.id }, ctx);
     res.json({ ok: true });
   } catch (error) {
+    log.error('auth.reset.verify', 'backend failure while setting the password', { email, error }, ctx);
     res.status(500).json({ error: safeError(error) });
   }
 });
@@ -3718,10 +3942,37 @@ app.get('/api/admin/reminders/preview', requireAdminSession, async (_req: Reques
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
+// Anything that escapes a handler (including the CORS origin rejection and
+// malformed JSON bodies) lands here instead of Express's HTML default page.
+app.use((err: unknown, req: Request, res: ExpressResponse, _next: (e?: unknown) => void) => {
+  const ctx = reqCtx(req);
+  const message = err instanceof Error ? err.message : String(err);
+  const corsBlocked = message.includes('CORS');
+  const badJson = err instanceof SyntaxError && 'body' in (err as object);
+  log.error('req.fail', `${req.method} ${req.originalUrl} threw`, {
+    error: err,
+    origin: asText(req.headers.origin) || undefined,
+    kind: corsBlocked ? 'cors' : badJson ? 'bad-json' : 'unhandled',
+  }, ctx);
+  if (res.headersSent) return;
+  if (corsBlocked) { res.status(403).json({ error: 'Origin not allowed.' }); return; }
+  if (badJson) { res.status(400).json({ error: 'Malformed JSON body.' }); return; }
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 app.listen(port, () => {
-  console.log(`API server listening on http://localhost:${port}`);
+  log.info('startup', `API server listening on http://localhost:${port}`, {
+    ringStats: ringStats(),
+    allowedOrigins: ALLOWED_ORIGINS,
+    testMode: TEST_MODE,
+    node: process.version,
+  });
   console.log(`[scheduler] games sync cron: "${VM_SYNC_CRON}" (${VM_SYNC_TIMEZONE})`);
   console.log(`[scheduler] match reminder cron: "${REMINDER_CRON}" (${VM_SYNC_TIMEZONE})`);
+
+  // Daily log-file retention sweep (03:30 local).
+  void pruneLogFiles();
+  cron.schedule('30 3 * * *', () => { void pruneLogFiles(); }, { timezone: VM_SYNC_TIMEZONE });
 
   cron.schedule(
     REMINDER_CRON,

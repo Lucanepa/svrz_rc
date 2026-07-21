@@ -12,5 +12,9 @@ deploy/hetzner/svrz-api.env
 deploy/hetzner/pb_data/
 deploy/hetzner/.env
 
+# Activity log written by the API (server/logstore.ts): ./logs locally,
+# deploy/hetzner/logs on the host via the compose bind mount.
+logs/
+
 # stray one-off scripts
 *.tmp.mjs

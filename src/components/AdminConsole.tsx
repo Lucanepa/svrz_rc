@@ -57,7 +57,7 @@ const STR = {
     reminderPreview: 'Vorschau: morgen', reminderPreviewHint: 'Zeigt exakt, was morgen versendet würde — es wird nichts gesendet.',
     reminderNone: 'Für morgen stehen keine Erinnerungen an.',
     importXlsx: 'xlsx importieren', importHint: (s: string) => `Import setzt die Saison ${s}. Bestehende (gleicher Name + Saison) werden aktualisiert.`,
-    firstName: 'Vorname', lastName: 'Nachname', level: 'Niveau', stage: 'Niveau/Stufe', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
+    firstName: 'Vorname', lastName: 'Nachname', level: 'Niveau', stage: 'Niveau', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
     noCoachees: (s: string) => `Keine Coachees für ${s} — importiere eine xlsx.`,
     delCoachee: (n: string) => `Coachee „${n}" löschen?`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
@@ -99,7 +99,7 @@ const STR = {
     reminderPreview: 'Preview: tomorrow', reminderPreviewHint: 'Shows exactly what would be sent tomorrow — nothing is sent.',
     reminderNone: 'No reminders due for tomorrow.',
     importXlsx: 'Import xlsx', importHint: (s: string) => `Import targets season ${s}. Existing (same name + season) are updated.`,
-    firstName: 'First name', lastName: 'Last name', level: 'Level', stage: 'Niveau/Stufe (level)', group: 'Group', email: 'Email', phone: 'Phone',
+    firstName: 'First name', lastName: 'Last name', level: 'Level', stage: 'Niveau', group: 'Group', email: 'Email', phone: 'Phone',
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
     noCoachees: (s: string) => `No coachees for ${s} — import an xlsx.`,
     delCoachee: (n: string) => `Delete coachee "${n}"?`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
@@ -436,9 +436,13 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
           <input className={input} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
           <input className={input} placeholder={t.lastName} value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
-          <select className={input} value={joinStufe(form.referee_level, form.stage)} onChange={(e) => setForm({ ...form, ...splitStufe(e.target.value) })}>
+          <select
+            className={cn(input, !joinStufe(form.referee_level, form.stage) && 'text-stone-400')}
+            value={joinStufe(form.referee_level, form.stage)}
+            onChange={(e) => setForm({ ...form, ...splitStufe(e.target.value) })}
+          >
             <option value="">{t.stage}</option>
-            {STUFEN.map((v) => <option key={v} value={v}>{v}</option>)}
+            {STUFEN.map((v) => <option key={v} value={v} className="text-stone-900">{v}</option>)}
           </select>
           <GroupMultiSelect groups={groups} value={form.groups} onChange={(v) => setForm({ ...form, groups: v })} placeholder={t.chooseGroups} />
           <button onClick={add} disabled={!form.first_name && !form.last_name} className={`${btnPrimary} justify-center`}><Plus size={15} /> {t.add}</button>
@@ -451,9 +455,13 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
             <div key={c.id} className="py-2 grid grid-cols-2 sm:grid-cols-5 gap-2 items-center">
               <input className={input} value={editForm.first_name} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
               <input className={input} value={editForm.last_name} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
-              <select className={input} value={joinStufe(editForm.referee_level, editForm.stage)} onChange={(e) => setEditForm({ ...editForm, ...splitStufe(e.target.value) })}>
+              <select
+                className={cn(input, !joinStufe(editForm.referee_level, editForm.stage) && 'text-stone-400')}
+                value={joinStufe(editForm.referee_level, editForm.stage)}
+                onChange={(e) => setEditForm({ ...editForm, ...splitStufe(e.target.value) })}
+              >
                 <option value="">{t.stage}</option>
-                {STUFEN.map((v) => <option key={v} value={v}>{v}</option>)}
+                {STUFEN.map((v) => <option key={v} value={v} className="text-stone-900">{v}</option>)}
               </select>
               <GroupMultiSelect groups={groups} value={editForm.groups} onChange={(v) => setEditForm({ ...editForm, groups: v })} placeholder={t.chooseGroups} />
               <div className="flex gap-1.5"><button onClick={() => saveEdit(c.id)} className={btnPrimary}><Check size={15} /></button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>

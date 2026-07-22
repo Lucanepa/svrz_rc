@@ -1914,14 +1914,26 @@ export default function App() {
       }
       return `${fd.role}: ${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}`;
     } catch (err) {
-      // Reached the server but it rejected → a real error the coach must see.
-      if ((err as { reachedServer?: boolean }).reachedServer) throw err;
-      // Network failure / offline → hold it in the local outbox; it will be sent
-      // (with real status) when connectivity returns. Never silently lost.
+      const e = err as { reachedServer?: boolean; status?: number };
+      // A rejection on the merits (400/403/409) is a real error the coach must
+      // see. An expired session or a server fault is neither their fault nor
+      // something they can fix with a match's worth of work on screen — the
+      // outbox replay already classifies both as "retry", so the first attempt
+      // treats them the same way instead of throwing the form away.
+      const sessionExpired = e.status === 401;
+      const retryable = !e.reachedServer || sessionExpired || (e.status ?? 0) >= 500;
+      if (!retryable) throw err;
+      // Held in the local outbox; sent (with real status) once connectivity —
+      // or the session — returns. Never silently lost.
       const de = fd.lang === 'DE';
       const label = `${selectedGame.homeTeam} vs ${selectedGame.awayTeam} · ${fd.role}`;
       await enqueueFeedback(payload, label, outboxOwnerId);
       void refreshOutboxCount();
+      if (sessionExpired) {
+        return `${fd.role}: ${de
+          ? 'Sitzung abgelaufen – lokal gespeichert. Bitte neu anmelden, dann wird es gesendet.'
+          : 'Session expired – saved locally. Sign in again and it will be sent.'}`;
+      }
       return `${fd.role}: ${de ? 'Offline gespeichert – wird gesendet, sobald du online bist.' : 'Saved offline – will send when you are back online.'}`;
     }
   };

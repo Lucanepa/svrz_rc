@@ -106,6 +106,8 @@ const STR = {
     pinShownInfo: (p: string) => `PIN: ${p}`,
     pinEmailed: (e: string) => `Per E-Mail an ${e} gesendet.`,
     pinNotEmailed: 'Nicht per E-Mail gesendet (keine E-Mail/Testmodus) — bitte manuell übermitteln.',
+    saveFailed: (m: string) => `Nicht gespeichert: ${m}`,
+    close: 'Schliessen',
     adminRole: 'Admin', toggleAdmin: 'Admin-Rechte umschalten',
     toggleAdminConfirm: (n: string, on: boolean) => on
       ? `„${n}" zum Admin machen? Admins haben vollen Zugriff — auch der PIN-Login gibt dann Admin-Rechte.`
@@ -185,6 +187,8 @@ const STR = {
     pinShownInfo: (p: string) => `PIN: ${p}`,
     pinEmailed: (e: string) => `Emailed to ${e}.`,
     pinNotEmailed: 'Not emailed (no address/test mode) — share it manually.',
+    saveFailed: (m: string) => `Not saved: ${m}`,
+    close: 'Close',
     adminRole: 'Admin', toggleAdmin: 'Toggle admin rights',
     toggleAdminConfirm: (n: string, on: boolean) => on
       ? `Make "${n}" an admin? Admins get full access — their PIN login also grants admin.`
@@ -263,6 +267,7 @@ export default function AdminConsole() {
   // id) who are on a half mandate and owe half of it.
   const [rcMandates, setRcMandates] = useState<RcMandateMap>({});
   const [defaultGoal, setDefaultGoal] = useState<number>(OBSERVATION_GOAL);
+  const [settingsError, setSettingsError] = useState('');
   const [leagueOptions, setLeagueOptions] = useState<string[]>([]);
   const [defaultSeason, setDefaultSeason] = useState<number>(CUR_SEASON);
   const [lang, setLang] = useState<Lang>(() => {
@@ -292,8 +297,21 @@ export default function AdminConsole() {
       .then((games) => { setLeagueOptions(Array.from(new Set(games.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort()); })
       .catch(() => {});
   }, [authed]);
-  const saveTargets = useCallback(async (next: CoacheeTargetMap) => { setCoacheeTargets(next); try { await putSettings({ coachee_targets: next }); } catch { /* ignore */ } }, []);
-  const saveMandates = useCallback(async (next: RcMandateMap) => { setRcMandates(next); try { await putSettings({ rc_mandates: next }); } catch { /* ignore */ } }, []);
+  // These render the new value before the server has agreed to it. Swallowing
+  // the failure left the console showing a mandate, target or group that was
+  // never stored — and the next reload quietly disagreed. Roll back and say so.
+  const saveTargets = useCallback(async (next: CoacheeTargetMap) => {
+    const previous = coacheeTargets;
+    setCoacheeTargets(next);
+    try { await putSettings({ coachee_targets: next }); setSettingsError(''); }
+    catch (e) { setCoacheeTargets(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
+  }, [coacheeTargets]);
+  const saveMandates = useCallback(async (next: RcMandateMap) => {
+    const previous = rcMandates;
+    setRcMandates(next);
+    try { await putSettings({ rc_mandates: next }); setSettingsError(''); }
+    catch (e) { setRcMandates(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
+  }, [rcMandates]);
   const saveDefaultGoal = useCallback(async (next: number) => { setDefaultGoal(next); await putSettings({ default_goal: next }); }, []);
 
   // Tab ↔ URL. pushState keeps the hashchange listener in main.tsx (which
@@ -401,6 +419,14 @@ export default function AdminConsole() {
           instead of starting that tab's request right then. Logs are the
           exception — they only poll while their tab is on screen. */}
       <main className="max-w-4xl mx-auto px-4 pt-5">
+        {/* Targets and mandates are edited from two different tabs, so the
+            rollback notice lives above all of them rather than in either. */}
+        {settingsError && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 flex items-start gap-2">
+            <p className="flex-1 text-xs font-medium text-red-700">{t.saveFailed(settingsError)}</p>
+            <button onClick={() => setSettingsError('')} aria-label={t.close} className="text-red-600 hover:text-red-800"><X size={13} /></button>
+          </div>
+        )}
         <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} /></div>
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
@@ -1407,7 +1433,15 @@ function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading
   const [ng, setNg] = useState('');
   const [gi, setGi] = useState<number | null>(null);
   const [gv, setGv] = useState('');
-  const saveGroups = async (next: string[]) => { onGroups(next); try { await putSettings({ groups: next }); } catch { /* ignore */ } };
+  // Optimistic like the mandates and targets above, and rolled back the same
+  // way: a group list that only exists in this tab is worse than none.
+  const [groupsError, setGroupsError] = useState('');
+  const saveGroups = async (next: string[]) => {
+    const previous = groups;
+    onGroups(next);
+    try { await putSettings({ groups: next }); setGroupsError(''); }
+    catch (e) { onGroups(previous); setGroupsError(e instanceof Error ? e.message : String(e)); }
+  };
   const addGroup = () => { const v = ng.trim(); if (!v || groups.includes(v)) return; setNg(''); void saveGroups([...groups, v].sort()); };
   const delGroup = (i: number) => void saveGroups(groups.filter((_, idx) => idx !== i));
   const saveEditGroup = (i: number) => { const v = gv.trim(); if (v) { const next = groups.slice(); next[i] = v; void saveGroups(Array.from(new Set(next)).sort()); } setGi(null); };
@@ -1448,6 +1482,7 @@ function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading
           <input className={input} placeholder={t.newGroup} value={ng} onChange={(e) => setNg(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addGroup(); }} />
           <button onClick={addGroup} className={btnPrimary}><Plus size={15} /> {t.add}</button>
         </div>
+        {groupsError && <p className="text-xs font-medium text-red-600 mb-3">{t.saveFailed(groupsError)}</p>}
         <div className="divide-y divide-stone-100">
           {groups.map((g, i) => gi === i ? (
             <div key={g} className="py-2 flex items-center gap-2">

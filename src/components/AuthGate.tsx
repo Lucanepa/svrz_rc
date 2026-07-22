@@ -1,7 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, type ReactNode } from 'react';
 import { Lock, Loader2, Mail, ArrowLeft, KeyRound, Eye, EyeOff } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
-import { getAuthMe, rcLogin, rcLogout, rcForgotStart, rcForgotVerify } from '../lib/pocketbase';
+import { getAuthMe, rcLogin, rcLogout, rcForgotStart, rcForgotVerify, hasPendingLogout, retryPendingLogout } from '../lib/pocketbase';
 import { clientLog, setLogUser, flush } from '../lib/logger';
 
 type ApiError = Error & { status?: number; retryAfterMs?: number };
@@ -68,6 +68,16 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [forgotInfo, setForgotInfo] = useState('');
 
   useEffect(() => {
+    // Someone logged out while offline: the cookie may still be valid, but the
+    // person holding it asked to be signed out, and the next person on this
+    // device must not inherit them. Stay on the login screen and keep trying to
+    // land the logout the server never heard about.
+    if (hasPendingLogout()) {
+      clientLog.info('auth.probe', 'offline logout not yet acknowledged — staying signed out');
+      void retryPendingLogout();
+      setChecking(false);
+      return;
+    }
     // Guard the status probe with a timeout so an unreachable API degrades to
     // the login screen instead of an infinite blank page.
     const timeout = setTimeout(() => {

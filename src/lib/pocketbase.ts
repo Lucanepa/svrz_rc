@@ -179,9 +179,37 @@ export async function rcLogin(email: string, password: string): Promise<{ name: 
     err.retryAfterMs = (data as { retryAfterMs?: number }).retryAfterMs;
     throw err;
   }
-  // New identity — drop any previous user's cached responses.
+  // New identity — drop any previous user's cached responses, and retire any
+  // unfinished logout: this session supersedes the one it was trying to end.
+  setPendingLogout(false);
   await clearApiCache();
   return response.json() as Promise<{ name: string }>;
+}
+
+// The RC session is a stateless signed cookie with a 30-day life, and only a
+// Set-Cookie from the server can clear it — there is no revocation list. So a
+// logout that never reached the server (offline, which is exactly when a phone
+// gets handed around a gym) left the device holding a live session while the UI
+// said "signed out". This marker remembers the intent: the app refuses the
+// session locally and keeps retrying the real logout until it lands.
+const PENDING_LOGOUT_KEY = 'svrz_pending_logout';
+
+export function hasPendingLogout(): boolean {
+  try { return localStorage.getItem(PENDING_LOGOUT_KEY) === '1'; } catch { return false; }
+}
+
+function setPendingLogout(pending: boolean): void {
+  try {
+    if (pending) localStorage.setItem(PENDING_LOGOUT_KEY, '1');
+    else localStorage.removeItem(PENDING_LOGOUT_KEY);
+  } catch { /* private mode — nothing to remember it with */ }
+}
+
+async function postLogout(): Promise<boolean> {
+  try {
+    const response = await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' });
+    return response.ok;
+  } catch { return false; }
 }
 
 export async function rcLogout(): Promise<void> {
@@ -189,8 +217,14 @@ export async function rcLogout(): Promise<void> {
   if (isDemoMode()) { demo.disableDemo(); await clearApiCache(); return; }
   // Purge the cache even if the logout POST fails (offline), so the previous
   // RC's cached data/identity can't be served to the next person on the device.
-  try { await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' }); }
+  try { setPendingLogout(!(await postLogout())); }
   finally { await clearApiCache(); }
+}
+
+/** Finish a logout that never reached the server. Safe to call on every boot. */
+export async function retryPendingLogout(): Promise<void> {
+  if (!hasPendingLogout() || isDemoMode()) return;
+  if (await postLogout()) setPendingLogout(false);
 }
 
 // Forgot password, step 1: request an email OTP. The 200 body carries no signal

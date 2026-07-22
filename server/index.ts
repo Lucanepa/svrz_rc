@@ -1870,6 +1870,21 @@ function rcRefPresent(recordId: unknown, recordName: unknown): boolean {
 // Non-throwing counterpart to resolveRefereeCoachPersonId, for filling in the
 // id beside a name that arrived as a name (an admin assigning on someone's
 // behalf). Reads the cached roster, so it costs nothing in the common case.
+// Whether this session may administer the identity of RC `id`. Only the
+// president's record is special: it is the one account admin rights must not be
+// able to assume, so anything that could redirect her credentials — the PIN, the
+// address a reset code is mailed to, or deactivating her — is hers alone.
+async function mayAdministerRcRecord(req: Request, id: string): Promise<boolean> {
+  let target: AnyRecord;
+  try {
+    target = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+      c.getOne<AnyRecord>(id, { fields: 'id,is_rc_president' }));
+  } catch { return true; } // record gone: let the caller's own 404 handle it
+  if (target.is_rc_president !== true) return true;
+  const me = await sessionRcIdentity(req);
+  return Boolean(me && me.rcId === id);
+}
+
 async function rcIdForName(rcName: unknown): Promise<string> {
   const key = normalizeName(rcName);
   if (!key) return '';
@@ -2564,8 +2579,13 @@ app.post('/api/admin/ui-login', (req: Request, res: ExpressResponse) => {
   const rl = checkGateRateLimit(ctx.ip);
   if (!rl.allowed) { denyRateLimited(req, res, 'login:ip', rl.retryAfterMs, { kind: 'admin-ui' }); return; }
   const password = asText((req.body ?? {}).password);
-  const ok = Boolean(ADMIN_UI_PASSWORD) && password.length === ADMIN_UI_PASSWORD.length
-    && timingSafeEqual(Buffer.from(password), Buffer.from(ADMIN_UI_PASSWORD));
+  // Compare BYTES: "password".length counts UTF-16 units, so a multibyte guess
+  // passed the length check and then threw inside timingSafeEqual, turning a
+  // wrong password into a 500.
+  const givenBuf = Buffer.from(password);
+  const wantBuf = Buffer.from(ADMIN_UI_PASSWORD);
+  const ok = Boolean(ADMIN_UI_PASSWORD) && givenBuf.length === wantBuf.length
+    && timingSafeEqual(givenBuf, wantBuf);
   if (!ok) {
     clearAdminSessionCookie(res);
     log.warn('auth.admin-ui-login', 'rejected', { configured: Boolean(ADMIN_UI_PASSWORD) }, ctx);
@@ -2902,6 +2922,18 @@ app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, re
       res.status(409).json({ error: 'Diese E-Mail-Adresse ist bereits einem anderen RC zugeordnet.' });
       return;
     }
+    // Same rule as the PIN endpoint, and for the same reason: the president's
+    // account opens the survey responses and the private notes, which admin
+    // rights deliberately do not. Rotating her PIN is blocked — but changing her
+    // address and then running "PIN vergessen" delivers the code to the new
+    // mailbox, which is the same takeover by a longer route. Deactivating her
+    // is refused too: it revokes the only account that can read those views.
+    if (('email' in raw || 'active' in raw) && !(await mayAdministerRcRecord(req, id))) {
+      res.status(403).json({
+        error: 'E-Mail und Status der RC-Präsidentin kann nur sie selbst ändern.',
+      });
+      return;
+    }
     const before = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
       c.getOne<AnyRecord>(id, { fields: 'id,first_name,last_name' }));
     const updated = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
@@ -3080,7 +3112,11 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
   const session = verifyRcSession(req);
   if (session.ok && session.rcId) {
     try {
-      const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
+      // resolveRcSession, not a bare lookup: it also checks the session still
+      // matches the PIN it was issued under. Skipping that here made a reset
+      // session answer "logged in", so AuthGate opened the app and then every
+      // endpoint 401'd — the reset looked broken rather than protective.
+      const person = await resolveRcSession(req);
       if (person) { rc = { id: person.id, name: person.fullName }; rcIsAdmin = person.isAdmin; surveyReader = person.isRcPresident; }
     } catch (error) {
       // The session token is valid but PocketBase is unreachable. Fail with 503
@@ -3104,7 +3140,18 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
   res.json({ rc, admin, surveyReader });
 });
 
+// One in-flight login per email address. peekRateLimit only reads the bucket and
+// the charge lands two awaits later, so without this a burst of concurrent
+// guesses for one account all saw an under-cap bucket and all got a full
+// credential check — the per-account brake existed but never engaged.
+const loginChains = new Map<string, Promise<unknown>>();
+
 app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
+  const emailKey = asText((req.body ?? {}).email).trim().toLowerCase();
+  return chainOnKey(loginChains, emailKey || `ip:${clientIp(req)}`, () => rcLoginAttempt(req, res));
+});
+
+async function rcLoginAttempt(req: Request, res: ExpressResponse): Promise<void> {
   const ctx = reqCtx(req);
   const ipRl = checkGateRateLimit(ctx.ip);
   if (!ipRl.allowed) {
@@ -3159,7 +3206,11 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
       // million-wide space; without a per-account counter the app-wide one was
       // the only brake on grinding a single coach's login from many addresses.
       checkRateLimit(pinLoginGlobal, 'global', PIN_GLOBAL_MAX, PIN_GLOBAL_WINDOW_MS);
-      if (person) checkRateLimit(pinLoginPerAccount, email, PIN_ACCOUNT_MAX, PIN_ACCOUNT_WINDOW_MS);
+      // Charged for EVERY failed email, present or not. Charging only known
+      // accounts made the 429 an oracle: a guessable email hit the cap, an
+      // unknown one never did, so the difference in response revealed which
+      // addresses belong to a real RC.
+      if (email) checkRateLimit(pinLoginPerAccount, email, PIN_ACCOUNT_MAX, PIN_ACCOUNT_WINDOW_MS);
       // Distinguishing these two in the log (never in the response) is what
       // turns "she can't log in" into an answerable question.
       log.warn('auth.login', 'rejected', {
@@ -3185,7 +3236,7 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     log.error('auth.login', 'backend failure during login', { email, error }, ctx);
     res.status(500).json({ error: safeError(error) });
   }
-});
+}
 
 app.post('/api/auth/rc/logout', (_req: Request, res: ExpressResponse) => {
   res.cookie(RC_COOKIE, '', {
@@ -3939,7 +3990,13 @@ app.put('/api/admin/games/:id/star', requireAdminSession, async (req: Request, r
 
 app.get('/api/referee-coach-people', requireRcSession, async (_req: Request, res: ExpressResponse) => {
   try {
-    res.json(await getActiveRcPeople());
+    // Projected, not whole: this list goes to every logged-in RC, so it carries
+    // only what the picker needs. Shipping the record as-is is how the session
+    // fingerprint leaked once already.
+    res.json((await getActiveRcPeople()).map((p) => ({
+      id: p.id, fullName: p.fullName, email: p.email,
+      isAdmin: p.isAdmin, isRcPresident: p.isRcPresident,
+    })));
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
@@ -4452,7 +4509,12 @@ app.get('/api/coachees/:id/feedbacks', requireRcSession, async (req: Request, re
         expand: 'game,coachee',
       }),
     );
-    res.json(rows);
+    // Scoped by coachee alone, this handed any RC every colleague's full
+    // feedback_json — the written assessment, not just its existence. The
+    // unfiltered view is the admin-gated /api/referee-coaches below; a plain RC
+    // sees the ones they filed, the same rule /api/observations applies.
+    const me = await sessionRcIdentity(req);
+    res.json(me ? rows.filter((fb) => rcRefMatches(fb.rc_id, fb.rc_name, me)) : rows);
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

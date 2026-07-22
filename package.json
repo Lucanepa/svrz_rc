@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -n api,web -c green,blue \"npm run dev:api\" \"npm run dev:web\"",
     "dev:web": "vite --port=3000 --host=0.0.0.0",
-    "dev:remote": "VITE_API_BASE_URL=https://rc-api.lucanepa.com npm run dev:web",
+    "dev:remote": "VITE_API_BASE_URL=https://svrz-rc-api.openvolley.app npm run dev:web",
     "dev:api": "tsx server/index.ts",
     "build": "vite build",
     "preview": "vite preview",

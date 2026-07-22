@@ -18,13 +18,45 @@ self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
+// Is there feedback still queued in this origin's offline outbox? It lives in
+// IndexedDB (svrz-offline / feedback-outbox) and cannot cross to the new origin,
+// so if the coach has unsent observations we must NOT wipe caches, unregister,
+// or force-redirect — that would take the outbox's last chance to flush with it.
+// The landing page (legacy/index.html) shows the coach a warning in that case.
+function pendingOutboxCount() {
+  return new Promise((resolve) => {
+    if (!self.indexedDB) { resolve(0); return; }
+    let settled = false;
+    const done = (n) => { if (!settled) { settled = true; resolve(n); } };
+    try {
+      const open = indexedDB.open('svrz-offline');
+      open.onsuccess = () => {
+        const db = open.result;
+        if (!db.objectStoreNames.contains('feedback-outbox')) { db.close(); done(0); return; }
+        try {
+          const req = db.transaction('feedback-outbox', 'readonly').objectStore('feedback-outbox').count();
+          req.onsuccess = () => { done(req.result || 0); db.close(); };
+          req.onerror = () => { done(0); db.close(); };
+        } catch (e) { done(0); db.close(); }
+      };
+      open.onerror = () => done(0);
+      setTimeout(() => done(0), 1200);
+    } catch (e) { done(0); }
+  });
+}
+
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
+    await self.clients.claim();
+
+    // Hold the teardown while unsent work exists. The old build keeps running
+    // for now — the point is not to destroy a coach's queued observation.
+    if (await pendingOutboxCount() > 0) return;
+
     // Drop the old precache first: while it exists, the shell can still be
     // served from disk.
     const keys = await caches.keys();
     await Promise.all(keys.map((key) => caches.delete(key)));
-    await self.clients.claim();
 
     // Move anything already open, keeping the #hash — survey and signature
     // links carry their token there.
@@ -45,10 +77,17 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Any navigation still routed through this worker leaves for the new domain.
-  // A redirect whose target carries no fragment lets the browser keep the
-  // original one, so tokenised links survive.
+  // Any navigation still routed through this worker leaves for the new domain —
+  // UNLESS unsent feedback is queued here, in which case it falls through to the
+  // network so the retirement page's warning is shown instead of bouncing the
+  // coach past it to an origin their outbox can't follow. A redirect whose
+  // target carries no fragment lets the browser keep the original one, so
+  // tokenised survey/signature links survive.
   if (event.request.mode === 'navigate') {
-    event.respondWith(Response.redirect(NEW_APP_ORIGIN + '/', 302));
+    event.respondWith(
+      pendingOutboxCount().then((n) =>
+        n > 0 ? fetch(event.request) : Response.redirect(NEW_APP_ORIGIN + '/', 302),
+      ).catch(() => Response.redirect(NEW_APP_ORIGIN + '/', 302)),
+    );
   }
 });

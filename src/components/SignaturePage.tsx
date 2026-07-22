@@ -12,6 +12,9 @@ export default function SignaturePage() {
   const [ctx, setCtx] = useState<{ context: string; signer: string } | null>(null);
   const [name, setName] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'saving' | 'done' | 'error'>('loading');
+  // A submit that fails is not a bad link — keep the drawn strokes and let them
+  // try again, instead of throwing them away behind "invalid or expired link".
+  const [saveError, setSaveError] = useState(false);
 
   useEffect(() => {
     if (!slug) { setState('error'); return; }
@@ -20,9 +23,15 @@ export default function SignaturePage() {
 
   const save = async () => {
     if (!padRef.current || padRef.current.isEmpty()) return;
+    setSaveError(false);
     setState('saving');
     try { await submitSignatureSession(slug, padRef.current.toDataURL(), name.trim()); setState('done'); }
-    catch { setState('error'); }
+    catch {
+      // Back to 'ready' with the pad — and its strokes — intact. 'error' is
+      // reserved for a link that never loaded (the useEffect catch above).
+      setSaveError(true);
+      setState('ready');
+    }
   };
 
   return (
@@ -36,6 +45,7 @@ export default function SignaturePage() {
           {(state === 'ready' || state === 'saving') && ctx && (
             <>
               {ctx.context && <p className="text-xs text-stone-500 mb-3 leading-snug">{ctx.context}</p>}
+              {saveError && <p className="text-xs text-red-600 mb-3">Speichern fehlgeschlagen – bitte erneut bestätigen.<br />Could not save — please confirm again.</p>}
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" className="h-10 w-full px-3 mb-3 text-sm rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-red-500" />
               <p className="text-[11px] text-stone-400 mb-1.5">Hier unterschreiben / Sign here:</p>
               <div className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50/50 h-44 overflow-hidden"><SignaturePad ref={padRef} /></div>

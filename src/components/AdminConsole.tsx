@@ -120,7 +120,7 @@ const STR = {
     importFail: (e: string) => `Import fehlgeschlagen: ${e}`,
     groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppe(n)', toApp: 'Zur App',
     target: 'Ziel-Spiele', targetHint: 'Welche Spiele für diesen SR relevant sind. Standard: automatisch aus dem Niveau (offizielle SVRZ-Tabelle).',
-    targetAuto: 'Auto (Niveau)', targetAll: 'Alle Spiele', targetCustom: 'Eigen', targetRoles: 'Rolle(n)', targetLeagues: 'Ligen', chooseLeagues: 'Ligen wählen', edit: 'Bearbeiten', done: 'Fertig',
+    targetAuto: 'Auto (Niveau)', targetAll: 'Alle Spiele', targetCustom: 'Eigen', targetRoles: 'Rolle(n)', targetLeagues: 'Ligen', chooseLeagues: 'Ligen wählen', edit: 'Bearbeiten', deleteLabel: 'Löschen', done: 'Fertig',
     colMandate: 'Mandat', mandateLabel: 'Mandat',
     mandateFull: (n: number) => `Ganz · ${n}`, mandateHalf: (n: number) => `Halb · ${n}`,
     mandateHint: (full: number, half: number) => `Ganzes Mandat = ${full} Beobachtungen pro Saison, halbes Mandat = ${half}.`,
@@ -201,7 +201,7 @@ const STR = {
     importFail: (e: string) => `Import failed: ${e}`,
     groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Group(s)', toApp: 'To app',
     target: 'Target games', targetHint: 'Which games are relevant for this referee. Default: automatic from the Niveau (official SVRZ table).',
-    targetAuto: 'Auto (level)', targetAll: 'All games', targetCustom: 'Custom', targetRoles: 'Role(s)', targetLeagues: 'Leagues', chooseLeagues: 'Choose leagues', edit: 'Edit', done: 'Done',
+    targetAuto: 'Auto (level)', targetAll: 'All games', targetCustom: 'Custom', targetRoles: 'Role(s)', targetLeagues: 'Leagues', chooseLeagues: 'Choose leagues', edit: 'Edit', deleteLabel: 'Delete', done: 'Done',
     colMandate: 'Mandate', mandateLabel: 'Mandate',
     mandateFull: (n: number) => `Full · ${n}`, mandateHalf: (n: number) => `Half · ${n}`,
     mandateHint: (full: number, half: number) => `A full mandate is ${full} observations per season, a half mandate ${half}.`,
@@ -674,8 +674,8 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
                   <p className={cn('text-xs truncate', c.email ? 'text-stone-400' : 'text-amber-600 font-medium')}>{c.email || t.noEmail}</p>
                 </div>
                 <button onClick={() => setTargetEditId(targetEditId === c.id ? null : c.id)} className={cn(btnGhost, targetEditId === c.id && 'bg-stone-100')} title={t.target}><Target size={13} /></button>
-                <button onClick={() => { setEditId(c.id); setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', email: c.email || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '' }); }} className={btnGhost}><Pencil size={13} /></button>
-                <button onClick={() => remove(c)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+                <button onClick={() => { setEditId(c.id); setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', email: c.email || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '' }); }} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
+                <button onClick={() => remove(c)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
               </div>
               <div className="flex items-center gap-1.5 mt-1 pl-0.5">
                 <span className="text-[11px] text-stone-400">{t.target}:</span>
@@ -784,7 +784,7 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
         {pinBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
       </button>
       <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost} title={t.edit}><Pencil size={13} /></button>
-      <button onClick={() => remove(r)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+      <button onClick={() => remove(r)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
     </>
   );
   // data-log-redact: the click logger copies rendered text into the admin-wide
@@ -917,7 +917,7 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                           {pinBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
                         </button>
                         <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost} title={t.edit}><Pencil size={13} /></button>
-                        <button onClick={() => remove(r)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+                        <button onClick={() => remove(r)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
                       </div>
                     </td>
                   </tr>
@@ -1530,8 +1530,8 @@ function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading
           ) : (
             <div key={g} className="py-2 flex items-center gap-3">
               <span className="flex-1 text-sm text-stone-800">{g}</span>
-              <button onClick={() => { setGi(i); setGv(g); }} className={btnGhost}><Pencil size={13} /></button>
-              <button onClick={() => delGroup(i)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+              <button onClick={() => { setGi(i); setGv(g); }} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
+              <button onClick={() => delGroup(i)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
             </div>
           ))}
           {groups.length === 0 && <p className="py-4 text-center text-xs text-stone-400">—</p>}

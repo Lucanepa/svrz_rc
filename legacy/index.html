@@ -40,7 +40,7 @@
   <body>
     <main>
       <h1>Die App ist umgezogen</h1>
-      <p>
+      <p id="msg">
         SR-Coaching läuft jetzt unter
         <strong>svrz-rc.openvolley.app</strong>. Du wirst automatisch
         weitergeleitet — bitte aktualisiere dein Lesezeichen und installiere die
@@ -53,35 +53,78 @@
         var target = 'https://svrz-rc.openvolley.app/' + (window.location.hash || '');
         document.getElementById('go').href = target;
 
-        // Tear the retired PWA down before leaving. A visitor who lands here
-        // from an old bookmark may still have the worker and its precache on
-        // disk; if we redirect without clearing them, this device keeps booting
-        // the dead build whenever it opens the old icon.
-        var cleanup = [];
-        if ('serviceWorker' in navigator) {
-          cleanup.push(
-            navigator.serviceWorker.getRegistrations().then(function (regs) {
-              return Promise.all(regs.map(function (r) { return r.unregister(); }));
-            })
-          );
-        }
-        if (window.caches && caches.keys) {
-          cleanup.push(
-            caches.keys().then(function (keys) {
-              return Promise.all(keys.map(function (k) { return caches.delete(k); }));
-            })
-          );
+        // Count feedback still queued in this origin's offline outbox BEFORE
+        // touching anything. The outbox is an IndexedDB store (svrz-offline /
+        // feedback-outbox) that a coach filled while offline; it cannot cross to
+        // the new origin, so wiping caches and redirecting away would destroy an
+        // observation the coach believes is safely saved. If any is pending we
+        // hold here with a warning and clean up nothing.
+        function pendingOutboxCount() {
+          return new Promise(function (resolve) {
+            if (!window.indexedDB) { resolve(0); return; }
+            var settled = false;
+            var done = function (n) { if (!settled) { settled = true; resolve(n); } };
+            try {
+              var open = indexedDB.open('svrz-offline');
+              open.onsuccess = function () {
+                var db = open.result;
+                if (!db.objectStoreNames.contains('feedback-outbox')) { db.close(); done(0); return; }
+                try {
+                  var tx = db.transaction('feedback-outbox', 'readonly');
+                  var countReq = tx.objectStore('feedback-outbox').count();
+                  countReq.onsuccess = function () { done(countReq.result || 0); db.close(); };
+                  countReq.onerror = function () { done(0); db.close(); };
+                } catch (e) { done(0); db.close(); }
+              };
+              open.onerror = function () { done(0); };
+              // Never let a blocked/hung open trap the visitor.
+              setTimeout(function () { done(0); }, 1200);
+            } catch (e) { done(0); }
+          });
         }
 
-        var left = false;
-        function leave() {
-          if (left) return;
-          left = true;
-          window.location.replace(target);
+        function tearDownAndLeave() {
+          var cleanup = [];
+          if ('serviceWorker' in navigator) {
+            cleanup.push(
+              navigator.serviceWorker.getRegistrations().then(function (regs) {
+                return Promise.all(regs.map(function (r) { return r.unregister(); }));
+              })
+            );
+          }
+          if (window.caches && caches.keys) {
+            cleanup.push(
+              caches.keys().then(function (keys) {
+                return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+              })
+            );
+          }
+          var left = false;
+          function leave() {
+            if (left) return;
+            left = true;
+            window.location.replace(target);
+          }
+          setTimeout(leave, 1500);
+          Promise.all(cleanup).then(leave, leave);
         }
-        // Never strand someone behind cleanup that hangs or is unsupported.
-        setTimeout(leave, 1500);
-        Promise.all(cleanup).then(leave, leave);
+
+        pendingOutboxCount().then(function (n) {
+          if (n > 0) {
+            // Hold the coach here. Clearing caches/unregistering the worker
+            // would take the outbox's own last chance to flush with it.
+            document.getElementById('msg').innerHTML =
+              '<strong>' + n + ' noch nicht gesendete Beobachtung(en)</strong> liegen auf dieser Adresse. ' +
+              'Bitte hier online gehen und einige Sekunden warten, damit sie gesendet werden — ' +
+              'dann diese Seite neu laden. Erst danach zur neuen Adresse wechseln.';
+            var go = document.getElementById('go');
+            go.textContent = 'Trotzdem zur neuen Adresse (Beobachtungen bleiben hier)';
+            // Leaving is a deliberate click now, and it does NOT wipe the outbox.
+            go.addEventListener('click', function (e) { e.preventDefault(); window.location.href = target; });
+            return;
+          }
+          tearDownAndLeave();
+        });
       })();
     </script>
   </body>

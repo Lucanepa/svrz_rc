@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Maximize2, Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo, useId } from 'react';
+import { Maximize2, Download, FileJson, Loader2, RefreshCw, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
@@ -827,6 +827,9 @@ export default function App() {
   const [selectedRcName, setSelectedRcName] = useState<string | null>(initialRoute.rc);
   const [rcCoachSummaryData, setrcCoachSummaryData] = useState<rcCoachSummary[]>([]);
   const [rcCoachSummaryLoading, setrcCoachSummaryLoading] = useState(false);
+  // Distinguishes a failed load from a genuinely empty season — the detail view
+  // showed the same "keine RC-Daten" for both, with no way to retry.
+  const [rcCoachSummaryFailed, setRcCoachSummaryFailed] = useState(false);
   // Which `${rcName}|${season}` the loaded summary belongs to — lets the Home
   // dashboard and the RC detail view share one fetch instead of racing two.
   const [rcSummaryKey, setRcSummaryKey] = useState<string | null>(null);
@@ -1177,7 +1180,10 @@ export default function App() {
         datum: formatDisplayDate(selectedGame.date) || prev.meta.datum,
         ort: shortenLocation(selectedGame.location) || prev.meta.ort,
         mannschaften: [selectedGame.homeTeam, selectedGame.awayTeam].filter(Boolean).join(' - '),
-        ergebnis: selectedGame.game_result || prev.meta.ergebnis,
+        // Once the coach has unlocked and corrected the score, the game's copy
+        // must not win — a role toggle re-runs this refill, and letting
+        // game_result overwrite here silently reverted their correction.
+        ergebnis: resultUnlocked ? prev.meta.ergebnis : (selectedGame.game_result || prev.meta.ergebnis),
         srName: srName || prev.meta.srName,
         srNiveau: metaNiveau(coachee) || prev.meta.srNiveau,
         gruppe: normalizeCoacheeGroup(coachee?.groups) || prev.meta.gruppe,
@@ -1412,6 +1418,7 @@ export default function App() {
   const loadRcSummary = async (rcName: string) => {
     const gen = beginLoad('rcSummary');
     setrcCoachSummaryLoading(true);
+    setRcCoachSummaryFailed(false);
     try {
       const data = await loadrcCoachSummary(rcName, seasonStartYear);
       if (!isCurrentLoad('rcSummary', gen)) return;
@@ -1421,6 +1428,7 @@ export default function App() {
       if (!isCurrentLoad('rcSummary', gen)) return;
       setrcCoachSummaryData([]);
       setRcSummaryKey(null);
+      setRcCoachSummaryFailed(true);
       // Release the claim, or one flaky fetch makes the RC detail say "no data"
       // for the rest of the session — a network blip presented as an empty
       // season, with no retry control anywhere on the screen.
@@ -1984,17 +1992,25 @@ export default function App() {
     // Built straight from the data, so the on-screen form no longer has to be
     // switched to German and re-rendered before the attachment can be made.
     const deFormData = toGermanFormData(fd);
-    const { feedbackPdfBase64 } = await loadPdfBuilder();
-    const base64 = feedbackPdfBase64(deFormData);
-    const payload = {
-      gameId: selectedGame.id,
-      role: fd.role,
-      formData: deFormData,
-      pdfBase64: base64,
-      pdfFilename: pdfFilename(deFormData),
-      tipsAndTricks: tips,
-    };
+    // The PDF chunk is lazy-loaded, and after a deploy the old chunk hash is
+    // gone — so the import can reject with the completed observation still only
+    // in memory. Build the payload INSIDE the try, and treat an import/build
+    // failure like any other pre-server failure: hold it in the outbox rather
+    // than throwing it away.
+    let payload: Awaited<ReturnType<typeof buildSubmitPayload>> | null = null;
+    async function buildSubmitPayload() {
+      const { feedbackPdfBase64 } = await loadPdfBuilder();
+      return {
+        gameId: selectedGame!.id,
+        role: fd.role,
+        formData: deFormData,
+        pdfBase64: feedbackPdfBase64(deFormData),
+        pdfFilename: pdfFilename(deFormData),
+        tipsAndTricks: tips,
+      };
+    }
     try {
+      payload = await buildSubmitPayload();
       const result = await saveFeedbackToPocketBase(payload);
       // The new record's id travels back so the sender can add a private note to
       // the RC president straight away, without reopening the game to find it.
@@ -2011,6 +2027,14 @@ export default function App() {
       const e = err as Error & { status?: number; reachedServer?: boolean };
       const de = fd.lang === 'DE';
       const label = `${selectedGame.homeTeam} vs ${selectedGame.awayTeam} · ${fd.role}`;
+      // The PDF chunk never loaded, so there is nothing to queue and retrying
+      // this session would hit the same missing chunk. Ask for a reload, which
+      // fetches the current build — the work is still on screen, unlost.
+      if (!payload) {
+        return `${fd.role}: ${de
+          ? 'Konnte nicht senden (App-Update nötig). Bitte die Seite neu laden – deine Eingaben bleiben erhalten.'
+          : 'Could not send (app update needed). Please reload the page – your entries are kept.'}`;
+      }
       // An expired session is not a rejection of the work — the outbox replay
       // path already treats 401 as "retry after re-auth". Rethrowing it here
       // instead threw away a completed observation, because the only way back
@@ -2305,13 +2329,36 @@ export default function App() {
     return true;
   };
 
+  // Escape closes the topmost open overlay. None of the modals handled a key at
+  // all, so a keyboard user who opened one had no way out but the mouse. Ordered
+  // most-transient first so Escape peels one layer at a time.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (showConfirmModal !== null) { setShowConfirmModal(null); return; }
+      if (sigModalOpen) { setSigModalOpen(false); return; }
+      if (demoMailOpen) { setDemoMailOpen(false); return; }
+      if (showInfoModal) { setShowInfoModal(false); return; }
+      if (showCalendarModal) { setShowCalendarModal(false); return; }
+      if (showEmptyFormModal) { setShowEmptyFormModal(false); return; }
+      if (detailCoachee !== null) { setDetailCoachee(null); return; }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showConfirmModal, sigModalOpen, demoMailOpen, showInfoModal, showCalendarModal, showEmptyFormModal, detailCoachee]);
+
   const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
   const formDisabled = feedbackLocked || isGameRoleClosed;
 
   // A half-filled observation lives only in React state — no draft, no
   // beforeunload guard. The service-worker auto-update reloads the page as soon
   // as a new build lands, so it has to know when that would destroy work.
-  const formIsDirty = feedbackSubView === 'feedbackForm' && !formDisabled && (
+  //
+  // Keyed on the form CONTENT, not on the visible sub-view: merely tabbing away
+  // from the form (to the games list, say) does not save the work, so treating
+  // that as "clean" let the deferred reload fire and wipe a filled-in but
+  // unsubmitted observation the moment a coach glanced at another screen.
+  const formIsDirty = !formDisabled && (
     !!formData.signature
     || !!formData.rcSignature
     || formData.sections.some((section) => section.items.some((item) => !!item.rating))
@@ -2859,6 +2906,8 @@ export default function App() {
               <>
                 <button
                   onClick={toggleRole}
+                  aria-label={`${t.switchRole} ${formData.role === '1. SR' ? '2. SR' : '1. SR'}`}
+                  title={`${t.switchRole} ${formData.role === '1. SR' ? '2. SR' : '1. SR'}`}
                   className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-red-700 transition-colors"
                 >
                   <RefreshCw size={18} />
@@ -2886,9 +2935,11 @@ export default function App() {
         </button>
         <button
           onClick={resetForm}
+          aria-label={t.reset}
+          title={t.reset}
           className="flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2 rounded-lg shadow-sm border border-red-100 hover:bg-red-100 transition-colors"
         >
-          <RefreshCw size={18} />
+          <RotateCcw size={18} />
           <span className="hidden sm:inline">{t.reset}</span>
         </button>
         {selectedGame && (
@@ -4209,6 +4260,16 @@ export default function App() {
                     <h3 className="text-base font-semibold text-stone-800 mb-4">{selectedRcName}</h3>
                     {(booting || rcCoachSummaryLoading) && rcCoachSummaryData.length === 0 ? (
                       <div className="border border-stone-200 rounded"><SkeletonRows rows={5} pill={false} /></div>
+                    ) : rcCoachSummaryFailed ? (
+                      <div className="text-sm text-stone-600 flex flex-col items-start gap-2">
+                        <p>{formData.lang === 'DE' ? 'RC-Daten konnten nicht geladen werden.' : 'Could not load RC data.'}</p>
+                        <button
+                          onClick={() => { rcSummaryAttemptRef.current = null; setRcCoachSummaryFailed(false); void loadRcSummary(selectedRcName!); }}
+                          className="inline-flex items-center gap-1.5 text-red-700 hover:underline"
+                        >
+                          <RefreshCw size={14} /> {formData.lang === 'DE' ? 'Erneut versuchen' : 'Retry'}
+                        </button>
+                      </div>
                     ) : rcCoachSummaryData.length === 0 ? (
                       <p className="text-sm text-stone-500">{t.rcNoData}</p>
                     ) : (
@@ -4988,7 +5049,7 @@ export default function App() {
       {/* Confirm Modal */}
       {showConfirmModal && (
         <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6">
+          <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6">
             <h3 className="text-lg font-bold text-stone-900 mb-3">
               {showConfirmModal === 'save'
                 ? (formData.lang === 'DE' ? 'Feedback speichern?' : 'Save feedback?')
@@ -5033,7 +5094,13 @@ export default function App() {
               </div>
             ) : (
               <p className="text-sm text-stone-600 mb-6">
-                {formData.lang === 'DE' ? 'Alle Bewertungen und Bemerkungen werden zurückgesetzt. Spieldaten bleiben erhalten.' : 'All ratings and remarks will be reset. Game data will be kept.'}
+                {formData.lang === 'DE'
+                  ? (gameHas2SR
+                    ? 'Bewertungen, Bemerkungen, beide Unterschriften und das Formular für die andere Rolle werden gelöscht. Spieldaten (Spiel-Nr., Teams, Datum) bleiben erhalten.'
+                    : 'Bewertungen, Bemerkungen und die Unterschriften werden gelöscht. Spieldaten (Spiel-Nr., Teams, Datum) bleiben erhalten.')
+                  : (gameHas2SR
+                    ? 'Ratings, remarks, both signatures and the other referee’s form will be cleared. Game data (match no., teams, date) is kept.'
+                    : 'Ratings, remarks and the signatures will be cleared. Game data (match no., teams, date) is kept.')}
               </p>
             )}
             <div className="flex justify-end gap-3">
@@ -5071,7 +5138,7 @@ export default function App() {
       {/* Empty Form Modal */}
       {sigModalOpen && (
         <div onClick={() => setSigModalOpen(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-4 max-h-[85vh] overflow-y-auto">
+          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-4 max-h-[85vh] overflow-y-auto">
             <div className="flex items-start justify-between mb-3">
               <h3 className="text-base font-bold text-stone-900">
                 {sigTarget === 'rc'
@@ -5080,9 +5147,13 @@ export default function App() {
               </h3>
               <button onClick={() => setSigModalOpen(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
             </div>
-            {sigError ? (
-              <p className="text-sm text-red-600 py-6 text-center">{sigError}</p>
-            ) : !sigSlug ? (
+            {/* The pad appears once startSignature has SETTLED — on success
+                (sigSlug) or on failure (sigError, e.g. offline). Gating it on the
+                slug alone left an offline coach without a pad, unable to satisfy
+                the mandatory-signature check; showing it on the error too fixes
+                that. It never mounts before the call resolves, so no stroke can
+                land before the canvas is sized. */}
+            {!sigSlug && !sigError ? (
               <div className="py-10 flex justify-center"><Loader2 className="h-6 w-6 animate-spin text-stone-300" /></div>
             ) : (
               <>
@@ -5102,6 +5173,12 @@ export default function App() {
                       ? 'Im Demo-Modus kannst du nur hier unterschreiben. Der QR-Code zum Unterschreiben auf dem Handy braucht den Server.'
                       : 'In the demo you can only sign here. The QR code for signing on a phone needs the server.'}
                   </p>
+                ) : sigError ? (
+                  <p className="mt-3 pt-3 border-t border-stone-200 text-[11px] text-stone-500 text-center">
+                    {formData.lang === 'DE'
+                      ? 'Unterschreiben auf dem Handy ist gerade nicht möglich (offline). Hier unterschreiben funktioniert.'
+                      : 'Signing on a phone isn’t available right now (offline). Signing here works.'}
+                  </p>
                 ) : (
                   <>
                     <div className="flex items-center gap-2 my-3"><div className="flex-1 h-px bg-stone-200" /><span className="text-[10px] uppercase text-stone-400 font-semibold">{formData.lang === 'DE' ? 'oder' : 'or'}</span><div className="flex-1 h-px bg-stone-200" /></div>
@@ -5120,7 +5197,7 @@ export default function App() {
 
       {showInfoModal && (
         <div onClick={() => setShowInfoModal(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5">
+          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5">
             <div className="flex items-start justify-between mb-3">
               <h3 className="text-base font-bold text-stone-900">{formData.lang === 'DE' ? 'Infos & Dokumente' : 'Info & documents'}</h3>
               <button onClick={() => setShowInfoModal(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
@@ -5136,7 +5213,7 @@ export default function App() {
 
       {showCalendarModal && (
         <div onClick={() => setShowCalendarModal(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 max-h-[85vh] overflow-auto">
+          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 max-h-[85vh] overflow-auto">
             <div className="flex items-start justify-between mb-3">
               <h3 className="text-base font-bold text-stone-900 flex items-center gap-2">
                 <CalendarDays size={17} className="text-red-600" />
@@ -5235,7 +5312,7 @@ export default function App() {
 
       {showEmptyFormModal && (
         <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-xs p-6">
+          <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-xs p-6">
             <h3 className="text-lg font-bold text-stone-900 mb-4">{t.emptyFormChoose}</h3>
             <div className="flex flex-col gap-2">
               {(['1SR', '2SR', 'both'] as const).map(choice => (
@@ -5261,7 +5338,7 @@ export default function App() {
       {/* JSON Modal */}
       {viewMode === 'feedback' && showJson && (
         <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+          <div role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
             <div className="p-6 border-b border-stone-100 flex justify-between items-center">
               <h2 className="text-xl font-bold text-stone-900 flex items-center gap-2">
                 <FileJson className="text-red-600" />
@@ -5294,7 +5371,7 @@ export default function App() {
 
       {viewMode === 'feedback' && detailCoachee && (
         <div onClick={() => setDetailCoachee(null)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-40 no-print">
-          <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 max-h-[85vh] overflow-auto">
+          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 max-h-[85vh] overflow-auto">
             <div className="flex items-start justify-between mb-4">
               <h3 className="text-base font-bold text-stone-900">{t.coacheeDetails}</h3>
               <button onClick={() => setDetailCoachee(null)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
@@ -5382,7 +5459,7 @@ export default function App() {
 
       {viewMode === 'feedback' && actionTargetCoachee && (
         <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-40 no-print">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-4">
+          <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-4">
             <h3 className="text-sm font-semibold text-stone-900 mb-3">
               {t.chooseAction}: {actionTargetCoachee.full_name}
             </h3>
@@ -5415,7 +5492,7 @@ export default function App() {
 
       {viewMode === 'feedback' && feedbackPickerCoachee && (
         <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-4 max-h-[80vh] flex flex-col">
+          <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-4 max-h-[80vh] flex flex-col">
             <h3 className="text-sm font-semibold text-stone-900 mb-3">
               {t.feedbackHistory}: {feedbackPickerCoachee.full_name}
             </h3>
@@ -5480,6 +5557,14 @@ export default function App() {
 function RatingPicker({ name, options, allowNA }: { name: string; options: readonly string[]; allowNA: boolean }) {
   const [value, setValue] = useState('');
   const pick = (v: string) => setValue((cur) => (cur === v ? '' : v)); // tap again to clear
+  // Turning the +/- toggle off drops A+/A-/… from `options`, but the hidden
+  // input kept the old grade — the form then submitted a rating the UI showed
+  // as unselected. Clear anything no longer offered (N/A stays valid when
+  // allowed even though it is not in `options`).
+  useEffect(() => {
+    if (value && value !== 'N/A' && !options.includes(value)) setValue('');
+    if (value === 'N/A' && !allowNA) setValue('');
+  }, [options, allowNA, value]);
   const btn = (v: string, selectedClass: string) => (
     <button
       key={v}
@@ -5570,7 +5655,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
 
   return (
     <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+      <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
         <div className="p-4 border-b border-stone-200 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-stone-900">
             {t.manualUploadTitle}: {coachee.full_name}
@@ -5841,10 +5926,14 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
 }
 
 function MetaField({ label, value, onChange, type = "text", className = "", readOnly = false }: { label: string, value: string, onChange: (v: string) => void, type?: string, className?: string, readOnly?: boolean }) {
+  // Associate the label with the input so a screen reader announces the field's
+  // name; without htmlFor/id it read the box as an unlabelled edit field.
+  const id = useId();
   return (
     <div className={cn("border-r border-b border-stone-900 p-1.5 flex flex-col min-h-[48px]", className)}>
-      <label className="block text-[8px] uppercase font-black text-stone-400 leading-none mb-1">{label}</label>
+      <label htmlFor={id} className="block text-[8px] uppercase font-black text-stone-400 leading-none mb-1">{label}</label>
       <input
+        id={id}
         type={type}
         className={cn("outline-none text-xs font-medium bg-transparent w-full", readOnly && "text-stone-500")}
         value={value}

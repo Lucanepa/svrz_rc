@@ -123,13 +123,18 @@ app.use(cors({
 // whatever the coach's screen, rather than the multi-megabyte screenshot it used
 // to be — but keep real headroom: hitting this limit costs a coach the whole
 // filled-in form, and manual uploads still carry arbitrary scanned files.
-// …except on the client log endpoint, which is unauthenticated and mounts its
-// own far tighter parsers below. Reaching it through the global one let a
-// text/plain limit of 256 kb be sidestepped by simply saying application/json.
+// Only /api/feedback/submit carries a large body (the finished PDF as base64).
+// Everything else — including every unauthenticated auth route — gets a small
+// limit, so a hostile caller cannot make the server buffer and parse 32 MB
+// before any handler or rate limit even runs. The client-log endpoint is
+// skipped entirely: it mounts its own tight parsers, and reaching it through a
+// global JSON parser once let its 256 kb text limit be sidestepped as JSON.
 const generousJson = express.json({ limit: '32mb' });
+const modestJson = express.json({ limit: '256kb' });
+const BIG_BODY_PATH_RE = /^\/api\/feedback\/submit\/?$/i;
 app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
   if (CLIENT_LOG_PATH_RE.test(req.path)) { next(); return; }
-  generousJson(req, res, next);
+  (BIG_BODY_PATH_RE.test(req.path) ? generousJson : modestJson)(req, res, next);
 });
 
 // body-parser rejects an oversized body by throwing, which the generic handler
@@ -1856,9 +1861,23 @@ function buildGradesPayload(formData: unknown) {
 // falling back to the name so rows written before the backfill keep working.
 function rcRefMatches(recordId: unknown, recordName: unknown, person: RcAuthInfo): boolean {
   const id = asText(recordId);
-  if (id) return id === person.rcId;
+  if (id) {
+    if (id === person.rcId) return true;
+    // A stored id that belongs to a live RC is authoritative — a different one
+    // means a different person, fall through to no match. But an id that
+    // resolves to NOBODY (the RC was deleted, or the id predates a data fix)
+    // would otherwise strand the row forever; let the name answer for it.
+    if (rcIdIsKnown(id)) return false;
+  }
   const name = normalizeName(recordName);
   return Boolean(name) && name === normalizeName(person.name);
+}
+
+// Whether an id belongs to an RC the roster still knows. Reads the cache
+// synchronously — populated on the first getActiveRcPeople of the request, which
+// every rcRefMatches caller has already awaited.
+function rcIdIsKnown(id: string): boolean {
+  return rcPinFingerprints.has(id);
 }
 
 // True when either half says the game is taken — an id without a name, or a
@@ -2608,6 +2627,17 @@ const CLIENT_LOG_EVENTS_PER_WINDOW = 3_000;
 const CLIENT_LOG_WINDOW_MS = 5 * 60 * 1000;
 const CLIENT_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
 
+// Cap a client log entry's `data` at ~2 kb of serialized JSON. Anything larger
+// is replaced with a marker, so a hostile caller cannot fill the ring by bytes.
+const CLIENT_LOG_DATA_MAX = 2_048;
+function boundedLogData(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  let json = '';
+  try { json = JSON.stringify(value); } catch { return { _dropped: 'unserializable' }; }
+  if (json.length <= CLIENT_LOG_DATA_MAX) return value as Record<string, unknown>;
+  return { _truncated: true, bytes: json.length, preview: json.slice(0, 200) };
+}
+
 // text/plain is parsed only here, never globally: a global text parser would
 // turn every state-changing POST into a CORS-simple request and hand away the
 // preflight that protects them from cross-site forgery. This endpoint only
@@ -2653,7 +2683,11 @@ app.post('/api/client-logs',
       // The browser's own timestamp, so ordering survives batching and offline
       // buffering; falls back to arrival time.
       t: asText(e.t) || undefined,
-      data: (e.data && typeof e.data === 'object' ? e.data : undefined) as Record<string, unknown> | undefined,
+      // Bounded before it enters the ring and the file sink: msg and evt are
+      // already sliced, but `data` was passed through whole, so one unauthenticated
+      // caller could inflate every entry to the batch/body limit and fill the log
+      // by bytes even while staying under the per-entry COUNT cap.
+      data: boundedLogData(e.data),
       sid,
       did,
       user,
@@ -2871,20 +2905,31 @@ async function emailTakenBy(email: string, exceptId: string): Promise<boolean> {
 
 // Games and filed feedbacks reference an RC by display name, so a rename would
 // otherwise orphan every game they hold and every observation they filed.
-async function renameRcReferences(oldName: string, newName: string): Promise<void> {
+async function renameRcReferences(oldName: string, newName: string, rcId: string): Promise<void> {
   const from = normalizeName(oldName);
   if (!from || from === normalizeName(newName)) return;
+  // A row carrying an id belongs to whoever that id names — so a row whose id is
+  // set and is NOT this person is a same-named colleague's, and must be left
+  // alone. Rows with no id yet are matched on the old name and stamped with the
+  // id as they are renamed, so the ambiguity does not come back.
+  const mine = (recId: unknown, recName: unknown) => {
+    const id = asText(recId);
+    if (id) return id === rcId;
+    return normalizeName(recName) === from;
+  };
   const games = await withCollection(collectionCandidates.games, (c) =>
-    c.getFullList<AnyRecord>({ fields: 'id,assigned_rc' }));
+    c.getFullList<AnyRecord>({ fields: 'id,assigned_rc,assigned_rc_id' }));
   for (const game of games) {
-    if (normalizeName(game.assigned_rc) !== from) continue;
-    await withCollection(collectionCandidates.games, (c) => c.update(game.id, { assigned_rc: newName }));
+    if (!mine(game.assigned_rc_id, game.assigned_rc)) continue;
+    await withCollection(collectionCandidates.games, (c) =>
+      c.update(game.id, { assigned_rc: newName, assigned_rc_id: rcId }));
   }
   const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (c) =>
-    c.getFullList<AnyRecord>({ fields: 'id,rc_name' }));
+    c.getFullList<AnyRecord>({ fields: 'id,rc_name,rc_id' }));
   for (const feedback of feedbacks) {
-    if (normalizeName(feedback.rc_name) !== from) continue;
-    await withCollection(collectionCandidates.refereeCoaches, (c) => c.update(feedback.id, { rc_name: newName }));
+    if (!mine(feedback.rc_id, feedback.rc_name)) continue;
+    await withCollection(collectionCandidates.refereeCoaches, (c) =>
+      c.update(feedback.id, { rc_name: newName, rc_id: rcId }));
   }
   icalGamesCache.clear();
 }
@@ -2941,7 +2986,7 @@ app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, re
     rcPeopleCache = null;
     const oldName = `${asText(before.first_name)} ${asText(before.last_name)}`.trim();
     const newName = `${asText(updated.first_name)} ${asText(updated.last_name)}`.trim();
-    try { await renameRcReferences(oldName, newName); }
+    try { await renameRcReferences(oldName, newName, id); }
     catch (renameErr) { console.error('[rc-rename] could not migrate references:', renameErr); }
     res.json(updated);
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -5141,15 +5186,71 @@ app.put('/api/referee-coaches/:id', requireAdminSession, async (req: Request, re
 });
 
 app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  const feedbackId = String(req.params.id);
   try {
     await ensureAdminAuth();
+    // Read the record first: a submit writes four things together — the feedback
+    // row, the game's closed-role flag, an observation, and an entry on the
+    // coachee — and deleting only the row left the other three behind. The game
+    // then showed the role as filed with nothing to open, and the coachee's
+    // history counted a feedback that was gone.
+    let record: AnyRecord | null = null;
+    try {
+      record = await withCollection(collectionCandidates.refereeCoaches, (c) =>
+        c.getOne<AnyRecord>(feedbackId));
+    } catch (readErr) {
+      if (!isRecordNotFound(readErr)) throw readErr;
+    }
+    if (!record) { res.status(404).json({ error: 'Feedback not found' }); return; }
+
+    const gameId = asText(record.game);
+    const coacheeId = asText(record.coachee);
+    const role = asText(record.role_assessed);
+
     await withCollection(collectionCandidates.refereeCoaches, (collection) =>
-      collection.delete(String(req.params.id)),
+      collection.delete(feedbackId),
     );
+
+    // Reopen the role — under the game lock, so it can't race a concurrent
+    // submit for the same game.
+    if (gameId && role) {
+      try {
+        await withGameLock(gameId, async () => {
+          const game = await withCollection(collectionCandidates.games, (c) => c.getOne<AnyRecord>(gameId));
+          const closed: string[] = Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [];
+          if (closed.includes(role)) {
+            await withCollection(collectionCandidates.games, (c) =>
+              c.update(gameId, { feedback_closed_roles: closed.filter((r) => r !== role) }));
+          }
+        });
+      } catch (e) { log.error('feedback.delete', 'reopen role failed', { feedbackId, gameId, role, error: String(e) }); }
+    }
+
+    // Drop the coachee's history entry that pointed at this feedback.
+    if (coacheeId) {
+      try {
+        const coachee = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(coacheeId));
+        const entries = Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries as AnyRecord[] : [];
+        const kept = entries.filter((e) => asText((e as AnyRecord).referee_coaches_id) !== feedbackId);
+        if (kept.length !== entries.length) {
+          await withCollection(collectionCandidates.coachees, (c) => c.update(coacheeId, { feedback_entries: kept }));
+        }
+      } catch (e) { log.error('feedback.delete', 'coachee entry cleanup failed', { feedbackId, coacheeId, error: String(e) }); }
+    }
+
+    // Delete the observation filed alongside — matched on the same game+coachee.
+    if (gameId && coacheeId) {
+      try {
+        const obs = await withCollection(collectionCandidates.observations, (c) =>
+          c.getFullList<AnyRecord>({ filter: `game = "${escapeFilterValue(gameId)}" && coachee = "${escapeFilterValue(coacheeId)}"` }));
+        for (const o of obs) await withCollection(collectionCandidates.observations, (c) => c.delete(o.id));
+      } catch (e) { log.error('feedback.delete', 'observation cleanup failed', { feedbackId, gameId, coacheeId, error: String(e) }); }
+    }
+
     // The private note hangs off this feedback by id; left behind it would show
     // the president a note about a game that no longer exists, forever.
-    try { await deletePresidentNote(String(req.params.id)); }
-    catch (noteErr) { console.error('[president-note] orphan cleanup failed:', noteErr); }
+    try { await deletePresidentNote(feedbackId); }
+    catch (noteErr) { log.error('feedback.delete', 'president-note cleanup failed', { feedbackId, error: String(noteErr) }); }
     res.status(204).send();
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
@@ -5418,13 +5519,30 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         collection.update(created.id, pdfFormData),
       );
     } catch (writeError) {
-      for (const undo of [
-        async () => { if (observationId) await withCollection(collectionCandidates.observations, (c) => c.delete(observationId)); },
-        async () => { await coacheeCollection.update(coachee.id, { feedback_entries: priorEntries, last_feedback_at: asText(coachee.last_feedback_at) }); },
-        async () => { await withCollection(collectionCandidates.refereeCoaches, (c) => c.delete(created.id)); },
-      ]) {
-        try { await undo(); }
-        catch (rollbackError) { console.error('[feedback-submit] rollback step failed:', rollbackError); }
+      // Undo the half-written set so an outbox replay re-files cleanly instead
+      // of stacking orphans. The coachee entry is RECOMPUTED (drop this
+      // feedback's id) rather than restored from the pre-read snapshot: another
+      // request may have appended to feedback_entries in between, and writing
+      // the stale array back would erase that. If any undo step fails the
+      // feedback row is deliberately LEFT — the replay then 409s on it rather
+      // than creating a duplicate — and every failure is logged to the Protokoll.
+      let rollbackClean = true;
+      if (observationId) {
+        try { await withCollection(collectionCandidates.observations, (c) => c.delete(observationId)); }
+        catch (e) { rollbackClean = false; log.error('feedback.submit', 'rollback: observation delete failed', { feedbackId: created.id, observationId, error: String(e) }); }
+      }
+      try {
+        const fresh = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(coachee.id));
+        const cur = Array.isArray(fresh.feedback_entries) ? fresh.feedback_entries as AnyRecord[] : [];
+        await coacheeCollection.update(coachee.id, {
+          feedback_entries: cur.filter((e) => asText((e as AnyRecord).referee_coaches_id) !== created.id),
+        });
+      } catch (e) { rollbackClean = false; log.error('feedback.submit', 'rollback: coachee entry cleanup failed', { feedbackId: created.id, coacheeId: coachee.id, error: String(e) }); }
+      if (rollbackClean) {
+        try { await withCollection(collectionCandidates.refereeCoaches, (c) => c.delete(created.id)); }
+        catch (e) { log.error('feedback.submit', 'rollback: feedback delete failed', { feedbackId: created.id, error: String(e) }); }
+      } else {
+        log.warn('feedback.submit', 'partial rollback — feedback row kept so a replay 409s instead of duplicating', { feedbackId: created.id });
       }
       throw writeError;
     }
@@ -5576,13 +5694,24 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     if (typedResult && typedResult !== asText(game.game_result)) {
       gamePatch.game_result = typedResult;
     }
+    let closureFailed = false;
     if (Object.keys(gamePatch).length > 0) {
-      try {
-        await withCollection(collectionCandidates.games, (collection) =>
-          collection.update(game.id, gamePatch),
-        );
-      } catch (closeErr) {
-        console.error('[feedback-closure] Failed to update game after feedback:', closeErr);
+      // Retry a couple of times: this write closes the role and stores the typed
+      // score. If it silently fails the role stays open — a second, duplicate
+      // observation can be filed — and the score the coach typed is lost. So
+      // report the failure to the client and log it to the Protokoll rather than
+      // answering a clean 201 over a game left half-updated.
+      for (let attempt = 1; attempt <= 3 && !closureFailed; attempt++) {
+        try {
+          await withCollection(collectionCandidates.games, (collection) =>
+            collection.update(game.id, gamePatch),
+          );
+        } catch (closeErr) {
+          if (attempt === 3) {
+            closureFailed = true;
+            log.error('feedback.submit', 'closure write failed after retries — role may stay open', { feedbackId: created.id, gameId: game.id, role, error: String(closeErr) });
+          }
+        }
       }
     }
 
@@ -5592,6 +5721,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       emailSent,
       emailError,
       emailWarning,
+      closureFailed,
     });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
@@ -5626,6 +5756,7 @@ app.post('/api/admin/migrate-rc-ids', requireAdminSession, async (_req: Request,
       const rows = await withCollection(collection, (c) =>
         c.getFullList<AnyRecord>({ fields: `id,${idField},${nameField}` }));
       let filled = 0, already = 0, unresolved = 0, blank = 0;
+      let columnVerified = false;
       for (const row of rows) {
         if (asText(row[idField])) { already++; continue; }
         const key = normalizeName(row[nameField]);
@@ -5633,6 +5764,17 @@ app.post('/api/admin/migrate-rc-ids', requireAdminSession, async (_req: Request,
         const resolved = idByName.get(key);
         if (!resolved) { unresolved++; continue; }
         await withCollection(collection, (c) => c.update(row.id, { [idField]: resolved }));
+        // PocketBase silently drops a write to a column the collection has not
+        // declared, so "filled" would be a lie if setup-schema.mjs had not run.
+        // Read the first fill back; if it did not stick, the column is missing —
+        // stop and say so rather than report success over a no-op.
+        if (!columnVerified) {
+          const check = await withCollection(collection, (c) => c.getOne<AnyRecord>(row.id, { fields: `id,${idField}` }));
+          if (asText(check[idField]) !== resolved) {
+            throw new Error(`Column ${idField} does not exist on ${collection[0]} — run setup-schema.mjs before backfilling.`);
+          }
+          columnVerified = true;
+        }
         filled++;
       }
       return { total: rows.length, filled, already, unresolved, blank };
@@ -5883,7 +6025,7 @@ async function runMatchReminders(): Promise<{ sent: number; skipped: number; sup
       fresh.push(key);
       sent++;
     } catch (err) {
-      console.error('[reminder] send failed:', err instanceof Error ? err.message : err);
+      log.error('reminder.send', 'send failed', { error: err instanceof Error ? err.message : String(err) });
     }
   }
   if (fresh.length) {
@@ -5987,7 +6129,7 @@ app.listen(port, () => {
         if (r.suppressed) console.log('[reminder] disabled or test mode — nothing sent');
         else console.log(`[reminder] ${r.sent} sent, ${r.skipped} skipped (of ${r.due} due)`);
       } catch (error) {
-        console.error('[reminder] Daily reminder run failed:', error);
+        log.error('reminder.run', 'daily reminder run failed', { error: String(error) });
       }
     },
     { timezone: VM_SYNC_TIMEZONE },
@@ -6000,7 +6142,7 @@ app.listen(port, () => {
         const result = await runGamesSyncWithRetry();
         console.log(`[scheduler] Synced ${result.imported}/${result.totalFetched} games (${result.from} -> ${result.to})`);
       } catch (error) {
-        console.error('[scheduler] Daily games sync failed:', error);
+        log.error('scheduler.sync', 'daily games sync failed', { error: String(error) });
       }
     },
     { timezone: VM_SYNC_TIMEZONE },

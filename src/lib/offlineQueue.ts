@@ -114,9 +114,31 @@ export type SendResult = { outcome: 'sent' | 'duplicate' | 'retry' | 'failed'; e
 
 let flushing = false;
 
+// The outbox lives in IndexedDB and is shared by every window on this origin,
+// but a module-level flag only covers one of them — an installed PWA and a
+// browser tab both flushing on the same 'online' event would send the queued
+// observation twice, and the coachee would get two copies of the same mail.
+// Web Locks are origin-wide, which is exactly the scope of the queue.
+const OUTBOX_LOCK = 'svrz-outbox-flush';
+async function withOutboxLock<T>(fn: () => Promise<T>, busy: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  if (!locks) return fn();
+  return await locks.request(OUTBOX_LOCK, { ifAvailable: true }, async (lock) => (lock ? fn() : busy())) as T;
+}
+
 // Send this owner's non-terminal items, oldest first. Guarded by a lock so
 // overlapping triggers (online event, mount, manual, interval) never double-send.
 export async function flushOutbox(
+  ownerId: string,
+  send: (p: OutboxPayload) => Promise<SendResult>,
+  onChange?: () => void,
+): Promise<{ sent: number; pending: number }> {
+  const idle = async () => ({ sent: 0, pending: (await outboxCounts(ownerId)).pending });
+  if (flushing) return idle();
+  return withOutboxLock(() => flushOwned(ownerId, send, onChange), idle);
+}
+
+async function flushOwned(
   ownerId: string,
   send: (p: OutboxPayload) => Promise<SendResult>,
   onChange?: () => void,

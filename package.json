@@ -18,10 +18,8 @@
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
-    "@google/genai": "^1.45.0",
     "@tailwindcss/vite": "^4.2.1",
     "@vitejs/plugin-react": "^5.1.0",
-    "better-sqlite3": "^12.6.2",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",

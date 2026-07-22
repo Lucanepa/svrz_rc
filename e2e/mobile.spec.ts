@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp } from './support/app';
+import { stubSignedInApp, COACHEE } from './support/app';
 
 // These tests only run in the mobile-chrome project (Pixel 5 viewport). They
 // sign in first: the app is behind a login, so without one they were asserting
@@ -18,21 +18,21 @@ test.describe('Mobile layout', () => {
     await expect(signOut.getByText('Anna Muster')).toBeHidden();
   });
 
-  test('coachees table hides Stage and Group columns on mobile', async ({ page, isMobile }) => {
+  test('the coachees list stays within the mobile viewport', async ({ page, isMobile }) => {
     test.skip(!isMobile, 'Mobile viewport only');
     await page.goto('/');
+    // Home opens first; the list this is about lives on the Coachees tab. The
+    // previous version never navigated there, so both its assertions sat behind
+    // count() guards that were always false — a guaranteed empty pass about
+    // Stage/Group columns the layout no longer has.
+    await page.getByRole('button', { name: /^Coachees$/ }).click();
 
-    // Stage and Group columns should be hidden (hidden md:table-cell)
-    // Note: if no coachees loaded, the table may not render at all
-    const stageHeader = page.locator('th', { hasText: 'Stage' });
-    const groupHeader = page.locator('th', { hasText: /Gruppe|Group/ });
-
-    if (await stageHeader.count() > 0) {
-      await expect(stageHeader).not.toBeVisible();
-    }
-    if (await groupHeader.count() > 0) {
-      await expect(groupHeader).not.toBeVisible();
-    }
+    await expect(page.getByText(COACHEE.full_name).first()).toBeVisible();
+    const overflow = await page.evaluate(() => ({
+      body: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(overflow.body).toBeLessThanOrEqual(overflow.viewport + 1);
   });
 
   test('search input is accessible on mobile', async ({ page, isMobile }) => {

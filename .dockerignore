@@ -1,9 +1,20 @@
 node_modules
 .git
 dist
+# Patterns without ** only match at the context root, and the build context is
+# the repo root — so the nested real secrets file needs naming explicitly, or it
+# is baked into every image layer at /app/deploy/hetzner/svrz-api.env.
 *.env
 .env*
+**/*.env
+**/.env*
 deploy/hetzner/pb_data
 deploy/hetzner/.env
-_shots
+deploy/hetzner/svrz-api.env
 deploy/hetzner/svrz-api.env.example
+# Activity-log JSONL carries user identities and IP addresses.
+**/logs
+logs
+# "actual secret values" by its own instructions.
+infrastructure.private.md
+_shots

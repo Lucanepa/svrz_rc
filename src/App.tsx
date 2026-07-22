@@ -31,6 +31,7 @@ import {
   getPresidentNote,
   savePresidentNote,
   getIcalSubscription,
+  settlePendingLogout,
   type IcalSubscription,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
@@ -731,11 +732,12 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
   );
 }
 
-function MultiSelectDropdown({ options, selected, onChange, placeholder }: {
+function MultiSelectDropdown({ options, selected, onChange, placeholder, lang }: {
   options: string[];
   selected: string[];
   onChange: (values: string[]) => void;
   placeholder: string;
+  lang: 'DE' | 'EN';
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -764,14 +766,16 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder }: {
         className="h-9 w-full flex items-center justify-between gap-1 px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400 text-left"
       >
         <span className="truncate text-stone-700">
-          {selected.length === 0 ? placeholder : `${selected.length} ${selected.length === 1 ? 'selected' : 'selected'}`}
+          {selected.length === 0
+            ? placeholder
+            : `${selected.length} ${lang === 'DE' ? 'ausgewählt' : 'selected'}`}
         </span>
         <ChevronDown className="w-4 h-4 text-stone-400 shrink-0" />
       </button>
       {open && (
         <div className="absolute z-50 mt-1 w-full max-h-48 overflow-auto bg-white border border-stone-300 rounded shadow-lg">
           {options.length === 0 ? (
-            <div className="px-2 py-2 text-sm text-stone-400 italic">No options</div>
+            <div className="px-2 py-2 text-sm text-stone-400 italic">{lang === 'DE' ? 'Keine Optionen' : 'No options'}</div>
           ) : options.map((opt) => (
             <label
               key={opt}
@@ -1129,8 +1133,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The filed feedback record currently on screen, if any. Set when an already
+  // submitted observation is reopened (or right after sending one), and it is
+  // what the private note to the RC president hangs off — the note belongs to a
+  // feedback that exists, not to a form still being filled in.
+  const [openFeedbackId, setOpenFeedbackId] = useState<string | null>(null);
+
   useEffect(() => {
     if (!selectedGame) {
+      return;
+    }
+    // A reopened observation is a snapshot of what was filed. Refilling its meta
+    // from today's game record would show a since-corrected score and a level
+    // the coachee has since been promoted to — and "PDF herunterladen" would
+    // then produce a document that disagrees with the one the coachee received.
+    if (openFeedbackId) {
       return;
     }
     const srName = getRefereeForRole(selectedGame, formData.role);
@@ -1167,7 +1184,7 @@ export default function App() {
         rc: (!isPrivileged && rcAuth.rcName) ? rcAuth.rcName : (selectedGame.assignedRc || prev.meta.rc),
       },
     }));
-  }, [selectedGameId, selectedGame?.assignedRc, formData.role, coachees, selectedCoacheeId]);
+  }, [selectedGameId, selectedGame?.assignedRc, formData.role, coachees, selectedCoacheeId, openFeedbackId]);
 
   const updateMeta = (key: keyof typeof formData.meta, value: string) => {
     setFormData(prev => ({
@@ -1230,6 +1247,18 @@ export default function App() {
   // RC-detail effect never re-runs a request that is in flight or has failed.
   const rcSummaryAttemptRef = useRef<string | null>(null);
 
+  // The connectivity listener is registered once and keeps the closures of that
+  // first render forever. Reading the selection through a ref means a flush
+  // triggered hours later still sees which game is actually open, instead of
+  // the empty string it was at mount — which used to make the "nothing selected
+  // yet" branch below fire and silently swap the half-filled form's game.
+  const selectedGameIdRef = useRef(selectedGameId);
+  selectedGameIdRef.current = selectedGameId;
+  // Same reason: the flush itself (and the loadHome inside it) must be this
+  // render's, not the mount render's, or a flush reloads the season that was
+  // current when the tab opened.
+  const flushOutboxNowRef = useRef<() => Promise<void>>(async () => {});
+
   const refreshGames = async () => {
     if (!hasPocketBaseConfig()) {
       setBackendNotice(t.pbMissing);
@@ -1242,7 +1271,7 @@ export default function App() {
       const games = await loadEligibleGames();
       if (!isCurrentLoad('games', gen)) return;
       setEligibleGames(games);
-      if (games.length > 0 && !selectedGameId) {
+      if (games.length > 0 && !selectedGameIdRef.current) {
         setSelectedGameId(games[0].id);
       }
     } catch (error) {
@@ -1351,6 +1380,9 @@ export default function App() {
       setRcSummaryKey(`${myName}|${season}`);
     } catch {
       if (isCurrentLoad('home', gen)) setHomeData(null);
+      // The claim above covers the RC detail view too; holding it after a
+      // failure would block that view from ever loading this session.
+      if (rcSummaryAttemptRef.current === `${myName}|${season}`) rcSummaryAttemptRef.current = null;
     } finally {
       if (isCurrentLoad('home', gen)) setHomeLoading(false);
     }
@@ -1389,6 +1421,10 @@ export default function App() {
       if (!isCurrentLoad('rcSummary', gen)) return;
       setrcCoachSummaryData([]);
       setRcSummaryKey(null);
+      // Release the claim, or one flaky fetch makes the RC detail say "no data"
+      // for the rest of the session — a network blip presented as an empty
+      // season, with no retry control anywhere on the screen.
+      rcSummaryAttemptRef.current = null;
     } finally {
       if (isCurrentLoad('rcSummary', gen)) setrcCoachSummaryLoading(false);
     }
@@ -1422,12 +1458,14 @@ export default function App() {
 
   // Track connectivity; flush the outbox when we come back online.
   useEffect(() => {
-    const goOnline = () => { setIsOffline(false); void flushOutboxNow(); };
+    // A logout that never reached the server is retried the moment there is a
+    // network, so the session really is revoked rather than merely hidden.
+    const goOnline = () => { setIsOffline(false); void settlePendingLogout(); void flushOutboxNowRef.current(); };
     const goOffline = () => setIsOffline(true);
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
     void refreshOutboxCount();
-    if (navigator.onLine) void flushOutboxNow();
+    if (navigator.onLine) void flushOutboxNowRef.current();
     return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1462,6 +1500,16 @@ export default function App() {
   };
 
   const handleSelectGame = (game: EligibleGame | CoacheeGame, preferredRef?: string) => {
+    // The form binds to a game from the eligible list. A coachee's games list
+    // also carries games where they are only a line judge — opening one gave a
+    // form bound to nothing: the previous game's header still on screen and a
+    // send button greyed out forever with no explanation.
+    if (!eligibleGames.some((g) => g.id === game.id)) {
+      setBackendNotice(formData.lang === 'DE'
+        ? 'Für dieses Spiel ist keine SR-Beobachtung möglich — der Coachee ist dort nicht als 1./2. SR eingeteilt.'
+        : 'No referee observation is possible for this game — the coachee is not assigned as 1st/2nd referee.');
+      return;
+    }
     const isNewGame = game.id !== selectedGameId;
     setSelectedGameId(game.id);
     setFeedbackLocked(false);
@@ -1502,9 +1550,26 @@ export default function App() {
       const newSections = role === '1. SR'
         ? adjustSectionsFor2SR(prev.lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, has2)
         : (prev.lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
-      return isNewGame
-        ? { ...prev, role, sections: newSections, results: { ...INITIAL_DATA.results } }
-        : { ...prev, role, sections: newSections };
+      if (!isNewGame) return { ...prev, role, sections: newSections };
+      return {
+        ...prev,
+        role,
+        sections: newSections,
+        results: { ...INITIAL_DATA.results },
+        // Signatures are an acknowledgment of THIS observation. Carried over,
+        // the mandatory-signature gate is satisfied by the previous referee's
+        // ink and their signature ends up on someone else's report.
+        signature: '',
+        rcSignature: undefined,
+        // Every game-derived meta field is cleared too: the fill effect below
+        // keeps `prev` whenever the new game leaves a field empty, so a game
+        // with no published score used to inherit the previous game's.
+        meta: {
+          ...prev.meta,
+          spielNr: '', liga: '', datum: '', ort: '', mannschaften: '',
+          ergebnis: '', srName: '', srNiveau: '', gruppe: '',
+        },
+      };
     });
   };
 
@@ -1527,6 +1592,11 @@ export default function App() {
   };
 
   const loadCoacheeGames = async (coachee: Coachee) => {
+    // Under the same generation guard the other loaders use: the header name is
+    // set synchronously on click, so a slow response for the coachee opened
+    // first would otherwise land under the second one's name — and starting an
+    // observation from that list would target the wrong person's game.
+    const gen = beginLoad('coacheeGames');
     setLoadingCoacheeGames(true);
     setShowAllPastGames(false);
     setBackendNotice('');
@@ -1535,14 +1605,16 @@ export default function App() {
         listCoacheeGames(coachee.id),
         listCoacheeFeedbacks(coachee.id),
       ]);
+      if (!isCurrentLoad('coacheeGames', gen)) return;
       setCoacheeGames(games);
       setCoacheeFeedbacks(feedbacks);
       setFeedbackSubView('coacheeGames');
     } catch (error) {
+      if (!isCurrentLoad('coacheeGames', gen)) return;
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(localizeRuntimeError(reason, formData.lang));
     } finally {
-      setLoadingCoacheeGames(false);
+      if (isCurrentLoad('coacheeGames', gen)) setLoadingCoacheeGames(false);
     }
   };
 
@@ -1638,7 +1710,10 @@ export default function App() {
       const records = await listCoacheeFeedbacks(row.coacheeId);
       const day = (s: string) => (s || '').slice(0, 10);
       const sameDay = records.filter((r) => day(r.expand?.game?.match_date || '') === day(row.gameDate));
-      const match = (row.role && sameDay.find((r) => r.role_assessed === row.role)) || sameDay[0] || records[0];
+      // Only ever a record from the day that was clicked. Falling back to
+      // "whatever this coachee has" opened an unrelated observation and
+      // presented it as the one on that row.
+      const match = (row.role && sameDay.find((r) => r.role_assessed === row.role)) || sameDay[0];
       if (match) openFeedbackRecord(match);
       else setBackendNotice(formData.lang === 'DE' ? 'Beobachtung nicht gefunden.' : 'Observation not found.');
     } catch (error) {
@@ -1648,10 +1723,12 @@ export default function App() {
   };
 
   const openFeedbackPicker = async (coachee: Coachee) => {
+    const gen = beginLoad('coacheeFeedbacks');
     setLoadingCoacheeFeedbacks(true);
     setBackendNotice('');
     try {
       const records = await listCoacheeFeedbacks(coachee.id);
+      if (!isCurrentLoad('coacheeFeedbacks', gen)) return;
       if (records.length === 1) {
         openFeedbackRecord(records[0]);
         return;
@@ -1659,10 +1736,11 @@ export default function App() {
       setCoacheeFeedbacks(records);
       setFeedbackPickerCoachee(coachee);
     } catch (error) {
+      if (!isCurrentLoad('coacheeFeedbacks', gen)) return;
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(localizeRuntimeError(reason, formData.lang));
     } finally {
-      setLoadingCoacheeFeedbacks(false);
+      if (isCurrentLoad('coacheeFeedbacks', gen)) setLoadingCoacheeFeedbacks(false);
     }
   };
 
@@ -1766,6 +1844,19 @@ export default function App() {
   };
 
   const handleManualUploadSubmit = async (form: HTMLFormElement) => {
+    // Claimed before the first await. Encoding the file takes long enough on a
+    // tablet that a second tap used to start a whole second submission, and the
+    // button only disables on this flag.
+    if (manualUploadSubmitting) return;
+    setManualUploadSubmitting(true);
+    try {
+      await runManualUploadSubmit(form);
+    } finally {
+      setManualUploadSubmitting(false);
+    }
+  };
+
+  const runManualUploadSubmit = async (form: HTMLFormElement) => {
     const fd = new FormData(form);
     const role = fd.get('role') as FeedbackFormData['role'];
     const file = fd.get('formFile') as File;
@@ -1830,15 +1921,21 @@ export default function App() {
     for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
     const fileBase64 = btoa(binary);
 
-    setManualUploadSubmitting(true);
+    // The server requires a real game; there is no "let the server sort it out"
+    // path. Resolving here turns a mistyped or blank match number into a
+    // sentence about the match number, instead of a raw 400 after ~20 ratings.
+    const matchNo = (feedbackData.meta.spielNr || '').trim();
+    const matchingGame = eligibleGames.find(g => (g.matchNo || '').trim() === matchNo);
+    if (!matchNo || !matchingGame) {
+      setManualUploadNotice(formData.lang === 'DE'
+        ? `Spiel-Nr. ${matchNo ? `«${matchNo}» ` : ''}nicht gefunden — bitte die Nummer eines Spiels aus der Liste eintragen.`
+        : `Match no. ${matchNo ? `"${matchNo}" ` : ''}not found — enter the number of a game from the list.`);
+      return;
+    }
+    const gameId = matchingGame.id;
+
     setManualUploadNotice('');
     try {
-      // We need a gameId. For manual upload, find or create a placeholder.
-      // Use the spielNr to look up the game, or pass empty and let server handle it.
-      const matchNo = feedbackData.meta.spielNr;
-      const matchingGame = eligibleGames.find(g => g.matchNo === matchNo);
-      const gameId = matchingGame?.id || '';
-
       const result = await saveFeedbackToPocketBase({
         gameId,
         role,
@@ -1857,8 +1954,6 @@ export default function App() {
       setTimeout(() => setManualUploadCoachee(null), 2000);
     } catch (err: unknown) {
       setManualUploadNotice(`${t.manualUploadError} ${err instanceof Error ? err.message : ''}`);
-    } finally {
-      setManualUploadSubmitting(false);
     }
   };
 
@@ -1913,12 +2008,24 @@ export default function App() {
       }
       return `${fd.role}: ${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}`;
     } catch (err) {
-      // Reached the server but it rejected → a real error the coach must see.
-      if ((err as { reachedServer?: boolean }).reachedServer) throw err;
-      // Network failure / offline → hold it in the local outbox; it will be sent
-      // (with real status) when connectivity returns. Never silently lost.
+      const e = err as Error & { status?: number; reachedServer?: boolean };
       const de = fd.lang === 'DE';
       const label = `${selectedGame.homeTeam} vs ${selectedGame.awayTeam} · ${fd.role}`;
+      // An expired session is not a rejection of the work — the outbox replay
+      // path already treats 401 as "retry after re-auth". Rethrowing it here
+      // instead threw away a completed observation, because the only way back
+      // to a login screen is a reload and nothing persists the form.
+      if (e.status === 401) {
+        await enqueueFeedback(payload, label, outboxOwnerId);
+        void refreshOutboxCount();
+        return `${fd.role}: ${de
+          ? 'Sitzung abgelaufen – Beobachtung zwischengespeichert. Bitte neu anmelden, sie wird dann automatisch gesendet.'
+          : 'Session expired – observation stored locally. Log in again and it will send automatically.'}`;
+      }
+      // Reached the server but it rejected → a real error the coach must see.
+      if (e.reachedServer) throw err;
+      // Network failure / offline → hold it in the local outbox; it will be sent
+      // (with real status) when connectivity returns. Never silently lost.
       await enqueueFeedback(payload, label, outboxOwnerId);
       void refreshOutboxCount();
       return `${fd.role}: ${de ? 'Offline gespeichert – wird gesendet, sobald du online bist.' : 'Saved offline – will send when you are back online.'}`;
@@ -1945,7 +2052,7 @@ export default function App() {
       if (!e.reachedServer) return { outcome: 'retry', error: 'offline' };
       if (e.status === 409) return { outcome: 'duplicate' };          // already recorded
       if (e.status === 401 || (e.status ?? 500) >= 500) return { outcome: 'retry', error: e.message }; // re-auth / transient
-      return { outcome: 'failed', error: e.message };                 // 400/403 — permanent
+      return { outcome: 'failed', error: e.message };                 // 400/403/422 — permanent
     }
   };
 
@@ -1969,6 +2076,7 @@ export default function App() {
       setFlushing(false);
     }
   };
+  flushOutboxNowRef.current = flushOutboxNow;
 
   const discardFailedOutbox = async (id: string) => {
     try { await discardOutboxItem(id); } finally { void refreshOutboxCount(); }
@@ -2081,11 +2189,6 @@ export default function App() {
   // that carries it — is visible without typing; empty in the real app.
   const [tipsAndTricks, setTipsAndTricks] = useState(demoTips);
   const [feedbackLocked, setFeedbackLocked] = useState(false);
-  // The filed feedback record currently on screen, if any. Set when an already
-  // submitted observation is reopened (or right after sending one), and it is
-  // what the private note to the RC president hangs off — the note belongs to a
-  // feedback that exists, not to a form still being filled in.
-  const [openFeedbackId, setOpenFeedbackId] = useState<string | null>(null);
   // Only the coach who filed an observation (or an admin) may write its note.
   // Anyone else opening the same record would get a box that 403s on save.
   const [openFeedbackMine, setOpenFeedbackMine] = useState(false);
@@ -2205,6 +2308,20 @@ export default function App() {
   const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
   const formDisabled = feedbackLocked || isGameRoleClosed;
 
+  // A half-filled observation lives only in React state — no draft, no
+  // beforeunload guard. The service-worker auto-update reloads the page as soon
+  // as a new build lands, so it has to know when that would destroy work.
+  const formIsDirty = feedbackSubView === 'feedbackForm' && !formDisabled && (
+    !!formData.signature
+    || !!formData.rcSignature
+    || formData.sections.some((section) => section.items.some((item) => !!item.rating))
+    || Object.values(formData.results).some((value) => typeof value === 'string' && value.trim() !== '')
+  );
+  useEffect(() => {
+    window.__svrzFormDirty = formIsDirty;
+    if (!formIsDirty) window.dispatchEvent(new Event('svrz:form-clean'));
+  }, [formIsDirty]);
+
   const selectedCoacheeInfo = useMemo(() => {
     const c = coachees.find(c => c.id === selectedCoacheeId);
     return {
@@ -2224,6 +2341,10 @@ export default function App() {
         gameHas2SR
       ),
       results: { ...INITIAL_DATA.results },
+      // The confirm dialog promises everything is cleared, so the signatures go
+      // too — they are the one field a stale value could smuggle past validation.
+      signature: '',
+      rcSignature: undefined,
     }));
     setFeedbackLocked(false);
     setOpenFeedbackId(null);
@@ -2575,6 +2696,14 @@ export default function App() {
       return true;
     });
   }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
+
+  // Any filter can shrink a list below the page currently shown, and the pager
+  // itself disappears under one page of rows — leaving a blank list with no
+  // control to get back from it. Clamping here covers every filter control at
+  // once, including the ones that forget to reset the page.
+  const clampPage = (total: number) => Math.min(listPage, Math.max(0, Math.ceil(total / LIST_PAGE_SIZE) - 1));
+  const coacheesPage = clampPage(filteredCoachees.length);
+  const gamesPage = clampPage(filteredGames.length);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
@@ -3251,6 +3380,7 @@ export default function App() {
                         {formData.lang === 'DE' ? 'Level' : 'Level'}
                       </label>
                       <MultiSelectDropdown
+                        lang={formData.lang}
                         options={coacheeLevels}
                         selected={listFilterLevels}
                         onChange={(values) => { setListFilterLevels(values); setListPage(0); }}
@@ -3435,6 +3565,7 @@ export default function App() {
                         {formData.lang === 'DE' ? 'Coachee' : 'Coachee'}
                       </label>
                       <MultiSelectDropdown
+                        lang={formData.lang}
                         options={gameCoacheeOptions}
                         selected={gameFilterCoachees}
                         onChange={setGameFilterCoachees}
@@ -3446,6 +3577,7 @@ export default function App() {
                         {formData.lang === 'DE' ? 'Level' : 'Level'}
                       </label>
                       <MultiSelectDropdown
+                        lang={formData.lang}
                         options={coacheeLevels}
                         selected={gameFilterLevels}
                         onChange={setGameFilterLevels}
@@ -3457,6 +3589,7 @@ export default function App() {
                         {formData.lang === 'DE' ? 'Funktion' : 'Function'}
                       </label>
                       <MultiSelectDropdown
+                        lang={formData.lang}
                         options={['1SR', '2SR']}
                         selected={gameFilterFunction}
                         onChange={setGameFilterFunction}
@@ -3468,6 +3601,7 @@ export default function App() {
                         {formData.lang === 'DE' ? 'Liga' : 'League'}
                       </label>
                       <MultiSelectDropdown
+                        lang={formData.lang}
                         options={gameLeagues}
                         selected={gameFilterLeagues}
                         onChange={setGameFilterLeagues}
@@ -3509,7 +3643,7 @@ export default function App() {
                       <span className="cursor-pointer select-none" onClick={() => toggleListSort('status')}>Status{listSortBy === 'status' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</span>
                     </div>
                     <div className="divide-y divide-stone-200">
-                      {filteredCoachees.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((coachee) => {
+                      {filteredCoachees.slice(coacheesPage * LIST_PAGE_SIZE, (coacheesPage + 1) * LIST_PAGE_SIZE).map((coachee) => {
                         const balls = coacheeBalls(coachee);
                         const groupStr = normalizeCoacheeGroup(coachee.groups) || '';
                         const sr1 = games1SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
@@ -3564,9 +3698,9 @@ export default function App() {
                   <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
                     <span>{filteredCoachees.length} {formData.lang === 'DE' ? 'Einträge' : 'entries'}</span>
                     <div className="flex items-center gap-2">
-                      <button disabled={listPage === 0} onClick={() => setListPage((p) => p - 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&laquo;</button>
-                      <span>{listPage + 1} / {Math.ceil(filteredCoachees.length / LIST_PAGE_SIZE)}</span>
-                      <button disabled={(listPage + 1) * LIST_PAGE_SIZE >= filteredCoachees.length} onClick={() => setListPage((p) => p + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
+                      <button disabled={coacheesPage === 0} onClick={() => setListPage(coacheesPage - 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&laquo;</button>
+                      <span>{coacheesPage + 1} / {Math.ceil(filteredCoachees.length / LIST_PAGE_SIZE)}</span>
+                      <button disabled={(coacheesPage + 1) * LIST_PAGE_SIZE >= filteredCoachees.length} onClick={() => setListPage(coacheesPage + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
                     </div>
                   </div>
                 )}
@@ -3661,7 +3795,7 @@ export default function App() {
                           <span>{formData.lang === 'DE' ? 'Status' : 'Status'}</span>
                         </div>
                         <div className="divide-y-4 divide-stone-200">
-                        {filteredGames.slice(listPage * LIST_PAGE_SIZE, (listPage + 1) * LIST_PAGE_SIZE).map((game) => {
+                        {filteredGames.slice(gamesPage * LIST_PAGE_SIZE, (gamesPage + 1) * LIST_PAGE_SIZE).map((game) => {
                           const d = new Date(game.date);
                           const dateValid = !isNaN(d.getTime());
                           const dayOfWeek = dateValid ? d.toLocaleDateString(formData.lang === 'DE' ? 'de-CH' : 'en-GB', { weekday: 'short' }) : '';
@@ -3718,22 +3852,26 @@ export default function App() {
                                 </div>
                                 {/* Teams + result */}
                                 {(() => {
-                                  const resultParts = game.game_result?.split('|').map((s: string) => s.trim()).filter(Boolean);
-                                  const mainResult = resultParts?.[0];
-                                  const setResults = resultParts?.slice(1);
+                                  // Two formats reach this list — "3:1 | 25:20, ..." from the
+                                  // form and "3:1 (25:20 / ...)" from the VolleyManager sync.
+                                  // Splitting on '|' by hand rendered every synced game's away
+                                  // score as "1 (25"; parseResult reads both.
+                                  const parsed = game.game_result ? parseResult(game.game_result) : null;
+                                  const hasResult = !!parsed && (parsed.home !== '' || parsed.away !== '');
+                                  const setResults = (parsed?.sets ?? []).filter(isSetComplete).map((s) => `${s.h}:${s.a}`);
                                   return (
                                     <>
                                       <div className="mt-1 flex items-center gap-1.5">
                                         <Home size={14} className="w-3.5 text-stone-400 shrink-0" />
                                         <span className="text-base text-stone-800 truncate flex-1">{game.homeTeam}</span>
-                                        {mainResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{mainResult.split(':')[0]?.trim()}</span>}
+                                        {hasResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{parsed.home}</span>}
                                       </div>
                                       <div className="flex items-center gap-1.5">
                                         <Navigation size={14} className="w-3.5 text-stone-400 shrink-0" />
                                         <span className="text-base text-stone-800 truncate flex-1">{game.awayTeam}</span>
-                                        {mainResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{mainResult.split(':')[1]?.trim()}</span>}
+                                        {hasResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{parsed.away}</span>}
                                       </div>
-                                      {setResults && setResults.length > 0 && (
+                                      {setResults.length > 0 && (
                                         <div className="pl-[20px] text-[11px] text-stone-400 tabular-nums">
                                           {setResults.map((s: string, i: number) => (
                                             <span key={i}>{i > 0 ? ' | ' : ''}{s}</span>
@@ -3914,9 +4052,9 @@ export default function App() {
                       <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
                         <span>{filteredGames.length} {formData.lang === 'DE' ? 'Spiele' : 'games'}</span>
                         <div className="flex items-center gap-2">
-                          <button disabled={listPage === 0} onClick={() => setListPage((p) => p - 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&laquo;</button>
-                          <span>{listPage + 1} / {Math.ceil(filteredGames.length / LIST_PAGE_SIZE)}</span>
-                          <button disabled={(listPage + 1) * LIST_PAGE_SIZE >= filteredGames.length} onClick={() => setListPage((p) => p + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
+                          <button disabled={gamesPage === 0} onClick={() => setListPage(gamesPage - 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&laquo;</button>
+                          <span>{gamesPage + 1} / {Math.ceil(filteredGames.length / LIST_PAGE_SIZE)}</span>
+                          <button disabled={(gamesPage + 1) * LIST_PAGE_SIZE >= filteredGames.length} onClick={() => setListPage(gamesPage + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
                         </div>
                       </div>
                     )}
@@ -4479,8 +4617,13 @@ export default function App() {
           </div>
         </div>
 
-        {/* Meta Data Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-[1fr_1fr_1fr_2fr] print:grid-cols-[1fr_1fr_1fr_2fr] border-t border-l border-stone-900 mb-4">
+        {/* Meta Data Grid — inside the disabled wrapper's reach: a filed or
+            already-closed observation must not accept edits to its header
+            either, or the screen shows numbers the filed PDF never had. */}
+        <div className={cn(
+          "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-[1fr_1fr_1fr_2fr] print:grid-cols-[1fr_1fr_1fr_2fr] border-t border-l border-stone-900 mb-4",
+          formDisabled && 'pointer-events-none opacity-60',
+        )}>
           <MetaField label={t.matchNo} value={formData.meta.spielNr} onChange={v => updateMeta('spielNr', v)} />
           <MetaField label={t.league} value={formData.meta.liga} onChange={v => updateMeta('liga', v)} />
           <MetaField label={t.date} value={formData.meta.datum} onChange={v => updateMeta('datum', v)} />
@@ -5376,29 +5519,32 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
 }) {
   const t = UI_STRINGS[lang] || UI_STRINGS.DE;
   const [role, setRole] = useState<'1. SR' | '2. SR'>('1. SR');
-  const [selectedGroups, setSelectedGroups] = useState<string[]>(
-    () => (coachee.groups || '').split(',').map(g => g.trim()).filter(Boolean)
-  );
-  const [usePlusMinus, setUsePlusMinus] = useState(false);
-
-  // Derive unique groups from all coachees
   // Coachee groups are stored joined with "/" ("Befördert/2. SR"), so splitting
   // on "," left whole combinations in the picker — you got one button per
   // observed COMBINATION instead of one per group. Split on "/" instead, but
-  // keep season suffixes ("Neu-SR 2025/26") intact, and always offer the
-  // canonical list so a group is pickable even if nobody has it yet.
+  // keep season suffixes ("Neu-SR 2025/26") intact.
+  const splitGroups = (value: string) => {
+    const out: string[] = [];
+    for (const part of value.split(/[/,]/).map(s => s.trim()).filter(Boolean)) {
+      if (/^\d{2}(\d{2})?$/.test(part) && out.length) out[out.length - 1] += `/${part}`;
+      else out.push(part);
+    }
+    return out;
+  };
+  // The same split as the chips below, or nothing is preselected and the raw
+  // combined token is what gets filed.
+  const [selectedGroups, setSelectedGroups] = useState<string[]>(
+    () => splitGroups(normalizeCoacheeGroup(coachee.groups) || '')
+  );
+  const [usePlusMinus, setUsePlusMinus] = useState(false);
+
+  // Always offer the canonical list too, so a group is pickable even if nobody
+  // has it yet.
   const allGroups = useMemo(() => {
-    const splitGroups = (value: string) => {
-      const out: string[] = [];
-      for (const part of value.split(/[/,]/).map(s => s.trim()).filter(Boolean)) {
-        if (/^\d{2}(\d{2})?$/.test(part) && out.length) out[out.length - 1] += `/${part}`;
-        else out.push(part);
-      }
-      return out;
-    };
     const set = new Set<string>(COACHEE_GROUP_OPTIONS);
     coachees.forEach(c => splitGroups(normalizeCoacheeGroup(c.groups) || '').forEach(g => set.add(g)));
     return Array.from(set).sort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coachees]);
 
   // Derive unique levels from all coachees (level - stage format, raw values)
@@ -5436,7 +5582,9 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
           onSubmit={(e) => { e.preventDefault(); void onSubmit(e.currentTarget); }}
         >
           {/* Hidden field for gruppe (populated from checkboxes) */}
-          <input type="hidden" name="gruppe" value={selectedGroups.join(', ')} />
+          {/* "/" is the storage convention everywhere else; ", " here produced a
+              third spelling of the same combination in the filed record. */}
+          <input type="hidden" name="gruppe" value={selectedGroups.join('/')} />
 
           {/* Rolle + Spiel-Nr. */}
           <div className="grid grid-cols-2 gap-3">

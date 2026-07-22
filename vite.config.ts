@@ -20,13 +20,21 @@ export default defineConfig(({mode}) => {
         workbox: {
           clientsClaim: true,
           skipWaiting: true,
+          // Anything under docs/ is a real file, not an app route. Without the
+          // denylist the navigation fallback answered a click on the SR-Technik
+          // guide with the app shell — an HTML page where a PDF was expected.
+          navigateFallbackDenylist: [/^\/?docs\//, /\/docs\//, /\.pdf$/i],
           // SPA shell precache already handles offline app loading. These runtime
           // rules make the DATA work offline too:
           runtimeCaching: [
             {
               // All API GETs (coachees, games, observations, rc-overview, auth/me,
               // settings…) — NetworkFirst: fresh when online, last-synced when not.
-              urlPattern: /\/api\/.*/i,
+              // A callback, not a RegExp: Workbox only applies a RegExp route to a
+              // cross-origin request when the match starts at index 0, and in
+              // production the API is a different origin (rc-api.lucanepa.com) —
+              // so the pattern matched nothing and offline data never worked.
+              urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/'),
               method: 'GET',
               handler: 'NetworkFirst',
               options: {
@@ -66,7 +74,6 @@ export default defineConfig(({mode}) => {
       })
     ],
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(''),
       __BUILD_SHA__: JSON.stringify(buildSha),
       __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     },

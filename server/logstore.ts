@@ -248,6 +248,16 @@ export function ringStats() {
 }
 
 // Best-effort flush so the last seconds of logs survive a `docker compose down`.
-for (const sig of ['SIGINT', 'SIGTERM', 'beforeExit'] as const) {
-  process.on(sig, () => { void flushToFile(); });
+// Listening for a termination signal removes Node's default "just exit", so the
+// handler has to finish the job itself — otherwise Ctrl+C in dev does nothing
+// and every `docker compose up --build` waits out the grace period and ends in
+// a SIGKILL through whatever write was in flight.
+process.on('beforeExit', () => { void flushToFile(); });
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(sig, () => {
+    void flushToFile().finally(() => {
+      process.removeAllListeners(sig);
+      process.kill(process.pid, sig);
+    });
+  });
 }

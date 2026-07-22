@@ -139,6 +139,9 @@ export async function saveFeedbackToPocketBase(params: {
   return response.json() as Promise<FeedbackSubmitResponse>;
 }
 
+// The API base is baked in at build time and the app has no unconfigured mode
+// any more, so this is always true. Kept as the single place any future
+// "backend not configured" state would be decided.
 export function hasPocketBaseConfig(): boolean {
   return true;
 }
@@ -179,9 +182,37 @@ export async function rcLogin(email: string, password: string): Promise<{ name: 
     err.retryAfterMs = (data as { retryAfterMs?: number }).retryAfterMs;
     throw err;
   }
-  // New identity — drop any previous user's cached responses.
+  // New identity — drop any previous user's cached responses, and with a fresh
+  // cookie in hand the stale session the pending logout was guarding is gone.
+  setPendingLogout(false);
   await clearApiCache();
   return response.json() as Promise<{ name: string }>;
+}
+
+// Set when a logout could not reach the server. The session is a signed
+// httpOnly cookie with a 30-day life that only the server can clear, so an
+// offline "Abmelden" on a shared tablet left the next person one reload away
+// from the previous coach's account. The flag survives the reload, blocks the
+// session probe, and retries the real logout as soon as there is a network.
+const PENDING_LOGOUT_KEY = 'svrz_pending_logout';
+
+export function hasPendingLogout(): boolean {
+  try { return localStorage.getItem(PENDING_LOGOUT_KEY) === '1'; } catch { return false; }
+}
+function setPendingLogout(pending: boolean): void {
+  try {
+    if (pending) localStorage.setItem(PENDING_LOGOUT_KEY, '1');
+    else localStorage.removeItem(PENDING_LOGOUT_KEY);
+  } catch { /* private mode — the in-flight logout below is all we have */ }
+}
+
+/** Retry a logout that never reached the server. Safe to call at any time. */
+export async function settlePendingLogout(): Promise<void> {
+  if (!hasPendingLogout()) return;
+  try {
+    const response = await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' });
+    if (response.ok) setPendingLogout(false);
+  } catch { /* still offline — stay logged out locally and try again later */ }
 }
 
 export async function rcLogout(): Promise<void> {
@@ -189,7 +220,11 @@ export async function rcLogout(): Promise<void> {
   if (isDemoMode()) { demo.disableDemo(); await clearApiCache(); return; }
   // Purge the cache even if the logout POST fails (offline), so the previous
   // RC's cached data/identity can't be served to the next person on the device.
-  try { await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' }); }
+  setPendingLogout(true);
+  try {
+    const response = await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' });
+    if (response.ok) setPendingLogout(false);
+  } catch { /* offline: the flag keeps the session shut until it can be revoked */ }
   finally { await clearApiCache(); }
 }
 

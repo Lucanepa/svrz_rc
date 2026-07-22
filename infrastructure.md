@@ -115,7 +115,10 @@ PB_REFEREE_COACHES_COLLECTION="referee_coach_feedbacks" # legacy alias fallback
 
 ```env
 SMTP_HOST="smtp.migadu.com"
-SMTP_PORT="465"
+# Hetzner blocks outbound 25/465, so implicit TLS on 465 just hangs until the
+# connect timeout and every mail silently fails. 587 (STARTTLS) is the one that
+# works — note the code default is still 465, so this must be set.
+SMTP_PORT="587"
 SMTP_USER="..."
 SMTP_PASS="..."
 SMTP_FROM="coaching-feedback@svrz.ch"
@@ -130,7 +133,8 @@ FEEDBACK_TEST_RECIPIENT="you@..."
 
 # Where each submitted survey is mailed as it arrives. Unset => stored only.
 # (Who may READ them in the tool is NOT an env var — see is_rc_president below.)
-SURVEY_NOTIFY_EMAIL="rekom.zuerich@gmail.com"
+# The real address belongs in the gitignored private file, not here.
+SURVEY_NOTIFY_EMAIL="__see_infrastructure.private.md__"
 ```
 
 `FEEDBACK_SURVEY_URL` is gone: the post-visit survey is now a page in this app
@@ -187,7 +191,9 @@ Deliberately has **no relation to `coachees`**: "anonym absenden" has to mean th
 row cannot point back at a person. On an anonymous submit `referee_name` is
 cleared before it is stored, not merely hidden in the UI. Match, date and RC
 always stay — a response nobody can place is a response nobody can act on.
-Created by `deploy/hetzner/seed/setup-schema.mjs` (gitignored, lives on the host).
+Created by `deploy/hetzner/seed/setup-schema.mjs`, which is tracked in this
+repo. It is additive and safe to re-run against the live DB — that is how a
+column the app has started writing gets added.
 
 ## API Authentication Model
 
@@ -372,15 +378,33 @@ Game sync uses Swiss Volley public data with authenticated access. For detailed 
 ## Frontend Hosting / API Routing Notes
 
 - Local dev: frontend uses relative `/api/*` and Vite proxy.
-- Static hosting (e.g., Codeberg Pages): set `VITE_API_BASE_URL` to absolute API origin.
+- Static hosting (GitHub Pages): set `VITE_API_BASE_URL` to absolute API origin.
 - Current production API origin: `https://rc-api.lucanepa.com`
 - Vite base in production is `/svrz_rc/`, so assets are generated for that subpath.
 
-Woodpecker CI requirement for static production builds:
+Deployment is GitHub Actions → GitHub Pages (`.github/workflows/deploy.yml`);
+the Codeberg/Woodpecker setup was retired in June 2026. The workflow type-checks
+and runs the Playwright suite before it builds, and hard-codes
+`VITE_API_BASE_URL=https://rc-api.lucanepa.com` for the production build.
 
-- Secret name: `vite_api_base_url`
-- Secret value: `https://rc-api.lucanepa.com`
-- `.woodpecker/build.yml` injects this into `VITE_API_BASE_URL` during `npm run build`
+## Session cookies (known constraint)
+
+The app is served from `lucanepa.github.io` and the API from
+`rc-api.lucanepa.com` — different sites, so the RC session cookie must be
+`SameSite=None; Secure` and is a **third-party** cookie to the browser. Safari
+and other WebKit browsers block those by default, so an affected user can enter
+the right password and still land back on the login screen. The login screen now
+says so instead of leaving them guessing.
+
+The real fix is to make the two same-site: serve the API from a subdomain of
+whatever host serves the app (or reverse-proxy `/api` under it) and drop the
+cookie back to `SameSite=Lax`. That is a DNS/hosting change, not a code one.
+
+## Backups
+
+`deploy/hetzner/pb_data` is a bind mount and the only copy of every feedback,
+PDF, president's note and PIN hash. Nothing in this repo backs it up — arrange a
+periodic snapshot of that directory (and verify a restore) outside it.
 
 ## Data Import Status (Current Snapshot)
 

@@ -130,10 +130,20 @@ export async function flush(beacon = false): Promise<void> {
   const url = `${apiBase}/api/client-logs`;
   try {
     if (beacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      // Offline the beacon goes nowhere and reports nothing, and this flush also
+      // runs on every switch to another app — so the offline failure window the
+      // log exists to explain was exactly what got dropped. Keep the batch.
+      if (typeof navigator.onLine === 'boolean' && !navigator.onLine) {
+        pending = [...batch, ...pending].slice(-RING_MAX);
+        return;
+      }
       // text/plain keeps this a CORS-simple request. A beacon fired on pagehide
       // has no chance to complete a preflight, and this is the flush that
       // captures the moment someone gave up and closed the app.
-      navigator.sendBeacon(url, new Blob([payload], { type: 'text/plain;charset=UTF-8' }));
+      // A false return means the payload was refused (over the beacon quota).
+      if (!navigator.sendBeacon(url, new Blob([payload], { type: 'text/plain;charset=UTF-8' }))) {
+        pending = [...batch, ...pending].slice(-RING_MAX);
+      }
       return;
     }
     // Raw fetch, NOT the instrumented one: shipping logs must not generate logs.
@@ -163,13 +173,20 @@ function describeElement(el: Element | null): Record<string, unknown> | undefine
   const tag = target.tagName.toLowerCase();
   const input = target as HTMLInputElement;
   const isSecret = tag === 'input' && /password|pin|code|otp/i.test(`${input.type} ${input.name} ${input.id} ${input.autocomplete}`);
+  // The activity log is read by every admin, so anything marked confidential
+  // must not have its rendered text copied into it. Clicking (or text-selecting)
+  // a freshly generated PIN, a president's private note, or a coachee's survey
+  // answer used to put the first 80 characters straight into the Protokoll —
+  // and into the 30-day log files, and into the log tab's Copy export.
+  const confidential = !!target.closest('[data-log-redact]');
+  const description = (target.innerText || target.getAttribute('aria-label') || target.getAttribute('title') || '').trim().slice(0, 80) || undefined;
   return {
     tag,
     type: tag === 'input' ? input.type : undefined,
     id: target.id || undefined,
     name: input.name || undefined,
     // Values are never logged; a password field isn't even described by text.
-    text: isSecret ? '[password field]' : (target.innerText || target.getAttribute('aria-label') || target.getAttribute('title') || '').trim().slice(0, 80) || undefined,
+    text: isSecret ? '[password field]' : confidential ? '[redacted]' : description,
     disabled: 'disabled' in target ? Boolean((target as HTMLButtonElement).disabled) : undefined,
     href: tag === 'a' ? (target as HTMLAnchorElement).getAttribute('href') || undefined : undefined,
   };

@@ -232,7 +232,8 @@ function resolveSessionSecret(): string {
   if (explicit) return explicit;
   console.error(
     '[startup] SECURITY: ADMIN_SESSION_SECRET is not set. Generated a random ephemeral key — '
-    + 'set ADMIN_SESSION_SECRET to keep sessions valid across restarts.',
+    + 'every restart therefore invalidates all sessions AND every RC PIN, because the PIN salt '
+    + 'is derived from this secret. Set ADMIN_SESSION_SECRET before going anywhere near production.',
   );
   return randomBytes(32).toString('hex');
 }
@@ -303,7 +304,7 @@ async function sendRcPinEmail(person: AnyRecord, pin: string): Promise<boolean> 
     + `<div style="text-align:center;margin:8px 0 4px;"><a href="${MAIL_APP_URL}" style="display:inline-block;padding:11px 28px;background:#dc2626;color:#ffffff;text-decoration:none;border-radius:9px;font-size:14px;font-weight:600;">Zur App</a></div>`
     + `<p style="margin:22px 0 0;font-size:13px;color:#78716c;line-height:1.6;">Ein zuvor gesetzter PIN ist ab sofort ungültig. Bitte bewahre den PIN sicher auf und teile ihn mit niemandem.</p>`,
   );
-  await smtpTransport.sendMail({
+  await sendMailResilient({
     from: MAIL_FROM,
     to,
     subject: 'Dein persönlicher PIN – SVRZ Referee Coaching',
@@ -427,7 +428,10 @@ function verifyRcSession(req: Request): { ok: boolean; rcId?: string } {
 // Periodic cleanup of stale rate-limit entries (every 10 min)
 setInterval(() => {
   const now = Date.now();
-  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal, rcOtpStartAttempts, rcOtpGlobal]) {
+  // Every bucket, not just the login ones: clientLogRl is fed by an
+  // unauthenticated endpoint that any scanner can reach, so a forgotten map
+  // grows one entry per source IP for the life of the process.
+  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal, rcOtpStartAttempts, rcOtpGlobal, resetAttempts, surveyAttempts, clientLogRl]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
@@ -754,7 +758,18 @@ function snippetFromHtml(html: string, maxLength = 180): string {
 
 function isMissingCollectionError(error: unknown): boolean {
   const text = String(error ?? '');
-  return text.includes('Missing collection context') || text.includes('ClientResponseError 404');
+  if (text.includes('Missing collection context')) return true;
+  if (!text.includes('ClientResponseError 404')) return false;
+  // PocketBase answers 404 for a missing *record* as well ("The requested
+  // resource wasn't found."). That is a routine miss, not a wrong collection
+  // name — walking on to the next candidate only buries it in an opaque 500.
+  return !/wasn'?t found|was not found/i.test(text);
+}
+
+/** A 404 that means "no such record", as opposed to "no such collection". */
+function isRecordNotFound(error: unknown): boolean {
+  const text = String(error ?? '');
+  return text.includes('ClientResponseError 404') && !text.includes('Missing collection context');
 }
 
 function isPocketBaseBadRequest(error: unknown): boolean {
@@ -879,16 +894,38 @@ async function getEmailTemplate(kind: EmailTemplateKind): Promise<EmailTemplate>
   } catch { return def; }
 }
 
+// Mail templates render a wall clock to people standing in Swiss gyms, so the
+// numbers have to be the region's — the container runs UTC, which would put
+// every VolleyManager kick-off an hour or two early. icalMoment already knows
+// the three shapes match_date arrives in; a bare date carries no clock at all.
+function zonedParts(instant: number): { year: string; month: string; day: string; hour: string; minute: string } {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: VM_SYNC_TIMEZONE,
+    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(new Date(instant));
+  const at = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  return {
+    year: at('year'), month: at('month'), day: at('day'),
+    // Some ICU builds render midnight as hour 24 under hour12:false.
+    hour: String(Number(at('hour')) % 24).padStart(2, '0'),
+    minute: at('minute'),
+  };
+}
+
 function fmtDateDe(value: string): string {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return asText(value);
-  return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
+  const moment = icalMoment(value);
+  if (!moment) return asText(value);
+  if (moment.allDay) return `${moment.date.slice(6, 8)}.${moment.date.slice(4, 6)}.${moment.date.slice(0, 4)}`;
+  const p = zonedParts(moment.instant);
+  return `${p.day}.${p.month}.${p.year}`;
 }
 
 function fmtTimeDe(value: string): string {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '';
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const moment = icalMoment(value);
+  if (!moment || moment.allDay) return '';
+  const p = zonedParts(moment.instant);
+  return `${p.hour}:${p.minute}`;
 }
 
 // Values available as {{placeholders}} in the templates. The German names are
@@ -1953,7 +1990,7 @@ async function getEligibleGames() {
       return await withCollection(collectionCandidates.games, (collection) =>
         collection.getFullList<AnyRecord>({
           sort: '-match_date',
-          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result',
+          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result,maps_url',
         }),
       );
     } catch (error) {
@@ -1990,6 +2027,10 @@ async function getEligibleGames() {
     isLdGame: Boolean(game.is_ld_game),
     isRsvGame: Boolean(game.is_rsv_game),
     game_result: asText(game.game_result),
+    // The sync stores a precise plus-code/lat-lng link per venue. Left out of
+    // the projection the UI fell back to a free-text Google search of the hall
+    // name — the ambiguity the precise link exists to avoid.
+    maps_url: asText(game.maps_url),
   }));
 }
 
@@ -2495,22 +2536,54 @@ app.get('/api/admin/logs/sessions', requireAdminSession, (_req: Request, res: Ex
 });
 
 // ── App settings (default season, ...) ───────────────────────────────
+// "No such setting yet" is the normal case and reads as null. Anything else —
+// PocketBase unreachable, the collection missing, auth expired — must NOT read
+// as an unset value: several settings are maps that get read, edited and
+// written back whole, so a swallowed read error saves an empty map over the
+// president's notes or the whole starred list.
 async function getSettingRecord(key: string): Promise<AnyRecord | null> {
   try {
     return await withCollection(['app_settings'], (collection) =>
       collection.getFirstListItem<AnyRecord>(`key = "${escapeFilterValue(key)}"`));
-  } catch { return null; }
+  } catch (error) {
+    if (isRecordNotFound(error)) return null;
+    throw error;
+  }
 }
 
 // Settings that are maps get read, edited and written back whole, so two
 // requests touching the same key can each save over the other's edit. Chaining
 // per key makes that sequence atomic — enough for a single API process, which
 // is what runs.
+function chainOnKey<T>(chains: Map<string, Promise<unknown>>, key: string, fn: () => Promise<T>): Promise<T> {
+  const queued = (chains.get(key) ?? Promise.resolve()).catch(() => {}).then(fn);
+  const tail = queued.catch(() => {});
+  chains.set(key, tail);
+  // Drop the entry once nothing is queued behind it: a map keyed by game id
+  // would otherwise hold one settled promise per game ever touched.
+  void tail.then(() => { if (chains.get(key) === tail) chains.delete(key); });
+  return queued;
+}
+
 const settingWrites = new Map<string, Promise<unknown>>();
 function withSettingLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const queued = (settingWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(fn);
-  settingWrites.set(key, queued.catch(() => {}));
-  return queued;
+  return chainOnKey(settingWrites, key, fn);
+}
+
+// Games get the same treatment: taking a game and closing a feedback role both
+// read the record, decide, and write back, so two requests for the same game
+// would each act on what the other was about to change.
+const gameWrites = new Map<string, Promise<unknown>>();
+function withGameLock<T>(gameId: string, fn: () => Promise<T>): Promise<T> {
+  return chainOnKey(gameWrites, gameId, fn);
+}
+
+// Acquire/release form of the same lock, for a body too long to read as a
+// callback. Always release from a `finally`, or the next holder waits forever.
+function acquireGameLock(gameId: string): Promise<() => void> {
+  return new Promise((handOver) => {
+    void chainOnKey(gameWrites, gameId, () => new Promise<void>((release) => handOver(() => release())));
+  });
 }
 
 // Only the RCs on a half mandate are stored; everyone else follows the full
@@ -2621,13 +2694,49 @@ app.post('/api/admin/rc-people/:id/pin', requireAdminSession, async (req: Reques
     res.json({ pin, emailed, email: asText(person.email) });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
+// Login resolves an RC by email, so a second record carrying the same address
+// is not a duplicate row — it is one of the two people permanently unable to
+// log in, with nothing on screen to say why.
+async function emailTakenBy(email: string, exceptId: string): Promise<boolean> {
+  const wanted = email.trim().toLowerCase();
+  if (!wanted) return false;
+  const people = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+    c.getFullList<AnyRecord>({ fields: 'id,email' }));
+  return people.some((p) => p.id !== exceptId && asText(p.email).trim().toLowerCase() === wanted);
+}
+
+// Games and filed feedbacks reference an RC by display name, so a rename would
+// otherwise orphan every game they hold and every observation they filed.
+async function renameRcReferences(oldName: string, newName: string): Promise<void> {
+  const from = normalizeName(oldName);
+  if (!from || from === normalizeName(newName)) return;
+  const games = await withCollection(collectionCandidates.games, (c) =>
+    c.getFullList<AnyRecord>({ fields: 'id,assigned_rc' }));
+  for (const game of games) {
+    if (normalizeName(game.assigned_rc) !== from) continue;
+    await withCollection(collectionCandidates.games, (c) => c.update(game.id, { assigned_rc: newName }));
+  }
+  const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (c) =>
+    c.getFullList<AnyRecord>({ fields: 'id,rc_name' }));
+  for (const feedback of feedbacks) {
+    if (normalizeName(feedback.rc_name) !== from) continue;
+    await withCollection(collectionCandidates.refereeCoaches, (c) => c.update(feedback.id, { rc_name: newName }));
+  }
+  icalGamesCache.clear();
+}
+
 app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const d = req.body ?? {};
+    const email = asText(d.email);
+    if (await emailTakenBy(email, '')) {
+      res.status(409).json({ error: 'Diese E-Mail-Adresse ist bereits einem anderen RC zugeordnet.' });
+      return;
+    }
     const created = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
       c.create({ first_name: asText(d.first_name), last_name: asText(d.last_name),
-        email: asText(d.email), phone: asText(d.phone), active: d.active !== false,
+        email, phone: asText(d.phone), active: d.active !== false,
         is_admin: d.is_admin === true }));
     rcPeopleCache = null;
     res.status(201).json(created);
@@ -2636,6 +2745,7 @@ app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: 
 app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
+    const id = String(req.params.id);
     const raw = (req.body ?? {}) as Record<string, unknown>;
     const payload: Record<string, unknown> = {};
     if ('first_name' in raw) payload.first_name = asText(raw.first_name);
@@ -2644,9 +2754,19 @@ app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, re
     if ('phone' in raw) payload.phone = asText(raw.phone);
     if ('active' in raw) payload.active = Boolean(raw.active);
     if ('is_admin' in raw) payload.is_admin = Boolean(raw.is_admin);
+    if ('email' in raw && await emailTakenBy(asText(raw.email), id)) {
+      res.status(409).json({ error: 'Diese E-Mail-Adresse ist bereits einem anderen RC zugeordnet.' });
+      return;
+    }
+    const before = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
+      c.getOne<AnyRecord>(id, { fields: 'id,first_name,last_name' }));
     const updated = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
-      c.update(String(req.params.id), payload));
+      c.update(id, payload)) as AnyRecord;
     rcPeopleCache = null;
+    const oldName = `${asText(before.first_name)} ${asText(before.last_name)}`.trim();
+    const newName = `${asText(updated.first_name)} ${asText(updated.last_name)}`.trim();
+    try { await renameRcReferences(oldName, newName); }
+    catch (renameErr) { console.error('[rc-rename] could not migrate references:', renameErr); }
     res.json(updated);
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -2961,7 +3081,7 @@ app.post('/api/auth/rc/forgot/start', async (req: Request, res: ExpressResponse)
           + `<p style="margin:0;font-size:13px;color:#78716c;text-align:center;">Der Code ist 10 Minuten gültig.</p>`
           + `<p style="margin:22px 0 0;font-size:13px;color:#a8a29e;line-height:1.6;">Wenn du das nicht angefragt hast, ignoriere diese E-Mail — dein PIN bleibt unverändert.</p>`,
         );
-        await smtpTransport.sendMail({
+        await sendMailResilient({
           from: MAIL_FROM,
           to: asText(person.email),
           subject: 'Bestätigungscode – SVRZ Referee Coaching',
@@ -3037,10 +3157,16 @@ app.post('/api/auth/rc/forgot/verify', async (req: Request, res: ExpressResponse
 // ---- Signature sessions (cross-device signing via slug capability token) ----
 // Unsigned sessions expire so a leaked slug can't be (re)used indefinitely.
 const SIGNATURE_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
+// The capability endpoints are reached without a session, so nothing else on
+// the request path has authenticated this process to PocketBase. Without the
+// explicit call every signing link 404s after a restart until some logged-in
+// route happens to run first.
 async function getSignatureRecord(slug: string) {
   if (!slug || slug.length > 64) return null;
-  try { return await pb.collection('signatures').getFirstListItem(`slug = "${escapeFilterValue(slug)}"`); }
-  catch { return null; }
+  try {
+    await ensureAdminAuth();
+    return await pb.collection('signatures').getFirstListItem(`slug = "${escapeFilterValue(slug)}"`);
+  } catch { return null; }
 }
 function isSignatureExpired(rec: AnyRecord): boolean {
   if (Boolean(rec.signed)) return false; // signed records stay readable
@@ -3049,6 +3175,7 @@ function isSignatureExpired(rec: AnyRecord): boolean {
 }
 app.post('/api/signature/start', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
+    await ensureAdminAuth();
     const slug = randomUUID().replace(/-/g, '');
     const context = asText((req.body ?? {}).context).slice(0, 300);
     const signer = asText((req.body ?? {}).signer).slice(0, 120);
@@ -3076,6 +3203,7 @@ app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
     if (isSignatureExpired(rec)) { res.status(410).json({ error: 'Signature session expired' }); return; }
     // Signatures are write-once: once signed, the capability can't overwrite it.
     if (Boolean(rec.signed)) { res.status(409).json({ error: 'Signature already captured' }); return; }
+    await ensureAdminAuth();
     await pb.collection('signatures').update(rec.id, { data, signed: true, signer: signer || asText(rec.signer) });
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -3205,10 +3333,14 @@ async function sendSurveyNotification(rec: AnyRecord, answers: Record<string, st
 const SURVEY_MAX_ANSWERS = 50;
 const SURVEY_MAX_ANSWER_LEN = 5000;
 
+// Same as the signature capability: no session on the request, so this is the
+// only place that can authenticate the process to PocketBase.
 async function getSurveyRecord(token: string) {
   if (!token || token.length > 64) return null;
-  try { return await pb.collection(SURVEY_COLLECTION).getFirstListItem(`token = "${escapeFilterValue(token)}"`); }
-  catch { return null; }
+  try {
+    await ensureAdminAuth();
+    return await pb.collection(SURVEY_COLLECTION).getFirstListItem(`token = "${escapeFilterValue(token)}"`);
+  } catch { return null; }
 }
 function isSurveyExpired(rec: AnyRecord): boolean {
   if (Boolean(rec.submitted)) return false; // answered records stay readable
@@ -3271,6 +3403,7 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
       if (value) answers[key] = value;
     }
 
+    await ensureAdminAuth();
     await pb.collection(SURVEY_COLLECTION).update(rec.id, {
       // Anonymous means the name is gone from the record, not merely hidden in
       // the UI — the row must not be able to betray them later.
@@ -3539,9 +3672,11 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
       second_referee: asText(d.second_referee),
       assigned_rc: asText(d.assigned_rc),
     }));
-    const manual = await getManualGameIds();
-    manual.add(created.id);
-    await setSetting('manual_games', JSON.stringify([...manual]));
+    await withSettingLock('manual_games', async () => {
+      const manual = await getManualGameIds();
+      manual.add(created.id);
+      await setSetting('manual_games', JSON.stringify([...manual]));
+    });
     res.status(201).json(created);
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -3580,10 +3715,14 @@ app.delete('/api/admin/games/:id', requireAdminSession, async (req: Request, res
   try {
     await ensureAdminAuth();
     const id = String(req.params.id);
-    const set = await getStarredGameIds();
-    if (set.delete(id)) await setSetting('starred_games', JSON.stringify([...set]));
-    const manual = await getManualGameIds();
-    if (manual.delete(id)) await setSetting('manual_games', JSON.stringify([...manual]));
+    await withSettingLock('starred_games', async () => {
+      const set = await getStarredGameIds();
+      if (set.delete(id)) await setSetting('starred_games', JSON.stringify([...set]));
+    });
+    await withSettingLock('manual_games', async () => {
+      const manual = await getManualGameIds();
+      if (manual.delete(id)) await setSetting('manual_games', JSON.stringify([...manual]));
+    });
     await withCollection(collectionCandidates.games, (c) => c.delete(id));
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -3593,9 +3732,13 @@ app.put('/api/admin/games/:id/star', requireAdminSession, async (req: Request, r
   try {
     const id = String(req.params.id);
     const on = Boolean((req.body ?? {}).starred);
-    const set = await getStarredGameIds();
-    if (on) set.add(id); else set.delete(id);
-    await setSetting('starred_games', JSON.stringify([...set]));
+    // The whole list is read, edited and written back, so two stars in quick
+    // succession would otherwise each save over the other's addition.
+    await withSettingLock('starred_games', async () => {
+      const set = await getStarredGameIds();
+      if (on) set.add(id); else set.delete(id);
+      await setSetting('starred_games', JSON.stringify([...set]));
+    });
     // Un-starring only drops the manual entry — a game VM marked stays flagged,
     // so report the effective state rather than what was asked for.
     let vmFlagged = false;
@@ -3624,40 +3767,44 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
   try {
     await ensureAdminAuth();
     const gameId = String(req.params.id);
-    let rcName = asText((req.body ?? {}).assignedRc);
+    const requestedRc = asText((req.body ?? {}).assignedRc);
     const rcAuth = rcAuthByReq.get(req);
-    if (rcAuth) {
-      // Non-admin RCs may only take games for themselves, and only give back
-      // games they currently hold. Admin sessions have no rcAuth and skip this.
-      const current = await withCollection(collectionCandidates.games, (collection) =>
-        collection.getOne<AnyRecord>(gameId),
-      );
-      const currentRc = normalizeName(current.assigned_rc);
-      const self = normalizeName(rcAuth.name);
-      if (rcName === '') {
-        if (currentRc && currentRc !== self) {
-          res.status(403).json({ error: 'Nur eigene Spiele können abgegeben werden.' });
-          return;
+    // The whole check-and-write runs under the game's lock: two RCs tapping
+    // "übernehmen" at the same moment would otherwise both read the game as
+    // free and the second write would quietly displace the first.
+    const outcome = await withGameLock(gameId, async () => {
+      let rcName = requestedRc;
+      if (rcAuth) {
+        // Non-admin RCs may only take games for themselves, and only give back
+        // games they currently hold. Admin sessions have no rcAuth and skip this.
+        const current = await withCollection(collectionCandidates.games, (collection) =>
+          collection.getOne<AnyRecord>(gameId),
+        );
+        const currentRc = normalizeName(current.assigned_rc);
+        const self = normalizeName(rcAuth.name);
+        if (rcName === '') {
+          if (currentRc && currentRc !== self) {
+            return { status: 403, body: { error: 'Nur eigene Spiele können abgegeben werden.' } };
+          }
+        } else {
+          if (normalizeName(rcName) !== self) {
+            return { status: 403, body: { error: 'Spiele können nur für dich selbst übernommen werden.' } };
+          }
+          if (currentRc && currentRc !== self) {
+            return { status: 409, body: { error: 'Dieses Spiel wurde bereits von einem anderen RC übernommen.' } };
+          }
+          rcName = rcAuth.name; // write the canonical name from the RC record
         }
-      } else {
-        if (normalizeName(rcName) !== self) {
-          res.status(403).json({ error: 'Spiele können nur für dich selbst übernommen werden.' });
-          return;
-        }
-        if (currentRc && currentRc !== self) {
-          res.status(409).json({ error: 'Dieses Spiel wurde bereits von einem anderen RC übernommen.' });
-          return;
-        }
-        rcName = rcAuth.name; // write the canonical name from the RC record
       }
-    }
-    const updated = await withCollection(collectionCandidates.games, (collection) =>
-      collection.update(gameId, { assigned_rc: rcName }),
-    );
-    // Both sides of a handover change: clearing the lot beats working out who
-    // the previous holder was, and the map holds one entry per RC.
-    icalGamesCache.clear();
-    res.json({ ok: true, id: (updated as AnyRecord).id, assignedRc: asText((updated as AnyRecord).assigned_rc) });
+      const updated = await withCollection(collectionCandidates.games, (collection) =>
+        collection.update(gameId, { assigned_rc: rcName }),
+      );
+      // Both sides of a handover change: clearing the lot beats working out who
+      // the previous holder was, and the map holds one entry per RC.
+      icalGamesCache.clear();
+      return { status: 200, body: { ok: true, id: (updated as AnyRecord).id, assignedRc: asText((updated as AnyRecord).assigned_rc) } };
+    });
+    res.status(outcome.status).json(outcome.body);
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
@@ -4037,7 +4184,7 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
       collection.getFullList<AnyRecord>({
         sort: '-match_date,-created',
         filter: nameFilterParts.join(' || '),
-        fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge',
+        fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge,assigned_rc,feedback_closed_roles,game_result,maps_url',
       }),
     );
 
@@ -4067,6 +4214,13 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
         secondLineJudge: assigned.secondLineJudge,
         assignedRoles,
         starred: starredIds.has(String(game.id)),
+        // The client type has always promised these; without them the "already
+        // taken by another RC" badge could never appear against the real API,
+        // so two coaches could plan the same visit unaware of each other.
+        assignedRc: asText(game.assigned_rc),
+        feedbackClosedRoles: Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [],
+        game_result: asText(game.game_result),
+        maps_url: asText(game.maps_url),
       };
     });
 
@@ -4717,6 +4871,57 @@ app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request,
   }
 });
 
+// A scanned paper form may be a phone photo, not a PDF (the upload accepts
+// ".pdf,image/*"). Declaring a JPEG as application/pdf makes mail clients
+// refuse to preview the coachee's own feedback, so read the type off the bytes.
+function sniffAttachmentType(buffer: Buffer): string {
+  if (buffer.length >= 4 && buffer.toString('latin1', 0, 4) === '%PDF') return 'application/pdf';
+  if (buffer.length >= 4 && buffer.toString('latin1', 1, 4) === 'PNG') return 'image/png';
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+  if (buffer.length >= 12 && buffer.toString('latin1', 0, 4) === 'RIFF' && buffer.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  if (buffer.length >= 6 && buffer.toString('latin1', 0, 4) === 'GIF8') return 'image/gif';
+  if (buffer.length >= 12 && buffer.toString('latin1', 4, 12) === 'ftypheic') return 'image/heic';
+  return 'application/octet-stream';
+}
+
+const ATTACHMENT_EXTENSIONS: Record<string, string> = {
+  'application/pdf': 'pdf', 'image/png': 'png', 'image/jpeg': 'jpg',
+  'image/webp': 'webp', 'image/gif': 'gif', 'image/heic': 'heic',
+};
+
+// Keep the extension honest too — a .pdf name on JPEG bytes fails the same way
+// the wrong MIME type does.
+function attachmentFilename(filename: string, contentType: string): string {
+  const ext = ATTACHMENT_EXTENSIONS[contentType];
+  const name = String(filename || 'feedback.pdf');
+  if (!ext || name.toLowerCase().endsWith(`.${ext}`)) return name;
+  return `${name.replace(/\.[^.]+$/, '')}.${ext}`;
+}
+
+// A submit that reached the server but whose response was lost gets replayed
+// from the offline outbox. Roles that close are protected by the 409 guard, but
+// a "second visit needed" submission closes nothing — so remember what was
+// filed recently and answer a replay with the original outcome instead of
+// creating a second record and mailing the coachee twice.
+const RECENT_SUBMIT_TTL_MS = 30 * 60 * 1000;
+
+async function findRecentSubmission(gameId: string, role: string): Promise<string> {
+  const since = new Date(Date.now() - RECENT_SUBMIT_TTL_MS).toISOString();
+  try {
+    const hit = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+      collection.getFirstListItem<AnyRecord>(
+        `game = "${escapeFilterValue(gameId)}" && role_assessed = "${escapeFilterValue(role)}" && submitted_at >= "${escapeFilterValue(since)}"`,
+        { fields: 'id', sort: '-submitted_at' },
+      ));
+    return hit.id;
+  } catch (error) {
+    if (isRecordNotFound(error)) return '';
+    // Never let the duplicate check itself block a legitimate submission.
+    console.error('[feedback-submit] duplicate lookup failed:', error);
+    return '';
+  }
+}
+
 app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: ExpressResponse) => {
   const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks } = req.body ?? {};
 
@@ -4739,6 +4944,11 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     return;
   }
 
+  // Everything below reads the game, decides, and writes the decision back.
+  // Without the lock two submits for the same game — one per role, or an
+  // outbox replay racing the original — each check the same stale snapshot and
+  // the later write drops the earlier role's closure.
+  const releaseGame = await acquireGameLock(String(gameId));
   try {
     await ensureAdminAuth();
 
@@ -4773,10 +4983,26 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       return;
     }
 
+    // A "second visit needed" submission deliberately leaves the role open, so
+    // the 409 above cannot catch a replay of it. A genuine second observation
+    // is days or weeks later, never minutes — anything inside the window is the
+    // same submission arriving twice.
+    const recentDuplicate = await findRecentSubmission(String(game.id), String(role));
+    if (recentDuplicate) {
+      res.status(409).json({
+        error: `Feedback for role "${role}" was already submitted for this game.`,
+        id: recentDuplicate,
+      });
+      return;
+    }
+
     // Resolve coachee and validate email
     const refereeName = role === '1. SR' ? asText(game.first_referee) : asText(game.second_referee);
     if (!refereeName) {
-      throw new Error(`No referee name found in game for role ${role}.`);
+      // A fixable data problem, not a server fault: as a 500 the outbox would
+      // retry it forever instead of telling the coach what to correct.
+      res.status(422).json({ error: `Im Spiel ist für die Rolle "${role}" kein Schiedsrichter eingetragen.` });
+      return;
     }
 
     const escaped = escapeFilterValue(refereeName);
@@ -4786,12 +5012,22 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     const reverseClause = escapedReversed
       ? ` || full_name = "${escapedReversed}" || name = "${escapedReversed}" || coachee_name = "${escapedReversed}" || referee_name = "${escapedReversed}"`
       : '';
-    const coacheeResult = await withCollection(collectionCandidates.coachees, async (collection) => ({
-      collection,
-      coachee: await collection.getFirstListItem<AnyRecord>(
-        `full_name = "${escaped}" || name = "${escaped}" || coachee_name = "${escaped}" || referee_name = "${escaped}"${reverseClause}`,
-      ),
-    }));
+    let coacheeResult: { collection: ReturnType<typeof pb.collection>; coachee: AnyRecord };
+    try {
+      coacheeResult = await withCollection(collectionCandidates.coachees, async (collection) => ({
+        collection,
+        coachee: await collection.getFirstListItem<AnyRecord>(
+          `full_name = "${escaped}" || name = "${escaped}" || coachee_name = "${escaped}" || referee_name = "${escaped}"${reverseClause}`,
+        ),
+      }));
+    } catch (lookupError) {
+      // The referee simply isn't on the coachee list — someone has to add them.
+      // Answered as a 500 this looked like a server fault and the offline
+      // outbox retried it forever instead of surfacing the fix.
+      if (!isRecordNotFound(lookupError)) throw lookupError;
+      res.status(422).json({ error: `"${refereeName}" ist nicht als Coachee erfasst. Bitte im Admin-Bereich anlegen.` });
+      return;
+    }
     const coachee = coacheeResult.coachee;
     const coacheeCollection = coacheeResult.collection;
 
@@ -4818,54 +5054,73 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       }),
     );
 
-    const entries = Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries : [];
-    const nextEntries = [
-      ...entries,
-      {
-        referee_coaches_id: created.id,
-        game_id: game.id,
-        submitted_at: submittedAt,
-        role_assessed: role,
-      },
-    ];
+    // From here the feedback record exists but is not yet complete. If any of
+    // the follow-up writes fails the whole set is undone before answering: an
+    // abandoned half-record survives every outbox retry, so without this each
+    // attempt leaves behind one more PDF-less feedback and observation.
+    const attachmentType = sniffAttachmentType(pdfBuffer);
+    const attachmentName = attachmentFilename(String(pdfFilename || 'feedback.pdf'), attachmentType);
+    const priorEntries = Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries : [];
+    let observationId = '';
+    try {
+      await coacheeCollection.update(coachee.id, {
+        feedback_entries: [
+          ...priorEntries,
+          {
+            referee_coaches_id: created.id,
+            game_id: game.id,
+            submitted_at: submittedAt,
+            role_assessed: role,
+          },
+        ],
+        last_feedback_at: submittedAt,
+      });
 
-    await coacheeCollection.update(coachee.id, {
-      feedback_entries: nextEntries,
-      last_feedback_at: submittedAt,
-    });
+      const grades = buildGradesPayload(formData);
+      const observationPayload: Record<string, unknown> = {
+        coachee: coachee.id,
+        referee_coach: refereeCoachPersonId,
+        game: game.id,
+        coachee_function: mapCoacheeFunction(role),
+        grades,
+        remarks: asText(formData.results?.bemerkungen),
+      };
 
-    const grades = buildGradesPayload(formData);
-    const observationPayload: Record<string, unknown> = {
-      coachee: coachee.id,
-      referee_coach: refereeCoachPersonId,
-      game: game.id,
-      coachee_function: mapCoacheeFunction(role),
-      grades,
-      remarks: asText(formData.results?.bemerkungen),
-    };
+      const gameLevel = mapGameLevel(formData.results?.spielniveau);
+      if (gameLevel) observationPayload.game_level = gameLevel;
+      const promotion = mapPromotion(formData.results?.einstufung);
+      if (promotion) observationPayload.promotion = promotion;
+      const motivation = mapMotivation(formData.results?.motivation);
+      if (motivation) observationPayload.motivation = motivation;
+      const srGoal = mapSrGoal(formData.results?.srZiel);
+      if (srGoal) observationPayload.sr_goal = srGoal;
+      const gameResult = asText(formData.results?.einstufung);
+      if (gameResult) observationPayload.game_result = gameResult;
+      observationPayload.second_observation = asBoolean(formData.results?.secondBesuch, false);
 
-    const gameLevel = mapGameLevel(formData.results?.spielniveau);
-    if (gameLevel) observationPayload.game_level = gameLevel;
-    const promotion = mapPromotion(formData.results?.einstufung);
-    if (promotion) observationPayload.promotion = promotion;
-    const motivation = mapMotivation(formData.results?.motivation);
-    if (motivation) observationPayload.motivation = motivation;
-    const srGoal = mapSrGoal(formData.results?.srZiel);
-    if (srGoal) observationPayload.sr_goal = srGoal;
-    const gameResult = asText(formData.results?.einstufung);
-    if (gameResult) observationPayload.game_result = gameResult;
-    observationPayload.second_observation = asBoolean(formData.results?.secondBesuch, false);
+      const observation = await withCollection<AnyRecord>(collectionCandidates.observations, (collection) =>
+        collection.create(observationPayload),
+      );
+      observationId = observation.id;
 
-    await withCollection(collectionCandidates.observations, (collection) =>
-      collection.create(observationPayload),
-    );
-
-    // Upload PDF to feedback record
-    const pdfFormData = new FormData();
-    pdfFormData.append('pdf_file', new Blob([pdfBuffer], { type: 'application/pdf' }), String(pdfFilename || 'feedback.pdf'));
-    await withCollection(collectionCandidates.refereeCoaches, (collection) =>
-      collection.update(created.id, pdfFormData),
-    );
+      // Upload the filed document to the feedback record. A manual upload may
+      // be a phone photo of a paper form, so the type comes from the bytes.
+      const pdfFormData = new FormData();
+      pdfFormData.append('pdf_file', new Blob([pdfBuffer], { type: attachmentType }), attachmentName);
+      await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+        collection.update(created.id, pdfFormData),
+      );
+    } catch (writeError) {
+      for (const undo of [
+        async () => { if (observationId) await withCollection(collectionCandidates.observations, (c) => c.delete(observationId)); },
+        async () => { await coacheeCollection.update(coachee.id, { feedback_entries: priorEntries, last_feedback_at: asText(coachee.last_feedback_at) }); },
+        async () => { await withCollection(collectionCandidates.refereeCoaches, (c) => c.delete(created.id)); },
+      ]) {
+        try { await undo(); }
+        catch (rollbackError) { console.error('[feedback-submit] rollback step failed:', rollbackError); }
+      }
+      throw writeError;
+    }
 
     // Phase 3 — Email (best-effort)
     let emailSent = false;
@@ -4888,15 +5143,10 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         emailWarning = 'RC has no email, sent without RC in CC';
       }
 
-      // Format date as dd.MM.yyyy
+      // dd.MM.yyyy in the region's zone — the container runs UTC, which would
+      // date a late-evening game to the day before.
       const matchDate = asText(game.match_date);
-      let formattedDate = matchDate;
-      if (matchDate) {
-        const d = new Date(matchDate);
-        if (!isNaN(d.getTime())) {
-          formattedDate = `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
-        }
-      }
+      const formattedDate = matchDate ? fmtDateDe(matchDate) : matchDate;
 
       const matchNo = asText(game.match_no);
       // Our own survey page, not a Google Form: one token per visit, so the
@@ -4941,6 +5191,16 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       const isTestMode = process.env.FEEDBACK_EMAIL_TEST === '1';
       const testRecipient = process.env.FEEDBACK_TEST_RECIPIENT || '';
 
+      // Asking for test mode and forgetting the recipient used to deliver the
+      // test feedback to the real referee, the real RC and the commission —
+      // the exact opposite of the request. Suppress loudly instead, the way the
+      // survey notification already does.
+      const misconfiguredTestMode = isTestMode && !testRecipient;
+      if (misconfiguredTestMode) {
+        console.warn('[feedback-email] FEEDBACK_EMAIL_TEST=1 without FEEDBACK_TEST_RECIPIENT — email suppressed.');
+        emailWarning = 'FEEDBACK_EMAIL_TEST ist gesetzt, FEEDBACK_TEST_RECIPIENT fehlt — keine E-Mail gesendet.';
+      }
+
       let mailTo: string;
       let mailCc: string[] | undefined;
       let mailBcc: string[] | undefined;
@@ -4967,11 +5227,11 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       }
 
       const emailTestMode = await isEmailTestMode();
-      if (emailTestMode) {
-        console.log(`[feedback-email] TEST_MODE — outbound email suppressed (would send to ${mailTo})`);
+      if (emailTestMode || misconfiguredTestMode) {
+        if (emailTestMode) console.log(`[feedback-email] TEST_MODE — outbound email suppressed (would send to ${mailTo})`);
         emailSent = false;
       } else {
-        await smtpTransport.sendMail({
+        await sendMailResilient({
           from: MAIL_FROM,
           replyTo: rcEmail || undefined,
           to: mailTo,
@@ -4981,9 +5241,9 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           html: built.html,
           text: built.text,
           attachments: emailAttachments([{
-            filename: String(pdfFilename || 'feedback.pdf'),
+            filename: attachmentName,
             content: pdfBuffer,
-            contentType: 'application/pdf',
+            contentType: attachmentType,
           }]),
         });
         emailSent = true;
@@ -4993,7 +5253,8 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       console.error('[feedback-email] Failed to send:', emailError);
     }
 
-    // Phase 4 — Closure
+    // Phase 4 — Closure. closedRoles was read inside the game lock, so the
+    // other role's closure cannot have landed in between.
     const gamePatch: Record<string, unknown> = {};
     if (formData.results?.secondBesuch !== 'Y') {
       gamePatch.feedback_closed_roles = [...closedRoles, String(role)];
@@ -5027,6 +5288,8 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
+  } finally {
+    releaseGame();
   }
 });
 
@@ -5088,11 +5351,29 @@ app.post('/api/admin/migrate-source-payload', requireAdminSession, async (_req: 
 // 10:00 the day before the match (Europe/Zurich, see VM_SYNC_TIMEZONE).
 const REMINDER_CRON = process.env.REMINDER_CRON || '0 10 * * *';
 
-function getTomorrowRange(): { from: string; to: string } {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  const dateStr = d.toISOString().slice(0, 10);
-  return { from: `${dateStr}T00:00:00.000Z`, to: `${dateStr}T23:59:59.999Z` };
+function shiftIsoDate(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// "Tomorrow" means tomorrow in the region, not in the container's UTC clock.
+function getTomorrowDate(): string {
+  const today = zonedParts(Date.now());
+  return shiftIsoDate(`${today.year}-${today.month}-${today.day}`, 1);
+}
+
+// The calendar day a match falls on, read in the region's zone. match_date is a
+// text column holding three different shapes, so this is the only comparison
+// that treats them alike — a lexicographic `>=` filter silently drops both the
+// bare dates manual fixtures get ("2026-09-26" sorts before
+// "2026-09-26T00:00:00.000Z") and legacy space-separated wall-clock values.
+function zonedDateOf(matchDate: string): string {
+  const moment = icalMoment(matchDate);
+  if (!moment) return '';
+  if (moment.allDay) return `${moment.date.slice(0, 4)}-${moment.date.slice(4, 6)}-${moment.date.slice(6, 8)}`;
+  const p = zonedParts(moment.instant);
+  return `${p.year}-${p.month}-${p.day}`;
 }
 
 // Resolve a game's referee name to a coachee record (handles "First Last" vs
@@ -5120,10 +5401,16 @@ type ReminderPlan = {
 // Build the reminders due for tomorrow. Sends nothing — so the admin UI can
 // preview exactly what would go out (same contract as the demo's mail preview).
 async function buildDueReminders(): Promise<ReminderPlan[]> {
-  const { from, to } = getTomorrowRange();
+  const target = getTomorrowDate();
   await ensureAdminAuth();
-  const games = await withCollection(collectionCandidates.games, (c) =>
-    c.getFullList<AnyRecord>({ filter: `match_date >= "${from}" && match_date <= "${to}"`, sort: 'match_date' }));
+  // A day either side, because a stored value's text prefix and its zoned
+  // calendar day can differ around midnight; the exact day is decided below.
+  const candidates = await withCollection(collectionCandidates.games, (c) =>
+    c.getFullList<AnyRecord>({
+      filter: `match_date >= "${shiftIsoDate(target, -1)}" && match_date < "${shiftIsoDate(target, 2)}"`,
+      sort: 'match_date',
+    }));
+  const games = candidates.filter((g) => zonedDateOf(asText(g.match_date)) === target);
   const tpl = await getEmailTemplate('reminder');
   const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
   const plans: ReminderPlan[] = [];
@@ -5177,14 +5464,17 @@ async function runMatchReminders(): Promise<{ sent: number; skipped: number; sup
   let already: string[] = [];
   try { already = sentRec ? JSON.parse(asText(sentRec.value)) as string[] : []; } catch { already = []; }
   const seen = new Set(already);
-  const stamp = getTomorrowRange().from.slice(0, 10);
+  const stamp = getTomorrowDate();
   const fresh: string[] = [];
   let sent = 0, skipped = 0;
   for (const p of plans) {
     const key = `${stamp}:${p.gameId}:${p.role}`;
     if (seen.has(key)) { skipped++; continue; } // already reminded — never double-send
     try {
-      await smtpTransport.sendMail({
+      // The pooled transport's stale-connection failure is exactly what this
+      // wrapper retries. Without it one hiccup loses the reminder for good:
+      // the next run is 24h later, by which time the match is in the past.
+      await sendMailResilient({
         from: MAIL_FROM,
         to: p.to,
         cc: p.cc.length ? p.cc : undefined,
@@ -5224,6 +5514,10 @@ app.get('/api/admin/email-templates', requireAdminSession, async (_req: Request,
 app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
+    // Validate everything before writing anything: rejecting the reminder
+    // template after the feedback one was already saved told the admin the save
+    // had failed while half of their edits were live.
+    const pending: Array<[EmailTemplateKind, EmailTemplate]> = [];
     for (const kind of ['feedback', 'reminder'] as EmailTemplateKind[]) {
       const tpl = body[kind];
       if (!tpl || typeof tpl !== 'object') continue;
@@ -5235,6 +5529,9 @@ app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, 
         outro: String(t.outro ?? '').slice(0, 4000),
       };
       if (!clean.subject.trim()) { res.status(400).json({ error: `Betreff darf nicht leer sein (${kind}).` }); return; }
+      pending.push([kind, clean]);
+    }
+    for (const [kind, clean] of pending) {
       await setSetting(`email_template_${kind}`, JSON.stringify(clean));
     }
     if ('reminder_enabled' in body) await setSetting('reminder_enabled', body.reminder_enabled ? '1' : '0');

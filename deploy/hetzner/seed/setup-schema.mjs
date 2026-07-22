@@ -10,6 +10,7 @@ async function login() {
   catch { await pb.admins.authWithPassword(email, password); }
 }
 const T = n => ({ name:n, type:'text', required:false });
+const NUM = n => ({ name:n, type:'number', required:false });
 const J = n => ({ name:n, type:'json', required:false, maxSize:2000000 });
 const B = n => ({ name:n, type:'bool', required:false });
 const FILE = n => ({ name:n, type:'file', required:false, maxSelect:1, maxSize:5242880 });
@@ -51,14 +52,23 @@ const games = await ensure('games', [
 ]);
 const coachees = await ensure('coachees', [
   T('full_name'),T('first_name'),T('last_name'),T('email'),T('phone'),
-  T('referee_level'),T('stage'),T('groups'),J('feedback_entries'),T('last_feedback_at')
+  T('referee_level'),T('stage'),T('groups'),J('feedback_entries'),T('last_feedback_at'),
+  // The coach's own notes on a coachee, and the season the row belongs to.
+  // PocketBase drops keys a collection doesn't declare, so without these the
+  // notes editor saved into the void and the xlsx import — which projects
+  // `id,full_name,season` — answered 400.
+  T('notes'),NUM('season')
 ]);
 const rcs = await ensure('referee_coaches', [
   T('first_name'),T('last_name'),T('email'),T('phone'),B('active'),
   // Reads the post-visit surveys (rc_visit_feedback). Set it HERE, not in the
   // admin console: a flag an admin can tick is one they can tick for
   // themselves, and admin rights must not open that view.
-  B('is_rc_president')
+  B('is_rc_president'),
+  // Per-RC PIN login: the scrypt hash of the PIN, and whether this RC's session
+  // counts as an admin one. Missing, a generated PIN is silently discarded and
+  // every later login fails with "rc-has-no-password-set".
+  T('pin_hash'),B('is_admin')
 ]);
 await ensure('referee_coach_feedbacks', [
   REL('game',games.id),REL('coachee',coachees.id),T('rc_name'),
@@ -76,6 +86,14 @@ await ensure('rc_visit_feedback', [
   T('token'),T('referee_name'),T('match_date'),T('match_no'),T('rc_name'),
   T('lang'),B('anonymous'),J('answers'),B('submitted'),T('submitted_at')
 ]);
+// Key/value store behind every app setting: default season, groups, coachee
+// targets, RC mandates, e-mail templates, starred games, the reminder dedupe
+// stamp and the president's private notes. Without it every settings write 500s
+// and every read silently answers "unset".
+await ensure('app_settings', [T('key'),T('value')]);
+// Cross-device signing sessions (#/sign/<slug>). Without it the signature pad
+// can never open, so no feedback can be completed.
+await ensure('signatures', [T('slug'),T('context'),T('signer'),T('data'),B('signed')]);
 console.log('SCHEMA_OK');
 
 // seed RCs (idempotent-ish: skip if any exist)

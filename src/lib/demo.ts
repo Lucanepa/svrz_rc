@@ -578,7 +578,15 @@ export function setGameStarred(gameId: string, starred: boolean): Promise<void> 
 
 export function assignRcToGame(gameId: string, assignedRc: string): Promise<void> {
   const g = store().games.find((x) => x.id === gameId);
-  if (g) g.assignedRc = assignedRc || undefined;
+  if (!g) return ok(undefined);
+  g.assignedRc = assignedRc || undefined;
+  // Every counter and list in the demo is derived from `kind`, so leaving it
+  // alone made "Spiel übernehmen" look broken: the game showed as taken while
+  // the Home planned counter and the upcoming list never mentioned it. A game
+  // already played is outstanding (needs an observation), a future one planned.
+  if (g.kind === 'done') return ok(undefined);
+  if (g.assignedRc) g.kind = new Date(g.date).getTime() < Date.now() ? 'outstanding' : 'planned';
+  else g.kind = 'available';
   return ok(undefined);
 }
 

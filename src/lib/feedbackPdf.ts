@@ -153,6 +153,26 @@ type Labels = (typeof LABELS)['DE'];
 /** A text field to overlay on the blank form, in final page coordinates. */
 type BlankField = { name: string; page: number; x: number; y: number; w: number; h: number; multiline?: boolean };
 
+// The embedded Inter subsets cover Latin only (scripts/build-pdf-fonts.mjs).
+// jsPDF silently drops any codepoint the subset has no glyph for, so an emoji
+// typed on a phone keyboard, or a Greek/Cyrillic name arriving unromanised from
+// VolleyManager, vanished from the archived PDF while the e-mail body showed it
+// intact. A visible placeholder keeps the two documents honest with each other.
+const PDF_GLYPHS = new Set<number>();
+for (const [from, to] of [[0x20, 0x7e], [0xa0, 0xff], [0x100, 0x17f], [0x1c4, 0x1cc], [0x2190, 0x2193]]) {
+  for (let cp = from; cp <= to; cp++) PDF_GLYPHS.add(cp);
+}
+for (const ch of 'ƒ–—‘’‚“”„•…‹›′″€™✓✔□☐\n\r\t') PDF_GLYPHS.add(ch.codePointAt(0)!);
+const PDF_MISSING_GLYPH = '□';
+
+export function pdfSafeText(value: string): string {
+  let out = '';
+  for (const ch of value) {
+    out += PDF_GLYPHS.has(ch.codePointAt(0)!) ? ch : PDF_MISSING_GLYPH;
+  }
+  return out;
+}
+
 class Sheet {
   readonly doc: jsPDF;
   y = MARGIN;
@@ -179,6 +199,15 @@ class Sheet {
     this.doc.addFileToVFS('Inter-Bold.ttf', INTER_BOLD_B64);
     this.doc.addFont('Inter-Bold.ttf', 'Inter', 'bold');
     this.doc.setLineHeightFactor(1.15);
+    // One chokepoint for every string that reaches the page — see pdfSafeText.
+    const rawText = this.doc.text.bind(this.doc);
+    type TextArg = Parameters<jsPDF['text']>[0];
+    this.doc.text = ((content: TextArg, ...rest: unknown[]) => rawText(
+      typeof content === 'string' ? pdfSafeText(content)
+        : Array.isArray(content) ? (content as string[]).map(pdfSafeText)
+        : content,
+      ...(rest as never[]),
+    )) as jsPDF['text'];
   }
 
   font(weight: 'normal' | 'bold', size: number, colour: Rgb = INK): this {
@@ -669,6 +698,10 @@ function drawRemarks(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
         // The band restarts on the new page, so the fillable rectangle does too.
         sheet.field({ name: block.name, x: MARGIN + 8, y: blockTop - 2, w: CONTENT_W - 16, h: floor() - blockTop, multiline: true });
         blockTop = sheet.y;
+        // The continuation header this break just drew leaves the doc on 7pt
+        // muted; without this the rest of a long block came out small and grey
+        // — in the archived PDF the coachee receives.
+        sheet.font('normal', 8, INK);
       }
       // Justified prose, except where a line ends its paragraph — stretching a
       // short closing line to the full column is exactly what justification

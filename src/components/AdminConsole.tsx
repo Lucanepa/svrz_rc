@@ -78,7 +78,9 @@ const STR = {
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
     noCoachees: (s: string) => `Keine Coachees für ${s} — importiere eine xlsx.`,
     delCoachee: (n: string) => `Coachee „${n}" löschen?`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
-    noRcs: 'Keine Referee Coaches.', delRc: (n: string) => `RC „${n}" löschen?`, inactive: 'inaktiv',
+    noRcs: 'Keine Referee Coaches.', loadFailed: 'Laden fehlgeschlagen.',
+    delGroup: (n: string) => `Gruppe „${n}" löschen? Coachees behalten den Eintrag, bis er dort geändert wird.`,
+    renameGroupWarn: (o: string, n: string) => `„${o}" in „${n}" umbenennen? Coachees mit „${o}" behalten die alte Schreibweise und erscheinen als eigene Gruppe.`, delRc: (n: string) => `RC „${n}" löschen?`, inactive: 'inaktiv',
     genPin: 'PIN erzeugen', hasPin: 'PIN gesetzt', noPin: 'kein PIN',
     colName: 'Name', colPin: 'PIN', colActions: 'Aktionen',
     mgTitle: 'Manuelles Spiel / Testspiel',
@@ -157,7 +159,9 @@ const STR = {
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
     noCoachees: (s: string) => `No coachees for ${s} — import an xlsx.`,
     delCoachee: (n: string) => `Delete coachee "${n}"?`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
-    noRcs: 'No referee coaches.', delRc: (n: string) => `Delete RC "${n}"?`, inactive: 'inactive',
+    noRcs: 'No referee coaches.', loadFailed: 'Could not load.',
+    delGroup: (n: string) => `Delete group "${n}"? Coachees keep the value until it is changed on them.`,
+    renameGroupWarn: (o: string, n: string) => `Rename "${o}" to "${n}"? Coachees carrying "${o}" keep the old spelling and show up as a separate group.`, delRc: (n: string) => `Delete RC "${n}"?`, inactive: 'inactive',
     genPin: 'Generate PIN', hasPin: 'PIN set', noPin: 'no PIN',
     colName: 'Name', colPin: 'PIN', colActions: 'Actions',
     mgTitle: 'Manual game / test game',
@@ -291,8 +295,24 @@ export default function AdminConsole() {
       .then((games) => { setLeagueOptions(Array.from(new Set(games.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort()); })
       .catch(() => {});
   }, [authed]);
-  const saveTargets = useCallback(async (next: CoacheeTargetMap) => { setCoacheeTargets(next); try { await putSettings({ coachee_targets: next }); } catch { /* ignore */ } }, []);
-  const saveMandates = useCallback(async (next: RcMandateMap) => { setRcMandates(next); try { await putSettings({ rc_mandates: next }); } catch { /* ignore */ } }, []);
+  // Optimistic with a rollback, like the test-mode toggle next to them. Left
+  // silent, a rejected save (expired admin session, 500) showed the new mandate
+  // or target as stored while the RC's season goal quietly stayed as it was.
+  const [settingsError, setSettingsError] = useState('');
+  const saveTargets = useCallback(async (next: CoacheeTargetMap) => {
+    let previous: CoacheeTargetMap = {};
+    setCoacheeTargets((current) => { previous = current; return next; });
+    setSettingsError('');
+    try { await putSettings({ coachee_targets: next }); }
+    catch (e) { setCoacheeTargets(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
+  }, []);
+  const saveMandates = useCallback(async (next: RcMandateMap) => {
+    let previous: RcMandateMap = {};
+    setRcMandates((current) => { previous = current; return next; });
+    setSettingsError('');
+    try { await putSettings({ rc_mandates: next }); }
+    catch (e) { setRcMandates(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
+  }, []);
   const saveDefaultGoal = useCallback(async (next: number) => { setDefaultGoal(next); await putSettings({ default_goal: next }); }, []);
 
   // Tab ↔ URL. pushState keeps the hashchange listener in main.tsx (which
@@ -400,6 +420,11 @@ export default function AdminConsole() {
           instead of starting that tab's request right then. Logs are the
           exception — they only poll while their tab is on screen. */}
       <main className="max-w-4xl mx-auto px-4 pt-5">
+        {/* Mandate/target saves are optimistic; when one is rejected the state
+            rolls back and this is what says so. */}
+        {settingsError && (
+          <p className="mb-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{settingsError}</p>
+        )}
         <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} /></div>
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
@@ -535,9 +560,16 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
   useEffect(() => { void reload(); }, [reload]);
   const rows = all.filter((c) => (typeof c.season === 'number' ? c.season === season : false)).sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
 
-  const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' }); await reload(); };
-  const saveEdit = async (id: string) => { const full_name = `${editForm.first_name} ${editForm.last_name}`.trim(); await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>); setEditId(null); await reload(); };
-  const remove = async (c: Coachee) => { if (!confirm(t.delCoachee(c.full_name))) return; await deleteCoachee(c.id); await reload(); };
+  // Same reason as RcsAdmin: a failed write left the console looking like it
+  // had worked.
+  const guard = async (action: () => Promise<void>) => {
+    setNotice('');
+    try { await action(); }
+    catch (e) { setNotice(e instanceof Error ? e.message : String(e)); }
+  };
+  const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await guard(async () => { await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' }); await reload(); }); };
+  const saveEdit = async (id: string) => { const full_name = `${editForm.first_name} ${editForm.last_name}`.trim(); await guard(async () => { await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>); setEditId(null); await reload(); }); };
+  const remove = async (c: Coachee) => { if (!confirm(t.delCoachee(c.full_name))) return; await guard(async () => { await deleteCoachee(c.id); await reload(); }); };
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     setImporting(true); setNotice('');
@@ -676,18 +708,35 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
   const [form, setForm] = useState({ first_name: '', last_name: '', email: '', phone: '' });
   const [editId, setEditId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<RcPerson>({ id: '' });
-  const reload = useCallback(async () => { setLoading(true); try { setRcs(await listRcPeopleFull()); } finally { setLoading(false); } }, []);
+  // Every write here used to fail in silence: the row stayed, no message
+  // appeared, and a failed initial load was indistinguishable from "there are
+  // no referee coaches".
+  const [notice, setNotice] = useState('');
+  const [loadFailed, setLoadFailed] = useState(false);
+  const guard = async (action: () => Promise<void>) => {
+    setNotice('');
+    try { await action(); }
+    catch (e) { setNotice(e instanceof Error ? e.message : String(e)); }
+  };
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try { setRcs(await listRcPeopleFull()); setLoadFailed(false); }
+    catch (e) { setLoadFailed(true); setNotice(e instanceof Error ? e.message : String(e)); }
+    finally { setLoading(false); }
+  }, []);
   useEffect(() => { void reload(); }, [reload]);
   const [pinShown, setPinShown] = useState<{ id: string; pin: string; emailed: boolean; email: string } | null>(null);
   const [pinBusy, setPinBusy] = useState<string | null>(null);
-  const add = async () => { if (!form.first_name && !form.last_name) return; await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); };
-  const saveEdit = async (id: string) => { await updateRcPerson(id, editForm); setEditId(null); await reload(); };
-  const remove = async (r: RcPerson) => { if (!confirm(t.delRc(`${r.first_name} ${r.last_name}`))) return; await deleteRcPerson(r.id); await reload(); };
+  const add = async () => { if (!form.first_name && !form.last_name) return; await guard(async () => { await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); }); };
+  const saveEdit = async (id: string) => { await guard(async () => { await updateRcPerson(id, editForm); setEditId(null); await reload(); }); };
+  const remove = async (r: RcPerson) => { if (!confirm(t.delRc(`${r.first_name} ${r.last_name}`))) return; await guard(async () => { await deleteRcPerson(r.id); await reload(); }); };
   const toggleAdmin = async (r: RcPerson) => {
     const makingAdmin = !r.is_admin;
     if (!confirm(t.toggleAdminConfirm(`${r.first_name ?? ''} ${r.last_name ?? ''}`.trim(), makingAdmin))) return;
-    await updateRcPerson(r.id, { is_admin: makingAdmin });
-    await reload();
+    await guard(async () => {
+      await updateRcPerson(r.id, { is_admin: makingAdmin });
+      await reload();
+    });
   };
   const genPin = async (r: RcPerson) => {
     if (r.has_pin && !confirm(t.genPinConfirm(`${r.first_name} ${r.last_name}`))) return;
@@ -697,7 +746,7 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
       setPinShown({ id: r.id, pin: res.pin, emailed: res.emailed, email: res.email });
       await reload();
     } catch (e) {
-      alert(e instanceof Error ? e.message : String(e));
+      setNotice(e instanceof Error ? e.message : String(e));
     } finally {
       setPinBusy(null);
     }
@@ -738,8 +787,10 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
       <button onClick={() => remove(r)} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
     </>
   );
+  // data-log-redact: the click logger copies rendered text into the admin-wide
+  // activity log, and a live login credential must not linger there.
   const pinBanner = (r: RcPerson) => pinShown?.id === r.id ? (
-    <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+    <div data-log-redact className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
       <p className="text-xs text-amber-800 flex-1">
         <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
         {' — '}
@@ -873,7 +924,7 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                   {pinShown?.id === r.id && (
                     <tr>
                       <td colSpan={6} className="pb-2">
-                        <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+                        <div data-log-redact className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
                           <p className="text-xs text-amber-800 flex-1">
                             <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
                             {' — '}
@@ -889,8 +940,11 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
             </tbody>
           </table>
         </div>
+        {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}
         {loading && rcs.length === 0 && <SkeletonRows rows={6} />}
-        {!loading && rcs.length === 0 && <p className="py-8 text-center text-sm text-stone-400">{t.noRcs}</p>}
+        {!loading && rcs.length === 0 && (
+          <p className="py-8 text-center text-sm text-stone-400">{loadFailed ? t.loadFailed : t.noRcs}</p>
+        )}
       </Card>
     </>
   );
@@ -1092,7 +1146,8 @@ function SurveyAdmin({ t, lang }: { t: T; lang: Lang }) {
             <span className="text-xs text-stone-400">#{r.matchNo}</span>
             <span className="ml-auto text-xs text-stone-500">{r.rc}</span>
           </div>
-          <dl className="flex flex-col gap-3">
+          {/* The coachee's own words about their coach — never into the log. */}
+          <dl data-log-redact className="flex flex-col gap-3">
             {SURVEY_QUESTIONS.filter((q) => r.answers[q.id]).map((q) => (
               <div key={q.id}>
                 <dt className="text-xs text-stone-400 leading-snug">{questionLabel(q, lang)}</dt>
@@ -1143,7 +1198,9 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
               {r.authorName && r.authorName !== r.rcName ? t.notesBy(r.authorName, r.rcName) : r.rcName}
             </span>
           </div>
-          <p className="text-sm text-stone-800 whitespace-pre-wrap">{r.note}</p>
+          {/* Confidential to the chair; the server already keeps it out of its
+              own request log, and the click logger must do the same. */}
+          <p data-log-redact className="text-sm text-stone-800 whitespace-pre-wrap">{r.note}</p>
         </div>
       ))}
     </div>
@@ -1406,10 +1463,26 @@ function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading
   const [ng, setNg] = useState('');
   const [gi, setGi] = useState<number | null>(null);
   const [gv, setGv] = useState('');
-  const saveGroups = async (next: string[]) => { onGroups(next); try { await putSettings({ groups: next }); } catch { /* ignore */ } };
+  const [groupsError, setGroupsError] = useState('');
+  // Optimistic, but no longer silent: a rejected save (expired session, 500)
+  // used to leave the new list on screen as if it had been stored.
+  const saveGroups = async (next: string[]) => {
+    const previous = groups;
+    onGroups(next);
+    setGroupsError('');
+    try { await putSettings({ groups: next }); }
+    catch (e) { onGroups(previous); setGroupsError(e instanceof Error ? e.message : String(e)); }
+  };
   const addGroup = () => { const v = ng.trim(); if (!v || groups.includes(v)) return; setNg(''); void saveGroups([...groups, v].sort()); };
-  const delGroup = (i: number) => void saveGroups(groups.filter((_, idx) => idx !== i));
-  const saveEditGroup = (i: number) => { const v = gv.trim(); if (v) { const next = groups.slice(); next[i] = v; void saveGroups(Array.from(new Set(next)).sort()); } setGi(null); };
+  const delGroup = (i: number) => { if (!confirm(t.delGroup(groups[i]))) return; void saveGroups(groups.filter((_, idx) => idx !== i)); };
+  const saveEditGroup = (i: number) => {
+    const v = gv.trim();
+    // Coachees carry the group name as a string, so a rename splits the cohort
+    // into two spellings that every filter treats as different groups.
+    if (v && v !== groups[i] && !confirm(t.renameGroupWarn(groups[i], v))) { setGi(null); return; }
+    if (v) { const next = groups.slice(); next[i] = v; void saveGroups(Array.from(new Set(next)).sort()); }
+    setGi(null);
+  };
   const save = async () => { await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
   const toggleTest = async () => { const next = !testMode; onTestMode(next); try { await putSettings({ test_mode: next }); } catch { onTestMode(!next); } };
   return (
@@ -1463,6 +1536,7 @@ function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading
           ))}
           {groups.length === 0 && <p className="py-4 text-center text-xs text-stone-400">—</p>}
         </div>
+        {groupsError && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{groupsError}</p>}
       </Card>
       <Card>
         <div className="flex items-start gap-3">

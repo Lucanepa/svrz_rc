@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp } from './support/app';
+import { stubSignedInApp, openFeedbackForm } from './support/app';
 
 test.describe('Print layout', () => {
   test.beforeEach(async ({ page }) => {
@@ -61,17 +61,17 @@ test.describe('Feedback form structure', () => {
   test('form has correct grid layout for meta fields', async ({ page }) => {
     await stubSignedInApp(page);
     await page.goto('/');
+    // The printable container only exists in the feedback-form view. Without
+    // opening it this test asserted nothing at all.
+    await openFeedbackForm(page);
 
-    // Check that the form container exists with print classes
     const printableArea = page.locator('[class*="print:shadow-none"]');
-    if (await printableArea.count() > 0) {
-      // Verify print-specific classes are on the container
-      const classes = await printableArea.first().getAttribute('class');
-      expect(classes).toContain('print:border-none');
-      expect(classes).toContain('print:p-0');
-      expect(classes).toContain('print:max-w-none');
-      expect(classes).toContain('print:mx-0');
-    }
+    await expect(printableArea.first()).toBeVisible();
+    const classes = await printableArea.first().getAttribute('class');
+    expect(classes).toContain('print:border-none');
+    expect(classes).toContain('print:p-0');
+    expect(classes).toContain('print:max-w-none');
+    expect(classes).toContain('print:mx-0');
   });
 });
 
@@ -79,29 +79,24 @@ test.describe('PDF download button', () => {
   test('PDF download button is visible on desktop', async ({ page }) => {
     await stubSignedInApp(page);
     await page.goto('/');
+    await openFeedbackForm(page);
 
-    // The download button with Download icon should exist when in feedbackForm view
-    // Look for a button containing "PDF" text or Download icon
     const pdfButton = page.locator('button').filter({ hasText: /PDF|Download/ });
-    // It may not be visible if we're in coachees subview
-    if (await pdfButton.count() > 0) {
-      await expect(pdfButton.first()).toBeVisible();
-    }
+    await expect(pdfButton.first()).toBeVisible();
   });
 
-  test('PDF filename format is correct', async ({ page }) => {
+  test('the downloaded PDF is named after the match and role', async ({ page }) => {
     await stubSignedInApp(page);
     await page.goto('/');
+    await openFeedbackForm(page);
 
-    // Test the filename generation logic by evaluating in page context
-    // The format should be "{matchNo}-{role}.pdf"
-    const filename = await page.evaluate(() => {
-      const match = '12345';
-      const role = '1. SR';
-      const cleanRole = role.replace('.', '').replace(/\s+/g, '');
-      return `${match}-${cleanRole}.pdf`;
-    });
-    expect(filename).toBe('12345-1SR.pdf');
+    // Exercises the app's own naming, not a copy of it re-implemented here —
+    // the previous version asserted on a string it had just built itself.
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('button').filter({ hasText: /PDF|Download/ }).first().click(),
+    ]);
+    expect(download.suggestedFilename()).toMatch(/^[\w.-]+-[12]SR\.pdf$/);
   });
 });
 
@@ -244,12 +239,13 @@ test.describe('Print page generation', () => {
       }
     }
 
-    // In a properly laid out page, the right 10% margin area should be mostly blank
-    // (page margin). If content is cut off, this check catches it differently:
-    // the key insight is that body scrollWidth <= viewport, tested above.
-    // This screenshot test is complementary — just verify it renders.
     expect(png.width).toBeGreaterThan(100);
     expect(png.height).toBeGreaterThan(100);
+    // The right 10% is the page margin: content reaching into it means the
+    // layout is running off the sheet. Computing this and never asserting on it
+    // was the whole point of the test going missing.
+    const sampled = Math.ceil(png.height / 10) * Math.ceil((png.width - rightEdgeStart) / 5);
+    expect(nonWhitePixelsInRightEdge).toBeLessThan(sampled * 0.5);
   });
 
   test('form grid borders are continuous (not broken by overflow)', async ({ page }) => {
@@ -291,26 +287,25 @@ test.describe('Print content visibility', () => {
   test('assessment legend is visible in print', async ({ page }) => {
     await stubSignedInApp(page);
     await page.goto('/');
+    await openFeedbackForm(page);
     await page.emulateMedia({ media: 'print' });
 
-    // The legend text should be visible (it's part of the printable form)
+    // The legend lives in the form view; on Home the guarded assertion below
+    // never ran and the test passed without checking anything.
     const legend = page.locator('text=/Beispielhaft|Exemplary/');
-    if (await legend.count() > 0) {
-      await expect(legend.first()).toBeVisible();
-    }
+    await expect(legend.first()).toBeVisible();
   });
 
   test('Swiss Volley logo is visible in print when form is shown', async ({ page }) => {
     await stubSignedInApp(page);
     await page.goto('/');
+    await openFeedbackForm(page);
+    await page.emulateMedia({ media: 'print' });
 
-    // The Swiss Volley logo (img) in the printable form area should remain visible in print
-    // The logo is inside the printable ref div, not inside a no-print element
-    const logo = page.locator('img[alt="Swiss Volley"]');
-    if (await logo.count() > 0) {
-      // In screen mode, the logo should be visible
-      await expect(logo.first()).toBeVisible();
-    }
+    // The real alt text is "Swiss Volley Region Zürich"; the exact-match
+    // selector this used to carry matched nothing, so nothing was checked.
+    const logo = page.locator('img[alt*="Swiss Volley"]');
+    await expect(logo.first()).toBeVisible();
   });
 
   test('toolbar buttons are hidden in print', async ({ page }) => {

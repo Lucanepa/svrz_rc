@@ -11,13 +11,31 @@ import { enableDemo, isDemoMode } from './lib/demo';
 import { installLogging, clientLog } from './lib/logger';
 import './index.css';
 
-// FIRST thing that runs: patches fetch and the error handlers, so nothing that
-// happens afterwards — including a failing boot — goes unrecorded.
+// Hidden demo entry: #/demo turns on throwaway client-side demo mode, then drops
+// the hash (via replaceState, which doesn't fire hashchange) so the normal app
+// renders as the demo coach — and a reload stays in the demo (flag in sessionStorage).
+//
+// This has to happen BEFORE logging is installed. The flag lives in
+// sessionStorage, so on the first navigation to #/demo in a fresh tab it is not
+// set yet — installing first latched shipping to "on" and the whole demo
+// session posted clicks and device ids to the production API.
+if (/^#\/?demo\/?$/i.test(window.location.hash)) {
+  enableDemo();
+  history.replaceState(null, '', window.location.pathname + window.location.search);
+}
+
+// FIRST thing that runs after the demo latch: patches fetch and the error
+// handlers, so nothing that happens afterwards — including a failing boot —
+// goes unrecorded.
 installLogging({
   apiBase: (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || '',
   // The demo is a promise of zero backend calls; shipping logs would break it.
   ship: !isDemoMode(),
 });
+
+// Whether a service worker was already in charge when the page loaded. Without
+// this, the first-ever install reloads the page under a user who is mid-login.
+const hadControllerAtStartup = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
 
 registerSW({
   immediate: true,
@@ -30,23 +48,31 @@ registerSW({
   onRegisterError(error) { clientLog.error('sw.error', 'service worker registration failed', { error }); },
 });
 
-// Auto-reload once a freshly deployed service worker takes control (no more stale builds).
+// Auto-reload once a freshly deployed service worker takes control (no more
+// stale builds) — but never out from under someone mid-observation. The form is
+// 30+ fields plus two captured signatures held only in React state, so a deploy
+// during a match used to wipe twenty minutes of work within fifteen seconds.
+// The app raises this flag while a dirty feedback form is open; the reload then
+// waits for the next navigation.
 if ('serviceWorker' in navigator) {
   let refreshing = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
+  let pendingReload = false;
+  const reloadIfSafe = () => {
     if (refreshing) return;
+    if (window.__svrzFormDirty) { pendingReload = true; return; }
     refreshing = true;
     clientLog.info('sw.controllerchange', 'new service worker took control — reloading');
     window.location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // The very first install also fires this, with no previous controller and
+    // therefore no stale build to escape — reloading there just interrupts the
+    // user's first visit for nothing.
+    if (!hadControllerAtStartup) return;
+    reloadIfSafe();
   });
-}
-
-// Hidden demo entry: #/demo turns on throwaway client-side demo mode, then drops
-// the hash (via replaceState, which doesn't fire hashchange) so the normal app
-// renders as the demo coach — and a reload stays in the demo (flag in sessionStorage).
-if (/^#\/?demo\/?$/i.test(window.location.hash)) {
-  enableDemo();
-  history.replaceState(null, '', window.location.pathname + window.location.search);
+  // Retried whenever the form stops being dirty (sent, reset, or left).
+  window.addEventListener('svrz:form-clean', () => { if (pendingReload) reloadIfSafe(); });
 }
 
 // Hash routes: #/admin[/tab] -> admin console; #/sign/<slug> -> public

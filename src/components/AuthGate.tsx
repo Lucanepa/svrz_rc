@@ -1,7 +1,7 @@
 import React, { useState, useEffect, createContext, useContext, type ReactNode } from 'react';
 import { Lock, Loader2, Mail, ArrowLeft, KeyRound, Eye, EyeOff } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
-import { getAuthMe, rcLogin, rcLogout, rcForgotStart, rcForgotVerify } from '../lib/pocketbase';
+import { getAuthMe, rcLogin, rcLogout, rcForgotStart, rcForgotVerify, hasPendingLogout, settlePendingLogout } from '../lib/pocketbase';
 import { clientLog, setLogUser, flush } from '../lib/logger';
 
 type ApiError = Error & { status?: number; retryAfterMs?: number };
@@ -68,6 +68,15 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [forgotInfo, setForgotInfo] = useState('');
 
   useEffect(() => {
+    // A logout that could not reach the server left the cookie alive. Honour it
+    // locally and keep retrying the revocation, rather than letting the next
+    // person on a shared device land in the previous coach's account.
+    if (hasPendingLogout()) {
+      clientLog.warn('auth.probe', 'a previous logout never reached the server — staying logged out');
+      void settlePendingLogout();
+      setChecking(false);
+      return;
+    }
     // Guard the status probe with a timeout so an unreachable API degrades to
     // the login screen instead of an infinite blank page.
     const timeout = setTimeout(() => {
@@ -103,7 +112,24 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       // Resolve the full identity BEFORE letting the app mount: it bootstraps
       // its data from rcId/rcName/admin, so handing it a half-known session
       // would make it load once as an anonymous user and again as itself.
-      const me = await getAuthMe().catch(() => null);
+      // One retry, because without an rcId anything queued offline this session
+      // is filed under 'anon' and no later flush ever finds it again.
+      const me = await getAuthMe().catch(async () => {
+        clientLog.warn('auth.login', 'auth/me failed right after login — retrying once');
+        return getAuthMe().catch(() => null);
+      });
+      // The password was accepted but the session did not come back. Almost
+      // always the browser refused the cross-site session cookie (Safari and
+      // WebKit block third-party cookies by default, and the app and the API
+      // are different sites) — worth naming, because "try again" never fixes
+      // that one. See infrastructure.md → Session cookies.
+      if (!me?.rc?.id && !me?.admin) {
+        throw new Error(
+          'Anmeldung unvollständig: Der Browser hat die Sitzung nicht gespeichert. '
+          + 'Bitte im Datenschutz die Option „Cross-Site-Tracking verhindern" für diese Seite deaktivieren '
+          + 'oder einen anderen Browser verwenden.',
+        );
+      }
       clientLog.info('auth.login', 'login ok', { name: me?.rc?.name ?? result.name, admin: Boolean(me?.admin) });
       setLogUser(me?.rc?.name ?? result.name);
       setRcId(me?.rc?.id ?? null);

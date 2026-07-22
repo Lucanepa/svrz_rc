@@ -1574,6 +1574,14 @@ export default function App() {
       setObservationTarget(payload.role === '2. SR' ? '2SR' : '1SR');
     }
     const expandedGame = record.expand?.game;
+    // This record existing IS the proof that its role was filed, so the game it
+    // reopens against carries that role as closed. The rebuilt game used to omit
+    // it and so looked untouched — offering "confirm and send" for an
+    // observation the server then (correctly) rejected as a duplicate. It also
+    // corrects a games list that was loaded before the feedback was sent.
+    const closedRole = record.role_assessed || payload?.role;
+    const withRoleClosed = (roles?: string[]): string[] =>
+      closedRole && !roles?.includes(closedRole) ? [...(roles ?? []), closedRole] : (roles ?? []);
     if (expandedGame?.id) {
       const mappedGame: EligibleGame = {
         id: expandedGame.id,
@@ -1585,10 +1593,20 @@ export default function App() {
         awayTeam: expandedGame.away_team || '',
         firstReferee: expandedGame.first_referee || '',
         secondReferee: expandedGame.second_referee || '',
+        feedbackClosedRoles: withRoleClosed(),
       };
-      setEligibleGames((prev) => (prev.some((item) => item.id === mappedGame.id) ? prev : [mappedGame, ...prev]));
+      setEligibleGames((prev) => (prev.some((item) => item.id === mappedGame.id)
+        ? prev.map((item) => (item.id === mappedGame.id
+          ? { ...item, feedbackClosedRoles: withRoleClosed(item.feedbackClosedRoles) }
+          : item))
+        : [mappedGame, ...prev]));
       setSelectedGameId(mappedGame.id);
       setFeedbackLocked(false);
+    } else {
+      // No game came back with the record, so the previously selected game is
+      // still the selected one. Lock the form rather than leave a filed
+      // observation pointing send at whatever game happened to be open.
+      setFeedbackLocked(true);
     }
     setFeedbackPickerCoachee(null);
     setActionTargetCoachee(null);

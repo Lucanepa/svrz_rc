@@ -48,7 +48,13 @@ const games = await ensure('games', [
   // Observation markings mirrored from VolleyManager: RD-Spiel / SR zu beobachten,
   // linesman supervision, and the RSV-Markierung.
   B('is_rd_game'),B('is_ld_game'),B('is_rsv_game'),T('maps_url'),T('game_result'),
-  T('assigned_rc'),J('feedback_closed_roles'),J('source_payload')
+  // assigned_rc is the RC's display NAME and stays: it is what the games list,
+  // the exports and the calendar feed print. assigned_rc_id is the identity —
+  // a name changes, and two coaches can normalise to the same string, at which
+  // point either could give away the other's game. Written together; readers
+  // prefer the id and fall back to the name for rows not yet backfilled
+  // (POST /api/admin/migrate-rc-ids).
+  T('assigned_rc'),T('assigned_rc_id'),J('feedback_closed_roles'),J('source_payload')
 ]);
 const coachees = await ensure('coachees', [
   T('full_name'),T('first_name'),T('last_name'),T('email'),T('phone'),
@@ -71,7 +77,9 @@ const rcs = await ensure('referee_coaches', [
   T('pin_hash'),B('is_admin')
 ]);
 await ensure('referee_coach_feedbacks', [
-  REL('game',games.id),REL('coachee',coachees.id),T('rc_name'),
+  // rc_name prints on the report and in the president's list; rc_id is who
+  // owns the record. Ownership checks read the id first — see rcRefMatches.
+  REL('game',games.id),REL('coachee',coachees.id),T('rc_name'),T('rc_id'),
   T('role_assessed'),J('feedback_json'),T('submitted_at'),FILE('pdf_file')
 ]);
 await ensure('observations', [

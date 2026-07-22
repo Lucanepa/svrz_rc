@@ -1842,6 +1842,37 @@ function buildGradesPayload(formData: unknown) {
   };
 }
 
+// ── RC identity: id first, name as the fallback ──────────────────────────────
+// Games and feedbacks were joined to their RC by display name alone. A name is
+// not an identity: it changes, and two active coaches can normalise to the same
+// string — at which point either can give away the other's game and read the
+// other's feedback. Both rows now carry an id beside the name. Everything that
+// decides *who* something belongs to goes through here, preferring the id and
+// falling back to the name so rows written before the backfill keep working.
+function rcRefMatches(recordId: unknown, recordName: unknown, person: RcAuthInfo): boolean {
+  const id = asText(recordId);
+  if (id) return id === person.rcId;
+  const name = normalizeName(recordName);
+  return Boolean(name) && name === normalizeName(person.name);
+}
+
+// True when either half says the game is taken — an id without a name, or a
+// name without an id, both mean somebody holds it.
+function rcRefPresent(recordId: unknown, recordName: unknown): boolean {
+  return Boolean(asText(recordId) || normalizeName(recordName));
+}
+
+// Non-throwing counterpart to resolveRefereeCoachPersonId, for filling in the
+// id beside a name that arrived as a name (an admin assigning on someone's
+// behalf). Reads the cached roster, so it costs nothing in the common case.
+async function rcIdForName(rcName: unknown): Promise<string> {
+  const key = normalizeName(rcName);
+  if (!key) return '';
+  try {
+    return (await getActiveRcPeople()).find((p) => normalizeName(p.fullName) === key)?.id ?? '';
+  } catch { return ''; }
+}
+
 async function resolveRefereeCoachPersonId(rcName: string): Promise<string> {
   const normalizedInput = normalizeName(rcName);
   if (!normalizedInput) {
@@ -2070,7 +2101,7 @@ async function getEligibleGames() {
       return await withCollection(collectionCandidates.games, (collection) =>
         collection.getFullList<AnyRecord>({
           sort: '-match_date',
-          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result,maps_url',
+          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result,maps_url',
         }),
       );
     } catch (error) {
@@ -3650,7 +3681,7 @@ async function deletePresidentNote(feedbackId: string): Promise<void> {
 function ownsFeedback(req: Request, record: AnyRecord): boolean {
   const rcAuth = rcAuthByReq.get(req);
   if (!rcAuth) return true;
-  return normalizeName(record.rc_name) === normalizeName(rcAuth.name);
+  return rcRefMatches(record.rc_id, record.rc_name, rcAuth);
 }
 
 // Who the session actually is, even when it is an admin one. requireRcSession
@@ -3674,7 +3705,7 @@ async function sessionRcIdentity(req: Request): Promise<RcAuthInfo | null> {
 async function mayReadPresidentNote(req: Request, record: AnyRecord): Promise<boolean> {
   if (await isSurveyReader(req)) return true;
   const me = await sessionRcIdentity(req);
-  return Boolean(me && normalizeName(record.rc_name) === normalizeName(me.name));
+  return Boolean(me && rcRefMatches(record.rc_id, record.rc_name, me));
 }
 
 async function getFeedbackForNote(id: string): Promise<AnyRecord> {
@@ -3837,7 +3868,7 @@ app.get('/api/admin/games/manual', requireAdminSession, async (req: Request, res
     const manual = await getManualGameIds();
     const all = await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
       sort: '-match_date',
-      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc',
+      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id',
     }));
     const hit = (g: AnyRecord) => {
       if (manual.has(g.id)) return true;
@@ -3920,30 +3951,39 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
     // free and the second write would quietly displace the first.
     const outcome = await withGameLock(gameId, async () => {
       let rcName = requestedRc;
+      // Written beside the name so ownership stops depending on the spelling.
+      let rcId = '';
       if (rcAuth) {
         // Non-admin RCs may only take games for themselves, and only give back
         // games they currently hold. Admin sessions have no rcAuth and skip this.
         const current = await withCollection(collectionCandidates.games, (collection) =>
           collection.getOne<AnyRecord>(gameId),
         );
-        const currentRc = normalizeName(current.assigned_rc);
-        const self = normalizeName(rcAuth.name);
+        const heldByMe = rcRefMatches(current.assigned_rc_id, current.assigned_rc, rcAuth);
+        const held = rcRefPresent(current.assigned_rc_id, current.assigned_rc);
         if (rcName === '') {
-          if (currentRc && currentRc !== self) {
+          if (held && !heldByMe) {
             return { status: 403, body: { error: 'Nur eigene Spiele können abgegeben werden.' } };
           }
         } else {
-          if (normalizeName(rcName) !== self) {
+          if (normalizeName(rcName) !== normalizeName(rcAuth.name)) {
             return { status: 403, body: { error: 'Spiele können nur für dich selbst übernommen werden.' } };
           }
-          if (currentRc && currentRc !== self) {
+          if (held && !heldByMe) {
             return { status: 409, body: { error: 'Dieses Spiel wurde bereits von einem anderen RC übernommen.' } };
           }
           rcName = rcAuth.name; // write the canonical name from the RC record
+          rcId = rcAuth.rcId;
         }
+      } else if (rcName !== '') {
+        // Admin assigning on someone's behalf: resolve the name they picked to
+        // an id, so the row is id-backed however it was created.
+        rcId = await rcIdForName(rcName);
       }
       const updated = await withCollection(collectionCandidates.games, (collection) =>
-        collection.update(gameId, { assigned_rc: rcName }),
+        // Giving a game back clears both halves; leaving a stale id behind would
+        // keep the game "held" by someone whose name is already gone.
+        collection.update(gameId, { assigned_rc: rcName, assigned_rc_id: rcName === '' ? '' : rcId }),
       );
       // Both sides of a handover change: clearing the lot beats working out who
       // the previous holder was, and the map holds one entry per RC.
@@ -3984,21 +4024,24 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date',
-        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game',
+        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game',
       }),
     );
     // 3. All feedback records
     const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
       collection.getFullList<AnyRecord>({
-        fields: 'id,rc_name,game,submitted_at',
+        fields: 'id,rc_name,rc_id,game,submitted_at',
       }),
     );
 
     const now = new Date();
-    // Build set of game IDs that have feedback, keyed by normalized rc_name
+    // Game ids that already have feedback, bucketed by whichever identity the
+    // row carries: its rc_id once backfilled, its normalised name before that.
+    // Each RC below reads both buckets, so a half-migrated table still counts
+    // every feedback exactly once.
     const feedbackGameIdsByRc = new Map<string, Set<string>>();
     for (const fb of allFeedbacks) {
-      const rcKey = normalizeName(fb.rc_name);
+      const rcKey = asText(fb.rc_id) || normalizeName(fb.rc_name);
       if (!rcKey) continue;
       if (!feedbackGameIdsByRc.has(rcKey)) feedbackGameIdsByRc.set(rcKey, new Set());
       feedbackGameIdsByRc.get(rcKey)!.add(String(fb.game || ''));
@@ -4007,15 +4050,18 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
     const result = people.map((p) => {
       const fullName = `${asText(p.first_name)} ${asText(p.last_name)}`.trim();
       const rcKey = normalizeName(fullName);
-      const fbGameIds = feedbackGameIdsByRc.get(rcKey) ?? new Set<string>();
+      const self: RcAuthInfo = { rcId: String(p.id), name: fullName };
+      const fbGameIds = new Set<string>([
+        ...(feedbackGameIdsByRc.get(String(p.id)) ?? []),
+        ...(feedbackGameIdsByRc.get(rcKey) ?? []),
+      ]);
 
       let done = 0;
       let outstanding = 0;
       let planned = 0;
 
       for (const game of allGames) {
-        const assignedRc = normalizeName(game.assigned_rc);
-        if (assignedRc !== rcKey) continue;
+        if (!rcRefMatches(game.assigned_rc_id, game.assigned_rc, self)) continue;
         if (inSeason && !inSeason(asText(game.match_date))) continue;
         const gameDate = new Date(asText(game.match_date));
         const hasFeedback = fbGameIds.has(game.id);
@@ -4048,16 +4094,24 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
     const rcName = rcAuth ? rcAuth.name : decodeURIComponent(String(req.params.rcName));
     const rcKey = normalizeName(rcName);
     const inSeason = seasonDateFilter(req.query.season);
+    // Who this page is about, as an identity. For a plain RC it is the session;
+    // for an admin reading someone's detail it is whoever that name resolves to.
+    // Rows carrying an id are matched on it, so a rename — or a second coach
+    // whose name folds to the same string — no longer moves games between pages.
+    const subject: RcAuthInfo | null = rcAuth
+      ?? (await rcIdForName(rcName).then((id) => (id ? { rcId: id, name: rcName } : null)));
+    const isSubject = (recId: unknown, recName: unknown) =>
+      subject ? rcRefMatches(recId, recName, subject) : normalizeName(recName) === rcKey;
 
     // Fetch all games assigned to this RC
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date',
-        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,feedback_closed_roles,is_rd_game,is_ld_game',
+        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game',
       }),
     );
     const rcGames = allGames.filter((g) =>
-      normalizeName(g.assigned_rc) === rcKey && (!inSeason || inSeason(asText(g.match_date))));
+      isSubject(g.assigned_rc_id, g.assigned_rc) && (!inSeason || inSeason(asText(g.match_date))));
 
     // Fetch feedbacks for this RC
     const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -4066,7 +4120,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
         expand: 'game,coachee',
       }),
     );
-    const rcFeedbacks = allFeedbacks.filter((fb) => normalizeName(fb.rc_name) === rcKey);
+    const rcFeedbacks = allFeedbacks.filter((fb) => isSubject(fb.rc_id, fb.rc_name));
 
     // Build feedback game IDs set
     const feedbackGameIds = new Set(rcFeedbacks.map((fb) => String(fb.game || '')));
@@ -4336,7 +4390,7 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
       collection.getFullList<AnyRecord>({
         sort: '-match_date,-created',
         filter: nameFilterParts.join(' || '),
-        fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge,assigned_rc,feedback_closed_roles,game_result,maps_url',
+        fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge,assigned_rc,assigned_rc_id,feedback_closed_roles,game_result,maps_url',
       }),
     );
 
@@ -4800,9 +4854,8 @@ type CalendarFeedGame = {
   updated: string;
 };
 
-async function getGamesAssignedToRc(rcName: string): Promise<CalendarFeedGame[]> {
-  const key = normalizeName(rcName);
-  if (!key) return [];
+async function getGamesAssignedToRc(subject: RcAuthInfo): Promise<CalendarFeedGame[]> {
+  if (!subject.rcId && !normalizeName(subject.name)) return [];
   await ensureAdminAuth();
   // Same shape as the other game reads: one full list, filtered in memory, so
   // PocketBase never sees a URI-length or rate-limit problem.
@@ -4811,7 +4864,7 @@ async function getGamesAssignedToRc(rcName: string): Promise<CalendarFeedGame[]>
       return await withCollection(collectionCandidates.games, (collection) =>
         collection.getFullList<AnyRecord>({
           sort: 'match_date',
-          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,game_result,updated',
+          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id,game_result,updated',
         }),
       );
     } catch (error) {
@@ -4824,7 +4877,7 @@ async function getGamesAssignedToRc(rcName: string): Promise<CalendarFeedGame[]>
   })();
 
   return allGames
-    .filter((game) => normalizeName(game.assigned_rc) === key)
+    .filter((game) => rcRefMatches(game.assigned_rc_id, game.assigned_rc, subject))
     .map((game) => ({
       id: String(game.id),
       matchNo: asText(game.match_no),
@@ -4916,7 +4969,7 @@ const icalGamesCache = new Map<string, { games: CalendarFeedGame[]; expiresAt: n
 async function getCachedGamesForRc(person: ActiveRcPerson): Promise<CalendarFeedGame[]> {
   const cached = icalGamesCache.get(person.id);
   if (cached && cached.expiresAt > Date.now()) return cached.games;
-  const games = await getGamesAssignedToRc(person.fullName);
+  const games = await getGamesAssignedToRc({ rcId: person.id, name: person.fullName });
   icalGamesCache.set(person.id, { games, expiresAt: Date.now() + ICAL_CACHE_TTL_MS });
   return games;
 }
@@ -5158,12 +5211,11 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     // already assigned to them — not one another RC has taken. This mirrors the
     // take/give-back allocation model and prevents locking out the rightful RC
     // (a submit closes the role) or emailing the coachee under a wrong RC.
-    if (rcAuth) {
-      const assigned = normalizeName(game.assigned_rc);
-      if (assigned && assigned !== normalizeName(rcAuth.name)) {
-        res.status(403).json({ error: 'Dieses Spiel ist einem anderen RC zugewiesen.' });
-        return;
-      }
+    if (rcAuth
+      && rcRefPresent(game.assigned_rc_id, game.assigned_rc)
+      && !rcRefMatches(game.assigned_rc_id, game.assigned_rc, rcAuth)) {
+      res.status(403).json({ error: 'Dieses Spiel ist einem anderen RC zugewiesen.' });
+      return;
     }
 
     const closedRoles: string[] = Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [];
@@ -5241,6 +5293,9 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         game: game.id,
         coachee: coachee.id,
         rc_name: asText(formData.meta?.rc),
+        // Same identity the observation is linked to, one line up: the session's
+        // own id for an RC submit, the resolved name for an admin's.
+        rc_id: refereeCoachPersonId,
         role_assessed: String(role),
         feedback_json: formData,
         submitted_at: submittedAt,
@@ -5487,6 +5542,51 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
 });
 
 // One-time migration: extract line judge names from source_payload, then clear it
+// One-time backfill: fill assigned_rc_id / rc_id on rows written while the RC
+// was identified by display name alone. Idempotent and safe to re-run — it only
+// ever fills a blank id, never rewrites one, and never touches the names. Rows
+// whose name matches no active RC are reported as `unresolved` and left as they
+// are: the name fallback still serves them, and guessing would be worse.
+app.post('/api/admin/migrate-rc-ids', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const people = await getActiveRcPeople();
+    const idByName = new Map<string, string>();
+    for (const p of people) {
+      const key = normalizeName(p.fullName);
+      // A name shared by two active RCs is exactly the ambiguity the id exists
+      // to remove — refuse to guess which one owns the row.
+      if (key) idByName.set(key, idByName.has(key) ? '' : p.id);
+    }
+
+    const backfill = async (
+      collection: string[],
+      idField: 'assigned_rc_id' | 'rc_id',
+      nameField: 'assigned_rc' | 'rc_name',
+    ) => {
+      const rows = await withCollection(collection, (c) =>
+        c.getFullList<AnyRecord>({ fields: `id,${idField},${nameField}` }));
+      let filled = 0, already = 0, unresolved = 0, blank = 0;
+      for (const row of rows) {
+        if (asText(row[idField])) { already++; continue; }
+        const key = normalizeName(row[nameField]);
+        if (!key) { blank++; continue; }
+        const resolved = idByName.get(key);
+        if (!resolved) { unresolved++; continue; }
+        await withCollection(collection, (c) => c.update(row.id, { [idField]: resolved }));
+        filled++;
+      }
+      return { total: rows.length, filled, already, unresolved, blank };
+    };
+
+    const games = await backfill(collectionCandidates.games, 'assigned_rc_id', 'assigned_rc');
+    const feedbacks = await backfill(collectionCandidates.refereeCoaches, 'rc_id', 'rc_name');
+    // The calendar feed caches per RC and is now filtered by id.
+    icalGamesCache.clear();
+    res.json({ ok: true, games, feedbacks });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
 app.post('/api/admin/migrate-source-payload', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
@@ -5608,9 +5708,15 @@ async function buildDueReminders(): Promise<ReminderPlan[]> {
   const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
   const plans: ReminderPlan[] = [];
   for (const game of games) {
-    const rcName = asText(game.assigned_rc);
-    if (!rcName) continue; // only games an RC has actually taken
-    const rcEmail = singleAddress(people.find((p) => normalizeName(p.fullName) === normalizeName(rcName))?.email);
+    if (!rcRefPresent(game.assigned_rc_id, game.assigned_rc)) continue; // only games an RC has taken
+    // The id names the coach; the stored name is only what the mail prints, and
+    // after a rename the two disagree until the next sync.
+    const assignedId = asText(game.assigned_rc_id);
+    const holder = assignedId
+      ? people.find((p) => p.id === assignedId)
+      : people.find((p) => normalizeName(p.fullName) === normalizeName(game.assigned_rc));
+    const rcName = holder?.fullName || asText(game.assigned_rc);
+    const rcEmail = singleAddress(holder?.email);
     for (const [roleLabel, refField] of [['1. SR', 'first_referee'], ['2. SR', 'second_referee']] as const) {
       const refereeName = asText(game[refField]);
       if (!refereeName) continue;

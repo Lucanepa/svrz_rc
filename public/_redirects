@@ -1,0 +1,6 @@
+# Cloudflare Pages redirects. Copied verbatim into dist/ by Vite.
+
+# The app used to live under the /svrz_rc/ subpath on GitHub Pages. Anyone who
+# pastes an old link with the new host keeps working instead of hitting a 404.
+# The #hash (survey and sign tokens live there) is preserved by the browser.
+/svrz_rc/*  /:splat  301

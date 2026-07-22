@@ -9,9 +9,12 @@ const buildSha = (() => {
   try { return execSync('git rev-parse --short HEAD').toString().trim(); } catch { return 'dev'; }
 })();
 
-export default defineConfig(({mode}) => {
+export default defineConfig(() => {
   return {
-    base: mode === 'production' ? '/svrz_rc/' : '/',
+    // Root, in every mode. The old `/svrz_rc/` subpath existed only because
+    // GitHub Pages served this as a project page; on its own domain the app
+    // owns the root, and dev/prod no longer disagree about where assets live.
+    base: '/',
     plugins: [
       react(), 
       tailwindcss(),

@@ -68,7 +68,7 @@ const MAIL_FROM = {
   name: process.env.SMTP_FROM_NAME || 'SVRZ Referee Coaching',
   address: process.env.SMTP_FROM || 'rc_coaching@volleyball.lucanepa.com',
 };
-const MAIL_APP_URL = process.env.APP_PUBLIC_URL || 'https://lucanepa.github.io/svrz_rc/';
+const MAIL_APP_URL = process.env.APP_PUBLIC_URL || 'https://svrz-rc.openvolley.app/';
 
 process.on('unhandledRejection', (reason) => {
   log.error('process.unhandledRejection', 'Unhandled promise rejection', { error: reason });
@@ -86,11 +86,24 @@ const port = Number(process.env.PORT || 8787);
 // not every upstream — so client-supplied X-Forwarded-For cannot be trusted blindly.
 app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false, crossOriginEmbedderPolicy: false, crossOriginOpenerPolicy: false }));
-// Default is the live Pages origin. It used to be the Codeberg one, which was
-// retired — a fallback pointing at a dead domain rejects the real frontend and
-// surfaces in the browser as a bare "Failed to fetch" with no status.
-const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || 'https://lucanepa.github.io')
+// Default is the live frontend origin. It has now pointed at a dead domain
+// twice (Codeberg, then GitHub Pages) — a stale fallback rejects the real
+// frontend and surfaces in the browser as a bare "Failed to fetch" with no
+// status, so keep this in step with wherever the app is actually served.
+const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || 'https://svrz-rc.openvolley.app')
   .split(',').map((o) => o.trim()).filter(Boolean);
+// Once the app (svrz-rc.openvolley.app) and this API (svrz-rc-api.openvolley.app)
+// share a registrable domain, the session cookies stop being third-party and can
+// go back to SameSite=Lax — which is the whole fix for Safari/WebKit silently
+// dropping them and bouncing a correct PIN back to the login screen.
+//
+// It is an env knob rather than a constant because the code ships before the DNS
+// and Tunnel cutover: while the browser is still talking to a different site,
+// only 'none' works. Flip to 'lax' in svrz-api.env once the new API hostname is
+// live, and never before — 'lax' against a cross-site API logs everyone out.
+const SESSION_SAMESITE: 'lax' | 'none' =
+  process.env.SESSION_COOKIE_SAMESITE === 'lax' ? 'lax' : 'none';
+
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
@@ -541,7 +554,7 @@ function getCookieValue(req: Request, cookieName: string): string {
 function clearAdminSessionCookie(res: ExpressResponse) {
   res.cookie(ADMIN_SESSION_COOKIE, '', {
     httpOnly: true,
-    sameSite: 'none',
+    sameSite: SESSION_SAMESITE,
     secure: true,
     maxAge: 0,
     path: '/',
@@ -551,7 +564,7 @@ function clearAdminSessionCookie(res: ExpressResponse) {
 function setAdminSessionCookie(res: ExpressResponse, token: string) {
   res.cookie(ADMIN_SESSION_COOKIE, token, {
     httpOnly: true,
-    sameSite: 'none',
+    sameSite: SESSION_SAMESITE,
     secure: true,
     maxAge: ADMIN_SESSION_TTL_MS,
     path: '/',
@@ -3126,7 +3139,7 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     log.info('auth.login', 'ok', { email, rcId: match.id, name }, ctx);
     res.cookie(RC_COOKIE, createRcSessionToken(match.id, name, pinFingerprint(asText(match.pin_hash))), {
       httpOnly: true,
-      sameSite: 'none',
+      sameSite: SESSION_SAMESITE,
       secure: true,
       maxAge: RC_TTL_MS,
       path: '/',
@@ -3141,7 +3154,7 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
 app.post('/api/auth/rc/logout', (_req: Request, res: ExpressResponse) => {
   res.cookie(RC_COOKIE, '', {
     httpOnly: true,
-    sameSite: 'none',
+    sameSite: SESSION_SAMESITE,
     secure: true,
     maxAge: 0,
     path: '/',

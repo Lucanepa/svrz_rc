@@ -1,15 +1,12 @@
-name: Build and deploy to GitHub Pages
+name: Build and deploy to Cloudflare Pages
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# Allow the workflow to publish to GitHub Pages
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One concurrent deploy; cancel superseded runs
 concurrency:
@@ -42,9 +39,12 @@ jobs:
           path: playwright-report
           retention-days: 7
 
-  build:
+  deploy:
     needs: check
     runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://svrz-rc.openvolley.app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -56,21 +56,15 @@ jobs:
         run: npm run build
         env:
           # Public API origin (Hetzner backend behind Cloudflare Tunnel).
-          # The static site is served from a different origin, so it must call the API absolutely.
-          VITE_API_BASE_URL: https://rc-api.lucanepa.com
-      - uses: actions/configure-pages@v5
-        with:
-          enablement: true
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          # The static site is served from a different origin, so it must call
+          # the API absolutely. Same registrable domain as the app on purpose —
+          # that is what keeps the session cookie first-party (see
+          # infrastructure.md, "Session cookies").
+          VITE_API_BASE_URL: https://svrz-rc-api.openvolley.app
+      - name: Publish to Cloudflare Pages
+        # Wrangler is pinned in package-lock, so the deploy tool cannot change
+        # under us between runs. Project + output dir come from wrangler.jsonc.
+        run: npx wrangler pages deploy dist --branch=main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -37,7 +37,7 @@ there is no public ingress IP, reverse proxy, or open port to document here.
 
 - Host / SSH target, tunnel name, and any private IPs: see `infrastructure.private.md` (gitignored).
 - Deployment manifests: `deploy/hetzner/` (`docker-compose.yml`, Dockerfiles, env example).
-- Public API domain: `https://rc-api.lucanepa.com` (Cloudflare Tunnel → API container on `127.0.0.1:8787`).
+- Public API domain: `https://svrz-rc-api.openvolley.app` (Cloudflare Tunnel → API container on `127.0.0.1:8787`). The former `rc-api.lucanepa.com` hostname stays routed to the same container during the migration; see `docs/cloudflare-migration.md` for when to remove it.
 - PocketBase is **not** publicly exposed: it listens only on the internal Docker network and is reached by the API container at `http://pocketbase:8090`. Admin UI (`/_/`) is private — access it via an SSH/port-forward to the host, never over the internet.
 
 Important: set `POCKETBASE_URL` to the internal service URL (e.g. `http://pocketbase:8090`), without `/_/`.
@@ -49,7 +49,7 @@ Both services run via Docker Compose (`deploy/hetzner/docker-compose.yml`):
 - `pocketbase` — built from `Dockerfile.pocketbase`, data persisted in `./pb_data`, reachable only on the internal `svrz` Docker network as `pocketbase:8090`.
 - `svrz-api` — built from `Dockerfile.api`, published on `127.0.0.1:8787` for the Cloudflare Tunnel to route. Reads secrets from `deploy/hetzner/svrz-api.env` (gitignored).
 
-Public ingress is the external Cloudflare Tunnel (`rc-api.lucanepa.com` → `http://localhost:8787`); there is no Nginx/Certbot on the host.
+Public ingress is the external Cloudflare Tunnel (`svrz-rc-api.openvolley.app` → `http://localhost:8787`); there is no Nginx/Certbot on the host. The tunnel is **dashboard-managed** (Zero Trust → Networks → Tunnels → Public Hostnames) — editing `/etc/cloudflared/config.yml` on the host changes nothing.
 
 Useful commands (run from `deploy/hetzner/` on the host):
 
@@ -378,27 +378,46 @@ Game sync uses Swiss Volley public data with authenticated access. For detailed 
 ## Frontend Hosting / API Routing Notes
 
 - Local dev: frontend uses relative `/api/*` and Vite proxy.
-- Static hosting (GitHub Pages): set `VITE_API_BASE_URL` to absolute API origin.
-- Current production API origin: `https://rc-api.lucanepa.com`
-- Vite base in production is `/svrz_rc/`, so assets are generated for that subpath.
+- Static hosting: set `VITE_API_BASE_URL` to the absolute API origin.
+- Production app origin: `https://svrz-rc.openvolley.app` (Cloudflare Pages).
+- Production API origin: `https://svrz-rc-api.openvolley.app` (Cloudflare Tunnel).
+- Vite base is `/` in every mode — the app owns the root of its own domain, so
+  dev and prod no longer disagree about where assets live.
 
-Deployment is GitHub Actions → GitHub Pages (`.github/workflows/deploy.yml`);
-the Codeberg/Woodpecker setup was retired in June 2026. The workflow type-checks
-and runs the Playwright suite before it builds, and hard-codes
-`VITE_API_BASE_URL=https://rc-api.lucanepa.com` for the production build.
+Deployment is GitHub Actions → Cloudflare Pages (`.github/workflows/deploy.yml`);
+GitHub Pages was retired in July 2026 and Codeberg/Woodpecker before it in June.
+The workflow type-checks and runs the Playwright suite before it builds, then
+publishes with `npx wrangler pages deploy` (project and output dir come from
+`wrangler.jsonc`; auth from the `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`
+repo secrets). `public/_headers` and `public/_redirects` ship with the build.
 
-## Session cookies (known constraint)
+Both hostnames are exactly one label under `openvolley.app` on purpose.
+Cloudflare's Universal SSL wildcard covers `*.openvolley.app` and nothing
+deeper, so a two-level name like `api.svrz-rc.openvolley.app` would have no edge
+certificate — the same trap that killed `rc-api.volleyball.lucanepa.com`. And
+because `.app` is HSTS-preloaded, there is no HTTP fallback to limp along on.
+For the same reason the hostname uses a hyphen: underscores are forbidden in
+certificate SANs, so `svrz_rc.openvolley.app` could never have been issued one.
 
-The app is served from `lucanepa.github.io` and the API from
-`rc-api.lucanepa.com` — different sites, so the RC session cookie must be
-`SameSite=None; Secure` and is a **third-party** cookie to the browser. Safari
-and other WebKit browsers block those by default, so an affected user can enter
-the right password and still land back on the login screen. The login screen now
-says so instead of leaving them guessing.
+The retired `lucanepa.github.io/svrz_rc/` still publishes `legacy/` via
+`.github/workflows/legacy-pages.yml` — a redirect page and a replacement
+service worker that clears the old precache and unregisters itself. See
+`legacy/README.md`.
 
-The real fix is to make the two same-site: serve the API from a subdomain of
-whatever host serves the app (or reverse-proxy `/api` under it) and drop the
-cookie back to `SameSite=Lax`. That is a DNS/hosting change, not a code one.
+## Session cookies
+
+The app (`svrz-rc.openvolley.app`) and the API (`svrz-rc-api.openvolley.app`)
+share the registrable domain `openvolley.app`, so they are **same-site** even
+though they are different origins. The session cookies are therefore first-party
+and can be `SameSite=Lax; Secure`, which is what makes login work in Safari and
+other WebKit browsers — they block third-party cookies by default, and under the
+old split (`lucanepa.github.io` app + `rc-api.lucanepa.com` API) that silently
+bounced a correct PIN back to the login screen.
+
+`SESSION_COOKIE_SAMESITE` in `svrz-api.env` selects the mode (`none` by default,
+`lax` after cutover). It is an env knob because the code ships before the DNS and
+Tunnel change: `lax` against a cross-site API logs everyone out. Cross-origin
+still means CORS applies — `CORS_ALLOWED_ORIGINS` must list the app origin.
 
 ## Backups
 

@@ -8,9 +8,13 @@ report as a PDF by e-mail.
 ## Deploy
 
 Pushing to `main` runs `.github/workflows/deploy.yml`: type check → Playwright
-suite → production build → GitHub Pages at
-<https://lucanepa.github.io/svrz_rc/>. The build bakes in
-`VITE_API_BASE_URL=https://rc-api.lucanepa.com`.
+suite → production build → Cloudflare Pages at
+<https://svrz-rc.openvolley.app>. The build bakes in
+`VITE_API_BASE_URL=https://svrz-rc-api.openvolley.app`.
+
+The retired GitHub Pages URL still serves `legacy/` (a redirect plus a
+service-worker kill switch) so already-installed PWAs are moved rather than
+stranded on a dead build — see `legacy/README.md` and `docs/cloudflare-migration.md`.
 
 The backend (Express + PocketBase, behind a Cloudflare Tunnel) runs on Hetzner
 from `deploy/hetzner/docker-compose.yml`. See `infrastructure.md` for the host

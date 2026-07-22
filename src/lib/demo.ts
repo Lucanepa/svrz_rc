@@ -64,7 +64,7 @@ const MAIL_FROM = 'SVRZ Referee Coaching <rc_coaching@volleyball.lucanepa.com>';
 const COACHING_MAILBOX = 'rc_coaching@volleyball.lucanepa.com'; // real FEEDBACK_CC → BCC
 // Shaped like the real post-visit survey link but with a token that was never
 // minted — the demo shows the mail, it doesn't hand out a live form.
-const SURVEY_URL = 'https://lucanepa.github.io/svrz_rc/#/survey/demo0000000000000000000000000000';
+const SURVEY_URL = 'https://svrz-rc.openvolley.app/#/survey/demo0000000000000000000000000000';
 
 // Sample "Tipps & Tricks" — the free-text block an RC writes for the coachee.
 // Pre-filled in the demo so the section (and the part of the feedback mail that

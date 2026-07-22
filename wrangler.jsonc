@@ -1,0 +1,8 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Cloudflare Pages project backing https://svrz-rc.openvolley.app.
+  // Static only — there are no Pages Functions, so no bindings or Worker entry.
+  "name": "svrz-rc",
+  "compatibility_date": "2026-07-22",
+  "pages_build_output_dir": "dist"
+}

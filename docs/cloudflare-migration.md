@@ -120,12 +120,34 @@ so that hostname has to answer before the frontend ships.
 ## Phase 2 — the frontend
 
 1. Push `main`. The workflow type-checks, runs Playwright, builds, and publishes
-   to the `svrz-rc` Pages project. It will also publish `legacy/` to the old
-   GitHub Pages URL (separate workflow, triggered by the new `legacy/` files).
+   to the `svrz-rc` Pages project.
+
+   **Push the app commit and the `legacy/` commit separately, and get the custom
+   domain serving 200 in between.** A single push containing `legacy/**` fires
+   `legacy-pages.yml` too, and that workflow finishes in ~15s — far sooner than a
+   newly attached custom domain becomes reachable. The old URL then starts
+   forwarding coaches to a hostname that does not resolve yet, *and* the kill
+   switch has already cleared their PWA cache, so there is nothing to fall back
+   to. This happened during the real migration on 2026-07-22: the window was a
+   few minutes, closed by adding the missing DNS record.
+
+   The safe order is: custom domain attached → `curl` returns 200 → only then
+   push the kill switch.
 
 2. Attach the custom domain: Pages project **svrz-rc → Custom domains → Set up a
-   custom domain** → `svrz-rc.openvolley.app`. Cloudflare creates the CNAME and
-   issues the certificate; it is usually live in under a minute.
+   custom domain** → `svrz-rc.openvolley.app`.
+
+   **Use the dashboard, not the API.** `POST /pages/projects/:name/domains`
+   registers the domain with the project but does **not** create the DNS record,
+   and the resulting state is indistinguishable from a slow certificate: the
+   domain sits at `status: pending` forever with no explanation. The dashboard
+   flow creates the `CNAME svrz-rc → svrz-rc.pages.dev` (proxied) for you. Doing
+   it by API means creating that record yourself, which needs a **Zone → DNS →
+   Edit** token — a Pages:Edit token cannot even read the zone.
+
+   Expect a minute or two of `522` after the record appears while Cloudflare
+   wires the hostname to the project. That is normal and clears on its own; the
+   same delay shows up right after a fresh `pages deploy` on `*.pages.dev`.
 
 3. Verify in a **fresh private window** (the old origin's service worker must not
    be involved):

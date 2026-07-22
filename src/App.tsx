@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Maximize2, Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil } from 'lucide-react';
+import { Maximize2, Download, FileJson, Loader2, RefreshCw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
@@ -28,6 +28,8 @@ import {
   startSignature,
   getSignatureSession,
   submitSignatureSession,
+  getPresidentNote,
+  savePresidentNote,
   getIcalSubscription,
   type IcalSubscription,
 } from './lib/pocketbase';
@@ -985,13 +987,24 @@ export default function App() {
   const [sigModalOpen, setSigModalOpen] = useState(false);
   const [sigSlug, setSigSlug] = useState('');
   const [sigError, setSigError] = useState('');
+  // Which of the two signatures the open modal is collecting. The referee signs
+  // to acknowledge the discussion, the coach for what the form says; both use
+  // the same pad and the same QR hand-off to a phone.
+  const [sigTarget, setSigTarget] = useState<'referee' | 'rc'>('referee');
   const sigPadRef = useRef<SignaturePadHandle>(null);
-  const updateSignature = (data: string) => setFormData(prev => ({ ...prev, signature: data }));
-  const openSignatureModal = async () => {
+  const sigSignerName = (target: 'referee' | 'rc') =>
+    target === 'rc' ? (formData.meta.rc || '') : formData.meta.srName;
+  const updateSignature = (data: string, target: 'referee' | 'rc' = sigTarget) =>
+    setFormData(prev => (target === 'rc' ? { ...prev, rcSignature: data } : { ...prev, signature: data }));
+  const openSignatureModal = async (target: 'referee' | 'rc') => {
+    setSigTarget(target);
     setSigModalOpen(true); setSigSlug(''); setSigError('');
     try {
-      const context = [formData.meta.mannschaften, formData.meta.liga, `${formData.role} ${formData.meta.srName}`.trim()].filter(Boolean).join(' · ');
-      const started = await startSignature(context, formData.meta.srName);
+      const who = target === 'rc'
+        ? `${formData.lang === 'DE' ? 'Referee Coach' : 'Referee Coach'} ${sigSignerName('rc')}`.trim()
+        : `${formData.role} ${formData.meta.srName}`.trim();
+      const context = [formData.meta.mannschaften, formData.meta.liga, who].filter(Boolean).join(' · ');
+      const started = await startSignature(context, sigSignerName(target));
       setSigSlug(started.slug);
     } catch { setSigError(formData.lang === 'DE' ? 'Konnte nicht gestartet werden.' : 'Could not start.'); }
   };
@@ -999,16 +1012,21 @@ export default function App() {
     if (!sigPadRef.current || sigPadRef.current.isEmpty()) return;
     const data = sigPadRef.current.toDataURL();
     updateSignature(data);
-    if (sigSlug) { try { await submitSignatureSession(sigSlug, data, formData.meta.srName); } catch { /* ignore */ } }
+    if (sigSlug) { try { await submitSignatureSession(sigSlug, data, sigSignerName(sigTarget)); } catch { /* ignore */ } }
     setSigModalOpen(false);
   };
   useEffect(() => {
     if (!sigModalOpen || !sigSlug) return;
     const id = setInterval(async () => {
-      try { const sess = await getSignatureSession(sigSlug); if (sess.signed && sess.data) { setFormData(prev => ({ ...prev, signature: sess.data })); setSigModalOpen(false); } } catch { /* ignore */ }
+      try {
+        const sess = await getSignatureSession(sigSlug);
+        // The phone that scanned the QR is signing for whichever party the modal
+        // was opened for, so the relayed image lands in that slot.
+        if (sess.signed && sess.data) { updateSignature(sess.data, sigTarget); setSigModalOpen(false); }
+      } catch { /* ignore */ }
     }, 3000);
     return () => clearInterval(id);
-  }, [sigModalOpen, sigSlug]);
+  }, [sigModalOpen, sigSlug, sigTarget]);
   const [downloadingEmptyForm, setDownloadingEmptyForm] = useState(false);
   const [manualUploadCoachee, setManualUploadCoachee] = useState<Coachee | null>(null);
   const [manualUploadSubmitting, setManualUploadSubmitting] = useState(false);
@@ -1437,6 +1455,9 @@ export default function App() {
     const isNewGame = game.id !== selectedGameId;
     setSelectedGameId(game.id);
     setFeedbackLocked(false);
+    // A game picked from the list is a form to fill, not a filed record — any
+    // note editor belonging to a previously opened observation goes away.
+    setOpenFeedbackId(null);
     setFeedbackSubView('feedbackForm');
 
     // Reset dual form storage; a different game must not inherit the previous
@@ -1546,6 +1567,7 @@ export default function App() {
   };
 
   const openFeedbackRecord = (record: FeedbackRecord) => {
+    setOpenFeedbackId(record.id || null);
     const payload = record.feedback_json;
     if (payload) {
       setFormData(normalizeLoadedFeedback(payload));
@@ -1846,6 +1868,11 @@ export default function App() {
     };
     try {
       const result = await saveFeedbackToPocketBase(payload);
+      // The new record's id travels back so the sender can add a private note to
+      // the RC president straight away, without reopening the game to find it.
+      // Not in dual mode: two records are filed in one go and only one form is
+      // on screen, so a note box there would attach to whichever finished last.
+      if (!dualMode) setOpenFeedbackId(result.id || null);
       if (result.emailSent) {
         return result.emailWarning
           ? `${fd.role}: ${t.saveOkEmail} (${result.emailWarning})`
@@ -2021,6 +2048,45 @@ export default function App() {
   // that carries it — is visible without typing; empty in the real app.
   const [tipsAndTricks, setTipsAndTricks] = useState(demoTips);
   const [feedbackLocked, setFeedbackLocked] = useState(false);
+  // The filed feedback record currently on screen, if any. Set when an already
+  // submitted observation is reopened (or right after sending one), and it is
+  // what the private note to the RC president hangs off — the note belongs to a
+  // feedback that exists, not to a form still being filled in.
+  const [openFeedbackId, setOpenFeedbackId] = useState<string | null>(null);
+  const [presidentNote, setPresidentNote] = useState('');
+  const [presidentNoteLoaded, setPresidentNoteLoaded] = useState(false);
+  const [presidentNoteSaving, setPresidentNoteSaving] = useState(false);
+  const [presidentNoteSaved, setPresidentNoteSaved] = useState(false);
+  const [presidentNoteError, setPresidentNoteError] = useState('');
+
+  // Pull whatever note this observation already carries whenever one is opened,
+  // so reopening a game shows what was written last time instead of a blank box.
+  useEffect(() => {
+    setPresidentNote(''); setPresidentNoteSaved(false); setPresidentNoteError(''); setPresidentNoteLoaded(false);
+    if (!openFeedbackId) return;
+    let cancelled = false;
+    getPresidentNote(openFeedbackId)
+      .then(({ note }) => { if (!cancelled) { setPresidentNote(note || ''); setPresidentNoteLoaded(true); } })
+      // A note that cannot be read is not worth an error banner over the whole
+      // feedback — the box simply opens empty and can still be written.
+      .catch(() => { if (!cancelled) setPresidentNoteLoaded(true); });
+    return () => { cancelled = true; };
+  }, [openFeedbackId]);
+
+  const savePresidentNoteNow = async () => {
+    if (!openFeedbackId) return;
+    setPresidentNoteSaving(true); setPresidentNoteError(''); setPresidentNoteSaved(false);
+    try {
+      await savePresidentNote(openFeedbackId, presidentNote);
+      setPresidentNoteSaved(true);
+      setTimeout(() => setPresidentNoteSaved(false), 2500);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setPresidentNoteError(localizeRuntimeError(reason, formData.lang));
+    } finally {
+      setPresidentNoteSaving(false);
+    }
+  };
   // Demo mode: emails aren't sent, they're shown. This holds the captured
   // preview(s) and controls the preview modal (auto-opened after a demo submit).
   const [demoMail, setDemoMail] = useState<DemoEmail[]>([]);
@@ -2045,12 +2111,18 @@ export default function App() {
     // or impossible one (3:0 with a set the winner lost) has to stop the send.
     const resultError = validateResult(fd.meta.ergebnis, fd.lang);
     if (resultError) return resultError;
-    // The signature is the referee confirming the feedback was discussed with
-    // them; without it the PDF is just an unacknowledged assessment.
+    // Both signatures: the referee confirming the feedback was discussed with
+    // them, the coach standing behind what it says. Without either, the PDF is
+    // an unacknowledged assessment.
     if (!fd.signature) {
       return fd.lang === 'DE'
         ? 'Bitte die Unterschrift des Schiedsrichters einholen.'
         : 'Please capture the referee’s signature.';
+    }
+    if (!fd.rcSignature) {
+      return fd.lang === 'DE'
+        ? 'Bitte die Unterschrift des Referee Coach einholen.'
+        : 'Please capture the referee coach’s signature.';
     }
     return null;
   };
@@ -2113,6 +2185,7 @@ export default function App() {
       results: { ...INITIAL_DATA.results },
     }));
     setFeedbackLocked(false);
+    setOpenFeedbackId(null);
     setTipsAndTricks('');
     setDualFormData({ '1. SR': null, '2. SR': null });
     setShowConfirmModal(null);
@@ -4599,20 +4672,27 @@ export default function App() {
           ))}
         </div>
 
-        {/* Signature */}
-        <div className="border-x border-b border-stone-900 p-4 flex items-end gap-4">
-          <div className="flex-1 min-w-0">
-            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-2">{formData.lang === 'DE' ? 'Unterschrift Schiedsrichter' : 'Referee signature'}</h4>
-            {formData.signature ? (
-              <img src={formData.signature} alt="Signature" className="h-20 max-w-full object-contain" />
-            ) : (
-              <div className="h-14 border-b border-stone-400" />
-            )}
-          </div>
-          <div className="no-print flex flex-col gap-1.5 shrink-0">
-            <button type="button" onClick={openSignatureModal} className="h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700">{formData.lang === 'DE' ? 'Unterschrift einholen' : 'Capture signature'}</button>
-            {formData.signature && <button type="button" onClick={() => updateSignature('')} className="h-8 px-3 rounded-lg border border-stone-200 text-xs text-stone-500 hover:bg-stone-100">{formData.lang === 'DE' ? 'Entfernen' : 'Remove'}</button>}
-          </div>
+        {/* Signatures — referee and coach, side by side as they print. */}
+        <div className="border-x border-b border-stone-900 grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-stone-300">
+          {([
+            { target: 'referee' as const, image: formData.signature || '', label: formData.lang === 'DE' ? 'Unterschrift Schiedsrichter' : 'Referee signature' },
+            { target: 'rc' as const, image: formData.rcSignature || '', label: formData.lang === 'DE' ? 'Unterschrift Referee Coach' : 'Referee Coach signature' },
+          ]).map((sig) => (
+            <div key={sig.target} className="p-4 flex items-end gap-3 min-w-0">
+              <div className="flex-1 min-w-0">
+                <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-2">{sig.label}</h4>
+                {sig.image ? (
+                  <img src={sig.image} alt={sig.label} className="h-20 max-w-full object-contain" />
+                ) : (
+                  <div className="h-14 border-b border-stone-400" />
+                )}
+              </div>
+              <div className="no-print flex flex-col gap-1.5 shrink-0">
+                <button type="button" onClick={() => void openSignatureModal(sig.target)} className="h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700">{formData.lang === 'DE' ? 'Unterschreiben' : 'Sign'}</button>
+                {sig.image && <button type="button" onClick={() => updateSignature('', sig.target)} className="h-8 px-3 rounded-lg border border-stone-200 text-xs text-stone-500 hover:bg-stone-100">{formData.lang === 'DE' ? 'Entfernen' : 'Remove'}</button>}
+              </div>
+            </div>
+          ))}
         </div>
 
         <div className="mt-6 pt-4 border-t border-stone-100 text-[9px] text-right text-stone-400 italic">
@@ -4639,6 +4719,43 @@ export default function App() {
         />
       </div>
       </div>{/* end formDisabled wrapper */}
+
+      {/* Private note to the RC president. Deliberately outside the disabled
+          wrapper: the feedback it belongs to is already filed and read-only,
+          and this note is the one thing still writable on that screen. */}
+      {openFeedbackId && (
+        <div className="max-w-4xl mx-auto mt-6 bg-white p-6 shadow-xl border border-amber-200 no-print">
+          <h3 className="font-bold text-stone-800 mb-3 flex items-center gap-2">
+            <Lock size={16} className="text-amber-600" />
+            {formData.lang === 'DE' ? 'Vertrauliche Notiz an die RC-Vorsitzende' : 'Private note to the RC president'}
+          </h3>
+          <p className="text-xs text-stone-500 mb-3">
+            {formData.lang === 'DE'
+              ? 'Nur die RC-Vorsitzende sieht diese Notiz. Sie wird weder im Feedback gespeichert noch dem Schiedsrichter gesendet.'
+              : 'Only the RC president sees this note. It is not part of the feedback and is never sent to the referee.'}
+          </p>
+          <textarea
+            className="w-full min-h-[7rem] text-sm leading-relaxed resize-none outline-none bg-amber-50/40 border border-amber-200 rounded p-3 placeholder:text-stone-300"
+            placeholder={formData.lang === 'DE' ? 'Was die RC-Vorsitzende wissen sollte…' : 'What the RC president should know…'}
+            value={presidentNote}
+            disabled={!presidentNoteLoaded}
+            onChange={(e) => setPresidentNote(e.target.value)}
+          />
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void savePresidentNoteNow()}
+              disabled={presidentNoteSaving || !presidentNoteLoaded}
+              className="inline-flex items-center gap-2 h-9 px-4 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-700 disabled:opacity-50 transition-colors"
+            >
+              {presidentNoteSaving && <Loader2 size={14} className="animate-spin" />}
+              {formData.lang === 'DE' ? 'Notiz speichern' : 'Save note'}
+            </button>
+            {presidentNoteSaved && <span className="text-xs font-medium text-green-600">{formData.lang === 'DE' ? 'Gespeichert ✓' : 'Saved ✓'}</span>}
+            {presidentNoteError && <span className="text-xs font-medium text-red-600">{presidentNoteError}</span>}
+          </div>
+        </div>
+      )}
 
       {(feedbackLocked || isGameRoleClosed) && (
         <div className="max-w-4xl mx-auto mt-4 no-print">
@@ -4760,7 +4877,11 @@ export default function App() {
         <div onClick={() => setSigModalOpen(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
           <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-4 max-h-[85vh] overflow-y-auto">
             <div className="flex items-start justify-between mb-3">
-              <h3 className="text-base font-bold text-stone-900">{formData.lang === 'DE' ? 'Unterschrift' : 'Signature'}</h3>
+              <h3 className="text-base font-bold text-stone-900">
+                {sigTarget === 'rc'
+                  ? (formData.lang === 'DE' ? 'Unterschrift Referee Coach' : 'Referee Coach signature')
+                  : (formData.lang === 'DE' ? 'Unterschrift Schiedsrichter' : 'Referee signature')}
+              </h3>
               <button onClick={() => setSigModalOpen(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
             </div>
             {sigError ? (

@@ -436,6 +436,16 @@ export function getSettings(): Promise<{ default_season: number | null; test_mod
   return ok({ default_season: seasonStartYear(), test_mode: false, groups: ['RD', 'LD'], coachee_targets: {}, rc_mandates: {}, default_goal: null });
 }
 
+// The president's notes need a server to be private to anyone, so the demo
+// offers the box but keeps nothing: an empty note and a save that goes nowhere.
+export function getPresidentNote(): Promise<{ note: string }> {
+  return ok({ note: '' });
+}
+
+export function savePresidentNote(): Promise<void> {
+  return ok(undefined as void);
+}
+
 export function listCoachees(): Promise<Coachee[]> {
   return ok(store().coachees.map((c) => ({ ...c })));
 }

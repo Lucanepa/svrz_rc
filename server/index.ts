@@ -3281,6 +3281,111 @@ app.get('/api/survey-responses', requireSurveyReader, async (_req: Request, res:
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
+// ── Private notes to the RC president ─────────────────────────────────
+// A coach's word to the chair about a visit they have already filed: the
+// coachee's feedback is sent and closed, and this is what did NOT belong in it.
+//
+// Kept OUT of feedback_json on purpose. That object is what the PDF is drawn
+// from and what the coachee receives, so a note living in it would be one
+// refactor away from being mailed to the person it is about. Here it is a
+// separate app_settings map (same key/value store as coachee_targets and
+// rc_mandates — no schema change), keyed by the feedback record id and carrying
+// the game/coachee labels the president's list needs, so reading the list costs
+// one settings read instead of a join per row.
+const PRESIDENT_NOTES_KEY = 'president_notes';
+const PRESIDENT_NOTE_MAX = 5000;
+
+type PresidentNoteEntry = {
+  note: string; gameId: string; teams: string; league: string;
+  gameDate: string; coacheeName: string; rcName: string; updatedAt: string;
+};
+
+async function readPresidentNotes(): Promise<Record<string, PresidentNoteEntry>> {
+  const rec = await getSettingRecord(PRESIDENT_NOTES_KEY);
+  if (!rec) return {};
+  try {
+    const parsed = JSON.parse(asText(rec.value));
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      ? parsed as Record<string, PresidentNoteEntry>
+      : {};
+  } catch { return {}; }
+}
+
+// The coach who filed the feedback owns its note. rcAuthByReq is absent for
+// admin sessions (and admin-flagged RCs), which is what grants them access —
+// same convention as the submit endpoint's ownership check.
+function ownsFeedback(req: Request, record: AnyRecord): boolean {
+  const rcAuth = rcAuthByReq.get(req);
+  if (!rcAuth) return true;
+  return normalizeName(record.rc_name) === normalizeName(rcAuth.name);
+}
+
+async function getFeedbackForNote(id: string): Promise<AnyRecord> {
+  return withCollection(collectionCandidates.refereeCoaches, (c) =>
+    c.getOne<AnyRecord>(id, { expand: 'game,coachee' }));
+}
+
+app.get('/api/feedback/:id/president-note', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    let record: AnyRecord;
+    try { record = await getFeedbackForNote(String(req.params.id)); }
+    catch { res.status(404).json({ error: 'Feedback not found' }); return; }
+    // The author reads it back to edit it; the president reads anyone's.
+    if (!ownsFeedback(req, record) && !(await isSurveyReader(req))) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    const notes = await readPresidentNotes();
+    res.json({ note: notes[record.id]?.note ?? '' });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    let record: AnyRecord;
+    try { record = await getFeedbackForNote(String(req.params.id)); }
+    catch { res.status(404).json({ error: 'Feedback not found' }); return; }
+    if (!ownsFeedback(req, record)) { res.status(403).json({ error: 'Forbidden' }); return; }
+
+    const note = asText((req.body ?? {}).note).trim().slice(0, PRESIDENT_NOTE_MAX);
+    const notes = await readPresidentNotes();
+    if (note) {
+      const expand = (record.expand ?? {}) as Record<string, AnyRecord | undefined>;
+      const game = expand.game;
+      const coachee = expand.coachee;
+      notes[record.id] = {
+        note,
+        gameId: asText(record.game),
+        teams: game ? `${asText(game.home_team)} vs ${asText(game.away_team)}` : '',
+        league: asText(game?.league),
+        gameDate: asText(game?.match_date),
+        coacheeName: asText(coachee?.full_name) || asText(coachee?.name),
+        rcName: asText(record.rc_name),
+        updatedAt: new Date().toISOString(),
+      };
+    } else {
+      // Clearing the box removes the note rather than filing an empty one.
+      delete notes[record.id];
+    }
+    await setSetting(PRESIDENT_NOTES_KEY, JSON.stringify(notes));
+    res.json({ ok: true, note });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// President-only, on the same gate as the survey responses: admin rights do not
+// open this one either.
+app.get('/api/president-notes', requireSurveyReader, async (_req: Request, res: ExpressResponse) => {
+  try {
+    const notes = await readPresidentNotes();
+    const rows = Object.entries(notes)
+      .map(([id, entry]) => ({ id, ...entry }))
+      .sort((a, b) => asText(b.updatedAt).localeCompare(asText(a.updatedAt)));
+    res.json(rows);
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
 // ── Games starred for observation (admin-picked priorities) ───────────
 // Stored as a plain id list in app_settings, so highlighting a game needs no
 // schema change. RCs see the star (and can filter by it); only admins set it.

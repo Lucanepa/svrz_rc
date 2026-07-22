@@ -8,7 +8,8 @@ import {
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson, generateRcPin,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame, listManualGames,
-  getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts,
+  getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
+  type PresidentNote,
   type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplates, type ReminderPreview, type ManualGame,
   type LogEntry, type LogSession, type SurveyResponse,
 } from '../lib/pocketbase';
@@ -53,6 +54,9 @@ const STR = {
     surveyHint: 'Rückmeldungen der Schiedsrichter:innen zum RC-Besuch — nur hier sichtbar. Alle Fragen sind freiwillig, leere Antworten fehlen entsprechend.',
     surveyEmpty: 'Noch keine Rückmeldungen.',
     surveyAnon: 'Anonym',
+    notes: 'RC-Notizen',
+    notesHint: 'Vertrauliche Notizen der Referee Coaches zu bereits abgeschickten Feedbacks — nur hier sichtbar. Der Schiedsrichter erfährt nichts davon.',
+    notesEmpty: 'Noch keine Notizen.',
     logsHint: 'Alles, was passiert: jede Anfrage, jeder Klick in der App, jeder Fehler. Neueste zuletzt.',
     logsSearch: 'Suchen (E-Mail, Pfad, Text…)', logsLevel: 'Stufe', logsSource: 'Quelle', logsAll: 'Alle',
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'Keine Einträge.',
@@ -128,6 +132,9 @@ const STR = {
     surveyHint: 'Referees’ feedback on the RC visit — visible only here. Every question is optional, so blank answers are simply missing.',
     surveyEmpty: 'No responses yet.',
     surveyAnon: 'Anonymous',
+    notes: 'RC notes',
+    notesHint: 'Confidential notes referee coaches wrote on feedback they have already sent — visible only here. The referee is never told about them.',
+    notesEmpty: 'No notes yet.',
     logsHint: 'Everything that happens: every request, every click in the app, every error. Newest last.',
     logsSearch: 'Search (email, path, text…)', logsLevel: 'Level', logsSource: 'Source', logsAll: 'All',
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'No entries.',
@@ -226,7 +233,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 
 // Console tabs live in the URL as #/admin/<tab>, so each one is linkable and
 // the Back button steps between them.
-const ADMIN_TABS = ['coachees', 'rcs', 'emails', 'survey', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'emails', 'survey', 'notes', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 const adminTabFromHash = (): AdminTab => {
   const m = /^#\/?admin\/([a-z]+)/i.exec(window.location.hash);
@@ -265,7 +272,7 @@ export default function AdminConsole() {
   // The RC-feedback tab is not an admin-role tab: only the reader named in the
   // server env sees it, so being an admin here tells us nothing.
   useEffect(() => { getAuthMe().then((m) => setSurveyReader(Boolean(m.surveyReader))).catch(() => setSurveyReader(false)); }, []);
-  useEffect(() => { if (surveyReader === false && tab === 'survey') setTab('coachees'); }, [surveyReader, tab]);
+  useEffect(() => { if (surveyReader === false && (tab === 'survey' || tab === 'notes')) setTab('coachees'); }, [surveyReader, tab]);
   // Console-wide data, fetched once and in parallel as soon as the session is
   // known; each tab loads its own rows at the same time (all tabs are mounted).
   useEffect(() => {
@@ -351,7 +358,10 @@ export default function AdminConsole() {
     { id: 'coachees', label: t.coachees, icon: <Users size={15} /> },
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
     { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
-    ...(surveyReader ? [{ id: 'survey' as const, label: t.survey, icon: <MessageSquare size={15} /> }] : []),
+    ...(surveyReader ? [
+      { id: 'survey' as const, label: t.survey, icon: <MessageSquare size={15} /> },
+      { id: 'notes' as const, label: t.notes, icon: <Lock size={15} /> },
+    ] : []),
     { id: 'logs', label: t.logs, icon: <ScrollText size={15} /> },
     { id: 'settings', label: t.settings, icon: <SettingsIcon size={15} /> },
   ];
@@ -367,9 +377,17 @@ export default function AdminConsole() {
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
-        <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', surveyReader ? 'grid-cols-6' : 'grid-cols-5')}>
+        {/* The president has two tabs more than anyone else. Seven across this
+            container leaves ~118px each and every second label truncates, so
+            their bar wraps to two comfortable rows instead. */}
+        <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', surveyReader ? 'grid-cols-4' : 'grid-cols-5')}>
           {tabs.map((tb) => (
-            <button key={tb.id} onClick={() => setTab(tb.id)} className={`h-11 inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-xl transition-colors ${tab === tb.id ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}>{tb.icon}<span className="hidden sm:inline">{tb.label}</span></button>
+            // min-w-0 + truncate: with the president's two extra tabs a long
+            // label would otherwise wrap and leave that one tab a line taller.
+            <button key={tb.id} onClick={() => setTab(tb.id)} className={`h-11 min-w-0 px-1.5 inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-xl transition-colors ${tab === tb.id ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}>
+              <span className="shrink-0">{tb.icon}</span>
+              <span className="hidden sm:inline truncate">{tb.label}</span>
+            </button>
           ))}
         </div>
       </header>
@@ -382,6 +400,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         {surveyReader && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
+        {surveyReader && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}>
           <SettingsAdmin t={t} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} />
@@ -1077,6 +1096,46 @@ function SurveyAdmin({ t, lang }: { t: T; lang: Lang }) {
               </div>
             ))}
           </dl>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// What a coach wanted the chair to know but not the referee. Read-only here on
+// purpose — same as the survey tab, this is somebody's candid word, not a
+// record to be edited. Only the note's author can change it, back in the app.
+function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
+  const [rows, setRows] = useState<PresidentNote[] | null>(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    listPresidentNotes().then(setRows).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  const fmtDate = (value: string) => {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime())
+      ? value
+      : d.toLocaleDateString(lang === 'DE' ? 'de-CH' : 'en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-xs text-stone-500 leading-snug">{t.notesHint}</p>
+      {err && <p className="text-sm text-red-600">{err}</p>}
+      {!rows && !err && <SkeletonRows />}
+      {rows?.length === 0 && <p className="text-sm text-stone-400 py-8 text-center">{t.notesEmpty}</p>}
+      {rows?.map((r) => (
+        <div key={r.id} className="bg-white rounded-2xl shadow-card border border-stone-200/70 p-5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pb-3 mb-3 border-b border-stone-100">
+            <span className="text-sm font-semibold text-stone-800">{r.coacheeName || '—'}</span>
+            {r.gameDate && <span className="text-xs text-stone-400">{fmtDate(r.gameDate)}</span>}
+            {r.league && <span className="text-xs text-stone-400">{r.league}</span>}
+            {r.teams && <span className="text-xs text-stone-500 truncate">{r.teams}</span>}
+            <span className="ml-auto text-xs text-stone-500">{r.rcName}</span>
+          </div>
+          <p className="text-sm text-stone-800 whitespace-pre-wrap">{r.note}</p>
         </div>
       ))}
     </div>

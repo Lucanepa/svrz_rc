@@ -339,6 +339,37 @@ export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackR
   return response.json() as Promise<FeedbackRecord[]>;
 }
 
+// ---- Private notes to the RC president ----
+// Written by the coach on a feedback they have already filed; readable only by
+// the coach who wrote it and the RC president. Never part of feedback_json, so
+// it cannot reach the coachee's PDF or email.
+export type PresidentNote = {
+  id: string; note: string; gameId: string; teams: string; league: string;
+  gameDate: string; coacheeName: string; rcName: string; updatedAt: string;
+};
+
+export async function getPresidentNote(feedbackId: string): Promise<{ note: string }> {
+  if (isDemoMode()) return demo.getPresidentNote();
+  const r = await fetch(apiUrl(`/api/feedback/${encodeURIComponent(feedbackId)}/president-note`), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function savePresidentNote(feedbackId: string, note: string): Promise<void> {
+  if (isDemoMode()) return demo.savePresidentNote();
+  const r = await fetch(apiUrl(`/api/feedback/${encodeURIComponent(feedbackId)}/president-note`), {
+    method: 'PUT', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export async function listPresidentNotes(): Promise<PresidentNote[]> {
+  const r = await fetch(apiUrl('/api/president-notes'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function loadCalendarGames(): Promise<CalendarGameStatus[]> {
   if (isDemoMode()) return demo.loadCalendarGames();
   const response = await fetch(apiUrl('/api/games/calendar-status'), { credentials: 'include' });

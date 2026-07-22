@@ -3280,6 +3280,10 @@ export default function App() {
                     return (
                       <button
                         onClick={() => setFiltersOpen(!filtersOpen)}
+                        // The label is hidden on a phone, so name the button for
+                        // anyone (or anything) that cannot see the icon.
+                        aria-label={formData.lang === 'DE' ? 'Filter' : 'Filters'}
+                        aria-expanded={filtersOpen}
                         className={cn(
                           "h-9 flex items-center gap-1.5 px-2.5 text-sm border rounded-md transition-colors cursor-pointer",
                           filtersOpen ? "bg-red-50 border-red-300 text-red-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"

@@ -341,12 +341,11 @@ function drawContinuationHeader(sheet: Sheet, data: FeedbackFormData, t: Labels)
     data.meta.srName,
   ].filter(Boolean).join('  ·  ');
   sheet.font('normal', 7, MUTED);
-  sheet.fitText(reference, x, sheet.y + 18, CONTENT_W - logoW - 10, 7);
+  sheet.fitText(reference, x, sheet.y + 21, CONTENT_W - logoW - 10, 7);
 
-  sheet.y += logoH + 8;
-  sheet.stroke(INK, RULE);
-  doc.line(MARGIN, sheet.y, MARGIN + CONTENT_W, sheet.y);
-  sheet.y += 8;
+  // No rule under the banner: the remarks box that follows draws its own top
+  // edge, so a second line here just doubled up.
+  sheet.y += logoH + 12;
 }
 
 /** One labelled cell of the meta grid. Returns nothing; advances no cursor. */

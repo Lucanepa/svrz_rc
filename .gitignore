@@ -27,3 +27,6 @@ logs/
 # Playwright output
 playwright-report/
 test-results/
+
+# Agent worktrees and local Claude settings
+.claude/

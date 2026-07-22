@@ -29,6 +29,10 @@ services:
       # outlive the container — a redeploy is exactly when you lose the logs you
       # were about to read.
       LOG_DIR: /app/logs
+      # The image is UTC. What the app formats itself now goes through
+      # VM_SYNC_TIMEZONE, but log file names still roll on the container's own
+      # midnight — name the zone so "yesterday's log" means what the reader means.
+      TZ: Europe/Zurich
     volumes:
       - ./logs:/app/logs
     ports:

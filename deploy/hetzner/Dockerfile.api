@@ -1,7 +1,10 @@
 # svrz-api (Express + tsx). Build context = repo root.
 FROM node:24-bookworm-slim
+# No node-gyp toolchain here: better-sqlite3 was the only dependency that needed
+# one, and nothing imported it. Every remaining native package ships a prebuilt
+# binary. Re-add python3/make/g++ only if a dependency starts compiling again.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 make g++ ca-certificates && apt-get clean
+      ca-certificates && apt-get clean
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci

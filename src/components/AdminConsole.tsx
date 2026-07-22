@@ -375,9 +375,9 @@ export default function AdminConsole() {
           <SvrzLogo className="h-7 w-auto" />
           <span className="text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">{t.admin}</span>
           {testMode && <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-[11px] font-semibold px-2 py-0.5"><FlaskConical size={12} /> {t.testBadge}</span>}
-          <button onClick={() => { window.location.href = window.location.pathname + window.location.search; }} className="ml-auto inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Home size={14} /><span className="hidden sm:inline">{t.toApp}</span></button>
+          <button onClick={() => { window.location.href = window.location.pathname + window.location.search; }} aria-label={t.toApp} className="ml-auto inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Home size={14} /><span className="hidden sm:inline">{t.toApp}</span></button>
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
-          <button onClick={logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
+          <button onClick={logout} aria-label={t.logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
         {/* The president has two tabs more than anyone else. Seven across this
             container leaves ~118px each and every second label truncates, so
@@ -386,7 +386,9 @@ export default function AdminConsole() {
           {tabs.map((tb) => (
             // min-w-0 + truncate: with the president's two extra tabs a long
             // label would otherwise wrap and leave that one tab a line taller.
-            <button key={tb.id} onClick={() => setTab(tb.id)} className={`h-11 min-w-0 px-1.5 inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-xl transition-colors ${tab === tb.id ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}>
+            // The label is hidden below sm, leaving an icon with no accessible
+            // name — so the button carries the name itself.
+            <button key={tb.id} onClick={() => setTab(tb.id)} aria-label={tb.label} aria-current={tab === tb.id ? 'page' : undefined} className={`h-11 min-w-0 px-1.5 inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-xl transition-colors ${tab === tb.id ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}>
               <span className="shrink-0">{tb.icon}</span>
               <span className="hidden sm:inline truncate">{tb.label}</span>
             </button>

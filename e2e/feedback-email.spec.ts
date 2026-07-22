@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openFeedbackForm, stubSignedInApp } from './support/app';
 
 /**
  * The feedback form and the send path around it.
@@ -11,68 +12,6 @@ import { test, expect } from '@playwright/test';
  * to the point, actually exercised. The auth half still needs a real API and
  * says so, skipping cleanly when there is none.
  */
-
-const RC = { id: 'rc1', name: 'Anna Muster' };
-
-const COACHEE = {
-  id: 'c1',
-  full_name: 'Ref One',
-  email: 'ref.one@example.ch',
-  referee_level: 'N3',
-  stage: '2',
-  observation_status: { needsObservation: true, count: 0 },
-};
-
-// Already claimed by the signed-in coach: only the coach holding a game may
-// observe it, and the list shows taken games behind the "RC assigned" filter.
-const GAME = {
-  id: 'g1',
-  matchNo: '2345678',
-  league: '3L',
-  date: '2026-11-15T19:30:00Z',
-  location: 'Sporthalle Utogrund',
-  homeTeam: 'VBC Züri Unterland',
-  awayTeam: 'Volley Näfels II',
-  firstReferee: 'Ref One',
-  secondReferee: '',
-  assignedRc: RC.name,
-  feedbackClosedRoles: [],
-};
-
-async function stubApi(page: import('@playwright/test').Page) {
-  // Catch-all first: later routes win, so anything not named here answers [].
-  await page.route('**/api/**', (r) => r.fulfill({ json: [] }));
-  await page.route('**/api/auth/me', (r) => r.fulfill({ json: { rc: RC, admin: null, surveyReader: false } }));
-  await page.route('**/api/settings', (r) => r.fulfill({
-    json: {
-      default_season: 2026, test_mode: false, groups: [],
-      // "All games" for this coachee, so the Niveau-target filter cannot hide
-      // the fixture out from under the test.
-      coachee_targets: { c1: { mode: 'all' } },
-      rc_mandates: {}, default_goal: 10,
-    },
-  }));
-  await page.route('**/api/coachees*', (r) => r.fulfill({ json: [COACHEE] }));
-  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [GAME] }));
-  await page.route('**/api/games/*/assign-rc', (r) => r.fulfill({ json: { ok: true } }));
-  // The pad only renders once a signing session exists; without a slug the
-  // modal sits on its spinner.
-  await page.route('**/api/signature/start', (r) => r.fulfill({ json: { slug: 'sig-test' } }));
-  await page.route('**/api/signature/sig-test', (r) => r.fulfill({ json: { context: '', signer: '', signed: false, data: '' } }));
-}
-
-/** Games tab → reveal taken games → expand the fixture → open its feedback form. */
-async function openFeedbackForm(page: import('@playwright/test').Page) {
-  await stubApi(page);
-  await page.goto('/');
-  await page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ }).click();
-  // Games already held by a coach live behind this filter.
-  await page.getByRole('button', { name: /^(Filters|Filter)$/ }).click();
-  await page.getByRole('button', { name: /RC assigned|RC zugewiesen/ }).click();
-  await page.getByText(GAME.homeTeam).first().click();
-  await page.getByRole('button', { name: /Start observation|Beobachtung starten/ }).click();
-  await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
-}
 
 const sendButton = (page: import('@playwright/test').Page) =>
   page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ });
@@ -139,7 +78,11 @@ async function fillFeedbackForm(page: import('@playwright/test').Page) {
 }
 
 test.describe('Feedback form UI', () => {
-  test.beforeEach(async ({ page }) => { await openFeedbackForm(page); });
+  test.beforeEach(async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openFeedbackForm(page);
+  });
 
   test.describe('Tips & Tricks section', () => {
     test('shows Tips & Tricks heading', async ({ page }) => {

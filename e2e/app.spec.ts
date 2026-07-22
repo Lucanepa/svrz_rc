@@ -1,90 +1,83 @@
 import { test, expect } from '@playwright/test';
+import { stubSignedInApp } from './support/app';
+
+// These asserted against an app that rendered straight away. It has sat behind
+// a login for a while now, so every one of them was really asserting things
+// about the login screen — and failing. They sign in first now.
+
+test.beforeEach(async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.goto('/');
+});
 
 test.describe('App loads', () => {
   test('shows header with Coaching Feedback title', async ({ page }) => {
-    await page.goto('/');
-    // Title is either "SR-Coaching Feedback" (DE) or "Referee Coaching Feedback" (EN)
+    // "SR-Coaching Feedback" (DE) or "Referee Coaching Feedback" (EN)
     await expect(page.locator('h1')).toContainText('Coaching Feedback');
   });
 
   test('shows Swiss Volley logo', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('img[alt="Swiss Volley"]')).toBeVisible();
+    // The alt text names the region too, so match on the part that matters.
+    await expect(page.locator('img[alt*="Swiss Volley"]').first()).toBeVisible();
   });
 
   test('shows Coachees and Games tab buttons', async ({ page }) => {
-    await page.goto('/');
-    // Tab text is "Coachees" in both DE/EN, "Games" (EN) or "Coachee-Spiele" (DE)
-    await expect(page.getByRole('button', { name: /Coachees/i })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Games|Coachee-Spiele/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Coachees$/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ })).toBeVisible();
   });
 });
 
 test.describe('Language toggle', () => {
   test('toggles between DE and EN', async ({ page }) => {
-    await page.goto('/');
-    // The language button shows the *other* language to switch to
-    const langButton = page.locator('button').filter({ has: page.locator('svg') }).nth(1);
-    await expect(langButton).toBeVisible();
-    // Get current h1 text
-    const titleBefore = await page.locator('h1').innerText();
-    await langButton.click();
-    // Title should change after toggling
-    await expect(page.locator('h1')).not.toContainText(titleBefore);
+    const title = page.locator('h1');
+    const before = await title.innerText();
+    // The button offers the other language, so its name flips with the app.
+    await page.getByRole('button', { name: /^(DE|EN)$/ }).click();
+    await expect(title).not.toHaveText(before);
   });
 });
 
 test.describe('Tab switching', () => {
   test('switches between Coachees and Games tabs', async ({ page }) => {
-    await page.goto('/');
+    await page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ }).click();
+    await expect(page.getByRole('button', { name: /^(Filters|Filter)$/ })).toBeVisible();
 
-    // Click Games tab
-    await page.getByRole('button', { name: /Games|Coachee-Spiele/i }).click();
-
-    // Games tab is now active — verify either a table header or an empty state message
-    const gamesSection = page.locator('div.bg-white').first();
-    await expect(gamesSection).toBeVisible();
-
-    // Click Coachees tab back
-    await page.getByRole('button', { name: /^Coachees$/i }).click();
-
-    // The coachees tab content should be visible
-    await expect(page.locator('div.bg-white').first()).toBeVisible();
+    await page.getByRole('button', { name: /^Coachees$/ }).click();
+    await expect(page.getByText('Ref One').first()).toBeVisible();
   });
 });
 
-test.describe('Admin mode', () => {
-  test('shows admin login form when switching to admin mode', async ({ page }) => {
-    await page.goto('/');
-
-    // Click the first button (Admin/Database toggle)
-    await page.locator('button').first().click();
-
-    // Verify login form appears
-    await expect(page.locator('input[type="email"]')).toBeVisible();
+test.describe('Admin console', () => {
+  // Admin used to be a toggle on the toolbar; it is its own hash route now, and
+  // it asks for the admin password when the session has no admin rights.
+  test('asks for the admin password when the session has none', async ({ page }) => {
+    await page.goto('/#/admin');
+    await expect(page.getByRole('button', { name: /Anmelden|Sign in/ })).toBeVisible();
     await expect(page.locator('input[type="password"]')).toBeVisible();
   });
 
-  test('can switch back to feedback mode', async ({ page }) => {
-    await page.goto('/');
+  test('an admin session gets the console itself', async ({ page }) => {
+    await stubSignedInApp(page, { admin: true });
+    await page.goto('/#/admin');
+    await expect(page.getByRole('button', { name: /^Coachees$/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Referee Coaches/ })).toBeVisible();
+  });
 
-    // Switch to admin
-    await page.locator('button').first().click();
-    await expect(page.locator('input[type="email"]')).toBeVisible();
-
-    // Switch back to feedback
-    await page.locator('button').first().click();
+  test('can get back to the app from the console', async ({ page }) => {
+    await stubSignedInApp(page, { admin: true });
+    await page.goto('/#/admin');
+    await page.getByRole('button', { name: /Zur App|To app/ }).click();
     await expect(page.locator('h1')).toContainText('Coaching Feedback');
   });
 });
 
 test.describe('Search input', () => {
   test('search input is visible and interactive', async ({ page }) => {
-    await page.goto('/');
-    // Placeholder is "Suche..." (DE) or "Search..." (EN)
-    const searchInput = page.locator('input[type="text"]').first();
-    await expect(searchInput).toBeVisible();
-    await searchInput.fill('test');
-    await expect(searchInput).toHaveValue('test');
+    // The list search belongs to the Coachees tab; Home opens first.
+    await page.getByRole('button', { name: /^Coachees$/ }).click();
+    const search = page.getByPlaceholder(/Suche|Search/).first();
+    await expect(search).toBeVisible();
+    await search.fill('Ref');
+    await expect(search).toHaveValue('Ref');
   });
 });

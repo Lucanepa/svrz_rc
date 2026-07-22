@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { RC, stubSignedInApp } from './support/app';
 
 /**
  * The private note a coach leaves for the RC chair on an observation they have
@@ -6,8 +7,6 @@ import { test, expect } from '@playwright/test';
  * when it cannot be read — the note is a promise about who sees what, and a
  * box that silently saves over an unreadable note breaks it quietly.
  */
-
-const RC = { id: 'rc1', name: 'Anna Muster' };
 
 const RECORD = {
   id: 'fb1',
@@ -39,14 +38,7 @@ async function stub(
   page: import('@playwright/test').Page,
   opts: { signedInAs: string; note?: NoteRoute; onPut?: (body: unknown) => void } ,
 ) {
-  await page.route('**/api/**', (r) => r.fulfill({ json: [] }));
-  await page.route('**/api/auth/me', (r) => r.fulfill({
-    json: { rc: { id: 'rc1', name: opts.signedInAs }, admin: null, surveyReader: false },
-  }));
-  await page.route('**/api/settings', (r) => r.fulfill({
-    json: { default_season: 2026, groups: [], coachee_targets: {}, rc_mandates: {}, default_goal: 10 },
-  }));
-  await page.route('**/api/coachees*', (r) => r.fulfill({ json: [{ id: 'c1', full_name: 'Ref One', email: 'r@e.ch', referee_level: 'N3' }] }));
+  await stubSignedInApp(page, { signedInAs: opts.signedInAs });
   await page.route('**/api/coachees/*/feedbacks', (r) => r.fulfill({ json: [RECORD] }));
   await page.route('**/api/rc-overview*', (r) => r.fulfill({ json: [{ id: 'rc1', fullName: opts.signedInAs, done: 1, outstanding: 0, planned: 0 }] }));
   await page.route('**/api/rc-overview/*/coachees*', (r) => r.fulfill({

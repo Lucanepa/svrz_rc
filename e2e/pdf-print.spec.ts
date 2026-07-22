@@ -1,7 +1,9 @@
 import { test, expect } from '@playwright/test';
+import { stubSignedInApp } from './support/app';
 
 test.describe('Print layout', () => {
   test.beforeEach(async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
     // Navigate to feedback form — click first coachee row if available, otherwise stay on main view
     // The feedback form is shown when feedbackSubView === 'feedbackForm'
@@ -47,6 +49,7 @@ test.describe('Print layout', () => {
 
 test.describe('Feedback form structure', () => {
   test('printable area contains form header with Swiss Volley branding', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
 
     // The printableRef div should contain the Swiss Volley logo and title
@@ -56,6 +59,7 @@ test.describe('Feedback form structure', () => {
   });
 
   test('form has correct grid layout for meta fields', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
 
     // Check that the form container exists with print classes
@@ -73,6 +77,7 @@ test.describe('Feedback form structure', () => {
 
 test.describe('PDF download button', () => {
   test('PDF download button is visible on desktop', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
 
     // The download button with Download icon should exist when in feedbackForm view
@@ -85,6 +90,7 @@ test.describe('PDF download button', () => {
   });
 
   test('PDF filename format is correct', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
 
     // Test the filename generation logic by evaluating in page context
@@ -101,6 +107,7 @@ test.describe('PDF download button', () => {
 
 test.describe('Print page generation', () => {
   test('can generate PDF from print view without errors', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
 
     // Listen for console errors during the page lifecycle
@@ -123,6 +130,7 @@ test.describe('Print page generation', () => {
   });
 
   test('page generates valid PDF with correct magic bytes', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
 
     const cdp = await page.context().newCDPSession(page);
@@ -140,6 +148,7 @@ test.describe('Print page generation', () => {
   });
 
   test('PDF MediaBox matches A4 portrait (595x842 pt)', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
 
     const cdp = await page.context().newCDPSession(page);
@@ -167,6 +176,7 @@ test.describe('Print page generation', () => {
   });
 
   test('no content overflows the page width in print mode', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
     await page.emulateMedia({ media: 'print' });
     await page.waitForTimeout(300);
@@ -202,6 +212,7 @@ test.describe('Print page generation', () => {
   });
 
   test('print screenshot shows form fills full width without right cutoff', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
     await page.emulateMedia({ media: 'print' });
     await page.waitForTimeout(300);
@@ -242,6 +253,7 @@ test.describe('Print page generation', () => {
   });
 
   test('form grid borders are continuous (not broken by overflow)', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
     await page.emulateMedia({ media: 'print' });
     await page.waitForTimeout(300);
@@ -277,6 +289,7 @@ test.describe('Print page generation', () => {
 
 test.describe('Print content visibility', () => {
   test('assessment legend is visible in print', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
     await page.emulateMedia({ media: 'print' });
 
@@ -288,6 +301,7 @@ test.describe('Print content visibility', () => {
   });
 
   test('Swiss Volley logo is visible in print when form is shown', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
 
     // The Swiss Volley logo (img) in the printable form area should remain visible in print
@@ -300,6 +314,7 @@ test.describe('Print content visibility', () => {
   });
 
   test('toolbar buttons are hidden in print', async ({ page }) => {
+    await stubSignedInApp(page);
     await page.goto('/');
     await page.emulateMedia({ media: 'print' });
 

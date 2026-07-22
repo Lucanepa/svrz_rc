@@ -111,6 +111,9 @@ export async function saveFeedbackToPocketBase(params: {
   pdfBase64: string;
   pdfFilename: string;
   tipsAndTricks: string;
+  // Same id across every retry of one submission — the server's only defence
+  // against a replay whose first response was lost.
+  submissionId?: string;
 }): Promise<FeedbackSubmitResponse> {
   if (isDemoMode()) return demo.saveFeedbackToPocketBase(params);
   const response = await fetch(apiUrl('/api/feedback/submit'), {
@@ -124,6 +127,7 @@ export async function saveFeedbackToPocketBase(params: {
       pdfBase64: params.pdfBase64,
       pdfFilename: params.pdfFilename,
       tipsAndTricks: params.tipsAndTricks,
+      submissionId: params.submissionId,
     }),
   });
   if (!response.ok) {

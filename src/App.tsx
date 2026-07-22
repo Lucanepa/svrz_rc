@@ -34,7 +34,7 @@ import {
   type IcalSubscription,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
-import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
+import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, newSubmissionId, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import { setUnsavedWork, formHasContent } from './lib/unsavedWork';
 import { cn } from './lib/utils';
 import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
@@ -1899,6 +1899,10 @@ export default function App() {
       pdfBase64: base64,
       pdfFilename: pdfFilename(deFormData),
       tipsAndTricks: tips,
+      // Minted here, before the first attempt, so the queued copy and every
+      // replay of it carry the same id and the server can tell a retry from a
+      // genuine second submission.
+      submissionId: newSubmissionId(),
     };
     try {
       const result = await saveFeedbackToPocketBase(payload);

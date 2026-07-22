@@ -70,7 +70,11 @@ const rcs = await ensure('referee_coaches', [
 ]);
 await ensure('referee_coach_feedbacks', [
   REL('game',games.id),REL('coachee',coachees.id),T('rc_name'),
-  T('role_assessed'),J('feedback_json'),T('submitted_at'),FILE('pdf_file')
+  T('role_assessed'),J('feedback_json'),T('submitted_at'),FILE('pdf_file'),
+  // Idempotency key from the client: a second visit leaves the role open, so
+  // this is the only thing standing between a replayed outbox item and a
+  // duplicate record plus a duplicate mail.
+  T('submission_id')
 ]);
 await ensure('observations', [
   REL('coachee',coachees.id),REL('referee_coach',rcs.id),REL('game',games.id),

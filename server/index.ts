@@ -4738,7 +4738,7 @@ app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request,
 });
 
 app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: ExpressResponse) => {
-  const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks } = req.body ?? {};
+  const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks, submissionId } = req.body ?? {};
 
   // Phase 1 — Validation
   if (!gameId || !role || !formData || !pdfBase64) {
@@ -4793,6 +4793,25 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       return;
     }
 
+    // A closed role is the usual protection against an outbox replay of a
+    // submission whose response was lost — but a second visit ("secondBesuch")
+    // deliberately leaves the role open, so that check would wave the replay
+    // straight through and file the whole thing twice, mail included. The
+    // client's per-submission id closes that gap for every submission alike.
+    const submissionKey = asText(submissionId).slice(0, 60);
+    if (submissionKey) {
+      // Not found and "column not declared yet" both land here: filtering on an
+      // undeclared field 400s, so until setup-schema.mjs has run against this
+      // database the check simply doesn't fire and behaviour is what it was.
+      const already = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+        collection.getFirstListItem<AnyRecord>(`submission_id = "${escapeFilterValue(submissionKey)}"`),
+      ).catch(() => null);
+      if (already) {
+        res.status(409).json({ error: 'This feedback has already been submitted.' });
+        return;
+      }
+    }
+
     // Resolve coachee and validate email
     const refereeName = role === '1. SR' ? asText(game.first_referee) : asText(game.second_referee);
     if (!refereeName) {
@@ -4835,6 +4854,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         role_assessed: String(role),
         feedback_json: formData,
         submitted_at: submittedAt,
+        submission_id: submissionKey,
       }),
     );
 

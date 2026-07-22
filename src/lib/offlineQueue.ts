@@ -14,7 +14,16 @@ export type OutboxPayload = {
   pdfBase64: string;
   pdfFilename: string;
   tipsAndTricks: string;
+  // Minted once per submission and carried through every retry, so the server
+  // can recognise a replay of a request whose response was lost.
+  submissionId: string;
 };
+
+/** Stable id for one submission attempt and all of its retries. */
+export function newSubmissionId(): string {
+  try { return crypto.randomUUID(); }
+  catch { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`; }
+}
 
 export type OutboxItem = {
   id: string;
@@ -112,7 +121,29 @@ async function putItem(item: OutboxItem): Promise<void> {
 // next flush; failed → keep but mark terminal (permanent, stop retrying).
 export type SendResult = { outcome: 'sent' | 'duplicate' | 'retry' | 'failed'; error?: string };
 
+const FLUSH_LOCK = 'svrz-outbox-flush';
 let flushing = false;
+
+/**
+ * The outbox is one IndexedDB store shared by every open client of this origin,
+ * and each of them flushes on the 'online' event and on mount. A module-level
+ * flag only ever stopped a tab from racing itself, so two open tabs replayed
+ * the same queued feedback — two records, two mails to the referee. Web Locks
+ * is the origin-wide equivalent; the flag stays as the fallback where it is
+ * unavailable. The lock is taken before the queue is read, so the loser sees
+ * the emptied queue rather than a stale copy of it.
+ */
+async function withFlushLock(run: () => Promise<number>): Promise<number> {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  if (!locks) {
+    if (flushing) return 0;
+    flushing = true;
+    try { return await run(); } finally { flushing = false; }
+  }
+  // ifAvailable: if another client holds it, let that one finish instead of
+  // queueing a second pass that would find nothing left to send.
+  return (await locks.request(FLUSH_LOCK, { ifAvailable: true }, async (lock) => (lock ? run() : 0))) ?? 0;
+}
 
 // Send this owner's non-terminal items, oldest first. Guarded by a lock so
 // overlapping triggers (online event, mount, manual, interval) never double-send.
@@ -121,10 +152,8 @@ export async function flushOutbox(
   send: (p: OutboxPayload) => Promise<SendResult>,
   onChange?: () => void,
 ): Promise<{ sent: number; pending: number }> {
-  if (flushing) return { sent: 0, pending: (await outboxCounts(ownerId)).pending };
-  flushing = true;
-  let sent = 0;
-  try {
+  const sent = await withFlushLock(async () => {
+    let count = 0;
     for (const item of await listOutbox(ownerId)) {
       if (item.terminal) continue; // permanent failure — needs manual discard
       let res: SendResult;
@@ -132,7 +161,7 @@ export async function flushOutbox(
       catch (e) { res = { outcome: 'retry', error: e instanceof Error ? e.message : String(e) }; }
       if (res.outcome === 'sent' || res.outcome === 'duplicate') {
         await removeItem(item.id);
-        sent++;
+        count++;
       } else if (res.outcome === 'failed') {
         await putItem({ ...item, terminal: true, lastError: res.error });
       } else {
@@ -140,8 +169,7 @@ export async function flushOutbox(
       }
       onChange?.();
     }
-  } finally {
-    flushing = false;
-  }
+    return count;
+  });
   return { sent, pending: (await outboxCounts(ownerId)).pending };
 }

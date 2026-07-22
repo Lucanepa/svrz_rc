@@ -2100,9 +2100,11 @@ export default function App() {
   const [feedbackLocked, setFeedbackLocked] = useState(false);
   // Tell the deploy reload and the browser's unload prompt that this form is
   // worth protecting. A locked (already filed) form is safe to reload over —
-  // it lives on the server and comes back on demand.
+  // it lives on the server and comes back on demand. The demo is exempt: it
+  // ships with the tips box prefilled, and nothing there is ever saved, so it
+  // would only earn a "leave site?" prompt for throwaway data.
   useEffect(() => {
-    const dirty = !feedbackLocked && (
+    const dirty = !feedbackLocked && !isDemoMode() && (
       formHasContent(formData, tipsAndTricks)
       || formHasContent(dualFormData['1. SR']?.formData, dualFormData['1. SR']?.tipsAndTricks)
       || formHasContent(dualFormData['2. SR']?.formData, dualFormData['2. SR']?.tipsAndTricks)

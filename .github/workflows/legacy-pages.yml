@@ -1,0 +1,39 @@
+name: Publish the retirement notice to the old GitHub Pages URL
+
+# The app moved to Cloudflare Pages, but lucanepa.github.io/svrz_rc/ has to keep
+# answering: installed PWAs boot from their own precache and would otherwise run
+# the retired build off disk forever. See legacy/README.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'legacy/**'
+      - '.github/workflows/legacy-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: legacy-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          # Published as-is — no build step. legacy/sw.js must land at
+          # /svrz_rc/sw.js, the exact URL the old Workbox worker registered.
+          path: legacy
+      - id: deployment
+        uses: actions/deploy-pages@v4

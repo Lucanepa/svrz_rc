@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>SR-Coaching ist umgezogen</title>
+    <link rel="canonical" href="https://svrz-rc.openvolley.app/" />
+    <!-- No-JS fallback. Cannot carry the #hash; the script below can, so it is
+         given a head start and this only fires if scripting is unavailable. -->
+    <noscript>
+      <meta http-equiv="refresh" content="0; url=https://svrz-rc.openvolley.app/" />
+    </noscript>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #ffffff;
+        color: #1f2937;
+        font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+        text-align: center;
+        padding: 24px;
+      }
+      main { max-width: 30rem; }
+      h1 { font-size: 1.25rem; margin: 0 0 0.75rem; }
+      p { margin: 0 0 1.25rem; color: #4b5563; }
+      a {
+        display: inline-block;
+        padding: 11px 28px;
+        border-radius: 9px;
+        background: #dc2626;
+        color: #ffffff;
+        text-decoration: none;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Die App ist umgezogen</h1>
+      <p>
+        SR-Coaching läuft jetzt unter
+        <strong>svrz-rc.openvolley.app</strong>. Du wirst automatisch
+        weitergeleitet — bitte aktualisiere dein Lesezeichen und installiere die
+        App dort neu.
+      </p>
+      <a id="go" href="https://svrz-rc.openvolley.app/">Zur neuen Adresse</a>
+    </main>
+    <script>
+      (function () {
+        var target = 'https://svrz-rc.openvolley.app/' + (window.location.hash || '');
+        document.getElementById('go').href = target;
+
+        // Tear the retired PWA down before leaving. A visitor who lands here
+        // from an old bookmark may still have the worker and its precache on
+        // disk; if we redirect without clearing them, this device keeps booting
+        // the dead build whenever it opens the old icon.
+        var cleanup = [];
+        if ('serviceWorker' in navigator) {
+          cleanup.push(
+            navigator.serviceWorker.getRegistrations().then(function (regs) {
+              return Promise.all(regs.map(function (r) { return r.unregister(); }));
+            })
+          );
+        }
+        if (window.caches && caches.keys) {
+          cleanup.push(
+            caches.keys().then(function (keys) {
+              return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+            })
+          );
+        }
+
+        var left = false;
+        function leave() {
+          if (left) return;
+          left = true;
+          window.location.replace(target);
+        }
+        // Never strand someone behind cleanup that hangs or is unsupported.
+        setTimeout(leave, 1500);
+        Promise.all(cleanup).then(leave, leave);
+      })();
+    </script>
+  </body>
+</html>

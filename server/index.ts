@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import cron from 'node-cron';
 import nodemailer from 'nodemailer';
 import helmet from 'helmet';
-import { createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scryptSync } from 'node:crypto';
+import { createHash, createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scryptSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { log, query as queryLogs, sessions as logSessions, ringStats, pruneLogFiles, record as recordLog, type LogLevel, type LogSource } from './logstore.ts';
 // Shared with the survey page so the mailed copy can never drift from the form
@@ -110,7 +110,14 @@ app.use(cors({
 // whatever the coach's screen, rather than the multi-megabyte screenshot it used
 // to be — but keep real headroom: hitting this limit costs a coach the whole
 // filled-in form, and manual uploads still carry arbitrary scanned files.
-app.use(express.json({ limit: '32mb' }));
+// …except on the client log endpoint, which is unauthenticated and mounts its
+// own far tighter parsers below. Reaching it through the global one let a
+// text/plain limit of 256 kb be sidestepped by simply saying application/json.
+const generousJson = express.json({ limit: '32mb' });
+app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
+  if (CLIENT_LOG_PATH_RE.test(req.path)) { next(); return; }
+  generousJson(req, res, next);
+});
 
 // body-parser rejects an oversized body by throwing, which the generic handler
 // reports as a bare 500 "Internal server error" — after a long upload, with no
@@ -156,15 +163,23 @@ function bodySummary(body: unknown): unknown {
   return { _summary: true, bytes: size, keys };
 }
 
+// Matched before the generous JSON parser is mounted, so keep it next to it.
+const CLIENT_LOG_PATH_RE = /^\/api\/client-logs\/?$/i;
+const CLIENT_LOG_BODY_LIMIT = '256kb';
+
 // Two routes carry something its author was promised stays with the RC chair:
 // a coach's private note, and a referee's survey answers. This log is read by
 // every admin, so their bodies are reduced to shape — and the survey's
 // capability token is stripped from the URL for the same reason the iCal one
 // is. redact() cannot help here: it keys off names like "password", and there
 // is nothing secret-looking about "note" or "answers".
+// Case-insensitive on purpose: Express routes case-insensitively by default, so
+// PUT /API/feedback/<id>/president-note reaches the handler while req.path keeps
+// the caller's spelling. Anchored patterns without /i then missed, and the note
+// went to the log in full.
 const CONFIDENTIAL_BODY_PATHS = [
-  /^\/api\/feedback\/[^/]+\/president-note$/,
-  /^\/api\/survey\/[^/]+$/,
+  /^\/api\/feedback\/[^/]+\/president-note$/i,
+  /^\/api\/survey\/[^/]+$/i,
 ];
 
 function logBody(path: string, body: unknown): unknown {
@@ -180,10 +195,10 @@ function logBody(path: string, body: unknown): unknown {
 // link from a calendar client polling the feed — the same line otherwise.
 function redactIcalToken(url: string): string {
   return url
-    .replace(/(\/api\/ical\/)(?!me(?:[/?]|$))[^/?]+/, '$1<token>')
+    .replace(/(\/api\/ical\/)(?!me(?:[/?]|$))[^/?]+/i, '$1<token>')
     // The survey token is the only credential its page has, and the page shows
     // (and accepts) one referee's answers about their coach.
-    .replace(/(\/api\/survey\/)(?!responses(?:[/?]|$))[^/?]+/, '$1<token>');
+    .replace(/(\/api\/survey\/)(?!responses(?:[/?]|$))[^/?]+/i, '$1<token>');
 }
 
 app.use((req: Request, res: ExpressResponse, next: () => void) => {
@@ -290,7 +305,7 @@ async function rotateRcPin(rcId: string): Promise<string> {
 // Emails a freshly-issued PIN to the RC. Best-effort: returns whether it sent.
 // Suppressed (like feedback mail) when the email test mode is on.
 async function sendRcPinEmail(person: AnyRecord, pin: string): Promise<boolean> {
-  const to = asText(person.email);
+  const to = singleAddress(person.email);
   if (!to) return false;
   if (await isEmailTestMode()) {
     console.log(`[rc-pin-email] TEST_MODE — suppressed (would send to ${to})`);
@@ -345,6 +360,25 @@ function checkRateLimit(
   return { allowed: true, retryAfterMs: 0 };
 }
 
+// Charge further units against a bucket already checked this request. One
+// request is not always one event: the client log endpoint takes a batch, and
+// billing it as a single hit made the real ceiling the batch size times the
+// nominal one.
+function chargeRateLimit(store: RateLimitStore, key: string, units: number): void {
+  const entry = store.get(key);
+  if (entry && Date.now() < entry.resetAt) entry.count += Math.max(0, units);
+}
+
+// Is this bucket over budget, without spending from it? For limits that should
+// only be charged when an attempt actually fails, so honest traffic can never
+// exhaust the allowance meant for guessers.
+function peekRateLimit(store: RateLimitStore, key: string, max: number): { allowed: boolean; retryAfterMs: number } {
+  const entry = store.get(key);
+  if (!entry || Date.now() >= entry.resetAt) return { allowed: true, retryAfterMs: 0 };
+  if (entry.count >= max) return { allowed: false, retryAfterMs: entry.resetAt - Date.now() };
+  return { allowed: true, retryAfterMs: 0 };
+}
+
 // Per-IP limiter for login endpoints (RC login + admin login).
 const gateAttempts: RateLimitStore = new Map();
 function checkGateRateLimit(ip: string) {
@@ -391,17 +425,23 @@ function checkSurveyRateLimit(ip: string) {
 // — high enough not to 429 legitimate coaches on a busy match weekend, low
 // enough to blunt a distributed credential-stuffing flood.
 const pinLoginGlobal: RateLimitStore = new Map();
+// Failed logins per email address. Separate store from the reset limiter for
+// the same reason those two are separate: exhausting one must not spend or
+// bypass the other.
+const pinLoginPerAccount: RateLimitStore = new Map();
+const PIN_ACCOUNT_MAX = 10;
+const PIN_ACCOUNT_WINDOW_MS = 15 * 60 * 1000;
 const PIN_GLOBAL_MAX = 1000;
 const PIN_GLOBAL_WINDOW_MS = 15 * 60 * 1000;
 
-function createRcSessionToken(rcId: string, name: string): string {
-  const body = JSON.stringify({ sub: randomUUID(), purpose: 'rc', rcId, name, exp: Date.now() + RC_TTL_MS });
+function createRcSessionToken(rcId: string, name: string, pf: string): string {
+  const body = JSON.stringify({ sub: randomUUID(), purpose: 'rc', rcId, name, pf, exp: Date.now() + RC_TTL_MS });
   const payload = base64UrlEncode(body);
   const signature = signAdminSessionPayload(payload);
   return `${payload}.${signature}`;
 }
 
-function verifyRcSession(req: Request): { ok: boolean; rcId?: string } {
+function verifyRcSession(req: Request): { ok: boolean; rcId?: string; pf?: string } {
   const token = getCookieValue(req, RC_COOKIE);
   if (!token) return { ok: false };
   const [payload, signature] = token.split('.');
@@ -413,13 +453,15 @@ function verifyRcSession(req: Request): { ok: boolean; rcId?: string } {
     return { ok: false };
   }
   try {
-    const parsed = JSON.parse(base64UrlDecode(payload)) as { purpose?: unknown; rcId?: unknown; exp?: unknown };
+    const parsed = JSON.parse(base64UrlDecode(payload)) as {
+      purpose?: unknown; rcId?: unknown; exp?: unknown; pf?: unknown;
+    };
     if (parsed.purpose !== 'rc') return { ok: false };
     const exp = Number(parsed.exp);
     if (!Number.isFinite(exp) || exp < Date.now()) return { ok: false };
     const rcId = asText(parsed.rcId);
     if (!rcId) return { ok: false };
-    return { ok: true, rcId };
+    return { ok: true, rcId, pf: asText(parsed.pf) };
   } catch {
     return { ok: false };
   }
@@ -431,7 +473,7 @@ setInterval(() => {
   // Every bucket, not just the login ones: clientLogRl is fed by an
   // unauthenticated endpoint that any scanner can reach, so a forgotten map
   // grows one entry per source IP for the life of the process.
-  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal, rcOtpStartAttempts, rcOtpGlobal, resetAttempts, surveyAttempts, clientLogRl]) {
+  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal, pinLoginPerAccount, rcOtpStartAttempts, rcOtpGlobal, resetAttempts, surveyAttempts, clientLogRl]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
@@ -571,7 +613,16 @@ function safeError(error: unknown): string {
 // Cached list of active RC people; also consulted on every RC-authenticated
 // request so deactivating/deleting an RC revokes their session within the
 // cache TTL. Invalidated by the admin rc-people CRUD endpoints.
-type ActiveRcPerson = { id: string; fullName: string; email: string; isAdmin: boolean; isRcPresident: boolean };
+// pinFingerprint ties a session to the PIN it was issued under — see
+// resolveRcSession. Derived, never the hash itself, so it can ride in a cookie.
+type ActiveRcPerson = {
+  id: string; fullName: string; email: string;
+  isAdmin: boolean; isRcPresident: boolean; pinFingerprint: string;
+};
+
+function pinFingerprint(pinHash: string): string {
+  return pinHash ? createHash('sha256').update(pinHash).digest('hex').slice(0, 12) : '';
+}
 let rcPeopleCache: { data: ActiveRcPerson[]; expiresAt: number } | null = null;
 
 async function getActiveRcPeople(): Promise<ActiveRcPerson[]> {
@@ -589,9 +640,25 @@ async function getActiveRcPeople(): Promise<ActiveRcPerson[]> {
     // RC editor: a flag an admin can tick is a flag an admin can tick for
     // themselves, and this is the one view admin rights must not open.
     isRcPresident: p.is_rc_president === true,
+    pinFingerprint: pinFingerprint(asText(p.pin_hash)),
   }));
   rcPeopleCache = { data: mapped, expiresAt: Date.now() + 10 * 60 * 1000 };
   return mapped;
+}
+
+// The one place a cookie becomes a person. Besides signature and expiry it
+// checks the session still matches the PIN it was issued under: a PIN reset
+// used to change nothing for whoever was already logged in, so a shoulder-surfed
+// or forwarded PIN kept its holder inside for the remaining 30 days while the
+// coach believed resetting had shut the door. Deactivating the RC was the only
+// real revocation, and that locks out the legitimate coach too.
+async function resolveRcSession(req: Request): Promise<ActiveRcPerson | null> {
+  const session = verifyRcSession(req);
+  if (!session.ok || !session.rcId) return null;
+  const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
+  if (!person) return null;
+  if (person.pinFingerprint && session.pf !== person.pinFingerprint) return null;
+  return person;
 }
 
 // Resolves admin privilege from either a real admin-console session OR an RC
@@ -600,14 +667,11 @@ async function getActiveRcPeople(): Promise<ActiveRcPerson[]> {
 async function resolveAdmin(req: Request): Promise<{ ok: boolean; email: string }> {
   const a = verifyAdminSession(req);
   if (a.ok) return { ok: true, email: a.email || '' };
-  const s = verifyRcSession(req);
-  if (s.ok && s.rcId) {
-    try {
-      const person = (await getActiveRcPeople()).find((p) => p.id === s.rcId);
-      if (person?.isAdmin) return { ok: true, email: person.email || person.fullName };
-    } catch (error) {
-      console.error('[auth] admin resolve failed:', error);
-    }
+  try {
+    const person = await resolveRcSession(req);
+    if (person?.isAdmin) return { ok: true, email: person.email || person.fullName };
+  } catch (error) {
+    console.error('[auth] admin resolve failed:', error);
   }
   return { ok: false, email: '' };
 }
@@ -626,10 +690,9 @@ const rcAuthByReq = new WeakMap<Request, RcAuthInfo>();
 // Fails CLOSED: unlike the old shared gate there is no "auth disabled" mode.
 async function requireRcSession(req: Request, res: ExpressResponse, next: () => void) {
   if (verifyAdminSession(req).ok) { next(); return; }
-  const session = verifyRcSession(req);
-  if (session.ok && session.rcId) {
+  {
     try {
-      const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
+      const person = await resolveRcSession(req);
       if (person) {
         // Admin-flagged RCs get NO rcAuth, so the enforcement sites grant them
         // full access exactly like a real admin session. Plain RCs get their
@@ -872,7 +935,11 @@ Bei Fragen oder falls sich am Einsatz etwas ändert, melde dich bitte rechtzeiti
 
 // Replace {{placeholders}}; unknown keys render empty rather than leaking braces.
 function renderPlaceholders(text: string, vars: Record<string, string>): string {
-  return String(text ?? '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_m, k: string) => vars[k] ?? '');
+  // hasOwn, not a bare lookup: the key charset admits `constructor` and
+  // `toString`, and an unguarded read walked the prototype chain and rendered
+  // "function Object() { [native code] }" into the mail.
+  return String(text ?? '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g,
+    (_m, k: string) => (Object.hasOwn(vars, k) ? vars[k] : ''));
 }
 
 async function getEmailTemplate(kind: EmailTemplateKind): Promise<EmailTemplate> {
@@ -2476,7 +2543,10 @@ const CLIENT_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
 // turn every state-changing POST into a CORS-simple request and hand away the
 // preflight that protects them from cross-site forgery. This endpoint only
 // writes to the log, and sendBeacon can't preflight.
-app.post('/api/client-logs', express.text({ type: 'text/plain', limit: '256kb' }), (req: Request, res: ExpressResponse) => {
+app.post('/api/client-logs',
+  express.text({ type: 'text/plain', limit: CLIENT_LOG_BODY_LIMIT }),
+  express.json({ limit: CLIENT_LOG_BODY_LIMIT }),
+  (req: Request, res: ExpressResponse) => {
   const ip = clientIp(req);
   const rl = checkRateLimit(clientLogRl, ip, CLIENT_LOG_EVENTS_PER_WINDOW, CLIENT_LOG_WINDOW_MS);
   // Silently accept when over budget: a client that can't ship logs must never
@@ -2489,9 +2559,20 @@ app.post('/api/client-logs', express.text({ type: 'text/plain', limit: '256kb' }
     : req.body;
   const body = (parsed ?? {}) as { sid?: unknown; did?: unknown; user?: unknown; entries?: unknown };
   const entries = Array.isArray(body.entries) ? body.entries.slice(0, CLIENT_LOG_MAX_BATCH) : [];
+  // Bill the batch, not the request. Otherwise the nominal per-window budget
+  // bought that many *batches* — enough to push every real line out of the ring
+  // the admin console reads, which is the log you would go looking for after.
+  if (entries.length > 1) chargeRateLimit(clientLogRl, ip, entries.length - 1);
   const sid = asText(body.sid).slice(0, 64) || undefined;
   const did = asText(body.did).slice(0, 64) || undefined;
-  const user = asText(body.user).slice(0, 120) || undefined;
+  // This endpoint takes no session on purpose: a beacon fires after logout, and
+  // before login there is nothing to authenticate with. So `user` is whatever
+  // the caller typed — and unmarked, an anonymous POST could file lines in the
+  // admin's Protokoll under a real coach's name. Mark it when no session backs it.
+  const claimedUser = asText(body.user).slice(0, 120);
+  const user = claimedUser
+    ? (verifyRcSession(req).ok ? claimedUser : `unverified:${claimedUser}`)
+    : undefined;
   for (const raw of entries) {
     const e = (raw ?? {}) as Record<string, unknown>;
     const lvl = asText(e.lvl);
@@ -2687,6 +2768,20 @@ app.post('/api/admin/rc-people/:id/pin', requireAdminSession, async (req: Reques
       person = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
         c.getOne<AnyRecord>(id));
     } catch { res.status(404).json({ error: 'RC not found' }); return; }
+    // The president's account is the one admin rights must not reach: it opens
+    // the survey responses and the private notes, and this endpoint answers with
+    // the new PIN in cleartext. Left open, "rotate her PIN, then log in as her"
+    // is a one-request route around the very gate isSurveyReader exists to hold.
+    // She recovers the same way every other RC does, through forgot-PIN.
+    if (person.is_rc_president === true) {
+      const me = await sessionRcIdentity(req);
+      if (!me || me.rcId !== id) {
+        res.status(403).json({
+          error: 'Die PIN der RC-Präsidentin kann nur sie selbst zurücksetzen — über "PIN vergessen".',
+        });
+        return;
+      }
+    }
     const pin = await rotateRcPin(id);
     let emailed = false;
     try { emailed = await sendRcPinEmail(person, pin); }
@@ -2967,13 +3062,24 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     denyRateLimited(req, res, 'login:ip', ipRl.retryAfterMs, { email: asText((req.body ?? {}).email).trim().toLowerCase() });
     return;
   }
-  const globalRl = checkRateLimit(pinLoginGlobal, 'global', PIN_GLOBAL_MAX, PIN_GLOBAL_WINDOW_MS);
+  // Read the shared bucket, don't spend it: it is charged on FAILURE only (see
+  // below). Counting every attempt meant a few dozen busy addresses could
+  // exhaust one app-wide budget and lock every coach out of a tool they were
+  // typing the right PIN into — a denial of service anyone could trigger.
+  const globalRl = peekRateLimit(pinLoginGlobal, 'global', PIN_GLOBAL_MAX);
   if (!globalRl.allowed) {
     denyRateLimited(req, res, 'login:global', globalRl.retryAfterMs);
     return;
   }
   const email = asText((req.body ?? {}).email).trim().toLowerCase();
   const password = asText((req.body ?? {}).password);
+  // Per-account brake, checked before any credential work so a targeted grind
+  // stops at this account rather than at the app-wide budget everyone shares.
+  const acctRl = peekRateLimit(pinLoginPerAccount, email, PIN_ACCOUNT_MAX);
+  if (email && !acctRl.allowed) {
+    denyRateLimited(req, res, 'login:account', acctRl.retryAfterMs, { email });
+    return;
+  }
   if (!email || !password) {
     log.warn('auth.login', 'missing email or password', { email, hasPassword: Boolean(password) }, ctx);
     res.status(400).json({ error: 'E-Mail und Passwort erforderlich.' });
@@ -2999,6 +3105,12 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     }
     const match = pwOk ? person! : undefined;
     if (!match) {
+      // Only a wrong answer costs the shared budget, and a wrong answer for a
+      // known address also costs that account its own. A six-digit PIN is a
+      // million-wide space; without a per-account counter the app-wide one was
+      // the only brake on grinding a single coach's login from many addresses.
+      checkRateLimit(pinLoginGlobal, 'global', PIN_GLOBAL_MAX, PIN_GLOBAL_WINDOW_MS);
+      if (person) checkRateLimit(pinLoginPerAccount, email, PIN_ACCOUNT_MAX, PIN_ACCOUNT_WINDOW_MS);
       // Distinguishing these two in the log (never in the response) is what
       // turns "she can't log in" into an answerable question.
       log.warn('auth.login', 'rejected', {
@@ -3012,7 +3124,7 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
     const name = `${asText(match.first_name)} ${asText(match.last_name)}`.trim();
     tagReqUser(req, name);
     log.info('auth.login', 'ok', { email, rcId: match.id, name }, ctx);
-    res.cookie(RC_COOKIE, createRcSessionToken(match.id, name), {
+    res.cookie(RC_COOKIE, createRcSessionToken(match.id, name, pinFingerprint(asText(match.pin_hash))), {
       httpOnly: true,
       sameSite: 'none',
       secure: true,
@@ -3083,7 +3195,7 @@ app.post('/api/auth/rc/forgot/start', async (req: Request, res: ExpressResponse)
         );
         await sendMailResilient({
           from: MAIL_FROM,
-          to: asText(person.email),
+          to: singleAddress(person.email),
           subject: 'Bestätigungscode – SVRZ Referee Coaching',
           text: `Dein Bestätigungscode lautet:\n\n    ${code}\n\nGib ihn in der App ein, um einen neuen PIN zu erhalten. Der Code ist 10 Minuten gültig.\n\nWenn du das nicht angefragt hast, ignoriere diese E-Mail — dein PIN bleibt unverändert.\n\n${MAIL_APP_URL}\nSwiss Volley Region Zürich`,
           html,
@@ -3234,10 +3346,7 @@ const SURVEY_COLLECTION = 'rc_visit_feedback';
 // An admin session does NOT pass. Admin rights open every other view in this
 // app; this is the one they must not, so the check is the flag alone.
 async function isSurveyReader(req: Request): Promise<boolean> {
-  const session = verifyRcSession(req);
-  if (!session.ok || !session.rcId) return false;
-  const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
-  return Boolean(person?.isRcPresident);
+  return Boolean((await resolveRcSession(req))?.isRcPresident);
 }
 
 async function requireSurveyReader(req: Request, res: ExpressResponse, next: () => void) {
@@ -3531,6 +3640,30 @@ function ownsFeedback(req: Request, record: AnyRecord): boolean {
   return normalizeName(record.rc_name) === normalizeName(rcAuth.name);
 }
 
+// Who the session actually is, even when it is an admin one. requireRcSession
+// deliberately attaches no rcAuth to admins and admin-flagged RCs, so ownership
+// questions that must still hold for them cannot use rcAuthByReq alone.
+async function sessionRcIdentity(req: Request): Promise<RcAuthInfo | null> {
+  const attached = rcAuthByReq.get(req);
+  if (attached) return attached;
+  const person = await resolveRcSession(req);
+  return person ? { rcId: person.id, name: person.fullName } : null;
+}
+
+// Reading a note is narrower than writing one. Writing is open to admins on
+// purpose (see the PUT below — the note records its author separately so the
+// president can tell an admin's words from the coach's). Reading is not: this
+// is the chair's private channel, and `/api/president-notes` and
+// `/api/survey-responses` both state that admin rights must not open it. Going
+// through ownsFeedback here handed every admin exactly that, one id at a time,
+// and `/api/referee-coaches` hands them the ids. Resolve the real identity so
+// an admin-flagged RC still reads back the note they wrote themselves.
+async function mayReadPresidentNote(req: Request, record: AnyRecord): Promise<boolean> {
+  if (await isSurveyReader(req)) return true;
+  const me = await sessionRcIdentity(req);
+  return Boolean(me && normalizeName(record.rc_name) === normalizeName(me.name));
+}
+
 async function getFeedbackForNote(id: string): Promise<AnyRecord> {
   return withCollection(collectionCandidates.refereeCoaches, (c) =>
     c.getOne<AnyRecord>(id, { expand: 'game,coachee' }));
@@ -3543,7 +3676,7 @@ app.get('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
     try { record = await getFeedbackForNote(String(req.params.id)); }
     catch { res.status(404).json({ error: 'Feedback not found' }); return; }
     // The author reads it back to edit it; the president reads anyone's.
-    if (!ownsFeedback(req, record) && !(await isSurveyReader(req))) {
+    if (!(await mayReadPresidentNote(req, record))) {
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
@@ -4180,6 +4313,12 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
       ];
     });
 
+    // A coachee with no usable name anywhere leaves no filter at all, and
+    // PocketBase reads an empty filter as "no filter" — so the endpoint answered
+    // a nameless record with every game in the collection. Nothing to match on
+    // means nothing matches.
+    if (nameFilterParts.length === 0) { res.json([]); return; }
+
     const games = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date,-created',
@@ -4279,7 +4418,15 @@ app.get('/api/observations', requireRcSession, async (req: Request, res: Express
     if (gameId) {
       filterParts.push(`game = "${escapeFilterValue(gameId)}"`);
     }
-    if (refereeCoachId) {
+    // A plain RC reads their own observations, whatever the query says. The
+    // parameter was taken on trust, so any RC could hand over a colleague's id
+    // and read their whole observation history, free-text remarks included —
+    // the same trust /api/rc-overview/:rcName/coachees already refuses to place
+    // in a URL. Admins keep the unrestricted view.
+    const ownObservations = await sessionRcIdentity(req);
+    if (ownObservations) {
+      filterParts.push(`referee_coach = "${escapeFilterValue(ownObservations.rcId)}"`);
+    } else if (refereeCoachId) {
       filterParts.push(`referee_coach = "${escapeFilterValue(refereeCoachId)}"`);
     }
     if (promotion) {
@@ -4322,6 +4469,11 @@ app.get('/api/observations/summary', requireRcSession, async (req: Request, res:
     }
     if (gameId) {
       filterParts.push(`game = "${escapeFilterValue(gameId)}"`);
+    }
+    // Same rule as the list above: a plain RC's numbers are their own.
+    const ownSummary = await sessionRcIdentity(req);
+    if (ownSummary) {
+      filterParts.push(`referee_coach = "${escapeFilterValue(ownSummary.rcId)}"`);
     }
 
     const filter = filterParts.length > 0 ? filterParts.join(' && ') : undefined;
@@ -4905,6 +5057,21 @@ function attachmentFilename(filename: string, contentType: string): string {
 // creating a second record and mailing the coachee twice.
 const RECENT_SUBMIT_TTL_MS = 30 * 60 * 1000;
 
+// The only roles a feedback can be filed for.
+const FEEDBACK_ROLES = ['1. SR', '2. SR'];
+
+// nodemailer parses a header value as an address LIST, so one stored
+// "referee@svrz.ch, someone@else" silently delivers the coaching report — full
+// PDF, grades and remarks — to a second mailbox, and the sender sees a normal
+// "sent". Addresses arrive from the xlsx import, the admin editor and
+// VolleyManager's contact sync, none of which check the shape. Anything that is
+// not exactly one address is treated as no address at all.
+const SINGLE_EMAIL_RE = /^[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>"]+$/;
+function singleAddress(value: unknown): string {
+  const v = asText(value).trim();
+  return SINGLE_EMAIL_RE.test(v) ? v : '';
+}
+
 async function findRecentSubmission(gameId: string, role: string): Promise<string> {
   const since = new Date(Date.now() - RECENT_SUBMIT_TTL_MS).toISOString();
   try {
@@ -4934,6 +5101,15 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
   // silently skipped and the stored rc_name would disagree with the observation.
   if (typeof formData !== 'object' || Array.isArray(formData)) {
     res.status(400).json({ error: 'formData must be an object.' });
+    return;
+  }
+  // Only the two real roles. Everything downstream treats "not 1. SR" as the
+  // second referee and the closure guard only knows the roles already filed, so
+  // an unrecognised role passed both: each new spelling filed another record,
+  // another observation into the chair's statistics, and another mail to the
+  // referee, with the submit-once 409 never firing.
+  if (!FEEDBACK_ROLES.includes(String(role))) {
+    res.status(400).json({ error: 'role must be "1. SR" or "2. SR".' });
     return;
   }
 
@@ -5031,9 +5207,13 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     const coachee = coacheeResult.coachee;
     const coacheeCollection = coacheeResult.collection;
 
-    const coacheeEmail = asText(coachee.email);
+    const coacheeEmail = singleAddress(coachee.email);
     if (!coacheeEmail) {
-      res.status(400).json({ error: 'Coachee has no email address. Add an email in the admin panel before submitting feedback.' });
+      res.status(400).json({
+        error: asText(coachee.email)
+          ? 'Die E-Mail-Adresse des Coachees ist ungültig (genau eine Adresse erwartet). Bitte im Admin-Panel korrigieren.'
+          : 'Coachee has no email address. Add an email in the admin panel before submitting feedback.',
+      });
       return;
     }
 
@@ -5134,7 +5314,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         const rcPerson = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
           collection.getOne<AnyRecord>(refereeCoachPersonId),
         );
-        rcEmail = asText(rcPerson.email);
+        rcEmail = singleAddress(rcPerson.email);
       } catch {
         // RC person fetch failed — continue without RC email
       }
@@ -5417,13 +5597,13 @@ async function buildDueReminders(): Promise<ReminderPlan[]> {
   for (const game of games) {
     const rcName = asText(game.assigned_rc);
     if (!rcName) continue; // only games an RC has actually taken
-    const rcEmail = people.find((p) => normalizeName(p.fullName) === normalizeName(rcName))?.email || '';
+    const rcEmail = singleAddress(people.find((p) => normalizeName(p.fullName) === normalizeName(rcName))?.email);
     for (const [roleLabel, refField] of [['1. SR', 'first_referee'], ['2. SR', 'second_referee']] as const) {
       const refereeName = asText(game[refField]);
       if (!refereeName) continue;
       const coachee = await findCoacheeByRefereeName(refereeName);
-      const email = coachee ? asText(coachee.email) : '';
-      if (!coachee || !email) continue; // not a coachee, or no address on file
+      const email = coachee ? singleAddress(coachee.email) : '';
+      if (!coachee || !email) continue; // not a coachee, or no usable address on file
       const built = buildTemplatedEmail({
         tpl,
         vars: emailVars({

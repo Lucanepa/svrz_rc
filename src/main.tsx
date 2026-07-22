@@ -9,6 +9,7 @@ import SurveyPage from './components/SurveyPage.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { enableDemo, isDemoMode } from './lib/demo';
 import { installLogging, clientLog } from './lib/logger';
+import { hasUnsavedWork, onUnsavedWorkChange } from './lib/unsavedWork';
 import './index.css';
 
 // FIRST thing that runs: patches fetch and the error handlers, so nothing that
@@ -30,16 +31,38 @@ registerSW({
   onRegisterError(error) { clientLog.error('sw.error', 'service worker registration failed', { error }); },
 });
 
-// Auto-reload once a freshly deployed service worker takes control (no more stale builds).
+// Auto-reload once a freshly deployed service worker takes control (no more
+// stale builds) — but never on top of a half-filled observation. The form is
+// in-memory only and a deploy lands near-daily, so an unconditional reload
+// would silently wipe a form a coach spent a match filling. The reload is held
+// until the work is submitted or cleared; until then the running build stays.
 if ('serviceWorker' in navigator) {
   let refreshing = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
+  const reloadNow = () => {
     if (refreshing) return;
     refreshing = true;
     clientLog.info('sw.controllerchange', 'new service worker took control — reloading');
     window.location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    if (!hasUnsavedWork()) { reloadNow(); return; }
+    clientLog.info('sw.reload-deferred', 'new build ready — reload deferred, form in progress');
+    const stop = onUnsavedWorkChange(() => {
+      if (hasUnsavedWork()) return;
+      stop();
+      reloadNow();
+    });
   });
 }
+
+// The same in-memory form deserves the browser's own "leave site?" prompt:
+// closing the tab or hitting back mid-observation is just as lossy as a deploy.
+window.addEventListener('beforeunload', (e) => {
+  if (!hasUnsavedWork()) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 // Hidden demo entry: #/demo turns on throwaway client-side demo mode, then drops
 // the hash (via replaceState, which doesn't fire hashchange) so the normal app

@@ -35,6 +35,7 @@ import {
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
+import { setUnsavedWork, formHasContent } from './lib/unsavedWork';
 import { cn } from './lib/utils';
 import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
@@ -2081,6 +2082,18 @@ export default function App() {
   // that carries it — is visible without typing; empty in the real app.
   const [tipsAndTricks, setTipsAndTricks] = useState(demoTips);
   const [feedbackLocked, setFeedbackLocked] = useState(false);
+  // Tell the deploy reload and the browser's unload prompt that this form is
+  // worth protecting. A locked (already filed) form is safe to reload over —
+  // it lives on the server and comes back on demand.
+  useEffect(() => {
+    const dirty = !feedbackLocked && (
+      formHasContent(formData, tipsAndTricks)
+      || formHasContent(dualFormData['1. SR']?.formData, dualFormData['1. SR']?.tipsAndTricks)
+      || formHasContent(dualFormData['2. SR']?.formData, dualFormData['2. SR']?.tipsAndTricks)
+    );
+    setUnsavedWork(dirty);
+  }, [formData, dualFormData, tipsAndTricks, feedbackLocked]);
+  useEffect(() => () => { setUnsavedWork(false); }, []);
   // The filed feedback record currently on screen, if any. Set when an already
   // submitted observation is reopened (or right after sending one), and it is
   // what the private note to the RC president hangs off — the note belongs to a

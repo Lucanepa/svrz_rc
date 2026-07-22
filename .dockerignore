@@ -1,9 +1,19 @@
 node_modules
 .git
 dist
+# Patterns without ** only match at the context root, and the build context is
+# the repo root (docker-compose.yml) — so the nested secrets files need their
+# own ** entries or they get COPY-ed straight into the image layers.
 *.env
 .env*
+**/*.env
+**/.env*
 deploy/hetzner/pb_data
 deploy/hetzner/.env
 _shots
 deploy/hetzner/svrz-api.env.example
+# Filled with real credentials per infrastructure.md.
+infrastructure.private.md
+# Activity-log JSONL: user identities and IPs, kept 30 days.
+logs
+deploy/hetzner/logs

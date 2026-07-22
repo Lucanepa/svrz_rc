@@ -41,10 +41,12 @@ const smtpTransport = nodemailer.createTransport({
 });
 
 // One retry on the transport-level failures — the connection never got a
-// greeting, timed out, or was reset. A survey response is stored before this
-// runs, so without a retry a single hiccup silently costs the notification and
-// leaves only a log line behind. Never retries a rejection (bad address, auth):
-// those fail the same way twice and the second attempt is just noise.
+// greeting, timed out, or was reset. Every send here is a one-shot the caller
+// cannot repeat: the survey response is already stored, the day-before reminder
+// window has passed by the next cron run, and the PIN and OTP mails answer
+// ok:true to a user who is now waiting for a code that never left the building.
+// Never retries a rejection (bad address, auth): those fail the same way twice
+// and the second attempt is just noise.
 async function sendMailResilient(message: Parameters<typeof smtpTransport.sendMail>[0]) {
   try {
     return await smtpTransport.sendMail(message);
@@ -303,7 +305,7 @@ async function sendRcPinEmail(person: AnyRecord, pin: string): Promise<boolean> 
     + `<div style="text-align:center;margin:8px 0 4px;"><a href="${MAIL_APP_URL}" style="display:inline-block;padding:11px 28px;background:#dc2626;color:#ffffff;text-decoration:none;border-radius:9px;font-size:14px;font-weight:600;">Zur App</a></div>`
     + `<p style="margin:22px 0 0;font-size:13px;color:#78716c;line-height:1.6;">Ein zuvor gesetzter PIN ist ab sofort ungültig. Bitte bewahre den PIN sicher auf und teile ihn mit niemandem.</p>`,
   );
-  await smtpTransport.sendMail({
+  await sendMailResilient({
     from: MAIL_FROM,
     to,
     subject: 'Dein persönlicher PIN – SVRZ Referee Coaching',
@@ -879,16 +881,34 @@ async function getEmailTemplate(kind: EmailTemplateKind): Promise<EmailTemplate>
   } catch { return def; }
 }
 
-function fmtDateDe(value: string): string {
+// Mails name a wall clock the coachee will read standing in a Swiss gym, so the
+// date and time are rendered in the region's zone — not in whatever zone the
+// container happens to run in (production sets no TZ, so that would be UTC and
+// every synced game would read 1-2 hours early).
+function zonedParts(value: string): Record<string, number> | null {
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return asText(value);
-  return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
+  if (Number.isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: VM_SYNC_TIMEZONE,
+    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  }).formatToParts(d);
+  const at = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+  // Some ICU builds render midnight as hour 24 under hour12:false.
+  return { year: at('year'), month: at('month'), day: at('day'), hour: at('hour') % 24, minute: at('minute') };
+}
+
+function fmtDateDe(value: string): string {
+  const p = zonedParts(value);
+  if (!p) return asText(value);
+  return `${String(p.day).padStart(2, '0')}.${String(p.month).padStart(2, '0')}.${p.year}`;
 }
 
 function fmtTimeDe(value: string): string {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '';
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const p = zonedParts(value);
+  if (!p) return '';
+  return `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`;
 }
 
 // Values available as {{placeholders}} in the templates. The German names are
@@ -2961,7 +2981,7 @@ app.post('/api/auth/rc/forgot/start', async (req: Request, res: ExpressResponse)
           + `<p style="margin:0;font-size:13px;color:#78716c;text-align:center;">Der Code ist 10 Minuten gültig.</p>`
           + `<p style="margin:22px 0 0;font-size:13px;color:#a8a29e;line-height:1.6;">Wenn du das nicht angefragt hast, ignoriere diese E-Mail — dein PIN bleibt unverändert.</p>`,
         );
-        await smtpTransport.sendMail({
+        await sendMailResilient({
           from: MAIL_FROM,
           to: asText(person.email),
           subject: 'Bestätigungscode – SVRZ Referee Coaching',
@@ -4971,7 +4991,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         console.log(`[feedback-email] TEST_MODE — outbound email suppressed (would send to ${mailTo})`);
         emailSent = false;
       } else {
-        await smtpTransport.sendMail({
+        await sendMailResilient({
           from: MAIL_FROM,
           replyTo: rcEmail || undefined,
           to: mailTo,
@@ -5184,7 +5204,7 @@ async function runMatchReminders(): Promise<{ sent: number; skipped: number; sup
     const key = `${stamp}:${p.gameId}:${p.role}`;
     if (seen.has(key)) { skipped++; continue; } // already reminded — never double-send
     try {
-      await smtpTransport.sendMail({
+      await sendMailResilient({
         from: MAIL_FROM,
         to: p.to,
         cc: p.cc.length ? p.cc : undefined,

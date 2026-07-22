@@ -10,6 +10,7 @@ async function login() {
   catch { await pb.admins.authWithPassword(email, password); }
 }
 const T = n => ({ name:n, type:'text', required:false });
+const N = n => ({ name:n, type:'number', required:false });
 const J = n => ({ name:n, type:'json', required:false, maxSize:2000000 });
 const B = n => ({ name:n, type:'bool', required:false });
 const FILE = n => ({ name:n, type:'file', required:false, maxSelect:1, maxSize:5242880 });
@@ -51,14 +52,21 @@ const games = await ensure('games', [
 ]);
 const coachees = await ensure('coachees', [
   T('full_name'),T('first_name'),T('last_name'),T('email'),T('phone'),
-  T('referee_level'),T('stage'),T('groups'),J('feedback_entries'),T('last_feedback_at')
+  T('referee_level'),T('stage'),T('groups'),J('feedback_entries'),T('last_feedback_at'),
+  // PocketBase drops keys the collection doesn't declare, and the xlsx import
+  // projects `season` explicitly — a projection onto an undeclared column 400s
+  // the whole import, so both have to exist here.
+  T('notes'),N('season')
 ]);
 const rcs = await ensure('referee_coaches', [
   T('first_name'),T('last_name'),T('email'),T('phone'),B('active'),
   // Reads the post-visit surveys (rc_visit_feedback). Set it HERE, not in the
   // admin console: a flag an admin can tick is one they can tick for
   // themselves, and admin rights must not open that view.
-  B('is_rc_president')
+  B('is_rc_president'),
+  // Per-RC login: the scrypt-hashed PIN and the admin role. Without these the
+  // hash is silently dropped on write and nobody can ever log in.
+  T('pin_hash'),B('is_admin')
 ]);
 await ensure('referee_coach_feedbacks', [
   REL('game',games.id),REL('coachee',coachees.id),T('rc_name'),
@@ -75,6 +83,17 @@ await ensure('observations', [
 await ensure('rc_visit_feedback', [
   T('token'),T('referee_name'),T('match_date'),T('match_no'),T('rc_name'),
   T('lang'),B('anonymous'),J('answers'),B('submitted'),T('submitted_at')
+]);
+// Key/value store behind everything an admin can change without a deploy:
+// default_season, test_mode, groups, coachee_targets, rc_mandates, default_goal,
+// starred_games, the e-mail templates, the reminder-sent marker and the
+// president notes. `value` is always a string (JSON-encoded where it holds a
+// map), matching setSetting() in server/index.ts.
+await ensure('app_settings', [T('key'),T('value')]);
+// Cross-device signing sessions: the coach opens #/sign/<slug> on the phone
+// they hand to the referee. `data` holds the signature PNG as a data URL.
+await ensure('signatures', [
+  T('slug'),T('context'),T('signer'),T('data'),B('signed')
 ]);
 console.log('SCHEMA_OK');
 

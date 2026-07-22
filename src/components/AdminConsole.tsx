@@ -18,6 +18,7 @@ import {
   type CoacheeTarget, type CoacheeTargetMap, type TargetRole,
 } from '../lib/niveauTargets';
 import { SURVEY_QUESTIONS, questionLabel, type SurveyQuestion } from '../lib/survey';
+import { NO_LOG_ATTR } from '../lib/logger';
 import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap } from '../types';
 import LevelText from './LevelText';
 import { Skeleton, SkeletonRows } from './Skeleton';
@@ -740,7 +741,7 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
   );
   const pinBanner = (r: RcPerson) => pinShown?.id === r.id ? (
     <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-      <p className="text-xs text-amber-800 flex-1">
+      <p className="text-xs text-amber-800 flex-1" {...{ [NO_LOG_ATTR]: '' }}>
         <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
         {' — '}
         {pinShown.emailed ? t.pinEmailed(pinShown.email) : t.pinNotEmailed}
@@ -874,7 +875,7 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                     <tr>
                       <td colSpan={6} className="pb-2">
                         <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-                          <p className="text-xs text-amber-800 flex-1">
+                          <p className="text-xs text-amber-800 flex-1" {...{ [NO_LOG_ATTR]: '' }}>
                             <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
                             {' — '}
                             {pinShown.emailed ? t.pinEmailed(pinShown.email) : t.pinNotEmailed}
@@ -1096,7 +1097,7 @@ function SurveyAdmin({ t, lang }: { t: T; lang: Lang }) {
             {SURVEY_QUESTIONS.filter((q) => r.answers[q.id]).map((q) => (
               <div key={q.id}>
                 <dt className="text-xs text-stone-400 leading-snug">{questionLabel(q, lang)}</dt>
-                <dd className="text-sm text-stone-800 whitespace-pre-wrap mt-0.5">{label(q, r.answers[q.id])}</dd>
+                <dd className="text-sm text-stone-800 whitespace-pre-wrap mt-0.5" {...{ [NO_LOG_ATTR]: '' }}>{label(q, r.answers[q.id])}</dd>
               </div>
             ))}
           </dl>
@@ -1143,7 +1144,7 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
               {r.authorName && r.authorName !== r.rcName ? t.notesBy(r.authorName, r.rcName) : r.rcName}
             </span>
           </div>
-          <p className="text-sm text-stone-800 whitespace-pre-wrap">{r.note}</p>
+          <p className="text-sm text-stone-800 whitespace-pre-wrap" {...{ [NO_LOG_ATTR]: '' }}>{r.note}</p>
         </div>
       ))}
     </div>

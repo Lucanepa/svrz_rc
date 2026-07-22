@@ -156,6 +156,14 @@ export function getClientLogs(): ClientLogEntry[] { return [...ring]; }
 // ── Instrumentation ───────────────────────────────────────────────────
 const originalFetch: typeof fetch = typeof window !== 'undefined' ? window.fetch.bind(window) : (undefined as never);
 
+/**
+ * Marks a subtree whose rendered text must never reach the log: a freshly
+ * generated PIN, a president note, a survey answer. The Protokoll is read by
+ * every admin, so anything gated to one reader on screen would otherwise be
+ * republished to all of them by a single stray click.
+ */
+export const NO_LOG_ATTR = 'data-no-log';
+
 /** Short, human-recognisable description of what was clicked. */
 function describeElement(el: Element | null): Record<string, unknown> | undefined {
   if (!el) return undefined;
@@ -163,13 +171,17 @@ function describeElement(el: Element | null): Record<string, unknown> | undefine
   const tag = target.tagName.toLowerCase();
   const input = target as HTMLInputElement;
   const isSecret = tag === 'input' && /password|pin|code|otp/i.test(`${input.type} ${input.name} ${input.id} ${input.autocomplete}`);
+  // Checked on both the click target and the resolved element: either may sit
+  // inside the marked subtree depending on where the closest() hop landed.
+  const isPrivate = Boolean(el.closest(`[${NO_LOG_ATTR}]`) || target.closest(`[${NO_LOG_ATTR}]`));
+  const describeText = () => (target.innerText || target.getAttribute('aria-label') || target.getAttribute('title') || '').trim().slice(0, 80) || undefined;
   return {
     tag,
     type: tag === 'input' ? input.type : undefined,
     id: target.id || undefined,
     name: input.name || undefined,
     // Values are never logged; a password field isn't even described by text.
-    text: isSecret ? '[password field]' : (target.innerText || target.getAttribute('aria-label') || target.getAttribute('title') || '').trim().slice(0, 80) || undefined,
+    text: isSecret ? '[password field]' : isPrivate ? '[redacted]' : describeText(),
     disabled: 'disabled' in target ? Boolean((target as HTMLButtonElement).disabled) : undefined,
     href: tag === 'a' ? (target as HTMLAnchorElement).getAttribute('href') || undefined : undefined,
   };

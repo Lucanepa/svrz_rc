@@ -248,6 +248,14 @@ export function ringStats() {
 }
 
 // Best-effort flush so the last seconds of logs survive a `docker compose down`.
-for (const sig of ['SIGINT', 'SIGTERM', 'beforeExit'] as const) {
-  process.on(sig, () => { void flushToFile(); });
+// Handling SIGINT/SIGTERM replaces Node's default terminate-on-signal, and
+// nothing else here exits — so without the explicit exit below, Ctrl+C did not
+// stop the dev server and every `docker compose stop` sat out the full grace
+// period and ended in SIGKILL, killing an in-flight SMTP send or PocketBase
+// write. Exactly the ungraceful shutdown this flush exists to avoid.
+process.on('beforeExit', () => { void flushToFile(); });
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    void flushToFile().finally(() => process.exit(0));
+  });
 }

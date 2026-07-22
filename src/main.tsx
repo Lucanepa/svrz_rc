@@ -12,6 +12,15 @@ import { installLogging, clientLog } from './lib/logger';
 import { hasUnsavedWork, onUnsavedWorkChange } from './lib/unsavedWork';
 import './index.css';
 
+// Hidden demo entry: #/demo turns on throwaway client-side demo mode. This has
+// to happen before installLogging, which latches `ship` once: on the very first
+// navigation to #/demo the sessionStorage flag is not set yet, so the demo used
+// to spend its whole session POSTing clicks and route events to the real API —
+// the one thing it promises never to do.
+if (/^#\/?demo\/?$/i.test(window.location.hash)) {
+  enableDemo();
+}
+
 // FIRST thing that runs: patches fetch and the error handlers, so nothing that
 // happens afterwards — including a failing boot — goes unrecorded.
 installLogging({
@@ -64,11 +73,11 @@ window.addEventListener('beforeunload', (e) => {
   e.returnValue = '';
 });
 
-// Hidden demo entry: #/demo turns on throwaway client-side demo mode, then drops
-// the hash (via replaceState, which doesn't fire hashchange) so the normal app
-// renders as the demo coach — and a reload stays in the demo (flag in sessionStorage).
+// Demo mode was switched on above, before the logger latched. All that is left
+// is to drop the hash (via replaceState, which doesn't fire hashchange) so the
+// normal app renders as the demo coach — and a reload stays in the demo (flag
+// in sessionStorage).
 if (/^#\/?demo\/?$/i.test(window.location.hash)) {
-  enableDemo();
   history.replaceState(null, '', window.location.pathname + window.location.search);
 }
 

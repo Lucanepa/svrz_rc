@@ -2605,6 +2605,16 @@ export default function App() {
     });
   }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
 
+  // Narrowing a filter can leave the current page past the end of the list: the
+  // slice renders nothing under the column header, and if what remains fits on
+  // one page the pager is hidden too — so there is no control left to get back.
+  // Clamping here covers every filter at once, including the ones added later.
+  const visibleCount = listTab === 'games' ? filteredGames.length : filteredCoachees.length;
+  useEffect(() => {
+    const lastPage = Math.max(0, Math.ceil(visibleCount / LIST_PAGE_SIZE) - 1);
+    setListPage((p) => (p > lastPage ? lastPage : p));
+  }, [visibleCount]);
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
       {isDemoMode() && (
@@ -3747,22 +3757,27 @@ export default function App() {
                                 </div>
                                 {/* Teams + result */}
                                 {(() => {
-                                  const resultParts = game.game_result?.split('|').map((s: string) => s.trim()).filter(Boolean);
-                                  const mainResult = resultParts?.[0];
-                                  const setResults = resultParts?.slice(1);
+                                  // Splitting on '|' and ':' by hand only reads the shape this
+                                  // form writes. Every VolleyManager-synced game uses
+                                  // "3:1 (25:20 / 22:25 / ...)", where ':' lands mid-bracket
+                                  // and the away score rendered as "1 (25" with the sets
+                                  // nowhere. parseResult reads both shapes.
+                                  const parsed = game.game_result ? parseResult(game.game_result) : null;
+                                  const hasResult = Boolean(parsed && (parsed.home || parsed.away));
+                                  const setResults = parsed?.sets.filter(isSetComplete).map((s) => `${s.h}:${s.a}`) ?? [];
                                   return (
                                     <>
                                       <div className="mt-1 flex items-center gap-1.5">
                                         <Home size={14} className="w-3.5 text-stone-400 shrink-0" />
                                         <span className="text-base text-stone-800 truncate flex-1">{game.homeTeam}</span>
-                                        {mainResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{mainResult.split(':')[0]?.trim()}</span>}
+                                        {hasResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{parsed?.home}</span>}
                                       </div>
                                       <div className="flex items-center gap-1.5">
                                         <Navigation size={14} className="w-3.5 text-stone-400 shrink-0" />
                                         <span className="text-base text-stone-800 truncate flex-1">{game.awayTeam}</span>
-                                        {mainResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{mainResult.split(':')[1]?.trim()}</span>}
+                                        {hasResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{parsed?.away}</span>}
                                       </div>
-                                      {setResults && setResults.length > 0 && (
+                                      {setResults.length > 0 && (
                                         <div className="pl-[20px] text-[11px] text-stone-400 tabular-nums">
                                           {setResults.map((s: string, i: number) => (
                                             <span key={i}>{i > 0 ? ' | ' : ''}{s}</span>

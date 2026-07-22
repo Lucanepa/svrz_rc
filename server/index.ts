@@ -426,10 +426,14 @@ function verifyRcSession(req: Request): { ok: boolean; rcId?: string } {
   }
 }
 
-// Periodic cleanup of stale rate-limit entries (every 10 min)
+// Periodic cleanup of stale rate-limit entries (every 10 min). Every store
+// belongs here: checkRateLimit only overwrites an expired entry when the SAME
+// key comes back, so a store left out of this sweep keeps one entry per
+// one-off IP forever. clientLogRl is the pointed one — /api/client-logs is
+// unauthenticated, so every app user and every passing scanner adds a key.
 setInterval(() => {
   const now = Date.now();
-  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal, rcOtpStartAttempts, rcOtpGlobal]) {
+  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal, rcOtpStartAttempts, rcOtpGlobal, resetAttempts, surveyAttempts, clientLogRl]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
@@ -441,6 +445,22 @@ setInterval(() => {
 
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+// Observations arrive as a generated PDF or, via the manual upload, as a scan.
+const ATTACHMENT_TYPES: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+};
+function attachmentContentType(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  return ATTACHMENT_TYPES[ext] ?? 'application/octet-stream';
 }
 
 function base64UrlEncode(value: string): string {
@@ -5023,7 +5043,10 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           attachments: emailAttachments([{
             filename: String(pdfFilename || 'feedback.pdf'),
             content: pdfBuffer,
-            contentType: 'application/pdf',
+            // The manual upload accepts scans as well as PDFs (accept=".pdf,image/*"),
+            // so a JPEG used to reach the coachee, the RC and the commission
+            // declared as application/pdf. Name the file's actual type.
+            contentType: attachmentContentType(String(pdfFilename || 'feedback.pdf')),
           }]),
         });
         emailSent = true;
@@ -5264,6 +5287,11 @@ app.get('/api/admin/email-templates', requireAdminSession, async (_req: Request,
 app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
+    // Validate both templates before writing either. Validating and saving in
+    // one pass meant a blank reminder subject returned 400 with the feedback
+    // template already stored — the console reports that as a failed save, so
+    // the admin believed nothing was kept while half of it was.
+    const pending: Array<{ kind: EmailTemplateKind; clean: EmailTemplate }> = [];
     for (const kind of ['feedback', 'reminder'] as EmailTemplateKind[]) {
       const tpl = body[kind];
       if (!tpl || typeof tpl !== 'object') continue;
@@ -5275,6 +5303,9 @@ app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, 
         outro: String(t.outro ?? '').slice(0, 4000),
       };
       if (!clean.subject.trim()) { res.status(400).json({ error: `Betreff darf nicht leer sein (${kind}).` }); return; }
+      pending.push({ kind, clean });
+    }
+    for (const { kind, clean } of pending) {
       await setSetting(`email_template_${kind}`, JSON.stringify(clean));
     }
     if ('reminder_enabled' in body) await setSetting('reminder_enabled', body.reminder_enabled ? '1' : '0');

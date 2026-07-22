@@ -626,12 +626,15 @@ function safeError(error: unknown): string {
 // Cached list of active RC people; also consulted on every RC-authenticated
 // request so deactivating/deleting an RC revokes their session within the
 // cache TTL. Invalidated by the admin rc-people CRUD endpoints.
-// pinFingerprint ties a session to the PIN it was issued under — see
-// resolveRcSession. Derived, never the hash itself, so it can ride in a cookie.
-type ActiveRcPerson = {
-  id: string; fullName: string; email: string;
-  isAdmin: boolean; isRcPresident: boolean; pinFingerprint: string;
-};
+type ActiveRcPerson = { id: string; fullName: string; email: string; isAdmin: boolean; isRcPresident: boolean };
+
+// A session's tie to the PIN it was issued under (see resolveRcSession). Held
+// OUTSIDE ActiveRcPerson on purpose: that object is handed to clients whole by
+// /api/referee-coach-people, and a fingerprint is not safe to publish. PINs are
+// six digits under one app-wide salt, so anyone holding a colleague's
+// fingerprint can walk the million candidates offline and recover the PIN
+// itself. Keyed by RC id, refreshed with the roster cache.
+const rcPinFingerprints = new Map<string, string>();
 
 function pinFingerprint(pinHash: string): string {
   return pinHash ? createHash('sha256').update(pinHash).digest('hex').slice(0, 12) : '';
@@ -653,8 +656,9 @@ async function getActiveRcPeople(): Promise<ActiveRcPerson[]> {
     // RC editor: a flag an admin can tick is a flag an admin can tick for
     // themselves, and this is the one view admin rights must not open.
     isRcPresident: p.is_rc_president === true,
-    pinFingerprint: pinFingerprint(asText(p.pin_hash)),
   }));
+  rcPinFingerprints.clear();
+  for (const p of people) rcPinFingerprints.set(String(p.id), pinFingerprint(asText(p.pin_hash)));
   rcPeopleCache = { data: mapped, expiresAt: Date.now() + 10 * 60 * 1000 };
   return mapped;
 }
@@ -670,7 +674,8 @@ async function resolveRcSession(req: Request): Promise<ActiveRcPerson | null> {
   if (!session.ok || !session.rcId) return null;
   const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
   if (!person) return null;
-  if (person.pinFingerprint && session.pf !== person.pinFingerprint) return null;
+  const expected = rcPinFingerprints.get(person.id) ?? '';
+  if (expected && session.pf !== expected) return null;
   return person;
 }
 
@@ -5246,20 +5251,12 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       return;
     }
 
-    const escaped = escapeFilterValue(refereeName);
-    const nameParts = refereeName.trim().split(/\s+/);
-    const reversed = nameParts.length >= 2 ? nameParts.reverse().join(' ') : '';
-    const escapedReversed = reversed ? escapeFilterValue(reversed) : '';
-    const reverseClause = escapedReversed
-      ? ` || full_name = "${escapedReversed}" || name = "${escapedReversed}" || coachee_name = "${escapedReversed}" || referee_name = "${escapedReversed}"`
-      : '';
     let coacheeResult: { collection: ReturnType<typeof pb.collection>; coachee: AnyRecord };
     try {
+      const filter = await coacheeNameFilterAsync(refereeName);
       coacheeResult = await withCollection(collectionCandidates.coachees, async (collection) => ({
         collection,
-        coachee: await collection.getFirstListItem<AnyRecord>(
-          `full_name = "${escaped}" || name = "${escaped}" || coachee_name = "${escaped}" || referee_name = "${escaped}"${reverseClause}`,
-        ),
+        coachee: await collection.getFirstListItem<AnyRecord>(filter),
       }));
     } catch (lookupError) {
       // The referee simply isn't on the coachee list — someone has to add them.
@@ -5671,18 +5668,56 @@ function zonedDateOf(matchDate: string): string {
 
 // Resolve a game's referee name to a coachee record (handles "First Last" vs
 // "Last First"), mirroring the lookup the feedback submit uses.
-async function findCoacheeByRefereeName(refereeName: string): Promise<AnyRecord | null> {
-  const esc = escapeFilterValue(refereeName);
-  const parts = refereeName.trim().split(/\s+/);
-  const reversed = parts.length >= 2 ? [...parts].reverse().join(' ') : '';
-  const escRev = reversed ? escapeFilterValue(reversed) : '';
-  const revClause = escRev
-    ? ` || full_name = "${escRev}" || name = "${escRev}" || coachee_name = "${escRev}" || referee_name = "${escRev}"`
-    : '';
+// A referee is matched to a coachee by name, forwards and reversed. The filter
+// used to name four columns — full_name plus the legacy aliases name,
+// coachee_name and referee_name — but setup-schema.mjs, which IS the schema
+// contract, declares only full_name, and so does the live database. PocketBase
+// rejects a filter mentioning an undeclared column with a 400 for the WHOLE
+// expression, matching clause included: so feedback submit answered 500 (which
+// the outbox then replays forever) and the day-before reminder, whose lookup
+// swallows errors, silently mailed nobody. Ask the collection what it actually
+// has and build the filter from that, so either schema works.
+const COACHEE_NAME_COLUMNS = ['full_name', 'name', 'coachee_name', 'referee_name'];
+let coacheeNameColumnsCache: { cols: string[]; expiresAt: number } | null = null;
+
+async function coacheeNameColumns(): Promise<string[]> {
+  if (coacheeNameColumnsCache && Date.now() < coacheeNameColumnsCache.expiresAt) return coacheeNameColumnsCache.cols;
+  let cols = ['full_name'];
   try {
+    const meta = await withCollection(collectionCandidates.coachees, (c) => pb.collections.getOne(c.collectionIdOrName));
+    const declared = new Set(((meta as AnyRecord).fields as AnyRecord[] ?? []).map((f) => asText(f.name)));
+    const found = COACHEE_NAME_COLUMNS.filter((n) => declared.has(n));
+    if (found.length) cols = found;
+  } catch {
+    // Can't read the collection meta — full_name alone is the one column every
+    // schema in this repo declares, so it is the safe floor.
+  }
+  coacheeNameColumnsCache = { cols, expiresAt: Date.now() + 10 * 60 * 1000 };
+  return cols;
+}
+
+function buildCoacheeNameFilter(refereeName: string, cols: string[]): string {
+  const variants = [refereeName.trim()];
+  const parts = refereeName.trim().split(/\s+/);
+  if (parts.length >= 2) variants.push([...parts].reverse().join(' '));
+  const clauses: string[] = [];
+  for (const v of variants) {
+    if (!v) continue;
+    const esc = escapeFilterValue(v);
+    for (const col of cols) clauses.push(`${col} = "${esc}"`);
+  }
+  return clauses.join(' || ');
+}
+
+async function coacheeNameFilterAsync(refereeName: string): Promise<string> {
+  return buildCoacheeNameFilter(refereeName, await coacheeNameColumns());
+}
+
+async function findCoacheeByRefereeName(refereeName: string): Promise<AnyRecord | null> {
+  try {
+    const filter = await coacheeNameFilterAsync(refereeName);
     return await withCollection(collectionCandidates.coachees, (c) =>
-      c.getFirstListItem<AnyRecord>(
-        `full_name = "${esc}" || name = "${esc}" || coachee_name = "${esc}" || referee_name = "${esc}"${revClause}`));
+      c.getFirstListItem<AnyRecord>(filter));
   } catch { return null; }
 }
 

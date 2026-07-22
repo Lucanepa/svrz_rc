@@ -57,6 +57,7 @@ const STR = {
     notes: 'RC-Notizen',
     notesHint: 'Vertrauliche Notizen der Referee Coaches zu bereits abgeschickten Feedbacks — nur hier sichtbar. Der Schiedsrichter erfährt nichts davon.',
     notesEmpty: 'Noch keine Notizen.',
+    notesBy: (author: string, rc: string) => `${author} (zu ${rc}s Beobachtung)`,
     logsHint: 'Alles, was passiert: jede Anfrage, jeder Klick in der App, jeder Fehler. Neueste zuletzt.',
     logsSearch: 'Suchen (E-Mail, Pfad, Text…)', logsLevel: 'Stufe', logsSource: 'Quelle', logsAll: 'Alle',
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'Keine Einträge.',
@@ -135,6 +136,7 @@ const STR = {
     notes: 'RC notes',
     notesHint: 'Confidential notes referee coaches wrote on feedback they have already sent — visible only here. The referee is never told about them.',
     notesEmpty: 'No notes yet.',
+    notesBy: (author: string, rc: string) => `${author} (on ${rc}'s observation)`,
     logsHint: 'Everything that happens: every request, every click in the app, every error. Newest last.',
     logsSearch: 'Search (email, path, text…)', logsLevel: 'Level', logsSource: 'Source', logsAll: 'All',
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'No entries.',
@@ -1133,7 +1135,11 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
             {r.gameDate && <span className="text-xs text-stone-400">{fmtDate(r.gameDate)}</span>}
             {r.league && <span className="text-xs text-stone-400">{r.league}</span>}
             {r.teams && <span className="text-xs text-stone-500 truncate">{r.teams}</span>}
-            <span className="ml-auto text-xs text-stone-500">{r.rcName}</span>
+            {/* Usually the same person; when they differ an admin wrote on a
+                coach's observation, and reading it as the coach's would mislead. */}
+            <span className="ml-auto text-xs text-stone-500">
+              {r.authorName && r.authorName !== r.rcName ? t.notesBy(r.authorName, r.rcName) : r.rcName}
+            </span>
           </div>
           <p className="text-sm text-stone-800 whitespace-pre-wrap">{r.note}</p>
         </div>

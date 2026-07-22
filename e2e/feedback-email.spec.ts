@@ -102,15 +102,21 @@ async function fillFeedbackForm(page: import('@playwright/test').Page) {
   // Every criterion gets a C. The desktop grid is five table cells per row in
   // A–E order; a phone gets the same choice as labelled buttons instead.
   // Both layouts are in the DOM at once — only one of them is on screen, so ask
-  // whether the grid is visible rather than whether it exists.
+  // whether the grid is visible rather than whether it exists. Work row by row
+  // rather than striding a flat list of cells: a criterion marked N/A collapses
+  // its five cells into one, which would shift every later row's C.
   const cells = page.locator('td.rating-cell');
-  const cellCount = await cells.count();
-  if (cellCount > 0 && await cells.first().isVisible()) {
-    for (let i = 2; i < cellCount; i += 5) await cells.nth(i).click();
+  if (await cells.count() > 0 && await cells.first().isVisible()) {
+    const rows = page.locator('tr', { has: page.locator('td.rating-cell') });
+    for (let r = 0; r < await rows.count(); r++) {
+      const row = rows.nth(r).locator('td.rating-cell');
+      // A–E in order, so C is the third — skip a row that has collapsed.
+      if (await row.count() === 5) await row.nth(2).click();
+    }
   } else {
-    const cs = page.getByRole('button', { name: 'C', exact: true });
-    const n = await cs.count();
-    for (let i = 0; i < n; i++) await cs.nth(i).click();
+    // The phone lays each criterion out as its own card of A–E buttons.
+    const cs = page.locator('button', { hasText: /^C$/ });
+    for (let i = 0; i < await cs.count(); i++) await cs.nth(i).click();
   }
 
   await resultGroup(page, /Match Level|Spielniveau/).getByRole('button', { name: /^(Normal)$/ }).click();

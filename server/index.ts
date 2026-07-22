@@ -156,12 +156,34 @@ function bodySummary(body: unknown): unknown {
   return { _summary: true, bytes: size, keys };
 }
 
+// Two routes carry something its author was promised stays with the RC chair:
+// a coach's private note, and a referee's survey answers. This log is read by
+// every admin, so their bodies are reduced to shape — and the survey's
+// capability token is stripped from the URL for the same reason the iCal one
+// is. redact() cannot help here: it keys off names like "password", and there
+// is nothing secret-looking about "note" or "answers".
+const CONFIDENTIAL_BODY_PATHS = [
+  /^\/api\/feedback\/[^/]+\/president-note$/,
+  /^\/api\/survey\/[^/]+$/,
+];
+
+function logBody(path: string, body: unknown): unknown {
+  if (!CONFIDENTIAL_BODY_PATHS.some((re) => re.test(path))) return bodySummary(body);
+  if (body == null || typeof body !== 'object') return undefined;
+  const keys = Object.keys(body as Record<string, unknown>);
+  return keys.length ? { _confidential: true, keys } : undefined;
+}
+
 // A calendar token never expires and is the only credential its feed has, so
 // the URL carrying it must not sit readable in the log the admin console shows.
 // `me` is spared so the log still distinguishes the app asking for its own
 // link from a calendar client polling the feed — the same line otherwise.
 function redactIcalToken(url: string): string {
-  return url.replace(/(\/api\/ical\/)(?!me(?:[/?]|$))[^/?]+/, '$1<token>');
+  return url
+    .replace(/(\/api\/ical\/)(?!me(?:[/?]|$))[^/?]+/, '$1<token>')
+    // The survey token is the only credential its page has, and the page shows
+    // (and accepts) one referee's answers about their coach.
+    .replace(/(\/api\/survey\/)(?!responses(?:[/?]|$))[^/?]+/, '$1<token>');
 }
 
 app.use((req: Request, res: ExpressResponse, next: () => void) => {
@@ -178,7 +200,7 @@ app.use((req: Request, res: ExpressResponse, next: () => void) => {
       method: req.method,
       path: redactIcalToken(req.path),
       query: Object.keys(req.query || {}).length ? req.query : undefined,
-      body: bodySummary(req.body),
+      body: logBody(req.path, req.body),
       ua: asText(req.headers['user-agent']) || undefined,
       referer: asText(req.headers.referer) || undefined,
       origin: asText(req.headers.origin) || undefined,
@@ -2480,6 +2502,17 @@ async function getSettingRecord(key: string): Promise<AnyRecord | null> {
   } catch { return null; }
 }
 
+// Settings that are maps get read, edited and written back whole, so two
+// requests touching the same key can each save over the other's edit. Chaining
+// per key makes that sequence atomic — enough for a single API process, which
+// is what runs.
+const settingWrites = new Map<string, Promise<unknown>>();
+function withSettingLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const queued = (settingWrites.get(key) ?? Promise.resolve()).catch(() => {}).then(fn);
+  settingWrites.set(key, queued.catch(() => {}));
+  return queued;
+}
+
 // Only the RCs on a half mandate are stored; everyone else follows the full
 // season goal, so "not in the map" is the normal case and the only two values
 // that survive a write are 'half' and (dropped) 'full'.
@@ -3292,23 +3325,68 @@ app.get('/api/survey-responses', requireSurveyReader, async (_req: Request, res:
 // rc_mandates — no schema change), keyed by the feedback record id and carrying
 // the game/coachee labels the president's list needs, so reading the list costs
 // one settings read instead of a join per row.
-const PRESIDENT_NOTES_KEY = 'president_notes';
+//
+// One row per season rather than one row for all time: every save rewrites the
+// whole value, and a single row would keep growing for as long as the tool is
+// used. The season comes from the game, so a note always lands in the season it
+// was played in.
+const PRESIDENT_NOTES_PREFIX = 'president_notes_';
 const PRESIDENT_NOTE_MAX = 5000;
 
 type PresidentNoteEntry = {
   note: string; gameId: string; teams: string; league: string;
-  gameDate: string; coacheeName: string; rcName: string; updatedAt: string;
+  gameDate: string; coacheeName: string; rcName: string;
+  /** Who wrote the note — an admin may write on a feedback they did not file. */
+  authorName: string;
+  updatedAt: string;
 };
 
-async function readPresidentNotes(): Promise<Record<string, PresidentNoteEntry>> {
-  const rec = await getSettingRecord(PRESIDENT_NOTES_KEY);
-  if (!rec) return {};
+/** Season a date belongs to, named by its starting year (Sept–Apr). */
+function seasonOfDate(value: string): number {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return new Date().getFullYear();
+  return d.getMonth() >= 8 ? d.getFullYear() : d.getFullYear() - 1;
+}
+
+const presidentNotesKey = (season: number) => `${PRESIDENT_NOTES_PREFIX}${season}`;
+
+function parseNoteMap(value: unknown): Record<string, PresidentNoteEntry> {
   try {
-    const parsed = JSON.parse(asText(rec.value));
+    const parsed = JSON.parse(asText(value));
     return (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
       ? parsed as Record<string, PresidentNoteEntry>
       : {};
   } catch { return {}; }
+}
+
+async function readPresidentNotes(season: number): Promise<Record<string, PresidentNoteEntry>> {
+  const rec = await getSettingRecord(presidentNotesKey(season));
+  return rec ? parseNoteMap(rec.value) : {};
+}
+
+/** Every season's notes, newest first — what the president's list shows. */
+async function readAllPresidentNotes(): Promise<Array<PresidentNoteEntry & { id: string }>> {
+  const rows = await withCollection(['app_settings'], (c) =>
+    c.getFullList<AnyRecord>({ filter: `key ~ "${PRESIDENT_NOTES_PREFIX}"` }));
+  return rows
+    .flatMap((row) => Object.entries(parseNoteMap(row.value)).map(([id, entry]) => ({ id, ...entry })))
+    .sort((a, b) => asText(b.updatedAt).localeCompare(asText(a.updatedAt)));
+}
+
+/** Drop a feedback's note wherever it lives — used when the feedback is deleted. */
+async function deletePresidentNote(feedbackId: string): Promise<void> {
+  const rows = await withCollection(['app_settings'], (c) =>
+    c.getFullList<AnyRecord>({ filter: `key ~ "${PRESIDENT_NOTES_PREFIX}"` }));
+  for (const row of rows) {
+    const key = asText(row.key);
+    const notes = parseNoteMap(row.value);
+    if (!notes[feedbackId]) continue;
+    await withSettingLock(key, async () => {
+      const current = parseNoteMap((await getSettingRecord(key))?.value);
+      delete current[feedbackId];
+      await setSetting(key, JSON.stringify(current));
+    });
+  }
 }
 
 // The coach who filed the feedback owns its note. rcAuthByReq is absent for
@@ -3336,7 +3414,8 @@ app.get('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
-    const notes = await readPresidentNotes();
+    const gameDate = asText(((record.expand ?? {}) as Record<string, AnyRecord | undefined>).game?.match_date);
+    const notes = await readPresidentNotes(seasonOfDate(gameDate));
     res.json({ note: notes[record.id]?.note ?? '' });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -3350,26 +3429,36 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
     if (!ownsFeedback(req, record)) { res.status(403).json({ error: 'Forbidden' }); return; }
 
     const note = asText((req.body ?? {}).note).trim().slice(0, PRESIDENT_NOTE_MAX);
-    const notes = await readPresidentNotes();
-    if (note) {
-      const expand = (record.expand ?? {}) as Record<string, AnyRecord | undefined>;
-      const game = expand.game;
-      const coachee = expand.coachee;
-      notes[record.id] = {
-        note,
-        gameId: asText(record.game),
-        teams: game ? `${asText(game.home_team)} vs ${asText(game.away_team)}` : '',
-        league: asText(game?.league),
-        gameDate: asText(game?.match_date),
-        coacheeName: asText(coachee?.full_name) || asText(coachee?.name),
-        rcName: asText(record.rc_name),
-        updatedAt: new Date().toISOString(),
-      };
-    } else {
-      // Clearing the box removes the note rather than filing an empty one.
-      delete notes[record.id];
-    }
-    await setSetting(PRESIDENT_NOTES_KEY, JSON.stringify(notes));
+    const expand = (record.expand ?? {}) as Record<string, AnyRecord | undefined>;
+    const game = expand.game;
+    const coachee = expand.coachee;
+    // An admin may write on a feedback another coach filed, so the note records
+    // who wrote it separately from who filed the observation — the president
+    // would otherwise read an admin's words as the coach's.
+    const rcAuth = rcAuthByReq.get(req);
+    const authorName = rcAuth?.name || asText(verifyAdminSession(req).email) || 'Admin';
+    const key = presidentNotesKey(seasonOfDate(asText(game?.match_date)));
+
+    await withSettingLock(key, async () => {
+      const notes = parseNoteMap((await getSettingRecord(key))?.value);
+      if (note) {
+        notes[record.id] = {
+          note,
+          gameId: asText(record.game),
+          teams: game ? `${asText(game.home_team)} vs ${asText(game.away_team)}` : '',
+          league: asText(game?.league),
+          gameDate: asText(game?.match_date),
+          coacheeName: asText(coachee?.full_name) || asText(coachee?.name),
+          rcName: asText(record.rc_name),
+          authorName,
+          updatedAt: new Date().toISOString(),
+        };
+      } else {
+        // Clearing the box removes the note rather than filing an empty one.
+        delete notes[record.id];
+      }
+      await setSetting(key, JSON.stringify(notes));
+    });
     res.json({ ok: true, note });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -3378,11 +3467,7 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
 // open this one either.
 app.get('/api/president-notes', requireSurveyReader, async (_req: Request, res: ExpressResponse) => {
   try {
-    const notes = await readPresidentNotes();
-    const rows = Object.entries(notes)
-      .map(([id, entry]) => ({ id, ...entry }))
-      .sort((a, b) => asText(b.updatedAt).localeCompare(asText(a.updatedAt)));
-    res.json(rows);
+    res.json(await readAllPresidentNotes());
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -4622,6 +4707,10 @@ app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request,
     await withCollection(collectionCandidates.refereeCoaches, (collection) =>
       collection.delete(String(req.params.id)),
     );
+    // The private note hangs off this feedback by id; left behind it would show
+    // the president a note about a game that no longer exists, forever.
+    try { await deletePresidentNote(String(req.params.id)); }
+    catch (noteErr) { console.error('[president-note] orphan cleanup failed:', noteErr); }
     res.status(204).send();
   } catch (error) {
     res.status(500).json({ error: safeError(error) });

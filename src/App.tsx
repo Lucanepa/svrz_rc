@@ -994,8 +994,18 @@ export default function App() {
   const sigPadRef = useRef<SignaturePadHandle>(null);
   const sigSignerName = (target: 'referee' | 'rc') =>
     target === 'rc' ? (formData.meta.rc || '') : formData.meta.srName;
-  const updateSignature = (data: string, target: 'referee' | 'rc' = sigTarget) =>
+  const updateSignature = (data: string, target: 'referee' | 'rc' = sigTarget) => {
     setFormData(prev => (target === 'rc' ? { ...prev, rcSignature: data } : { ...prev, signature: data }));
+    // The coach signs the visit, not one of its forms. On a game where both
+    // referees are coachees that is one person signing once, not the same
+    // signature collected twice — so it reaches the other role's form too.
+    if (target === 'rc') {
+      setDualFormData(prev => ({
+        '1. SR': prev['1. SR'] ? { ...prev['1. SR'], formData: { ...prev['1. SR'].formData, rcSignature: data } } : null,
+        '2. SR': prev['2. SR'] ? { ...prev['2. SR'], formData: { ...prev['2. SR'].formData, rcSignature: data } } : null,
+      }));
+    }
+  };
   const openSignatureModal = async (target: 'referee' | 'rc') => {
     setSigTarget(target);
     setSigModalOpen(true); setSigSlug(''); setSigError('');
@@ -1458,6 +1468,7 @@ export default function App() {
     // A game picked from the list is a form to fill, not a filed record — any
     // note editor belonging to a previously opened observation goes away.
     setOpenFeedbackId(null);
+    setOpenFeedbackMine(false);
     setFeedbackSubView('feedbackForm');
 
     // Reset dual form storage; a different game must not inherit the previous
@@ -1568,6 +1579,7 @@ export default function App() {
 
   const openFeedbackRecord = (record: FeedbackRecord) => {
     setOpenFeedbackId(record.id || null);
+    setOpenFeedbackMine(isPrivileged || (!!rcAuth.rcName && normName(record.rc_name || '') === normName(rcAuth.rcName)));
     const payload = record.feedback_json;
     if (payload) {
       setFormData(normalizeLoadedFeedback(payload));
@@ -1601,7 +1613,10 @@ export default function App() {
           : item))
         : [mappedGame, ...prev]));
       setSelectedGameId(mappedGame.id);
-      setFeedbackLocked(false);
+      // Marking the role closed is what makes the form read-only; if the record
+      // never said which role it assessed, fall back to locking it outright
+      // rather than presenting a filed observation as sendable.
+      setFeedbackLocked(!closedRole);
     } else {
       // No game came back with the record, so the previously selected game is
       // still the selected one. Lock the form rather than leave a filed
@@ -1890,7 +1905,7 @@ export default function App() {
       // the RC president straight away, without reopening the game to find it.
       // Not in dual mode: two records are filed in one go and only one form is
       // on screen, so a note box there would attach to whichever finished last.
-      if (!dualMode) setOpenFeedbackId(result.id || null);
+      if (!dualMode) { setOpenFeedbackId(result.id || null); setOpenFeedbackMine(true); }
       if (result.emailSent) {
         return result.emailWarning
           ? `${fd.role}: ${t.saveOkEmail} (${result.emailWarning})`
@@ -2071,6 +2086,9 @@ export default function App() {
   // what the private note to the RC president hangs off — the note belongs to a
   // feedback that exists, not to a form still being filled in.
   const [openFeedbackId, setOpenFeedbackId] = useState<string | null>(null);
+  // Only the coach who filed an observation (or an admin) may write its note.
+  // Anyone else opening the same record would get a box that 403s on save.
+  const [openFeedbackMine, setOpenFeedbackMine] = useState(false);
   const [presidentNote, setPresidentNote] = useState('');
   const [presidentNoteLoaded, setPresidentNoteLoaded] = useState(false);
   const [presidentNoteSaving, setPresidentNoteSaving] = useState(false);
@@ -2085,9 +2103,14 @@ export default function App() {
     let cancelled = false;
     getPresidentNote(openFeedbackId)
       .then(({ note }) => { if (!cancelled) { setPresidentNote(note || ''); setPresidentNoteLoaded(true); } })
-      // A note that cannot be read is not worth an error banner over the whole
-      // feedback — the box simply opens empty and can still be written.
-      .catch(() => { if (!cancelled) setPresidentNoteLoaded(true); });
+      .catch((error) => {
+        // Leaving the box enabled and empty here would let a save overwrite a
+        // note that exists and simply could not be read — so say so and keep
+        // the box shut until a reload gets a real answer.
+        if (cancelled) return;
+        const reason = error instanceof Error ? error.message : String(error);
+        setPresidentNoteError(localizeRuntimeError(reason, formData.lang));
+      });
     return () => { cancelled = true; };
   }, [openFeedbackId]);
 
@@ -2204,6 +2227,7 @@ export default function App() {
     }));
     setFeedbackLocked(false);
     setOpenFeedbackId(null);
+    setOpenFeedbackMine(false);
     setTipsAndTricks('');
     setDualFormData({ '1. SR': null, '2. SR': null });
     setShowConfirmModal(null);
@@ -2241,6 +2265,9 @@ export default function App() {
         lang,
         role: newRole,
         sections: newSections,
+        // Same coach, same visit — they have already signed if they signed
+        // the other role's form.
+        rcSignature: prev.rcSignature,
         meta: {
           ...prev.meta,
           srName: selectedGame ? getRefereeForRole(selectedGame, newRole) || '' : '',
@@ -2279,6 +2306,9 @@ export default function App() {
           lang,
           role: newRole,
           sections: newSections,
+          // Same coach, same visit — they have already signed if they signed
+          // the other role's form.
+          rcSignature: prev.rcSignature,
           meta: {
             ...prev.meta,
             srName: selectedGame ? getRefereeForRole(selectedGame, newRole) || '' : '',
@@ -4746,7 +4776,7 @@ export default function App() {
       {/* Private note to the RC president. Deliberately outside the disabled
           wrapper: the feedback it belongs to is already filed and read-only,
           and this note is the one thing still writable on that screen. */}
-      {openFeedbackId && (
+      {openFeedbackId && openFeedbackMine && (
         <div className="max-w-4xl mx-auto mt-6 bg-white p-6 shadow-xl border border-amber-200 no-print">
           <h3 className="font-bold text-stone-800 mb-3 flex items-center gap-2">
             <Lock size={16} className="text-amber-600" />

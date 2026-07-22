@@ -345,7 +345,10 @@ export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackR
 // it cannot reach the coachee's PDF or email.
 export type PresidentNote = {
   id: string; note: string; gameId: string; teams: string; league: string;
-  gameDate: string; coacheeName: string; rcName: string; updatedAt: string;
+  gameDate: string; coacheeName: string; rcName: string;
+  /** Who wrote the note; differs from rcName when an admin wrote it. */
+  authorName?: string;
+  updatedAt: string;
 };
 
 export async function getPresidentNote(feedbackId: string): Promise<{ note: string }> {

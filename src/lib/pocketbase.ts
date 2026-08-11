@@ -146,8 +146,19 @@ export function hasPocketBaseConfig(): boolean {
   return true;
 }
 
-// ── Per-RC PIN auth ───────────────────────────────────────────────────
-export type AuthMe = { rc: { id: string; name: string } | null; admin: { email: string } | null; surveyReader?: boolean };
+// ── Auth ──────────────────────────────────────────────────────────────
+export type AuthMe = {
+  rc: { id: string; name: string } | null;
+  admin: { email: string } | null;
+  surveyReader?: boolean;
+  /** Signed in on the team credential rather than a personal one. */
+  shared?: boolean;
+  /** Signed in, but no RC named yet — show the picker, not the login screen. */
+  needsIdentity?: boolean;
+};
+
+/** A name the picker can offer. */
+export type RcRosterEntry = { id: string; fullName: string };
 
 // Purge the offline API response cache (see vite.config.ts runtimeCaching). Must
 // run on every identity change — login AND logout — so cached authenticated data
@@ -226,6 +237,55 @@ export async function rcLogout(): Promise<void> {
     if (response.ok) setPendingLogout(false);
   } catch { /* offline: the flag keeps the session shut until it can be revoked */ }
   finally { await clearApiCache(); }
+}
+
+// The everyday login: one username and password for the whole team. What comes
+// back is a session with no identity on it — the caller must follow up with the
+// picker and identifyAsRc() before the app can load anything.
+export async function sharedLogin(username: string, password: string): Promise<void> {
+  const response = await fetch(apiUrl('/api/auth/shared/login'), {
+    credentials: 'include',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) throw await apiError(response, 'Login failed');
+  // Same reasoning as rcLogin: a fresh cookie retires whatever session the
+  // pending-logout flag was guarding, and the next person's data must not come
+  // out of the previous one's cache.
+  setPendingLogout(false);
+  await clearApiCache();
+}
+
+/** The names the picker offers. Needs a session — any session. */
+export async function listRcRoster(): Promise<RcRosterEntry[]> {
+  const response = await fetch(apiUrl('/api/auth/rc/roster'), { credentials: 'include' });
+  if (!response.ok) throw await apiError(response, 'Could not load the RC list');
+  return response.json() as Promise<RcRosterEntry[]>;
+}
+
+// Names the RC behind a shared session. Also the "switch RC" path, so it clears
+// the response cache too: the previous coach's coachees and feedback history are
+// in there, and serving them to the next one is the whole failure this avoids.
+export async function identifyAsRc(rcId: string): Promise<{ id: string; name: string }> {
+  const response = await fetch(apiUrl('/api/auth/rc/identify'), {
+    credentials: 'include',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rcId }),
+  });
+  if (!response.ok) throw await apiError(response, 'Could not set the RC');
+  await clearApiCache();
+  return (await response.json() as { rc: { id: string; name: string } }).rc;
+}
+
+/** The API's error body turned into an Error the gate can render. */
+async function apiError(response: Response, fallback: string): Promise<Error & { status?: number; retryAfterMs?: number }> {
+  const data = await response.json().catch(() => ({})) as { error?: string; retryAfterMs?: number };
+  const err = new Error(data.error || fallback) as Error & { status?: number; retryAfterMs?: number };
+  err.status = response.status;
+  err.retryAfterMs = data.retryAfterMs;
+  return err;
 }
 
 // Forgot password, step 1: request an email OTP. The 200 body carries no signal

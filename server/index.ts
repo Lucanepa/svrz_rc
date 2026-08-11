@@ -276,9 +276,25 @@ const TEST_MODE = process.env.TEST_MODE === '1' || process.env.TEST_MODE === 'tr
 if (TEST_MODE) console.warn('[startup] TEST_MODE enabled — outbound emails are suppressed.');
 if (!ADMIN_UI_PASSWORD) console.warn('[startup] ADMIN_UI_PASSWORD not set — admin console login disabled.');
 
-// ── Per-RC PIN auth (replaces the old shared APP_PASSWORD gate) ──────
+// ── App login ────────────────────────────────────────────────────────
+// Two ways in, one cookie. The everyday one is a single credential the whole
+// team shares; the session it opens carries no identity at all until its holder
+// says which RC they are (see /api/auth/rc/identify). The other is the original
+// per-person e-mail + password, kept for the two things a secret everybody
+// knows cannot carry: admin rights, and the chair's access to the surveys.
+//
+// WHICH of the two opened a session is recorded on the session itself, and
+// every privilege check reads it. A shared session states who its holder says
+// they are — never who they proved to be — so it is attribution (logs,
+// ownership, the "my games" filter) and never authority.
 const RC_COOKIE = 'svrz_rc_session';
 const RC_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+
+// The shared credential. Env-overridable so it can be rotated at the season
+// change without a deploy; the defaults are the pair handed to the team for
+// 26/27.
+const SHARED_LOGIN_USERNAME = process.env.SHARED_LOGIN_USERNAME || 'Referee-Coaching';
+const SHARED_LOGIN_PASSWORD = process.env.SHARED_LOGIN_PASSWORD || 'Saison26-27';
 const GATE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 min
 const GATE_RATE_LIMIT_MAX = 10;
 // Password reset gets its own per-IP budget. It used to share the login bucket,
@@ -452,37 +468,81 @@ const PIN_ACCOUNT_WINDOW_MS = 15 * 60 * 1000;
 const PIN_GLOBAL_MAX = 1000;
 const PIN_GLOBAL_WINDOW_MS = 15 * 60 * 1000;
 
-function createRcSessionToken(rcId: string, name: string, pf: string): string {
-  const body = JSON.stringify({ sub: randomUUID(), purpose: 'rc', rcId, name, pf, exp: Date.now() + RC_TTL_MS });
+// How a session was authenticated — see the RC_COOKIE block above. Kept on the
+// token rather than re-derived, because by the time a request arrives the two
+// are indistinguishable from the outside: both are one signed cookie naming one
+// active RC.
+type RcSessionMode = 'shared' | 'personal';
+
+type RcSessionToken = { ok: boolean; mode: RcSessionMode; rcId: string; pf: string };
+const NO_RC_SESSION: RcSessionToken = { ok: false, mode: 'shared', rcId: '', pf: '' };
+
+function createRcSessionToken(opts: { mode: RcSessionMode; rcId?: string; name?: string; pf?: string }): string {
+  const body = JSON.stringify({
+    sub: randomUUID(),
+    purpose: 'rc',
+    mode: opts.mode,
+    rcId: opts.rcId || '',
+    name: opts.name || '',
+    pf: opts.pf || '',
+    exp: Date.now() + RC_TTL_MS,
+  });
   const payload = base64UrlEncode(body);
   const signature = signAdminSessionPayload(payload);
   return `${payload}.${signature}`;
 }
 
-function verifyRcSession(req: Request): { ok: boolean; rcId?: string; pf?: string } {
+function verifyRcSession(req: Request): RcSessionToken {
   const token = getCookieValue(req, RC_COOKIE);
-  if (!token) return { ok: false };
+  if (!token) return NO_RC_SESSION;
   const [payload, signature] = token.split('.');
-  if (!payload || !signature) return { ok: false };
+  if (!payload || !signature) return NO_RC_SESSION;
   const expectedSignature = signAdminSessionPayload(payload);
   const actualBuffer = Buffer.from(signature);
   const expectedBuffer = Buffer.from(expectedSignature);
   if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) {
-    return { ok: false };
+    return NO_RC_SESSION;
   }
   try {
     const parsed = JSON.parse(base64UrlDecode(payload)) as {
-      purpose?: unknown; rcId?: unknown; exp?: unknown; pf?: unknown;
+      purpose?: unknown; mode?: unknown; rcId?: unknown; exp?: unknown; pf?: unknown;
     };
-    if (parsed.purpose !== 'rc') return { ok: false };
+    if (parsed.purpose !== 'rc') return NO_RC_SESSION;
     const exp = Number(parsed.exp);
-    if (!Number.isFinite(exp) || exp < Date.now()) return { ok: false };
+    if (!Number.isFinite(exp) || exp < Date.now()) return NO_RC_SESSION;
+    // Anything that is not literally 'shared' is personal. Tokens minted before
+    // the shared login existed carry no mode at all and were all personal ones,
+    // so reading them that way keeps everyone signed in across the deploy —
+    // and an unrecognised value can only ever lose privileges, never gain them.
+    const mode: RcSessionMode = parsed.mode === 'shared' ? 'shared' : 'personal';
     const rcId = asText(parsed.rcId);
-    if (!rcId) return { ok: false };
-    return { ok: true, rcId, pf: asText(parsed.pf) };
+    // A personal session with no RC on it was never issued and cannot mean
+    // anything. A shared one with no RC is the normal state between signing in
+    // and choosing a name — authenticated, deliberately nobody.
+    if (!rcId && mode === 'personal') return NO_RC_SESSION;
+    return { ok: true, mode, rcId, pf: asText(parsed.pf) };
   } catch {
-    return { ok: false };
+    return NO_RC_SESSION;
   }
+}
+
+function setRcSessionCookie(res: ExpressResponse, token: string): void {
+  res.cookie(RC_COOKIE, token, {
+    httpOnly: true,
+    sameSite: SESSION_SAMESITE,
+    secure: true,
+    maxAge: RC_TTL_MS,
+    path: '/',
+  });
+}
+
+// Byte-wise, length-checked, constant-time string compare. Length is compared
+// first because timingSafeEqual throws on a mismatch — which is how a wrong
+// password once became a 500 (see the admin UI gate).
+function constantTimeEquals(given: string, expected: string): boolean {
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 // Periodic cleanup of stale rate-limit entries (every 10 min)
@@ -674,25 +734,40 @@ async function getActiveRcPeople(): Promise<ActiveRcPerson[]> {
 // or forwarded PIN kept its holder inside for the remaining 30 days while the
 // coach believed resetting had shut the door. Deactivating the RC was the only
 // real revocation, and that locks out the legitimate coach too.
-async function resolveRcSession(req: Request): Promise<ActiveRcPerson | null> {
+type RcSession = { person: ActiveRcPerson; mode: RcSessionMode };
+
+async function resolveRcSession(req: Request): Promise<RcSession | null> {
   const session = verifyRcSession(req);
+  // No rcId: either no session at all, or a shared one that has not named an RC
+  // yet. Both are "nobody", which is what makes the app inert until the picker
+  // has been answered — every requireRcSession endpoint 401s on this path.
   if (!session.ok || !session.rcId) return null;
   const person = (await getActiveRcPeople()).find((p) => p.id === session.rcId);
   if (!person) return null;
-  const expected = rcPinFingerprints.get(person.id) ?? '';
-  if (expected && session.pf !== expected) return null;
-  return person;
+  // The fingerprint ties a session to the password it was issued under. Only a
+  // personal session has one to be tied to; a shared session was never issued
+  // against this person's password, so there is nothing here to check.
+  if (session.mode === 'personal') {
+    const expected = rcPinFingerprints.get(person.id) ?? '';
+    if (expected && session.pf !== expected) return null;
+  }
+  return { person, mode: session.mode };
 }
 
-// Resolves admin privilege from either a real admin-console session OR an RC
-// PIN session whose person is flagged is_admin. This is the single source of
-// truth for "is this request an admin".
+// Resolves admin privilege from either a real admin-console session OR a
+// PERSONAL RC session whose person is flagged is_admin. This is the single
+// source of truth for "is this request an admin".
 async function resolveAdmin(req: Request): Promise<{ ok: boolean; email: string }> {
   const a = verifyAdminSession(req);
   if (a.ok) return { ok: true, email: a.email || '' };
   try {
-    const person = await resolveRcSession(req);
-    if (person?.isAdmin) return { ok: true, email: person.email || person.fullName };
+    const session = await resolveRcSession(req);
+    // Personal only. Under the shared credential is_admin is a property of a
+    // name on a list anyone signed in can pick, so honouring it there would
+    // hand the admin console to every coach in the region.
+    if (session?.mode === 'personal' && session.person.isAdmin) {
+      return { ok: true, email: session.person.email || session.person.fullName };
+    }
   } catch (error) {
     console.error('[auth] admin resolve failed:', error);
   }
@@ -715,13 +790,16 @@ async function requireRcSession(req: Request, res: ExpressResponse, next: () => 
   if (verifyAdminSession(req).ok) { next(); return; }
   {
     try {
-      const person = await resolveRcSession(req);
-      if (person) {
-        // Admin-flagged RCs get NO rcAuth, so the enforcement sites grant them
-        // full access exactly like a real admin session. Plain RCs get their
-        // identity attached (name from the live record, so ownership checks
-        // stay correct after a rename).
-        if (!person.isAdmin) rcAuthByReq.set(req, { rcId: person.id, name: person.fullName });
+      const session = await resolveRcSession(req);
+      if (session) {
+        // Personally-authenticated admins get NO rcAuth, so the enforcement
+        // sites grant them full access exactly like a real admin session.
+        // Everyone else — including a shared session that picked an
+        // admin-flagged name — gets their identity attached and is scoped to it
+        // (name from the live record, so ownership checks survive a rename).
+        if (!(session.mode === 'personal' && session.person.isAdmin)) {
+          rcAuthByReq.set(req, { rcId: session.person.id, name: session.person.fullName });
+        }
         next();
         return;
       }
@@ -2876,9 +2954,16 @@ app.post('/api/admin/rc-people/:id/pin', requireAdminSession, async (req: Reques
     // the new PIN in cleartext. Left open, "rotate her PIN, then log in as her"
     // is a one-request route around the very gate isSurveyReader exists to hold.
     // She recovers the same way every other RC does, through forgot-PIN.
+    //
+    // Her PERSONAL session, specifically — not merely an identity that matches
+    // hers. Since the team login exists, "pick her name from the picker" is an
+    // identity anyone can assume, so an admin (a role several people hold) could
+    // otherwise assume it, rotate her PIN here, read it out of this response and
+    // sign in as her for real. Three clicks, two credentials they legitimately
+    // have, and the survey gate is open.
     if (person.is_rc_president === true) {
-      const me = await sessionRcIdentity(req);
-      if (!me || me.rcId !== id) {
+      const me = await resolveRcSession(req);
+      if (!me || me.mode !== 'personal' || me.person.id !== id) {
         res.status(403).json({
           error: 'Die PIN der RC-Präsidentin kann nur sie selbst zurücksetzen — über "PIN vergessen".',
         });
@@ -3155,14 +3240,22 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
   let rcIsAdmin = false;
   let surveyReader = false;
   const session = verifyRcSession(req);
+  const shared = session.ok && session.mode === 'shared';
   if (session.ok && session.rcId) {
     try {
       // resolveRcSession, not a bare lookup: it also checks the session still
       // matches the PIN it was issued under. Skipping that here made a reset
       // session answer "logged in", so AuthGate opened the app and then every
       // endpoint 401'd — the reset looked broken rather than protective.
-      const person = await resolveRcSession(req);
-      if (person) { rc = { id: person.id, name: person.fullName }; rcIsAdmin = person.isAdmin; surveyReader = person.isRcPresident; }
+      const resolved = await resolveRcSession(req);
+      if (resolved) {
+        rc = { id: resolved.person.id, name: resolved.person.fullName };
+        // Both flags are personal-only (see resolveAdmin / isSurveyReader). The
+        // client mirrors the server's answer rather than the record's, so a
+        // shared session is never shown a door the API would slam.
+        rcIsAdmin = resolved.mode === 'personal' && resolved.person.isAdmin;
+        surveyReader = resolved.mode === 'personal' && resolved.person.isRcPresident;
+      }
     } catch (error) {
       // The session token is valid but PocketBase is unreachable. Fail with 503
       // (Cache-Control: no-store) rather than a 200 {rc:null}: a cached "logged
@@ -3182,7 +3275,13 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
   // Lets the console hide the RC-feedback tab from everyone else. Read off the
   // person already loaded above; the server enforces the same flag on the
   // endpoint independently, so this only saves a pointless 403.
-  res.json({ rc, admin, surveyReader });
+  //
+  // needsIdentity is the third state the gate has to tell apart from "logged
+  // in" and "logged out": signed in on the shared credential, but not yet
+  // anybody. It also covers a session whose chosen RC has since been
+  // deactivated — that sends them back to the picker, not to the login screen,
+  // because their password is still perfectly good.
+  res.json({ rc, admin, surveyReader, shared, needsIdentity: shared && !rc });
 });
 
 // One in-flight login per email address. peekRateLimit only reads the bucket and
@@ -3269,19 +3368,103 @@ async function rcLoginAttempt(req: Request, res: ExpressResponse): Promise<void>
     const name = `${asText(match.first_name)} ${asText(match.last_name)}`.trim();
     tagReqUser(req, name);
     log.info('auth.login', 'ok', { email, rcId: match.id, name }, ctx);
-    res.cookie(RC_COOKIE, createRcSessionToken(match.id, name, pinFingerprint(asText(match.pin_hash))), {
-      httpOnly: true,
-      sameSite: SESSION_SAMESITE,
-      secure: true,
-      maxAge: RC_TTL_MS,
-      path: '/',
-    });
+    setRcSessionCookie(res, createRcSessionToken({
+      mode: 'personal', rcId: match.id, name, pf: pinFingerprint(asText(match.pin_hash)),
+    }));
     res.json({ ok: true, name });
   } catch (error) {
     log.error('auth.login', 'backend failure during login', { email, error }, ctx);
     res.status(500).json({ error: safeError(error) });
   }
 }
+
+// The everyday way in: one username and password for the whole team. Opens a
+// session that is deliberately NOBODY — every requireRcSession endpoint still
+// answers 401 until /api/auth/rc/identify puts a name on it.
+app.post('/api/auth/shared/login', async (req: Request, res: ExpressResponse) => {
+  const ctx = reqCtx(req);
+  const ipRl = checkGateRateLimit(ctx.ip);
+  if (!ipRl.allowed) { denyRateLimited(req, res, 'login:ip', ipRl.retryAfterMs, { kind: 'shared' }); return; }
+  // Read the app-wide budget, spend it only on a wrong answer — same reasoning
+  // as the personal login, and it matters more here: one secret for everybody
+  // means one bucket for everybody, so charging correct logins would let a
+  // busy Saturday lock the whole region out.
+  const globalRl = peekRateLimit(pinLoginGlobal, 'global', PIN_GLOBAL_MAX);
+  if (!globalRl.allowed) { denyRateLimited(req, res, 'login:global', globalRl.retryAfterMs, { kind: 'shared' }); return; }
+  const username = asText((req.body ?? {}).username).trim();
+  const password = asText((req.body ?? {}).password);
+  // Both halves are compared every time — no early return on a wrong username,
+  // so the response says nothing about which half was wrong.
+  const userOk = constantTimeEquals(username, SHARED_LOGIN_USERNAME);
+  const passOk = constantTimeEquals(password, SHARED_LOGIN_PASSWORD);
+  if (!userOk || !passOk) {
+    checkRateLimit(pinLoginGlobal, 'global', PIN_GLOBAL_MAX, PIN_GLOBAL_WINDOW_MS);
+    // Which HALF was wrong, never what was typed. The username field is
+    // prefilled and the password is the app's one shared secret, so a mistyped
+    // login is most likely the secret landing in the wrong box — and the log is
+    // read by humans in the admin console. The two booleans answer every
+    // support question the string would have.
+    log.warn('auth.shared-login', 'rejected', { userOk, passOk }, ctx);
+    res.status(401).json({ error: 'Falscher Benutzername oder falsches Passwort.' });
+    return;
+  }
+  log.info('auth.shared-login', 'ok', undefined, ctx);
+  setRcSessionCookie(res, createRcSessionToken({ mode: 'shared' }));
+  res.json({ ok: true });
+});
+
+// The names the picker offers. Behind any valid session cookie, but NOT behind
+// requireRcSession — that is precisely the gate a session which has not picked
+// yet cannot pass. Carries names and ids only: it is the one roster endpoint
+// reachable before the app knows who is asking.
+app.get('/api/auth/rc/roster', async (req: Request, res: ExpressResponse) => {
+  if (!verifyRcSession(req).ok && !verifyAdminSession(req).ok) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  try {
+    res.json((await getActiveRcPeople()).map((p) => ({ id: p.id, fullName: p.fullName })));
+  } catch (error) {
+    log.error('auth.roster', 'could not load the RC roster', { error }, reqCtx(req));
+    res.status(503).json({ error: 'Auth backend unavailable' });
+  }
+});
+
+// Puts a name on a shared session. This is a claim, not a proof — everyone
+// holding the shared credential could make any of them — so it decides what the
+// session is ATTRIBUTED to (the log, ownership of games and feedbacks, the "my
+// games" filter) and never what it may do beyond a plain coach.
+//
+// Re-callable on purpose: picking the wrong name on a shared tablet has to be
+// fixable in the app, not by handing out new credentials.
+app.post('/api/auth/rc/identify', async (req: Request, res: ExpressResponse) => {
+  const ctx = reqCtx(req);
+  const session = verifyRcSession(req);
+  if (!session.ok) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  // A personal session already IS someone, provably. Letting it re-point at
+  // another RC would turn the one credential that establishes identity into one
+  // that launders it.
+  if (session.mode !== 'shared') {
+    res.status(403).json({ error: 'Diese Anmeldung ist bereits persönlich.' });
+    return;
+  }
+  const rcId = asText((req.body ?? {}).rcId);
+  try {
+    const person = (await getActiveRcPeople()).find((p) => p.id === rcId);
+    if (!person) {
+      log.warn('auth.identify', 'rejected: unknown or inactive RC', { rcId }, ctx);
+      res.status(400).json({ error: 'Unbekannter Referee Coach.' });
+      return;
+    }
+    tagReqUser(req, person.fullName);
+    log.info('auth.identify', 'shared session identified', { rcId: person.id, name: person.fullName }, ctx);
+    setRcSessionCookie(res, createRcSessionToken({ mode: 'shared', rcId: person.id, name: person.fullName }));
+    res.json({ ok: true, rc: { id: person.id, name: person.fullName } });
+  } catch (error) {
+    log.error('auth.identify', 'backend failure while identifying', { rcId, error }, ctx);
+    res.status(503).json({ error: 'Auth backend unavailable' });
+  }
+});
 
 app.post('/api/auth/rc/logout', (_req: Request, res: ExpressResponse) => {
   res.cookie(RC_COOKIE, '', {
@@ -3490,8 +3673,14 @@ const SURVEY_COLLECTION = 'rc_visit_feedback';
 //
 // An admin session does NOT pass. Admin rights open every other view in this
 // app; this is the one they must not, so the check is the flag alone.
+//
+// Nor does the shared team login: it lets anyone holding one password pick her
+// name off a list, and a promise of confidentiality that a name-picker can
+// satisfy is no promise at all. She reaches this the way she always has —
+// through her own e-mail and password.
 async function isSurveyReader(req: Request): Promise<boolean> {
-  return Boolean((await resolveRcSession(req))?.isRcPresident);
+  const session = await resolveRcSession(req);
+  return session?.mode === 'personal' && session.person.isRcPresident;
 }
 
 async function requireSurveyReader(req: Request, res: ExpressResponse, next: () => void) {
@@ -3791,8 +3980,8 @@ function ownsFeedback(req: Request, record: AnyRecord): boolean {
 async function sessionRcIdentity(req: Request): Promise<RcAuthInfo | null> {
   const attached = rcAuthByReq.get(req);
   if (attached) return attached;
-  const person = await resolveRcSession(req);
-  return person ? { rcId: person.id, name: person.fullName } : null;
+  const session = await resolveRcSession(req);
+  return session ? { rcId: session.person.id, name: session.person.fullName } : null;
 }
 
 // Reading a note is narrower than writing one. Writing is open to admins on

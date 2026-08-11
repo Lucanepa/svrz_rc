@@ -1,5 +1,51 @@
 # Plan: Per-RC authentication and row-based access
 
+> ## Superseded in part (2026-08-11): shared team login + RC picker
+>
+> Per-RC passwords proved to be more login admin than the group wanted. The
+> everyday way in is now **one credential for the whole team** —
+> `Referee-Coaching` / `Saison26-27`, overridable via `SHARED_LOGIN_USERNAME`
+> and `SHARED_LOGIN_PASSWORD` — followed by a **picker**: the coach chooses
+> their own name (and their language) before the app will load anything.
+>
+> The session cookie is unchanged in shape and lifetime; what changed is how it
+> gets filled and that it now records **how** it was authenticated:
+>
+> | | `mode: 'shared'` | `mode: 'personal'` |
+> |---|---|---|
+> | Opened by | `POST /api/auth/shared/login` | `POST /api/auth/rc/login` (e-mail + password, §2 below) |
+> | Identity | claimed via `POST /api/auth/rc/identify`, re-callable | proven by the password, fixed |
+> | Before identifying | authenticated but **nobody** — every `requireRcSession` route 401s | n/a |
+> | Coach-level access (own games, own feedbacks, filing observations) | yes | yes |
+> | `is_admin` honoured | **no** | yes |
+> | `is_rc_president` honoured (survey responses, president notes) | **no** | yes |
+>
+> That table is the whole security argument. A password everybody knows can
+> establish *attribution* — whose name the log, the game assignment and the
+> filed feedback carry — but it cannot establish *authority*, because anyone
+> holding it could pick any name off the list. So the two privileges that a
+> name-picker must not be able to grant itself are refused to shared sessions
+> outright, and the people who hold them (the admins, and the chair whose
+> access to the surveys the form promises is hers alone) keep signing in with
+> their own e-mail and password through "Persönlicher Zugang" on the login
+> screen. Everything below about per-RC passwords therefore still describes a
+> live code path — it is simply no longer the one most people use.
+>
+> Consequences worth remembering:
+> - `resolveRcSession` returns `{ person, mode }`, and every privilege check
+>   reads the mode. Tokens minted before this change carry no mode and are read
+>   as personal, so the deploy signs nobody out.
+> - The president's PIN rotation (`POST /api/admin/rc-people/:id/pin`) now
+>   requires *her personal* session, not merely an identity matching hers —
+>   otherwise admin + a shared session picking her name walked around the
+>   survey gate in three clicks.
+> - Choosing an RC is **not** a privilege boundary between coaches. Any coach
+>   can pick any colleague's name and act as them. That is inherent to a shared
+>   credential and was accepted knowingly; the log records every identify.
+> - The picker pre-selects the last name used on the device (`svrz_rc_identity`
+>   in localStorage) but still asks, and stays reachable from the app header so
+>   a wrong pick or a handed-on tablet never needs the password again.
+
 Status: **implemented** (2026-07-20) — with these decisions by Luca:
 - The shared `APP_PASSWORD` gate is removed **completely** (no dual mode).
 - Login is a personal **6-digit PIN per RC** (not the email one-time code

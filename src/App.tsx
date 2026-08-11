@@ -37,6 +37,7 @@ import {
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import { cn } from './lib/utils';
+import { getStoredLang, setStoredLang } from './lib/prefs';
 import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
@@ -594,6 +595,10 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
 const loadPdfBuilder = () => import('./lib/feedbackPdf');
 
 function detectInitialLang(): FeedbackFormData['lang'] {
+  // A choice made at the login screen outranks the browser's guess — that is
+  // the point of putting the toggle there.
+  const stored = getStoredLang();
+  if (stored) return stored;
   if (typeof window === 'undefined' || !window.navigator?.language) {
     return INITIAL_DATA.lang;
   }
@@ -2511,6 +2516,8 @@ export default function App() {
   const toggleLang = () => {
     setFormData(prev => {
       const newLang = prev.lang === 'DE' ? 'EN' : 'DE';
+      // Remembered per device, so the gate and the app agree on the next visit.
+      setStoredLang(newLang);
       let newSections;
       if (prev.role === '1. SR') {
         newSections = adjustSectionsFor2SR(newLang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, gameHas2SR);
@@ -3156,6 +3163,21 @@ export default function App() {
                     <span className="hidden sm:inline">{formData.lang === 'DE' ? 'Kalender' : 'Calendar'}</span>
                   </button>
                 )}
+                {/* On the team login the name is a claim, so it has to stay
+                    changeable in the app: whoever picked wrong — or is handing
+                    the tablet to the next coach — must not need the password
+                    again. The name doubles as that button; a personal session
+                    can't switch, so there it just labels the logout. */}
+                {rcAuth.rcName && rcAuth.sharedSession && (
+                  <button
+                    onClick={rcAuth.switchRc}
+                    className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
+                    title={formData.lang === 'DE' ? `Angemeldet als ${rcAuth.rcName} — wechseln` : `Signed in as ${rcAuth.rcName} — switch`}
+                  >
+                    <Users size={14} />
+                    <span className="hidden sm:inline max-w-[9rem] truncate">{rcAuth.rcName}</span>
+                  </button>
+                )}
                 {rcAuth.rcName && (
                   <button
                     onClick={rcAuth.logout}
@@ -3163,7 +3185,7 @@ export default function App() {
                     title={formData.lang === 'DE' ? `Abmelden (${rcAuth.rcName})` : `Log out (${rcAuth.rcName})`}
                   >
                     <LogOut size={14} />
-                    <span className="hidden sm:inline max-w-[9rem] truncate">{rcAuth.rcName}</span>
+                    {!rcAuth.sharedSession && <span className="hidden sm:inline max-w-[9rem] truncate">{rcAuth.rcName}</span>}
                   </button>
                 )}
               </div>

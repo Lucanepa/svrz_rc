@@ -89,6 +89,13 @@ VM_PASSWORD="..."   # game sync credentials
 ADMIN_SESSION_SECRET="long-random-secret" # recommended
 ADMIN_SESSION_TTL_MS="28800000"           # default 8h
 
+# The shared team login (the everyday way into the app). Both default to the
+# 26/27 pair baked into the code, so an unset env is a working app — set them
+# to rotate at the season change without a deploy. Rotating logs nobody out:
+# existing session cookies stay valid for their 30 days.
+SHARED_LOGIN_USERNAME="Referee-Coaching"
+SHARED_LOGIN_PASSWORD="Saison26-27"
+
 VM_BASE=""  # game sync base URL
 VM_SYNC_CRON="0 5 * * *"
 VM_SYNC_TIMEZONE="Europe/Zurich"
@@ -197,27 +204,45 @@ column the app has started writing gets added.
 
 ## API Authentication Model
 
-Two auth layers are in use:
+Three layers, plus capability tokens:
 
-1. PocketBase admin auth (server-side, via env creds) for DB operations.
-2. App admin session cookie (`svrz_admin_session`) for protected admin endpoints.
+1. **PocketBase admin auth** (server-side, via env creds) for every DB
+   operation. The browser never talks to PocketBase.
+2. **App session cookie** `svrz_rc_session` — who the app is acting as. Signed
+   (HMAC, `ADMIN_SESSION_SECRET`), `httpOnly`, 30 days. Carries a `mode`:
+   - `shared` — opened by `POST /api/auth/shared/login` with the team
+     credential. Starts with **no identity**: every `requireRcSession` route
+     answers 401 until `POST /api/auth/rc/identify` names an RC (the list comes
+     from `GET /api/auth/rc/roster`). The name is a claim, so the session gets
+     coach-level access only — `is_admin` and `is_rc_president` are ignored on
+     it. Re-callable, which is how "switch RC" works.
+   - `personal` — opened by `POST /api/auth/rc/login` with that RC's own e-mail
+     and password. Identity is proven, so the two flags are honoured. This is
+     how admins and the RC chair sign in.
+   Tokens issued before `mode` existed are read as `personal`.
+3. **Admin console cookie** `svrz_admin_session` — PocketBase superuser
+   credentials via `POST /api/admin/auth/login`, or the single
+   `ADMIN_UI_PASSWORD` via `POST /api/admin/ui-login`. Implies admin everywhere.
+4. **Capability tokens** in the URL for the two pages that have no session at
+   all: `#/sign/<slug>` (signature capture) and `#/survey/<token>` (post-visit
+   survey, sent to referees who are not app users).
 
-Admin cookie endpoints:
+`GET /api/auth/me` reports the state the client needs to route on:
+`{ rc, admin, surveyReader, shared, needsIdentity }` — where `needsIdentity`
+means "signed in, but nobody yet: show the picker, not the login screen".
 
-- `GET /api/admin/auth/status`
-- `POST /api/admin/auth/login`
-- `POST /api/admin/auth/logout`
+Middleware:
 
-Protected endpoints requiring admin cookie:
+- `requireAdminSession` — admin cookie, **or** a personal RC session flagged
+  `is_admin`.
+- `requireRcSession` — any identified session. Attaches the caller's identity
+  unless they are a personally-authenticated admin, and enforcement sites read
+  "no identity attached" as full access.
+- `requireSurveyReader` — a **personal** session flagged `is_rc_president`, and
+  nothing else. Admin rights deliberately do not open it.
 
-- `POST /api/games/sync`
-- `POST /api/games/sync/debug`
-- `POST /api/vm/auth-check`
-- `POST|PUT|DELETE /api/coachees`
-- `GET|POST|PUT|DELETE /api/referee-coaches`
-- `POST /api/admin/migrate-source-payload`
-
-Read endpoints used by app are generally open, but still depend on valid server-side PocketBase credentials.
+Nothing outside the four capability-token routes and `/api/client-logs` is
+reachable without a session.
 
 ## API Endpoints (What They Do)
 

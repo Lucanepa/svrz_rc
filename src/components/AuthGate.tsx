@@ -165,10 +165,18 @@ const primaryButtonClass =
 // the app whenever someone hands the device on.
 type View = 'shared' | 'personal' | 'forgot-email' | 'forgot-code' | 'forgot-done' | 'identify';
 
+// Which of the two login forms a signed-out visitor should meet. #/admin is
+// reached by people who came for the admin console, and the team credential
+// cannot open it — so that route opens on the personal form. Everywhere else
+// starts on the everyday one; the two stay one click apart either way.
+function defaultView(): View {
+  return /^#\/?admin(\/|$)/i.test(window.location.hash) ? 'personal' : 'shared';
+}
+
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [authed, setAuthed] = useState(false);
   const [checking, setChecking] = useState(true);
-  const [view, setView] = useState<View>('shared');
+  const [view, setView] = useState<View>(defaultView);
   const [lang, setLang] = useState<Lang>(() => getStoredLang() ?? (navigator.language?.toLowerCase().startsWith('en') ? 'EN' : 'DE'));
   const t = STR[lang];
 
@@ -366,7 +374,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setPassword('');
       setChosenRcId(null);
       setRoster(null);
-      setView('shared');
+      setView(defaultView());
     });
   };
 

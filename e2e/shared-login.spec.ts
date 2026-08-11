@@ -96,6 +96,17 @@ test.describe('Team login', () => {
     await expect(page.getByRole('button', { name: /^Coachee Games$/ })).toBeVisible();
   });
 
+  test('#/admin opens on the personal form — the team credential cannot open the console', async ({ page }) => {
+    await stubLoginFlow(page);
+    await page.goto('/#/admin');
+
+    await expect(page.getByPlaceholder(/E-Mail|^Email$/)).toBeVisible();
+    await expect(page.getByPlaceholder(/Benutzername|Username/)).toHaveCount(0);
+    // Still one click from the everyday screen, for an admin who is there to coach.
+    await page.getByRole('button', { name: /Zurück zur Team-Anmeldung|Back to team sign-in/ }).click();
+    await expect(page.getByPlaceholder(/Benutzername|Username/)).toBeVisible();
+  });
+
   test('the name in the header reopens the picker without asking for the password', async ({ page }) => {
     const { setPhase } = await stubLoginFlow(page);
     setPhase('identified');

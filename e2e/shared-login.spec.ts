@@ -52,8 +52,12 @@ test.describe('Team login', () => {
     await stubLoginFlow(page);
     await page.goto('/');
 
-    // The everyday screen is username + password, not e-mail.
-    await expect(page.getByPlaceholder(/Benutzername|Username/)).toBeVisible();
+    // The everyday screen is username + password, not e-mail — and neither
+    // field is pre-filled: the credential is typed, not handed out by the page.
+    await expect(page.getByPlaceholder(/Benutzername|Username/)).toHaveValue('');
+    await expect(page.getByPlaceholder(/^(Passwort|Password)$/)).toHaveValue('');
+    // Nor is the personal form advertised here; it lives at #/admin.
+    await expect(page.getByRole('button', { name: /Persönlicher Zugang|Personal access/ })).toHaveCount(0);
     await signInWithTeamCredential(page);
 
     // The password alone gets nobody in — the picker stands between.

@@ -24,6 +24,8 @@ const STR = {
     sending: 'Sende…',
     showPassword: 'Passwort anzeigen',
     hidePassword: 'Passwort verbergen',
+    // Parked, not dead: the link that used it was pulled from the team login
+    // screen on purpose (see the comment there), and this is what puts it back.
     toPersonal: 'Persönlicher Zugang',
     toShared: 'Zurück zur Team-Anmeldung',
     personalHint: 'Für Admin und RC-Vorsitz — mit persönlicher E-Mail und Passwort.',
@@ -180,7 +182,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [lang, setLang] = useState<Lang>(() => getStoredLang() ?? (navigator.language?.toLowerCase().startsWith('en') ? 'EN' : 'DE'));
   const t = STR[lang];
 
-  const [username, setUsername] = useState('Referee-Coaching');
+  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -509,6 +511,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                     value={username}
                     onChange={e => setUsername(e.target.value)}
                     placeholder={t.username}
+                    autoFocus
                     disabled={submitting}
                     className={inputClass(error)}
                   />
@@ -526,11 +529,13 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                   {submitting ? t.checking : t.login}
                 </button>
               </form>
+              {/* The personal form is deliberately NOT linked from here: this
+                  screen is for the team credential and nothing else. It is not
+                  gone — #/admin still opens on it, which is where the two
+                  people who need it are going anyway (admin console, and the
+                  survey tabs the chair reads). Restore the link by putting
+                  t.toPersonal back next to the admin one. */}
               <p className="text-center text-[11px] text-stone-400 mt-5">
-                <button type="button" onClick={() => { setError(''); setPassword(''); setView('personal'); }} className="underline hover:text-stone-600">
-                  {t.toPersonal}
-                </button>
-                {' · '}
                 <a href="#/admin" className="underline hover:text-stone-600">{t.adminLogin}</a>
               </p>
             </>

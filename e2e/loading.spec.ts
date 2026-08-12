@@ -87,3 +87,58 @@ test('opening the RC detail tab reuses what Home already fetched', async ({ page
 
   expect(seen.filter((s) => s.path === 'summary').length).toBe(before);
 });
+
+test.describe('what a wait looks like', () => {
+  const SLOW = 20_000;
+
+  /** Signed in as an admin, so a colleague's RC detail can be opened. */
+  async function stubOverview(page: import('@playwright/test').Page, slowSummaryAfter: number) {
+    let n = 0;
+    await stubSignedInApp(page, { admin: true });
+    await page.route('**/api/settings', (r) => r.fulfill({
+      json: {
+        default_season: SERVER_SEASON, test_mode: false, groups: [],
+        coachee_targets: {}, rc_mandates: {}, default_goal: 10,
+      },
+    }));
+    await page.route('**/api/rc-overview*', (r) => r.fulfill({
+      json: [
+        { id: RC.id, fullName: RC.name, done: 0, outstanding: 0, planned: 0 },
+        { id: 'rc2', fullName: 'Beat Beispiel', done: 2, outstanding: 1, planned: 3 },
+      ],
+    }));
+    await page.route('**/api/rc-overview/*/coachees*', async (r) => {
+      // StrictMode fires the bootstrap's own call twice in a dev build, so the
+      // threshold counts requests rather than "the first one".
+      if (++n > slowSummaryAfter) await new Promise((res) => setTimeout(res, SLOW));
+      await r.fulfill({ json: [] });
+    });
+  }
+
+  test('the first load of a session gets the branded spinner', async ({ page }) => {
+    // Nothing answers the dashboard, so the app never leaves its bootstrap.
+    await stubOverview(page, 0);
+    await page.goto('/');
+    await expect(page.locator('h1')).toContainText('Coaching Feedback');
+    await page.waitForTimeout(1500);
+
+    expect(await page.locator('.svrz-orbit').count()).toBeGreaterThan(0);
+    expect(await page.locator('.animate-pulse').count()).toBe(0);
+  });
+
+  test('a load after the app is up gets skeleton rows instead', async ({ page }) => {
+    await stubOverview(page, 2);
+    await page.goto('/');
+    await expect(page.locator('h1')).toContainText('Coaching Feedback');
+    await page.waitForTimeout(2000);
+
+    // A colleague's detail is fetched on demand, so this wait happens well
+    // after the bootstrap has finished.
+    await page.getByRole('button', { name: /Referee Coaches/ }).click();
+    await page.getByText('Beat Beispiel').first().click();
+    await page.waitForTimeout(1200);
+
+    expect(await page.locator('.animate-pulse').count()).toBeGreaterThan(0);
+    expect(await page.locator('.svrz-orbit').count()).toBe(0);
+  });
+});

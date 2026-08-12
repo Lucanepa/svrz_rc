@@ -44,6 +44,7 @@ import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap
 import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
 import LevelText from './components/LevelText';
+import { Skeleton, SkeletonRows } from './components/Skeleton';
 import AppSpinner from './components/AppSpinner';
 import { useRcAuth } from './components/AuthGate';
 import { isDemoMode, getSentMail, demoTips, type DemoEmail } from './lib/demo';
@@ -618,13 +619,40 @@ function MatchResult({ result, className }: { result?: string; className?: strin
 }
 
 /**
- * The wait shown in place of a list that has not arrived.
+ * The wait shown in place of a list that has not arrived — in one of two ways.
  *
- * Padded to roughly the height the loaded list occupies: a spinner in a
- * collapsed container makes the page jump when the data lands, which is the one
- * thing the skeletons this replaced were good at.
+ * The very first load of a session gets the branded spinner: nothing is on
+ * screen yet, there is no layout to preserve, and it is the moment worth
+ * making the app's own. Every load after that gets skeleton rows instead,
+ * because by then the reader knows the shape of the page and wants to see it
+ * coming back, not a logo where their list used to be.
+ *
+ * The spinner is padded to roughly the height the list occupies, so the page
+ * does not jolt when the data lands.
  */
-function ListLoading({ label, className = 'py-20' }: { label: string; className?: string }) {
+function ListLoading({
+  label,
+  first,
+  rows = 6,
+  pill = true,
+  framed = false,
+  className = 'py-20',
+}: {
+  label: string;
+  /** True only while the app is still doing its one-time bootstrap. */
+  first: boolean;
+  rows?: number;
+  pill?: boolean;
+  /** Wrap the skeleton in the bordered box its list normally sits in. */
+  framed?: boolean;
+  className?: string;
+}) {
+  if (!first) {
+    const skeleton = <SkeletonRows rows={rows} pill={pill} />;
+    // Some of these stand in for a bordered table; the frame is part of the
+    // shape being held open.
+    return framed ? <div className="border border-stone-200 rounded">{skeleton}</div> : skeleton;
+  }
   return (
     <div className={`flex justify-center ${className}`}>
       <AppSpinner size={132} label={label} />
@@ -3373,7 +3401,27 @@ export default function App() {
                   </div>
 
                   {(homeLoading || booting) && !homeData ? (
-                    <ListLoading label={t.loading} className="py-24" />
+                    booting ? (
+                      <div className="flex justify-center py-24">
+                        <AppSpinner size={132} label={t.loading} />
+                      </div>
+                    ) : (
+                      // Same shape as the loaded dashboard — counters, then a list.
+                      <div className="space-y-4" role="status" aria-busy="true">
+                        <div className="grid grid-cols-3 gap-2">
+                          <Skeleton className="h-[76px] rounded-xl" />
+                          <Skeleton className="h-[76px] rounded-xl" />
+                          <Skeleton className="h-[76px] rounded-xl" />
+                        </div>
+                        <Skeleton className="h-4 w-40" />
+                        <div className="space-y-1.5">
+                          <Skeleton className="h-[58px] rounded-lg" />
+                          <Skeleton className="h-[58px] rounded-lg" />
+                          <Skeleton className="h-[58px] rounded-lg" />
+                          <Skeleton className="h-[58px] rounded-lg" />
+                        </div>
+                      </div>
+                    )
                   ) : homeData ? (
                     <>
                       {/* Counters */}
@@ -3766,7 +3814,7 @@ export default function App() {
               <div className="border border-stone-200 rounded">
                 {coachees.length === 0 && (booting || loadingCoachees) ? (
                   // Still loading — a skeleton, never the "nothing found" state.
-                  <ListLoading label={t.loading} />
+                  <ListLoading label={t.loading} first={booting} rows={8} />
                 ) : filteredCoachees.length === 0 ? (
                   <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><Users size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noCoachees}</p></div>
                 ) : (
@@ -3918,7 +3966,7 @@ export default function App() {
                   })()}
                   <div className="border border-stone-200 rounded">
                     {eligibleGames.length === 0 && (booting || loadingGames) ? (
-                      <ListLoading label={t.loading} />
+                      <ListLoading label={t.loading} first={booting} rows={8} />
                     ) : filteredGames.length === 0 ? (
                       <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><CalendarDays size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noGames}</p></div>
                     ) : (
@@ -4340,7 +4388,7 @@ export default function App() {
                 {(booting || rcOverviewLoading) && rcOverviewData.length === 0 && !selectedRcName ? (
                   // Only when there is nothing to show yet — a background
                   // refresh keeps the current table on screen.
-                  <ListLoading label={t.loading} />
+                  <ListLoading label={t.loading} first={booting} rows={6} framed />
                 ) : selectedRcName ? (
                   <div>
                     <button
@@ -4352,7 +4400,7 @@ export default function App() {
                     </button>
                     <h3 className="text-base font-semibold text-stone-800 mb-4">{selectedRcName}</h3>
                     {(booting || rcCoachSummaryLoading) && rcCoachSummaryData.length === 0 ? (
-                      <ListLoading label={t.loading} className="py-16" />
+                      <ListLoading label={t.loading} first={booting} rows={5} pill={false} framed className="py-16" />
                     ) : rcCoachSummaryFailed ? (
                       <div className="text-sm text-stone-600 flex flex-col items-start gap-2">
                         <p>{formData.lang === 'DE' ? 'RC-Daten konnten nicht geladen werden.' : 'Could not load RC data.'}</p>
@@ -4561,7 +4609,7 @@ export default function App() {
           </div>
           <div className="border border-stone-200 rounded">
             {loadingCoacheeGames ? (
-              <ListLoading label={t.loading} />
+              <ListLoading label={t.loading} first={booting} rows={5} />
             ) : coacheeGames.length === 0 ? (
               <p className="text-sm text-stone-500 p-4">{t.noCoacheeGames}</p>
             ) : (() => {
@@ -4726,7 +4774,7 @@ export default function App() {
           </div>
           <div className="space-y-4 max-h-[70vh] overflow-auto">
             {sortedCalendarDays.length === 0 && (booting || loadingCalendar) ? (
-              <ListLoading label={t.loading} />
+              <ListLoading label={t.loading} first={booting} rows={5} framed />
             ) : sortedCalendarDays.length === 0 ? (
               <p className="text-sm text-stone-500">{t.noGames}</p>
             ) : (

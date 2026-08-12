@@ -456,6 +456,19 @@ for a year**. Clients whose requests land on that cache shard then load an
 on 2026-08-12; `cf-cache-status: HIT` with `content-type: text/html` on
 `/assets/index-*.js` is the fingerprint.
 
+**Fixed 2026-08-12** by adding `public/404.html`. Cloudflare Pages serves that
+with a real **404** for unmatched paths instead of falling back to `index.html`
+at 200, and a 404 does not get cached in an asset's place. Nothing needed the
+fallback: every route in this app lives in the URL hash (`#/admin`,
+`#/sign/<slug>`, `#/survey/<token>`), so no path other than `/` is ever
+requested from the server. Verify after any change to Pages' not-found handling:
+
+```bash
+curl -so /dev/null -w '%{http_code} %{content_type}\n' \
+  https://svrz-rc.openvolley.app/assets/nope-abc123.js
+# must be 404 — a 200 text/html here means the trap is back
+```
+
 Two consequences worth knowing:
 
 - **Do not fetch canonical asset URLs immediately after a deploy.** That is how

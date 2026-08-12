@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Seite nicht gefunden – SVRZ Referee Coaching</title>
+    <!--
+      This page exists to stop Cloudflare Pages answering unknown paths with
+      index.html at status 200.
+
+      Every route in this app lives in the URL hash (#/admin, #/sign/<slug>,
+      #/survey/<token>), so nothing is ever served from a path other than "/" —
+      the SPA fallback was doing no work here. What it DID do was turn a missing
+      file into a success: during the propagation window after a deploy, a
+      request for a hashed asset that had not landed yet was answered with this
+      HTML at 200, and _headers marks /assets/* immutable for a year, so the
+      edge cached it under the script's URL and clients got a blank page. A 404
+      is not a success and does not get cached in its place.
+
+      See infrastructure.md → "Deploy trap".
+    -->
+    <style>
+      :root { color-scheme: light; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f5f5f4;
+        color: #292524;
+        font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        text-align: center;
+        padding: 24px;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid rgba(231, 229, 228, 0.7);
+        border-radius: 24px;
+        padding: 40px 32px;
+        max-width: 380px;
+        box-shadow: 0 2px 4px -2px rgb(28 25 23 / 0.08), 0 16px 40px -12px rgb(28 25 23 / 0.16);
+      }
+      h1 { font-size: 18px; margin: 0 0 8px; }
+      p { font-size: 14px; color: #57534e; margin: 0 0 24px; line-height: 1.6; }
+      a {
+        display: inline-block;
+        background: #e2001a;
+        color: #fff;
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 14px;
+        padding: 12px 28px;
+        border-radius: 12px;
+      }
+      .brand {
+        margin-top: 28px;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #a8a29e;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Seite nicht gefunden</h1>
+      <p>Diese Adresse gibt es nicht. Zur&uuml;ck zur Referee-Coaching-App:</p>
+      <a href="/">Zur App</a>
+      <p class="brand">Swiss Volley Region Z&uuml;rich</p>
+    </div>
+  </body>
+</html>

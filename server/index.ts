@@ -4560,6 +4560,9 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
 // container log.
 app.get('/api/admin/games/sync-status', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
+    // PocketBase is reached as superuser; without this every read below is a
+    // 403 ("Only superusers can perform this action").
+    await ensureAdminAuth();
     const rec = await getSettingRecord(GAMES_SYNC_STATUS_KEY);
     let status: GamesSyncStatus | null = null;
     try { status = rec ? JSON.parse(asText(rec.value)) as GamesSyncStatus : null; } catch { status = null; }
@@ -4568,8 +4571,10 @@ app.get('/api/admin/games/sync-status', requireAdminSession, async (_req: Reques
     // it can say "ok" while every game it touched was already up to date.
     let newestGame = '';
     try {
+      // Projected to two columns, so pulling the list to read its head is
+      // cheap — getFullList has no "just the first row" mode.
       const [latest] = await withCollection(collectionCandidates.games, (c) =>
-        c.getFullList<AnyRecord>({ sort: '-updated', fields: 'id,updated', page: 1, perPage: 1 }));
+        c.getFullList<AnyRecord>({ sort: '-updated', fields: 'id,updated' }));
       newestGame = asText(latest?.updated);
     } catch { /* leave it blank rather than fail the whole readout */ }
     res.json({ status, newestGame, cron: process.env.VM_SYNC_CRON || '0 5 * * *' });

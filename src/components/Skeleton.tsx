@@ -1,6 +1,11 @@
 // Placeholders for data that is still in flight. They keep a page's real
 // layout on screen during the first load, so a list that is merely loading
 // never looks like a list that is empty.
+//
+// The admin console is the only caller left: the coach-facing app waits behind
+// the branded spinner instead (components/AppSpinner.tsx). Several of the
+// shapes below stand in for form fields and a text area rather than list rows,
+// which is the part a spinner cannot say.
 
 export function Skeleton({ className = '' }: { className?: string }) {
   return <div aria-hidden="true" className={`animate-pulse rounded bg-stone-200/80 ${className}`} />;

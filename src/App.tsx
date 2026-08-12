@@ -44,7 +44,6 @@ import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap
 import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
 import LevelText from './components/LevelText';
-import { Skeleton, SkeletonRows } from './components/Skeleton';
 import AppSpinner from './components/AppSpinner';
 import { useRcAuth } from './components/AuthGate';
 import { isDemoMode, getSentMail, demoTips, type DemoEmail } from './lib/demo';
@@ -615,6 +614,21 @@ function MatchResult({ result, className }: { result?: string; className?: strin
       <span className="text-sm font-bold text-stone-600">{parsed.home}:{parsed.away}</span>
       {sets.length > 0 && <span className="text-[11px] text-stone-400">{sets.join(' | ')}</span>}
     </span>
+  );
+}
+
+/**
+ * The wait shown in place of a list that has not arrived.
+ *
+ * Padded to roughly the height the loaded list occupies: a spinner in a
+ * collapsed container makes the page jump when the data lands, which is the one
+ * thing the skeletons this replaced were good at.
+ */
+function ListLoading({ label, className = 'py-20' }: { label: string; className?: string }) {
+  return (
+    <div className={`flex justify-center ${className}`}>
+      <AppSpinner size={132} label={label} />
+    </div>
   );
 }
 
@@ -3359,21 +3373,7 @@ export default function App() {
                   </div>
 
                   {(homeLoading || booting) && !homeData ? (
-                    // Same shape as the loaded dashboard — counters, then a list.
-                    <div className="space-y-4" role="status" aria-busy="true">
-                      <div className="grid grid-cols-3 gap-2">
-                        <Skeleton className="h-[76px] rounded-xl" />
-                        <Skeleton className="h-[76px] rounded-xl" />
-                        <Skeleton className="h-[76px] rounded-xl" />
-                      </div>
-                      <Skeleton className="h-4 w-40" />
-                      <div className="space-y-1.5">
-                        <Skeleton className="h-[58px] rounded-lg" />
-                        <Skeleton className="h-[58px] rounded-lg" />
-                        <Skeleton className="h-[58px] rounded-lg" />
-                        <Skeleton className="h-[58px] rounded-lg" />
-                      </div>
-                    </div>
+                    <ListLoading label={t.loading} className="py-24" />
                   ) : homeData ? (
                     <>
                       {/* Counters */}
@@ -3766,7 +3766,7 @@ export default function App() {
               <div className="border border-stone-200 rounded">
                 {coachees.length === 0 && (booting || loadingCoachees) ? (
                   // Still loading — a skeleton, never the "nothing found" state.
-                  <SkeletonRows rows={8} />
+                  <ListLoading label={t.loading} />
                 ) : filteredCoachees.length === 0 ? (
                   <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><Users size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noCoachees}</p></div>
                 ) : (
@@ -3918,7 +3918,7 @@ export default function App() {
                   })()}
                   <div className="border border-stone-200 rounded">
                     {eligibleGames.length === 0 && (booting || loadingGames) ? (
-                      <SkeletonRows rows={8} />
+                      <ListLoading label={t.loading} />
                     ) : filteredGames.length === 0 ? (
                       <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><CalendarDays size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noGames}</p></div>
                     ) : (
@@ -4340,7 +4340,7 @@ export default function App() {
                 {(booting || rcOverviewLoading) && rcOverviewData.length === 0 && !selectedRcName ? (
                   // Only when there is nothing to show yet — a background
                   // refresh keeps the current table on screen.
-                  <div className="border border-stone-200 rounded"><SkeletonRows rows={6} /></div>
+                  <ListLoading label={t.loading} />
                 ) : selectedRcName ? (
                   <div>
                     <button
@@ -4352,7 +4352,7 @@ export default function App() {
                     </button>
                     <h3 className="text-base font-semibold text-stone-800 mb-4">{selectedRcName}</h3>
                     {(booting || rcCoachSummaryLoading) && rcCoachSummaryData.length === 0 ? (
-                      <div className="border border-stone-200 rounded"><SkeletonRows rows={5} pill={false} /></div>
+                      <ListLoading label={t.loading} className="py-16" />
                     ) : rcCoachSummaryFailed ? (
                       <div className="text-sm text-stone-600 flex flex-col items-start gap-2">
                         <p>{formData.lang === 'DE' ? 'RC-Daten konnten nicht geladen werden.' : 'Could not load RC data.'}</p>
@@ -4561,7 +4561,7 @@ export default function App() {
           </div>
           <div className="border border-stone-200 rounded">
             {loadingCoacheeGames ? (
-              <SkeletonRows rows={5} />
+              <ListLoading label={t.loading} />
             ) : coacheeGames.length === 0 ? (
               <p className="text-sm text-stone-500 p-4">{t.noCoacheeGames}</p>
             ) : (() => {
@@ -4726,7 +4726,7 @@ export default function App() {
           </div>
           <div className="space-y-4 max-h-[70vh] overflow-auto">
             {sortedCalendarDays.length === 0 && (booting || loadingCalendar) ? (
-              <div className="border border-stone-200 rounded"><SkeletonRows rows={5} /></div>
+              <ListLoading label={t.loading} />
             ) : sortedCalendarDays.length === 0 ? (
               <p className="text-sm text-stone-500">{t.noGames}</p>
             ) : (

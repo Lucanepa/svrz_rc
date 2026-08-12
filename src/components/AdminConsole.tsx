@@ -3,7 +3,7 @@ import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
-  getAdminAuthStatus, adminUiLogin, logoutAdmin, getAuthMe,
+  getAdminAuthStatus, adminUiLogin, logoutAdmin, getAuthMe, getGamesSyncStatus,
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson, generateRcPin,
   getSettings, putSettings, loadEligibleGames,
@@ -432,7 +432,7 @@ export default function AdminConsole() {
         {surveyReader && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}>
-          <SettingsAdmin t={t} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} />
+          <SettingsAdmin t={t} lang={lang} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} />
           <ManualGameAdmin t={t} lang={lang} />
         </div>
         <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
@@ -1444,7 +1444,7 @@ function ManualGameAdmin({ t, lang }: { t: T; lang: Lang }) {
   );
 }
 
-function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups, defaultGoal, onDefaultGoal }: { t: T; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void; defaultGoal: number; onDefaultGoal: (n: number) => Promise<void> }) {
+function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups, defaultGoal, onDefaultGoal }: { t: T; lang: Lang; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void; defaultGoal: number; onDefaultGoal: (n: number) => Promise<void> }) {
   const [season, setSeason] = useState<number>(defaultSeason);
   const seasonTouched = useRef(false);
   useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
@@ -1460,6 +1460,11 @@ function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading
     setGoalSaved(true); setTimeout(() => setGoalSaved(false), 2500);
   };
   const loading = settingsLoading;
+  // The nightly VolleyManager import, and whether it is still working. It
+  // failed every night for three weeks once with nobody the wiser, because the
+  // only place that knew was the container log.
+  const [sync, setSync] = useState<Awaited<ReturnType<typeof getGamesSyncStatus>> | null>(null);
+  useEffect(() => { getGamesSyncStatus().then(setSync).catch(() => setSync(null)); }, []);
   const [ng, setNg] = useState('');
   const [gi, setGi] = useState<number | null>(null);
   const [gv, setGv] = useState('');
@@ -1487,6 +1492,48 @@ function SettingsAdmin({ t, testMode, onTestMode, defaultSeason, settingsLoading
   const toggleTest = async () => { const next = !testMode; onTestMode(next); try { await putSettings({ test_mode: next }); } catch { onTestMode(!next); } };
   return (
     <>
+      {sync && typeof sync === 'object' && !Array.isArray(sync) && (() => {
+        // "Stale" is nothing new for over two days: long enough to be wrong on
+        // a weekly fixture list, short enough to catch within a round.
+        const newest = sync.newestGame ? new Date(sync.newestGame) : null;
+        const stale = !newest || Number.isNaN(newest.getTime())
+          || (Date.now() - newest.getTime()) / 86_400_000 > 2;
+        // `sync.status` is null before the first run and undefined if the
+        // payload is not what we expect — `!== null` was true for both, and
+        // then reading .ok threw and took the whole console down with it.
+        const bad = (sync.status ? !sync.status.ok : false) || stale;
+        const when = (iso: string) => {
+          const d = new Date(iso);
+          return Number.isNaN(d.getTime()) ? '–' : d.toLocaleString('de-CH', { dateStyle: 'short', timeStyle: 'short' });
+        };
+        const de = lang === 'DE';
+        return (
+          <div className={cn('rounded-xl border px-4 py-3 text-xs',
+            bad ? 'border-red-300 bg-red-50 text-red-800' : 'border-stone-200 bg-white text-stone-600')}>
+            <div className="font-semibold mb-0.5">{de ? 'Spiel-Import (VolleyManager)' : 'Game import (VolleyManager)'}</div>
+            <div>
+              {de ? 'Neuestes Spiel aktualisiert: ' : 'Newest game updated: '}
+              <strong>{sync.newestGame ? when(sync.newestGame) : '–'}</strong>
+              {` · ${de ? 'Zeitplan' : 'schedule'} ${sync.cron}`}
+            </div>
+            {sync.status && (
+              <div className="mt-0.5">
+                {de ? 'Letzter Lauf: ' : 'Last run: '}{when(sync.status.at)}
+                {sync.status.ok
+                  ? ` · ${sync.status.imported ?? 0} ${de ? 'importiert' : 'imported'}`
+                  : ` · ${de ? 'FEHLER' : 'FAILED'}: ${sync.status.error ?? ''}`}
+              </div>
+            )}
+            {bad && (
+              <div className="mt-1 font-medium">
+                {de
+                  ? 'Der Import läuft nicht. Häufigste Ursache: die VolleyManager-Rolle des Sync-Kontos steht nicht auf «Referee Delegate: SVRZ».'
+                  : 'The import is not running. Most common cause: the sync account\u2019s VolleyManager role is not set to \u201cReferee Delegate: SVRZ\u201d.'}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       <Card>
         <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.defaultSeason}</h2>
         <p className="text-xs text-stone-400 mb-3">{t.defaultSeasonHint}</p>

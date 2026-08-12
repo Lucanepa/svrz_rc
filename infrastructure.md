@@ -398,42 +398,36 @@ mount), `LOG_LEVEL` (default `debug`), `LOG_RING_MAX` (20000),
 
 ## Upstream Sync Troubleshooting
 
-### The games sync is BROKEN as of 2026-07-23 — VolleyManager permissions
+### The games sync and the VolleyManager ROLE (broke 2026-07-23, fixed 2026-08-12)
 
-`POST /api/vm/auth-check` fails and the nightly 05:00 cron has imported nothing
-since **2026-07-23 11:47** (verified against the DB including its WAL). The
-error is a 403 while fetching the CSRF token:
+The nightly import silently brought in nothing for three weeks. `vmLogin()`
+reads its CSRF token off `/indoorvolleyball.refadmin/refereegame/index`, and
+that page answered **403**.
+
+Not a permissions grant — a **role selection**. The sync account (Luca Canepa)
+holds many VolleyManager roles, and its *active* one had become
+`Spielplanverantwortlicher: KSC Wiedikon`, a club role that cannot see the
+association's referee games. Everything else about the session was fine: the
+referee **address** list (which the contact sync uses) returned all 135 people
+on that very session, which is what made this look like a code problem.
+
+Switching the active role to **`Referee Delegate: SVRZ`** fixed it instantly and
+**persists on the account** — a fresh login comes back with that role, so no
+code change was needed. In the UI it is the account menu, the line under the
+name. The underlying call is:
 
 ```
-[vm] CSRF page attempt 5/5 …
-Error: Could not extract CSRF token after login. Page title: "403 - Forbidden"
+PUT /api/sportmanager.security/api%5cparty/switchRoleAndAttribute
+    attributeValueAsArray[0]=<attribute uuid>&__csrfToken=<token>
 ```
 
-Probed against production credentials on 2026-08-12 — the account signs in fine
-and its session is good; the **RefAdmin games module** is what refuses it:
+**Keep the sync account on `Referee Delegate: SVRZ`.** Switching it back to a
+club role in VolleyManager breaks the import again, region-wide and silently.
+If that is impractical because a human uses the same account day to day, give
+the sync its own VolleyManager account that only holds the referee role.
 
-| | result |
-|---|---|
-| `/login` → dashboard | 200 |
-| `/indoorvolleyball.refadmin/refereegame/index` (page `vmLogin()` reads its token from) | **403** |
-| `api%5celasticsearchrefereegame/searchForManagingAssociation` (games API) | **500** |
-| `/sportmanager.indoorvolleyball/refereeaddressviewer/index` | 200, CSRF present |
-| `api%5crefereeaddressviewer/search` (contacts, control) | **200**, 135 referees |
-
-So this is **not** fixable by moving where the CSRF token comes from — that
-trick is what makes the contact sync work, and the games API refuses the same
-session anyway. No role-switch link or form exists on the dashboard, so the code
-cannot switch itself into a role with access.
-
-**The fix is upstream:** the VM account needs its RefAdmin rights restored (its
-active role is `Indoorvolleyball.RefAdmin:Referee`, which cannot see the
-association's games), or `VM_USERNAME` / `VM_PASSWORD` must point at an account
-that holds them. Re-test afterwards with:
-
-```bash
-# on hetzner, with an admin session cookie in $J
-curl -s -b "$J" -X POST http://127.0.0.1:8787/api/vm/auth-check -H 'Content-Type: application/json' -d '{}'
-```
+Symptom to recognise: `POST /api/vm/auth-check` returns 500 with
+`Could not extract CSRF token after login. Page title: "403 - Forbidden"`.
 
 Note the failure is **silent to users**: the cron logs an error and stops, and
 nothing surfaces it, which is how three weeks passed unnoticed. Worth adding a

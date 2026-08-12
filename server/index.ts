@@ -2429,6 +2429,32 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
   };
 }
 
+// The outcome of the last games sync, so a broken one is visible to a human
+// instead of only to whoever reads container logs. It went unnoticed for three
+// weeks once: VolleyManager started answering 403 (the account's active VM role
+// had been switched to a club one, which cannot see the association's referee
+// games), the cron logged and moved on, and nothing in the app said a word.
+const GAMES_SYNC_STATUS_KEY = 'games_sync_status';
+
+export type GamesSyncStatus = {
+  at: string;
+  ok: boolean;
+  imported?: number;
+  totalFetched?: number;
+  error?: string;
+};
+
+async function recordGamesSyncStatus(status: GamesSyncStatus): Promise<void> {
+  // Best effort on purpose: failing to write the note must never turn a
+  // successful sync into a failed request, nor mask the real error of a failed
+  // one behind a bookkeeping error.
+  try {
+    await setSetting(GAMES_SYNC_STATUS_KEY, JSON.stringify(status));
+  } catch (error) {
+    console.error('[scheduler] could not record the games-sync status:', error);
+  }
+}
+
 async function runGamesSyncWithRetry(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
   let lastError: unknown = null;
   const totalAttempts = VM_SYNC_MAX_RETRIES + 1;
@@ -2438,7 +2464,16 @@ async function runGamesSyncWithRetry(windowInput: { date?: unknown; from?: unkno
       if (attempt > 1) {
         console.warn(`[scheduler] Retrying games sync (${attempt}/${totalAttempts})...`);
       }
-      return await runGamesSync(windowInput);
+      {
+        const result = await runGamesSync(windowInput);
+        await recordGamesSyncStatus({
+          at: new Date().toISOString(),
+          ok: true,
+          imported: result.imported,
+          totalFetched: result.totalFetched,
+        });
+        return result;
+      }
     } catch (error) {
       lastError = error;
       if (attempt >= totalAttempts) {
@@ -2451,6 +2486,11 @@ async function runGamesSyncWithRetry(windowInput: { date?: unknown; from?: unkno
     }
   }
 
+  await recordGamesSyncStatus({
+    at: new Date().toISOString(),
+    ok: false,
+    error: lastError instanceof Error ? lastError.message.slice(0, 300) : String(lastError).slice(0, 300),
+  });
   throw lastError;
 }
 
@@ -4510,6 +4550,29 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
 
     const result = Array.from(coacheeMap.values()).sort((a, b) => a.coacheeName.localeCompare(b.coacheeName));
     res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+// What the last games sync did. The admin console shows it, so a sync that has
+// stopped working is visible on a screen someone opens rather than only in the
+// container log.
+app.get('/api/admin/games/sync-status', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    const rec = await getSettingRecord(GAMES_SYNC_STATUS_KEY);
+    let status: GamesSyncStatus | null = null;
+    try { status = rec ? JSON.parse(asText(rec.value)) as GamesSyncStatus : null; } catch { status = null; }
+    // The newest game record is the honest cross-check: a status note can be
+    // missing (nothing has run since this shipped) while the data is fine, and
+    // it can say "ok" while every game it touched was already up to date.
+    let newestGame = '';
+    try {
+      const [latest] = await withCollection(collectionCandidates.games, (c) =>
+        c.getFullList<AnyRecord>({ sort: '-updated', fields: 'id,updated', page: 1, perPage: 1 }));
+      newestGame = asText(latest?.updated);
+    } catch { /* leave it blank rather than fail the whole readout */ }
+    res.json({ status, newestGame, cron: process.env.VM_SYNC_CRON || '0 5 * * *' });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

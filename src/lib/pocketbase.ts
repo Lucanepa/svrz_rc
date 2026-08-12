@@ -323,6 +323,19 @@ export async function rcForgotVerify(email: string, code: string, newPassword: s
   }
 }
 
+export type GamesSyncStatus = {
+  status: { at: string; ok: boolean; imported?: number; totalFetched?: number; error?: string } | null;
+  newestGame: string;
+  cron: string;
+};
+
+/** What the nightly VolleyManager import last did. Admin console only. */
+export async function getGamesSyncStatus(): Promise<GamesSyncStatus> {
+  const r = await fetch(apiUrl('/api/admin/games/sync-status'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json() as Promise<GamesSyncStatus>;
+}
+
 export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
   if (isDemoMode()) return demo.getAdminAuthStatus();
   const response = await fetch(apiUrl('/api/admin/auth/status'), { credentials: 'include' });

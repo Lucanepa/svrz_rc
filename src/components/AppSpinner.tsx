@@ -1,3 +1,4 @@
+import { Volleyball } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 
 /**
@@ -15,13 +16,14 @@ import SvrzLogo from '../SvrzLogo';
  */
 
 // The box is sized around the wordmark, not the other way round. The mark is
-// ~100×24 at h-6, and both radii have to clear it by more than the satellite's
-// own half-width (11px) or the ball crops the logo's corners as it passes:
-// 70 > 50 + 11 across, 26 > 12 + 11 down.
-const BOX = 170;
+// ~100×24 at h-6, and the track has to stand off it by more than the
+// satellite's own half-width — which grew with the icons, so the radii grew
+// with it. The satellites pass behind the mark, so a clip is not fatal; a
+// track that hugs it just stops reading as an orbit.
+const BOX = 186;
 const CENTRE = BOX / 2;
-const RX = 70;
-const RY = 26;
+const RX = 78;
+const RY = 32;
 
 // An ellipse tilted by `deg`, drawn as two arcs between the ends of its major
 // axis. Those ends are the centre plus/minus the major axis rotated by `deg`.
@@ -39,35 +41,38 @@ function tiltedEllipsePath(deg: number): string {
 const BALL_ORBIT = tiltedEllipsePath(45);
 const REF_ORBIT = tiltedEllipsePath(-45);
 
-/** A volleyball: the three seams are what make it one at this size. */
-function Volleyball() {
-  return (
-    <svg viewBox="-12 -12 24 24" className="h-[22px] w-[22px] drop-shadow-sm" aria-hidden="true">
-      <circle r="10" fill="#ffffff" stroke="#a8a29e" strokeWidth="1.1" />
-      <g fill="none" stroke="#a8a29e" strokeWidth="1.1" strokeLinecap="round">
-        <path d="M -10,-2 C -4,-4 4,-3 9.4,3.4" />
-        <path d="M -3.5,-9.4 C -1,-3 0.5,3 -2.6,9.6" />
-        <path d="M 6.5,-7.6 C 3.5,-3.5 -2,0.5 -9.8,1.5" />
-      </g>
-    </svg>
-  );
-}
+// 1.5x the original 22px. Big enough that the ball's seams and the whistle's
+// mouthpiece survive at a glance, which was the point of using real icons.
+const SAT = 33;
 
-/** A referee mid-signal: one arm up is the shape that reads as "referee". */
-function Referee() {
+/**
+ * A referee's whistle, drawn on lucide's own grid — 24×24, 2px stroke, round
+ * caps and joins, artwork inset from the edges — because lucide has no whistle
+ * of its own (checked against the installed 0.577 and upstream `main`) and the
+ * ball beside it is the genuine lucide icon. Anything drawn to a different
+ * convention would read as the odd one out.
+ */
+function Whistle({ className }: { className?: string }) {
   return (
-    <svg viewBox="-12 -12 24 24" className="h-[22px] w-[22px] drop-shadow-sm" aria-hidden="true">
-      <g stroke="#44403c" strokeWidth="1.8" strokeLinecap="round" fill="none">
-        {/* Legs first, so the shirt overlaps them at the waist. */}
-        <path d="M -1.5,2.6 L -2.4,8.4" />
-        <path d="M 1.5,2.6 L 2.4,8.4" />
-        {/* The signalling arm, and the one at rest. */}
-        <path d="M 3.4,-2.6 L 7.4,-7.8" />
-        <path d="M -3.4,-2.4 L -6.2,1.6" />
-      </g>
-      <circle cx="0" cy="-6.6" r="2.8" fill="#44403c" />
-      {/* Shirt: narrow waist, so it reads as a torso and not a bell. */}
-      <path d="M -3.6,-3 Q 0,-4 3.6,-3 L 3,3.2 Q 0,4 -3,3.2 Z" fill="#e2001a" />
+    <svg
+      viewBox="0 0 24 24"
+      width={SAT}
+      height={SAT}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      {/* Bulb and mouthpiece, and nothing else. A lanyard ring on top turned it
+          into a key, and an air hole in the body into an eye — at 33px the
+          silhouette is the whole of the recognition. The mouthpiece meets the
+          bulb on a tangent rather than pointing at its centre, which is what
+          keeps it from reading as a magnifying glass. */}
+      <circle cx="14.5" cy="13.5" r="6.5" />
+      <path d="M8.6 10.8 3.4 8.9a2 2 0 0 0-1.4 3.7l5.3 1.9" />
     </svg>
   );
 }
@@ -106,10 +111,10 @@ export default function AppSpinner({
 
           {/* Offset by half a lap so the two are never on top of each other. */}
           <span className="svrz-orbit" style={{ offsetPath: `path("${BALL_ORBIT}")` }}>
-            <Volleyball />
+            <Volleyball size={SAT} strokeWidth={1.75} className="text-stone-500 drop-shadow-sm" />
           </span>
           <span className="svrz-orbit" style={{ offsetPath: `path("${REF_ORBIT}")`, animationDelay: '-1.3s' }}>
-            <Referee />
+            <Whistle className="text-[#e2001a] drop-shadow-sm" />
           </span>
 
           {/* Last, so it is painted OVER the satellites. An ellipse comes closer

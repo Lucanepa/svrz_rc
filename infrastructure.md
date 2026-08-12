@@ -444,6 +444,33 @@ bounced a correct PIN back to the login screen.
 Tunnel change: `lax` against a cross-site API logs everyone out. Cross-origin
 still means CORS applies — `CORS_ALLOWED_ORIGINS` must list the app origin.
 
+## Deploy trap: a 404 fallback cached under an asset URL
+
+`_headers` marks `/assets/*` `immutable, max-age=31536000`, and the Pages
+project answers unknown paths with `index.html` at status **200** (SPA
+handling). Those two combine badly during the minute or so after a deploy while
+the new files propagate: a request for a hashed asset that has not landed yet
+gets the fallback HTML, and the edge caches that HTML **under the asset's URL,
+for a year**. Clients whose requests land on that cache shard then load an
+`index.html` where the JS should be, and the app is a blank page. Seen for real
+on 2026-08-12; `cf-cache-status: HIT` with `content-type: text/html` on
+`/assets/index-*.js` is the fingerprint.
+
+Two consequences worth knowing:
+
+- **Do not fetch canonical asset URLs immediately after a deploy.** That is how
+  the bad response gets cached in the first place — a verification script can
+  poison the very build it is checking. Probe with a throwaway query
+  (`/assets/index-x.js?cb=123`) so anything wrong is cached under a URL nothing
+  references, and leave the real one alone until the deploy has settled.
+- **Recovering needs a new URL, not a new deploy.** The JS hash changes on
+  every build (the bundle carries a build timestamp), so a redeploy fixes the
+  script by accident. The CSS hash does not — it only changes when the CSS
+  changes — so a poisoned stylesheet survives any number of redeploys and the
+  app comes back up unstyled. Either purge the Cloudflare cache (zone-level
+  Cache Purge token, which CI does not have) or make a real change to
+  `src/index.css` so it hashes differently.
+
 ## Backups
 
 `deploy/hetzner/pb_data` is a bind mount and the only copy of every feedback,

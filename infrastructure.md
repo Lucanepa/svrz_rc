@@ -398,6 +398,48 @@ mount), `LOG_LEVEL` (default `debug`), `LOG_RING_MAX` (20000),
 
 ## Upstream Sync Troubleshooting
 
+### The games sync is BROKEN as of 2026-07-23 — VolleyManager permissions
+
+`POST /api/vm/auth-check` fails and the nightly 05:00 cron has imported nothing
+since **2026-07-23 11:47** (verified against the DB including its WAL). The
+error is a 403 while fetching the CSRF token:
+
+```
+[vm] CSRF page attempt 5/5 …
+Error: Could not extract CSRF token after login. Page title: "403 - Forbidden"
+```
+
+Probed against production credentials on 2026-08-12 — the account signs in fine
+and its session is good; the **RefAdmin games module** is what refuses it:
+
+| | result |
+|---|---|
+| `/login` → dashboard | 200 |
+| `/indoorvolleyball.refadmin/refereegame/index` (page `vmLogin()` reads its token from) | **403** |
+| `api%5celasticsearchrefereegame/searchForManagingAssociation` (games API) | **500** |
+| `/sportmanager.indoorvolleyball/refereeaddressviewer/index` | 200, CSRF present |
+| `api%5crefereeaddressviewer/search` (contacts, control) | **200**, 135 referees |
+
+So this is **not** fixable by moving where the CSRF token comes from — that
+trick is what makes the contact sync work, and the games API refuses the same
+session anyway. No role-switch link or form exists on the dashboard, so the code
+cannot switch itself into a role with access.
+
+**The fix is upstream:** the VM account needs its RefAdmin rights restored (its
+active role is `Indoorvolleyball.RefAdmin:Referee`, which cannot see the
+association's games), or `VM_USERNAME` / `VM_PASSWORD` must point at an account
+that holds them. Re-test afterwards with:
+
+```bash
+# on hetzner, with an admin session cookie in $J
+curl -s -b "$J" -X POST http://127.0.0.1:8787/api/vm/auth-check -H 'Content-Type: application/json' -d '{}'
+```
+
+Note the failure is **silent to users**: the cron logs an error and stops, and
+nothing surfaces it, which is how three weeks passed unnoticed. Worth adding a
+"last successful sync" readout to the admin console.
+
+
 Game sync uses Swiss Volley public data with authenticated access. For detailed implementation notes (auth flow, headers, API properties, troubleshooting runbook), see `infrastructure.private.md`.
 
 ## Frontend Hosting / API Routing Notes

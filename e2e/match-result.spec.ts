@@ -12,9 +12,14 @@ import { stubSignedInApp, RC, COACHEE, GAME } from './support/app';
  * all 925 scored games in production use.
  */
 
-/** "3:0" and the three sets, as the UI writes them. */
+/** "3:0" and the three sets, as the compact lists write them. */
 const OVERALL = /3\s*:\s*0/;
 const SETS = '25:15 | 25:21 | 25:14';
+
+// The games list splits each set across the two team rows instead, so a row
+// reads as one team's whole match. Same three sets as SETS above.
+const HOME_POINTS = '25 | 25 | 25';
+const AWAY_POINTS = '15 | 21 | 14';
 
 // The shape the VolleyManager sync writes — all 925 scored games in production
 // use it. Kept local to this file rather than on the shared fixture, because a
@@ -36,13 +41,16 @@ test.beforeEach(async ({ page }) => {
   }));
 });
 
-test('the games list shows the set count and the set scores', async ({ page }) => {
+test('the games list puts each team\'s set points on that team\'s row', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ }).click();
   await page.getByRole('button', { name: /^(Filters|Filter)$/ }).click();
   await page.getByRole('button', { name: /RC assigned|RC zugewiesen/ }).click();
 
-  await expect(page.getByText(SETS)).toBeVisible();
+  await expect(page.getByText(HOME_POINTS)).toBeVisible();
+  await expect(page.getByText(AWAY_POINTS)).toBeVisible();
+  // The combined "25:15 | ..." line the two replaced is gone, not merely moved.
+  await expect(page.getByText(SETS)).toHaveCount(0);
 });
 
 test('a coachee\'s own games list shows them too', async ({ page }) => {

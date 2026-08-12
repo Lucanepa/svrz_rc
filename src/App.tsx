@@ -3956,26 +3956,37 @@ export default function App() {
                                   // score as "1 (25"; parseResult reads both.
                                   const parsed = game.game_result ? parseResult(game.game_result) : null;
                                   const hasResult = !!parsed && (parsed.home !== '' || parsed.away !== '');
-                                  const setResults = (parsed?.sets ?? []).filter(isSetComplete).map((s) => `${s.h}:${s.a}`);
+                                  const sets = (parsed?.sets ?? []).filter(isSetComplete);
+                                  // Each team's own points, on that team's own row — so
+                                  // reading across a row gives you their whole match, the
+                                  // way the set count already did. As one "25:15 | 25:21"
+                                  // line under both teams, the sets sat away from the
+                                  // score they belong to and had to be decoded before
+                                  // they said anything about either side.
+                                  // tabular-nums keeps the two rows' digits in step, and
+                                  // the count's fixed width keeps the counts aligned even
+                                  // when one row's points are a digit shorter (a 25:9 set).
+                                  const setPoints = (side: 'h' | 'a') => (
+                                    sets.length > 0 && (
+                                      <span className="text-[11px] text-stone-400 tabular-nums whitespace-nowrap shrink-0">
+                                        {sets.map((s) => s[side]).join(' | ')}
+                                      </span>
+                                    )
+                                  );
                                   return (
                                     <>
-                                      <div className="mt-1 flex items-center gap-1.5">
+                                      <div className="mt-1 flex items-center gap-2">
                                         <Home size={14} className="w-3.5 text-stone-400 shrink-0" />
                                         <span className="text-base text-stone-800 truncate flex-1">{game.homeTeam}</span>
-                                        {hasResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{parsed.home}</span>}
+                                        {setPoints('h')}
+                                        {hasResult && <span className="w-4 text-right text-sm font-bold text-stone-600 tabular-nums shrink-0">{parsed.home}</span>}
                                       </div>
-                                      <div className="flex items-center gap-1.5">
+                                      <div className="flex items-center gap-2">
                                         <Navigation size={14} className="w-3.5 text-stone-400 shrink-0" />
                                         <span className="text-base text-stone-800 truncate flex-1">{game.awayTeam}</span>
-                                        {hasResult && <span className="text-sm font-bold text-stone-600 tabular-nums whitespace-nowrap">{parsed.away}</span>}
+                                        {setPoints('a')}
+                                        {hasResult && <span className="w-4 text-right text-sm font-bold text-stone-600 tabular-nums shrink-0">{parsed.away}</span>}
                                       </div>
-                                      {setResults.length > 0 && (
-                                        <div className="pl-[20px] text-[11px] text-stone-400 tabular-nums">
-                                          {setResults.map((s: string, i: number) => (
-                                            <span key={i}>{i > 0 ? ' | ' : ''}{s}</span>
-                                          ))}
-                                        </div>
-                                      )}
                                     </>
                                   );
                                 })()}

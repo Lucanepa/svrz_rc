@@ -67,3 +67,29 @@
     display: none !important;
   }
 }
+
+/* ── Loading spinner orbits (see components/AppSpinner.tsx) ────────────
+   The satellite rides a path set inline; this only supplies the motion.
+   offset-anchor stays at its default, so it is the satellite's CENTRE that
+   follows the path rather than its top-left corner. offset-rotate is pinned to
+   0deg because a tumbling volleyball reads as a glitch, not as spin. */
+.svrz-orbit {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  offset-rotate: 0deg;
+  offset-distance: 0%;
+  animation: svrz-orbit 2.8s linear infinite;
+}
+
+@keyframes svrz-orbit {
+  to { offset-distance: 100%; }
+}
+
+/* Asked for less motion: park both satellites and let the mark stand alone.
+   The spinner is never the only signal that something is loading — every
+   caller also carries a label — so stopping it costs no information. */
+@media (prefers-reduced-motion: reduce) {
+  .svrz-orbit { animation: none; }
+}

@@ -6,6 +6,7 @@ import {
   sharedLogin, listRcRoster, identifyAsRc, type AuthMe, type RcRosterEntry,
 } from '../lib/pocketbase';
 import { clientLog, setLogUser, flush } from '../lib/logger';
+import AppSpinner from './AppSpinner';
 import { getStoredLang, setStoredLang, getStoredRcId, setStoredRcId, type Lang } from '../lib/prefs';
 
 type ApiError = Error & { status?: number; retryAfterMs?: number };
@@ -21,6 +22,7 @@ const STR = {
     email: 'E-Mail',
     login: 'Anmelden',
     checking: 'Prüfe…',
+    loading: 'Wird geladen…',
     sending: 'Sende…',
     showPassword: 'Passwort anzeigen',
     hidePassword: 'Passwort verbergen',
@@ -71,6 +73,7 @@ const STR = {
     email: 'Email',
     login: 'Sign in',
     checking: 'Checking…',
+    loading: 'Loading…',
     sending: 'Sending…',
     showPassword: 'Show password',
     hidePassword: 'Hide password',
@@ -431,9 +434,12 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   };
 
   if (checking) {
+    // The very first thing anyone sees, and it can sit here for up to six
+    // seconds against a slow network — worth the branded spinner rather than a
+    // bare grey ring that reads as "nothing is happening".
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-stone-50 to-stone-100">
-        <Loader2 className="h-6 w-6 animate-spin text-stone-300" />
+        <AppSpinner label={t.loading} />
       </div>
     );
   }
@@ -596,7 +602,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               </div>
 
               {roster === null && !rosterError && (
-                <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-stone-300" /></div>
+                <div className="flex justify-center py-6"><AppSpinner size={104} /></div>
               )}
 
               {rosterError && (

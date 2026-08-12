@@ -45,6 +45,7 @@ import SvrzLogo from './SvrzLogo';
 import AdminPanel from './components/AdminPanel';
 import LevelText from './components/LevelText';
 import { Skeleton, SkeletonRows } from './components/Skeleton';
+import AppSpinner from './components/AppSpinner';
 import { useRcAuth } from './components/AuthGate';
 import { isDemoMode, getSentMail, demoTips, type DemoEmail } from './lib/demo';
 import { BUILD_INFO } from './lib/buildInfo';
@@ -900,23 +901,34 @@ export default function App() {
   // Read admin settings: email test-mode banner + default season + coachee targets.
   // A saved season pref older than the admin default is stale (new season started) — snap forward.
   // Part of the mount bootstrap below, not an effect of its own.
-  const loadSettings = async () => {
+  // Resolves to the season everything else should be loaded for. The caller
+  // needs that answer rather than the state setter's, because setState is not
+  // visible until the next render and the bootstrap has to fire its
+  // season-scoped requests now — see the mount effect.
+  const loadSettings = async (): Promise<number> => {
     try {
       const s = await getSettings();
       setEmailTestMode(Boolean(s.test_mode));
       setCoacheeTargets(s.coachee_targets ?? {});
       setRcMandates(s.rc_mandates ?? {});
       if (s.default_goal) setDefaultGoal(s.default_goal);
-      if (!s.default_season) return;
+      if (!s.default_season) return seasonStartYear;
       // The season is no longer pickable in the app — it is set once in the
       // admin console and everyone follows it. A stored preference used to win
       // here, which is how people ended up stranded in a finished 25/26.
       setSeasonStartYear(s.default_season);
+      // Claim it in the same breath, so the season-change effect sees the value
+      // as already loaded and stays quiet. The mount batch is about to fetch
+      // this exact season; without the claim that effect fires on the state
+      // change and fetches it a second time.
+      loadedSeasonRef.current = s.default_season;
       try {
         localStorage.removeItem('svrz_season_v3');
         localStorage.removeItem('svrz_season_v2');
       } catch { /* storage unavailable */ }
+      return s.default_season;
     } catch { /* keep the local season pref and defaults */ }
+    return seasonStartYear;
   };
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
@@ -1148,18 +1160,30 @@ export default function App() {
       return;
     }
     setBackendNotice('');
-    // The Home dashboard and the RC Overview tab read the same overview
-    // endpoint — fetch it once and share the promise.
-    const overview = refreshRcOverview();
+    // Everything that does not depend on the season starts at once. The two
+    // that DO — overview and the Home dashboard — wait for settings to say
+    // which season, and only for that: settings is one small request, so they
+    // still overlap the rest.
+    //
+    // They used to launch immediately off the locally guessed season, and the
+    // guess is usually wrong (the stored preference is deleted after the first
+    // successful load, leaving a client-side calculation the admin default
+    // routinely disagrees with). Both then ran a second time when the real
+    // season arrived — two extra round trips per cold start, and a dashboard
+    // that showed the wrong season's numbers until the rerun landed.
+    const seasonReady = loadSettings();
     void Promise.allSettled([
-      loadSettings(),
       refreshGames(),
       refreshCoachees(),
       refreshCalendarGames(),
       refreshRcPeople(),
       refreshAdminAuthStatus(),
-      overview,
-      loadHome(overview),
+      seasonReady.then((season) => {
+        // The Home dashboard and the RC Overview tab read the same overview
+        // endpoint — fetch it once and share the promise.
+        const overview = refreshRcOverview(season);
+        return Promise.all([overview, loadHome(overview, season)]);
+      }),
     ]).then(() => setBooting(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1371,11 +1395,14 @@ export default function App() {
   // upcoming + missing games from their own coachee summary. Takes the overview
   // promise from the caller when one is already in flight, so the dashboard and
   // the RC Overview tab never issue the same request twice.
-  const loadHome = async (overviewInFlight?: Promise<RcOverviewEntry[]>) => {
+  // `seasonOverride` exists for the mount batch: it runs before the settings
+  // answer has reached state, so the season it must load for is only available
+  // as a value, not from `seasonStartYear`.
+  const loadHome = async (overviewInFlight?: Promise<RcOverviewEntry[]>, seasonOverride?: number) => {
     const myName = rcAuth.rcName;
     if (!myName) { setHomeData(null); return; }
     const gen = beginLoad('home');
-    const season = seasonStartYear;
+    const season = seasonOverride ?? seasonStartYear;
     // This request also covers the RC detail view for the logged-in coach —
     // claim it so the detail effect below doesn't fetch the same thing again.
     rcSummaryAttemptRef.current = `${myName}|${season}`;
@@ -1422,11 +1449,11 @@ export default function App() {
     }
   };
 
-  const refreshRcOverview = async (): Promise<RcOverviewEntry[]> => {
+  const refreshRcOverview = async (seasonOverride?: number): Promise<RcOverviewEntry[]> => {
     const gen = beginLoad('rcOverview');
     setRcOverviewLoading(true);
     try {
-      const data = await loadRcOverview(seasonStartYear);
+      const data = await loadRcOverview(seasonOverride ?? seasonStartYear);
       if (isCurrentLoad('rcOverview', gen)) setRcOverviewData(data);
       return data;
     } catch {
@@ -3149,15 +3176,23 @@ export default function App() {
                   <Languages size={14} />
                   <span>{formData.lang}</span>
                 </button>
-                {isPrivileged && (
-                  <button
-                    onClick={() => { window.location.hash = '/admin'; }}
-                    className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
-                  >
-                    <ShieldAlert size={14} />
-                    <span className="hidden sm:inline">Admin</span>
-                  </button>
-                )}
+                {/* Always here, privileged or not. It used to appear only for
+                    admins, which worked while admin rights came from an RC's own
+                    login — but the team credential grants none, so on the
+                    everyday session the door vanished and #/admin had to be
+                    typed by hand. The lock says "there is something here you
+                    have to sign in for"; it gives nothing away, since the route
+                    behind it asks for admin credentials regardless. */}
+                <button
+                  onClick={() => { window.location.hash = '/admin'; }}
+                  className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
+                  title={isPrivileged
+                    ? 'Admin'
+                    : (formData.lang === 'DE' ? 'Admin-Bereich — Anmeldung erforderlich' : 'Admin area — sign-in required')}
+                >
+                  {isPrivileged ? <ShieldAlert size={14} /> : <Lock size={14} />}
+                  <span className="hidden sm:inline">Admin</span>
+                </button>
                 <button
                   onClick={() => setShowInfoModal(true)}
                   className="sm:hidden h-9 inline-flex items-center justify-center px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
@@ -5218,7 +5253,7 @@ export default function App() {
                 that. It never mounts before the call resolves, so no stroke can
                 land before the canvas is sized. */}
             {!sigSlug && !sigError ? (
-              <div className="py-10 flex justify-center"><Loader2 className="h-6 w-6 animate-spin text-stone-300" /></div>
+              <div className="py-6 flex justify-center"><AppSpinner size={104} /></div>
             ) : (
               <>
                 <p className="text-[11px] text-stone-400 mb-1.5">{formData.lang === 'DE' ? 'Hier unterschreiben:' : 'Sign here:'}</p>

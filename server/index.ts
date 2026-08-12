@@ -1440,9 +1440,75 @@ type VmSession = { jar: CookieJar; csrfToken: string; windowUniqueId: string };
 let vmCsrfCache: (VmSession & { cachedAt: number }) | null = null;
 const VM_CSRF_CACHE_TTL_MS = 30 * 60 * 1000;
 
+
+// ── VolleyManager roles ──────────────────────────────────────────────
+// One VM account, and no single role can do both jobs. Measured 2026-08-12
+// against the production account:
+//
+//   role                                     refereegame   addressviewer
+//   Indoorvolleyball.RefAdmin:RefereeDelegate    200           403
+//   SportManager.Indoorvolleyball:*(club)        403           200
+//   everything else                              403           403
+//
+// So the games sync needs the referee-delegate role and the contact sync needs
+// a club one, and whichever a human last picked in the VM UI decides whether
+// either works. That is how the games import died unnoticed for three weeks.
+// Each job now switches the session into the role it needs before it starts.
+//
+// The value is an *attribute value* id, not a role name: it is the
+// `persistenceObjectIdentifier` of an entry in
+// `party.groupedEligibleAttributeValues` (visible at
+// `GET /api/sportmanager.security/api%5cparty?party[__identity]=<partyId>`,
+// which the account menu calls). They are per-account, so they are overridable
+// — if VM_USERNAME ever changes, re-read them there and set these.
+const VM_ROLE_FOR_GAMES = process.env.VM_ROLE_ATTRIBUTE_GAMES
+  || 'e693b8cf-3fda-4a8d-b091-b3c7dae850ec'; // Indoorvolleyball.RefAdmin:RefereeDelegate
+const VM_ROLE_FOR_CONTACTS = process.env.VM_ROLE_ATTRIBUTE_CONTACTS
+  || 'ed24d37c-5444-4c5d-b602-623eff84d400'; // SportManager.Indoorvolleyball:PlayingScheduleResponsible
+
+/**
+ * Point the logged-in session at a particular role. Best effort: if the switch
+ * fails, the caller's own page fetch will fail with a clearer message than
+ * anything this could throw, and the session may already be on the right role
+ * (in which case the switch is unnecessary anyway).
+ */
+async function vmSwitchRole(jar: CookieJar, csrfToken: string, attributeValueId: string): Promise<boolean> {
+  if (!attributeValueId || !csrfToken) return false;
+  try {
+    const body = new URLSearchParams();
+    body.set('attributeValueAsArray[0]', attributeValueId);
+    body.set('__csrfToken', csrfToken);
+    const res = await fetch(`${VM_BASE}/api/sportmanager.security/api%5cparty/switchRoleAndAttribute`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: '*/*',
+        Origin: VM_BASE,
+        Referer: `${VM_BASE}/`,
+        Cookie: jar.header(),
+      },
+      body: body.toString(),
+    });
+    if (!res.ok) {
+      console.warn(`[vm] role switch to ${attributeValueId} returned ${res.status}`);
+      return false;
+    }
+    console.log(`[vm] switched the session to role attribute ${attributeValueId}`);
+    return true;
+  } catch (error) {
+    console.warn('[vm] role switch failed:', error);
+    return false;
+  }
+}
+
 async function vmLogin(username: string, password: string): Promise<VmSession> {
   if (vmCsrfCache && (Date.now() - vmCsrfCache.cachedAt) < VM_CSRF_CACHE_TTL_MS) {
     console.log('[vm] Using cached CSRF token');
+    // The role lives on the VM session, not on this cache, so a contact sync
+    // in between will have moved the very session being reused here onto a club
+    // role. Re-assert before handing it back, or the second job of the day
+    // quietly runs as the wrong person.
+    await vmSwitchRole(vmCsrfCache.jar, vmCsrfCache.csrfToken, VM_ROLE_FOR_GAMES);
     return { jar: vmCsrfCache.jar, csrfToken: vmCsrfCache.csrfToken, windowUniqueId: vmCsrfCache.windowUniqueId };
   }
   return vmLoginWithTrace(username, password);
@@ -1481,7 +1547,12 @@ async function vmLoginWithTrace(
   );
 
   // Visit dashboard — required to establish session permissions before referee-index
-  await followRedirects(`${VM_BASE}/`, jar, {}, 10, trace, 'dashboard');
+  const { body: dashboardHtml } = await followRedirects(`${VM_BASE}/`, jar, {}, 10, trace, 'dashboard');
+
+  // The dashboard opens under every role and carries a CSRF token, which is
+  // what lets us ask for the one role that can read the game list below.
+  const dashboardCsrf = dashboardHtml.match(/data-csrf-token="([^"]+)"/)?.[1] ?? '';
+  await vmSwitchRole(jar, dashboardCsrf, VM_ROLE_FOR_GAMES);
 
   const tokenPatterns = [
     /data-csrf-token="([^"]+)"/,
@@ -1587,11 +1658,14 @@ async function fetchVmRefereeContacts(username: string, password: string): Promi
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(hidden).toString(),
   }, 10);
-  await followRedirects(`${VM_BASE}/`, jar, {}, 10);
+  const { body: dash } = await followRedirects(`${VM_BASE}/`, jar, {}, 10);
+  // The address viewer opens under a CLUB role and 403s under the referee one —
+  // the exact opposite of the game list (see VM_ROLE_FOR_GAMES). Whichever role
+  // the last job left behind, put the session back where this one needs it.
+  await vmSwitchRole(jar, dash.match(/data-csrf-token="([^"]+)"/)?.[1] ?? '', VM_ROLE_FOR_CONTACTS);
 
-  // The CSRF token comes from the address-viewer page itself. vmLogin() reads
-  // its token off the refadmin game list, which 403s for an account that only
-  // holds the Referee role — this page is readable by both.
+  // The CSRF token comes from the address-viewer page itself, not the refadmin
+  // game list vmLogin() uses — that one 403s under this role.
   const viewerUrl = `${VM_BASE}/sportmanager.indoorvolleyball/refereeaddressviewer/index`;
   const { body: page } = await followRedirects(viewerUrl, jar, {
     headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },

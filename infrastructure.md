@@ -398,36 +398,48 @@ mount), `LOG_LEVEL` (default `debug`), `LOG_RING_MAX` (20000),
 
 ## Upstream Sync Troubleshooting
 
-### The games sync and the VolleyManager ROLE (broke 2026-07-23, fixed 2026-08-12)
+### VolleyManager roles: each sync claims the one it needs
 
-The nightly import silently brought in nothing for three weeks. `vmLogin()`
-reads its CSRF token off `/indoorvolleyball.refadmin/refereegame/index`, and
-that page answered **403**.
+One VM account, and **no single role can do both jobs**. Measured 2026-08-12
+against the production account:
 
-Not a permissions grant — a **role selection**. The sync account (Luca Canepa)
-holds many VolleyManager roles, and its *active* one had become
-`Spielplanverantwortlicher: KSC Wiedikon`, a club role that cannot see the
-association's referee games. Everything else about the session was fine: the
-referee **address** list (which the contact sync uses) returned all 135 people
-on that very session, which is what made this look like a code problem.
+| active role | `refadmin/refereegame` (games sync) | `refereeaddressviewer` (contact sync) |
+|---|---|---|
+| `Indoorvolleyball.RefAdmin:RefereeDelegate` | **200** | 403 |
+| `SportManager.Indoorvolleyball:PlayingScheduleResponsible` | 403 | **200** |
+| `SportManager.Indoorvolleyball:ClubAdministrator` / `TeamResponsible` | 403 | **200** |
+| every other role the account holds | 403 | 403 |
 
-Switching the active role to **`Referee Delegate: SVRZ`** fixed it instantly and
-**persists on the account** — a fresh login comes back with that role, so no
-code change was needed. In the UI it is the account menu, the line under the
-name. The underlying call is:
+The active role is **per account and persists** — a fresh login keeps whatever
+was last chosen, in the VM UI or by us. So whichever role a human last picked
+decided whether the games import worked, and it silently imported nothing for
+three weeks after someone selected a club role.
+
+Both jobs now switch the session into the role they need before starting
+(`vmSwitchRole`), including on the cached-session path, since the role lives on
+the account rather than on the cache. **Nothing needs to be kept selected by
+hand any more** — pick whatever role you like in VolleyManager.
 
 ```
 PUT /api/sportmanager.security/api%5cparty/switchRoleAndAttribute
-    attributeValueAsArray[0]=<attribute uuid>&__csrfToken=<token>
+    attributeValueAsArray[0]=<attribute value id>&__csrfToken=<token from the dashboard>
 ```
 
-**Keep the sync account on `Referee Delegate: SVRZ`.** Switching it back to a
-club role in VolleyManager breaks the import again, region-wide and silently.
-If that is impractical because a human uses the same account day to day, give
-the sync its own VolleyManager account that only holds the referee role.
+The id is an *attribute value*, not a role name: the
+`persistenceObjectIdentifier` of an entry in
+`party.groupedEligibleAttributeValues`, which
+`GET /api/sportmanager.security/api%5cparty?party[__identity]=<partyId>` returns
+(the account menu calls it). They are per-account, so if `VM_USERNAME` changes,
+re-read them there and set `VM_ROLE_ATTRIBUTE_GAMES` /
+`VM_ROLE_ATTRIBUTE_CONTACTS`; the code carries the current account's as
+defaults.
 
-Symptom to recognise: `POST /api/vm/auth-check` returns 500 with
-`Could not extract CSRF token after login. Page title: "403 - Forbidden"`.
+**Known limit:** the contact sync's *fallback* pass, which scrapes contacts off
+game convocations for referees missing from the address list, still fails
+(`Upstream search failed: 500`). The delegate role can list games but appears
+not to be allowed the convocation contact details. The primary source covers
+everyone who is on the referee list; the ~32 who are not stay without an
+address.
 
 Note the failure is **silent to users**: the cron logs an error and stops, and
 nothing surfaces it, which is how three weeks passed unnoticed. Worth adding a

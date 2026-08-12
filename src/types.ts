@@ -288,6 +288,9 @@ export interface rcCoachSummaryFeedback {
   teams: string;
   role: string;
   submittedAt: string;
+  /** The match result string, in either of the two shapes parseResult reads.
+   *  Empty for a game the sync has no score for yet. */
+  result?: string;
 }
 
 export interface rcCoachSummaryGame {
@@ -296,6 +299,9 @@ export interface rcCoachSummaryGame {
   league: string;
   teams: string;
   refereeName: string;
+  /** The match result string, in either of the two shapes parseResult reads.
+   *  Empty for a game not played yet — which is most of `plannedGames`. */
+  result?: string;
   /** Assigned to the coach, but no referee on it is a coachee — so no
    *  observation can be filed and the row is not clickable. */
   noCoachee?: boolean;

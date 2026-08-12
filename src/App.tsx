@@ -594,6 +594,29 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
 // Workbox precaches the chunk with everything else, so this still works offline.
 const loadPdfBuilder = () => import('./lib/feedbackPdf');
 
+/**
+ * The match result the way the games list shows it: the set count, then the
+ * individual set scores. One component so every list that carries a result
+ * reads the same — the games list grew this look first, and copying it by hand
+ * into each new list is how three of them end up subtly different.
+ *
+ * Renders nothing when there is no result yet, so callers can drop it into a
+ * row unconditionally: most planned games have no score, and a row that
+ * silently stays as it was is the point.
+ */
+function MatchResult({ result, className }: { result?: string; className?: string }) {
+  const parsed = result ? parseResult(result) : null;
+  if (!parsed || (parsed.home === '' && parsed.away === '')) return null;
+  // Only completed sets: a half-entered "25:" is a score nobody can read.
+  const sets = parsed.sets.filter(isSetComplete).map((s) => `${s.h}:${s.a}`);
+  return (
+    <span className={cn('inline-flex items-baseline gap-2 tabular-nums whitespace-nowrap', className)}>
+      <span className="text-sm font-bold text-stone-600">{parsed.home}:{parsed.away}</span>
+      {sets.length > 0 && <span className="text-[11px] text-stone-400">{sets.join(' | ')}</span>}
+    </span>
+  );
+}
+
 function detectInitialLang(): FeedbackFormData['lang'] {
   // A choice made at the login screen outranks the browser's guess — that is
   // the point of putting the toggle there.
@@ -812,7 +835,7 @@ export default function App() {
   const [listTab, setListTab] = useState<'home' | 'coachees' | 'games' | 'rcOverview'>(initialRoute.listTab);
   // `doneList` powers the "already observed" list at the bottom of Home; each
   // entry keeps its coachee id so the row can open the filed feedback.
-  type HomeDone = { gameDate: string; league: string; teams: string; role: string; submittedAt: string; coacheeName: string; coacheeId: string };
+  type HomeDone = { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result?: string; coacheeName: string; coacheeId: string };
   const [homeData, setHomeData] = useState<{ done: number; planned: number; outstanding: number; nextGames: rcCoachSummaryGame[]; missingGames: rcCoachSummaryGame[]; doneList: HomeDone[] } | null>(null);
   const [homeLoading, setHomeLoading] = useState(false);
   const [listPage, setListPage] = useState(0);
@@ -1373,7 +1396,7 @@ export default function App() {
       const doneList: HomeDone[] = summary
         .flatMap((cs) => cs.doneFeedbacks.map((fb) => ({
           gameDate: fb.gameDate, league: fb.league, teams: fb.teams,
-          role: fb.role, submittedAt: fb.submittedAt,
+          role: fb.role, submittedAt: fb.submittedAt, result: fb.result,
           coacheeName: cs.coacheeName, coacheeId: cs.coacheeId,
         })))
         .sort((a, b) => (b.submittedAt || b.gameDate).localeCompare(a.submittedAt || a.gameDate));
@@ -3277,6 +3300,7 @@ export default function App() {
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-stone-800 truncate">{g.teams}</p>
                     <p className="text-xs text-stone-500 truncate">{g.league} · {g.refereeName}</p>
+                    <MatchResult result={g.result} className="mt-0.5" />
                   </div>
                   <Eye size={15} className="text-stone-400 shrink-0" />
                 </button>
@@ -3397,6 +3421,7 @@ export default function App() {
                                   <p className="text-xs text-stone-500 truncate">
                                     {f.league} · {f.coacheeName}{f.role ? ` (${f.role})` : ''}
                                   </p>
+                                  <MatchResult result={f.result} className="mt-0.5" />
                                 </div>
                                 <Eye size={15} className="text-stone-400 shrink-0" />
                               </button>
@@ -4299,7 +4324,7 @@ export default function App() {
                         // Game-centric view: one row per game, all its coachees merged onto it.
                         // `coacheeId`/`role` are only set for done rows — they let a filed
                         // observation be reopened (the summary carries no feedback id).
-                        type RcGameRow = { gameId?: string; gameDate: string; league: string; teams: string; names: string[]; coacheeId?: string; role?: string; noCoachee?: boolean };
+                        type RcGameRow = { gameId?: string; gameDate: string; league: string; teams: string; names: string[]; coacheeId?: string; role?: string; noCoachee?: boolean; result?: string };
                         const collect = (m: Map<string, RcGameRow>, key: string, base: Omit<RcGameRow, 'names'>, name: string) => {
                           const row = m.get(key) ?? { ...base, names: [] };
                           if (name && !row.names.includes(name)) row.names.push(name);
@@ -4309,9 +4334,9 @@ export default function App() {
                         const outstandingM = new Map<string, RcGameRow>();
                         const doneM = new Map<string, RcGameRow>();
                         for (const cs of rcCoachSummaryData) {
-                          for (const g of cs.plannedGames) collect(plannedM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams, noCoachee: g.noCoachee }, g.refereeName);
-                          for (const g of cs.outstandingGames) collect(outstandingM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams, noCoachee: g.noCoachee }, g.refereeName);
-                          for (const fb of cs.doneFeedbacks) collect(doneM, `${fb.gameDate}|${fb.teams}`, { gameDate: fb.gameDate, league: fb.league, teams: fb.teams, coacheeId: cs.coacheeId, role: fb.role }, fb.role ? `${cs.coacheeName} (${fb.role})` : cs.coacheeName);
+                          for (const g of cs.plannedGames) collect(plannedM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams, noCoachee: g.noCoachee, result: g.result }, g.refereeName);
+                          for (const g of cs.outstandingGames) collect(outstandingM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams, noCoachee: g.noCoachee, result: g.result }, g.refereeName);
+                          for (const fb of cs.doneFeedbacks) collect(doneM, `${fb.gameDate}|${fb.teams}`, { gameDate: fb.gameDate, league: fb.league, teams: fb.teams, coacheeId: cs.coacheeId, role: fb.role, result: fb.result }, fb.role ? `${cs.coacheeName} (${fb.role})` : cs.coacheeName);
                         }
                         const de2 = formData.lang === 'DE';
                         const sections = [
@@ -4385,6 +4410,7 @@ export default function App() {
                                         <p className="mt-0.5 text-sm font-medium text-stone-800 sm:mt-0 sm:text-xs sm:font-normal sm:text-stone-600 sm:flex-1 sm:min-w-[10rem] sm:truncate">
                                           {g.teams}
                                         </p>
+                                        <MatchResult result={g.result} className="mt-0.5 sm:mt-0 sm:shrink-0" />
                                         <div className="mt-1.5 flex flex-wrap items-center gap-1.5 sm:mt-0 sm:contents">
                                           <span className="flex flex-wrap items-center gap-1.5">
                                             {g.names.map((n) => (
@@ -4563,6 +4589,10 @@ export default function App() {
                             <div className="text-xs text-stone-500 mt-1">
                               {formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}
                             </div>
+                            {/* Normally nothing here — an upcoming game has no
+                                score. It shows up for a fixture that has just
+                                been played but not yet moved out of this list. */}
+                            <MatchResult result={game.game_result} className="mt-1" />
                           </button>
                         );
                       })}
@@ -4611,6 +4641,7 @@ export default function App() {
                                 <div className="text-xs text-stone-500 mt-1">
                                   {formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}
                                 </div>
+                                <MatchResult result={game.game_result} className="mt-1" />
                               </button>
                             );
                           })}

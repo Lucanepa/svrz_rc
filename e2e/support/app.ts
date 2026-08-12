@@ -34,6 +34,12 @@ export const GAME = {
   secondReferee: '',
   assignedRc: RC.name,
   feedbackClosedRoles: [] as string[],
+  // Deliberately unscored. A game that carries a result renders its score box
+  // read-only (correctable only via "unlock"), so putting one here silently
+  // moved every form test onto that path — four of them then sat waiting to
+  // type into a locked field. Specs that need a score bring their own; see
+  // e2e/match-result.spec.ts.
+  game_result: '',
 };
 
 const EMAIL_TEMPLATE = { subject: 's', heading: 'h', intro: 'i', outro: 'o' };

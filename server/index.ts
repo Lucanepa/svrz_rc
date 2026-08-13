@@ -3307,7 +3307,24 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
     // expected outcome, not a failure.
     let gamesSearched = 0;
     let gamesError = '';
-    if (unresolved.length > 0) {
+    // The games pass is OFF unless asked for. It cannot work with this account:
+    // the referee-delegate role is the only one that can open the game list, and
+    // under it VolleyManager returns convocation persons with their contact
+    // fields stripped — 41 properties on the person, `displayName` among them,
+    // no email and no phone (checked 2026-08-13). The roles that DO expose
+    // contacts cannot see the games. So this used to spend a 1401-game scrape,
+    // several minutes and eight upstream calls, to find exactly nothing.
+    //
+    // Kept behind a flag rather than deleted: if the account ever gains a role
+    // that can do both, `{"useGames": true}` is how you find out.
+    const useGames = body.useGames === true;
+    if (unresolved.length > 0 && !useGames) {
+      notFound += unresolved.length;
+      for (const coachee of unresolved) {
+        if (missing.length < 50) missing.push(coacheeName(coachee));
+      }
+      gamesError = 'Spiel-Konvokationen übersprungen: VolleyManager liefert dort keine Kontaktdaten.';
+    } else if (unresolved.length > 0) {
       const seasonForGames = season ?? Number(asText((await getSettingRecord('default_season'))?.value));
       try {
         if (!Number.isFinite(seasonForGames)) throw new Error('Keine Saison bestimmbar.');

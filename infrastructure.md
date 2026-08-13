@@ -434,12 +434,30 @@ re-read them there and set `VM_ROLE_ATTRIBUTE_GAMES` /
 `VM_ROLE_ATTRIBUTE_CONTACTS`; the code carries the current account's as
 defaults.
 
-**Known limit:** the contact sync's *fallback* pass, which scrapes contacts off
-game convocations for referees missing from the address list, still fails
-(`Upstream search failed: 500`). The delegate role can list games but appears
-not to be allowed the convocation contact details. The primary source covers
-everyone who is on the referee list; the ~32 who are not stay without an
-address.
+**The contact sync's games fallback is off, and cannot be made to work.** It
+scraped referee contacts off game convocations for people missing from the
+address list. Two findings, 2026-08-13:
+
+1. It used to fail with `Upstream search failed: 500` — a **date-format bug on
+   our side**, not permissions. It built `2025-09-01T00:00:00` by hand while the
+   games sync sends a full ISO timestamp, and VolleyManager's search answers 500
+   (not 400, not an empty result) for a date without the timezone suffix. Fixed.
+2. With that fixed the search returns 1401 games with convocations attached —
+   and the convocation's `person` object carries **41 properties, none of them
+   contact details**: `displayName` is there, email and phone are simply absent.
+   VolleyManager strips them for the referee-delegate role, and the club roles
+   that do expose contacts cannot open the game list at all (see the table
+   above). No role this account holds can do both.
+
+So the pass could only ever spend a 1401-game scrape, several minutes and eight
+upstream calls, to find nothing. It is now **skipped by default** and reports
+why; pass `{"useGames": true}` to `POST /api/admin/coachees/sync-contacts` to run
+it anyway, which is worth doing only if the account gains a new role.
+
+Consequence: coachees who are not on VolleyManager's referee address list have
+no e-mail, and feedback cannot be submitted for them. As of 2026-08-13 that is
+32 of 83 for season 2025. They have to be filled in by hand in the admin console
+(or added to the referee list upstream).
 
 Note the failure is **silent to users**: the cron logs an error and stops, and
 nothing surfaces it, which is how three weeks passed unnoticed. Worth adding a

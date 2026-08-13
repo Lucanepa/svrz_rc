@@ -3311,11 +3311,16 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
       const seasonForGames = season ?? Number(asText((await getSettingRecord('default_season'))?.value));
       try {
         if (!Number.isFinite(seasonForGames)) throw new Error('Keine Saison bestimmbar.');
+        // Full ISO with the timezone suffix, exactly as resolveSyncWindow
+        // produces for the games sync. VolleyManager's search answers 500 —
+        // not 400, not an empty result — for a date without it, which is why
+        // this fallback looked like a permissions problem for weeks while the
+        // games sync ran fine on the identical request.
         const gameContacts = await fetchVmGameRefereeContacts(
           username,
           password,
-          `${seasonForGames}-09-01T00:00:00`,
-          `${seasonForGames + 1}-04-30T23:59:59`,
+          new Date(Date.UTC(seasonForGames, 8, 1, 0, 0, 0)).toISOString(),
+          new Date(Date.UTC(seasonForGames + 1, 3, 30, 23, 59, 59)).toISOString(),
         );
         gamesSearched = gameContacts.size;
         for (const coachee of unresolved) {

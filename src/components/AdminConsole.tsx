@@ -1493,11 +1493,14 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
   return (
     <>
       {sync && typeof sync === 'object' && !Array.isArray(sync) && (() => {
-        // "Stale" is nothing new for over two days: long enough to be wrong on
-        // a weekly fixture list, short enough to catch within a round.
-        const newest = sync.newestGame ? new Date(sync.newestGame) : null;
-        const stale = !newest || Number.isNaN(newest.getTime())
-          || (Date.now() - newest.getTime()) / 86_400_000 > 2;
+        // What matters is whether the importer still RUNS, not whether games
+        // changed: the season is September to April, so from May to August
+        // nothing changes for months and a "nothing new lately" alarm would cry
+        // wolf all summer. The cron is daily, so a run recorded within 36 hours
+        // is healthy; the newest game is shown as information, not as a test.
+        const lastRun = sync.status ? new Date(sync.status.at) : null;
+        const stale = !lastRun || Number.isNaN(lastRun.getTime())
+          || (Date.now() - lastRun.getTime()) / 3_600_000 > 36;
         // `sync.status` is null before the first run and undefined if the
         // payload is not what we expect — `!== null` was true for both, and
         // then reading .ok threw and took the whole console down with it.
@@ -1527,8 +1530,8 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
             {bad && (
               <div className="mt-1 font-medium">
                 {de
-                  ? 'Der Import läuft nicht. Häufigste Ursache: die VolleyManager-Rolle des Sync-Kontos steht nicht auf «Referee Delegate: SVRZ».'
-                  : 'The import is not running. Most common cause: the sync account\u2019s VolleyManager role is not set to \u201cReferee Delegate: SVRZ\u201d.'}
+                  ? 'Der nächtliche Import hat zuletzt nicht erfolgreich gelaufen. Prüfe die VolleyManager-Verbindung (Rolle des Sync-Kontos).'
+                  : 'The nightly import did not last run successfully. Check the VolleyManager connection (the sync account\u2019s role).'}
               </div>
             )}
           </div>

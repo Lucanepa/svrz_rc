@@ -1528,7 +1528,10 @@ function GameImportCard({ lang }: { lang: Lang }) {
   };
 
   return (
-    <div className={cn('rounded-xl border px-4 py-3 text-xs',
+    // mb-4 to match Card(): the gap between cards comes from each card's own
+    // bottom margin, not from a parent, so a card that forgets it sits flush
+    // against the next one.
+    <div className={cn('rounded-xl border px-4 py-3 text-xs mb-4',
       bad ? 'border-red-300 bg-red-50 text-red-800' : 'border-stone-200 bg-white text-stone-600')}>
       <div className="flex flex-wrap items-start gap-2">
         <div className="min-w-0">

@@ -368,6 +368,30 @@ To run the import without waiting for the cron: admin console → Settings →
 "Game import (VolleyManager)" → **Import now**. Same window and same code path
 as the nightly run, and it records the same status note.
 
+There is a second job: the match reminder, `REMINDER_CRON` (default
+`0 10 * * *`, same timezone), which mails each coachee the day before a game an
+RC has taken.
+
+### A scheduled job must authenticate PocketBase itself
+
+Every route handler calls `ensureAdminAuth()` before it touches PocketBase, so
+under HTTP traffic the shared client is always somebody's authenticated session
+and a helper that forgets to authenticate still works. A cron firing at 10:00
+into a quiet process has no such session, and PocketBase answers
+`403: Only superusers can perform this action`.
+
+That is not hypothetical: the reminder failed **every day from 2026-07-25 to
+2026-08-23** — 19 recorded runs, nothing sent, nothing visible outside
+`reminder.run` lines in the activity log. `runMatchReminders()` reads
+`reminder_enabled` first, `getSettingRecord()` was the one data helper without
+an `ensureAdminAuth()` call, and the job died on its opening line. The 05:00
+games sync was spared only because it reaches PocketBase through
+`listCoacheesWithFallbackSort()`, which does authenticate.
+
+Fixed at the helper. When adding an unattended path, check that its **first**
+PocketBase call goes through something that authenticates — a passing test under
+an HTTP request proves nothing about a cron.
+
 ## Activity Log (Debugging What Users Actually Did)
 
 `server/logstore.ts` collects everything the system does, from both sides:

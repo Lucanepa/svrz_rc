@@ -2935,6 +2935,18 @@ app.get('/api/admin/logs/sessions', requireAdminSession, (_req: Request, res: Ex
 // written back whole, so a swallowed read error saves an empty map over the
 // president's notes or the whole starred list.
 async function getSettingRecord(key: string): Promise<AnyRecord | null> {
+  // Every other data helper opens this way (getActiveRcPeople,
+  // listCoacheesWithFallbackSort, getEligibleGames, upsertGame); these two
+  // app_settings helpers were the exception, and it cost the daily reminder a
+  // month. Route handlers call ensureAdminAuth() themselves, so a settings read
+  // under an HTTP request was always authenticated and the gap stayed invisible
+  // — but the 10:00 reminder cron's FIRST PocketBase call is this one, and with
+  // nothing having authenticated the shared client it got "403: Only superusers
+  // can perform this action" and died before it could even read
+  // reminder_enabled. The games sync at 05:00 survived only by luck: it reaches
+  // PocketBase through listCoacheesWithFallbackSort, which does authenticate.
+  // ensureAdminAuth() is a no-op on a valid session, so this costs nothing.
+  await ensureAdminAuth();
   try {
     return await withCollection(['app_settings'], (collection) =>
       collection.getFirstListItem<AnyRecord>(`key = "${escapeFilterValue(key)}"`));

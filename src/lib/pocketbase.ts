@@ -345,25 +345,6 @@ export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
   return response.json() as Promise<AdminAuthStatus>;
 }
 
-export async function loginAdmin(payload: { email: string; password: string }): Promise<AdminAuthStatus> {
-  const response = await fetch(apiUrl('/api/admin/auth/login'), {
-    credentials: 'include',
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
-  const result = await response.json() as { email?: string };
-  // Identity change — drop the previous identity's cached responses.
-  await clearApiCache();
-  return {
-    authenticated: true,
-    email: result.email || payload.email,
-  };
-}
-
 export async function logoutAdmin(): Promise<void> {
   await clearApiCache();
   const response = await fetch(apiUrl('/api/admin/auth/logout'), {
@@ -419,14 +400,6 @@ export async function deleteCoachee(id: string) {
   if (!response.ok) {
     throw new Error(await response.text());
   }
-}
-
-export async function listRefereeCoaches() {
-  const response = await fetch(apiUrl('/api/referee-coaches'), { credentials: 'include' });
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
-  return response.json();
 }
 
 export async function listCoacheeGames(coacheeId: string): Promise<CoacheeGame[]> {
@@ -508,16 +481,6 @@ export async function getIcalSubscription(lang: 'DE' | 'EN'): Promise<IcalSubscr
     throw new Error(await response.text());
   }
   return response.json() as Promise<IcalSubscription>;
-}
-
-export async function deleteRefereeCoach(id: string) {
-  const response = await fetch(apiUrl(`/api/referee-coaches/${id}`), {
-    credentials: 'include',
-    method: 'DELETE',
-  });
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
 }
 
 export type RefereeCoachPerson = {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useId } from 'react';
-import { Maximize2, Download, FileJson, Loader2, RefreshCw, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogIn, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock } from 'lucide-react';
+import { Maximize2, Download, FileJson, Loader2, RefreshCw, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
@@ -14,8 +14,6 @@ import {
   loadCalendarGames,
   loadEligibleGames,
   getAdminAuthStatus,
-  loginAdmin,
-  logoutAdmin,
   saveFeedbackToPocketBase,
   updateCoachee,
   listRefereeCoachPeople,
@@ -42,7 +40,6 @@ import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete
 import { normalizeCoacheeGroup, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
-import AdminPanel from './components/AdminPanel';
 import LevelText from './components/LevelText';
 import { Skeleton, SkeletonRows } from './components/Skeleton';
 import AppSpinner from './components/AppSpinner';
@@ -159,17 +156,6 @@ const UI_STRINGS = {
     saveError: "Speichern fehlgeschlagen.",
     loading: "Lädt...",
     pbMissing: "VITE_POCKETBASE_URL fehlt. Bitte in .env setzen.",
-    adminLogout: "Admin abmelden",
-    adminLoginRequiredTitle: "Admin-Anmeldung erforderlich",
-    adminLoginRequiredDesc: "Melde dich mit deinem PocketBase-Admin-Benutzer an, um auf das Admin-Panel zuzugreifen.",
-    email: "E-Mail",
-    password: "Passwort",
-    login: "Anmelden",
-    currentSession: "Aktuelle Sitzung",
-    authLoginSuccess: "Admin-Anmeldung erfolgreich.",
-    authLoginFailed: "Anmeldung fehlgeschlagen.",
-    authLoggedOut: "Abgemeldet.",
-    authLogoutFailed: "Abmeldung fehlgeschlagen.",
     role1Short: "1SR",
     role2Short: "2SR",
     rolesLabel: "Rollen",
@@ -295,17 +281,6 @@ const UI_STRINGS = {
     saveError: "Saving failed.",
     loading: "Loading...",
     pbMissing: "VITE_POCKETBASE_URL is missing. Please set it in .env.",
-    adminLogout: "Logout Admin",
-    adminLoginRequiredTitle: "Admin Login Required",
-    adminLoginRequiredDesc: "Sign in with your PocketBase admin user to access the admin panel.",
-    email: "Email",
-    password: "Password",
-    login: "Login",
-    currentSession: "Current session",
-    authLoginSuccess: "Admin login successful.",
-    authLoginFailed: "Login failed.",
-    authLoggedOut: "Logged out.",
-    authLogoutFailed: "Logout failed.",
     role1Short: "1SR",
     role2Short: "2SR",
     rolesLabel: "Roles",
@@ -873,7 +848,6 @@ export default function App() {
   const initialRoute = useRef(parseHash(window.location.hash, false)).current;
   // Legacy in-app database panel: no control switches to it any more, so it
   // stays out of the URL scheme.
-  const [viewMode] = useState<'feedback' | 'admin'>('feedback');
   const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>(initialRoute.subView);
   const [listTab, setListTab] = useState<'home' | 'coachees' | 'games' | 'rcOverview'>(initialRoute.listTab);
   // `doneList` powers the "already observed" list at the bottom of Home; each
@@ -1030,9 +1004,7 @@ export default function App() {
   const [outboxFailed, setOutboxFailed] = useState<OutboxItem[]>([]);
   const [flushing, setFlushing] = useState(false);
   const [backendNotice, setBackendNotice] = useState('');
-  const [adminAuthLoading, setAdminAuthLoading] = useState(false);
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
-  const [adminAuthEmail, setAdminAuthEmail] = useState('');
   const rcAuth = useRcAuth();
   // Admin via the admin-console session or the in-app database login: keeps
   // the unrestricted RC picker and may open any RC's detail. Plain RC sessions
@@ -1041,9 +1013,6 @@ export default function App() {
   // Identity that owns any outbox item created now — a queued submission is only
   // ever sent back under this same identity, never a different coach's.
   const outboxOwnerId = rcAuth.rcId || (isPrivileged ? 'admin' : 'anon');
-  const [adminLoginEmail, setAdminLoginEmail] = useState('');
-  const [adminLoginPassword, setAdminLoginPassword] = useState('');
-  const [adminAuthNotice, setAdminAuthNotice] = useState('');
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showInfoModal, setShowInfoModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
@@ -1392,23 +1361,18 @@ export default function App() {
     } catch { /* picker stays empty */ }
   };
 
+  // Not a screen of its own any more — the admin console at #/admin has its own
+  // login. What the app still needs from it is the one bit isPrivileged reads:
+  // whether this browser carries an admin session.
   const refreshAdminAuthStatus = async () => {
     const gen = beginLoad('adminAuth');
-    setAdminAuthLoading(true);
     try {
       const status = await getAdminAuthStatus();
       if (!isCurrentLoad('adminAuth', gen)) return;
       setAdminAuthenticated(status.authenticated);
-      setAdminAuthEmail(status.email || '');
-      if (status.authenticated) {
-        setAdminLoginPassword('');
-      }
     } catch {
       if (!isCurrentLoad('adminAuth', gen)) return;
       setAdminAuthenticated(false);
-      setAdminAuthEmail('');
-    } finally {
-      if (isCurrentLoad('adminAuth', gen)) setAdminAuthLoading(false);
     }
   };
 
@@ -2269,43 +2233,6 @@ export default function App() {
     }
   };
 
-  const handleAdminLogin = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setAdminAuthLoading(true);
-    setAdminAuthNotice('');
-    try {
-      const status = await loginAdmin({ email: adminLoginEmail, password: adminLoginPassword });
-      setAdminAuthenticated(status.authenticated);
-      setAdminAuthEmail(status.email || adminLoginEmail);
-      setAdminLoginPassword('');
-      setAdminAuthNotice(t.authLoginSuccess);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      setAdminAuthenticated(false);
-      setAdminAuthEmail('');
-      setAdminAuthNotice(`${t.authLoginFailed} ${localizeRuntimeError(reason, formData.lang)}`);
-    } finally {
-      setAdminAuthLoading(false);
-    }
-  };
-
-  const handleAdminLogout = async () => {
-    setAdminAuthLoading(true);
-    setAdminAuthNotice('');
-    try {
-      await logoutAdmin();
-      setAdminAuthenticated(false);
-      setAdminAuthEmail('');
-      setAdminLoginPassword('');
-      setAdminAuthNotice(t.authLoggedOut);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      setAdminAuthNotice(`${t.authLogoutFailed} ${localizeRuntimeError(reason, formData.lang)}`);
-    } finally {
-      setAdminAuthLoading(false);
-    }
-  };
-
   // Pre-filled in the demo so the section — and the part of the feedback mail
   // that carries it — is visible without typing; empty in the real app.
   const [tipsAndTricks, setTipsAndTricks] = useState(demoTips);
@@ -2954,7 +2881,7 @@ export default function App() {
       )}
       {/* UI Controls */}
       <div className="max-w-4xl mx-auto mb-6 flex flex-wrap gap-3 no-print">
-        {viewMode === 'feedback' && feedbackSubView !== 'coachees' && (
+        {feedbackSubView !== 'coachees' && (
           <>
         <button
           onClick={() => setFeedbackSubView('coachees')}
@@ -3073,73 +3000,9 @@ export default function App() {
         )}
           </>
         )}
-        {viewMode === 'admin' && adminAuthenticated && (
-          <button
-            onClick={() => void handleAdminLogout()}
-            disabled={adminAuthLoading}
-            className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-red-700 transition-colors disabled:opacity-50 ml-auto"
-          >
-            <LogOut size={18} />
-            <span className="hidden sm:inline">{adminAuthLoading ? t.loading : t.adminLogout}</span>
-          </button>
-        )}
       </div>
 
-      {viewMode === 'admin' && (
-        adminAuthenticated ? (
-          <AdminPanel lang={formData.lang} />
-        ) : (
-          <div className="max-w-md mx-auto bg-white border border-stone-200/70 shadow-card-lg rounded-2xl p-6 sm:p-7 no-print">
-            <div className="flex items-start gap-3 mb-4">
-              <ShieldAlert className="text-slate-700 mt-0.5" size={20} />
-              <div>
-                <h2 className="text-lg font-semibold text-stone-900">{t.adminLoginRequiredTitle}</h2>
-                <p className="text-sm text-stone-600">
-                  {t.adminLoginRequiredDesc}
-                </p>
-              </div>
-            </div>
-            <form onSubmit={handleAdminLogin} className="space-y-3">
-              <label className="block text-xs text-stone-600">
-                {t.email}
-                <input
-                  type="email"
-                  value={adminLoginEmail}
-                  onChange={(e) => setAdminLoginEmail(e.target.value)}
-                  className="h-10 w-full mt-1 px-3 rounded border border-stone-300 bg-white focus-visible:ring-2 focus-visible:ring-red-400 outline-none"
-                  required
-                />
-              </label>
-              <label className="block text-xs text-stone-600">
-                {t.password}
-                <input
-                  type="password"
-                  value={adminLoginPassword}
-                  onChange={(e) => setAdminLoginPassword(e.target.value)}
-                  className="h-10 w-full mt-1 px-3 rounded border border-stone-300 bg-white focus-visible:ring-2 focus-visible:ring-red-400 outline-none"
-                  required
-                />
-              </label>
-              <button
-                type="submit"
-                disabled={adminAuthLoading}
-                className="h-10 px-4 rounded bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50 inline-flex items-center gap-2"
-              >
-                <LogIn size={16} />
-                <span>{adminAuthLoading ? t.loading : t.login}</span>
-              </button>
-            </form>
-            {adminAuthEmail && (
-              <p className="mt-3 text-xs text-stone-500">{t.currentSession}: {adminAuthEmail}</p>
-            )}
-            {adminAuthNotice && (
-              <p className="mt-2 text-xs text-red-700">{adminAuthNotice}</p>
-            )}
-          </div>
-        )
-      )}
-
-      {viewMode === 'feedback' && feedbackSubView === 'coachees' && (
+      {feedbackSubView === 'coachees' && (
         <div className="max-w-5xl mx-auto no-print">
           <div className="bg-white p-4 sm:p-5 rounded-2xl shadow-card border border-stone-200/70 mb-4 flex items-center sm:items-start gap-4">
             <div className="flex-1">
@@ -4589,7 +4452,7 @@ export default function App() {
         </div>
       )}
 
-      {viewMode === 'feedback' && feedbackSubView === 'coacheeGames' && (
+      {feedbackSubView === 'coacheeGames' && (
         <div className="max-w-4xl mx-auto bg-white p-3 sm:p-6 shadow-xl border border-stone-200 no-print">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-stone-800">
@@ -4753,7 +4616,7 @@ export default function App() {
         </div>
       )}
 
-      {viewMode === 'feedback' && feedbackSubView === 'calendar' && (
+      {feedbackSubView === 'calendar' && (
         <div className="max-w-5xl mx-auto bg-white p-3 sm:p-6 shadow-xl border border-stone-200 no-print">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-stone-800">{t.calendar}</h2>
@@ -4806,7 +4669,7 @@ export default function App() {
         </div>
       )}
 
-      {viewMode === 'feedback' && feedbackSubView === 'feedbackForm' && (
+      {feedbackSubView === 'feedbackForm' && (
       <>
       {/* Main Form Container */}
       <div className="max-w-4xl mx-auto bg-white p-4 md:p-8 shadow-xl border border-stone-200 print:shadow-none print:border-none print:p-0 print:max-w-none print:mx-0">
@@ -5483,7 +5346,7 @@ export default function App() {
       )}
 
       {/* JSON Modal */}
-      {viewMode === 'feedback' && showJson && (
+      {showJson && (
         <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
           <div role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
             <div className="p-6 border-b border-stone-100 flex justify-between items-center">
@@ -5516,7 +5379,7 @@ export default function App() {
         </div>
       )}
 
-      {viewMode === 'feedback' && detailCoachee && (
+      {detailCoachee && (
         <div onClick={() => setDetailCoachee(null)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-40 no-print">
           <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 max-h-[85vh] overflow-auto">
             <div className="flex items-start justify-between mb-4">
@@ -5604,7 +5467,7 @@ export default function App() {
         </div>
       )}
 
-      {viewMode === 'feedback' && actionTargetCoachee && (
+      {actionTargetCoachee && (
         <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-40 no-print">
           <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-4">
             <h3 className="text-sm font-semibold text-stone-900 mb-3">
@@ -5637,7 +5500,7 @@ export default function App() {
         </div>
       )}
 
-      {viewMode === 'feedback' && feedbackPickerCoachee && (
+      {feedbackPickerCoachee && (
         <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
           <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-2xl p-4 max-h-[80vh] flex flex-col">
             <h3 className="text-sm font-semibold text-stone-900 mb-3">

@@ -558,11 +558,11 @@ export async function syncGames(payload?: { date?: string; from?: string; to?: s
 }
 
 // ── Admin console (simple-password gate) ──────────────────────────────
-export async function adminUiLogin(password: string): Promise<void> {
+export async function adminUiLogin(username: string, password: string): Promise<void> {
   const r = await fetch(apiUrl('/api/admin/ui-login'), {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ username, password }),
   });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Login failed');
 }

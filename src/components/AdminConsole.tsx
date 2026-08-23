@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, KeyRound, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX } from 'lucide-react';
+import { Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, KeyRound, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
@@ -48,7 +48,10 @@ function mapGroups(s: string): string {
 
 const STR = {
   DE: {
-    admin: 'Admin', logout: 'Abmelden', login: 'Anmelden', adminPw: 'Admin-Passwort', wrongPw: 'Falsches Passwort',
+    admin: 'Admin', logout: 'Abmelden', login: 'Anmelden', adminUser: 'Benutzername', adminPw: 'Admin-Passwort',
+    // Which half was wrong is deliberately not said — the server does not tell
+    // the client either.
+    wrongCreds: 'Benutzername oder Passwort falsch',
     noAdminRights: 'Dein Konto hat keine Admin-Rechte. Falls du Admin bist, melde dich mit dem Admin-Passwort an.',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Einstellungen', testBadge: 'Testmodus',
     emails: 'E-Mails', logs: 'Protokoll', survey: 'RC-Feedback',
@@ -129,7 +132,8 @@ const STR = {
     defaultGoalHint: (half: number) => `Wie viele Beobachtungen ein ganzes Mandat pro Saison umfasst. Ein halbes Mandat ist die Hälfte davon (${half}) — wer ein halbes Mandat hat, wird im Tab „Referee Coaches" markiert.`,
   },
   EN: {
-    admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminPw: 'Admin password', wrongPw: 'Wrong password',
+    admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminUser: 'Username', adminPw: 'Admin password',
+    wrongCreds: 'Wrong username or password',
     noAdminRights: 'Your account has no admin rights. If you are an admin, sign in with the admin password.',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Settings', testBadge: 'Test mode',
     emails: 'Emails', logs: 'Activity log', survey: 'RC feedback',
@@ -251,6 +255,7 @@ const adminTabFromHash = (): AdminTab => {
 export default function AdminConsole() {
   const [checking, setChecking] = useState(true);
   const [authed, setAuthed] = useState(false);
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
@@ -337,8 +342,10 @@ export default function AdminConsole() {
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault(); setSubmitting(true); setError('');
-    try { await adminUiLogin(password.trim()); setAuthed(true); setPassword(''); }
-    catch { setError(t.wrongPw); setPassword(''); }
+    // The name is trimmed but not lower-cased here — the server does that, so
+    // one rule decides it rather than two that can drift apart.
+    try { await adminUiLogin(username.trim(), password.trim()); setAuthed(true); setPassword(''); }
+    catch { setError(t.wrongCreds); setPassword(''); }
     finally { setSubmitting(false); }
   };
   const logout = async () => { try { await logoutAdmin(); } catch { /* ignore */ } setAuthed(false); };
@@ -360,15 +367,26 @@ export default function AdminConsole() {
                 admin rights — the password below is the bootstrap fallback. */}
             <p className="text-xs text-stone-500 text-center mb-4">{t.noAdminRights}</p>
             <form onSubmit={login} className="space-y-4">
+              {/* autoComplete username/current-password, and both fields inside
+                  one form: that is the shape a password manager recognises, so
+                  the console can be saved and filled like any other login. */}
+              <div className="relative">
+                <User className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
+                <input id="admin-user" type="text" value={username} autoFocus disabled={submitting}
+                  autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                  onChange={(e) => setUsername(e.target.value)} placeholder={t.adminUser}
+                  className={`w-full pl-10 pr-3 py-3 rounded-xl border text-sm bg-stone-50 focus:bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/70 ${error ? 'border-red-400 bg-red-50' : 'border-stone-300'}`} />
+              </div>
               <div className="relative">
                 <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
-                <input id="admin-pw" type={showPw ? 'text' : 'password'} value={password} autoFocus disabled={submitting}
+                <input id="admin-pw" type={showPw ? 'text' : 'password'} value={password} disabled={submitting}
+                  autoComplete="current-password"
                   onChange={(e) => setPassword(e.target.value)} placeholder={t.adminPw}
                   className={`w-full pl-10 pr-10 py-3 rounded-xl border text-sm bg-stone-50 focus:bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/70 ${error ? 'border-red-400 bg-red-50' : 'border-stone-300'}`} />
                 <button type="button" onClick={() => setShowPw((v) => !v)} tabIndex={-1} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600">{showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button>
               </div>
               {error && <p className="text-red-600 text-xs font-medium">{error}</p>}
-              <button type="submit" disabled={!password.trim() || submitting} className="w-full inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 active:scale-[0.99] disabled:bg-stone-300 text-white font-semibold py-3 rounded-xl text-sm transition-all shadow-sm shadow-red-600/20">{submitting && <Loader2 className="h-4 w-4 animate-spin" />}{t.login}</button>
+              <button type="submit" disabled={!username.trim() || !password.trim() || submitting} className="w-full inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 active:scale-[0.99] disabled:bg-stone-300 text-white font-semibold py-3 rounded-xl text-sm transition-all shadow-sm shadow-red-600/20">{submitting && <Loader2 className="h-4 w-4 animate-spin" />}{t.login}</button>
             </form>
           </div>
           <p className="text-center text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400 mt-5">Swiss Volley Region Zürich</p>

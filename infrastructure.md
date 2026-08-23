@@ -221,8 +221,14 @@ Three layers, plus capability tokens:
      how admins and the RC chair sign in.
    Tokens issued before `mode` existed are read as `personal`.
 3. **Admin console cookie** `svrz_admin_session` — PocketBase superuser
-   credentials via `POST /api/admin/auth/login`, or the single
+   credentials via `POST /api/admin/auth/login`, or `ADMIN_UI_USERNAME` +
    `ADMIN_UI_PASSWORD` via `POST /api/admin/ui-login`. Implies admin everywhere.
+   The username defaults to `admin` and is compared case-insensitively (a phone
+   keyboard capitalises the first letter of a name field); the password is the
+   secret and is unchanged. Both halves are always compared before the answer,
+   and a rejection says only "Invalid credentials" — which half was wrong is
+   recorded in the activity log (`userMatched`) for the admin, not returned to
+   the caller.
 4. **Capability tokens** in the URL for the two pages that have no session at
    all: `#/sign/<slug>` (signature capture) and `#/survey/<token>` (post-visit
    survey, sent to referees who are not app users).

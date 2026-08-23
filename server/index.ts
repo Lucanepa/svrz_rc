@@ -272,6 +272,10 @@ function resolveSessionSecret(): string {
 }
 const ADMIN_SESSION_SECRET = resolveSessionSecret();
 const ADMIN_UI_PASSWORD = process.env.ADMIN_UI_PASSWORD || '';
+// A username beside the password. Not a second secret — it is "admin" — but it
+// lets a password manager store and fill this login like any other site, and a
+// password-only POST is no longer enough on its own.
+const ADMIN_UI_USERNAME = process.env.ADMIN_UI_USERNAME || 'admin';
 const TEST_MODE = process.env.TEST_MODE === '1' || process.env.TEST_MODE === 'true';
 if (TEST_MODE) console.warn('[startup] TEST_MODE enabled — outbound emails are suppressed.');
 if (!ADMIN_UI_PASSWORD) console.warn('[startup] ADMIN_UI_PASSWORD not set — admin console login disabled.');
@@ -2801,23 +2805,25 @@ app.post('/api/admin/auth/logout', (_req: Request, res: ExpressResponse) => {
   res.json({ ok: true });
 });
 
-// ── Admin UI password gate (single password -> admin session) ─────────
+// ── Admin UI gate (username + password -> admin session) ──────────────
 app.post('/api/admin/ui-login', (req: Request, res: ExpressResponse) => {
   const ctx = reqCtx(req);
   const rl = checkGateRateLimit(ctx.ip);
   if (!rl.allowed) { denyRateLimited(req, res, 'login:ip', rl.retryAfterMs, { kind: 'admin-ui' }); return; }
-  const password = asText((req.body ?? {}).password);
-  // Compare BYTES: "password".length counts UTF-16 units, so a multibyte guess
-  // passed the length check and then threw inside timingSafeEqual, turning a
-  // wrong password into a 500.
-  const givenBuf = Buffer.from(password);
-  const wantBuf = Buffer.from(ADMIN_UI_PASSWORD);
-  const ok = Boolean(ADMIN_UI_PASSWORD) && givenBuf.length === wantBuf.length
-    && timingSafeEqual(givenBuf, wantBuf);
-  if (!ok) {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  // Lower-cased before comparing: a phone keyboard capitalises the first letter
+  // of a username field by default, and "Admin" failing to log in with the right
+  // password is a support call nobody should have to make.
+  const userOk = constantTimeEquals(asText(body.username).trim().toLowerCase(), ADMIN_UI_USERNAME.toLowerCase());
+  const passOk = Boolean(ADMIN_UI_PASSWORD) && constantTimeEquals(asText(body.password), ADMIN_UI_PASSWORD);
+  // Both halves are always evaluated, so a wrong username cannot be told from a
+  // wrong password by how fast the answer comes back.
+  if (!userOk || !passOk) {
     clearAdminSessionCookie(res);
-    log.warn('auth.admin-ui-login', 'rejected', { configured: Boolean(ADMIN_UI_PASSWORD) }, ctx);
-    res.status(401).json({ error: 'Invalid password.' });
+    // `userMatched` is for the admin reading the log after a failed sign-in
+    // ("was it the name or the password?"); the CALLER is told neither.
+    log.warn('auth.admin-ui-login', 'rejected', { configured: Boolean(ADMIN_UI_PASSWORD), userMatched: userOk }, ctx);
+    res.status(401).json({ error: 'Invalid credentials.' });
     return;
   }
   setAdminSessionCookie(res, createAdminSessionToken('admin-ui'));

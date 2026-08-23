@@ -1650,13 +1650,24 @@ function buildVmSearchBody(csrfToken: string, offset: number, limit: number, fro
 // a filled-in form. VM's "Schiedsrichterliste" (refereeAddressViewer) holds an
 // email and phone for every licensed referee, so pull them from there as a
 // follow-up step to the import.
-type VmRefereeContact = { firstName: string; lastName: string; email: string; phone: string };
+type VmRefereeContact = { firstName: string; lastName: string; email: string; phone: string; level: string };
 
 const VM_CONTACT_COLUMNS = [
   'person.lastName',
   'person.firstName',
   'person.primaryEmailAddress.emailAddress',
   'person.primaryPhoneNumber.normalizedLocalNumber',
+  // Niveau (N1..N4). The XLSX's Niveau column is a snapshot of import day, so a
+  // promotion since then leaves us showing the old level for a whole season —
+  // seven coachees were stale when this was added (2026-08-23). The path comes
+  // from VM's public label catalogue (`activeSeasonalRefereeData…refereeLevel.name`
+  // = "Niveau"); this search returns ONLY the columns asked for, so it has to be
+  // requested explicitly.
+  //
+  // The Niveau*stufe* (the "-3" in "N4-3") is NOT available here: it lives on
+  // IndoorAssociationReferee, and that API answers 403 under every role this
+  // account can hold. `stage` therefore stays whatever the import set.
+  'activeSeasonalRefereeData.activeIndoorRefereeLevel.refereeLevel.name',
 ];
 const VM_CONTACT_PAGE_SIZE = 400;
 
@@ -1737,6 +1748,8 @@ async function fetchVmRefereeContacts(username: string, password: string): Promi
         lastName: asText(person.lastName),
         email: asText(deepGet(person, 'primaryEmailAddress', 'emailAddress')),
         phone: asText(deepGet(person, 'primaryPhoneNumber', 'normalizedLocalNumber')),
+        // Niveau hangs off the item, not the person.
+        level: asText(deepGet(raw as AnyRecord, 'activeSeasonalRefereeData', 'activeIndoorRefereeLevel', 'refereeLevel', 'name')),
       });
     }
   }
@@ -1768,7 +1781,9 @@ const VM_CONVOCATION_KEYS = [
   'activeRefereeConvocationSecondLineJudge',
 ];
 
-type VmContact = { email: string; phone: string };
+// `level` only comes from the referee list; the games pass has no Niveau to
+// offer, which is why it is optional rather than a required empty string.
+type VmContact = { email: string; phone: string; level?: string };
 
 function convocationContact(convocation: Record<string, unknown>): { name: string; contact: VmContact } | null {
   const person = deepGet(convocation, 'indoorAssociationReferee', 'indoorReferee', 'person') as AnyRecord | undefined;
@@ -3322,6 +3337,16 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
       const patch: Record<string, unknown> = {};
       if (hit.email && (overwrite || !asText(coachee.email))) patch.email = hit.email;
       if (hit.phone && (overwrite || !asText(coachee.phone))) patch.phone = hit.phone;
+      // Niveau follows the same rule as the contact fields. Only ever N1..N4
+      // from VM; the Stufe half is not offered by that API, so `stage` is left
+      // exactly as it was.
+      if (hit.level && (overwrite || !asText(coachee.referee_level))) patch.referee_level = hit.level;
+      // A write that would set every field to what it already holds is not an
+      // update. Without this, `overwrite` reported all 52 matched coachees as
+      // "updated" when nothing about them had changed.
+      for (const [field, value] of Object.entries(patch)) {
+        if (asText(coachee[field]) === asText(value)) delete patch[field];
+      }
       if (Object.keys(patch).length === 0) { alreadySet++; return false; }
       await withCollection(collectionCandidates.coachees, (c) => c.update(coachee.id, patch));
       updated++;

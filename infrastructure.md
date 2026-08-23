@@ -252,7 +252,7 @@ reachable without a session.
 - `PUT /api/games/:id/assign-rc`: assign RC to a game.
 - `GET /api/rc-overview`: per-RC done/outstanding/planned summary.
 - `GET /api/rc-overview/:rcName/coachees`: per-RC coachee breakdown.
-- `POST /api/games/sync`: run game sync from Swiss Volley data.
+- `POST /api/games/sync`: run game sync from Swiss Volley data. Records its outcome under the `games_sync_status` setting exactly as the cron does, so a run started by hand shows up in the admin console's readout. On failure it answers the upstream reason, not `Internal server error` — the admin clicking it is the one who has to go fix the VolleyManager account.
 - `POST /api/games/sync/debug`: run sync with debug trace payload.
 - `POST /api/vm/auth-check`: validate upstream auth/session.
 - `GET /api/survey/:token`: **public** — prefill data for the post-visit survey page. No login; the token is the capability, so no name or match number rides in the URL.
@@ -364,6 +364,10 @@ Automatic sync runs inside `server/index.ts` using `node-cron`:
 
 Production note: the API container runs with `restart: unless-stopped` so the cron stays alive; if the container is stopped, scheduled sync will not run.
 
+To run the import without waiting for the cron: admin console → Settings →
+"Game import (VolleyManager)" → **Import now**. Same window and same code path
+as the nightly run, and it records the same status note.
+
 ## Activity Log (Debugging What Users Actually Did)
 
 `server/logstore.ts` collects everything the system does, from both sides:
@@ -459,9 +463,11 @@ no e-mail, and feedback cannot be submitted for them. As of 2026-08-13 that is
 32 of 83 for season 2025. They have to be filled in by hand in the admin console
 (or added to the referee list upstream).
 
-Note the failure is **silent to users**: the cron logs an error and stops, and
-nothing surfaces it, which is how three weeks passed unnoticed. Worth adding a
-"last successful sync" readout to the admin console.
+The failure used to be **silent to users**: the cron logged an error and
+stopped, and nothing surfaced it, which is how three weeks passed unnoticed.
+The admin console's Settings tab now carries both halves of the answer — the
+last-run readout and the button that runs it again — and the contact sync
+reports the upstream error itself rather than `Internal server error`.
 
 
 Game sync uses Swiss Volley public data with authenticated access. For detailed implementation notes (auth flow, headers, API properties, troubleshooting runbook), see `infrastructure.private.md`.

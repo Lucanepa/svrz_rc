@@ -577,7 +577,9 @@ export async function loadrcCoachSummary(rcName: string, season?: number): Promi
   return response.json() as Promise<rcCoachSummary[]>;
 }
 
-export async function syncGames(payload?: { date?: string; from?: string; to?: string }) {
+export type GamesSyncResult = { imported: number; totalFetched: number; from: string; to: string };
+
+export async function syncGames(payload?: { date?: string; from?: string; to?: string }): Promise<GamesSyncResult> {
   const response = await fetch(apiUrl('/api/games/sync'), {
     credentials: 'include',
     method: 'POST',
@@ -585,9 +587,11 @@ export async function syncGames(payload?: { date?: string; from?: string; to?: s
     body: JSON.stringify(payload ?? {}),
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    // The API answers {error} — reading the body as text put the raw JSON on
+    // screen, braces and all, for the one reader who needs the sentence inside.
+    throw new Error((await response.json().catch(() => ({}))).error || 'Could not sync games');
   }
-  return response.json();
+  return response.json() as Promise<GamesSyncResult>;
 }
 
 // ── Admin console (simple-password gate) ──────────────────────────────

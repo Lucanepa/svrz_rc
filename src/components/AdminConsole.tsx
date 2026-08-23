@@ -9,6 +9,7 @@ import {
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame, listManualGames,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
+  syncGames, type GamesSyncStatus,
   type PresidentNote,
   type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplates, type ReminderPreview, type ManualGame,
   type LogEntry, type LogSession, type SurveyResponse,
@@ -587,7 +588,9 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
       ].filter(Boolean).join(' '));
       setSyncMissing(r.missing);
       await reload();
-    } catch (err) { setNotice(t.syncFail(String(err))); } finally { setSyncing(false); }
+    // The message, not String(err): that prefixed every failure with a bare
+    // "Error:" in front of the sentence the server took care to write.
+    } catch (err) { setNotice(t.syncFail(err instanceof Error ? err.message : String(err))); } finally { setSyncing(false); }
   };
 
   const missingEmail = rows.filter((c) => !c.email).length;
@@ -1308,13 +1311,20 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
         <div ref={scroller} className="max-h-[62vh] overflow-y-auto rounded-xl border border-stone-200 divide-y divide-stone-100 bg-white">
           {entries.map((e) => (
             <div key={e.seq} className="px-2.5 py-1.5 hover:bg-stone-50 cursor-pointer" onClick={() => setExpanded(expanded === e.seq ? null : e.seq)}>
-              <div className="flex items-start gap-2 font-mono text-[11px] leading-relaxed">
+              {/* One line per entry on a desktop, two on a phone. Everything
+                  around the message is shrink-0, so on a narrow screen the
+                  message was the only thing left to squeeze: it ended up a
+                  column two characters wide, one letter per line. `w-full`
+                  drops it onto its own full-width line below the metadata
+                  instead, and `sm:w-auto sm:flex-1` puts the terminal-style
+                  single line back as soon as there is room for it. */}
+              <div className="flex flex-wrap items-start gap-x-2 gap-y-0.5 font-mono text-[11px] leading-relaxed">
                 <span className="text-stone-400 shrink-0 tabular-nums">{new Date(e.t).toLocaleTimeString('de-CH', { hour12: false })}</span>
                 <span className={cn('shrink-0 px-1.5 rounded border text-[10px] font-semibold uppercase', LEVEL_STYLE[e.lvl] || LEVEL_STYLE.info)}>{e.lvl}</span>
                 <span className={cn('shrink-0 text-[10px] uppercase font-semibold', e.src === 'client' ? 'text-indigo-500' : 'text-stone-400')}>{e.src === 'client' ? 'app' : 'srv'}</span>
-                <span className="shrink-0 text-stone-500">{e.evt}</span>
-                <span className="text-stone-800 break-all">{e.msg}</span>
-                {e.user && <span className="ml-auto shrink-0 text-stone-400">{e.user}</span>}
+                <span className="shrink-0 text-stone-500 break-all">{e.evt}</span>
+                <span className="order-last sm:order-none w-full sm:w-auto sm:flex-1 min-w-0 text-stone-800 break-words">{e.msg}</span>
+                {e.user && <span className="ml-auto shrink-0 text-stone-400 truncate max-w-[45%]">{e.user}</span>}
               </div>
               {expanded === e.seq && (
                 <pre className="mt-1.5 p-2 rounded-lg bg-stone-900 text-stone-100 text-[10px] leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">
@@ -1444,6 +1454,111 @@ function ManualGameAdmin({ t, lang }: { t: T; lang: Lang }) {
   );
 }
 
+// The nightly VolleyManager import: whether it still works, and the button that
+// runs it now. Both belong on the same card — the readout used to be the only
+// thing here, so the one question it provokes ("then run it again") had no
+// answer anywhere in the console and meant waiting for tomorrow's cron.
+function GameImportCard({ lang }: { lang: Lang }) {
+  const [sync, setSync] = useState<GamesSyncStatus | null>(null);
+  const [running, setRunning] = useState(false);
+  const [note, setNote] = useState('');
+  const [error, setError] = useState('');
+  const de = lang === 'DE';
+
+  const load = useCallback(() => {
+    getGamesSyncStatus()
+      // Anything that is not the object we expect (an array, a string) is no
+      // status at all: reading .cron off it printed "schedule undefined".
+      .then((s) => setSync(s && typeof s === 'object' && !Array.isArray(s) ? s : null))
+      .catch(() => setSync(null));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const run = async () => {
+    setRunning(true); setNote(''); setError('');
+    try {
+      const r = await syncGames();
+      setNote(de
+        ? `${r.imported} Spiele importiert (${r.totalFetched} geprüft).`
+        : `${r.imported} games imported (${r.totalFetched} checked).`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+      // The run records its own outcome server-side, so re-read it rather than
+      // patching the card from the response: this way a manual run and the
+      // nightly one leave the same, single source of truth on screen.
+      load();
+    }
+  };
+
+  // What matters is whether the importer still RUNS, not whether games
+  // changed: the season is September to April, so from May to August
+  // nothing changes for months and a "nothing new lately" alarm would cry
+  // wolf all summer. The cron is daily, so a run recorded within 36 hours
+  // is healthy; the newest game is shown as information, not as a test.
+  const lastRun = sync?.status ? new Date(sync.status.at) : null;
+  const stale = !lastRun || Number.isNaN(lastRun.getTime())
+    || (Date.now() - lastRun.getTime()) / 3_600_000 > 36;
+  // `sync.status` is null before the first run and undefined if the
+  // payload is not what we expect — `!== null` was true for both, and
+  // then reading .ok threw and took the whole console down with it.
+  const bad = (sync?.status ? !sync.status.ok : false) || stale;
+  const when = (iso: string) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? '–' : d.toLocaleString('de-CH', { dateStyle: 'short', timeStyle: 'short' });
+  };
+
+  return (
+    <div className={cn('rounded-xl border px-4 py-3 text-xs',
+      bad ? 'border-red-300 bg-red-50 text-red-800' : 'border-stone-200 bg-white text-stone-600')}>
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="min-w-0">
+          <div className="font-semibold mb-0.5">{de ? 'Spiel-Import (VolleyManager)' : 'Game import (VolleyManager)'}</div>
+          {sync ? (
+            <>
+              <div>
+                {de ? 'Neuestes Spiel aktualisiert: ' : 'Newest game updated: '}
+                <strong>{sync.newestGame ? when(sync.newestGame) : '–'}</strong>
+                {` · ${de ? 'Zeitplan' : 'schedule'} ${sync.cron}`}
+              </div>
+              {sync.status && (
+                <div className="mt-0.5">
+                  {de ? 'Letzter Lauf: ' : 'Last run: '}{when(sync.status.at)}
+                  {sync.status.ok
+                    ? ` · ${sync.status.imported ?? 0} ${de ? 'importiert' : 'imported'}`
+                    : ` · ${de ? 'FEHLER' : 'FAILED'}: ${sync.status.error ?? ''}`}
+                </div>
+              )}
+            </>
+          ) : (
+            <div>{de ? 'Status nicht abrufbar.' : 'Status unavailable.'}</div>
+          )}
+        </div>
+        {/* Runs the same import the cron runs, over the same window. Slow (a
+            VolleyManager login and a season of games), hence the spinner. */}
+        <button onClick={() => void run()} disabled={running} className={cn(btnPrimary, 'ml-auto shrink-0')}>
+          {running ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
+          <span>{running
+            ? (de ? 'Importiert …' : 'Importing…')
+            : (de ? 'Jetzt importieren' : 'Import now')}</span>
+        </button>
+      </div>
+      {/* Only when there is a status to judge: with none, "Status unavailable"
+          above already says everything that is known. */}
+      {sync && bad && (
+        <div className="mt-1 font-medium">
+          {de
+            ? 'Der nächtliche Import hat zuletzt nicht erfolgreich gelaufen. Prüfe die VolleyManager-Verbindung (Rolle des Sync-Kontos).'
+            : 'The nightly import did not last run successfully. Check the VolleyManager connection (the sync account\u2019s role).'}
+        </div>
+      )}
+      {note && <p className="mt-2 rounded-lg border border-green-100 bg-green-50 px-3 py-2 text-green-700">{note}</p>}
+      {error && <p className="mt-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-red-700">{error}</p>}
+    </div>
+  );
+}
+
 function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups, defaultGoal, onDefaultGoal }: { t: T; lang: Lang; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void; defaultGoal: number; onDefaultGoal: (n: number) => Promise<void> }) {
   const [season, setSeason] = useState<number>(defaultSeason);
   const seasonTouched = useRef(false);
@@ -1460,11 +1575,6 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
     setGoalSaved(true); setTimeout(() => setGoalSaved(false), 2500);
   };
   const loading = settingsLoading;
-  // The nightly VolleyManager import, and whether it is still working. It
-  // failed every night for three weeks once with nobody the wiser, because the
-  // only place that knew was the container log.
-  const [sync, setSync] = useState<Awaited<ReturnType<typeof getGamesSyncStatus>> | null>(null);
-  useEffect(() => { getGamesSyncStatus().then(setSync).catch(() => setSync(null)); }, []);
   const [ng, setNg] = useState('');
   const [gi, setGi] = useState<number | null>(null);
   const [gv, setGv] = useState('');
@@ -1492,51 +1602,7 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
   const toggleTest = async () => { const next = !testMode; onTestMode(next); try { await putSettings({ test_mode: next }); } catch { onTestMode(!next); } };
   return (
     <>
-      {sync && typeof sync === 'object' && !Array.isArray(sync) && (() => {
-        // What matters is whether the importer still RUNS, not whether games
-        // changed: the season is September to April, so from May to August
-        // nothing changes for months and a "nothing new lately" alarm would cry
-        // wolf all summer. The cron is daily, so a run recorded within 36 hours
-        // is healthy; the newest game is shown as information, not as a test.
-        const lastRun = sync.status ? new Date(sync.status.at) : null;
-        const stale = !lastRun || Number.isNaN(lastRun.getTime())
-          || (Date.now() - lastRun.getTime()) / 3_600_000 > 36;
-        // `sync.status` is null before the first run and undefined if the
-        // payload is not what we expect — `!== null` was true for both, and
-        // then reading .ok threw and took the whole console down with it.
-        const bad = (sync.status ? !sync.status.ok : false) || stale;
-        const when = (iso: string) => {
-          const d = new Date(iso);
-          return Number.isNaN(d.getTime()) ? '–' : d.toLocaleString('de-CH', { dateStyle: 'short', timeStyle: 'short' });
-        };
-        const de = lang === 'DE';
-        return (
-          <div className={cn('rounded-xl border px-4 py-3 text-xs',
-            bad ? 'border-red-300 bg-red-50 text-red-800' : 'border-stone-200 bg-white text-stone-600')}>
-            <div className="font-semibold mb-0.5">{de ? 'Spiel-Import (VolleyManager)' : 'Game import (VolleyManager)'}</div>
-            <div>
-              {de ? 'Neuestes Spiel aktualisiert: ' : 'Newest game updated: '}
-              <strong>{sync.newestGame ? when(sync.newestGame) : '–'}</strong>
-              {` · ${de ? 'Zeitplan' : 'schedule'} ${sync.cron}`}
-            </div>
-            {sync.status && (
-              <div className="mt-0.5">
-                {de ? 'Letzter Lauf: ' : 'Last run: '}{when(sync.status.at)}
-                {sync.status.ok
-                  ? ` · ${sync.status.imported ?? 0} ${de ? 'importiert' : 'imported'}`
-                  : ` · ${de ? 'FEHLER' : 'FAILED'}: ${sync.status.error ?? ''}`}
-              </div>
-            )}
-            {bad && (
-              <div className="mt-1 font-medium">
-                {de
-                  ? 'Der nächtliche Import hat zuletzt nicht erfolgreich gelaufen. Prüfe die VolleyManager-Verbindung (Rolle des Sync-Kontos).'
-                  : 'The nightly import did not last run successfully. Check the VolleyManager connection (the sync account\u2019s role).'}
-              </div>
-            )}
-          </div>
-        );
-      })()}
+      <GameImportCard lang={lang} />
       <Card>
         <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.defaultSeason}</h2>
         <p className="text-xs text-stone-400 mb-3">{t.defaultSeasonHint}</p>

@@ -687,6 +687,18 @@ function safeError(error: unknown): string {
   return 'Internal server error';
 }
 
+// Same logging, but the caller is told what actually went wrong. Only for the
+// admin-only VolleyManager routes: the person clicking those is the one who has
+// to go fix the upstream account, and "Internal server error" sent them to the
+// container log for every single failure — which is exactly the trip the admin
+// console exists to save them. The message is ours (a thrown Error from the VM
+// helpers), never a raw upstream body, and it is length-capped.
+function upstreamError(error: unknown): string {
+  log.error('api.error', 'upstream request failed', { error });
+  const message = (error instanceof Error ? error.message : String(error)).trim();
+  return message ? message.slice(0, 300) : 'Upstream request failed';
+}
+
 // ── RC identity session ──────────────────────────────────────────────
 // Cached list of active RC people; also consulted on every RC-authenticated
 // request so deactivating/deleting an RC revokes their session within the
@@ -1699,8 +1711,12 @@ async function fetchVmRefereeContacts(username: string, password: string): Promi
 
   const out: VmRefereeContact[] = [];
   let total = Infinity;
-  while (out.length < total) {
-    const response = await fetch(url, { method: 'POST', headers, body: body(out.length) });
+  // Paged by an explicit offset rather than by out.length: an item that carries
+  // no `person` is skipped, so a page made of those would leave out.length
+  // where it was and ask VolleyManager for the very same page forever.
+  let offset = 0;
+  while (offset < total) {
+    const response = await fetch(url, { method: 'POST', headers, body: body(offset) });
     if (!response.ok) {
       throw new Error(`VolleyManager referee list failed: ${response.status} ${(await response.text()).slice(0, 120)}`);
     }
@@ -1708,6 +1724,7 @@ async function fetchVmRefereeContacts(username: string, password: string): Promi
     total = payload.totalItemsCount ?? 0;
     const items = payload.items ?? [];
     if (items.length === 0) break;
+    offset += items.length;
     for (const raw of items) {
       const person = (raw as AnyRecord)?.person as AnyRecord | undefined;
       if (!person) continue;
@@ -3367,7 +3384,12 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
       notFound,
       missing,
     });
-  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+  } catch (error) {
+    // What fails here is a VolleyManager login, the role switch or the referee
+    // list itself, and the admin who pressed the button is the one who can fix
+    // it — so name the step instead of sending them to the container log.
+    res.status(500).json({ error: upstreamError(error) });
+  }
 });
 
 // ── Auth endpoints (per-RC PIN sessions) ─────────────────────────────
@@ -4679,12 +4701,23 @@ app.get('/api/admin/games/sync-status', requireAdminSession, async (_req: Reques
   }
 });
 
+// A manual run records its outcome just like the nightly one does: the admin
+// console reads that single note, so a sync started by hand has to leave the
+// same trace or the card keeps showing last night's run as the latest word.
 app.post('/api/games/sync', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     const result = await runGamesSync(req.body ?? {});
+    await recordGamesSyncStatus({
+      at: new Date().toISOString(),
+      ok: true,
+      imported: result.imported,
+      totalFetched: result.totalFetched,
+    });
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: safeError(error) });
+    const message = upstreamError(error);
+    await recordGamesSyncStatus({ at: new Date().toISOString(), ok: false, error: message });
+    res.status(500).json({ error: message });
   }
 });
 
@@ -4693,7 +4726,7 @@ app.post('/api/games/sync/debug', requireAdminSession, async (req: Request, res:
     const result = await runGamesSyncDebug(req.body ?? {});
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: safeError(error) });
+    res.status(500).json({ error: upstreamError(error) });
   }
 });
 

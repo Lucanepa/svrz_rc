@@ -620,7 +620,13 @@ function getCookieValue(req: Request, cookieName: string): string {
     if (key !== cookieName) {
       continue;
     }
-    return decodeURIComponent(part.slice(separatorIndex + 1));
+    const raw = part.slice(separatorIndex + 1);
+    // A malformed escape ("%") makes decodeURIComponent throw, and it threw
+    // outside the route handler's try — so `Cookie: svrz_rc_session=%` answered
+    // 500 instead of 401 and wrote an unrate-limited error line per attempt.
+    // The raw value simply fails signature verification, which is the right
+    // outcome.
+    try { return decodeURIComponent(raw); } catch { return raw; }
   }
   return '';
 }
@@ -701,7 +707,13 @@ function safeError(error: unknown): string {
 // to go fix the upstream account, and "Internal server error" sent them to the
 // container log for every single failure — which is exactly the trip the admin
 // console exists to save them. The message is ours (a thrown Error from the VM
-// helpers), never a raw upstream body, and it is length-capped.
+// helpers) and length-capped — but note it CAN embed a slice of an upstream
+// response body: the game-list and referee-list helpers interpolate up to
+// 120–200 characters of it to make a 403 diagnosable. Every route that returns
+// this sits behind requireAdminSession, and that admin already holds the
+// VolleyManager account, so nothing is disclosed that they cannot see anyway.
+// It is also persisted into app_settings under games_sync_status, so keep the
+// cap: this text accumulates.
 function upstreamError(error: unknown): string {
   log.error('api.error', 'upstream request failed', { error });
   const message = (error instanceof Error ? error.message : String(error)).trim();
@@ -1311,6 +1323,27 @@ async function ensureAdminAuth() {
   await pb.collection('_superusers').authWithPassword(email, password);
 }
 
+/**
+ * Re-authenticate once when PocketBase rejects the token we hold.
+ *
+ * `isValid` only checks the JWT's own expiry, and nothing anywhere cleared the
+ * store on a 401/403 — so rotating the superuser password (which the security
+ * notes tell you to do on exposure) without restarting the container left every
+ * call failing until the container restarted or the 14-day token ran out.
+ * Returns true if a retry is worth making.
+ */
+async function reauthOnRejection(error: unknown): Promise<boolean> {
+  const status = Number((error as { status?: unknown })?.status);
+  if (status !== 401 && status !== 403) return false;
+  pb.authStore.clear();
+  try {
+    await ensureAdminAuth();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function verifyAdminCredentials(email: string, password: string): Promise<void> {
   const authPb = new PocketBase(process.env.POCKETBASE_URL || 'http://127.0.0.1:8090');
   const isAuthError = (error: unknown) => {
@@ -1872,7 +1905,14 @@ async function fetchAllVmGames(
     });
     console.log(`[vm] Batch response: ${response.status}`);
     if (!response.ok) {
-      break;
+      // Was a bare break, so a failure on page 2 of 4 returned a short list that
+      // ran through the importer and was recorded as ok:true — the admin card
+      // stayed green over a half-imported season, and its cross-check (the
+      // newest game's `updated`) is refreshed by a partial run too. The first
+      // page already throws on a bad status; the rest now behave the same.
+      throw new Error(
+        `VolleyManager game list failed at offset ${items.length}/${total}: ${response.status} ${(await response.text()).slice(0, 120)}`,
+      );
     }
     const batch = await response.json() as { items?: unknown[] };
     const nextItems = batch.items ?? [];
@@ -2083,7 +2123,17 @@ async function mayAdministerRcRecord(req: Request, id: string): Promise<boolean>
   try {
     target = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
       c.getOne<AnyRecord>(id, { fields: 'id,is_rc_president' }));
-  } catch { return true; } // record gone: let the caller's own 404 handle it
+  } catch (error) {
+    // "Record gone" is the ONLY reading of a failed lookup that may permit the
+    // action — the caller's own 404 then handles it. Catching everything meant
+    // a guard whose lookup could not run answered "permitted": one 5xx or a
+    // dropped connection at the wrong moment and an admin could edit the
+    // president's record, change the address her forgot-PIN mail goes to, or
+    // deactivate her. Its sibling rule on the PIN-rotate route already fails
+    // closed on exactly this condition.
+    if (isRecordNotFound(error)) return true;
+    throw error;
+  }
   if (target.is_rc_president !== true) return true;
   const me = await sessionRcIdentity(req);
   return Boolean(me && me.rcId === id);
@@ -2792,7 +2842,17 @@ app.get('/api/health', async (_req: Request, res: ExpressResponse) => {
       return;
     }
 
-    await ensureAdminAuth();
+    // One cheap AUTHENTICATED read, not just ensureAdminAuth(). That call
+    // short-circuits on any unexpired token, so a superuser password rotated in
+    // the PocketBase admin UI left every real query failing while this endpoint
+    // — and therefore any uptime probe watching it — stayed green.
+    try {
+      await ensureAdminAuth();
+      await withCollection(['app_settings'], (c) => c.getList(1, 1, { fields: 'id', skipTotal: true }));
+    } catch (probeError) {
+      if (!(await reauthOnRejection(probeError))) throw probeError;
+      await withCollection(['app_settings'], (c) => c.getList(1, 1, { fields: 'id', skipTotal: true }));
+    }
     res.json({ ok: true });
   } catch (error) {
     console.error('[health] auth:', error);
@@ -3265,7 +3325,20 @@ app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, re
 app.delete('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    await withCollection(collectionCandidates.refereeCoachPeople, (c) => c.delete(String(req.params.id)));
+    const id = String(req.params.id);
+    // The same rule the PUT and the PIN-rotate route both enforce, and this was
+    // the hole in it: deactivating the president is refused, rotating her PIN is
+    // refused, changing her address is refused — but DELETING her went through
+    // on a plain confirm(). is_rc_president is not writable by any API route
+    // (create and update both use explicit whitelists) and the seed only runs on
+    // an empty collection, so that delete permanently 403s /api/survey-responses
+    // and /api/president-notes for everyone, recoverable only in the PocketBase
+    // admin UI.
+    if (!(await mayAdministerRcRecord(req, id))) {
+      res.status(403).json({ error: 'Die RC-Präsidentin kann nur sie selbst löschen.' });
+      return;
+    }
+    await withCollection(collectionCandidates.refereeCoachPeople, (c) => c.delete(id));
     rcPeopleCache = null;
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -5838,6 +5911,30 @@ function singleAddress(value: unknown): string {
   return SINGLE_EMAIL_RE.test(v) ? v : '';
 }
 
+// An exact replay of one outbox item, however long ago it was written. The
+// 30-minute window below cannot see this case: a connection dropped AFTER the
+// server committed leaves the client believing it never sent, and the item then
+// waits for the next flush — commonly the following morning, since the only
+// triggers are the `online` event, mount and the manual button. Same game, same
+// role, hours apart is also exactly what a legitimate second visit looks like,
+// so nothing but the key can tell them apart. Without it the referee received a
+// second full report and PDF, and the chair's statistics counted the visit twice.
+async function findSubmissionByKey(submissionKey: string): Promise<string> {
+  if (!submissionKey) return '';
+  try {
+    const hit = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+      collection.getFirstListItem<AnyRecord>(
+        `submission_key = "${escapeFilterValue(submissionKey)}"`,
+        { fields: 'id' },
+      ));
+    return hit.id;
+  } catch (error) {
+    if (isRecordNotFound(error)) return '';
+    console.error('[feedback-submit] submission-key lookup failed:', error);
+    return '';
+  }
+}
+
 async function findRecentSubmission(gameId: string, role: string): Promise<string> {
   const since = new Date(Date.now() - RECENT_SUBMIT_TTL_MS).toISOString();
   try {
@@ -5856,7 +5953,7 @@ async function findRecentSubmission(gameId: string, role: string): Promise<strin
 }
 
 app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: ExpressResponse) => {
-  const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks } = req.body ?? {};
+  const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks, submissionKey } = req.body ?? {};
 
   // Phase 1 — Validation
   if (!gameId || !role || !formData || !pdfBase64) {
@@ -5928,6 +6025,17 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     // the 409 above cannot catch a replay of it. A genuine second observation
     // is days or weeks later, never minutes — anything inside the window is the
     // same submission arriving twice.
+    // Exact first: a replayed outbox item is the same submission no matter how
+    // much time has passed, and answering 409 is what makes the client drop it.
+    const replayed = await findSubmissionByKey(asText(submissionKey));
+    if (replayed) {
+      res.status(409).json({
+        error: `Feedback for role "${role}" was already submitted for this game.`,
+        id: replayed,
+      });
+      return;
+    }
+
     const recentDuplicate = await findRecentSubmission(String(game.id), String(role));
     if (recentDuplicate) {
       res.status(409).json({
@@ -6008,6 +6116,9 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         role_assessed: String(role),
         feedback_json: formData,
         submitted_at: submittedAt,
+        // Empty for an online submit; set for anything that came through the
+        // offline outbox, so a later replay of the same item is recognised.
+        submission_key: asText(submissionKey),
       }),
     );
 
@@ -6283,6 +6394,11 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           await withCollection(collectionCandidates.games, (collection) =>
             collection.update(game.id, gamePatch),
           );
+          // Missing break: every successful submit issued this write THREE
+          // times, on the slowest request in the app, and a success followed by
+          // two failures logged "closure write failed" about a closure that had
+          // in fact landed.
+          break;
         } catch (closeErr) {
           if (attempt === 3) {
             closureFailed = true;

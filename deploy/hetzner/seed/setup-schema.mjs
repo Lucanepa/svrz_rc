@@ -80,7 +80,16 @@ await ensure('referee_coach_feedbacks', [
   // rc_name prints on the report and in the president's list; rc_id is who
   // owns the record. Ownership checks read the id first — see rcRefMatches.
   REL('game',games.id),REL('coachee',coachees.id),T('rc_name'),T('rc_id'),
-  T('role_assessed'),J('feedback_json'),T('submitted_at'),FILE('pdf_file')
+  T('role_assessed'),J('feedback_json'),T('submitted_at'),FILE('pdf_file'),
+  // The offline outbox's own item id, replayed unchanged on every retry, so a
+  // resend can be recognised as the SAME submission rather than guessed at by a
+  // 30-minute time window. A connection dropped after the server committed
+  // leaves the client believing it never sent; the item then waits — often
+  // until the app is next opened, the following morning — and re-sends. Same
+  // game, same role, hours apart, is exactly what a legitimate second visit
+  // looks like, so nothing else can tell them apart. Empty for submissions made
+  // online, which never enter the outbox.
+  T('submission_key')
 ]);
 await ensure('observations', [
   REL('coachee',coachees.id),REL('referee_coach',rcs.id),REL('game',games.id),

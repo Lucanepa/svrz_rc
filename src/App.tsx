@@ -2080,12 +2080,21 @@ export default function App() {
       // Not in dual mode: two records are filed in one go and only one form is
       // on screen, so a note box there would attach to whichever finished last.
       if (!dualMode) { setOpenFeedbackId(result.id || null); setOpenFeedbackMine(true); }
+      // The report is filed either way, so this is a warning beside the success,
+      // not a failure. But the game still looks unobserved: someone can file and
+      // mail a SECOND report for the same role, and a typed-in score was
+      // dropped. The coach is the only one in a position to notice.
+      const closureNote = result.closureFailed
+        ? (fd.lang === 'DE'
+          ? ' — Achtung: Die Rolle konnte im Spiel nicht als erledigt markiert werden, bitte im Admin prüfen.'
+          : ' — note: the role could not be marked done on the game, please check in Admin.')
+        : '';
       if (result.emailSent) {
         return result.emailWarning
-          ? `${fd.role}: ${t.saveOkEmail} (${result.emailWarning})`
-          : `${fd.role}: ${t.saveOkEmail}`;
+          ? `${fd.role}: ${t.saveOkEmail} (${result.emailWarning})${closureNote}`
+          : `${fd.role}: ${t.saveOkEmail}${closureNote}`;
       }
-      return `${fd.role}: ${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}`;
+      return `${fd.role}: ${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}${closureNote}`;
     } catch (err) {
       const e = err as Error & { status?: number; reachedServer?: boolean };
       const de = fd.lang === 'DE';

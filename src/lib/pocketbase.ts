@@ -102,9 +102,18 @@ export type FeedbackSubmitResponse = {
   emailSent: boolean;
   emailError?: string;
   emailWarning?: string;
+  /**
+   * The role could not be closed on the game. The report IS filed and sent, but
+   * the game still looks unobserved: another report can be filed and mailed for
+   * the same role, and a score typed into this one was dropped. The server has
+   * always computed this; nothing read it, so the coach saw an ordinary success.
+   */
+  closureFailed?: boolean;
 };
 
 export async function saveFeedbackToPocketBase(params: {
+  /** See OutboxPayload.submissionKey — replay-stable, absent when online. */
+  submissionKey?: string;
   gameId: string;
   role: FeedbackFormData['role'];
   formData: FeedbackFormData;
@@ -118,6 +127,7 @@ export async function saveFeedbackToPocketBase(params: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      submissionKey: params.submissionKey,
       gameId: params.gameId,
       role: params.role,
       formData: params.formData,

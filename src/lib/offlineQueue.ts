@@ -8,6 +8,13 @@
 // same identity — so a queued item can never be submitted as a different coach.
 
 export type OutboxPayload = {
+  /**
+   * Stable across every replay of this item — it IS the outbox item's id. The
+   * server stores it so a resend is recognised as the SAME submission instead
+   * of being guessed at by a time window. Absent for an online submit, which
+   * never enters the outbox.
+   */
+  submissionKey?: string;
   gameId: string;
   role: '1. SR' | '2. SR';
   formData: unknown;
@@ -66,7 +73,10 @@ function genId(): string {
 }
 
 export async function enqueueFeedback(payload: OutboxPayload, label: string, ownerId: string): Promise<void> {
-  const item: OutboxItem = { id: genId(), ownerId, createdAt: Date.now(), label, payload };
+  const id = genId();
+  // The id travels with the payload, so every retry of this item carries the
+  // same key and the server can tell a replay from a genuine second visit.
+  const item: OutboxItem = { id, ownerId, createdAt: Date.now(), label, payload: { ...payload, submissionKey: id } };
   await run('readwrite', (s) => s.put(item));
 }
 

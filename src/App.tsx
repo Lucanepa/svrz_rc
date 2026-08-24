@@ -1559,6 +1559,13 @@ export default function App() {
   };
 
   const applyCoacheeToMeta = (coachee: Coachee) => {
+    // A filed record is a document about ONE referee, already signed and sent.
+    // Tapping another coachee while it is open used to rewrite the name, Niveau
+    // and Gruppe on screen — and into "PDF herunterladen" — so the saved file
+    // showed one person's name over another's ratings and signature. The
+    // meta-fill effect already refuses to run while openFeedbackId is set; this
+    // path skipped that guard, and nothing put the record's own values back.
+    if (openFeedbackId) return;
     setFormData((prev) => ({
       ...prev,
       meta: {

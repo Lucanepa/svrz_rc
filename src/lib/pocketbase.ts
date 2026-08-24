@@ -646,9 +646,6 @@ export type ContactSyncResult = {
   // Names VolleyManager holds for more than one referee. Nothing is written for
   // these — guessing would put one person's report in another's inbox.
   ambiguous?: string[];
-  // Second pass: whoever the referee list missed, looked up on the games.
-  // `gamesError` is set when that pass could not run — the first pass still counts.
-  updatedFromGames: number; gameRefereesFound: number; gamesError: string;
 };
 
 export async function syncCoacheeContacts(season: number, overwrite = false): Promise<ContactSyncResult> {

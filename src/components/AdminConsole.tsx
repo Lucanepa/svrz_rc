@@ -99,8 +99,6 @@ const STR = {
     syncBtn: 'Kontakte holen',
     syncOverwrite: 'Vorhandene Einträge überschreiben (sonst werden nur leere Felder gefüllt)',
     syncResult: (u: number, a: number, n: number, f: number) => `${u} aktualisiert, ${a} bereits vollständig, ${n} nicht gefunden (${f} SR in VolleyManager).`,
-    syncFromGames: (u: number, f: number) => `Davon ${u} aus den Spielen (${f} SR auf Aufgeboten gefunden).`,
-    syncGamesFailed: (e: string) => `Suche über die Spiele nicht möglich: ${e}`,
     syncFail: (e: string) => `Kontakt-Abgleich fehlgeschlagen: ${e}`,
     syncNotFoundList: 'Nicht in VolleyManager gefunden',
     syncAmbiguous: 'Mehrdeutiger Name — nichts übernommen, bitte von Hand prüfen',
@@ -182,8 +180,6 @@ const STR = {
     syncBtn: 'Fetch contacts',
     syncOverwrite: 'Overwrite existing entries (otherwise only empty fields are filled)',
     syncResult: (u: number, a: number, n: number, f: number) => `${u} updated, ${a} already complete, ${n} not found (${f} referees in VolleyManager).`,
-    syncFromGames: (u: number, f: number) => `${u} of those came from the games (${f} referees found on convocations).`,
-    syncGamesFailed: (e: string) => `Could not search the games: ${e}`,
     syncFail: (e: string) => `Contact sync failed: ${e}`,
     syncNotFoundList: 'Not found in VolleyManager',
     syncAmbiguous: 'Ambiguous name — nothing written, please check by hand',
@@ -222,19 +218,44 @@ const input = 'h-9 w-full px-3 text-sm rounded-lg border border-stone-300 bg-whi
 const btnPrimary = 'inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:bg-stone-300 transition-colors';
 const btnGhost = 'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors';
 
+// Bounds before the parser sees the bytes. `xlsx` is pinned at 0.18.5 — the last
+// npm release, carrying CVE-2023-30533 (prototype pollution) and CVE-2024-22363
+// (ReDoS), with no upgrade path on npm since SheetJS left the registry. The
+// import rows are built from literal keys, so a polluted prototype has no route
+// into them; the realistic outcome is a hung or crashed admin tab. A size and
+// row cap keeps a malformed file from being one. Move to the SheetJS CDN build
+// (>=0.20.2) or exceljs when convenient.
+const XLSX_MAX_BYTES = 8 * 1024 * 1024;
+const XLSX_MAX_ROWS = 5_000;
+
 async function parseXlsx(file: File): Promise<ImportRow[]> {
+  if (file.size > XLSX_MAX_BYTES) {
+    throw new Error(`Die Datei ist zu gross (${Math.round(file.size / 1024 / 1024)} MB, max. 8 MB).`);
+  }
   const XLSX = await import('xlsx');
   const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
   const sheet = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
+  const allRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
+  if (allRows.length > XLSX_MAX_ROWS) {
+    throw new Error(`Die Datei hat ${allRows.length} Zeilen (max. ${XLSX_MAX_ROWS}).`);
+  }
+  const rows = allRows;
   if (!rows.length) return [];
-  const header = (rows[0] as unknown[]).map((h) => String(h).trim().toLowerCase());
+  const NAME_COLS = ['nachname', 'name', 'last', 'lastname'];
+  const cells = (row: unknown) => (row as unknown[]).map((h) => String(h).trim().toLowerCase());
+  // The header is not always the first row: VolleyManager's "Schiedsrichter
+  // verwalten" export spends row 1 on its own title and puts the column names on
+  // row 2, which read as a title-only header and imported zero rows. Take the
+  // first row that actually carries a name column instead.
+  const headerRow = rows.slice(0, 10).findIndex((row) => cells(row).some((h) => NAME_COLS.includes(h)));
+  if (headerRow < 0) return [];
+  const header = cells(rows[headerRow]);
   const col = (names: string[]) => { for (const n of names) { const i = header.indexOf(n); if (i >= 0) return i; } return -1; };
-  const ci = { last: col(['nachname', 'name', 'last', 'lastname']), first: col(['vorname', 'first', 'firstname']), email: col(['email', 'e-mail', 'mail', 'e-mail-adresse', 'emailadresse', 'e mail']), level: col(['niveau', 'level']), stage: col(['stufe', 'stage']), group: col(['gruppe', 'group', 'groups']), notes: col(['bemerkung', 'bemerkungen', 'notizen', 'notes', 'note', 'kommentar']) };
+  const ci = { last: col(NAME_COLS), first: col(['vorname', 'first', 'firstname']), email: col(['email', 'e-mail', 'mail', 'e-mail-adresse', 'emailadresse', 'e mail']), level: col(['niveau', 'level']), stage: col(['niveaustufe', 'stufe', 'stage']), group: col(['gruppe', 'group', 'groups']), notes: col(['bemerkung', 'bemerkungen', 'notizen', 'notes', 'note', 'kommentar']) };
   // Notes often live in an unnamed column right after Gruppe.
   if (ci.notes < 0 && ci.group >= 0 && !header[ci.group + 1]) ci.notes = ci.group + 1;
   const out: ImportRow[] = [];
-  for (const raw of rows.slice(1)) {
+  for (const raw of rows.slice(headerRow + 1)) {
     const r = raw as unknown[];
     const last = String(r[ci.last] ?? '').trim();
     const first = String(r[ci.first] ?? '').trim();
@@ -321,7 +342,20 @@ export default function AdminConsole() {
     try { await putSettings({ rc_mandates: next }); }
     catch (e) { setRcMandates(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
   }, []);
-  const saveDefaultGoal = useCallback(async (next: number) => { setDefaultGoal(next); await putSettings({ default_goal: next }); }, []);
+  // Optimistic, but not silent: its two neighbours (groups, mandates) were fixed
+  // for exactly this — a rejected save left the new number on screen with no
+  // error and no ✓, so it looked stored until the next reload disagreed.
+  const saveDefaultGoal = useCallback(async (next: number) => {
+    let previous = 0;
+    setDefaultGoal((current) => { previous = current; return next; });
+    try {
+      await putSettings({ default_goal: next });
+    } catch (e) {
+      setDefaultGoal(previous);
+      setSettingsError(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  }, []);
 
   // Tab ↔ URL. pushState keeps the hashchange listener in main.tsx (which
   // reloads on a root change) out of it; popstate handles Back/Forward.
@@ -604,8 +638,6 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
       const r = await syncCoacheeContacts(season, overwriteContacts);
       setSyncNote([
         t.syncResult(r.updated, r.alreadySet, r.notFound, r.refereesFetched),
-        r.updatedFromGames > 0 ? t.syncFromGames(r.updatedFromGames, r.gameRefereesFound) : '',
-        r.gamesError ? t.syncGamesFailed(r.gamesError) : '',
       ].filter(Boolean).join(' '));
       setSyncMissing(r.missing);
       setSyncAmbiguous(r.ambiguous ?? []);
@@ -1609,6 +1641,9 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
   const loading = settingsLoading;
   const [ng, setNg] = useState('');
   const [gi, setGi] = useState<number | null>(null);
+  // The name the open edit row started on — the index alone is not stable across
+  // a re-sort. See saveEditGroup.
+  const [giName, setGiName] = useState('');
   const [gv, setGv] = useState('');
   const [groupsError, setGroupsError] = useState('');
   // Optimistic, but no longer silent: a rejected save (expired session, 500)
@@ -1624,10 +1659,17 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
   const delGroup = (i: number) => { if (!confirm(t.delGroup(groups[i]))) return; void saveGroups(groups.filter((_, idx) => idx !== i)); };
   const saveEditGroup = (i: number) => {
     const v = gv.trim();
+    // Re-resolved by NAME, not by the index the edit started at: the list is
+    // re-sorted on every save, so adding or deleting a group while this row was
+    // open retargeted the rename onto a different group. The confirm() named the
+    // real victim, which is the only reason it was survivable.
+    const original = gi != null ? giName : groups[i];
+    const at = groups.indexOf(original);
+    if (at < 0) { setGi(null); return; } // renamed or deleted underneath us
     // Coachees carry the group name as a string, so a rename splits the cohort
     // into two spellings that every filter treats as different groups.
-    if (v && v !== groups[i] && !confirm(t.renameGroupWarn(groups[i], v))) { setGi(null); return; }
-    if (v) { const next = groups.slice(); next[i] = v; void saveGroups(Array.from(new Set(next)).sort()); }
+    if (v && v !== original && !confirm(t.renameGroupWarn(original, v))) { setGi(null); return; }
+    if (v) { const next = groups.slice(); next[at] = v; void saveGroups(Array.from(new Set(next)).sort()); }
     setGi(null);
   };
   const save = async () => { await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
@@ -1678,7 +1720,7 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
           ) : (
             <div key={g} className="py-2 flex items-center gap-3">
               <span className="flex-1 text-sm text-stone-800">{g}</span>
-              <button onClick={() => { setGi(i); setGv(g); }} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
+              <button onClick={() => { setGi(i); setGiName(g); setGv(g); }} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
               <button onClick={() => delGroup(i)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
             </div>
           ))}

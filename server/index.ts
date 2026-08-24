@@ -424,8 +424,16 @@ function peekRateLimit(store: RateLimitStore, key: string, max: number): { allow
 
 // Per-IP limiter for login endpoints (RC login + admin login).
 const gateAttempts: RateLimitStore = new Map();
-function checkGateRateLimit(ip: string) {
-  return checkRateLimit(gateAttempts, ip, GATE_RATE_LIMIT_MAX, GATE_RATE_LIMIT_WINDOW_MS);
+// Namespaced per route, not one bucket for all four sign-in doors. Sharing it
+// meant ten sign-ins of ANY kind from one address in five minutes — a
+// season-kickoff meeting on one office WiFi, every coach on the same NAT — 429'd
+// the eleventh person on every flow at once, including the admin console.
+// Charged on failure only: a successful sign-in is not evidence of an attack.
+function checkGateRateLimit(ip: string, scope = 'gate') {
+  return checkRateLimit(gateAttempts, `${scope}|${ip}`, GATE_RATE_LIMIT_MAX, GATE_RATE_LIMIT_WINDOW_MS);
+}
+function peekGateRateLimit(ip: string, scope = 'gate') {
+  return peekRateLimit(gateAttempts, `${scope}|${ip}`, GATE_RATE_LIMIT_MAX);
 }
 
 // Per-IP limiter for the password-reset flow — deliberately separate from the
@@ -472,7 +480,20 @@ const pinLoginGlobal: RateLimitStore = new Map();
 // the same reason those two are separate: exhausting one must not spend or
 // bypass the other.
 const pinLoginPerAccount: RateLimitStore = new Map();
+const pinLoginPerAccountTotal: RateLimitStore = new Map();
+// Keyed (email + IP), not email alone. A per-account brake protects a 6-digit
+// PIN from a targeted grind — but keyed on the address by itself, any stranger
+// who knows a coach's e-mail could burn the ten attempts from their own machine
+// and keep the RIGHT password from ever being compared. Ten wrong guesses plus
+// three password-reset starts (rcOtpStartAttempts, same shape) locked a coach
+// out of both doors with no admin unlock. Per (email, IP) an attacker only ever
+// throttles themselves; a distributed grind still meets PIN_ACCOUNT_TOTAL_MAX
+// below and the app-wide pinLoginGlobal.
 const PIN_ACCOUNT_MAX = 10;
+// The same brake keyed on the address ALONE, set high enough that no ordinary
+// person reaches it (a coach fumbling their PIN on a phone will not) but low
+// enough to matter against many addresses grinding one account.
+const PIN_ACCOUNT_TOTAL_MAX = 60;
 const PIN_ACCOUNT_WINDOW_MS = 15 * 60 * 1000;
 const PIN_GLOBAL_MAX = 1000;
 const PIN_GLOBAL_WINDOW_MS = 15 * 60 * 1000;
@@ -560,7 +581,7 @@ setInterval(() => {
   // Every bucket, not just the login ones: clientLogRl is fed by an
   // unauthenticated endpoint that any scanner can reach, so a forgotten map
   // grows one entry per source IP for the life of the process.
-  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal, pinLoginPerAccount, rcOtpStartAttempts, rcOtpGlobal, resetAttempts, surveyAttempts, clientLogRl]) {
+  for (const store of [gateAttempts, signatureAttempts, pinLoginGlobal, pinLoginPerAccount, pinLoginPerAccountTotal, rcOtpStartAttempts, rcOtpGlobal, resetAttempts, surveyAttempts, clientLogRl, clientLogGlobalRl]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
@@ -1797,64 +1818,7 @@ function nameKeyVariants(name: string): string[] {
   return reversed === norm ? [norm] : [norm, reversed];
 }
 
-// Second source for the same contact details: the games themselves. Every
-// referee convocation on a game carries the referee's email and phone, so once
-// the season's games are published they cover anyone the Schiedsrichterliste
-// missed. VM exposes the contact twice — flat on the convocation (that is what
-// "SR E-Mail" is in the convocation list) and nested under the referee's person,
-// as in the address viewer — and which one a given response fills is not
-// documented, so read both and take whichever is there.
-const VM_CONVOCATION_KEYS = [
-  'activeRefereeConvocationFirstHeadReferee',
-  'activeRefereeConvocationSecondHeadReferee',
-  'activeRefereeConvocationFirstLineJudge',
-  'activeRefereeConvocationSecondLineJudge',
-];
-
-// `level` only comes from the referee list; the games pass has no Niveau to
-// offer, which is why it is optional rather than a required empty string.
 type VmContact = { email: string; phone: string; level?: string };
-
-function convocationContact(convocation: Record<string, unknown>): { name: string; contact: VmContact } | null {
-  const person = deepGet(convocation, 'indoorAssociationReferee', 'indoorReferee', 'person') as AnyRecord | undefined;
-  const name = asText(person?.displayName)
-    || [asText(person?.firstName), asText(person?.lastName)].filter(Boolean).join(' ');
-  const email = asText(convocation.emailAddress) || asText(deepGet(person ?? {}, 'primaryEmailAddress', 'emailAddress'));
-  const phone = asText(convocation.phoneNumber) || asText(deepGet(person ?? {}, 'primaryPhoneNumber', 'normalizedLocalNumber'));
-  if (!name || (!email && !phone)) return null;
-  return { name, contact: { email, phone } };
-}
-
-async function fetchVmGameRefereeContacts(
-  username: string,
-  password: string,
-  from: string,
-  to: string,
-): Promise<Map<string, VmContact>> {
-  const { jar, csrfToken, windowUniqueId } = await vmLogin(username, password);
-  const { items } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
-  const byName = new Map<string, VmContact>();
-  for (const item of items) {
-    if (!item || typeof item !== 'object') continue;
-    for (const key of VM_CONVOCATION_KEYS) {
-      const convocation = (item as Record<string, unknown>)[key];
-      if (!convocation || typeof convocation !== 'object') continue;
-      const hit = convocationContact(convocation as Record<string, unknown>);
-      if (!hit) continue;
-      for (const variant of nameKeyVariants(hit.name)) {
-        // A later game can fill a gap an earlier one left, so merge per field
-        // instead of letting the first game seen win outright.
-        const prev = byName.get(variant);
-        byName.set(variant, {
-          email: hit.contact.email || prev?.email || '',
-          phone: hit.contact.phone || prev?.phone || '',
-        });
-      }
-    }
-  }
-  return byName;
-}
-
 async function fetchAllVmGames(
   jar: CookieJar,
   csrfToken: string,
@@ -2869,7 +2833,7 @@ app.get('/api/admin/auth/status', async (req: Request, res: ExpressResponse) => 
 
 app.post('/api/admin/auth/login', async (req: Request, res: ExpressResponse) => {
   const ctx = reqCtx(req);
-  const rl = checkGateRateLimit(ctx.ip);
+  const rl = peekGateRateLimit(ctx.ip, 'admin');
   if (!rl.allowed) { denyRateLimited(req, res, 'login:ip', rl.retryAfterMs, { kind: 'admin' }); return; }
   const email = asText((req.body ?? {}).email);
   const password = asText((req.body ?? {}).password);
@@ -2888,6 +2852,7 @@ app.post('/api/admin/auth/login', async (req: Request, res: ExpressResponse) => 
   } catch (error) {
     clearAdminSessionCookie(res);
     if (error instanceof Error && error.message === 'INVALID_ADMIN_CREDENTIALS') {
+      checkGateRateLimit(ctx.ip, 'admin'); // charged on failure only
       log.warn('auth.admin-login', 'rejected: invalid credentials', { email }, ctx);
       res.status(401).json({ error: 'Invalid credentials.' });
       return;
@@ -2905,7 +2870,7 @@ app.post('/api/admin/auth/logout', (_req: Request, res: ExpressResponse) => {
 // ── Admin UI gate (username + password -> admin session) ──────────────
 app.post('/api/admin/ui-login', (req: Request, res: ExpressResponse) => {
   const ctx = reqCtx(req);
-  const rl = checkGateRateLimit(ctx.ip);
+  const rl = peekGateRateLimit(ctx.ip, 'admin-ui');
   if (!rl.allowed) { denyRateLimited(req, res, 'login:ip', rl.retryAfterMs, { kind: 'admin-ui' }); return; }
   const body = (req.body ?? {}) as Record<string, unknown>;
   // Lower-cased before comparing: a phone keyboard capitalises the first letter
@@ -2916,6 +2881,7 @@ app.post('/api/admin/ui-login', (req: Request, res: ExpressResponse) => {
   // Both halves are always evaluated, so a wrong username cannot be told from a
   // wrong password by how fast the answer comes back.
   if (!userOk || !passOk) {
+    checkGateRateLimit(ctx.ip, 'admin-ui'); // charged on failure only
     clearAdminSessionCookie(res);
     // `userMatched` is for the admin reading the log after a failed sign-in
     // ("was it the name or the password?"); the CALLER is told neither.
@@ -2936,6 +2902,15 @@ app.post('/api/admin/ui-login', (req: Request, res: ExpressResponse) => {
 const clientLogRl: RateLimitStore = new Map();
 const CLIENT_LOG_MAX_BATCH = 200;
 const CLIENT_LOG_EVENTS_PER_WINDOW = 3_000;
+// A GLOBAL ceiling beside the per-IP one. Per-IP alone is ~12 MB per address
+// per window (3,000 events x a 2,000-char msg + 2,048-char data), appended to
+// /app/logs — which docker-compose bind-mounts from the same directory as
+// pb_data. A filesystem filled by an unauthenticated endpoint makes every
+// PocketBase write fail and every submit 500. Cheaper still: ~20k entries flush
+// the whole in-memory ring, so the Protokoll you open to diagnose the flood
+// contains nothing but the flood.
+const CLIENT_LOG_GLOBAL_PER_WINDOW = 20_000;
+const clientLogGlobalRl: RateLimitStore = new Map();
 const CLIENT_LOG_WINDOW_MS = 5 * 60 * 1000;
 const CLIENT_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
 
@@ -2959,6 +2934,13 @@ app.post('/api/client-logs',
   express.json({ limit: CLIENT_LOG_BODY_LIMIT }),
   (req: Request, res: ExpressResponse) => {
   const ip = clientIp(req);
+  const globalRl = checkRateLimit(clientLogGlobalRl, 'global', CLIENT_LOG_GLOBAL_PER_WINDOW, CLIENT_LOG_WINDOW_MS);
+  if (!globalRl.allowed) {
+    // Answered 204 on purpose: browser log shipping is fire-and-forget, and a
+    // 429 here would only make clients retry into a budget that is already full.
+    res.status(204).end();
+    return;
+  }
   const rl = checkRateLimit(clientLogRl, ip, CLIENT_LOG_EVENTS_PER_WINDOW, CLIENT_LOG_WINDOW_MS);
   // Silently accept when over budget: a client that can't ship logs must never
   // start showing the user errors about logging.
@@ -3361,20 +3343,28 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
       if (!full_name) continue;
       const payload: Record<string, unknown> = {
         full_name, first_name: asText(r.first_name), last_name: asText(r.last_name),
-        referee_level: asText(r.referee_level), stage: asText(r.stage) || 'active',
+        referee_level: asText(r.referee_level),
         groups: asText(r.groups), season,
       };
-      // Only touch notes/email when the file actually provided a value — a
+      // Only touch notes/email/stage when the file actually provided a value — a
       // re-import from a sheet without those columns must not wipe what is
       // maintained in the app. Losing the email silently breaks submission:
       // the feedback POST hard-fails without one.
+      //
+      // stage used to default to the literal 'active' whenever the sheet had no
+      // Stufe column. That is not a Stufe: levelKey() only accepts a numeric one,
+      // so those coachees showed as "N4 – TBD" and derived no Niveau rules at all
+      // — 20 of the 52 season-2026 coachees carried it (fixed from the VolleyManager
+      // export on 2026-08-24). An unknown Stufe is now simply empty, and a re-import
+      // leaves whatever the app already holds.
       if (asText(r.notes)) payload.notes = asText(r.notes);
       if (asText(r.email)) payload.email = asText(r.email);
+      if (asText(r.stage)) payload.stage = asText(r.stage);
       const key = `${normalizeName(full_name)}|${season ?? ''}`;
       const ex = byKey.get(key);
       if (ex) { await withCollection(collectionCandidates.coachees, (c) => c.update(ex.id, payload)); updated++; }
       else {
-        const rec = await withCollection(collectionCandidates.coachees, (c) => c.create({ notes: '', ...payload, feedback_entries: [] }));
+        const rec = await withCollection(collectionCandidates.coachees, (c) => c.create({ notes: '', stage: '', ...payload, feedback_entries: [] }));
         byKey.set(key, rec as AnyRecord); // duplicate rows in one file update instead of duplicating
         created++;
       }
@@ -3434,7 +3424,7 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
 
     const coachees = await listCoacheesWithFallbackSort();
     const scoped = season == null ? coachees : coachees.filter((c) => Number(c.season) === season);
-    let updated = 0, alreadySet = 0, notFound = 0, updatedFromGames = 0;
+    let updated = 0, alreadySet = 0, notFound = 0;
     const missing: string[] = [];
     // Names VolleyManager holds more than once. Reported, never guessed at.
     const ambiguous: string[] = [];
@@ -3508,69 +3498,35 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
       await applyContact(coachee, match.hit);
     }
 
-    // Whoever the referee list did not cover gets a second pass over the games,
-    // which carry the same contact on each convocation. Only fetched when there
-    // is actually a gap to fill: it is a second login and a season of games.
-    // Before the season's games are published this finds nothing, which is the
-    // expected outcome, not a failure.
-    let gamesSearched = 0;
-    let gamesError = '';
-    // The games pass is OFF unless asked for. It cannot work with this account:
-    // the referee-delegate role is the only one that can open the game list, and
-    // under it VolleyManager returns convocation persons with their contact
-    // fields stripped — 41 properties on the person, `displayName` among them,
-    // no email and no phone (checked 2026-08-13). The roles that DO expose
-    // contacts cannot see the games. So this used to spend a 1401-game scrape,
-    // several minutes and eight upstream calls, to find exactly nothing.
+    // Everyone the referee list did not cover. There is no second source: the
+    // games pass that used to live here is gone.
     //
-    // Kept behind a flag rather than deleted: if the account ever gains a role
-    // that can do both, `{"useGames": true}` is how you find out.
-    const useGames = body.useGames === true;
-    if (unresolved.length > 0 && !useGames) {
-      notFound += unresolved.length;
-      for (const coachee of unresolved) {
-        if (missing.length < 50) missing.push(coacheeName(coachee));
-      }
-      gamesError = 'Spiel-Konvokationen übersprungen: VolleyManager liefert dort keine Kontaktdaten.';
-    } else if (unresolved.length > 0) {
-      const seasonForGames = season ?? Number(asText((await getSettingRecord('default_season'))?.value));
-      try {
-        if (!Number.isFinite(seasonForGames)) throw new Error('Keine Saison bestimmbar.');
-        // Full ISO with the timezone suffix, exactly as resolveSyncWindow
-        // produces for the games sync. VolleyManager's search answers 500 —
-        // not 400, not an empty result — for a date without it, which is why
-        // this fallback looked like a permissions problem for weeks while the
-        // games sync ran fine on the identical request.
-        const gameContacts = await fetchVmGameRefereeContacts(
-          username,
-          password,
-          new Date(Date.UTC(seasonForGames, 8, 1, 0, 0, 0)).toISOString(),
-          new Date(Date.UTC(seasonForGames + 1, 3, 30, 23, 59, 59)).toISOString(),
-        );
-        gamesSearched = gameContacts.size;
-        for (const coachee of unresolved) {
-          const hit = lookup(gameContacts, coachee);
-          if (!hit) { notFound++; if (missing.length < 50) missing.push(coacheeName(coachee)); continue; }
-          if (await applyContact(coachee, hit)) updatedFromGames++;
-        }
-      } catch (gamesErr) {
-        // The referee-list pass already ran and its updates are saved; report
-        // the failure instead of throwing all of that away.
-        gamesError = gamesErr instanceof Error ? gamesErr.message : String(gamesErr);
-        notFound += unresolved.length;
-        for (const coachee of unresolved) {
-          if (missing.length < 50) missing.push(coacheeName(coachee));
-        }
-      }
+    // It read referee contacts off game convocations, and it could never work.
+    // Measured 2026-08-24 over 300 games / 61 convocations under the
+    // referee-delegate role — the only role that can open the game list at all:
+    // ZERO carried a flat `emailAddress`, and ZERO carried the referee's own
+    // address either. VolleyManager strips contact fields from convocation data
+    // for every role this account can hold, which confirms the 2026-08-13 field
+    // note. Re-ordering which of the two was preferred would therefore have
+    // changed nothing, and the pass cost a full-season scrape and eight upstream
+    // calls to find exactly nothing.
+    //
+    // It also carried real risk while it existed: pairing a name from one
+    // convocation slot with an address from another is precisely how a coachee
+    // ends up holding a stranger's e-mail. Kept behind a flag it was still one
+    // `{"useGames": true}` away from running.
+    //
+    // If the account ever gains a role that can read the games AND see contacts,
+    // this comes back deliberately — not by flipping a flag nobody has tested.
+    notFound += unresolved.length;
+    for (const coachee of unresolved) {
+      if (missing.length < 50) missing.push(coacheeName(coachee));
     }
 
     res.json({
       refereesFetched: contacts.length,
       coachees: scoped.length,
       updated,
-      updatedFromGames,
-      gameRefereesFound: gamesSearched,
-      gamesError,
       alreadySet,
       notFound,
       missing,
@@ -3647,7 +3603,7 @@ app.post('/api/auth/rc/login', async (req: Request, res: ExpressResponse) => {
 
 async function rcLoginAttempt(req: Request, res: ExpressResponse): Promise<void> {
   const ctx = reqCtx(req);
-  const ipRl = checkGateRateLimit(ctx.ip);
+  const ipRl = checkGateRateLimit(ctx.ip, 'rc-login');
   if (!ipRl.allowed) {
     denyRateLimited(req, res, 'login:ip', ipRl.retryAfterMs, { email: asText((req.body ?? {}).email).trim().toLowerCase() });
     return;
@@ -3665,9 +3621,14 @@ async function rcLoginAttempt(req: Request, res: ExpressResponse): Promise<void>
   const password = asText((req.body ?? {}).password);
   // Per-account brake, checked before any credential work so a targeted grind
   // stops at this account rather than at the app-wide budget everyone shares.
-  const acctRl = peekRateLimit(pinLoginPerAccount, email, PIN_ACCOUNT_MAX);
+  const acctRl = peekRateLimit(pinLoginPerAccount, `${email}|${ctx.ip}`, PIN_ACCOUNT_MAX);
   if (email && !acctRl.allowed) {
     denyRateLimited(req, res, 'login:account', acctRl.retryAfterMs, { email });
+    return;
+  }
+  const acctTotalRl = peekRateLimit(pinLoginPerAccountTotal, email, PIN_ACCOUNT_TOTAL_MAX);
+  if (email && !acctTotalRl.allowed) {
+    denyRateLimited(req, res, 'login:account-total', acctTotalRl.retryAfterMs, { email });
     return;
   }
   if (!email || !password) {
@@ -3704,7 +3665,10 @@ async function rcLoginAttempt(req: Request, res: ExpressResponse): Promise<void>
       // accounts made the 429 an oracle: a guessable email hit the cap, an
       // unknown one never did, so the difference in response revealed which
       // addresses belong to a real RC.
-      if (email) checkRateLimit(pinLoginPerAccount, email, PIN_ACCOUNT_MAX, PIN_ACCOUNT_WINDOW_MS);
+      if (email) {
+        checkRateLimit(pinLoginPerAccount, `${email}|${ctx.ip}`, PIN_ACCOUNT_MAX, PIN_ACCOUNT_WINDOW_MS);
+        checkRateLimit(pinLoginPerAccountTotal, email, PIN_ACCOUNT_TOTAL_MAX, PIN_ACCOUNT_WINDOW_MS);
+      }
       // Distinguishing these two in the log (never in the response) is what
       // turns "she can't log in" into an answerable question.
       log.warn('auth.login', 'rejected', {
@@ -3733,7 +3697,7 @@ async function rcLoginAttempt(req: Request, res: ExpressResponse): Promise<void>
 // answers 401 until /api/auth/rc/identify puts a name on it.
 app.post('/api/auth/shared/login', async (req: Request, res: ExpressResponse) => {
   const ctx = reqCtx(req);
-  const ipRl = checkGateRateLimit(ctx.ip);
+  const ipRl = checkGateRateLimit(ctx.ip, 'shared-login');
   if (!ipRl.allowed) { denyRateLimited(req, res, 'login:ip', ipRl.retryAfterMs, { kind: 'shared' }); return; }
   // Read the app-wide budget, spend it only on a wrong answer — same reasoning
   // as the personal login, and it matters more here: one secret for everybody
@@ -5882,11 +5846,21 @@ const ATTACHMENT_EXTENSIONS: Record<string, string> = {
 
 // Keep the extension honest too — a .pdf name on JPEG bytes fails the same way
 // the wrong MIME type does.
+// The filename is derived from the sniffed type, never trusted from the client.
+// An unrecognised type used to fall through to application/octet-stream and then
+// return the caller's name untouched, so a coach session could have an
+// SPF/DKIM-aligned SVRZ mail deliver "SVRZ-Bericht.pdf.html" to a referee. The
+// submit route now refuses anything that is not a known type, so `ext` is always
+// present; the base name is stripped of any path and of its own extension.
 function attachmentFilename(filename: string, contentType: string): string {
-  const ext = ATTACHMENT_EXTENSIONS[contentType];
-  const name = String(filename || 'feedback.pdf');
-  if (!ext || name.toLowerCase().endsWith(`.${ext}`)) return name;
-  return `${name.replace(/\.[^.]+$/, '')}.${ext}`;
+  const ext = ATTACHMENT_EXTENSIONS[contentType] || 'pdf';
+  const base = String(filename || 'feedback')
+    .split(/[/\\]/).pop()!            // no directory components
+    .replace(/\.[^.]+$/, '')           // no caller-chosen extension
+    .replace(/[^\w.\- ]+/g, '_')       // no quotes, CR/LF or control characters
+    .slice(0, 120)
+    .trim() || 'feedback';
+  return `${base}.${ext}`;
 }
 
 // A submit that reached the server but whose response was lost gets replayed
@@ -6127,6 +6101,13 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     // abandoned half-record survives every outbox retry, so without this each
     // attempt leaves behind one more PDF-less feedback and observation.
     const attachmentType = sniffAttachmentType(pdfBuffer);
+    // Only the types the report can legitimately be. Falling through to
+    // application/octet-stream let an insider mail arbitrary bytes from the
+    // official address under a name of their choosing.
+    if (!(attachmentType in ATTACHMENT_EXTENSIONS)) {
+      res.status(422).json({ error: 'Der Anhang ist kein PDF oder Bild.' });
+      return;
+    }
     const attachmentName = attachmentFilename(String(pdfFilename || 'feedback.pdf'), attachmentType);
     const priorEntries = Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries : [];
     let observationId = '';

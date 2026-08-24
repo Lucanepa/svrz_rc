@@ -89,7 +89,21 @@ export function redact(value: unknown, depth = 0): unknown {
 // syscall per log line, and a crash loses at most a second of buffer.
 let fileQueue: string[] = [];
 let flushTimer: NodeJS.Timeout | null = null;
+// A COOLDOWN, not a one-way latch. This was permanent: one transient
+// appendFile error (a full disk that someone then cleared, a momentary EIO)
+// disabled the durable JSONL sink and the retention sweep for the life of the
+// process, with a single console.error nobody was watching. The container runs
+// restart: unless-stopped, so it could stay off for weeks — and then a redeploy
+// takes the in-memory ring with it and the evidence is gone twice over.
 let fileSinkBroken = false;
+let fileSinkRetryAt = 0;
+const FILE_SINK_COOLDOWN_MS = 5 * 60 * 1000;
+function fileSinkUsable(): boolean {
+  if (!fileSinkBroken) return true;
+  if (Date.now() < fileSinkRetryAt) return false;
+  fileSinkBroken = false; // one more go; a still-broken sink re-arms below
+  return true;
+}
 
 if (LOG_TO_FILE && !existsSync(LOG_DIR)) {
   try { mkdirSync(LOG_DIR, { recursive: true }); }
@@ -102,21 +116,23 @@ function currentLogFile(): string {
 
 async function flushToFile(): Promise<void> {
   flushTimer = null;
-  if (!fileQueue.length || fileSinkBroken) return;
+  if (!fileQueue.length || !fileSinkUsable()) return;
   const batch = fileQueue;
   fileQueue = [];
   try {
     await mkdir(LOG_DIR, { recursive: true });
     await appendFile(currentLogFile(), batch.join(''), 'utf8');
   } catch (error) {
-    // Never let logging take the server down; degrade to stdout only.
+    // Never let logging take the server down; degrade to stdout only — but come
+    // back and try again, rather than staying off until the next deploy.
     fileSinkBroken = true;
-    console.error('[logstore] file sink failed, disabling it:', error);
+    fileSinkRetryAt = Date.now() + FILE_SINK_COOLDOWN_MS;
+    console.error('[logstore] file sink failed, retrying in 5 min:', error);
   }
 }
 
 function scheduleFlush(): void {
-  if (flushTimer || fileSinkBroken) return;
+  if (flushTimer) return;
   flushTimer = setTimeout(() => { void flushToFile(); }, 1_000);
   flushTimer.unref?.();
 }

@@ -81,12 +81,22 @@ export const SR_ZIEL_OPTIONS = ['4L', '3L', '2L', '1L', 'NL', 'Verbleib'];
 // change the number; this is what applies until it does.
 export const OBSERVATION_GOAL = 10;
 
-// An RC on a half mandate owes half as many (10 → 5). Rounded up, so an odd
-// season goal never leaves a half mandate below half.
-export type RcMandate = 'full' | 'half';
+// The season goal ("Pensum") for one RC: how many observations they owe.
+//
+// This was a Full/Half switch, which could not describe the coaches who owe
+// neither — and a third option would only have moved the same wall. A plain
+// number says exactly what was meant, 0 included. 0 does NOT restrict anybody:
+// the Pensum is informative, and an RC on 0 can still take and observe games.
+//
+// 'half' is still understood, because it is what existing settings hold: an RC
+// stored before this change keeps owing half the default, rounded up so an odd
+// season goal never puts a half mandate below half. Absent = the default goal.
+export type RcMandate = 'full' | 'half' | number;
 export type RcMandateMap = Record<string, RcMandate>;
-export const goalForMandate = (fullGoal: number, mandate?: RcMandate): number =>
-  mandate === 'half' ? Math.ceil(fullGoal / 2) : fullGoal;
+export const goalForMandate = (fullGoal: number, mandate?: RcMandate): number => {
+  if (typeof mandate === 'number' && Number.isFinite(mandate) && mandate >= 0) return Math.trunc(mandate);
+  return mandate === 'half' ? Math.ceil(fullGoal / 2) : fullGoal;
+};
 
 export const SECTIONS_1SR_DE: AssessmentSection[] = [
   {

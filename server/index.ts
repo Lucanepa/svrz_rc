@@ -3079,11 +3079,21 @@ function acquireGameLock(gameId: string): Promise<() => void> {
 // Only the RCs on a half mandate are stored; everyone else follows the full
 // season goal, so "not in the map" is the normal case and the only two values
 // that survive a write are 'half' and (dropped) 'full'.
-function sanitizeMandates(raw: unknown): Record<string, 'half'> {
-  const out: Record<string, 'half'> = {};
+// A per-RC season goal ("Pensum"): a whole number of observations, 0 allowed.
+// 'half' is still accepted because it is what settings written before the switch
+// to free numbers contain — see goalForMandate in src/types.ts. Anything else,
+// negative, or beyond a plainly unreasonable ceiling is dropped rather than
+// stored, so a bad payload cannot put nonsense on the chair's overview.
+const MANDATE_MAX = 200;
+function sanitizeMandates(raw: unknown): Record<string, 'half' | number> {
+  const out: Record<string, 'half' | number> = {};
   if (!raw || typeof raw !== 'object') return out;
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (id && value === 'half') out[id] = 'half';
+    if (!id) continue;
+    if (value === 'half') out[id] = 'half';
+    else if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MANDATE_MAX) {
+      out[id] = Math.trunc(value);
+    }
   }
   return out;
 }
@@ -3109,10 +3119,11 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
     const targetsRec = await getSettingRecord('coachee_targets');
     let coachee_targets: Record<string, unknown> = {};
     try { coachee_targets = targetsRec ? JSON.parse(asText(targetsRec.value)) : {}; } catch { coachee_targets = {}; }
-    // Season observation goal: default_goal is what a full mandate owes; the
-    // RCs listed in rc_mandates (by RC id) are on a half mandate.
+    // Season observation goal: default_goal is what an RC owes unless
+    // rc_mandates names them (by RC id) with their own number. Legacy entries
+    // may still say 'half'.
     const mandatesRec = await getSettingRecord('rc_mandates');
-    let rc_mandates: Record<string, 'half'> = {};
+    let rc_mandates: Record<string, 'half' | number> = {};
     try { rc_mandates = sanitizeMandates(mandatesRec ? JSON.parse(asText(mandatesRec.value)) : {}); } catch { rc_mandates = {}; }
     const defaultGoalRec = await getSettingRecord('default_goal');
     const default_goal = defaultGoalRec ? Number(asText(defaultGoalRec.value)) || null : null;

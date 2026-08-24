@@ -3303,7 +3303,10 @@ export default function App() {
                         the goal tile, where "(5 ½)" would read as five and a half. */}
                     <p className="text-sm text-stone-500">
                       {de ? 'Deine Coaching-Übersicht' : 'Your coaching overview'}
-                      {myMandate === 'half' && (de ? ' · halbes Mandat' : ' · half mandate')}
+                      {/* Only worth saying when it differs from the default —
+                          and 'half mandate' no longer exists as a category. */}
+                      {myMandate !== undefined && myGoal !== defaultGoal
+                        && (de ? ` · Pensum ${myGoal}` : ` · target ${myGoal}`)}
                     </p>
                   </div>
 
@@ -3343,8 +3346,11 @@ export default function App() {
                         </div>
                         <div
                           className={cn("rounded-xl border px-3 py-3 text-center", toGoal === 0 ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50")}
-                          title={myMandate === 'half'
-                            ? (de ? `Halbes Mandat: ${myGoal} Beobachtungen pro Saison.` : `Half mandate: ${myGoal} observations per season.`)
+                          // The Pensum is a plain number now, so there is no
+                          // "half mandate" to name — and 0 is a real answer,
+                          // which does not stop anyone taking games.
+                          title={myGoal === 0
+                            ? (de ? 'Kein festes Pensum — du kannst trotzdem Spiele übernehmen.' : 'No fixed target — you can still take on games.')
                             : (de ? `${myGoal} Beobachtungen pro Saison.` : `${myGoal} observations per season.`)}
                         >
                           <div className={cn("text-2xl font-bold", toGoal === 0 ? "text-green-700" : "text-amber-700")}>{toGoal === 0 ? '✓' : toGoal}</div>

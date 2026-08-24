@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, KeyRound, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX } from 'lucide-react';
+import { Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
   getAdminAuthStatus, adminUiLogin, logoutAdmin, getAuthMe, getGamesSyncStatus,
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
-  listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson, generateRcPin,
+  listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame, listManualGames,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
@@ -85,8 +85,7 @@ const STR = {
     noRcs: 'Keine Referee Coaches.', loadFailed: 'Laden fehlgeschlagen.',
     delGroup: (n: string) => `Gruppe „${n}" löschen? Coachees behalten den Eintrag, bis er dort geändert wird.`,
     renameGroupWarn: (o: string, n: string) => `„${o}" in „${n}" umbenennen? Coachees mit „${o}" behalten die alte Schreibweise und erscheinen als eigene Gruppe.`, delRc: (n: string) => `RC „${n}" löschen?`, inactive: 'inaktiv',
-    genPin: 'PIN erzeugen', hasPin: 'PIN gesetzt', noPin: 'kein PIN',
-    colName: 'Name', colPin: 'PIN', colActions: 'Aktionen',
+    colName: 'Name', colActions: 'Aktionen',
     mgTitle: 'Manuelles Spiel / Testspiel',
     mgHint: 'Für Spiele, die nicht aus VolleyManager kommen. Die SR-Namen müssen exakt einem Coachee entsprechen, sonst findet das Feedback keinen Empfänger. Testspiele danach wieder löschen.',
     mgDate: 'Datum', mgMatchNo: 'Spiel-Nr. (optional)', mgLeague: 'Liga', mgLocation: 'Ort',
@@ -106,10 +105,6 @@ const STR = {
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
-    genPinConfirm: (n: string) => `Neuen PIN für „${n}" erzeugen? Ein bestehender PIN wird ungültig und der neue PIN wird per E-Mail zugestellt.`,
-    pinShownInfo: (p: string) => `PIN: ${p}`,
-    pinEmailed: (e: string) => `Per E-Mail an ${e} gesendet.`,
-    pinNotEmailed: 'Nicht per E-Mail gesendet (keine E-Mail/Testmodus) — bitte manuell übermitteln.',
     adminRole: 'Admin', toggleAdmin: 'Admin-Rechte umschalten',
     toggleAdminConfirm: (n: string, on: boolean) => on
       ? `„${n}" zum Admin machen? Admins haben vollen Zugriff — auch der PIN-Login gibt dann Admin-Rechte.`
@@ -124,11 +119,10 @@ const STR = {
     groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppe(n)', toApp: 'Zur App',
     target: 'Ziel-Spiele', targetHint: 'Welche Spiele für diesen SR relevant sind. Standard: automatisch aus dem Niveau (offizielle SVRZ-Tabelle).',
     targetAuto: 'Auto (Niveau)', targetAll: 'Alle Spiele', targetCustom: 'Eigen', targetRoles: 'Rolle(n)', targetLeagues: 'Ligen', chooseLeagues: 'Ligen wählen', edit: 'Bearbeiten', deleteLabel: 'Löschen', done: 'Fertig',
-    colMandate: 'Mandat', mandateLabel: 'Mandat',
-    mandateFull: (n: number) => `Ganz · ${n}`, mandateHalf: (n: number) => `Halb · ${n}`,
-    mandateHint: (full: number, half: number) => `Ganzes Mandat = ${full} Beobachtungen pro Saison, halbes Mandat = ${half}.`,
-    defaultGoal: 'Beobachtungsziel (ganzes Mandat)',
-    defaultGoalHint: (half: number) => `Wie viele Beobachtungen ein ganzes Mandat pro Saison umfasst. Ein halbes Mandat ist die Hälfte davon (${half}) — wer ein halbes Mandat hat, wird im Tab „Referee Coaches" markiert.`,
+    colMandate: 'Pensum', mandateLabel: 'Pensum (Beobachtungen pro Saison)',
+    mandateHint: (fallback: number) => `Wie viele Beobachtungen dieser RC pro Saison übernimmt. Leer = Standard (${fallback}). 0 ist erlaubt und schränkt nichts ein — das Pensum ist rein informativ.`,
+    defaultGoal: 'Standard-Pensum',
+    defaultGoalHint: () => 'Beobachtungen pro Saison für alle RC, die kein eigenes Pensum haben. Einzelne Pensen (auch 0) werden im Tab „Referee Coaches" gesetzt.',
   },
   EN: {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminUser: 'Username', adminPw: 'Admin password',
@@ -166,8 +160,7 @@ const STR = {
     noRcs: 'No referee coaches.', loadFailed: 'Could not load.',
     delGroup: (n: string) => `Delete group "${n}"? Coachees keep the value until it is changed on them.`,
     renameGroupWarn: (o: string, n: string) => `Rename "${o}" to "${n}"? Coachees carrying "${o}" keep the old spelling and show up as a separate group.`, delRc: (n: string) => `Delete RC "${n}"?`, inactive: 'inactive',
-    genPin: 'Generate PIN', hasPin: 'PIN set', noPin: 'no PIN',
-    colName: 'Name', colPin: 'PIN', colActions: 'Actions',
+    colName: 'Name', colActions: 'Actions',
     mgTitle: 'Manual game / test game',
     mgHint: 'For games VolleyManager does not carry. Referee names must match a coachee exactly, otherwise the feedback has no recipient. Delete test games afterwards.',
     mgDate: 'Date', mgMatchNo: 'Match no. (optional)', mgLeague: 'League', mgLocation: 'Venue',
@@ -187,10 +180,7 @@ const STR = {
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
-    genPinConfirm: (n: string) => `Generate a new PIN for "${n}"? Any existing PIN stops working and the new PIN is emailed to the RC.`,
     pinShownInfo: (p: string) => `PIN: ${p}`,
-    pinEmailed: (e: string) => `Emailed to ${e}.`,
-    pinNotEmailed: 'Not emailed (no address/test mode) — share it manually.',
     adminRole: 'Admin', toggleAdmin: 'Toggle admin rights',
     toggleAdminConfirm: (n: string, on: boolean) => on
       ? `Make "${n}" an admin? Admins get full access — their PIN login also grants admin.`
@@ -205,11 +195,10 @@ const STR = {
     groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Group(s)', toApp: 'To app',
     target: 'Target games', targetHint: 'Which games are relevant for this referee. Default: automatic from the Niveau (official SVRZ table).',
     targetAuto: 'Auto (level)', targetAll: 'All games', targetCustom: 'Custom', targetRoles: 'Role(s)', targetLeagues: 'Leagues', chooseLeagues: 'Choose leagues', edit: 'Edit', deleteLabel: 'Delete', done: 'Done',
-    colMandate: 'Mandate', mandateLabel: 'Mandate',
-    mandateFull: (n: number) => `Full · ${n}`, mandateHalf: (n: number) => `Half · ${n}`,
-    mandateHint: (full: number, half: number) => `A full mandate is ${full} observations per season, a half mandate ${half}.`,
-    defaultGoal: 'Observation goal (full mandate)',
-    defaultGoalHint: (half: number) => `How many observations a full mandate covers per season. A half mandate is half of that (${half}) — mark who is on one in the "Referee Coaches" tab.`,
+    colMandate: 'Target', mandateLabel: 'Season target (observations)',
+    mandateHint: (fallback: number) => `How many observations this coach takes on per season. Empty = the default (${fallback}). 0 is allowed and restricts nothing — the target is informative only.`,
+    defaultGoal: 'Default season target',
+    defaultGoalHint: () => 'Observations per season for every coach without their own target. Individual targets (0 included) are set in the "Referee Coaches" tab.',
   },
 } as const;
 type T = typeof STR['DE'];
@@ -789,8 +778,6 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void reload(); }, [reload]);
-  const [pinShown, setPinShown] = useState<{ id: string; pin: string; emailed: boolean; email: string } | null>(null);
-  const [pinBusy, setPinBusy] = useState<string | null>(null);
   const add = async () => { if (!form.first_name && !form.last_name) return; await guard(async () => { await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); }); };
   const saveEdit = async (id: string) => { await guard(async () => { await updateRcPerson(id, editForm); setEditId(null); await reload(); }); };
   const remove = async (r: RcPerson) => { if (!confirm(t.delRc(`${r.first_name} ${r.last_name}`))) return; await guard(async () => { await deleteRcPerson(r.id); await reload(); }); };
@@ -802,40 +789,51 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
       await reload();
     });
   };
-  const genPin = async (r: RcPerson) => {
-    if (r.has_pin && !confirm(t.genPinConfirm(`${r.first_name} ${r.last_name}`))) return;
-    setPinBusy(r.id);
-    try {
-      const res = await generateRcPin(r.id);
-      setPinShown({ id: r.id, pin: res.pin, emailed: res.emailed, email: res.email });
-      await reload();
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPinBusy(null);
-    }
-  };
-  // Full or half mandate per RC — the season goal follows from it. Only the
-  // half mandates are stored, so switching back to full drops the entry.
-  const halfGoal = goalForMandate(defaultGoal, 'half');
-  const setMandate = (id: string, mandate: RcMandate) => {
-    if ((mandates[id] ?? 'full') === mandate) return;
+  // The season goal ("Pensum") per RC, as a plain number of observations.
+  //
+  // It was a Full/Half switch, which had no way to describe the coaches who owe
+  // neither — and a third fixed option would have hit the same wall the moment
+  // somebody owed a fourth thing. A number says what was meant. 0 is a real
+  // answer and does not restrict anyone: the Pensum is informative, so an RC on
+  // 0 still picks up and observes games like everybody else.
+  //
+  // Only deviations are stored, so clearing the box drops the entry and the RC
+  // follows the default goal again. Legacy 'half' entries keep working until
+  // they are next edited — see goalForMandate.
+  const setMandate = (id: string, mandate: RcMandate | undefined) => {
     const next = { ...mandates };
-    if (mandate === 'half') next[id] = 'half';
-    else delete next[id];
+    if (mandate === undefined) delete next[id];
+    else next[id] = mandate;
     onMandates(next);
   };
   const mandateToggle = (r: RcPerson) => {
-    const half = mandates[r.id] === 'half';
-    const btn = (on: boolean) => cn(
-      'h-8 px-2.5 text-xs font-medium whitespace-nowrap transition-colors',
-      on ? 'bg-slate-900 text-white' : 'bg-white text-stone-600 hover:bg-stone-100',
-    );
+    const current = mandates[r.id];
+    // An empty box means "no deviation": show the default as a placeholder
+    // rather than pre-filling it, so saving is always a deliberate act.
+    const shown = current === undefined ? '' : String(goalForMandate(defaultGoal, current));
     return (
-      <div className="inline-flex rounded-lg border border-stone-200 overflow-hidden" role="group" aria-label={t.mandateLabel} title={t.mandateHint(defaultGoal, halfGoal)}>
-        <button onClick={() => setMandate(r.id, 'full')} aria-pressed={!half} className={btn(!half)}>{t.mandateFull(defaultGoal)}</button>
-        <button onClick={() => setMandate(r.id, 'half')} aria-pressed={half} className={cn(btn(half), 'border-l border-stone-200')}>{t.mandateHalf(halfGoal)}</button>
-      </div>
+      <input
+        type="number"
+        min={0}
+        max={200}
+        inputMode="numeric"
+        value={shown}
+        aria-label={t.mandateLabel}
+        title={t.mandateHint(defaultGoal)}
+        placeholder={String(defaultGoal)}
+        onChange={(e) => {
+          const raw = e.target.value.trim();
+          if (raw === '') { setMandate(r.id, undefined); return; }
+          const n = Math.trunc(Number(raw));
+          if (!Number.isFinite(n) || n < 0 || n > 200) return;
+          // Storing the number even when it equals the default is deliberate:
+          // "explicitly 10" and "whatever the default happens to be" are
+          // different statements, and the second changes under your feet when
+          // the season goal is edited.
+          setMandate(r.id, n);
+        }}
+        className="h-8 w-20 rounded-lg border border-stone-200 bg-white px-2 text-sm text-stone-800 text-center tabular-nums focus:outline-none focus:ring-2 focus:ring-red-500/60"
+      />
     );
   };
   // Shared by the desktop table and the mobile cards so the two can't drift.
@@ -844,25 +842,10 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
       <button onClick={() => toggleAdmin(r)} className={cn(btnGhost, r.is_admin && 'text-red-600')} title={t.toggleAdmin}>
         <ShieldCheck size={13} />
       </button>
-      <button onClick={() => genPin(r)} disabled={pinBusy === r.id} className={btnGhost} title={t.genPin}>
-        {pinBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
-      </button>
       <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost} title={t.edit}><Pencil size={13} /></button>
       <button onClick={() => remove(r)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
     </>
   );
-  // data-log-redact: the click logger copies rendered text into the admin-wide
-  // activity log, and a live login credential must not linger there.
-  const pinBanner = (r: RcPerson) => pinShown?.id === r.id ? (
-    <div data-log-redact className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-      <p className="text-xs text-amber-800 flex-1">
-        <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
-        {' — '}
-        {pinShown.emailed ? t.pinEmailed(pinShown.email) : t.pinNotEmailed}
-      </p>
-      <button onClick={() => setPinShown(null)} className="text-amber-700 hover:text-amber-900"><X size={13} /></button>
-    </div>
-  ) : null;
   const adminBadge = (
     <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 align-middle">
       <ShieldCheck size={10} />{t.adminRole}
@@ -908,9 +891,6 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                   </p>
                   {r.is_admin && <div className="mt-1">{adminBadge}</div>}
                 </div>
-                <span className={cn('shrink-0 text-xs font-medium whitespace-nowrap', r.has_pin ? 'text-green-600' : 'text-amber-600')}>
-                  {r.has_pin ? t.hasPin : t.noPin}
-                </span>
               </div>
               {r.email && <p className="mt-1.5 text-xs text-stone-500 break-all">{r.email}</p>}
               {r.phone && <p className="text-xs text-stone-500">{r.phone}</p>}
@@ -919,7 +899,6 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                 {mandateToggle(r)}
               </div>
               <div className="mt-2.5 flex items-center justify-end gap-1.5">{rowActions(r)}</div>
-              {pinShown?.id === r.id && <div className="mt-2">{pinBanner(r)}</div>}
             </div>
           ))}
         </div>
@@ -931,8 +910,7 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                 <th className="text-left font-bold py-2 pr-3">{t.colName}</th>
                 <th className="text-left font-bold py-2 pr-3">{t.email}</th>
                 <th className="text-left font-bold py-2 pr-3">{t.phone}</th>
-                <th className="text-left font-bold py-2 pr-3">{t.colPin}</th>
-                <th className="text-left font-bold py-2 pr-3" title={t.mandateHint(defaultGoal, halfGoal)}>{t.colMandate}</th>
+                <th className="text-left font-bold py-2 pr-3" title={t.mandateHint(defaultGoal)}>{t.colMandate}</th>
                 <th className="text-right font-bold py-2">{t.colActions}</th>
               </tr>
             </thead>
@@ -947,7 +925,6 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                   </td>
                   <td className="py-2 pr-3"><input className={`${input} w-full`} value={editForm.email || ''} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} /></td>
                   <td className="py-2 pr-3"><input className={`${input} w-full`} value={editForm.phone || ''} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} /></td>
-                  <td className="py-2 pr-3 text-stone-400 text-xs">{r.has_pin ? t.hasPin : t.noPin}</td>
                   <td className="py-2 pr-3">{mandateToggle(r)}</td>
                   <td className="py-2">
                     <div className="flex items-center justify-end gap-1.5">
@@ -966,39 +943,17 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                     </td>
                     <td className="py-2.5 pr-3 text-stone-500">{r.email}</td>
                     <td className="py-2.5 pr-3 text-stone-500 whitespace-nowrap">{r.phone}</td>
-                    <td className="py-2.5 pr-3 whitespace-nowrap">
-                      <span className={cn('text-xs font-medium', r.has_pin ? 'text-green-600' : 'text-amber-600')}>
-                        {r.has_pin ? t.hasPin : t.noPin}
-                      </span>
-                    </td>
                     <td className="py-2.5 pr-3">{mandateToggle(r)}</td>
                     <td className="py-2.5">
                       <div className="flex items-center justify-end gap-1.5">
                         <button onClick={() => toggleAdmin(r)} className={cn(btnGhost, r.is_admin && 'text-red-600')} title={t.toggleAdmin}>
                           <ShieldCheck size={13} />
                         </button>
-                        <button onClick={() => genPin(r)} disabled={pinBusy === r.id} className={btnGhost} title={t.genPin}>
-                          {pinBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <KeyRound size={13} />}
-                        </button>
                         <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost} title={t.edit}><Pencil size={13} /></button>
                         <button onClick={() => remove(r)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
                       </div>
                     </td>
                   </tr>
-                  {pinShown?.id === r.id && (
-                    <tr>
-                      <td colSpan={6} className="pb-2">
-                        <div data-log-redact className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
-                          <p className="text-xs text-amber-800 flex-1">
-                            <span className="font-mono font-semibold tracking-widest">{t.pinShownInfo(pinShown.pin)}</span>
-                            {' — '}
-                            {pinShown.emailed ? t.pinEmailed(pinShown.email) : t.pinNotEmailed}
-                          </p>
-                          <button onClick={() => setPinShown(null)} className="text-amber-700 hover:text-amber-900"><X size={13} /></button>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
                 </React.Fragment>
               ))}
             </tbody>
@@ -1690,7 +1645,7 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
         <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.defaultGoal}</h2>
         {/* The saved goal drives the hint, not the field being typed in — the
             half only becomes real once it is saved. */}
-        <p className="text-xs text-stone-400 mb-3">{t.defaultGoalHint(goalForMandate(defaultGoal, 'half'))}</p>
+        <p className="text-xs text-stone-400 mb-3">{t.defaultGoalHint()}</p>
         <div className="flex items-center gap-2">
           <input
             type="number" min={1} inputMode="numeric" disabled={loading}

@@ -3342,29 +3342,34 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
       const full_name = asText(r.full_name) || `${asText(r.first_name)} ${asText(r.last_name)}`.trim();
       if (!full_name) continue;
       const payload: Record<string, unknown> = {
-        full_name, first_name: asText(r.first_name), last_name: asText(r.last_name),
-        referee_level: asText(r.referee_level),
-        groups: asText(r.groups), season,
+        full_name, first_name: asText(r.first_name), last_name: asText(r.last_name), season,
       };
-      // Only touch notes/email/stage when the file actually provided a value — a
-      // re-import from a sheet without those columns must not wipe what is
-      // maintained in the app. Losing the email silently breaks submission:
-      // the feedback POST hard-fails without one.
+      // Only touch a field when the file actually provided a value — a re-import
+      // from a sheet without that column must not wipe what is maintained in the
+      // app. Losing the email silently breaks submission: the feedback POST
+      // hard-fails without one. The same held for the rest: a sheet carrying only
+      // names and emails blanked every Niveau and every Gruppe it did not mention.
       //
-      // stage used to default to the literal 'active' whenever the sheet had no
-      // Stufe column. That is not a Stufe: levelKey() only accepts a numeric one,
-      // so those coachees showed as "N4 – TBD" and derived no Niveau rules at all
-      // — 20 of the 52 season-2026 coachees carried it (fixed from the VolleyManager
-      // export on 2026-08-24). An unknown Stufe is now simply empty, and a re-import
-      // leaves whatever the app already holds.
-      if (asText(r.notes)) payload.notes = asText(r.notes);
-      if (asText(r.email)) payload.email = asText(r.email);
-      if (asText(r.stage)) payload.stage = asText(r.stage);
+      // stage was worse than blanked — it defaulted to the literal 'active'
+      // whenever the sheet had no Stufe column. That is not a Stufe: levelKey()
+      // only accepts a numeric one, so those coachees showed as "N4 – TBD" and
+      // derived no Niveau rules at all — 20 of the 52 season-2026 coachees carried
+      // it (fixed from the VolleyManager export on 2026-08-24). An unknown Stufe
+      // is now simply empty.
+      //
+      // The cost of the guard: blanking a cell no longer clears the field, so a
+      // Niveau, Stufe or Gruppe is cleared by editing the coachee in the console.
+      // That beats the alternative, which cannot tell an empty cell from a column
+      // the sheet never had.
+      for (const field of ['notes', 'email', 'referee_level', 'stage', 'groups'] as const) {
+        const value = asText(r[field]);
+        if (value) payload[field] = value;
+      }
       const key = `${normalizeName(full_name)}|${season ?? ''}`;
       const ex = byKey.get(key);
       if (ex) { await withCollection(collectionCandidates.coachees, (c) => c.update(ex.id, payload)); updated++; }
       else {
-        const rec = await withCollection(collectionCandidates.coachees, (c) => c.create({ notes: '', stage: '', ...payload, feedback_entries: [] }));
+        const rec = await withCollection(collectionCandidates.coachees, (c) => c.create({ notes: '', referee_level: '', stage: '', groups: '', ...payload, feedback_entries: [] }));
         byKey.set(key, rec as AnyRecord); // duplicate rows in one file update instead of duplicating
         created++;
       }

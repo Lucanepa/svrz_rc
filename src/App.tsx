@@ -33,7 +33,7 @@ import {
   type IcalSubscription,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
-import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
+import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
 import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
@@ -1001,6 +1001,8 @@ export default function App() {
   const [savingFeedback, setSavingFeedback] = useState(false);
   const [isOffline, setIsOffline] = useState(typeof navigator !== 'undefined' && !navigator.onLine);
   const [outboxPending, setOutboxPending] = useState(0);
+  // Queued by a DIFFERENT coach on this device — see foreignOutboxSummary.
+  const [outboxForeign, setOutboxForeign] = useState<{ ownerId: string; count: number }[]>([]);
   const [outboxFailed, setOutboxFailed] = useState<OutboxItem[]>([]);
   const [flushing, setFlushing] = useState(false);
   const [backendNotice, setBackendNotice] = useState('');
@@ -2122,6 +2124,7 @@ export default function App() {
       const { pending } = await outboxCounts(outboxOwnerId);
       setOutboxPending(pending);
       setOutboxFailed((await listOutbox(outboxOwnerId)).filter((i) => i.terminal));
+      setOutboxForeign(await foreignOutboxSummary(outboxOwnerId));
     } catch { /* ignore */ }
   };
 
@@ -3024,6 +3027,23 @@ export default function App() {
                   : 'Offline – showing last-loaded data. New feedback is saved locally and sent once you are back online.'}
               </div>
             )}
+            {/* Somebody else's unsent observation is sitting on this device. It
+                can only be sent as its own author, so the one useful thing this
+                screen can do is say whose it is — otherwise the work is simply
+                invisible until someone notices the game never got filed. */}
+            {outboxForeign.length > 0 && (
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+                <CloudOff size={14} className="shrink-0 mt-0.5" />
+                <span className="flex-1">
+                  {outboxForeign.map(({ ownerId, count }) => {
+                    const owner = rcPeople.find((p) => p.id === ownerId)?.fullName;
+                    return formData.lang === 'DE'
+                      ? `${count} nicht gesendete${count > 1 ? '' : 's'} Feedback${count > 1 ? 's' : ''} von ${owner || 'einer anderen Person'} — bitte als ${owner || 'diese Person'} anmelden, um es zu senden.`
+                      : `${count} unsent feedback${count > 1 ? 's' : ''} from ${owner || 'another coach'} — sign in as ${owner || 'that coach'} to send ${count > 1 ? 'them' : 'it'}.`;
+                  }).join(' ')}
+                </span>
+              </div>
+            )}
             {outboxPending > 0 && (
               <div className="mb-3 flex items-center gap-2 rounded-lg border border-sky-300 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800">
                 <Send size={14} className="shrink-0" />
@@ -3133,7 +3153,15 @@ export default function App() {
                     can't switch, so there it just labels the logout. */}
                 {rcAuth.rcName && rcAuth.sharedSession && (
                   <button
-                    onClick={rcAuth.switchRc}
+                    onClick={() => {
+                      // Ask BEFORE the hand-off, not after: an item queued under
+                      // the outgoing coach can only ever be sent as that coach,
+                      // so switching now is what strands it.
+                      if (outboxPending > 0 && !confirm(formData.lang === 'DE'
+                        ? `${outboxPending} Feedback wartet noch auf Übermittlung und kann nur von ${rcAuth.rcName} gesendet werden. Trotzdem wechseln?`
+                        : `${outboxPending} feedback submission is still waiting to send and can only be sent by ${rcAuth.rcName}. Switch anyway?`)) return;
+                      rcAuth.switchRc();
+                    }}
                     className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
                     title={formData.lang === 'DE' ? `Angemeldet als ${rcAuth.rcName} — wechseln` : `Signed in as ${rcAuth.rcName} — switch`}
                   >

@@ -143,7 +143,14 @@ export default function SurveyPage() {
             {SURVEY_QUESTIONS.map((q) => {
               const hint = questionHint(q, lang);
               return (
-                <div key={q.id} className={`${card} p-5`}>
+                // data-log-redact: the click logger copies the clicked
+                // element's rendered text into an entry every admin can read,
+                // and an option here is a <label> whose text IS the referee's
+                // answer. The admin console already redacts the tab that
+                // DISPLAYS these answers (and refuses admins outright); the page
+                // that collects them must not leak them on the way in — least of
+                // all for someone who ticked "Anonym".
+                <div key={q.id} data-log-redact className={`${card} p-5`}>
                   <p className="text-sm font-medium text-stone-800 leading-snug">{questionLabel(q, lang)}</p>
                   {hint && <p className="text-xs text-stone-400 mt-1 leading-snug">{hint}</p>}
                   {q.kind === 'choice' ? (

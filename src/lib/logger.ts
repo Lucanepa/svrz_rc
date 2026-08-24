@@ -167,6 +167,19 @@ export function getClientLogs(): ClientLogEntry[] { return [...ring]; }
 const originalFetch: typeof fetch = typeof window !== 'undefined' ? window.fetch.bind(window) : (undefined as never);
 
 /** Short, human-recognisable description of what was clicked. */
+// Capability tokens ride in URLs: #/survey/<token>, #/sign/<slug>, and the
+// /api/survey|signature|ical/<token> calls the page makes. Whoever holds one can
+// answer a survey AS the referee (once), or read a handwritten signature — so a
+// token copied into the activity log hands that capability to every admin who
+// reads it, and re-links a survey answer to the person even when they chose
+// "Anonym" and the stored record dropped their name. Mask them everywhere a URL
+// is logged, rather than trusting each call site to remember.
+function scrubTokens(value: string): string {
+  return value
+    .replace(/(#\/(?:survey|sign)\/)[^/?#\s]+/gi, '$1<token>')
+    .replace(/(\/api\/(?:survey|signature|ical)\/)[^/?#\s]+/gi, '$1<token>');
+}
+
 function describeElement(el: Element | null): Record<string, unknown> | undefined {
   if (!el) return undefined;
   const target = (el.closest('button,a,[role="button"],input,select,textarea,label,summary') || el) as HTMLElement;
@@ -197,7 +210,7 @@ function installClickLogging(): void {
   window.addEventListener('click', (e) => {
     const el = e.target instanceof Element ? e.target : null;
     const d = describeElement(el);
-    clientLog.info('ui.click', d?.text ? `click: ${d.text}` : 'click', { ...d, hash: location.hash || undefined });
+    clientLog.info('ui.click', d?.text ? `click: ${d.text}` : 'click', { ...d, hash: location.hash ? scrubTokens(location.hash) : undefined });
   }, { capture: true, passive: true });
 
   window.addEventListener('submit', (e) => {
@@ -244,8 +257,8 @@ function installFetchLogging(): void {
       const res = await originalFetch(input as RequestInfo, traced);
       const ms = Math.round(performance.now() - started);
       const lvl: ClientLevel = res.status >= 500 ? 'error' : res.status >= 400 ? 'warn' : 'debug';
-      logEvent(lvl, 'net.fetch', `${method} ${url} → ${res.status} (${ms}ms)`, {
-        method, url, status: res.status, ms, ok: res.ok,
+      logEvent(lvl, 'net.fetch', `${method} ${scrubTokens(url)} → ${res.status} (${ms}ms)`, {
+        method, url: scrubTokens(url), status: res.status, ms, ok: res.ok,
         // The one header that explains a 429 to whoever reads the log later.
         retryAfter: res.headers.get('retry-after') || undefined,
       });
@@ -291,7 +304,7 @@ function installErrorLogging(): void {
 function installLifecycleLogging(): void {
   window.addEventListener('online', () => clientLog.info('net.online', 'back online'));
   window.addEventListener('offline', () => clientLog.warn('net.offline', 'went offline'));
-  window.addEventListener('hashchange', () => clientLog.info('nav.hashchange', location.hash || '#'));
+  window.addEventListener('hashchange', () => clientLog.info('nav.hashchange', scrubTokens(location.hash || '#')));
   document.addEventListener('visibilitychange', () => clientLog.debug('app.visibility', document.visibilityState));
   window.addEventListener('pagehide', () => { void flush(true); });
   // Flushing on hide (not unload) is what actually works on iOS Safari.
@@ -313,7 +326,7 @@ export function installLogging(options: { apiBase?: string; ship?: boolean } = {
     installClickLogging();
     installLifecycleLogging();
     clientLog.info('app.start', 'app loaded', {
-      url: location.href,
+      url: scrubTokens(location.href),
       ua: navigator.userAgent,
       lang: navigator.language,
       online: navigator.onLine,

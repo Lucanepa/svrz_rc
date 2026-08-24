@@ -81,6 +81,34 @@ export async function listOutbox(ownerId: string): Promise<OutboxItem[]> {
   return (await allItems()).filter((i) => i.ownerId === ownerId);
 }
 
+/**
+ * What is queued for SOMEBODY ELSE on this device, grouped by owner.
+ *
+ * Every other reader filters to the current identity, which is right for
+ * sending — an item may only be sent as the coach who wrote it. But it meant a
+ * finished observation became invisible the moment the tablet changed hands:
+ * coach A files with no reception, hands over, and from then on the pending
+ * banner reads 0, no flush ever touches A's item, the coachee never receives
+ * the report, and nothing on any screen mentions it. On shared hardware — which
+ * is exactly what the "switch RC" button exists for — that is silent loss of
+ * completed work.
+ *
+ * Nothing is deleted and nothing is sent under the wrong identity: this only
+ * makes the item visible so someone can sign back in as its owner.
+ */
+export async function foreignOutboxSummary(ownerId: string): Promise<{ ownerId: string; count: number }[]> {
+  try {
+    const groups = new Map<string, number>();
+    for (const item of await allItems()) {
+      if (item.ownerId === ownerId || item.terminal) continue;
+      groups.set(item.ownerId, (groups.get(item.ownerId) ?? 0) + 1);
+    }
+    return [...groups].map(([owner, count]) => ({ ownerId: owner, count }));
+  } catch {
+    return [];
+  }
+}
+
 export async function outboxCounts(ownerId: string): Promise<{ pending: number; failed: number }> {
   try {
     const mine = await listOutbox(ownerId);

@@ -103,6 +103,7 @@ const STR = {
     syncGamesFailed: (e: string) => `Suche über die Spiele nicht möglich: ${e}`,
     syncFail: (e: string) => `Kontakt-Abgleich fehlgeschlagen: ${e}`,
     syncNotFoundList: 'Nicht in VolleyManager gefunden',
+    syncAmbiguous: 'Mehrdeutiger Name — nichts übernommen, bitte von Hand prüfen',
     syncMissingEmail: (n: number, total: number) => `${n} von ${total} Coachees haben keine E-Mail — für diese kann kein Feedback abgeschickt werden.`,
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
@@ -185,6 +186,7 @@ const STR = {
     syncGamesFailed: (e: string) => `Could not search the games: ${e}`,
     syncFail: (e: string) => `Contact sync failed: ${e}`,
     syncNotFoundList: 'Not found in VolleyManager',
+    syncAmbiguous: 'Ambiguous name — nothing written, please check by hand',
     syncMissingEmail: (n: number, total: number) => `${n} of ${total} coachees have no email — feedback cannot be submitted for them.`,
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
@@ -570,6 +572,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState('');
   const [syncMissing, setSyncMissing] = useState<string[]>([]);
+  const [syncAmbiguous, setSyncAmbiguous] = useState<string[]>([]);
   const [overwriteContacts, setOverwriteContacts] = useState(false);
   const [form, setForm] = useState({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' });
   const [editId, setEditId] = useState<string | null>(null);
@@ -605,6 +608,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
         r.gamesError ? t.syncGamesFailed(r.gamesError) : '',
       ].filter(Boolean).join(' '));
       setSyncMissing(r.missing);
+      setSyncAmbiguous(r.ambiguous ?? []);
       await reload();
     // The message, not String(err): that prefixed every failure with a bare
     // "Error:" in front of the sentence the server took care to write.
@@ -643,6 +647,13 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
           </label>
           {missingEmail > 0 && <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">{t.syncMissingEmail(missingEmail, rows.length)}</p>}
           {syncNote && <p className="mt-2 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{syncNote}</p>}
+          {/* Ambiguous first, and in amber: it is the one outcome that needs a
+              person to decide, where "not found" is merely a gap to fill. */}
+          {syncAmbiguous.length > 0 && (
+            <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+              {t.syncAmbiguous}: {syncAmbiguous.join(', ')}
+            </p>
+          )}
           {syncMissing.length > 0 && (
             <p className="mt-2 text-xs text-stone-500">{t.syncNotFoundList}: {syncMissing.join(', ')}</p>
           )}

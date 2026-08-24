@@ -216,7 +216,12 @@ function redactIcalToken(url: string): string {
     .replace(/(\/api\/ical\/)(?!me(?:[/?]|$))[^/?]+/i, '$1<token>')
     // The survey token is the only credential its page has, and the page shows
     // (and accepts) one referee's answers about their coach.
-    .replace(/(\/api\/survey\/)(?!responses(?:[/?]|$))[^/?]+/i, '$1<token>');
+    .replace(/(\/api\/survey\/)(?!responses(?:[/?]|$))[^/?]+/i, '$1<token>')
+    // The signature slug was the one capability token left in the clear, and
+    // the app polls its route every 3 seconds while a signature is open — so a
+    // single visit wrote the slug into the log dozens of times. The route is
+    // unauthenticated and returns the handwritten signature.
+    .replace(/(\/api\/signature\/)(?!start(?:[/?]|$))[^/?]+/i, '$1<token>');
 }
 
 app.use((req: Request, res: ExpressResponse, next: () => void) => {
@@ -1246,14 +1251,6 @@ async function withCollection<T>(
   );
 }
 
-function getTodayRange(): { from: string; to: string } {
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10);
-  return {
-    from: `${dateStr}T00:00:00.000Z`,
-    to: `${dateStr}T23:59:59.000Z`,
-  };
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -2498,7 +2495,32 @@ function resolveSyncWindow(input: { date?: unknown; from?: unknown; to?: unknown
       to: `${dateParam}T23:59:59.000Z`,
     };
   }
-  return getTodayRange();
+  return getDefaultSyncRange();
+}
+
+// How far the unattended import reaches when nobody passes a window.
+const VM_SYNC_BACK_DAYS = Number(process.env.VM_SYNC_BACK_DAYS || 14);
+const VM_SYNC_AHEAD_DAYS = Number(process.env.VM_SYNC_AHEAD_DAYS || 120);
+
+// This used to be a today-only range, and every shipped caller passes no window:
+// the 05:00 cron calls runGamesSyncWithRetry() bare and the console's "Import
+// now" posts {}. So the importer only ever saw the current day — no future
+// fixture was ever imported, an RC could not see or claim a match before the
+// morning it was played, and the 10:00 reminder looked for TOMORROW's games,
+// which by construction had not been imported yet. It found nothing, every day,
+// and said so in a log nobody reads.
+//
+// Backwards as well as forwards: a result or a late referee designation lands
+// after the match, and a window that starts today would never pick it up.
+function getDefaultSyncRange(): SyncWindow {
+  const day = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const back = Number.isFinite(VM_SYNC_BACK_DAYS) ? VM_SYNC_BACK_DAYS : 14;
+  const ahead = Number.isFinite(VM_SYNC_AHEAD_DAYS) ? VM_SYNC_AHEAD_DAYS : 120;
+  return {
+    from: `${new Date(now - back * day).toISOString().slice(0, 10)}T00:00:00.000Z`,
+    to: `${new Date(now + ahead * day).toISOString().slice(0, 10)}T23:59:59.000Z`,
+  };
 }
 
 async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
@@ -3313,25 +3335,71 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
     const contacts = await fetchVmRefereeContacts(username, password);
     // Index under both name orders — the XLSX and VM disagree on which comes
     // first, and normalizeName already folds case and accents.
-    const byName = new Map<string, VmRefereeContact>();
+    //
+    // Every key holds ALL its candidates, and the two orders are kept apart.
+    // This was one map with `if (!byName.has(key)) set(key, c)`, so two
+    // referees sharing a name — or whose names reverse into each other, which
+    // the server's normalizeName does NOT fold together — collided and the one
+    // VolleyManager happened to page first silently won. The other vanished
+    // from the index, and a coachee with no address on file could be handed the
+    // WRONG PERSON's address for good, with every later coaching report mailed
+    // to a stranger and nothing anywhere reporting it. An ambiguous name is now
+    // refused and returned to the caller instead of being resolved by paging
+    // order; the forward order is tried first so an exact "Vorname Nachname"
+    // always beats a reversed guess.
+    const byNameForward = new Map<string, VmRefereeContact[]>();
+    const byNameReversed = new Map<string, VmRefereeContact[]>();
+    const indexUnder = (index: Map<string, VmRefereeContact[]>, key: string, contact: VmRefereeContact) => {
+      if (!key) return;
+      const bucket = index.get(key);
+      if (bucket) bucket.push(contact); else index.set(key, [contact]);
+    };
     for (const c of contacts) {
-      const first = `${c.firstName} ${c.lastName}`.trim();
-      const last = `${c.lastName} ${c.firstName}`.trim();
-      for (const key of [normalizeName(first), normalizeName(last)]) {
-        if (key && !byName.has(key)) byName.set(key, c);
-      }
+      indexUnder(byNameForward, normalizeName(`${c.firstName} ${c.lastName}`), c);
+      indexUnder(byNameReversed, normalizeName(`${c.lastName} ${c.firstName}`), c);
     }
 
     const coachees = await listCoacheesWithFallbackSort();
     const scoped = season == null ? coachees : coachees.filter((c) => Number(c.season) === season);
     let updated = 0, alreadySet = 0, notFound = 0, updatedFromGames = 0;
     const missing: string[] = [];
+    // Names VolleyManager holds more than once. Reported, never guessed at.
+    const ambiguous: string[] = [];
 
     const coacheeName = (coachee: AnyRecord) =>
       asText(coachee.full_name) || `${asText(coachee.first_name)} ${asText(coachee.last_name)}`.trim();
     const lookup = <T,>(index: Map<string, T>, coachee: AnyRecord): T | undefined =>
       index.get(normalizeName(coacheeName(coachee)))
       ?? index.get(normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`));
+
+    // The same person listed twice is not an ambiguity — only genuinely
+    // different people are. Compared on the fields we would actually write.
+    const distinctPeople = (bucket: VmRefereeContact[]): VmRefereeContact[] => {
+      const seen = new Map<string, VmRefereeContact>();
+      for (const c of bucket) {
+        const key = [c.firstName, c.lastName, c.email, c.phone].map((v) => normalizeName(v)).join('|');
+        if (!seen.has(key)) seen.set(key, c);
+      }
+      return [...seen.values()];
+    };
+
+    /** A referee-list hit, or why there isn't one. Never picks between people. */
+    const lookupContact = (coachee: AnyRecord): { hit?: VmRefereeContact; ambiguous?: boolean } => {
+      const keys = [
+        normalizeName(coacheeName(coachee)),
+        normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`),
+      ];
+      for (const index of [byNameForward, byNameReversed]) {
+        for (const key of keys) {
+          const bucket = key ? index.get(key) : undefined;
+          if (!bucket) continue;
+          const people = distinctPeople(bucket);
+          if (people.length > 1) return { ambiguous: true };
+          return { hit: people[0] };
+        }
+      }
+      return {};
+    };
     // Never clobber a hand-corrected address unless explicitly asked to.
     const applyContact = async (coachee: AnyRecord, hit: VmContact) => {
       const patch: Record<string, unknown> = {};
@@ -3355,9 +3423,16 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
 
     const unresolved: AnyRecord[] = [];
     for (const coachee of scoped) {
-      const hit = lookup(byName, coachee);
-      if (!hit) { unresolved.push(coachee); continue; }
-      await applyContact(coachee, hit);
+      const match = lookupContact(coachee);
+      // Two different referees answer to this name. Writing either address is a
+      // coin flip with somebody's personal report as the stake, so write
+      // nothing and say so — an admin can pick the right one by hand.
+      if (match.ambiguous) {
+        if (ambiguous.length < 50) ambiguous.push(coacheeName(coachee));
+        continue;
+      }
+      if (!match.hit) { unresolved.push(coachee); continue; }
+      await applyContact(coachee, match.hit);
     }
 
     // Whoever the referee list did not cover gets a second pass over the games,
@@ -3426,6 +3501,7 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
       alreadySet,
       notFound,
       missing,
+      ambiguous,
     });
   } catch (error) {
     // What fails here is a VolleyManager login, the role switch or the referee
@@ -4166,15 +4242,6 @@ async function deletePresidentNote(feedbackId: string): Promise<void> {
   }
 }
 
-// The coach who filed the feedback owns its note. rcAuthByReq is absent for
-// admin sessions (and admin-flagged RCs), which is what grants them access —
-// same convention as the submit endpoint's ownership check.
-function ownsFeedback(req: Request, record: AnyRecord): boolean {
-  const rcAuth = rcAuthByReq.get(req);
-  if (!rcAuth) return true;
-  return rcRefMatches(record.rc_id, record.rc_name, rcAuth);
-}
-
 // Who the session actually is, even when it is an admin one. requireRcSession
 // deliberately attaches no rcAuth to admins and admin-flagged RCs, so ownership
 // questions that must still hold for them cannot use rcAuthByReq alone.
@@ -4185,17 +4252,46 @@ async function sessionRcIdentity(req: Request): Promise<RcAuthInfo | null> {
   return session ? { rcId: session.person.id, name: session.person.fullName } : null;
 }
 
+// Identity that has been PROVEN, not merely claimed. A shared-team session picks
+// its name from the roster, and the endpoint that mints it says so in as many
+// words: "This is a claim, not a proof". For most data that is the accepted
+// trade — the whole team shares one credential and can already read each other's
+// feedbacks. For the chair's private channel it is not: whoever holds the team
+// password could read, silently rewrite (the note stores an author, so the
+// chair would see the coach's name on words they never wrote) or delete a
+// colleague's confidential note. isSurveyReader right beside this already
+// demands `mode === 'personal'` for exactly this data class.
+async function personalRcIdentity(req: Request): Promise<RcAuthInfo | null> {
+  const session = await resolveRcSession(req);
+  if (!session || session.mode !== 'personal') return null;
+  return { rcId: session.person.id, name: session.person.fullName };
+}
+
 // Reading a note is narrower than writing one. Writing is open to admins on
 // purpose (see the PUT below — the note records its author separately so the
 // president can tell an admin's words from the coach's). Reading is not: this
 // is the chair's private channel, and `/api/president-notes` and
 // `/api/survey-responses` both state that admin rights must not open it. Going
-// through ownsFeedback here handed every admin exactly that, one id at a time,
+// through the plain ownership check here handed every admin exactly that, one id at a time,
 // and `/api/referee-coaches` hands them the ids. Resolve the real identity so
 // an admin-flagged RC still reads back the note they wrote themselves.
+// Writing stays open to admins on purpose — the note stores its author, so the
+// chair can tell an admin's words from the coach's. What is NOT open is a
+// shared-team session: it could rewrite a colleague's note (appearing under
+// that colleague's name) or delete it with an empty body. The old ownership
+// check could not tell the two apart: it only asked whether an rcAuth was
+// attached, never whether that identity had been proven.
+async function mayWritePresidentNote(req: Request, record: AnyRecord): Promise<boolean> {
+  if (!rcAuthByReq.get(req)) return true; // admin session, by the convention above
+  const me = await personalRcIdentity(req);
+  return Boolean(me && rcRefMatches(record.rc_id, record.rc_name, me));
+}
+
 async function mayReadPresidentNote(req: Request, record: AnyRecord): Promise<boolean> {
   if (await isSurveyReader(req)) return true;
-  const me = await sessionRcIdentity(req);
+  // personalRcIdentity, not sessionRcIdentity: reading back your own note costs
+  // a personal sign-in, the same trade the survey view already makes.
+  const me = await personalRcIdentity(req);
   return Boolean(me && rcRefMatches(record.rc_id, record.rc_name, me));
 }
 
@@ -4227,7 +4323,7 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
     let record: AnyRecord;
     try { record = await getFeedbackForNote(String(req.params.id)); }
     catch { res.status(404).json({ error: 'Feedback not found' }); return; }
-    if (!ownsFeedback(req, record)) { res.status(403).json({ error: 'Forbidden' }); return; }
+    if (!(await mayWritePresidentNote(req, record))) { res.status(403).json({ error: 'Forbidden' }); return; }
 
     const note = asText((req.body ?? {}).note).trim().slice(0, PRESIDENT_NOTE_MAX);
     const expand = (record.expand ?? {}) as Record<string, AnyRecord | undefined>;
@@ -5843,6 +5939,26 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
 
     // Resolve coachee and validate email
     const refereeName = role === '1. SR' ? asText(game.first_referee) : asText(game.second_referee);
+
+    // The report says who it is about; the recipient is derived from the game
+    // slot. Nothing tied the two together: meta.srName is a freely editable
+    // field the server never read, so filing under the wrong role — the manual
+    // upload dialog defaults its role select to "1. SR" — mailed one coachee's
+    // complete written assessment to the other referee on the same match, and
+    // recorded the observation against them too. The coach's OWN name was
+    // already protected on both sides (readOnly in the UI, overridden above);
+    // the person being assessed had neither guard.
+    //
+    // Compared both name orders, because the XLSX and VolleyManager disagree on
+    // which comes first and nothing downstream knows which one it is holding.
+    const claimedName = asText((formData.meta as AnyRecord | undefined)?.srName);
+    if (refereeName && claimedName && !nameKeyVariants(claimedName).includes(normalizeName(refereeName))) {
+      res.status(422).json({
+        error: `Das Feedback ist auf "${claimedName}" ausgestellt, aber für die Rolle "${role}" ist in diesem Spiel "${refereeName}" eingetragen. Bitte Rolle oder Schiedsrichter korrigieren.`,
+      });
+      return;
+    }
+
     if (!refereeName) {
       // A fixable data problem, not a server fault: as a 500 the outbox would
       // retry it forever instead of telling the coach what to correct.
@@ -5852,11 +5968,8 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
 
     let coacheeResult: { collection: ReturnType<typeof pb.collection>; coachee: AnyRecord };
     try {
-      const filter = await coacheeNameFilterAsync(refereeName);
-      coacheeResult = await withCollection(collectionCandidates.coachees, async (collection) => ({
-        collection,
-        coachee: await collection.getFirstListItem<AnyRecord>(filter),
-      }));
+      // Season comes from the GAME, not from whatever the console has selected.
+      coacheeResult = await findCoacheeRecord(refereeName, seasonOfDate(asText(game.match_date)));
     } catch (lookupError) {
       // The referee simply isn't on the coachee list — someone has to add them.
       // Answered as a 500 this looked like a server fault and the offline
@@ -6020,8 +6133,12 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         rc: asText(formData.meta?.rc),
       });
       const surveyUrl = surveyToken ? `${MAIL_APP_URL}#/survey/${surveyToken}` : '';
-      const built = buildTemplatedEmail({
-        tpl: await getEmailTemplate('feedback'),
+      const feedbackTpl = await getEmailTemplate('feedback');
+      // Rendered twice on purpose — see the two-message send below. The survey
+      // token is a capability: whoever holds it can answer, once, as the
+      // referee. It must not travel to anyone else.
+      const renderFeedbackMail = (linkForThisCopy: string) => buildTemplatedEmail({
+        tpl: feedbackTpl,
         vars: emailVars({
           refereeName,
           rcName: asText(formData.meta?.rc),
@@ -6044,9 +6161,12 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           ['Referee Coach', asText(formData.meta?.rc)],
         ],
         tips: String(tipsAndTricks || ''),
-        surveyUrl,
+        surveyUrl: linkForThisCopy,
         footerNote: 'Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt.',
       });
+      const built = renderFeedbackMail(surveyUrl);
+      // The copy for everyone who is not the referee. Identical but for the link.
+      const builtForCopies = surveyUrl ? renderFeedbackMail('') : built;
       const subject = built.subject;
 
       const isTestMode = process.env.FEEDBACK_EMAIL_TEST === '1';
@@ -6092,22 +6212,43 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         if (emailTestMode) console.log(`[feedback-email] TEST_MODE — outbound email suppressed (would send to ${mailTo})`);
         emailSent = false;
       } else {
+        const attachments = emailAttachments([{
+          filename: attachmentName,
+          content: pdfBuffer,
+          contentType: attachmentType,
+        }]);
+        // TWO messages, not one with Cc. The survey link is a one-shot
+        // capability to answer AS the referee, and the RC in Cc is by
+        // construction the very person that survey assesses — the button sat in
+        // her own inbox. One click (curiosity is enough, malice not required)
+        // burns the referee's token, the chair reads her answer as his, and his
+        // genuine attempt then gets a 409. Merely opening the link also reveals
+        // whether he has answered yet.
         await sendMailResilient({
           from: MAIL_FROM,
           replyTo: rcEmail || undefined,
           to: mailTo,
-          cc: mailCc,
-          bcc: mailBcc,
           subject: mailSubject,
           html: built.html,
           text: built.text,
-          attachments: emailAttachments([{
-            filename: attachmentName,
-            content: pdfBuffer,
-            contentType: attachmentType,
-          }]),
+          attachments,
         });
+        // The referee has their report; a failure below must not report
+        // otherwise.
         emailSent = true;
+
+        const copyRecipients = [...(mailCc ?? []), ...(mailBcc ?? [])];
+        if (copyRecipients.length > 0) {
+          await sendMailResilient({
+            from: MAIL_FROM,
+            replyTo: rcEmail || undefined,
+            to: copyRecipients,
+            subject: mailSubject,
+            html: builtForCopies.html,
+            text: builtForCopies.text,
+            attachments,
+          });
+        }
       }
     } catch (emailErr) {
       emailError = emailErr instanceof Error ? emailErr.message : String(emailErr);
@@ -6353,12 +6494,58 @@ async function coacheeNameFilterAsync(refereeName: string): Promise<string> {
   return buildCoacheeNameFilter(refereeName, await coacheeNameColumns());
 }
 
-async function findCoacheeByRefereeName(refereeName: string): Promise<AnyRecord | null> {
+// WHICH row, not just which name. Coachees are per-season records: importing
+// 26/27 creates a SECOND row for a referee who was already there in 25/26, and
+// the admin console only ever shows and edits the selected season's copy. A
+// name-only lookup has no index to order it, so PocketBase answers in rowid
+// order — the OLDEST row, last season's. That row may carry a stale address,
+// and every feedback_entry, last_feedback_at and observations.coachee written
+// against it attaches to the wrong season, so the current season's "needs
+// observation" list never clears. The client already compensates for the
+// duplicates (see the comment in App.tsx, "Insert the selected season's records
+// last so they win"); the server never did.
+//
+// The game's own date decides the season, so a match played in the 26/27 window
+// resolves the 26/27 coachee even if someone runs it with another season open.
+async function findCoacheeRecord(
+  refereeName: string,
+  season: number | null,
+): Promise<{ collection: ReturnType<typeof pb.collection>; coachee: AnyRecord }> {
+  const nameFilter = await coacheeNameFilterAsync(refereeName);
+  return withCollection(collectionCandidates.coachees, async (collection) => {
+    if (season != null && Number.isFinite(season)) {
+      try {
+        return {
+          collection,
+          coachee: await collection.getFirstListItem<AnyRecord>(`(${nameFilter}) && season = ${Math.trunc(season)}`),
+        };
+      } catch (error) {
+        // No row for THIS season: a referee carried over without being
+        // re-imported, or a game outside the season window. Fall through rather
+        // than refuse — a slightly stale row still beats no recipient at all.
+        if (!isRecordNotFound(error)) throw error;
+      }
+    }
+    // Newest season first, so a name matching several rows resolves to the most
+    // recent one deterministically instead of by rowid.
+    return {
+      collection,
+      coachee: await collection.getFirstListItem<AnyRecord>(nameFilter, { sort: '-season' }),
+    };
+  });
+}
+
+async function findCoacheeByRefereeName(refereeName: string, season: number | null): Promise<AnyRecord | null> {
   try {
-    const filter = await coacheeNameFilterAsync(refereeName);
-    return await withCollection(collectionCandidates.coachees, (c) =>
-      c.getFirstListItem<AnyRecord>(filter));
-  } catch { return null; }
+    return (await findCoacheeRecord(refereeName, season)).coachee;
+  } catch (error) {
+    // Only "no such coachee" is an ordinary answer here. Swallowing everything
+    // made a broken filter or an unreachable PocketBase look like "nobody on
+    // this game is a coachee", so the run reported "0 sent, 0 skipped (of 0
+    // due)" — byte-identical to a quiet Tuesday.
+    if (isRecordNotFound(error)) return null;
+    throw error;
+  }
 }
 
 type ReminderPlan = {
@@ -6395,7 +6582,7 @@ async function buildDueReminders(): Promise<ReminderPlan[]> {
     for (const [roleLabel, refField] of [['1. SR', 'first_referee'], ['2. SR', 'second_referee']] as const) {
       const refereeName = asText(game[refField]);
       if (!refereeName) continue;
-      const coachee = await findCoacheeByRefereeName(refereeName);
+      const coachee = await findCoacheeByRefereeName(refereeName, seasonOfDate(asText(game.match_date)));
       const email = coachee ? singleAddress(coachee.email) : '';
       if (!coachee || !email) continue; // not a coachee, or no usable address on file
       const built = buildTemplatedEmail({

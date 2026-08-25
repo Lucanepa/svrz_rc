@@ -681,46 +681,46 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
         </div>
       </Card>
       <Card>
-        <div className="grid grid-cols-2 sm:grid-cols-7 gap-2">
-          <input className={input} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
-          <input className={input} placeholder={t.lastName} value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
-          <input type="email" className={input} placeholder={t.email} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
+          <input className={cn(input, 'sm:col-span-3')} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
+          <input className={cn(input, 'sm:col-span-3')} placeholder={t.lastName} value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
+          <input type="email" className={cn(input, 'col-span-2 sm:col-span-3')} placeholder={t.email} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
           {/* Phone had no field anywhere: it arrived only from the VolleyManager
               sync, so the coachees VM does not carry could never be given one,
               and a wrong number could not be corrected. The app shows it as a
               tel: link on the coachee sheet, which is the point of having it. */}
-          <input type="tel" className={input} placeholder={t.phone} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+          <input type="tel" className={cn(input, 'sm:col-span-3')} placeholder={t.phone} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
           <select
-            className={cn(input, !joinStufe(form.referee_level, form.stage) && 'text-stone-400')}
+            className={cn(input, 'sm:col-span-3', !joinStufe(form.referee_level, form.stage) && 'text-stone-400')}
             value={joinStufe(form.referee_level, form.stage)}
             onChange={(e) => setForm({ ...form, ...splitStufe(e.target.value) })}
           >
             <option value="">{t.stage}</option>
             {STUFEN.map((v) => <option key={v} value={v} className="text-stone-900">{v}</option>)}
           </select>
-          <GroupMultiSelect groups={groups} value={form.groups} onChange={(v) => setForm({ ...form, groups: v })} placeholder={t.chooseGroups} />
-          <button onClick={add} disabled={!form.first_name && !form.last_name} className={`${btnPrimary} justify-center`}><Plus size={15} /> {t.add}</button>
+          <div className="sm:col-span-4"><GroupMultiSelect groups={groups} value={form.groups} onChange={(v) => setForm({ ...form, groups: v })} placeholder={t.chooseGroups} /></div>
+          <button onClick={add} disabled={!form.first_name && !form.last_name} className={cn(btnPrimary, 'justify-center sm:col-span-5 sm:justify-self-end')}><Plus size={15} /> {t.add}</button>
         </div>
       </Card>
       <Card>
         <p className="text-xs text-stone-400 mb-2">{loading ? t.loading : t.count(rows.length, seasonLabel(season))}</p>
         <div className="divide-y divide-stone-100">
           {rows.map((c) => editId === c.id ? (
-            <div key={c.id} className="py-2 grid grid-cols-2 sm:grid-cols-7 gap-2 items-center">
-              <input className={input} value={editForm.first_name} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
-              <input className={input} value={editForm.last_name} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
-              <input type="email" className={input} placeholder={t.email} value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
-              <input type="tel" className={input} placeholder={t.phone} value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
+            <div key={c.id} className="py-2 grid grid-cols-2 gap-2 sm:grid-cols-12 items-center">
+              <input className={cn(input, 'sm:col-span-3')} value={editForm.first_name} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
+              <input className={cn(input, 'sm:col-span-3')} value={editForm.last_name} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
+              <input type="email" className={cn(input, 'col-span-2 sm:col-span-3')} placeholder={t.email} value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
+              <input type="tel" className={cn(input, 'sm:col-span-3')} placeholder={t.phone} value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
               <select
-                className={cn(input, !joinStufe(editForm.referee_level, editForm.stage) && 'text-stone-400')}
+                className={cn(input, 'sm:col-span-3', !joinStufe(editForm.referee_level, editForm.stage) && 'text-stone-400')}
                 value={joinStufe(editForm.referee_level, editForm.stage)}
                 onChange={(e) => setEditForm({ ...editForm, ...splitStufe(e.target.value) })}
               >
                 <option value="">{t.stage}</option>
                 {STUFEN.map((v) => <option key={v} value={v} className="text-stone-900">{v}</option>)}
               </select>
-              <GroupMultiSelect groups={groups} value={editForm.groups} onChange={(v) => setEditForm({ ...editForm, groups: v })} placeholder={t.chooseGroups} />
-              <div className="flex gap-1.5"><button onClick={() => saveEdit(c.id)} className={btnPrimary}><Check size={15} /></button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
+              <div className="sm:col-span-4"><GroupMultiSelect groups={groups} value={editForm.groups} onChange={(v) => setEditForm({ ...editForm, groups: v })} placeholder={t.chooseGroups} /></div>
+              <div className="flex gap-1.5 sm:col-span-5 sm:justify-self-end"><button onClick={() => saveEdit(c.id)} className={btnPrimary}><Check size={15} /></button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
             </div>
           ) : (
             <div key={c.id} className="py-2">

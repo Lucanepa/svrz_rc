@@ -597,9 +597,9 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
   const [syncMissing, setSyncMissing] = useState<string[]>([]);
   const [syncAmbiguous, setSyncAmbiguous] = useState<string[]>([]);
   const [overwriteContacts, setOverwriteContacts] = useState(false);
-  const [form, setForm] = useState({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' });
+  const [form, setForm] = useState({ first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '' });
   const [editId, setEditId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' });
+  const [editForm, setEditForm] = useState({ first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '' });
 
   const reload = useCallback(async () => { setLoading(true); try { setAll(await listCoachees()); } catch (e) { setNotice(String(e)); } finally { setLoading(false); } }, []);
   useEffect(() => { void reload(); }, [reload]);
@@ -612,7 +612,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
     try { await action(); }
     catch (e) { setNotice(e instanceof Error ? e.message : String(e)); }
   };
-  const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await guard(async () => { await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm({ first_name: '', last_name: '', email: '', referee_level: '', stage: '', groups: '' }); await reload(); }); };
+  const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await guard(async () => { await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm({ first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '' }); await reload(); }); };
   const saveEdit = async (id: string) => { const full_name = `${editForm.first_name} ${editForm.last_name}`.trim(); await guard(async () => { await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>); setEditId(null); await reload(); }); };
   const remove = async (c: Coachee) => { if (!confirm(t.delCoachee(c.full_name))) return; await guard(async () => { await deleteCoachee(c.id); await reload(); }); };
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -681,10 +681,15 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
         </div>
       </Card>
       <Card>
-        <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-7 gap-2">
           <input className={input} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
           <input className={input} placeholder={t.lastName} value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
           <input type="email" className={input} placeholder={t.email} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          {/* Phone had no field anywhere: it arrived only from the VolleyManager
+              sync, so the coachees VM does not carry could never be given one,
+              and a wrong number could not be corrected. The app shows it as a
+              tel: link on the coachee sheet, which is the point of having it. */}
+          <input type="tel" className={input} placeholder={t.phone} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
           <select
             className={cn(input, !joinStufe(form.referee_level, form.stage) && 'text-stone-400')}
             value={joinStufe(form.referee_level, form.stage)}
@@ -701,10 +706,11 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
         <p className="text-xs text-stone-400 mb-2">{loading ? t.loading : t.count(rows.length, seasonLabel(season))}</p>
         <div className="divide-y divide-stone-100">
           {rows.map((c) => editId === c.id ? (
-            <div key={c.id} className="py-2 grid grid-cols-2 sm:grid-cols-6 gap-2 items-center">
+            <div key={c.id} className="py-2 grid grid-cols-2 sm:grid-cols-7 gap-2 items-center">
               <input className={input} value={editForm.first_name} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
               <input className={input} value={editForm.last_name} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
               <input type="email" className={input} placeholder={t.email} value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
+              <input type="tel" className={input} placeholder={t.phone} value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
               <select
                 className={cn(input, !joinStufe(editForm.referee_level, editForm.stage) && 'text-stone-400')}
                 value={joinStufe(editForm.referee_level, editForm.stage)}
@@ -724,10 +730,17 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
                   <p className="text-xs text-stone-400 truncate"><LevelText level={c.referee_level} stage={c.stage} />{c.groups ? ` · ${c.groups}` : ''}</p>
                   {/* Without an address the feedback submit fails at the very
                       end, after the whole form is filled in — flag it early. */}
-                  <p className={cn('text-xs truncate', c.email ? 'text-stone-400' : 'text-amber-600 font-medium')}>{c.email || t.noEmail}</p>
+                  <p className={cn('text-xs truncate', c.email ? 'text-stone-400' : 'text-amber-600 font-medium')}>
+                    {c.email || t.noEmail}
+                    {/* Shown, not just editable: the coach's detail sheet offers
+                        this as a tel: link, so a missing or wrong number is
+                        worth seeing from the list. Absence is not flagged —
+                        unlike the address, feedback does not need it. */}
+                    {c.phone && <span className="text-stone-400"> · {c.phone}</span>}
+                  </p>
                 </div>
                 <button onClick={() => setTargetEditId(targetEditId === c.id ? null : c.id)} className={cn(btnGhost, targetEditId === c.id && 'bg-stone-100')} title={t.target}><Target size={13} /></button>
-                <button onClick={() => { setEditId(c.id); setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', email: c.email || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '' }); }} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
+                <button onClick={() => { setEditId(c.id); setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', email: c.email || '', phone: c.phone || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '' }); }} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
                 <button onClick={() => remove(c)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
               </div>
               <div className="flex items-center gap-1.5 mt-1 pl-0.5">

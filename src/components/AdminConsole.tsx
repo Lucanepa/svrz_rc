@@ -240,7 +240,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
   if (headerRow < 0) return [];
   const header = cells(rows[headerRow]);
   const col = (names: string[]) => { for (const n of names) { const i = header.indexOf(n); if (i >= 0) return i; } return -1; };
-  const ci = { last: col(NAME_COLS), first: col(['vorname', 'first', 'firstname']), email: col(['email', 'e-mail', 'mail', 'e-mail-adresse', 'emailadresse', 'e mail']), level: col(['niveau', 'level']), stage: col(['niveaustufe', 'stufe', 'stage']), group: col(['gruppe', 'group', 'groups']), notes: col(['bemerkung', 'bemerkungen', 'notizen', 'notes', 'note', 'kommentar']) };
+  const ci = { last: col(NAME_COLS), first: col(['vorname', 'first', 'firstname']), email: col(['email', 'e-mail', 'mail', 'e-mail-adresse', 'emailadresse', 'e mail']), phone: col(['telefon', 'telefon-nr.', 'telefon-nr', 'telefonnummer', 'phone', 'mobile', 'natel', 'handy', 'tel', 'tel.']), level: col(['niveau', 'level']), stage: col(['niveaustufe', 'stufe', 'stage']), group: col(['gruppe', 'group', 'groups']), notes: col(['bemerkung', 'bemerkungen', 'notizen', 'notes', 'note', 'kommentar']) };
   // Notes often live in an unnamed column right after Gruppe.
   if (ci.notes < 0 && ci.group >= 0 && !header[ci.group + 1]) ci.notes = ci.group + 1;
   const out: ImportRow[] = [];
@@ -249,7 +249,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
     const last = String(r[ci.last] ?? '').trim();
     const first = String(r[ci.first] ?? '').trim();
     if (!first && !last) continue;
-    out.push({ first_name: first, last_name: last, full_name: `${first} ${last}`.trim(), email: String(r[ci.email] ?? '').trim(), referee_level: String(r[ci.level] ?? '').trim(), stage: String(r[ci.stage] ?? '').trim().replace(/\.0$/, ''), groups: mapGroups(String(r[ci.group] ?? '').trim()), notes: String(r[ci.notes] ?? '').trim() });
+    out.push({ first_name: first, last_name: last, full_name: `${first} ${last}`.trim(), email: String(r[ci.email] ?? '').trim(), phone: String(r[ci.phone] ?? '').trim(), referee_level: String(r[ci.level] ?? '').trim(), stage: String(r[ci.stage] ?? '').trim().replace(/\.0$/, ''), groups: mapGroups(String(r[ci.group] ?? '').trim()), notes: String(r[ci.notes] ?? '').trim() });
   }
   return out;
 }

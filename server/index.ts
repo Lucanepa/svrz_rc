@@ -3372,7 +3372,7 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
       // Niveau, Stufe or Gruppe is cleared by editing the coachee in the console.
       // That beats the alternative, which cannot tell an empty cell from a column
       // the sheet never had.
-      for (const field of ['notes', 'email', 'referee_level', 'stage', 'groups'] as const) {
+      for (const field of ['notes', 'email', 'phone', 'referee_level', 'stage', 'groups'] as const) {
         const value = asText(r[field]);
         if (value) payload[field] = value;
       }
@@ -3380,7 +3380,7 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
       const ex = byKey.get(key);
       if (ex) { await withCollection(collectionCandidates.coachees, (c) => c.update(ex.id, payload)); updated++; }
       else {
-        const rec = await withCollection(collectionCandidates.coachees, (c) => c.create({ notes: '', referee_level: '', stage: '', groups: '', ...payload, feedback_entries: [] }));
+        const rec = await withCollection(collectionCandidates.coachees, (c) => c.create({ notes: '', phone: '', referee_level: '', stage: '', groups: '', ...payload, feedback_entries: [] }));
         byKey.set(key, rec as AnyRecord); // duplicate rows in one file update instead of duplicating
         created++;
       }

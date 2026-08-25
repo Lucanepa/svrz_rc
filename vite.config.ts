@@ -23,6 +23,16 @@ export default defineConfig(() => {
         workbox: {
           clientsClaim: true,
           skipWaiting: true,
+          // The default only precaches js/css/html, which left everything else
+          // Vite emits into assets/ out of the shell: the header logo and the
+          // Inter woff2 files. That is invisible online — but once the service
+          // worker controls the page it answers those requests with a fetch()
+          // that fails offline and never falls back to the HTTP cache, so an
+          // offline reload showed broken-image alt text where the SVRZ logo is
+          // and dropped the app to a system font. PDFs stay out on purpose:
+          // docs/ is a quarter-megabyte of guides nobody needs cached to file
+          // an observation.
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           // Anything under docs/ is a real file, not an app route. Without the
           // denylist the navigation fallback answered a click on the SR-Technik
           // guide with the app shell — an HTML page where a PDF was expected.

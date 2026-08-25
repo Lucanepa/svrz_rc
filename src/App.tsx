@@ -4761,9 +4761,21 @@ export default function App() {
         </div>
 
         {/* Legend */}
-        <div className="mb-6 p-2 bg-stone-50 border border-stone-200 rounded flex items-center gap-2 text-[10px] text-stone-600 italic">
-          <Info size={14} className="text-red-500 shrink-0" />
-          {LEGEND[formData.lang]}
+        <div className="mb-6 p-2 bg-stone-50 border border-stone-200 rounded flex items-start gap-2 text-[10px] text-stone-600 italic">
+          <Info size={14} className="text-red-500 shrink-0 mt-px" />
+          <div className="min-w-0">
+            <div>{LEGEND[formData.lang]}</div>
+            {/* Clicking a cell again has always cycled A → A+ → A- → empty, but
+                nothing said so and coaches never found it. Deliberately NOT
+                folded into LEGEND: feedbackPdf draws that same string and its
+                legend line already runs close to the page width. Hidden in
+                print so the paper sheet keeps the plain A–E scale. */}
+            <div className="mt-1 not-italic text-stone-500 print:hidden">
+              {formData.lang === 'DE'
+                ? 'Feiner abstufen: dieselbe Zelle nochmals anklicken — A → A+ → A- → leer.'
+                : 'Finer grading: click the same cell again — A → A+ → A- → empty.'}
+            </div>
+          </div>
         </div>
 
         <div className={cn(formDisabled && 'pointer-events-none opacity-60')}>

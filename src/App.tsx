@@ -2690,6 +2690,10 @@ export default function App() {
   }, [coachees, seasonStartYear]);
 
   const filteredGames = useMemo(() => {
+    const gameTime = (d: string) => {
+      const t = new Date(d).getTime();
+      return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+    };
     const q = listSearch.toLowerCase();
     // Referees already covered this season: an RC took one of their games and the
     // observation is still pending (role not yet in feedbackClosedRoles), so none
@@ -2798,7 +2802,13 @@ export default function App() {
         }
       }
       return true;
-    });
+    })
+      // The API hands games back newest-first (`sort: '-match_date'`), which put
+      // the LAST game of the season at the top of the list — the one date nobody
+      // is looking for. A fixture list reads chronologically. Compared as
+      // timestamps rather than strings so a stray offset cannot reorder a day,
+      // and anything undated sinks to the bottom instead of leading.
+      .sort((a, b) => gameTime(a.date) - gameTime(b.date));
   }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
 
   // Any filter can shrink a list below the page currently shown, and the pager

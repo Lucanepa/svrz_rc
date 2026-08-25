@@ -61,8 +61,12 @@ test('every season-scoped request is for the season the server named', async ({ 
   expect(seen.some((s) => s.path === 'summary')).toBe(true);
 });
 
+// Signed in as an admin: Referee Coaches is an admin tab now, and its list is
+// the only way into a detail page. The shared fetch it guards is unchanged --
+// Home claims the summary for the signed-in coach, and opening that same coach's
+// detail must read it rather than ask for the identical payload again.
 test('opening the RC detail tab reuses what Home already fetched', async ({ page }) => {
-  await stubSignedInApp(page);
+  await stubSignedInApp(page, { admin: true });
   await page.route('**/api/settings', (r) => r.fulfill({
     json: {
       default_season: SERVER_SEASON, test_mode: false, groups: [],
@@ -80,9 +84,10 @@ test('opening the RC detail tab reuses what Home already fetched', async ({ page
   await page.waitForTimeout(2000);
   const before = seen.filter((s) => s.path === 'summary').length;
 
-  // Home claims the summary fetch for the signed-in coach; opening their own
-  // detail must read that, not fetch the identical payload again.
   await page.getByRole('button', { name: /Referee Coaches/ }).click();
+  // Scoped to the list: the sign-out button in the header carries the same name.
+  await page.locator('div.divide-y').getByText(RC.name, { exact: true }).click();
+  await expect(page.getByRole('heading', { name: RC.name })).toBeVisible();
   await page.waitForTimeout(1500);
 
   expect(seen.filter((s) => s.path === 'summary').length).toBe(before);

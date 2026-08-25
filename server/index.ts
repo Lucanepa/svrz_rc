@@ -4663,9 +4663,19 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
     await ensureAdminAuth();
     const inSeason = seasonDateFilter(req.query.season);
     // 1. RC people
-    const people = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
+    const allPeople = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
       collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }),
     );
+    // Every other coach's workload is an ADMIN surface. It used to be hidden
+    // client-side while the endpoint still handed the whole table to anyone
+    // holding a session -- one `curl` away, and one flipped boolean away in a
+    // devtools console. Cut here, so a plain RC is served only their own row
+    // (the Home dashboard is all that still reads this as a coach).
+    // rcAuthByReq is absent for admin sessions, by the convention above.
+    const rcAuth = rcAuthByReq.get(req);
+    const people = rcAuth
+      ? allPeople.filter((p) => rcRefMatches(p.id, `${asText(p.first_name)} ${asText(p.last_name)}`.trim(), rcAuth))
+      : allPeople;
     // 2. All games
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({

@@ -1019,6 +1019,11 @@ export default function App() {
   // the unrestricted RC picker and may open any RC's detail. Plain RC sessions
   // act only as themselves (the server enforces this too).
   const isPrivileged = rcAuth.isAdminSession || adminAuthenticated;
+  // How many tabs the nav actually renders: Home drops out for a session with no
+  // dashboard, Referee Coaches for one with no admin rights. An odd count leaves
+  // the last tile alone on the second mobile row, so it takes the full width.
+  const tabCount = (homelessAdmin ? 0 : 1) + 2 + (isPrivileged ? 1 : 0);
+  const oddTabOut = tabCount % 2 === 1 ? 'max-sm:col-span-2' : undefined;
   // Identity that owns any outbox item created now — a queued submission is only
   // ever sent back under this same identity, never a different coach's.
   const outboxOwnerId = rcAuth.rcId || (isPrivileged ? 'admin' : 'anon');
@@ -3238,7 +3243,7 @@ export default function App() {
               </button>
             </div>
             {/* Toggle tabs */}
-            <div className={cn("mb-3 grid grid-cols-2 gap-2", homelessAdmin ? "sm:grid-cols-3" : "sm:grid-cols-4")}>
+            <div className={cn("mb-3 grid grid-cols-2 gap-2", tabCount === 4 ? "sm:grid-cols-4" : "sm:grid-cols-3")}>
               {/* Hidden rather than left to bounce off the redirect: a tab that
                   answers a click by highlighting a different one is worse than
                   no tab. See homelessAdmin. */}
@@ -3271,6 +3276,7 @@ export default function App() {
                 onClick={() => { setListTab('games'); setListSearch(''); setListPage(0); }}
                 className={cn(
                   "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
+                  !isPrivileged && oddTabOut,
                   listTab === 'games'
                     ? "bg-slate-900 text-white"
                     : "bg-stone-100 text-stone-600 hover:bg-stone-200"
@@ -3278,25 +3284,25 @@ export default function App() {
               >
                 {t.gamePool}
               </button>
-              <button
-                onClick={() => {
-                  setListTab('rcOverview');
-                  // Plain RC sessions land directly on their own detail — whose
-                  // data the bootstrap already fetched, so this is instant.
-                  setSelectedRcName(!isPrivileged && rcAuth.rcName ? rcAuth.rcName : null);
-                }}
-                className={cn(
-                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
-                  // Three tabs in a two-column grid would leave this one alone
-                  // on a half-width last row.
-                  homelessAdmin && "max-sm:col-span-2",
-                  listTab === 'rcOverview'
-                    ? "bg-slate-900 text-white"
-                    : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                )}
-              >
-                {t.rcOverview}
-              </button>
+              {/* An admin surface. For a coach this listed a dozen names of which
+                  only their own row opened, and that row says what Home already
+                  says — while the endpoint behind it handed over every coach's
+                  counters to anyone holding a session. The API agrees now: a
+                  plain RC is served its own row and nothing else. */}
+              {isPrivileged && (
+                <button
+                  onClick={() => { setListTab('rcOverview'); setSelectedRcName(null); }}
+                  className={cn(
+                    "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
+                    oddTabOut,
+                    listTab === 'rcOverview'
+                      ? "bg-slate-900 text-white"
+                      : "bg-stone-100 text-stone-600 hover:bg-stone-200"
+                  )}
+                >
+                  {t.rcOverview}
+                </button>
+              )}
             </div>
 
             {/* Home dashboard */}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, createContext, useContext, type ReactNode } from 'react';
-import { Lock, Loader2, Mail, ArrowLeft, KeyRound, Eye, EyeOff, User, Languages, Search, Check } from 'lucide-react';
+import { Lock, Loader2, Mail, ArrowLeft, KeyRound, Eye, EyeOff, User, Languages, Search, Check, ChevronDown } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import {
   getAuthMe, rcLogin, rcLogout, logoutAdmin, rcForgotStart, rcForgotVerify, hasPendingLogout, settlePendingLogout,
@@ -53,6 +53,7 @@ const STR = {
     search: 'Suchen…',
     continue: 'Weiter',
     noMatch: 'Kein Treffer',
+    choose: 'Namen wählen',
     rosterFailed: 'Die Liste konnte nicht geladen werden.',
     retry: 'Erneut versuchen',
     genericError: 'Etwas ist schiefgelaufen. Bitte versuche es erneut.',
@@ -102,6 +103,7 @@ const STR = {
     search: 'Search…',
     continue: 'Continue',
     noMatch: 'No match',
+    choose: 'Choose your name',
     rosterFailed: 'The list could not be loaded.',
     retry: 'Try again',
     genericError: 'Something went wrong. Please try again.',
@@ -201,6 +203,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [rosterError, setRosterError] = useState('');
   const [chosenRcId, setChosenRcId] = useState<string | null>(null);
   const [rcSearch, setRcSearch] = useState('');
+  // The roster is a dozen-odd names and it used to fill the card, pushing
+  // Continue off a phone screen. Collapsed to the chosen name; it opens on
+  // demand, and on its own whenever there is nothing to show in it yet.
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   // Forgot/set password: 'personal' → 'forgot-email' → 'forgot-code' → 'forgot-done'.
   const [forgotEmail, setForgotEmail] = useState('');
@@ -210,7 +216,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   const chooseLang = (next: Lang) => { setLang(next); setStoredLang(next); };
 
-  const loadRoster = useCallback(async () => {
+  const loadRoster = useCallback(async (forceOpen = false) => {
     setRosterError('');
     try {
       const people = await listRcRoster();
@@ -219,7 +225,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       // point of a shared credential is that the next holder may be someone
       // else, and a silent carry-over files their work under the wrong name.
       const remembered = getStoredRcId();
-      setChosenRcId((current) => current ?? (people.some((p) => p.id === remembered) ? remembered : null));
+      const preselected = people.some((p) => p.id === remembered) ? remembered : null;
+      setChosenRcId((current) => current ?? preselected);
+      // Nothing to collapse around, or a hand-over in progress: start open, so
+      // nobody has to work out that the button is the way in.
+      setPickerOpen(forceOpen || !preselected);
     } catch (err) {
       clientLog.warn('auth.roster', 'could not load the RC list', { error: err });
       setRoster(null);
@@ -363,7 +373,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setChosenRcId(null);
     setRcSearch('');
     setView('identify');
-    void loadRoster();
+    void loadRoster(true);
   }, [loadRoster]);
 
   const logout = () => {
@@ -462,6 +472,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   const query = rcSearch.trim().toLowerCase();
   const visibleRoster = (roster ?? []).filter((p) => !query || p.fullName.toLowerCase().includes(query));
+  const chosenName = (roster ?? []).find((p) => p.id === chosenRcId)?.fullName ?? null;
   const passwordField = (id: string, autoComplete: string, placeholder: string, value: string, onChange: (v: string) => void) => (
     <div className="relative">
       <label htmlFor={id} className="sr-only">{placeholder}</label>
@@ -624,46 +635,69 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               )}
 
               {roster !== null && (
-                <>
-                  {/* A search box only earns its space once scanning the list
-                      stops being instant. */}
-                  {roster.length > 8 && (
-                    <div className="relative">
-                      <label htmlFor="rc-search" className="sr-only">{t.search}</label>
-                      <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
-                      <input
-                        id="rc-search"
-                        type="text"
-                        value={rcSearch}
-                        onChange={e => setRcSearch(e.target.value)}
-                        placeholder={t.search}
-                        autoFocus
-                        className={`${inputClass('')} !py-2.5`}
-                      />
+                <div onKeyDown={(e) => { if (e.key === 'Escape' && pickerOpen) { e.stopPropagation(); setPickerOpen(false); } }}>
+                  {/* The whole roster laid out at once filled the card and
+                      pushed Continue off a phone screen. Collapsed to the one
+                      name that matters; the list is one tap away. */}
+                  <button
+                    type="button"
+                    onClick={() => setPickerOpen((open) => !open)}
+                    aria-expanded={pickerOpen}
+                    aria-controls="rc-picker"
+                    className={`w-full flex items-center gap-2 px-3.5 py-3 rounded-xl border text-sm transition-colors ${
+                      chosenName
+                        ? 'border-red-500 bg-red-50 text-stone-900 font-semibold'
+                        : 'border-stone-300 bg-stone-50 text-stone-500 hover:bg-stone-100'
+                    }`}
+                  >
+                    <User className="h-4 w-4 shrink-0 text-stone-400" />
+                    <span className="flex-1 truncate text-left">{chosenName ?? t.choose}</span>
+                    <ChevronDown className={`h-4 w-4 shrink-0 text-stone-400 transition-transform ${pickerOpen ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {pickerOpen && (
+                    <div id="rc-picker" className="mt-2 space-y-1.5">
+                      {/* A search box only earns its space once scanning the list
+                          stops being instant. */}
+                      {roster.length > 8 && (
+                        <div className="relative">
+                          <label htmlFor="rc-search" className="sr-only">{t.search}</label>
+                          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
+                          <input
+                            id="rc-search"
+                            type="text"
+                            value={rcSearch}
+                            onChange={e => setRcSearch(e.target.value)}
+                            placeholder={t.search}
+                            autoFocus
+                            className={`${inputClass('')} !py-2.5`}
+                          />
+                        </div>
+                      )}
+                      <div className="max-h-56 overflow-y-auto -mx-1 px-1 space-y-1.5">
+                        {visibleRoster.map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => { setChosenRcId(p.id); setRcSearch(''); setPickerOpen(false); }}
+                            aria-pressed={chosenRcId === p.id}
+                            className={`w-full flex items-center gap-2 text-left px-3.5 py-2.5 rounded-xl border text-sm transition-colors ${
+                              chosenRcId === p.id
+                                ? 'border-red-500 bg-red-50 text-stone-900 font-semibold'
+                                : 'border-stone-200 bg-stone-50 text-stone-700 hover:bg-stone-100'
+                            }`}
+                          >
+                            <span className="flex-1 truncate">{p.fullName}</span>
+                            {chosenRcId === p.id && <Check className="h-4 w-4 text-red-600 shrink-0" />}
+                          </button>
+                        ))}
+                        {visibleRoster.length === 0 && (
+                          <p className="text-center text-xs text-stone-400 py-6">{t.noMatch}</p>
+                        )}
+                      </div>
                     </div>
                   )}
-                  <div className="max-h-64 overflow-y-auto -mx-1 px-1 space-y-1.5">
-                    {visibleRoster.map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => setChosenRcId(p.id)}
-                        aria-pressed={chosenRcId === p.id}
-                        className={`w-full flex items-center gap-2 text-left px-3.5 py-2.5 rounded-xl border text-sm transition-colors ${
-                          chosenRcId === p.id
-                            ? 'border-red-500 bg-red-50 text-stone-900 font-semibold'
-                            : 'border-stone-200 bg-stone-50 text-stone-700 hover:bg-stone-100'
-                        }`}
-                      >
-                        <span className="flex-1 truncate">{p.fullName}</span>
-                        {chosenRcId === p.id && <Check className="h-4 w-4 text-red-600 shrink-0" />}
-                      </button>
-                    ))}
-                    {visibleRoster.length === 0 && (
-                      <p className="text-center text-xs text-stone-400 py-6">{t.noMatch}</p>
-                    )}
-                  </div>
-                </>
+                </div>
               )}
 
               {error && <p className="text-red-600 text-xs font-medium">{error}</p>}

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, createContext, useContext, typ
 import { Lock, Loader2, Mail, ArrowLeft, KeyRound, Eye, EyeOff, User, Languages, Search, Check } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import {
-  getAuthMe, rcLogin, rcLogout, rcForgotStart, rcForgotVerify, hasPendingLogout, settlePendingLogout,
+  getAuthMe, rcLogin, rcLogout, logoutAdmin, rcForgotStart, rcForgotVerify, hasPendingLogout, settlePendingLogout,
   sharedLogin, listRcRoster, identifyAsRc, type AuthMe, type RcRosterEntry,
 } from '../lib/pocketbase';
 import { clientLog, setLogUser, flush } from '../lib/logger';
@@ -369,7 +369,16 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const logout = () => {
     clientLog.info('auth.logout', 'logout');
     void flush();
-    void rcLogout().finally(() => {
+    // An admin session lives in a SECOND cookie, and /auth/rc/logout never
+    // touches it. Revoking only the RC one dropped the screen back to the login
+    // form while the admin session stayed alive — and the gate opens for
+    // `rc || admin`, so the next reload walked straight back in. Harmless when
+    // the admin rights came off the RC record instead of the console login:
+    // the endpoint only clears a cookie that then wasn't there.
+    void (async () => {
+      await rcLogout();
+      if (isAdminSession) await logoutAdmin().catch(() => { /* the RC session is already gone */ });
+    })().finally(() => {
       setLogUser(null);
       setAuthed(false);
       setRcId(null);

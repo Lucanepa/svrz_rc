@@ -846,10 +846,18 @@ export default function App() {
   // Deep link the app was opened with — read once, before the first paint, so
   // a shared/bookmarked tab renders directly instead of flashing Home first.
   const initialRoute = useRef(parseHash(window.location.hash, false)).current;
+  const rcAuth = useRcAuth();
+  // An admin-console session is nobody in particular: it carries no RC record,
+  // so the Home tab has no dashboard to show it — only a "Willkommen." dead
+  // end. Every route that would put such a session on Home puts it on the RC
+  // list instead, which is the screen it came for.
+  const homelessAdmin = !rcAuth.rcName && rcAuth.isAdminSession;
+  const landingTab = (tab: AppRoute['listTab']): AppRoute['listTab'] =>
+    tab === 'home' && homelessAdmin ? 'rcOverview' : tab;
   // Legacy in-app database panel: no control switches to it any more, so it
   // stays out of the URL scheme.
   const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>(initialRoute.subView);
-  const [listTab, setListTab] = useState<'home' | 'coachees' | 'games' | 'rcOverview'>(initialRoute.listTab);
+  const [listTab, setListTab] = useState<'home' | 'coachees' | 'games' | 'rcOverview'>(() => landingTab(initialRoute.listTab));
   // `doneList` powers the "already observed" list at the bottom of Home; each
   // entry keeps its coachee id so the row can open the filed feedback.
   type HomeDone = { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result?: string; coacheeName: string; coacheeId: string };
@@ -1007,7 +1015,6 @@ export default function App() {
   const [flushing, setFlushing] = useState(false);
   const [backendNotice, setBackendNotice] = useState('');
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
-  const rcAuth = useRcAuth();
   // Admin via the admin-console session or the in-app database login: keeps
   // the unrestricted RC picker and may open any RC's detail. Plain RC sessions
   // act only as themselves (the server enforces this too).
@@ -1155,7 +1162,12 @@ export default function App() {
       if (isForeignHash(window.location.hash)) return;
       const r = parseHash(window.location.hash, true);
       setFeedbackSubView(r.subView);
-      setListTab(r.listTab);
+      const tab = landingTab(r.listTab);
+      // Rewriting the tab must REPLACE the entry, not push one: otherwise Back
+      // onto #/home would bounce here and push #/rc straight back on, and Back
+      // could never get past it.
+      if (tab !== r.listTab) didSyncHashRef.current = false;
+      setListTab(tab);
       setSelectedRcName(r.rc);
     };
     window.addEventListener('popstate', onPop);
@@ -3185,14 +3197,24 @@ export default function App() {
                     <span className="hidden sm:inline max-w-[9rem] truncate">{rcAuth.rcName}</span>
                   </button>
                 )}
-                {rcAuth.rcName && (
+                {/* Also for a session with no RC name — the admin console
+                    login is one. Gating this on the name left that session with
+                    no way out of the app at all: the only exit was typing
+                    #/admin and signing out from the console instead. */}
+                {(rcAuth.rcName || isPrivileged) && (
                   <button
                     onClick={rcAuth.logout}
                     className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
-                    title={formData.lang === 'DE' ? `Abmelden (${rcAuth.rcName})` : `Log out (${rcAuth.rcName})`}
+                    title={rcAuth.rcName
+                      ? (formData.lang === 'DE' ? `Abmelden (${rcAuth.rcName})` : `Log out (${rcAuth.rcName})`)
+                      : (formData.lang === 'DE' ? 'Abmelden' : 'Log out')}
                   >
                     <LogOut size={14} />
-                    {!rcAuth.sharedSession && <span className="hidden sm:inline max-w-[9rem] truncate">{rcAuth.rcName}</span>}
+                    {!rcAuth.sharedSession && (
+                      <span className="hidden sm:inline max-w-[9rem] truncate">
+                        {rcAuth.rcName ?? (formData.lang === 'DE' ? 'Abmelden' : 'Log out')}
+                      </span>
+                    )}
                   </button>
                 )}
               </div>
@@ -3206,19 +3228,24 @@ export default function App() {
               </button>
             </div>
             {/* Toggle tabs */}
-            <div className="mb-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <button
-                onClick={() => setListTab('home')}
-                className={cn(
-                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center gap-1.5",
-                  listTab === 'home'
-                    ? "bg-slate-900 text-white"
-                    : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                )}
-              >
-                <Home size={16} />
-                {formData.lang === 'DE' ? 'Start' : 'Home'}
-              </button>
+            <div className={cn("mb-3 grid grid-cols-2 gap-2", homelessAdmin ? "sm:grid-cols-3" : "sm:grid-cols-4")}>
+              {/* Hidden rather than left to bounce off the redirect: a tab that
+                  answers a click by highlighting a different one is worse than
+                  no tab. See homelessAdmin. */}
+              {!homelessAdmin && (
+                <button
+                  onClick={() => setListTab('home')}
+                  className={cn(
+                    "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center gap-1.5",
+                    listTab === 'home'
+                      ? "bg-slate-900 text-white"
+                      : "bg-stone-100 text-stone-600 hover:bg-stone-200"
+                  )}
+                >
+                  <Home size={16} />
+                  {formData.lang === 'DE' ? 'Start' : 'Home'}
+                </button>
+              )}
               <button
                 onClick={() => { setListTab('coachees'); setListSearch(''); setListPage(0); }}
                 className={cn(
@@ -3250,6 +3277,9 @@ export default function App() {
                 }}
                 className={cn(
                   "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
+                  // Three tabs in a two-column grid would leave this one alone
+                  // on a half-width last row.
+                  homelessAdmin && "max-sm:col-span-2",
                   listTab === 'rcOverview'
                     ? "bg-slate-900 text-white"
                     : "bg-stone-100 text-stone-600 hover:bg-stone-200"

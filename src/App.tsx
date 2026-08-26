@@ -3132,7 +3132,7 @@ export default function App() {
                       overflows the box. Inert on purpose: nothing here was sent. */}
                   {m.surveyUrl && (
                     <div className="px-3 pb-3 -mt-1">
-                      <span className="inline-block px-5 py-2 rounded-lg bg-emerald-600 text-white text-[12px] font-semibold">Feedback geben</span>
+                      <span className="inline-block px-5 py-2 rounded-lg bg-red-600 text-white text-[12px] font-semibold">Feedback geben</span>
                     </div>
                   )}
                   {m.attachment && (

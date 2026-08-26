@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import { DEFAULT_SURVEY_CONFIG } from '../../src/lib/survey';
 
 /**
  * A signed-in app with a little data behind it.
@@ -94,10 +95,15 @@ export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promi
   await page.route('**/api/games/*/assign-rc', (r) => r.fulfill({ json: { ok: true } }));
   await page.route('**/api/admin/email-templates', (r) => r.fulfill({
     json: {
-      feedback: EMAIL_TEMPLATE, reminder: EMAIL_TEMPLATE,
-      defaults: { feedback: EMAIL_TEMPLATE, reminder: EMAIL_TEMPLATE },
-      reminder_enabled: true, placeholders: [],
+      feedback: EMAIL_TEMPLATE, reminder: EMAIL_TEMPLATE, survey: EMAIL_TEMPLATE,
+      defaults: { feedback: EMAIL_TEMPLATE, reminder: EMAIL_TEMPLATE, survey: EMAIL_TEMPLATE },
+      reminder_enabled: true,
+      placeholders: { feedback: [], reminder: [], survey: [] },
     },
+  }));
+  // The questionnaire editor is an admin tab and mounts with the console.
+  await page.route('**/api/admin/survey-config', (r) => r.fulfill({
+    json: { config: DEFAULT_SURVEY_CONFIG, defaults: DEFAULT_SURVEY_CONFIG },
   }));
   // The signature pad only renders once a signing session exists.
   await page.route('**/api/signature/start', (r) => r.fulfill({ json: { slug: 'sig-test' } }));

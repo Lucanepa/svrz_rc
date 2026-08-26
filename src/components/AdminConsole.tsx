@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX } from 'lucide-react';
+import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
@@ -10,11 +10,12 @@ import {
   getAdminShortcutRcs, setAdminShortcutRcs,
   loadRcOverview, listRefereeCoachPeople, assignRcToGame,
   getSettings, putSettings, loadEligibleGames,
-  getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame, listManualGames,
+  getEmailTemplates, putEmailTemplates, placeholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
+  getSurveyConfig, putSurveyConfig,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
   syncGames, type GamesSyncStatus,
   type PresidentNote,
-  type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplates, type ReminderPreview, type ManualGame,
+  type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplateKind, type EmailTemplates, type ReminderPreview, type ManualGame,
   type LogEntry, type LogSession, type SurveyResponse,
 } from '../lib/pocketbase';
 import {
@@ -24,7 +25,11 @@ import {
   type CoacheeTarget, type CoacheeTargetMap, type TargetRole,
   type NiveauMatrix, type NiveauColumn,
 } from '../lib/niveauTargets';
-import { SURVEY_QUESTIONS, questionLabel, type SurveyQuestion } from '../lib/survey';
+import {
+  DEFAULT_SURVEY_CONFIG, SURVEY_SCALES, SURVEY_SCALE_IDS, SURVEY_LIMITS,
+  answerLabel, questionLabel, surveyQuestionId,
+  type SurveyConfig, type SurveyQuestion, type SurveyScaleId,
+} from '../lib/survey';
 import { bySurname } from '../lib/coacheeName';
 import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
 import LevelText from './LevelText';
@@ -78,9 +83,32 @@ const STR = {
     tplFeedbackHint: 'Wird nach dem Absenden eines Feedbacks an den Coachee gesendet (RC in Kopie, PDF im Anhang).',
     tplReminder: 'Erinnerung (Tag vor dem Spiel)',
     tplReminderHint: 'Wird am Vortag an jeden Coachee gesendet, dessen Spiel ein RC übernommen hat (RC in Kopie). Sind beide SR Coachees, erhält jeder eine eigene E-Mail.',
+    tplSurvey: 'RC-Feedback-Benachrichtigung',
+    tplSurveyHint: 'Geht an die RC-Kommission, sobald jemand den Fragebogen abgeschickt hat. Die Antworten hängen automatisch darunter — anonyme Rückmeldungen ohne Namen.',
     tplSubject: 'Betreff', tplHeading: 'Titel (optional)', tplIntro: 'Text', tplOutro: 'Schluss / Grussformel',
     tplPlaceholders: 'Platzhalter (werden automatisch ersetzt):',
+    tplUnknown: 'Orange markierte Platzhalter kennt diese E-Mail nicht — sie bleiben im Versand leer.',
     tplReset: 'Standard wiederherstellen', tplSaved: 'Gespeichert ✓',
+    form: 'Fragebogen',
+    formHint: 'Der Fragebogen, den Schiedsrichter:innen nach einem RC-Besuch ausfüllen (Link in der Feedback-E-Mail). Änderungen gelten ab dem nächsten Aufruf; die Antworten liest weiterhin nur die RC-Vorsitzende.',
+    formIntroTitle: 'Titelzeile & Einleitung',
+    formEyebrow: 'Titelzeile',
+    formIntro: 'Einleitung',
+    formQuestions: 'Fragen',
+    formCount: (n: number) => `${n} Frage${n === 1 ? '' : 'n'}`,
+    formAdd: 'Frage hinzufügen',
+    formType: 'Antworttyp',
+    formTypeText: 'Freitext',
+    formQuestionDe: 'Frage (Deutsch)', formQuestionEn: 'Frage (Englisch)',
+    formHintDe: 'Hinweis DE (optional)', formHintEn: 'Hinweis EN (optional)',
+    formKey: 'Kennung',
+    formKeyHint: 'Unter dieser Kennung werden die Antworten gespeichert. Sie bleibt fest, auch wenn du die Frage umformulierst — so bleiben alte Antworten zur Frage lesbar.',
+    formUp: 'Nach oben', formDown: 'Nach unten',
+    formDelete: (q: string) => `Frage «${q}» entfernen? Bereits gegebene Antworten bleiben gespeichert und erscheinen im RC-Feedback unter ihrer Kennung.`,
+    formResetConfirm: 'Alle Änderungen verwerfen und den Standard-Fragebogen wiederherstellen?',
+    formNeedsText: 'Jede Frage braucht einen deutschen Text.',
+    formSaved: 'Gespeichert ✓',
+    formLangNote: 'Der Fragebogen ist zweisprachig — Schiedsrichter:innen wählen DE oder EN. Bleibt ein Feld leer, wird die andere Sprache angezeigt.',
     reminderEnabled: 'Erinnerungen aktiv', reminderEnabledHint: 'Wenn aus, wird am Vortag nichts versendet. Der Testmodus unterdrückt den Versand zusätzlich.',
     reminderPreview: 'Vorschau: morgen', reminderPreviewHint: 'Zeigt exakt, was morgen versendet würde — es wird nichts gesendet.',
     reminderNone: 'Für morgen stehen keine Erinnerungen an.',
@@ -194,9 +222,32 @@ const STR = {
     tplFeedbackHint: 'Sent to the coachee when a feedback is submitted (RC in CC, PDF attached).',
     tplReminder: 'Reminder (day before the match)',
     tplReminderHint: 'Sent the day before to every coachee whose game an RC has taken (RC in CC). If both referees are coachees, each gets their own email.',
+    tplSurvey: 'RC feedback notification',
+    tplSurveyHint: 'Goes to the RC commission as soon as somebody submits the questionnaire. The answers are appended automatically — anonymous responses without a name.',
     tplSubject: 'Subject', tplHeading: 'Title (optional)', tplIntro: 'Body', tplOutro: 'Closing / sign-off',
     tplPlaceholders: 'Placeholders (filled in automatically):',
+    tplUnknown: 'Placeholders marked amber are unknown to this email — they render empty when it is sent.',
     tplReset: 'Restore default', tplSaved: 'Saved ✓',
+    form: 'Questionnaire',
+    formHint: 'The form referees fill in after an RC visit (linked from the feedback email). Changes take effect the next time it is opened; the responses are still read by the RC chair alone.',
+    formIntroTitle: 'Eyebrow & intro',
+    formEyebrow: 'Eyebrow',
+    formIntro: 'Intro',
+    formQuestions: 'Questions',
+    formCount: (n: number) => `${n} question${n === 1 ? '' : 's'}`,
+    formAdd: 'Add question',
+    formType: 'Answer type',
+    formTypeText: 'Free text',
+    formQuestionDe: 'Question (German)', formQuestionEn: 'Question (English)',
+    formHintDe: 'Hint DE (optional)', formHintEn: 'Hint EN (optional)',
+    formKey: 'Key',
+    formKeyHint: 'Answers are stored under this key. It stays fixed even when you reword the question, so older answers keep reading against it.',
+    formUp: 'Move up', formDown: 'Move down',
+    formDelete: (q: string) => `Remove the question “${q}”? Answers already given stay stored and show up under their key in RC feedback.`,
+    formResetConfirm: 'Discard every change and restore the default questionnaire?',
+    formNeedsText: 'Every question needs German text.',
+    formSaved: 'Saved ✓',
+    formLangNote: 'The form is bilingual — referees pick DE or EN. A field left empty falls back to the other language.',
     reminderEnabled: 'Reminders active', reminderEnabledHint: 'When off, nothing is sent the day before. Test mode suppresses sending as well.',
     reminderPreview: 'Preview: tomorrow', reminderPreviewHint: 'Shows exactly what would be sent tomorrow — nothing is sent.',
     reminderNone: 'No reminders due for tomorrow.',
@@ -294,6 +345,9 @@ type T = typeof STR['DE'];
 const input = 'h-9 w-full px-3 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500';
 const btnPrimary = 'inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:bg-stone-300 transition-colors';
 const btnGhost = 'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors';
+// Small caps field label. Always inside its <label>, so the control it names
+// gets an accessible name from it rather than sitting anonymous next to it.
+const fieldLabel = 'block text-[11px] font-semibold uppercase tracking-wide text-stone-500 mb-1';
 
 // Bounds before the parser sees the bytes. `xlsx` is pinned at 0.18.5 — the last
 // npm release, carrying CVE-2023-30533 (prototype pollution) and CVE-2024-22363
@@ -344,7 +398,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 
 // Console tabs live in the URL as #/admin/<tab>, so each one is linkable and
 // the Back button steps between them.
-const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'niveau', 'emails', 'survey', 'notes', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'niveau', 'emails', 'form', 'survey', 'notes', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 const adminTabFromHash = (): AdminTab => {
   const m = /^#\/?admin\/([a-z]+)/i.exec(window.location.hash);
@@ -398,6 +452,8 @@ export default function AdminConsole() {
   useEffect(() => {
     if (role === 'president' && tab !== 'survey' && tab !== 'notes') setTab('survey');
     if (role === 'admin' && (tab === 'survey' || tab === 'notes')) setTab('coachees');
+    // 'form' edits the questionnaire and is admin-only, even though its
+    // subject — the survey — belongs to the chair's half of the console.
   }, [role, tab]);
   // Console-wide data, fetched once and in parallel as soon as the session is
   // known; each tab loads its own rows at the same time (all tabs are mounted).
@@ -552,6 +608,7 @@ export default function AdminConsole() {
     { id: 'overview', label: t.overview, icon: <Target size={15} /> },
     { id: 'niveau', label: t.niveau, icon: <Gauge size={15} /> },
     { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
+    { id: 'form', label: t.form, icon: <ClipboardList size={15} /> },
     { id: 'logs', label: t.logs, icon: <ScrollText size={15} /> },
     { id: 'settings', label: t.settings, icon: <SettingsIcon size={15} /> },
   ];
@@ -567,9 +624,10 @@ export default function AdminConsole() {
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} aria-label={t.logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
-        {/* Eight across this container leaves ~103px each and every second
-            label truncates, so the admin bar wraps to two rows of four. */}
-        <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', isPresident ? 'grid-cols-2' : 'grid-cols-4')}>
+        {/* All nine across this container leaves ~90px each and every second
+            label truncates, so the admin bar wraps — three rows of three,
+            rather than four-four-and-a-lonely-ninth. */}
+        <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', isPresident ? 'grid-cols-2' : 'grid-cols-3')}>
           {tabs.map((tb) => (
             // min-w-0 + truncate: the label is hidden below sm, leaving an icon
             // with no accessible name — so the button carries the name itself.
@@ -594,6 +652,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} /></div>
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
+        <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'overview'}><OverviewAdmin t={t} /></div>
         <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
@@ -1294,6 +1353,84 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
   );
 }
 
+// ── Placeholder-aware text fields ─────────────────────────────────────
+// A textarea cannot colour its own content, so the value is mirrored into a
+// layer behind it and the textarea's own text is made transparent. Both layers
+// carry FIELD_METRICS: one differing pixel of padding, font or line-height and
+// the colours drift off the words they belong to.
+const FIELD_METRICS = 'px-3 py-2 text-sm font-mono leading-relaxed whitespace-pre-wrap break-words';
+const PLACEHOLDER_RE = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+
+function hasUnknownPlaceholder(text: string, known: Set<string>): boolean {
+  PLACEHOLDER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PLACEHOLDER_RE.exec(text || ''))) if (!known.has(m[1])) return true;
+  return false;
+}
+
+// Blue = this mail will fill it in. Amber = it will not, and the spot goes out
+// blank — the failure mode this colouring exists to catch.
+function placeholderParts(value: string, known: Set<string>): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  PLACEHOLDER_RE.lastIndex = 0;
+  while ((m = PLACEHOLDER_RE.exec(value))) {
+    if (m.index > last) out.push(value.slice(last, m.index));
+    out.push(
+      <span key={m.index} className={known.has(m[1]) ? 'text-blue-600 font-semibold' : 'text-amber-600 underline decoration-dotted'}>{m[0]}</span>,
+    );
+    last = m.index + m[0].length;
+  }
+  out.push(value.slice(last));
+  // A block box swallows a trailing newline. Without this the mirror is a line
+  // shorter than the textarea and the bottom of a long text sits off by a row.
+  out.push('\n');
+  return out;
+}
+
+function TemplateField({ value, onChange, rows, singleLine, known }: {
+  value: string; onChange: (v: string) => void; rows: number; singleLine?: boolean; known: Set<string>;
+}) {
+  const mirror = useRef<HTMLDivElement>(null);
+  const field = useRef<HTMLTextAreaElement>(null);
+  // A fixed one-row box clips a subject that wraps on a narrow screen, and a
+  // scrollbar on a single line reads worse than a second line does. Grow to
+  // fit instead — the mirror is sized by this wrapper, so it follows.
+  useEffect(() => {
+    const el = field.current;
+    if (!singleLine || !el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+  }, [value, singleLine]);
+  return (
+    <div className="relative bg-white rounded-lg">
+      <div
+        ref={mirror}
+        aria-hidden
+        className={cn(FIELD_METRICS, 'tpl-field pointer-events-none absolute inset-0 overflow-hidden rounded-lg border border-transparent text-stone-800')}
+      >{placeholderParts(value, known)}</div>
+      <textarea
+        ref={field}
+        value={value}
+        rows={rows}
+        // The mirror has no scrollbar of its own, so it follows this one.
+        onScroll={() => { if (mirror.current && field.current) mirror.current.scrollTop = field.current.scrollTop; }}
+        // Subject and title are textareas too, so a single overlay serves all
+        // four fields. A newline in a subject line is a mail-header split, so
+        // Enter is simply not a character there.
+        onKeyDown={singleLine ? (e) => { if (e.key === 'Enter') e.preventDefault(); } : undefined}
+        onChange={(e) => onChange(singleLine ? e.target.value.replace(/[\r\n]+/g, ' ') : e.target.value)}
+        className={cn(
+          FIELD_METRICS,
+          'tpl-field relative w-full rounded-lg border border-stone-300 bg-transparent text-transparent caret-stone-900 focus:outline-none focus:ring-2 focus:ring-red-400',
+          singleLine ? 'resize-none overflow-hidden' : 'resize-y',
+        )}
+      />
+    </div>
+  );
+}
+
 // Guided template editor: admins edit subject/title/body/closing with
 // {{placeholders}}; the branded layout, detail rows and attachments are fixed,
 // so an edit can never break rendering.
@@ -1307,14 +1444,17 @@ function EmailsAdmin({ t }: { t: T }) {
 
   useEffect(() => { getEmailTemplates().then(setData).catch((e) => setErr(e instanceof Error ? e.message : String(e))); }, []);
 
-  const patch = (kind: 'feedback' | 'reminder', p: Partial<EmailTemplate>) =>
+  const patch = (kind: EmailTemplateKind, p: Partial<EmailTemplate>) =>
     setData((d) => (d ? { ...d, [kind]: { ...d[kind], ...p } } : d));
 
   const save = async () => {
     if (!data) return;
     setSaving(true); setErr(''); setSaved(false);
     try {
-      await putEmailTemplates({ feedback: data.feedback, reminder: data.reminder, reminder_enabled: data.reminder_enabled });
+      await putEmailTemplates({
+        feedback: data.feedback, reminder: data.reminder, survey: data.survey,
+        reminder_enabled: data.reminder_enabled,
+      });
       setSaved(true); window.setTimeout(() => setSaved(false), 2500);
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
     finally { setSaving(false); }
@@ -1340,8 +1480,12 @@ function EmailsAdmin({ t }: { t: T }) {
     </Card>
   );
 
-  const editor = (kind: 'feedback' | 'reminder', title: string, hint: string) => {
-    const tpl = data[kind];
+  const editor = (kind: EmailTemplateKind, title: string, hint: string) => {
+    // A server that predates this template kind simply has no entry for it.
+    const blank: EmailTemplate = { subject: '', heading: '', intro: '', outro: '' };
+    const tpl = data[kind] ?? data.defaults?.[kind] ?? blank;
+    const known = new Set(placeholdersFor(data, kind));
+    const unknownUsed = [tpl.subject, tpl.heading, tpl.intro, tpl.outro].some((v) => hasUnknownPlaceholder(v, known));
     return (
       <Card>
         <div className="flex items-start justify-between gap-3 mb-1">
@@ -1354,39 +1498,30 @@ function EmailsAdmin({ t }: { t: T }) {
         </div>
         <p className="text-xs text-stone-400 mb-3">{hint}</p>
         <div className="space-y-2.5">
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-stone-500 mb-1">{t.tplSubject}</label>
-            <input className={input + ' w-full'} value={tpl.subject} onChange={(e) => patch(kind, { subject: e.target.value })} />
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-stone-500 mb-1">{t.tplHeading}</label>
-            <input className={input + ' w-full'} value={tpl.heading} onChange={(e) => patch(kind, { heading: e.target.value })} />
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-stone-500 mb-1">{t.tplIntro}</label>
-            <textarea
-              className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-red-400"
-              rows={kind === 'reminder' ? 14 : 6}
-              value={tpl.intro}
-              onChange={(e) => patch(kind, { intro: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-stone-500 mb-1">{t.tplOutro}</label>
-            <textarea
-              className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-red-400"
-              rows={3}
-              value={tpl.outro}
-              onChange={(e) => patch(kind, { outro: e.target.value })}
-            />
-          </div>
+          <label className="block">
+            <span className={fieldLabel}>{t.tplSubject}</span>
+            <TemplateField value={tpl.subject} onChange={(v) => patch(kind, { subject: v })} rows={1} singleLine known={known} />
+          </label>
+          <label className="block">
+            <span className={fieldLabel}>{t.tplHeading}</span>
+            <TemplateField value={tpl.heading} onChange={(v) => patch(kind, { heading: v })} rows={1} singleLine known={known} />
+          </label>
+          <label className="block">
+            <span className={fieldLabel}>{t.tplIntro}</span>
+            <TemplateField value={tpl.intro} onChange={(v) => patch(kind, { intro: v })} rows={kind === 'reminder' ? 14 : 6} known={known} />
+          </label>
+          <label className="block">
+            <span className={fieldLabel}>{t.tplOutro}</span>
+            <TemplateField value={tpl.outro} onChange={(v) => patch(kind, { outro: v })} rows={3} known={known} />
+          </label>
         </div>
         <p className="mt-3 text-[11px] text-stone-400">
           {t.tplPlaceholders}{' '}
-          {data.placeholders.map((p) => (
-            <code key={p} className="inline-block mx-0.5 rounded bg-stone-100 border border-stone-200 px-1 py-0.5 text-[10px] text-stone-600">{`{{${p}}}`}</code>
+          {[...known].map((p) => (
+            <code key={p} className="inline-block mx-0.5 rounded bg-blue-50 border border-blue-100 px-1 py-0.5 text-[10px] text-blue-600">{`{{${p}}}`}</code>
           ))}
         </p>
+        {unknownUsed && <p className="mt-1.5 text-[11px] text-amber-600">{t.tplUnknown}</p>}
       </Card>
     );
   };
@@ -1427,12 +1562,197 @@ function EmailsAdmin({ t }: { t: T }) {
         )}
       </Card>
       {editor('feedback', t.tplFeedback, t.tplFeedbackHint)}
+      {editor('survey', t.tplSurvey, t.tplSurveyHint)}
       <Card>
         <div className="flex items-center gap-3">
           <button onClick={save} disabled={saving} className={btnPrimary}>
             {saving ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} {t.save}
           </button>
           {saved && <span className="text-sm text-green-600 font-medium">{t.tplSaved}</span>}
+          {err && <span className="text-sm text-red-600">{err}</span>}
+        </div>
+      </Card>
+    </>
+  );
+}
+
+// ── The survey form (admin) ───────────────────────────────────────────
+// Shapes what referees are ASKED after an RC visit. What they answered is the
+// chair's to read and lives behind her own password, one tab over — an admin
+// can rewrite the questionnaire and still never see a response.
+//
+// The scale of a choice question is picked from a fixed set rather than typed:
+// the option VALUES are what lands in the database, so an editable scale would
+// silently split every historical answer off from the new ones.
+function SurveyFormAdmin({ t, lang }: { t: T; lang: Lang }) {
+  const [cfg, setCfg] = useState<SurveyConfig | null>(null);
+  const [defaults, setDefaults] = useState<SurveyConfig>(DEFAULT_SURVEY_CONFIG);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    getSurveyConfig()
+      .then((r) => { setCfg(r.config); setDefaults(r.defaults); })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  const patchQ = (i: number, p: Partial<SurveyQuestion>) => setCfg((c) => (c
+    ? { ...c, questions: c.questions.map((q, n) => (n === i ? { ...q, ...p } : q)) }
+    : c));
+
+  const move = (i: number, delta: number) => setCfg((c) => {
+    if (!c) return c;
+    const j = i + delta;
+    if (j < 0 || j >= c.questions.length) return c;
+    const qs = c.questions.slice();
+    [qs[i], qs[j]] = [qs[j], qs[i]];
+    return { ...c, questions: qs };
+  });
+
+  const remove = (i: number) => {
+    const q = cfg?.questions[i];
+    if (!q) return;
+    if (!window.confirm(t.formDelete(q.DE || q.EN || q.id))) return;
+    setCfg((c) => (c ? { ...c, questions: c.questions.filter((_, n) => n !== i) } : c));
+  };
+
+  const add = () => setCfg((c) => (c
+    // No id yet: it is minted from the German wording on save, so it reads like
+    // the question it stores rather than like a counter.
+    ? { ...c, questions: [...c.questions, { id: '', kind: 'choice', scale: 'yesno', DE: '', EN: '' }] }
+    : c));
+
+  const save = async () => {
+    if (!cfg) return;
+    if (cfg.questions.some((q) => !q.DE.trim() && !q.EN.trim())) { setErr(t.formNeedsText); return; }
+    const taken = new Set<string>(cfg.questions.map((q) => q.id).filter((id) => Boolean(id)));
+    const next: SurveyConfig = {
+      ...cfg,
+      questions: cfg.questions.map((q) => {
+        if (q.id) return q; // frozen once assigned — it is the answers' key
+        const id = surveyQuestionId(q.DE || q.EN, taken);
+        taken.add(id);
+        return { ...q, id };
+      }),
+    };
+    setSaving(true); setErr(''); setSaved(false);
+    try {
+      await putSurveyConfig(next);
+      setCfg(next);
+      setSaved(true); window.setTimeout(() => setSaved(false), 2500);
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setSaving(false); }
+  };
+
+  if (!cfg) return (
+    <Card>
+      {err ? <p className="text-sm text-red-600">{err}</p> : (
+        <div className="space-y-3" role="status" aria-busy="true">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-24 w-full rounded-lg" />
+          <Skeleton className="h-24 w-full rounded-lg" />
+        </div>
+      )}
+    </Card>
+  );
+
+  const pairInput = (label: string, value: string, onChange: (v: string) => void, max: number) => (
+    <label className="block">
+      <span className={fieldLabel}>{label}</span>
+      <input className={input} value={value} maxLength={max} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  );
+
+  return (
+    <>
+      <Card>
+        <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.formIntroTitle}</h2>
+        <p className="text-xs text-stone-400 mb-3">{t.formHint}</p>
+        <div className="grid sm:grid-cols-2 gap-2.5">
+          {pairInput(`${t.formEyebrow} · DE`, cfg.eyebrow.DE, (v) => setCfg({ ...cfg, eyebrow: { ...cfg.eyebrow, DE: v } }), SURVEY_LIMITS.label)}
+          {pairInput(`${t.formEyebrow} · EN`, cfg.eyebrow.EN, (v) => setCfg({ ...cfg, eyebrow: { ...cfg.eyebrow, EN: v } }), SURVEY_LIMITS.label)}
+          <label className="block">
+            <span className={fieldLabel}>{t.formIntro} · DE</span>
+            <textarea
+              className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-red-400"
+              rows={8} maxLength={SURVEY_LIMITS.intro} value={cfg.intro.DE}
+              onChange={(e) => setCfg({ ...cfg, intro: { ...cfg.intro, DE: e.target.value } })}
+            />
+          </label>
+          <label className="block">
+            <span className={fieldLabel}>{t.formIntro} · EN</span>
+            <textarea
+              className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-red-400"
+              rows={8} maxLength={SURVEY_LIMITS.intro} value={cfg.intro.EN}
+              onChange={(e) => setCfg({ ...cfg, intro: { ...cfg.intro, EN: e.target.value } })}
+            />
+          </label>
+        </div>
+        <p className="mt-2 text-[11px] text-stone-400">{t.formLangNote}</p>
+      </Card>
+
+      <Card>
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <h2 className="text-sm font-semibold text-stone-700">
+            {t.formQuestions} <span className="font-normal text-stone-400">· {t.formCount(cfg.questions.length)}</span>
+          </h2>
+          <button
+            onClick={() => { if (window.confirm(t.formResetConfirm)) setCfg(defaults); }}
+            className={cn(btnGhost, 'shrink-0')} title={t.tplReset}
+          ><RotateCcw size={13} /> <span className="hidden sm:inline">{t.tplReset}</span></button>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          {cfg.questions.map((q, i) => (
+            <div key={q.id || `new-${i}`} className="rounded-xl border border-stone-200 p-3">
+              <div className="flex items-center gap-2 mb-2.5">
+                <span className="text-xs font-semibold text-stone-400 w-5 shrink-0">{i + 1}.</span>
+                <select
+                  className="h-8 px-2 text-xs rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                  value={q.kind === 'text' ? 'text' : (q.scale ?? 'yesno')}
+                  onChange={(e) => (e.target.value === 'text'
+                    ? patchQ(i, { kind: 'text' })
+                    : patchQ(i, { kind: 'choice', scale: e.target.value as SurveyScaleId }))}
+                  aria-label={t.formType}
+                >
+                  <option value="text">{t.formTypeText}</option>
+                  {SURVEY_SCALE_IDS.map((id) => <option key={id} value={id}>{SURVEY_SCALES[id][lang]}</option>)}
+                </select>
+                <div className="ml-auto flex items-center gap-1">
+                  <button onClick={() => move(i, -1)} disabled={i === 0} title={t.formUp} aria-label={t.formUp}
+                    className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-stone-200 text-stone-500 hover:bg-stone-100 disabled:opacity-30"><ChevronUp size={14} /></button>
+                  <button onClick={() => move(i, 1)} disabled={i === cfg.questions.length - 1} title={t.formDown} aria-label={t.formDown}
+                    className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-stone-200 text-stone-500 hover:bg-stone-100 disabled:opacity-30"><ChevronDown size={14} /></button>
+                  <button onClick={() => remove(i)} title={t.deleteLabel} aria-label={t.deleteLabel}
+                    className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-stone-200 text-red-600 hover:bg-red-50"><Trash2 size={14} /></button>
+                </div>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-2">
+                {pairInput(t.formQuestionDe, q.DE, (v) => patchQ(i, { DE: v }), SURVEY_LIMITS.label)}
+                {pairInput(t.formQuestionEn, q.EN, (v) => patchQ(i, { EN: v }), SURVEY_LIMITS.label)}
+                {pairInput(t.formHintDe, q.hintDE ?? '', (v) => patchQ(i, { hintDE: v }), SURVEY_LIMITS.hint)}
+                {pairInput(t.formHintEn, q.hintEN ?? '', (v) => patchQ(i, { hintEN: v }), SURVEY_LIMITS.hint)}
+              </div>
+              <p className="mt-2 text-[10px] text-stone-400">
+                {t.formKey}: <code className="rounded bg-stone-100 border border-stone-200 px-1 py-0.5 text-stone-500">{q.id || '—'}</code>
+              </p>
+            </div>
+          ))}
+        </div>
+
+        <button onClick={add} disabled={cfg.questions.length >= SURVEY_LIMITS.questions} className={cn(btnGhost, 'mt-3')}>
+          <Plus size={13} /> {t.formAdd}
+        </button>
+        <p className="mt-2 text-[11px] text-stone-400">{t.formKeyHint}</p>
+      </Card>
+
+      <Card>
+        <div className="flex items-center gap-3">
+          <button onClick={save} disabled={saving} className={btnPrimary}>
+            {saving ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} {t.save}
+          </button>
+          {saved && <span className="text-sm text-green-600 font-medium">{t.formSaved}</span>}
           {err && <span className="text-sm text-red-600">{err}</span>}
         </div>
       </Card>
@@ -1461,15 +1781,34 @@ function SurveyAdmin({ t, lang }: { t: T; lang: Lang }) {
   const [rows, setRows] = useState<SurveyResponse[] | null>(null);
   const [err, setErr] = useState('');
 
+  // The questions travel with the responses: this session is the chair's, not an
+  // admin's, so it cannot read the questionnaire from the admin endpoint.
+  const [form, setForm] = useState<SurveyConfig>(DEFAULT_SURVEY_CONFIG);
+
   useEffect(() => {
-    listSurveyResponses().then(setRows).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+    listSurveyResponses()
+      .then((r) => { setForm(r.form); setRows(r.responses); })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
   }, []);
 
   // Answers are stored as stable values, so a response written in English still
   // reads in the admin's chosen language — only free text stays as typed.
-  const label = (q: SurveyQuestion, value: string): string => {
-    if (q.kind !== 'choice') return value;
-    return q.options.find((o) => o.value === value)?.[lang] ?? value;
+  const blocks = (answers: Record<string, string>): Array<{ key: string; label: string; value: string }> => {
+    const out: Array<{ key: string; label: string; value: string }> = [];
+    const known = new Set<string>();
+    for (const q of form.questions) {
+      known.add(q.id);
+      if (!answers[q.id]) continue;
+      out.push({ key: q.id, label: questionLabel(q, lang), value: answerLabel(q, answers[q.id], lang) });
+    }
+    // Answers to a question that has since been reworded away or deleted. Shown
+    // under their raw key rather than dropped — a silently shortened response
+    // reads exactly like a complete one.
+    for (const key of Object.keys(answers)) {
+      if (known.has(key) || !answers[key]) continue;
+      out.push({ key, label: key, value: answers[key] });
+    }
+    return out;
   };
 
   return (
@@ -1492,10 +1831,10 @@ function SurveyAdmin({ t, lang }: { t: T; lang: Lang }) {
           </div>
           {/* The coachee's own words about their coach — never into the log. */}
           <dl data-log-redact className="flex flex-col gap-3">
-            {SURVEY_QUESTIONS.filter((q) => r.answers[q.id]).map((q) => (
-              <div key={q.id}>
-                <dt className="text-xs text-stone-400 leading-snug">{questionLabel(q, lang)}</dt>
-                <dd className="text-sm text-stone-800 whitespace-pre-wrap mt-0.5">{label(q, r.answers[q.id])}</dd>
+            {blocks(r.answers).map((b) => (
+              <div key={b.key}>
+                <dt className="text-xs text-stone-400 leading-snug">{b.label}</dt>
+                <dd className="text-sm text-stone-800 whitespace-pre-wrap mt-0.5">{b.value}</dd>
               </div>
             ))}
           </dl>

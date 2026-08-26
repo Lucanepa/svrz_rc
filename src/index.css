@@ -45,6 +45,15 @@
   }
 }
 
+/* The mail-template editor colours {{placeholders}} by mirroring its own text
+   into a layer behind a transparent textarea. Both layers must wrap the same
+   way, so the scrollbar gutter is reserved whether or not a bar is showing —
+   otherwise the moment the text overflows, the mirror's lines break a few
+   pixels later than the real ones. The selection stays translucent for the same
+   reason: an opaque one would paint over the only visible copy of the text. */
+.tpl-field { scrollbar-gutter: stable; }
+.tpl-field::selection { background-color: rgb(59 130 246 / 0.25); }
+
 /* Reusable elevation helpers */
 .shadow-card { box-shadow: var(--shadow-card); }
 .shadow-card-lg { box-shadow: var(--shadow-card-lg); }

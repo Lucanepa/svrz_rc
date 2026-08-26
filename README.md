@@ -26,7 +26,11 @@ setup and `infrastructure.private.md` (gitignored) for the actual secrets.
   iCal, activity log. The frontend never talks to PocketBase directly.
 - `src/App.tsx` — the coach's app: games, coachees, the observation form.
 - `src/components/AdminConsole.tsx` — `#/admin`: coachees, RCs, e-mail
-  templates, surveys, president's notes, activity log, settings.
+  templates, the post-visit questionnaire, surveys, president's notes, activity
+  log, settings.
+- `src/lib/survey.ts` — the post-visit questionnaire: the shipped default
+  questions, the fixed answer scales, and the normaliser both the server and the
+  survey page run a stored config through.
 - `src/lib/offlineQueue.ts` — IndexedDB outbox for submissions made offline.
 - `deploy/hetzner/seed/setup-schema.mjs` — the PocketBase schema. Additive and
   safe to re-run; this is how a new column gets added.

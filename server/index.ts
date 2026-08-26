@@ -10,7 +10,10 @@ import { readFileSync } from 'node:fs';
 import { log, query as queryLogs, sessions as logSessions, ringStats, pruneLogFiles, record as recordLog, type LogLevel, type LogSource } from './logstore.ts';
 // Shared with the survey page so the mailed copy can never drift from the form
 // the coachee actually filled in. Pure data — no browser dependencies.
-import { SURVEY_QUESTIONS, questionLabel, type SurveyLang } from '../src/lib/survey.ts';
+import {
+  DEFAULT_SURVEY_CONFIG, SURVEY_LIMITS, normalizeSurveyConfig, questionLabel, answerLabel,
+  type SurveyConfig, type SurveyLang,
+} from '../src/lib/survey.ts';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -1009,28 +1012,71 @@ function emailAttachments(extra: Array<Record<string, unknown>> = []): Array<Rec
   return [...extra, ...logoAtt];
 }
 
-// Branded SVRZ email shell: white header with the logo, a red accent rule, then
-// the white card + footer. Inline styles + table-free layout so it renders
-// across email clients. `bodyHtml` is the card content (trusted markup).
+// ── Email look & feel ─────────────────────────────────────────────────
+// The palette and typeface of the app, restated here because an email cannot
+// import src/index.css. Keep the two in step: these are the same values as the
+// @theme block there (brand red + Tailwind's stone scale).
+const MAIL_BRAND = '#e2001a';        // --color-brand
+const MAIL_BRAND_DARK = '#be0014';   // --color-red-700
+const MAIL_INK = '#292524';          // stone-800 — the app's body text
+const MAIL_INK_SOFT = '#57534e';     // stone-600
+const MAIL_MUTED = '#a8a29e';        // stone-400
+const MAIL_LINE = '#e7e5e4';         // stone-200
+const MAIL_SURFACE = '#f5f5f4';      // stone-100 — the page behind the card
+const MAIL_PANEL = '#fafaf9';        // stone-50 — inset panels
+
+// Inter is the app's typeface; 'Inter Display' is its display optical size,
+// which readers who have Inter installed locally get by name and everyone on a
+// client that keeps the stylesheet gets through the opsz axis below.
+//
+// Webmail strips <link> and <style> (Gmail, Outlook.com), so the webfont is a
+// bonus, never the plan: every fallback in this stack is a real face that is
+// actually installed somewhere, and the layout is sized to survive all of them.
+const MAIL_FONT = "'Inter Display','Inter Variable',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+const MAIL_FONT_LINK = '<link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&display=swap" rel="stylesheet">';
+// The display cut: tighter spacing, for headings only. Ignored where the
+// variable font never loaded, which is exactly the right failure.
+const MAIL_DISPLAY = "font-variation-settings:'opsz' 32;letter-spacing:-0.3px;";
+
+/** Body copy, headings and the two panel styles — one place, so they agree. */
+const mailText = (size: number, color: string, extra = '') =>
+  `font-family:${MAIL_FONT};font-size:${size}px;color:${color};line-height:1.6;${extra}`;
+
+// Branded SVRZ email shell: white header with the logo, a brand-red accent
+// rule, then the white card + footer. Inline styles + table-free layout so it
+// renders across email clients. `bodyHtml` is the card content (trusted markup).
 function emailShell(bodyHtml: string): string {
   const header = getEmailLogo()
     ? `<img src="cid:${EMAIL_LOGO_CID}" alt="Swiss Volley Region Zürich" width="150" style="display:block;width:150px;max-width:60%;height:auto;margin:0 auto;" />`
-    : `<div style="font-size:19px;font-weight:800;letter-spacing:-0.4px;color:#dc2626;">Swiss Volley <span style="color:#57534e;">Region Zürich</span></div>`;
+    : `<div style="${mailText(19, MAIL_BRAND, `font-weight:800;${MAIL_DISPLAY}`)}">Swiss Volley <span style="color:${MAIL_INK_SOFT};">Region Zürich</span></div>`;
   return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#f5f5f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- The app is light-only (see color-scheme in src/index.css). Saying so here
+     stops iOS Mail's dark mode from inverting a card built out of warm greys. -->
+<meta name="color-scheme" content="light only">
+<meta name="supported-color-schemes" content="light">
+${MAIL_FONT_LINK}
+<style>
+  body, div, p, h1, h2, td, span, a { font-family:${MAIL_FONT}; }
+  h1, h2 { ${MAIL_DISPLAY} }
+  a { color:${MAIL_BRAND}; }
+</style>
+</head>
+<body style="margin:0;padding:0;background-color:${MAIL_SURFACE};${mailText(14, MAIL_INK)}">
   <div style="max-width:600px;margin:0 auto;padding:32px 16px;">
-    <div style="background:#ffffff;border:1px solid #e7e5e4;border-bottom:none;border-radius:14px 14px 0 0;padding:26px 32px 22px;text-align:center;">
+    <div style="background:#ffffff;border:1px solid ${MAIL_LINE};border-bottom:none;border-radius:16px 16px 0 0;padding:26px 32px 22px;text-align:center;">
       ${header}
-      <div style="font-size:10px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;color:#a8a29e;margin-top:12px;">Referee Coaching</div>
+      <div style="${mailText(10, MAIL_MUTED, 'font-weight:700;letter-spacing:1.8px;text-transform:uppercase;margin-top:12px;')}">Referee Coaching</div>
     </div>
-    <div style="height:3px;background:linear-gradient(90deg,#dc2626,#b91c1c);"></div>
-    <div style="background:#ffffff;border:1px solid #e7e5e4;border-top:none;border-radius:0 0 14px 14px;padding:32px;">
+    <div style="height:3px;background:${MAIL_BRAND};background:linear-gradient(90deg,${MAIL_BRAND},${MAIL_BRAND_DARK});"></div>
+    <div style="background:#ffffff;border:1px solid ${MAIL_LINE};border-top:none;border-radius:0 0 16px 16px;padding:32px;">
       ${bodyHtml}
     </div>
     <div style="text-align:center;padding:16px 0;">
-      <p style="margin:0;font-size:11px;color:#a8a29e;">Swiss Volley Region Zürich · Diese E-Mail wurde automatisch versendet.</p>
+      <p style="margin:0;${mailText(11, MAIL_MUTED)}">Swiss Volley Region Zürich · Diese E-Mail wurde automatisch versendet.</p>
     </div>
   </div>
 </body>
@@ -1042,7 +1088,7 @@ function emailShell(bodyHtml: string): string {
 // the branded shell, the data-driven detail rows and the attachments stay
 // fixed, so a bad edit can never break rendering or leak raw HTML. Stored in
 // app_settings as JSON under `email_template_<kind>`.
-type EmailTemplateKind = 'feedback' | 'reminder';
+type EmailTemplateKind = 'feedback' | 'reminder' | 'survey';
 type EmailTemplate = { subject: string; heading: string; intro: string; outro: string };
 
 const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
@@ -1051,6 +1097,15 @@ const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
     heading: 'SR-Coaching Feedback',
     intro: 'Hallo {{coachee}}\n\nHier ist das Feedback zu deinem Einsatz als {{role}}. Der vollständige Bericht ist als PDF angehängt.',
     outro: 'Wir freuen uns über dein Feedback zum Coaching-Erlebnis:',
+  },
+  // Goes to the RC commission, not back to the coachee — always German, and
+  // deliberately thin: the fixed detail rows underneath already carry who,
+  // when and which match, and the answers follow as question/answer blocks.
+  survey: {
+    subject: 'Feedback zu RC-Besuch – Spiel {{spielNr}} ({{datum}})',
+    heading: 'Feedback zu RC-Besuch',
+    intro: 'Eine Rückmeldung ist eingegangen.',
+    outro: '',
   },
   reminder: {
     subject: 'Coaching-Begleitung bei deinem nächsten Einsatz',
@@ -1156,20 +1211,24 @@ function emailVars(o: {
   };
 }
 
+// What the guided editor offers for a mail built around a game. Names only —
+// emailVars() also answers to English aliases, kept working but not advertised.
+const EMAIL_PLACEHOLDERS_MATCH = ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'uhrzeit', 'heim', 'gast', 'liga', 'halle', 'spielNr', 'rolle'];
+
 // Admin-edited prose → escaped HTML paragraphs (blank line = new paragraph).
 function textBlockHtml(text: string): string {
   const t = String(text ?? '').trim();
   if (!t) return '';
   return t.split(/\n{2,}/).map((p) =>
-    `<p style="margin:0 0 14px;font-size:14px;color:#44403c;line-height:1.6;">${escapeHtml(p).replace(/\n/g, '<br />')}</p>`,
+    `<p style="margin:0 0 14px;${mailText(14, MAIL_INK)}">${escapeHtml(p).replace(/\n/g, '<br />')}</p>`,
   ).join('');
 }
 
 function detailRowsHtml(rows: Array<[string, string]>): string {
   const body = rows.filter(([, v]) => v).map(([k, v]) =>
-    `<tr><td style="padding:6px 12px 6px 0;font-weight:600;white-space:nowrap;vertical-align:top;color:#57534e;">${escapeHtml(k)}</td><td style="padding:6px 0;color:#1c1917;">${escapeHtml(v)}</td></tr>`,
+    `<tr><td style="padding:6px 12px 6px 0;font-weight:600;white-space:nowrap;vertical-align:top;color:${MAIL_INK_SOFT};">${escapeHtml(k)}</td><td style="padding:6px 0;color:${MAIL_INK};">${escapeHtml(v)}</td></tr>`,
   ).join('');
-  return body ? `<table style="width:100%;border-collapse:collapse;font-size:14px;margin:0 0 18px;">${body}</table>` : '';
+  return body ? `<table style="width:100%;border-collapse:collapse;${mailText(14, MAIL_INK)}margin:0 0 18px;">${body}</table>` : '';
 }
 
 // Question above, answer below. Survey questions are full sentences — in the
@@ -1178,11 +1237,11 @@ function detailRowsHtml(rows: Array<[string, string]>): string {
 function qaBlocksHtml(qa: Array<[string, string]>): string {
   const body = qa.filter(([, v]) => v).map(([q, a]) =>
     `<div style="margin:0 0 14px;">`
-    + `<p style="margin:0 0 3px;font-size:13px;font-weight:600;color:#57534e;line-height:1.4;">${escapeHtml(q)}</p>`
-    + `<p style="margin:0;font-size:14px;color:#1c1917;white-space:pre-wrap;line-height:1.5;">${escapeHtml(a)}</p>`
+    + `<p style="margin:0 0 3px;${mailText(13, MAIL_INK_SOFT, 'font-weight:600;line-height:1.4;')}">${escapeHtml(q)}</p>`
+    + `<p style="margin:0;${mailText(14, MAIL_INK, 'white-space:pre-wrap;')}">${escapeHtml(a)}</p>`
     + `</div>`,
   ).join('');
-  return body ? `<div style="margin:0 0 18px;padding:14px 16px;background:#fafaf9;border:1px solid #e7e5e4;border-radius:8px;">${body}</div>` : '';
+  return body ? `<div style="margin:0 0 18px;padding:14px 16px;background:${MAIL_PANEL};border:1px solid ${MAIL_LINE};border-radius:12px;">${body}</div>` : '';
 }
 
 // Render a template + data into the branded shell. Used by BOTH the post-match
@@ -1201,17 +1260,20 @@ function buildTemplatedEmail(opts: {
   const intro = r(opts.tpl.intro);
   const outro = r(opts.tpl.outro);
   const tips = (opts.tips || '').trim();
+  // The app's own section idiom: an inset stone panel under a small uppercase
+  // label, with the brand rule down the side. (It used to be an emerald box —
+  // a colour that appears nowhere in the app.)
   const tipsHtml = tips
-    ? `<div style="margin:18px 0;padding:14px 18px;border-left:4px solid #059669;background:#ecfdf5;border-radius:0 8px 8px 0;"><h2 style="margin:0 0 6px;font-size:14px;font-weight:600;color:#059669;">Tipps &amp; Tricks</h2><p style="margin:0;font-size:14px;color:#1e293b;white-space:pre-wrap;line-height:1.6;">${escapeHtml(tips)}</p></div>`
+    ? `<div style="margin:18px 0;padding:14px 18px;border-left:3px solid ${MAIL_BRAND};background:${MAIL_PANEL};border-radius:0 12px 12px 0;"><h2 style="margin:0 0 6px;${mailText(11, MAIL_MUTED, 'font-weight:700;letter-spacing:1.2px;text-transform:uppercase;')}">Tipps &amp; Tricks</h2><p style="margin:0;${mailText(14, MAIL_INK, 'white-space:pre-wrap;')}">${escapeHtml(tips)}</p></div>`
     : '';
   const surveyHtml = opts.surveyUrl
-    ? `<div style="margin-top:20px;"><a href="${escapeHtml(opts.surveyUrl)}" style="display:inline-block;padding:10px 24px;background:#059669;color:#ffffff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;">Feedback geben</a></div>`
+    ? `<div style="margin-top:20px;"><a href="${escapeHtml(opts.surveyUrl)}" style="display:inline-block;padding:11px 24px;background:${MAIL_BRAND};color:#ffffff;text-decoration:none;border-radius:10px;${mailText(14, '#ffffff', 'font-weight:600;line-height:1;')}">Feedback geben</a></div>`
     : '';
   const footerHtml = opts.footerNote
-    ? `<p style="margin:18px 0 0;font-size:12px;color:#a8a29e;">${escapeHtml(opts.footerNote)}</p>`
+    ? `<p style="margin:18px 0 0;${mailText(12, MAIL_MUTED)}">${escapeHtml(opts.footerNote)}</p>`
     : '';
   const html = emailShell(
-    (heading.trim() ? `<h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#1c1917;">${escapeHtml(heading)}</h1>` : '')
+    (heading.trim() ? `<h1 style="margin:0 0 16px;${mailText(20, MAIL_INK, `font-weight:700;line-height:1.3;${MAIL_DISPLAY}`)}">${escapeHtml(heading)}</h1>` : '')
     + textBlockHtml(intro)
     + detailRowsHtml(opts.rows)
     + qaBlocksHtml(opts.qa ?? [])
@@ -1234,7 +1296,7 @@ function buildTemplatedEmail(opts: {
 // Prominent monospace box for a PIN or one-time code.
 function emailCodeBox(value: string): string {
   return `<div style="margin:24px 0;text-align:center;">
-    <span style="display:inline-block;padding:16px 30px;background:#f5f5f4;border:1px solid #e7e5e4;border-radius:12px;font-size:30px;font-weight:700;letter-spacing:9px;color:#1c1917;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;">${escapeHtml(value)}</span>
+    <span style="display:inline-block;padding:16px 30px;background:${MAIL_SURFACE};border:1px solid ${MAIL_LINE};border-radius:12px;font-size:30px;font-weight:700;letter-spacing:9px;color:${MAIL_INK};font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;">${escapeHtml(value)}</span>
   </div>`;
 }
 
@@ -3314,10 +3376,10 @@ async function sendCredentialCodeEmail(to: string, code: string, slotLabel: stri
     return;
   }
   const html = emailShell(
-    '<h1 style="margin:0 0 6px;font-size:20px;font-weight:700;color:#1c1917;">Bestätigungscode</h1>'
-    + `<p style="margin:0 0 14px;font-size:14px;color:#44403c;">Jemand ändert gerade das Passwort für <strong>${escapeHtml(slotLabel)}</strong> in der Referee-Coaching-Administration. Mit diesem Code wird die Änderung bestätigt:</p>`
+    `<h1 style="margin:0 0 6px;${mailText(20, MAIL_INK, `font-weight:700;line-height:1.3;${MAIL_DISPLAY}`)}">Bestätigungscode</h1>`
+    + `<p style="margin:0 0 14px;${mailText(14, MAIL_INK)}">Jemand ändert gerade das Passwort für <strong>${escapeHtml(slotLabel)}</strong> in der Referee-Coaching-Administration. Mit diesem Code wird die Änderung bestätigt:</p>`
     + emailCodeBox(code)
-    + '<p style="margin:22px 0 0;font-size:13px;color:#78716c;line-height:1.6;">Der Code ist 10 Minuten gültig und kann nur einmal verwendet werden. Hast du das nicht ausgelöst, wurde das Passwort NICHT geändert — aber jemand hat Zugriff auf eine Admin-Sitzung. Ändere in dem Fall umgehend das Admin-Passwort.</p>',
+    + `<p style="margin:22px 0 0;${mailText(13, MAIL_INK_SOFT)}">Der Code ist 10 Minuten gültig und kann nur einmal verwendet werden. Hast du das nicht ausgelöst, wurde das Passwort NICHT geändert — aber jemand hat Zugriff auf eine Admin-Sitzung. Ändere in dem Fall umgehend das Admin-Passwort.</p>`,
   );
   await sendMailResilient({
     from: MAIL_FROM,
@@ -4037,6 +4099,46 @@ async function requireSurveyReader(req: Request, res: ExpressResponse, next: () 
 const SURVEY_NOTIFY_EMAILS = (process.env.SURVEY_NOTIFY_EMAIL || '')
   .split(',').map((e) => e.trim()).filter(Boolean);
 
+// ── The form itself (admin-editable) ──────────────────────────────────
+// Questions, their scales and the intro text live in app_settings, so the
+// commission can reword the form without a deploy. Everything reads it through
+// here, and everything normalises: a config stored before a later edit to
+// src/lib/survey.ts must still produce a usable form.
+const SURVEY_CONFIG_KEY = 'survey_config';
+
+async function getSurveyConfig(): Promise<SurveyConfig> {
+  const rec = await getSettingRecord(SURVEY_CONFIG_KEY);
+  if (!rec) return DEFAULT_SURVEY_CONFIG;
+  try {
+    return normalizeSurveyConfig(JSON.parse(asText(rec.value)));
+  } catch {
+    // Unparseable is not "no form" — the coachee still gets the shipped one.
+    log.warn('survey.config_unreadable', 'stored survey config is not valid JSON — using defaults');
+    return DEFAULT_SURVEY_CONFIG;
+  }
+}
+
+/** Submitted answers as question/answer pairs, in the form's current order. */
+function surveyAnswerBlocks(config: SurveyConfig, answers: Record<string, string>): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  const known = new Set<string>();
+  for (const q of config.questions) {
+    known.add(q.id);
+    const value = answers[q.id];
+    if (!value) continue; // unanswered: the form requires nothing
+    out.push([questionLabel(q, 'DE'), answerLabel(q, value, 'DE')]);
+  }
+  // A question deleted after this response was written still has an answer in
+  // the record. Show it under its raw id rather than dropping it — somebody
+  // took the trouble to write it, and a silently shortened response reads like
+  // a complete one.
+  for (const id of Object.keys(answers)) {
+    if (known.has(id) || !answers[id]) continue;
+    out.push([`${id} (Frage entfernt)`, answers[id]]);
+  }
+  return out;
+}
+
 // Mails one submitted survey. Never throws: the coachee has already answered,
 // and losing their response because SMTP hiccuped would be the worst outcome
 // here — the tool stays the canonical copy either way.
@@ -4058,25 +4160,15 @@ async function sendSurveyNotification(rec: AnyRecord, answers: Record<string, st
     // used. Choice answers are stored as a stable value, so the German label is
     // always available.
     if (lang === 'EN') rows.push(['Sprache', 'auf Englisch ausgefüllt']);
-    const qa: Array<[string, string]> = [];
-    for (const q of SURVEY_QUESTIONS) {
-      const value = answers[q.id];
-      if (!value) continue; // unanswered: the form requires nothing
-      const label = q.kind === 'choice'
-        ? (q.options.find((o) => o.value === value)?.DE ?? value)
-        : value;
-      qa.push([questionLabel(q, 'DE'), label]);
-    }
+    const qa = surveyAnswerBlocks(await getSurveyConfig(), answers);
+    const refereeLabel = anonymous ? '(anonym)' : asText(rec.referee_name);
     const built = buildTemplatedEmail({
-      tpl: {
-        subject: `Feedback zu RC-Besuch – Spiel ${matchNo} (${date})`,
-        heading: 'Feedback zu RC-Besuch',
-        intro: anonymous
-          ? 'Eine anonyme Rückmeldung ist eingegangen.'
-          : 'Eine Rückmeldung ist eingegangen.',
-        outro: '',
-      },
-      vars: {},
+      tpl: await getEmailTemplate('survey'),
+      vars: emailVars({
+        refereeName: refereeLabel, rcName: asText(rec.rc_name),
+        matchNo, league: '', date, time: '', location: '',
+        homeTeam: '', awayTeam: '', role: '',
+      }),
       rows,
       qa,
       footerNote: 'Automatisch vom SR-Coaching-System versendet.',
@@ -4154,6 +4246,10 @@ app.get('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
       matchNo: asText(rec.match_no),
       rc: asText(rec.rc_name),
       submitted: Boolean(rec.submitted),
+      // The form travels with the session rather than in its own request: one
+      // round trip, and the page can never render a question set that belongs
+      // to a different moment than the visit it is asking about.
+      form: await getSurveyConfig(),
     });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -4176,7 +4272,10 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
     const raw = (body.answers ?? {}) as Record<string, unknown>;
     const answers: Record<string, string> = {};
     for (const key of Object.keys(raw).slice(0, SURVEY_MAX_ANSWERS)) {
-      if (!/^[a-z_]{1,40}$/.test(key)) continue;
+      // Same charset surveyQuestionId() generates, digits included — an admin
+      // adding a second "Erläuterung" gets `erlaeuterung_2`, and a key this
+      // rejected would drop that question's answers on the floor.
+      if (!/^[a-z][a-z0-9_]{0,39}$/.test(key)) continue;
       const value = asText(raw[key]).slice(0, SURVEY_MAX_ANSWER_LEN);
       if (value) answers[key] = value;
     }
@@ -4200,12 +4299,20 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
 // the configured reader does, mirroring the promise the form makes the coachee.
 // Its own path, not /api/survey/responses: that would be swallowed by the
 // /api/survey/:token route above as token="responses".
-app.get('/api/survey-responses', requireSurveyReader, async (_req: Request, res: ExpressResponse) => {
+app.get('/api/survey-responses', requireSurveyReader, async (req: Request, res: ExpressResponse) => {
   try {
     const rows = await pb.collection(SURVEY_COLLECTION).getFullList<AnyRecord>({
       filter: 'submitted = true', sort: '-submitted_at',
     });
-    res.json(rows.map((r) => {
+    // The form travels with the responses: the chair's session is not an admin
+    // one, so her list cannot read the config endpoint to learn what the
+    // questions say — and the answers are stored by id alone.
+    //
+    // Only when asked for, because the API ships ahead of the frontend and the
+    // bundle in a chair's open tab still expects a bare array here. Once no
+    // pre-2026-08-26 bundle can still be in the wild, this can always return
+    // the object and the parameter can go.
+    const responses = rows.map((r) => {
       // A `json` field comes back as an object already (same as feedback_json).
       const answers = (r.answers && typeof r.answers === 'object' && !Array.isArray(r.answers))
         ? r.answers as Record<string, string>
@@ -4221,7 +4328,9 @@ app.get('/api/survey-responses', requireSurveyReader, async (_req: Request, res:
         submittedAt: asText(r.submitted_at),
         answers,
       };
-    }));
+    });
+    if (asText(req.query.form) !== '1') { res.json(responses); return; }
+    res.json({ form: await getSurveyConfig(), responses });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -6875,9 +6984,18 @@ app.get('/api/admin/email-templates', requireAdminSession, async (_req: Request,
     res.json({
       feedback: await getEmailTemplate('feedback'),
       reminder: await getEmailTemplate('reminder'),
+      survey: await getEmailTemplate('survey'),
       defaults: DEFAULT_EMAIL_TEMPLATES,
       reminder_enabled: asText((await getSettingRecord('reminder_enabled'))?.value) === '1',
-      placeholders: ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'uhrzeit', 'heim', 'gast', 'liga', 'halle', 'spielNr', 'rolle'],
+      // Per kind, because they differ: a survey notification is built from the
+      // response record, which knows the referee, the coach, the date and the
+      // match number — and nothing about the hall, the league or the kick-off.
+      // Offering those there would render silent blanks.
+      placeholders: {
+        feedback: EMAIL_PLACEHOLDERS_MATCH,
+        reminder: EMAIL_PLACEHOLDERS_MATCH,
+        survey: ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'spielNr'],
+      },
     });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -6889,13 +7007,16 @@ app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, 
     // template after the feedback one was already saved told the admin the save
     // had failed while half of their edits were live.
     const pending: Array<[EmailTemplateKind, EmailTemplate]> = [];
-    for (const kind of ['feedback', 'reminder'] as EmailTemplateKind[]) {
+    for (const kind of ['feedback', 'reminder', 'survey'] as EmailTemplateKind[]) {
       const tpl = body[kind];
       if (!tpl || typeof tpl !== 'object') continue;
       const t = tpl as Partial<EmailTemplate>;
+      // Newlines stripped, not just trimmed: the subject becomes a mail header,
+      // and a header split there is a mail nobody can read at best.
+      const oneLine = (v: unknown, max: number) => String(v ?? '').replace(/[\r\n]+/g, ' ').slice(0, max);
       const clean: EmailTemplate = {
-        subject: String(t.subject ?? '').slice(0, 300),
-        heading: String(t.heading ?? '').slice(0, 300),
+        subject: oneLine(t.subject, 300),
+        heading: oneLine(t.heading, 300),
         intro: String(t.intro ?? '').slice(0, 8000),
         outro: String(t.outro ?? '').slice(0, 4000),
       };
@@ -6907,6 +7028,37 @@ app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, 
     }
     if ('reminder_enabled' in body) await setSetting('reminder_enabled', body.reminder_enabled ? '1' : '0');
     res.json({ ok: true });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// ── The survey form (admin API) ───────────────────────────────────────
+// Admin, not the chair: she is the only one who may READ the responses, but the
+// form itself is tooling, and she signs in on a session that opens her private
+// channel and nothing else. Splitting it this way keeps that channel narrow.
+app.get('/api/admin/survey-config', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    res.json({ config: await getSurveyConfig(), defaults: DEFAULT_SURVEY_CONFIG });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.put('/api/admin/survey-config', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const raw = (req.body ?? {}) as AnyRecord;
+    const sent = Array.isArray(raw.questions) ? raw.questions.length : 0;
+    if (!sent) { res.status(400).json({ error: 'Der Fragebogen braucht mindestens eine Frage.' }); return; }
+    if (sent > SURVEY_LIMITS.questions) {
+      res.status(400).json({ error: `Höchstens ${SURVEY_LIMITS.questions} Fragen.` }); return;
+    }
+    const clean = normalizeSurveyConfig(raw);
+    // Saving fewer questions than were sent means normalisation threw some away
+    // — a blank one, or two sharing an id. Refuse the whole save rather than
+    // quietly storing a form that is missing what the admin just typed.
+    if (clean.questions.length !== sent) {
+      res.status(400).json({ error: 'Jede Frage braucht einen Text und eine eigene Kennung.' }); return;
+    }
+    await setSetting(SURVEY_CONFIG_KEY, JSON.stringify(clean));
+    log.info('survey.config_saved', 'survey form updated', { questions: clean.questions.length });
+    res.json({ ok: true, config: clean });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 

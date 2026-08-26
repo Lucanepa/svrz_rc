@@ -3,8 +3,9 @@ import { Loader2, Check, ShieldCheck } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { getSurveySession, submitSurvey, SurveyAlreadySubmitted } from '../lib/pocketbase';
 import {
-  SURVEY_QUESTIONS, SURVEY_UI, t, questionLabel, questionHint,
-  type SurveyLang,
+  DEFAULT_SURVEY_CONFIG, SURVEY_UI, normalizeSurveyConfig, optionsOf,
+  t, questionLabel, questionHint,
+  type SurveyConfig, type SurveyLang,
 } from '../lib/survey';
 
 function tokenFromHash(): string {
@@ -19,6 +20,9 @@ export default function SurveyPage() {
   const [lang, setLang] = useState<SurveyLang>('DE');
   const [visit, setVisit] = useState<Visit | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  // The questions the commission has configured. Ships with the session, so the
+  // shipped defaults are only ever the fallback for an old server.
+  const [form, setForm] = useState<SurveyConfig>(DEFAULT_SURVEY_CONFIG);
   const [anonymous, setAnonymous] = useState(false);
   const [state, setState] = useState<'loading' | 'ready' | 'saving' | 'done' | 'already' | 'error'>('loading');
   const [saveError, setSaveError] = useState(false);
@@ -26,7 +30,13 @@ export default function SurveyPage() {
   useEffect(() => {
     if (!token) { setState('error'); return; }
     getSurveySession(token)
-      .then((s) => { setVisit(s); setState(s.submitted ? 'already' : 'ready'); })
+      .then((s) => {
+        setVisit(s);
+        // Re-normalised here, not trusted as fetched: this page can be a cached
+        // build older than the config it just received.
+        setForm(normalizeSurveyConfig(s.form));
+        setState(s.submitted ? 'already' : 'ready');
+      })
       .catch(() => setState('error'));
   }, [token]);
 
@@ -53,7 +63,7 @@ export default function SurveyPage() {
         <div className="flex flex-col items-center mb-5">
           <SvrzLogo className="h-9 w-auto" />
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400 mt-3">
-            {t(SURVEY_UI.eyebrow, lang)}
+            {t(form.eyebrow, lang)}
           </p>
         </div>
 
@@ -103,7 +113,7 @@ export default function SurveyPage() {
         {(state === 'ready' || state === 'saving') && visit && (
           <div className="flex flex-col gap-4">
             <div className={`${card} p-5`}>
-              <p className="text-sm text-stone-600 leading-relaxed whitespace-pre-line">{t(SURVEY_UI.intro, lang)}</p>
+              <p className="text-sm text-stone-600 leading-relaxed whitespace-pre-line">{t(form.intro, lang)}</p>
             </div>
 
             {/* Prefilled from the token, read-only: these are facts the system
@@ -140,7 +150,7 @@ export default function SurveyPage() {
 
             <p className="text-[11px] text-stone-400 text-center -mb-1">{t(SURVEY_UI.optional, lang)}</p>
 
-            {SURVEY_QUESTIONS.map((q) => {
+            {form.questions.map((q) => {
               const hint = questionHint(q, lang);
               return (
                 // data-log-redact: the click logger copies the clicked
@@ -155,7 +165,7 @@ export default function SurveyPage() {
                   {hint && <p className="text-xs text-stone-400 mt-1 leading-snug">{hint}</p>}
                   {q.kind === 'choice' ? (
                     <div className="flex flex-col gap-1.5 mt-3">
-                      {q.options.map((o) => (
+                      {optionsOf(q).map((o) => (
                         <label key={o.value} className="flex items-center gap-2.5 cursor-pointer group">
                           <input
                             type="radio"

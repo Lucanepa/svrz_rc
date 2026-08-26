@@ -1,5 +1,6 @@
 import type { EligibleGame, FeedbackFormData, RcMandateMap, RcOverviewEntry, rcCoachSummary } from '../types';
 import type { CoacheeTargetMap, NiveauMatrix } from './niveauTargets';
+import { normalizeSurveyConfig, type SurveyConfig } from './survey';
 import * as demo from './demo';
 import { isDemoMode } from './demo';
 
@@ -620,13 +621,23 @@ export async function listManualGames(q = ''): Promise<ManualGame[]> {
 
 // ── Editable email templates (admin) ──────────────────────────────────
 export type EmailTemplate = { subject: string; heading: string; intro: string; outro: string };
+export type EmailTemplateKind = 'feedback' | 'reminder' | 'survey';
 export type EmailTemplates = {
   feedback: EmailTemplate;
   reminder: EmailTemplate;
-  defaults: { feedback: EmailTemplate; reminder: EmailTemplate };
+  survey: EmailTemplate;
+  defaults: Record<EmailTemplateKind, EmailTemplate>;
   reminder_enabled: boolean;
-  placeholders: string[];
+  // Per kind — the survey notification knows nothing about halls or leagues.
+  // A plain array is the pre-3-templates shape, which a cached response can
+  // still be; read it as "the same list for every kind".
+  placeholders: Record<string, string[]> | string[];
 };
+
+export function placeholdersFor(t: EmailTemplates, kind: EmailTemplateKind): string[] {
+  if (Array.isArray(t.placeholders)) return t.placeholders;
+  return t.placeholders?.[kind] ?? [];
+}
 export type ReminderPreview = {
   enabled: boolean;
   testMode: boolean;
@@ -638,7 +649,7 @@ export async function getEmailTemplates(): Promise<EmailTemplates> {
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
-export async function putEmailTemplates(payload: { feedback?: EmailTemplate; reminder?: EmailTemplate; reminder_enabled?: boolean }): Promise<void> {
+export async function putEmailTemplates(payload: Partial<Record<EmailTemplateKind, EmailTemplate>> & { reminder_enabled?: boolean }): Promise<void> {
   const r = await fetch(apiUrl('/api/admin/email-templates'), {
     method: 'PUT', credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -743,7 +754,7 @@ export async function submitSignatureSession(slug: string, data: string, signer?
 // ---- Post-visit survey (coachee's feedback on the RC) ----
 // No demo branch: #/survey/<token> mounts its own root, which the demo never
 // reaches, and a token only exists once a real feedback mail has gone out.
-export async function getSurveySession(token: string): Promise<{ referee: string; date: string; matchNo: string; rc: string; submitted: boolean }> {
+export async function getSurveySession(token: string): Promise<{ referee: string; date: string; matchNo: string; rc: string; submitted: boolean; form?: SurveyConfig }> {
   const res = await fetch(apiUrl(`/api/survey/${encodeURIComponent(token)}`));
   if (!res.ok) throw new Error('Survey not found');
   return res.json();
@@ -762,10 +773,34 @@ export type SurveyResponse = {
   id: string; referee: string; anonymous: boolean; date: string; matchNo: string;
   rc: string; lang: string; submittedAt: string; answers: Record<string, string>;
 };
-export async function listSurveyResponses(): Promise<SurveyResponse[]> {
-  const res = await fetch(apiUrl('/api/survey-responses'), { credentials: 'include' });
+export async function listSurveyResponses(): Promise<{ form: SurveyConfig; responses: SurveyResponse[] }> {
+  // ?form=1 asks for the questionnaire alongside the answers; an API that
+  // predates it ignores the parameter and returns the bare array, handled below.
+  const res = await fetch(apiUrl('/api/survey-responses?form=1'), { credentials: 'include' });
   if (!res.ok) throw new Error('Could not load survey responses');
-  return res.json();
+  const raw = await res.json();
+  // A bare array is the shape before the form travelled along, which an offline
+  // cache can still hand back.
+  if (Array.isArray(raw)) return { form: normalizeSurveyConfig(null), responses: raw };
+  return { form: normalizeSurveyConfig(raw?.form), responses: Array.isArray(raw?.responses) ? raw.responses : [] };
+}
+
+// ── The survey form itself (admin) ────────────────────────────────────
+// Reading is admin-gated, so the chair's response list gets its labels from the
+// copy that rides along with each response request instead.
+export async function getSurveyConfig(): Promise<{ config: SurveyConfig; defaults: SurveyConfig }> {
+  const r = await fetch(apiUrl('/api/admin/survey-config'), { credentials: 'include' });
+  if (!r.ok) throw await apiError(r, 'Could not load the questionnaire');
+  const raw = await r.json();
+  return { config: normalizeSurveyConfig(raw?.config), defaults: normalizeSurveyConfig(raw?.defaults) };
+}
+
+export async function putSurveyConfig(config: SurveyConfig): Promise<void> {
+  const r = await fetch(apiUrl('/api/admin/survey-config'), {
+    method: 'PUT', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config),
+  });
+  if (!r.ok) throw await apiError(r, 'Save failed');
 }
 
 // Which RCs see the #/admin shortcut in their toolbar. Cosmetic only: the name

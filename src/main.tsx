@@ -94,13 +94,13 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
     {kind === 'admin' ? (
-      // Admin sits behind the SAME login as the app: hitting #/admin while
-      // logged out shows the normal e-mail/password screen and lands on the
-      // console afterwards (an is_admin PIN session already counts as admin,
-      // so no second password prompt appears).
-      <AuthGate>
-        <AdminConsole />
-      </AuthGate>
+      // Deliberately NOT behind AuthGate. The admin page used to sit behind the
+      // app's own login, which worked while a personal e-mail login existed to
+      // establish who you were. It doesn't any more: the team credential is one
+      // password everybody has, so putting it in front of the console would
+      // mean the console's own password was the second of two prompts rather
+      // than the only one that matters. The console asks for its own.
+      <AdminConsole />
     ) : kind === 'sign' ? (
       <SignaturePage />
     ) : kind === 'survey' ? (

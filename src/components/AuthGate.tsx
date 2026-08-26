@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, createContext, useContext, type ReactNode } from 'react';
-import { Lock, Loader2, Mail, ArrowLeft, KeyRound, Eye, EyeOff, User, Languages, Search, Check, ChevronDown } from 'lucide-react';
+import { Lock, Loader2, ArrowLeft, Eye, EyeOff, User, Languages, Search, Check, ChevronDown } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import {
-  getAuthMe, rcLogin, rcLogout, logoutAdmin, rcForgotStart, rcForgotVerify, hasPendingLogout, settlePendingLogout,
+  getAuthMe, rcLogout, logoutAdmin, hasPendingLogout, settlePendingLogout,
   sharedLogin, listRcRoster, identifyAsRc, type AuthMe, type RcRosterEntry,
 } from '../lib/pocketbase';
 import { clientLog, setLogUser, flush } from '../lib/logger';
@@ -19,34 +19,14 @@ const STR = {
     brand: 'Referee Coaching',
     username: 'Benutzername',
     password: 'Passwort',
-    email: 'E-Mail',
     login: 'Anmelden',
     checking: 'Prüfe…',
     loading: 'Wird geladen…',
-    sending: 'Sende…',
     showPassword: 'Passwort anzeigen',
     hidePassword: 'Passwort verbergen',
-    // Parked, not dead: the link that used it was pulled from the team login
-    // screen on purpose (see the comment there), and this is what puts it back.
-    toPersonal: 'Persönlicher Zugang',
-    toShared: 'Zurück zur Team-Anmeldung',
-    personalHint: 'Für Admin und RC-Vorsitz — mit persönlicher E-Mail und Passwort.',
     adminLogin: 'Admin-Login',
-    forgot: 'Passwort vergessen / einrichten',
-    forgotIntro: 'Gib deine hinterlegte E-Mail ein — wir senden dir einen Bestätigungscode.',
-    sendCode: 'Code senden',
-    codeSent: 'Falls die E-Mail hinterlegt ist, wurde ein Bestätigungscode gesendet.',
-    codePlaceholder: '6-stelliger Code',
-    newPassword: 'Neues Passwort (min. 6 Zeichen)',
-    setPassword: 'Passwort setzen',
-    passwordSet: 'Passwort gesetzt. Du kannst dich jetzt anmelden.',
-    requestNewCode: 'Neuen Code anfordern',
     backToLogin: 'Zurück zur Anmeldung',
-    toLogin: 'Zur Anmeldung',
     wrongShared: 'Falscher Benutzername oder falsches Passwort',
-    wrongPersonal: 'Falsche E-Mail oder falsches Passwort',
-    codeInvalid: 'Code ungültig oder abgelaufen. Fordere bitte einen neuen Code an.',
-    passwordTooShort: 'Passwort muss mindestens 6 Zeichen haben.',
     langToggle: 'Sprache wechseln',
     whoTitle: 'Wer bist du?',
     whoHint: 'Wähle deinen Namen. Spiele, Beobachtungen und Einträge werden darunter gespeichert.',
@@ -71,32 +51,14 @@ const STR = {
     brand: 'Referee Coaching',
     username: 'Username',
     password: 'Password',
-    email: 'Email',
     login: 'Sign in',
     checking: 'Checking…',
     loading: 'Loading…',
-    sending: 'Sending…',
     showPassword: 'Show password',
     hidePassword: 'Hide password',
-    toPersonal: 'Personal access',
-    toShared: 'Back to team sign-in',
-    personalHint: 'For admins and the RC chair — with a personal email and password.',
     adminLogin: 'Admin login',
-    forgot: 'Forgot / set password',
-    forgotIntro: 'Enter your registered email — we will send you a confirmation code.',
-    sendCode: 'Send code',
-    codeSent: 'If the address is registered, a confirmation code has been sent.',
-    codePlaceholder: '6-digit code',
-    newPassword: 'New password (min. 6 characters)',
-    setPassword: 'Set password',
-    passwordSet: 'Password set. You can sign in now.',
-    requestNewCode: 'Request a new code',
     backToLogin: 'Back to sign-in',
-    toLogin: 'Go to sign-in',
     wrongShared: 'Wrong username or password',
-    wrongPersonal: 'Wrong email or password',
-    codeInvalid: 'Code invalid or expired. Please request a new one.',
-    passwordTooShort: 'Password must be at least 6 characters.',
     langToggle: 'Switch language',
     whoTitle: 'Who are you?',
     whoHint: 'Pick your name. Games, observations and entries are filed under it.',
@@ -139,15 +101,16 @@ function errorMessage(err: unknown, t: Strings, fallback = ''): string {
   return fallback || t.genericError;
 }
 
-// Identity of the session that passed the gate. rcName/rcId are null for
-// admin-only sessions (admin console login without a personal RC record).
+// Identity of the session that passed the gate. rcName/rcId are null when the
+// only cookie present is a console one — someone who signed in at #/admin and
+// then navigated to the app without a team session of their own.
 export type RcAuth = {
   rcId: string | null;
   rcName: string | null;
   isAdminSession: boolean;
-  /** Signed in on the team credential — the name was chosen, not proven. */
+  /** Signed in to the app — the name was chosen off a list, not proven. */
   sharedSession: boolean;
-  /** Reopens the picker without signing out. Only meaningful when shared. */
+  /** Reopens the picker without signing out. */
   switchRc: () => void;
   logout: () => void;
 };
@@ -167,28 +130,21 @@ const inputClass = (error: string) =>
 const primaryButtonClass =
   'w-full inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 active:scale-[0.99] disabled:bg-stone-300 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl text-sm transition-all shadow-sm shadow-red-600/20';
 
-// 'shared' is the everyday screen; 'personal' is the e-mail/password one behind
-// it. 'identify' is the picker — reached after a shared login, and again from
-// the app whenever someone hands the device on.
-type View = 'shared' | 'personal' | 'forgot-email' | 'forgot-code' | 'forgot-done' | 'identify';
-
-// Which of the two login forms a signed-out visitor should meet. #/admin is
-// reached by people who came for the admin console, and the team credential
-// cannot open it — so that route opens on the personal form. Everywhere else
-// starts on the everyday one; the two stay one click apart either way.
-function defaultView(): View {
-  return /^#\/?admin(\/|$)/i.test(window.location.hash) ? 'personal' : 'shared';
-}
+// 'shared' is the login screen; 'identify' is the picker — reached after
+// signing in, and again from the app whenever someone hands the device on.
+// There used to be a third: a per-person e-mail and password, which is what
+// admin rights and the chair's survey access hung off. Both now have their own
+// password on the admin page, so the app has one way in and one screen for it.
+type View = 'shared' | 'identify';
 
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [authed, setAuthed] = useState(false);
   const [checking, setChecking] = useState(true);
-  const [view, setView] = useState<View>(defaultView);
+  const [view, setView] = useState<View>('shared');
   const [lang, setLang] = useState<Lang>(() => getStoredLang() ?? (navigator.language?.toLowerCase().startsWith('en') ? 'EN' : 'DE'));
   const t = STR[lang];
 
   const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -207,12 +163,6 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   // Continue off a phone screen. Collapsed to the chosen name; it opens on
   // demand, and on its own whenever there is nothing to show in it yet.
   const [pickerOpen, setPickerOpen] = useState(false);
-
-  // Forgot/set password: 'personal' → 'forgot-email' → 'forgot-code' → 'forgot-done'.
-  const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotCode, setForgotCode] = useState('');
-  const [forgotNewPassword, setForgotNewPassword] = useState('');
-  const [forgotInfo, setForgotInfo] = useState('');
 
   const chooseLang = (next: Lang) => { setLang(next); setStoredLang(next); };
 
@@ -305,42 +255,6 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     }
   };
 
-  const handlePersonalSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setSubmitting(true);
-    clientLog.info('auth.login', 'login submitted', { email: email.trim() });
-    try {
-      const result = await rcLogin(email.trim(), password);
-      // Resolve the full identity BEFORE letting the app mount: it bootstraps
-      // its data from rcId/rcName/admin, so handing it a half-known session
-      // would make it load once as an anonymous user and again as itself.
-      // One retry, because without an rcId anything queued offline this session
-      // is filed under 'anon' and no later flush ever finds it again.
-      const me = await getAuthMe().catch(async () => {
-        clientLog.warn('auth.login', 'auth/me failed right after login — retrying once');
-        return getAuthMe().catch(() => null);
-      });
-      // The password was accepted but the session did not come back. Almost
-      // always the browser refused the cross-site session cookie (Safari and
-      // WebKit block third-party cookies by default, and the app and the API
-      // are different sites) — worth naming, because "try again" never fixes
-      // that one. See infrastructure.md → Session cookies.
-      if (!me?.rc?.id && !me?.admin) throw new Error(t.cookieBlocked);
-      clientLog.info('auth.login', 'login ok', { name: me?.rc?.name ?? result.name, admin: Boolean(me?.admin) });
-      adoptSession(me);
-      return;
-    } catch (err) {
-      const e2 = err as ApiError;
-      const message = (e2.status === 401 || e2.status === 400) ? t.wrongPersonal : errorMessage(err, t, e2.message);
-      clientLog.warn('auth.login', `login failed: ${message}`, { email: email.trim(), status: e2.status, retryAfterMs: e2.retryAfterMs, error: err });
-      setError(message);
-      setPassword('');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const handleIdentify = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chosenRcId) return;
@@ -398,58 +312,8 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setPassword('');
       setChosenRcId(null);
       setRoster(null);
-      setView(defaultView());
+      setView('shared');
     });
-  };
-
-  const handleForgotStart = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setSubmitting(true);
-    clientLog.info('auth.reset.start', 'requested a reset code', { email: forgotEmail.trim() });
-    try {
-      await rcForgotStart(forgotEmail.trim());
-      // Advance without confirming anything — the server never reveals whether
-      // the address is registered.
-      setView('forgot-code');
-      setForgotInfo(t.codeSent);
-    } catch (err) {
-      const message = errorMessage(err, t);
-      clientLog.warn('auth.reset.start', `reset request failed: ${message}`, { email: forgotEmail.trim(), status: (err as ApiError).status, error: err });
-      setError(message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleForgotVerify = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setSubmitting(true);
-    clientLog.info('auth.reset.verify', 'submitting code + new password', { email: forgotEmail.trim() });
-    try {
-      await rcForgotVerify(forgotEmail.trim(), forgotCode.trim(), forgotNewPassword);
-      clientLog.info('auth.reset.verify', 'password set');
-      setForgotInfo(t.passwordSet);
-      setView('forgot-done');
-    } catch (err) {
-      const e2 = err as ApiError;
-      const message = e2.status === 401 ? t.codeInvalid
-        : e2.status === 400 ? t.passwordTooShort
-        : errorMessage(err, t);
-      clientLog.warn('auth.reset.verify', `verify failed: ${message}`, { email: forgotEmail.trim(), status: e2.status, retryAfterMs: e2.retryAfterMs, error: err });
-      setError(message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const backToPersonalLogin = () => {
-    setView('personal');
-    setError('');
-    setForgotCode('');
-    setForgotNewPassword('');
-    setForgotInfo('');
   };
 
   if (checking) {
@@ -555,62 +419,12 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                   {submitting ? t.checking : t.login}
                 </button>
               </form>
-              {/* The personal form is deliberately NOT linked from here: this
-                  screen is for the team credential and nothing else. It is not
-                  gone — #/admin still opens on it, which is where the two
-                  people who need it are going anyway (admin console, and the
-                  survey tabs the chair reads). Restore the link by putting
-                  t.toPersonal back next to the admin one. */}
+              {/* #/admin is a different door with its own password, not a
+                  second form behind this one — the console no longer sits
+                  behind this gate at all (see main.tsx). */}
               <p className="text-center text-[11px] text-stone-400 mt-5">
                 <a href="#/admin" className="underline hover:text-stone-600">{t.adminLogin}</a>
               </p>
-            </>
-          )}
-
-          {view === 'personal' && (
-            <>
-              <p className="text-xs text-stone-500 text-center mb-4">{t.personalHint}</p>
-              <form onSubmit={handlePersonalSubmit} className="space-y-3">
-                <div className="relative">
-                  <label htmlFor="rc-email" className="sr-only">{t.email}</label>
-                  <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
-                  <input
-                    id="rc-email"
-                    type="email"
-                    autoComplete="email"
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
-                    placeholder={t.email}
-                    autoFocus
-                    disabled={submitting}
-                    className={inputClass(error)}
-                  />
-                </div>
-                <div>
-                  {passwordField('rc-personal-password', 'current-password', t.password, password, setPassword)}
-                  {error && <p className="text-red-600 text-xs mt-2 font-medium">{error}</p>}
-                </div>
-                <button
-                  type="submit"
-                  disabled={!/\S+@\S+\.\S+/.test(email) || password.length < 1 || submitting}
-                  className={primaryButtonClass}
-                >
-                  {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-                  {submitting ? t.checking : t.login}
-                </button>
-              </form>
-              <p className="text-center text-[11px] text-stone-400 mt-5">
-                <button type="button" onClick={() => { setError(''); setForgotEmail(email); setView('forgot-email'); }} className="underline hover:text-stone-600">
-                  {t.forgot}
-                </button>
-              </p>
-              <button
-                type="button"
-                onClick={() => { setError(''); setPassword(''); setView('shared'); }}
-                className="w-full mt-3 text-[11px] text-stone-400 hover:text-stone-600 inline-flex items-center justify-center gap-1"
-              >
-                <ArrowLeft className="h-3 w-3" /> {t.toShared}
-              </button>
             </>
           )}
 
@@ -715,90 +529,6 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             </form>
           )}
 
-          {view === 'forgot-email' && (
-            <form onSubmit={handleForgotStart} className="space-y-4">
-              <p className="text-xs text-stone-500 text-center">{t.forgotIntro}</p>
-              <div className="relative">
-                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
-                <input
-                  type="email"
-                  autoComplete="email"
-                  value={forgotEmail}
-                  onChange={e => setForgotEmail(e.target.value)}
-                  placeholder={t.email}
-                  autoFocus
-                  disabled={submitting}
-                  className={inputClass(error)}
-                />
-              </div>
-              {error && <p className="text-red-600 text-xs font-medium">{error}</p>}
-              <button
-                type="submit"
-                disabled={!/\S+@\S+\.\S+/.test(forgotEmail) || submitting}
-                className={primaryButtonClass}
-              >
-                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-                {submitting ? t.sending : t.sendCode}
-              </button>
-              <button type="button" onClick={backToPersonalLogin} className="w-full text-[11px] text-stone-400 hover:text-stone-600 inline-flex items-center justify-center gap-1">
-                <ArrowLeft className="h-3 w-3" /> {t.backToLogin}
-              </button>
-            </form>
-          )}
-
-          {view === 'forgot-code' && (
-            <form onSubmit={handleForgotVerify} className="space-y-3">
-              {forgotInfo && <p className="text-xs text-stone-500 text-center">{forgotInfo}</p>}
-              <div className="relative">
-                <KeyRound className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  pattern="[0-9]*"
-                  maxLength={6}
-                  value={forgotCode}
-                  onChange={e => setForgotCode(e.target.value.replace(/\D/g, ''))}
-                  placeholder={t.codePlaceholder}
-                  autoFocus
-                  disabled={submitting}
-                  className={`${inputClass(error)} tracking-[0.3em]`}
-                />
-              </div>
-              {passwordField('rc-new-password', 'new-password', t.newPassword, forgotNewPassword, setForgotNewPassword)}
-              {error && <p className="text-red-600 text-xs font-medium">{error}</p>}
-              <button
-                type="submit"
-                disabled={forgotCode.trim().length !== 6 || forgotNewPassword.length < 6 || submitting}
-                className={primaryButtonClass}
-              >
-                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-                {submitting ? t.checking : t.setPassword}
-              </button>
-              {/* Codes expire after 10 minutes and are single-use, so "request a
-                  new one" has to be reachable from here — not only by starting
-                  the whole flow over from the login screen. */}
-              <button
-                type="button"
-                onClick={() => { setError(''); setForgotCode(''); setForgotInfo(''); setView('forgot-email'); }}
-                className="w-full text-[11px] text-stone-500 hover:text-stone-700 underline"
-              >
-                {t.requestNewCode}
-              </button>
-              <button type="button" onClick={backToPersonalLogin} className="w-full text-[11px] text-stone-400 hover:text-stone-600 inline-flex items-center justify-center gap-1">
-                <ArrowLeft className="h-3 w-3" /> {t.backToLogin}
-              </button>
-            </form>
-          )}
-
-          {view === 'forgot-done' && (
-            <div className="space-y-4 text-center">
-              <p className="text-sm text-stone-700 font-medium">{forgotInfo}</p>
-              <button type="button" onClick={backToPersonalLogin} className={primaryButtonClass}>
-                {t.toLogin}
-              </button>
-            </div>
-          )}
         </div>
         <p className="text-center text-[11px] font-medium uppercase tracking-[0.12em] text-stone-400 mt-5">
           Swiss Volley Region Zürich

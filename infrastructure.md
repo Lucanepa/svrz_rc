@@ -89,12 +89,17 @@ VM_PASSWORD="..."   # game sync credentials
 ADMIN_SESSION_SECRET="long-random-secret" # recommended
 ADMIN_SESSION_TTL_MS="28800000"           # default 8h
 
-# The shared team login (the everyday way into the app). Both default to the
-# 26/27 pair baked into the code, so an unset env is a working app — set them
-# to rotate at the season change without a deploy. Rotating logs nobody out:
-# existing session cookies stay valid for their 30 days.
+# The shared team login (the everyday way into the app). There is NO fallback
+# in the code any more — the old default was live in production while sitting
+# in a public repo. Unset means the door is shut. Rotating logs nobody out:
+# session cookies are signed with ADMIN_SESSION_SECRET, so they stay valid for
+# their 30 days and only new sign-ins need the new password.
 SHARED_LOGIN_USERNAME="Referee-Coaching"
-SHARED_LOGIN_PASSWORD="Saison26-27"
+SHARED_LOGIN_PASSWORD="<set in the env, or change it in the admin console>"
+
+# The RC chair's own login, typed on the same form as the admin one at #/admin.
+PRESIDENT_UI_USERNAME="praesidium"
+PRESIDENT_UI_PASSWORD="<set to open the chair's tabs; unset keeps them shut>"
 
 VM_BASE=""  # game sync base URL
 VM_SYNC_CRON="0 5 * * *"
@@ -166,7 +171,9 @@ Common fields: `full_name`, `first_name`, `last_name`, `email`, `phone`, `refere
 
 Directory of RC persons.
 
-Common fields: `first_name`, `last_name`, `email`, `phone`, `active`, `is_admin`, `is_rc_president`.
+Common fields: `first_name`, `last_name`, `email`, `phone`, `active`, `is_rc_president`.
+`is_admin` and `pin_hash` are no longer read by anything — the columns may still
+hold data from before the per-person login was removed.
 
 `is_rc_president` is the sole key to the post-visit survey responses
 (`GET /api/survey-responses` and the console's RC-feedback tab). An admin
@@ -209,26 +216,42 @@ Three layers, plus capability tokens:
 1. **PocketBase admin auth** (server-side, via env creds) for every DB
    operation. The browser never talks to PocketBase.
 2. **App session cookie** `svrz_rc_session` — who the app is acting as. Signed
-   (HMAC, `ADMIN_SESSION_SECRET`), `httpOnly`, 30 days. Carries a `mode`:
-   - `shared` — opened by `POST /api/auth/shared/login` with the team
-     credential. Starts with **no identity**: every `requireRcSession` route
-     answers 401 until `POST /api/auth/rc/identify` names an RC (the list comes
-     from `GET /api/auth/rc/roster`). The name is a claim, so the session gets
-     coach-level access only — `is_admin` and `is_rc_president` are ignored on
-     it. Re-callable, which is how "switch RC" works.
-   - `personal` — opened by `POST /api/auth/rc/login` with that RC's own e-mail
-     and password. Identity is proven, so the two flags are honoured. This is
-     how admins and the RC chair sign in.
-   Tokens issued before `mode` existed are read as `personal`.
-3. **Admin console cookie** `svrz_admin_session` — PocketBase superuser
-   credentials via `POST /api/admin/auth/login`, or `ADMIN_UI_USERNAME` +
-   `ADMIN_UI_PASSWORD` via `POST /api/admin/ui-login`. Implies admin everywhere.
-   The username defaults to `admin` and is compared case-insensitively (a phone
-   keyboard capitalises the first letter of a name field); the password is the
-   secret and is unchanged. Both halves are always compared before the answer,
-   and a rejection says only "Invalid credentials" — which half was wrong is
-   recorded in the activity log (`userMatched`) for the admin, not returned to
-   the caller.
+   (HMAC, `ADMIN_SESSION_SECRET`), `httpOnly`, 30 days. There is exactly one way
+   to open it: `POST /api/auth/shared/login` with the team credential. It starts
+   with **no identity** — every `requireRcSession` route answers 401 until
+   `POST /api/auth/rc/identify` names an RC (the list comes from
+   `GET /api/auth/rc/roster`). That name is a **claim, not a proof**, so the
+   session gets coach-level access and nothing more. Re-callable, which is how
+   "switch RC" works.
+
+   There used to be a second kind (`mode: 'personal'`, a per-RC e-mail and
+   password) and it was the only thing that could prove identity, which is why
+   `is_admin` and `is_rc_president` hung off it. It is gone; both privileges now
+   have their own password on the admin page. Tokens issued before this carry a
+   `mode` and a PIN fingerprint, and both are simply ignored — which keeps
+   everyone signed in across the deploy and can only lose privileges, never
+   grant them.
+3. **Console cookie** `svrz_admin_session` — opened by `POST /api/admin/ui-login`
+   only. One form, two credentials, and which username was typed decides the
+   `role` stamped into the token:
+   - `admin` (`ADMIN_UI_USERNAME` / `ADMIN_UI_PASSWORD`) — implies admin
+     everywhere. Does **not** open the chair's tabs.
+   - `president` (`PRESIDENT_UI_USERNAME` / `PRESIDENT_UI_PASSWORD`) — opens the
+     survey answers and the private notes, and nothing else. Every admin route
+     answers 401 to it.
+   A token with no role is read as `admin` (that is what pre-deploy cookies are).
+   Usernames are compared case-insensitively (a phone keyboard capitalises the
+   first letter of a name field); the passwords are the secrets. Both credentials
+   are always checked before the answer, and a rejection says only "Invalid
+   credentials" — which half was wrong is recorded in the activity log
+   (`userMatched`) for the admin, not returned to the caller.
+
+   **Storage:** all three passwords (team, admin, chair) live in `app_settings`
+   as a scrypt hash over a per-record random salt, and are changed from
+   Admin → Einstellungen → Passwörter. The env vars above are the bootstrap: a
+   slot never written in the console falls back to its variable. Hashes never
+   leave the server, and a password that has been set cannot be read back —
+   only replaced.
 4. **Capability tokens** in the URL for the two pages that have no session at
    all: `#/sign/<slug>` (signature capture) and `#/survey/<token>` (post-visit
    survey, sent to referees who are not app users).
@@ -239,13 +262,15 @@ means "signed in, but nobody yet: show the picker, not the login screen".
 
 Middleware:
 
-- `requireAdminSession` — admin cookie, **or** a personal RC session flagged
-  `is_admin`.
-- `requireRcSession` — any identified session. Attaches the caller's identity
-  unless they are a personally-authenticated admin, and enforcement sites read
-  "no identity attached" as full access.
-- `requireSurveyReader` — a **personal** session flagged `is_rc_president`, and
-  nothing else. Admin rights deliberately do not open it.
+- `requireAdminSession` — a console cookie with `role: 'admin'`, and nothing
+  else.
+- `requireRcSession` — any identified app session, **or** an admin console
+  cookie. Every app session gets its identity attached and is scoped to it;
+  enforcement sites read "no identity attached" as full access, which is safe
+  precisely because only an admin console session can reach a handler without
+  one.
+- `requireSurveyReader` — a console cookie with `role: 'president'`, and nothing
+  else. Admin rights deliberately do not open it.
 
 Nothing outside the four capability-token routes and `/api/client-logs` is
 reachable without a session.

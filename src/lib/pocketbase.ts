@@ -85,6 +85,8 @@ export type CalendarGameStatus = {
 export type AdminAuthStatus = {
   authenticated: boolean;
   email: string;
+  /** Which credential opened it — decides which half of the console shows. */
+  role?: 'admin' | 'president' | null;
 };
 
 export async function loadEligibleGames(): Promise<EligibleGame[]> {
@@ -160,8 +162,9 @@ export function hasPocketBaseConfig(): boolean {
 export type AuthMe = {
   rc: { id: string; name: string } | null;
   admin: { email: string } | null;
+  /** Reads the chair's private channel — a console session, not an app one. */
   surveyReader?: boolean;
-  /** Signed in on the team credential rather than a personal one. */
+  /** Signed in to the app (there is only the team credential now). */
   shared?: boolean;
   /** Signed in, but no RC named yet — show the picker, not the login screen. */
   needsIdentity?: boolean;
@@ -187,27 +190,6 @@ export async function getAuthMe(): Promise<AuthMe> {
     throw new Error(await response.text());
   }
   return response.json() as Promise<AuthMe>;
-}
-
-export async function rcLogin(email: string, password: string): Promise<{ name: string }> {
-  const response = await fetch(apiUrl('/api/auth/rc/login'), {
-    credentials: 'include',
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    const err = new Error((data as { error?: string }).error || 'Login failed') as Error & { status?: number; retryAfterMs?: number };
-    err.status = response.status;
-    err.retryAfterMs = (data as { retryAfterMs?: number }).retryAfterMs;
-    throw err;
-  }
-  // New identity — drop any previous user's cached responses, and with a fresh
-  // cookie in hand the stale session the pending logout was guarding is gone.
-  setPendingLogout(false);
-  await clearApiCache();
-  return response.json() as Promise<{ name: string }>;
 }
 
 // Set when a logout could not reach the server. The session is a signed
@@ -260,9 +242,9 @@ export async function sharedLogin(username: string, password: string): Promise<v
     body: JSON.stringify({ username, password }),
   });
   if (!response.ok) throw await apiError(response, 'Login failed');
-  // Same reasoning as rcLogin: a fresh cookie retires whatever session the
-  // pending-logout flag was guarding, and the next person's data must not come
-  // out of the previous one's cache.
+  // A fresh cookie retires whatever session the pending-logout flag was
+  // guarding, and the next person's data must not come out of the previous
+  // one's cache.
   setPendingLogout(false);
   await clearApiCache();
 }
@@ -296,41 +278,6 @@ async function apiError(response: Response, fallback: string): Promise<Error & {
   err.status = response.status;
   err.retryAfterMs = data.retryAfterMs;
   return err;
-}
-
-// Forgot password, step 1: request an email OTP. The 200 body carries no signal
-// (the server never reveals whether the address is registered), but the STATUS
-// does — a 429 means no code was sent. Ignoring that told people "check your
-// inbox" for a mail that was never going to arrive.
-export async function rcForgotStart(email: string): Promise<void> {
-  const r = await fetch(apiUrl('/api/auth/rc/forgot/start'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email }),
-  });
-  if (!r.ok) {
-    const data = await r.json().catch(() => ({}));
-    const err = new Error((data as { error?: string }).error || 'Reset start failed') as Error & { status?: number; retryAfterMs?: number };
-    err.status = r.status;
-    err.retryAfterMs = (data as { retryAfterMs?: number }).retryAfterMs;
-    throw err;
-  }
-}
-
-// Forgot password, step 2: verify the emailed code and set the chosen password.
-export async function rcForgotVerify(email: string, code: string, newPassword: string): Promise<void> {
-  const r = await fetch(apiUrl('/api/auth/rc/forgot/verify'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, code, newPassword }),
-  });
-  if (!r.ok) {
-    const data = await r.json().catch(() => ({}));
-    const err = new Error((data as { error?: string }).error || 'Verification failed') as Error & { status?: number; retryAfterMs?: number };
-    err.status = r.status;
-    err.retryAfterMs = (data as { retryAfterMs?: number }).retryAfterMs;
-    throw err;
-  }
 }
 
 export type GamesSyncStatus = {
@@ -568,22 +515,20 @@ export async function syncGames(payload?: { date?: string; from?: string; to?: s
 }
 
 // ── Admin console (simple-password gate) ──────────────────────────────
-export async function adminUiLogin(username: string, password: string): Promise<void> {
+// One form, two credentials: the answer says which one was typed, because that
+// decides whether the console opens on the admin tabs or the chair's two.
+export async function adminUiLogin(username: string, password: string): Promise<'admin' | 'president'> {
   const r = await fetch(apiUrl('/api/admin/ui-login'), {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Login failed');
+  return ((await r.json().catch(() => ({}))) as { role?: 'admin' | 'president' }).role || 'admin';
 }
 
-export type RcPerson = { id: string; first_name?: string; last_name?: string; email?: string; phone?: string; active?: boolean; has_pin?: boolean; is_admin?: boolean };
+export type RcPerson = { id: string; first_name?: string; last_name?: string; email?: string; phone?: string; active?: boolean };
 
-export async function generateRcPin(id: string): Promise<{ pin: string; emailed: boolean; email: string }> {
-  const r = await fetch(apiUrl(`/api/admin/rc-people/${id}/pin`), { method: 'POST', credentials: 'include' });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'PIN generation failed');
-  return (await r.json()) as { pin: string; emailed: boolean; email: string };
-}
 
 export async function listRcPeopleFull(): Promise<RcPerson[]> {
   const r = await fetch(apiUrl('/api/admin/rc-people'), { credentials: 'include' });
@@ -810,4 +755,29 @@ export async function listSurveyResponses(): Promise<SurveyResponse[]> {
   const res = await fetch(apiUrl('/api/survey-responses'), { credentials: 'include' });
   if (!res.ok) throw new Error('Could not load survey responses');
   return res.json();
+}
+
+// ── Credentials (admin console) ───────────────────────────────────────
+export type CredentialSlotInfo = {
+  slot: 'shared' | 'admin' | 'president';
+  username: string;
+  source: 'db' | 'env' | 'unset';
+  updatedAt: string | null;
+  updatedBy: string | null;
+};
+
+export async function getCredentials(): Promise<{ slots: CredentialSlotInfo[]; minLength: number }> {
+  const r = await fetch(apiUrl('/api/admin/credentials'), { credentials: 'include' });
+  if (!r.ok) throw await apiError(r, 'Could not load the credentials');
+  return r.json() as Promise<{ slots: CredentialSlotInfo[]; minLength: number }>;
+}
+
+export async function setCredential(slot: string, username: string, password: string): Promise<void> {
+  const r = await fetch(apiUrl('/api/admin/credentials'), {
+    credentials: 'include',
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slot, username, password }),
+  });
+  if (!r.ok) throw await apiError(r, 'Could not save the password');
 }

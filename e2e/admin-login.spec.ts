@@ -11,7 +11,8 @@ import { stubSignedInApp } from './support/app';
 const FAKE_PW = 'not-a-real-password';
 
 test.beforeEach(async ({ page }) => {
-  // A signed-in session WITHOUT admin rights is what puts the gate on screen.
+  // No console session is what puts the gate on screen. The app session is
+  // irrelevant now — #/admin does not sit behind the app's login any more.
   await stubSignedInApp(page);
 });
 

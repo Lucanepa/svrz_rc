@@ -37,7 +37,7 @@ import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOut
 import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
 import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
-import { normalizeCoacheeGroup, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
+import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
@@ -469,15 +469,16 @@ function englishOrdinal(n: number): string {
 type PlannedObs = { game: EligibleGame; role: string; rc: string };
 
 /** Referee name rendered with a clear coachee highlight (amber chip + badge).
- *  The Niveau rides in the badge — the games list is where an RC decides whom
- *  to watch, and until now "which level is this one?" meant a trip to the
- *  Coachees tab and back. */
-function CoacheeName({ name, level }: { name: string; level?: string }) {
+ *  The Niveau and the group ride in the badge — the games list is where an RC
+ *  decides whom to watch, and both answers ("which level is this one?", "are
+ *  they up for promotion?") used to mean a trip to the Coachees tab and back.
+ *  Wraps rather than overflowing: a group can be as long as "Beförderung?". */
+function CoacheeName({ name, level, group }: { name: string; level?: string; group?: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-md bg-amber-100 border border-amber-300 px-1.5 py-0.5 font-bold text-amber-900">
+    <span className="inline-flex flex-wrap items-center gap-1.5 rounded-md bg-amber-100 border border-amber-300 px-1.5 py-0.5 font-bold text-amber-900">
       {name}
       <span className="rounded bg-amber-300/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-900">
-        Coachee{level ? ` · ${level}` : ''}
+        Coachee{level ? ` · ${level}` : ''}{group ? ` · ${group}` : ''}
       </span>
     </span>
   );
@@ -2798,7 +2799,9 @@ export default function App() {
     const q = listSearch.toLowerCase();
     const filtered = coachees.filter((c) => {
       if (typeof c.season === 'number' && c.season !== seasonStartYear) return false;
-      if (q && !(c.full_name || '').toLowerCase().includes(q) && !levelDisplay(c.referee_level, c.stage).text.toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q)) return false;
+      // Groups are matched in both languages: the badge in the games list may
+      // read "Promotion?" while the record still says "Beförderung?".
+      if (q && !(c.full_name || '').toLowerCase().includes(q) && !levelDisplay(c.referee_level, c.stage).text.toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q) && !groupLabel(c.groups, 'EN').toLowerCase().includes(q)) return false;
       if (listFilterLevels.length > 0) {
         const coacheeLevel = levelDisplay(c.referee_level, c.stage).text;
         if (!listFilterLevels.includes(coacheeLevel)) return false;
@@ -2844,10 +2847,14 @@ export default function App() {
     return map;
   }, [coachees, seasonStartYear]);
 
-  // Niveau for the amber Coachee badge in the games list.
+  // Niveau and group for the amber Coachee badge in the games list.
   const coacheeLevelOf = (name: string) => {
     const c = coacheeByName.get(normName(name || ''));
     return c ? levelDisplay(c.referee_level, c.stage).text : undefined;
+  };
+  const coacheeGroupOf = (name: string) => {
+    const c = coacheeByName.get(normName(name || ''));
+    return c ? groupLabel(c.groups, formData.lang) || undefined : undefined;
   };
 
   // Observations already booked: an RC took one of the coachee's games and the
@@ -3964,7 +3971,7 @@ export default function App() {
                       {filteredCoachees.slice(coacheesPage * LIST_PAGE_SIZE, (coacheesPage + 1) * LIST_PAGE_SIZE).map((coachee) => {
                         const plannedObs = plannedObsByCoachee.get(normName(coachee.full_name || ''));
                         const balls = coacheeBalls(coachee, plannedObs);
-                        const groupStr = normalizeCoacheeGroup(coachee.groups) || '';
+                        const groupStr = groupLabel(coachee.groups, formData.lang);
                         const sr1 = games1SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
                         const sr2 = games2SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
                         return (
@@ -4246,7 +4253,7 @@ export default function App() {
                                     <Users size={14} className="w-3.5 text-stone-400 shrink-0" />
                                     <span className="font-medium text-stone-400">1SR</span>
                                     {r1 ? (
-                                      r1IsCoachee ? <CoacheeName name={r1} level={coacheeLevelOf(r1)} /> : <span className="font-semibold text-stone-700">{r1}</span>
+                                      r1IsCoachee ? <CoacheeName name={r1} level={coacheeLevelOf(r1)} group={coacheeGroupOf(r1)} /> : <span className="font-semibold text-stone-700">{r1}</span>
                                     ) : (
                                       <span className="text-stone-300">–</span>
                                     )}
@@ -4255,7 +4262,7 @@ export default function App() {
                                     <div className="flex items-center gap-1.5">
                                       <span className="w-3.5 shrink-0" />
                                       <span className="font-medium text-stone-400">2SR</span>
-                                      {r2IsCoachee ? <CoacheeName name={r2} level={coacheeLevelOf(r2)} /> : <span className="font-semibold text-stone-700">{r2}</span>}
+                                      {r2IsCoachee ? <CoacheeName name={r2} level={coacheeLevelOf(r2)} group={coacheeGroupOf(r2)} /> : <span className="font-semibold text-stone-700">{r2}</span>}
                                     </div>
                                   )}
                                 </div>
@@ -5754,7 +5761,7 @@ export default function App() {
               {detailCoachee.groups && (
                 <div className="flex justify-between">
                   <span className="text-stone-500">{t.group}</span>
-                  <span className="font-medium text-stone-900">{normalizeCoacheeGroup(detailCoachee.groups)}</span>
+                  <span className="font-medium text-stone-900">{groupLabel(detailCoachee.groups, formData.lang)}</span>
                 </div>
               )}
               {detailCoachee.phone && (
@@ -5967,18 +5974,10 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
   // on "," left whole combinations in the picker — you got one button per
   // observed COMBINATION instead of one per group. Split on "/" instead, but
   // keep season suffixes ("Neu-SR 2025/26") intact.
-  const splitGroups = (value: string) => {
-    const out: string[] = [];
-    for (const part of value.split(/[/,]/).map(s => s.trim()).filter(Boolean)) {
-      if (/^\d{2}(\d{2})?$/.test(part) && out.length) out[out.length - 1] += `/${part}`;
-      else out.push(part);
-    }
-    return out;
-  };
   // The same split as the chips below, or nothing is preselected and the raw
   // combined token is what gets filed.
   const [selectedGroups, setSelectedGroups] = useState<string[]>(
-    () => splitGroups(normalizeCoacheeGroup(coachee.groups) || '')
+    () => splitCoacheeGroups(coachee.groups)
   );
   const [usePlusMinus, setUsePlusMinus] = useState(false);
 
@@ -5986,7 +5985,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
   // has it yet.
   const allGroups = useMemo(() => {
     const set = new Set<string>(COACHEE_GROUP_OPTIONS);
-    coachees.forEach(c => splitGroups(normalizeCoacheeGroup(c.groups) || '').forEach(g => set.add(g)));
+    coachees.forEach(c => splitCoacheeGroups(c.groups).forEach(g => set.add(g)));
     return Array.from(set).sort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coachees]);

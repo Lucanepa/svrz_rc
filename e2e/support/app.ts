@@ -70,7 +70,12 @@ export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promi
     },
   }));
   await page.route('**/api/admin/auth/status', (r) => r.fulfill({
-    json: { authenticated: Boolean(opts.admin), email: opts.admin ? 'admin@example.ch' : '' },
+    json: {
+      authenticated: Boolean(opts.admin),
+      email: opts.admin ? 'admin@example.ch' : '',
+      // Which credential opened the console decides which half of it renders.
+      role: opts.admin ? (opts.surveyReader ? 'president' : 'admin') : null,
+    },
   }));
   await page.route('**/api/settings', (r) => r.fulfill({
     json: {

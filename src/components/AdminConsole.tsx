@@ -6,6 +6,7 @@ import {
   getAdminAuthStatus, adminUiLogin, logoutAdmin, getAuthMe, getGamesSyncStatus,
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
+  getCredentials, setCredential, type CredentialSlotInfo,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame, listManualGames,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
@@ -52,7 +53,7 @@ const STR = {
     // Which half was wrong is deliberately not said — the server does not tell
     // the client either.
     wrongCreds: 'Benutzername oder Passwort falsch',
-    noAdminRights: 'Dein Konto hat keine Admin-Rechte. Falls du Admin bist, melde dich mit dem Admin-Passwort an.',
+    consoleIntro: 'Eigener Zugang für diese Seite — nicht der Team-Login der App.',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Einstellungen', testBadge: 'Testmodus',
     emails: 'E-Mails', logs: 'Protokoll', survey: 'RC-Feedback',
     surveyHint: 'Rückmeldungen der Schiedsrichter:innen zum RC-Besuch — nur hier sichtbar. Alle Fragen sind freiwillig, leere Antworten fehlen entsprechend.',
@@ -105,10 +106,16 @@ const STR = {
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
-    adminRole: 'Admin', toggleAdmin: 'Admin-Rechte umschalten',
-    toggleAdminConfirm: (n: string, on: boolean) => on
-      ? `„${n}" zum Admin machen? Admins haben vollen Zugriff — auch der PIN-Login gibt dann Admin-Rechte.`
-      : `Admin-Rechte von „${n}" entfernen?`,
+    credentials: 'Passwörter', credentialsHint: 'Diese Passwörter öffnen die App und diese Seite. Sie werden nur als Hash gespeichert — ein gesetztes Passwort kann nicht wieder angezeigt, sondern nur ersetzt werden. Notiere es dir jetzt.',
+    credShared: 'Team-Login (App)', credSharedHint: 'Das Passwort, das alle Referee Coaches für die App benutzen.',
+    credAdmin: 'Admin (diese Seite)', credAdminHint: 'Öffnet diese Konsole.',
+    credPresident: 'RC-Präsidium', credPresidentHint: 'Öffnet nur die Umfrage- und Notiz-Tabs. Admin-Rechte öffnen diese nicht.',
+    credUser: 'Benutzername', credNew: 'Neues Passwort', credSave: 'Passwort setzen',
+    credSaved: (u: string) => `Gespeichert. Ab sofort gilt: ${u} + das neue Passwort.`,
+    credFromEnv: 'Noch aus der Server-Konfiguration',
+    credNeverSet: 'Nicht gesetzt — dieser Zugang ist geschlossen',
+    credChangedAt: (d: string, by: string) => `Zuletzt geändert ${d}${by ? ` von ${by}` : ''}`,
+    credTooShort: (n: number) => `Mindestens ${n} Zeichen.`,
     defaultSeason: 'Standard-Saison', defaultSeasonHint: 'Die Saison, in der die App standardmässig startet (für neue Nutzer).',
     save: 'Speichern', saved: 'Gespeichert ✓', testTitle: 'Test-Modus (E-Mail)',
     testHint: 'Wenn aktiv, werden keine E-Mails versendet (Feedback wird trotzdem gespeichert). Zum Live-Betrieb ausschalten.',
@@ -127,7 +134,7 @@ const STR = {
   EN: {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminUser: 'Username', adminPw: 'Admin password',
     wrongCreds: 'Wrong username or password',
-    noAdminRights: 'Your account has no admin rights. If you are an admin, sign in with the admin password.',
+    consoleIntro: 'This page has its own login — not the team credential used for the app.',
     coachees: 'Coachees', rcs: 'Referee Coaches', settings: 'Settings', testBadge: 'Test mode',
     emails: 'Emails', logs: 'Activity log', survey: 'RC feedback',
     surveyHint: 'Referees’ feedback on the RC visit — visible only here. Every question is optional, so blank answers are simply missing.',
@@ -180,11 +187,16 @@ const STR = {
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
-    pinShownInfo: (p: string) => `PIN: ${p}`,
-    adminRole: 'Admin', toggleAdmin: 'Toggle admin rights',
-    toggleAdminConfirm: (n: string, on: boolean) => on
-      ? `Make "${n}" an admin? Admins get full access — their PIN login also grants admin.`
-      : `Remove admin rights from "${n}"?`,
+    credentials: 'Passwords', credentialsHint: 'These passwords open the app and this page. Only a hash is stored — a password that has been set cannot be shown again, only replaced. Write it down now.',
+    credShared: 'Team login (app)', credSharedHint: 'The password every referee coach uses for the app.',
+    credAdmin: 'Admin (this page)', credAdminHint: 'Opens this console.',
+    credPresident: 'RC chair', credPresidentHint: 'Opens the survey and notes tabs only. Admin rights do not open those.',
+    credUser: 'Username', credNew: 'New password', credSave: 'Set password',
+    credSaved: (u: string) => `Saved. From now on: ${u} + the new password.`,
+    credFromEnv: 'Still from the server configuration',
+    credNeverSet: 'Not set — this door is closed',
+    credChangedAt: (d: string, by: string) => `Last changed ${d}${by ? ` by ${by}` : ''}`,
+    credTooShort: (n: number) => `At least ${n} characters.`,
     defaultSeason: 'Default season', defaultSeasonHint: 'The season the app opens to by default (for new users).',
     save: 'Save', saved: 'Saved ✓', testTitle: 'Test mode (email)',
     testHint: 'When on, no emails are sent (feedback is still saved). Turn off for live operation.',
@@ -273,9 +285,10 @@ export default function AdminConsole() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [tab, setTab] = useState<AdminTab>(adminTabFromHash);
-  // null while unknown: a deep link to #/admin/survey must not bounce the one
-  // person allowed to be there just because the check hasn't come back yet.
-  const [surveyReader, setSurveyReader] = useState<boolean | null>(null);
+  // Which credential opened this session. null while unknown: a deep link to
+  // #/admin/survey must not bounce the one person allowed to be there just
+  // because the check hasn't come back yet.
+  const [role, setRole] = useState<'admin' | 'president' | null>(null);
   const [testMode, setTestMode] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [groups, setGroups] = useState<string[]>([]);
@@ -292,15 +305,28 @@ export default function AdminConsole() {
   const t = STR[lang];
   const toggleLang = () => setLang((l) => { const n = l === 'DE' ? 'EN' : 'DE'; try { localStorage.setItem('svrz_admin_lang', n); } catch { /* ignore */ } return n; });
 
-  useEffect(() => { getAdminAuthStatus().then((s) => setAuthed(Boolean(s.authenticated))).catch(() => {}).finally(() => setChecking(false)); }, []);
-  // The RC-feedback tab is not an admin-role tab: only the reader named in the
-  // server env sees it, so being an admin here tells us nothing.
-  useEffect(() => { getAuthMe().then((m) => setSurveyReader(Boolean(m.surveyReader))).catch(() => setSurveyReader(false)); }, []);
-  useEffect(() => { if (surveyReader === false && (tab === 'survey' || tab === 'notes')) setTab('coachees'); }, [surveyReader, tab]);
+  useEffect(() => {
+    getAdminAuthStatus()
+      // A session with no role on it is an admin one: that is what the server
+      // reads a role-less (pre-deploy) cookie as, and answering differently
+      // here would strand a signed-in admin on a console that loads nothing.
+      .then((s) => { setAuthed(Boolean(s.authenticated)); setRole(s.authenticated ? (s.role ?? 'admin') : null); })
+      .catch(() => {})
+      .finally(() => setChecking(false));
+  }, []);
+  // The chair's two tabs and the admin's five are disjoint sets, so a deep link
+  // into the other half lands on that role's own first tab rather than on a
+  // page whose every request would 401.
+  useEffect(() => {
+    if (role === 'president' && tab !== 'survey' && tab !== 'notes') setTab('survey');
+    if (role === 'admin' && (tab === 'survey' || tab === 'notes')) setTab('coachees');
+  }, [role, tab]);
   // Console-wide data, fetched once and in parallel as soon as the session is
   // known; each tab loads its own rows at the same time (all tabs are mounted).
   useEffect(() => {
-    if (!authed) return;
+    // Console-wide settings are admin-gated; the chair's session would only
+    // collect 401s for data none of her two tabs render.
+    if (!authed || role !== 'admin') return;
     getSettings()
       .then((s) => {
         setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); setCoacheeTargets(s.coachee_targets || {});
@@ -312,7 +338,7 @@ export default function AdminConsole() {
     loadEligibleGames()
       .then((games) => { setLeagueOptions(Array.from(new Set(games.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort()); })
       .catch(() => {});
-  }, [authed]);
+  }, [authed, role]);
   // Optimistic with a rollback, like the test-mode toggle next to them. Left
   // silent, a rejected save (expired admin session, 500) showed the new mandate
   // or target as stored while the RC's season goal quietly stayed as it was.
@@ -369,7 +395,10 @@ export default function AdminConsole() {
     e.preventDefault(); setSubmitting(true); setError('');
     // The name is trimmed but not lower-cased here — the server does that, so
     // one rule decides it rather than two that can drift apart.
-    try { await adminUiLogin(username.trim(), password.trim()); setAuthed(true); setPassword(''); }
+    try {
+      const signedInAs = await adminUiLogin(username.trim(), password.trim());
+      setRole(signedInAs); setAuthed(true); setPassword('');
+    }
     catch { setError(t.wrongCreds); setPassword(''); }
     finally { setSubmitting(false); }
   };
@@ -388,9 +417,10 @@ export default function AdminConsole() {
               <SvrzLogo className="h-11 w-auto" />
               <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400 mt-4">{t.admin}</p>
             </div>
-            {/* Reaching this means you ARE signed in but your account has no
-                admin rights — the password below is the bootstrap fallback. */}
-            <p className="text-xs text-stone-500 text-center mb-4">{t.noAdminRights}</p>
+            {/* This page has its own password and is not reached by signing
+                in to the app — two credentials open it, and which one you type
+                decides what you see. */}
+            <p className="text-xs text-stone-500 text-center mb-4">{t.consoleIntro}</p>
             <form onSubmit={login} className="space-y-4">
               {/* autoComplete username/current-password, and both fields inside
                   one form: that is the shape a password manager recognises, so
@@ -420,14 +450,17 @@ export default function AdminConsole() {
     );
   }
 
-  const tabs: { id: typeof tab; label: string; icon: React.ReactNode }[] = [
+  // The chair gets her two tabs and nothing else. She is not a lesser admin —
+  // she is a different person with a different password, and the admin half of
+  // this console is closed to her exactly as her half is closed to the admin.
+  const isPresident = role === 'president';
+  const tabs: { id: typeof tab; label: string; icon: React.ReactNode }[] = isPresident ? [
+    { id: 'survey', label: t.survey, icon: <MessageSquare size={15} /> },
+    { id: 'notes', label: t.notes, icon: <Lock size={15} /> },
+  ] : [
     { id: 'coachees', label: t.coachees, icon: <Users size={15} /> },
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
     { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
-    ...(surveyReader ? [
-      { id: 'survey' as const, label: t.survey, icon: <MessageSquare size={15} /> },
-      { id: 'notes' as const, label: t.notes, icon: <Lock size={15} /> },
-    ] : []),
     { id: 'logs', label: t.logs, icon: <ScrollText size={15} /> },
     { id: 'settings', label: t.settings, icon: <SettingsIcon size={15} /> },
   ];
@@ -443,15 +476,10 @@ export default function AdminConsole() {
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} aria-label={t.logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
-        {/* The president has two tabs more than anyone else. Seven across this
-            container leaves ~118px each and every second label truncates, so
-            their bar wraps to two comfortable rows instead. */}
-        <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', surveyReader ? 'grid-cols-4' : 'grid-cols-5')}>
+        <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', isPresident ? 'grid-cols-2' : 'grid-cols-5')}>
           {tabs.map((tb) => (
-            // min-w-0 + truncate: with the president's two extra tabs a long
-            // label would otherwise wrap and leave that one tab a line taller.
-            // The label is hidden below sm, leaving an icon with no accessible
-            // name — so the button carries the name itself.
+            // min-w-0 + truncate: the label is hidden below sm, leaving an icon
+            // with no accessible name — so the button carries the name itself.
             <button key={tb.id} onClick={() => setTab(tb.id)} aria-label={tb.label} aria-current={tab === tb.id ? 'page' : undefined} className={`h-11 min-w-0 px-1.5 inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-xl transition-colors ${tab === tb.id ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}>
               <span className="shrink-0">{tb.icon}</span>
               <span className="hidden sm:inline truncate">{tb.label}</span>
@@ -469,16 +497,21 @@ export default function AdminConsole() {
         {settingsError && (
           <p className="mb-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{settingsError}</p>
         )}
+        {!isPresident && <>
         <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} /></div>
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
-        {surveyReader && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
-        {surveyReader && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
+        </>}
+        {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
+        {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
+        {!isPresident && <>
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}>
           <SettingsAdmin t={t} lang={lang} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} />
           <ManualGameAdmin t={t} lang={lang} />
+          <CredentialsAdmin t={t} />
         </div>
+        </>}
         <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
       </main>
     </div>
@@ -794,14 +827,6 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
   const add = async () => { if (!form.first_name && !form.last_name) return; await guard(async () => { await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); }); };
   const saveEdit = async (id: string) => { await guard(async () => { await updateRcPerson(id, editForm); setEditId(null); await reload(); }); };
   const remove = async (r: RcPerson) => { if (!confirm(t.delRc(`${r.first_name} ${r.last_name}`))) return; await guard(async () => { await deleteRcPerson(r.id); await reload(); }); };
-  const toggleAdmin = async (r: RcPerson) => {
-    const makingAdmin = !r.is_admin;
-    if (!confirm(t.toggleAdminConfirm(`${r.first_name ?? ''} ${r.last_name ?? ''}`.trim(), makingAdmin))) return;
-    await guard(async () => {
-      await updateRcPerson(r.id, { is_admin: makingAdmin });
-      await reload();
-    });
-  };
   // The season goal ("Pensum") per RC, as a plain number of observations.
   //
   // It was a Full/Half switch, which had no way to describe the coaches who owe
@@ -852,17 +877,9 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
   // Shared by the desktop table and the mobile cards so the two can't drift.
   const rowActions = (r: RcPerson) => (
     <>
-      <button onClick={() => toggleAdmin(r)} className={cn(btnGhost, r.is_admin && 'text-red-600')} title={t.toggleAdmin}>
-        <ShieldCheck size={13} />
-      </button>
       <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost} title={t.edit}><Pencil size={13} /></button>
       <button onClick={() => remove(r)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
     </>
-  );
-  const adminBadge = (
-    <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-red-600 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 align-middle">
-      <ShieldCheck size={10} />{t.adminRole}
-    </span>
   );
   return (
     <>
@@ -902,7 +919,6 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                     {r.first_name} {r.last_name}
                     {r.active === false && <span className="ml-1.5 text-xs font-normal text-stone-400">· {t.inactive}</span>}
                   </p>
-                  {r.is_admin && <div className="mt-1">{adminBadge}</div>}
                 </div>
               </div>
               {r.email && <p className="mt-1.5 text-xs text-stone-500 break-all">{r.email}</p>}
@@ -952,16 +968,12 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                     <td className="py-2.5 pr-3">
                       <span className="font-medium text-stone-800 whitespace-nowrap">{r.first_name} {r.last_name}</span>
                       {r.active === false && <span className="ml-1.5 text-xs text-stone-400">· {t.inactive}</span>}
-                      {r.is_admin && <span className="ml-2">{adminBadge}</span>}
                     </td>
                     <td className="py-2.5 pr-3 text-stone-500">{r.email}</td>
                     <td className="py-2.5 pr-3 text-stone-500 whitespace-nowrap">{r.phone}</td>
                     <td className="py-2.5 pr-3">{mandateToggle(r)}</td>
                     <td className="py-2.5">
                       <div className="flex items-center justify-end gap-1.5">
-                        <button onClick={() => toggleAdmin(r)} className={cn(btnGhost, r.is_admin && 'text-red-600')} title={t.toggleAdmin}>
-                          <ShieldCheck size={13} />
-                        </button>
                         <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost} title={t.edit}><Pencil size={13} /></button>
                         <button onClick={() => remove(r)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
                       </div>
@@ -1588,6 +1600,92 @@ function GameImportCard({ lang }: { lang: Lang }) {
       {note && <p className="mt-2 rounded-lg border border-green-100 bg-green-50 px-3 py-2 text-green-700">{note}</p>}
       {error && <p className="mt-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-red-700">{error}</p>}
     </div>
+  );
+}
+
+// Passwords are write-only from here on purpose: the server stores a scrypt
+// hash, so there is nothing to read back. Replacing one IS the recovery path,
+// which is the same operation as rotating it — and the value shows once, right
+// after saving, because whoever changes the team password has to go and tell
+// twenty coaches what it is now.
+function CredentialsAdmin({ t }: { t: T }) {
+  const [slots, setSlots] = useState<CredentialSlotInfo[]>([]);
+  const [minLength, setMinLength] = useState(10);
+  const [drafts, setDrafts] = useState<Record<string, { username: string; password: string }>>({});
+  const [busy, setBusy] = useState('');
+  const [saved, setSaved] = useState('');
+  const [error, setError] = useState('');
+
+  const reload = useCallback(async () => {
+    try {
+      const data = await getCredentials();
+      // Defensive: every tab is mounted at once, so a malformed body here does
+      // not just break this card — it throws during render and the console's
+      // ErrorBoundary replaces the whole page, coachees and all.
+      setSlots(Array.isArray(data?.slots) ? data.slots : []);
+      if (Number.isFinite(data?.minLength)) setMinLength(data.minLength);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  }, []);
+  useEffect(() => { void reload(); }, [reload]);
+
+  const labels: Record<string, { title: string; hint: string }> = {
+    shared: { title: t.credShared, hint: t.credSharedHint },
+    admin: { title: t.credAdmin, hint: t.credAdminHint },
+    president: { title: t.credPresident, hint: t.credPresidentHint },
+  };
+
+  const save = async (slot: CredentialSlotInfo) => {
+    const draft = drafts[slot.slot] ?? { username: slot.username, password: '' };
+    setError(''); setSaved('');
+    if (draft.password.length < minLength) { setError(t.credTooShort(minLength)); return; }
+    setBusy(slot.slot);
+    try {
+      const username = draft.username.trim() || slot.username;
+      await setCredential(slot.slot, username, draft.password);
+      setDrafts((d) => ({ ...d, [slot.slot]: { username, password: '' } }));
+      setSaved(t.credSaved(username));
+      await reload();
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(''); }
+  };
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-stone-700">{t.credentials}</h2>
+      <p className="mt-1 text-xs text-stone-500">{t.credentialsHint}</p>
+      {error && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
+      {saved && <p className="mt-2 text-xs text-green-800 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{saved}</p>}
+      <div className="mt-3 space-y-4">
+        {slots.map((slot) => {
+          const draft = drafts[slot.slot] ?? { username: slot.username, password: '' };
+          const set = (patch: Partial<{ username: string; password: string }>) =>
+            setDrafts((d) => ({ ...d, [slot.slot]: { ...draft, ...patch } }));
+          return (
+            <div key={slot.slot} className="rounded-xl border border-stone-200 p-3">
+              <p className="text-sm font-medium text-stone-800">{labels[slot.slot]?.title ?? slot.slot}</p>
+              <p className="mt-0.5 text-xs text-stone-500">{labels[slot.slot]?.hint}</p>
+              <p className="mt-1 text-[11px] text-stone-400">
+                {slot.source === 'env' ? t.credFromEnv
+                  : slot.source === 'unset' ? t.credNeverSet
+                  : t.credChangedAt(new Date(slot.updatedAt ?? '').toLocaleDateString(), slot.updatedBy ?? '')}
+              </p>
+              <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                <input className={input} value={draft.username} aria-label={t.credUser} placeholder={t.credUser}
+                  autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                  onChange={(e) => set({ username: e.target.value })} />
+                <input className={input} value={draft.password} type="text" aria-label={t.credNew} placeholder={t.credNew}
+                  autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                  onChange={(e) => set({ password: e.target.value })} />
+                <button className={btnPrimary} disabled={busy === slot.slot || draft.password.length < minLength}
+                  onClick={() => void save(slot)}>
+                  {busy === slot.slot ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} {t.credSave}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
   );
 }
 

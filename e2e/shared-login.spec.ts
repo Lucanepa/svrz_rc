@@ -56,8 +56,10 @@ test.describe('Team login', () => {
     // field is pre-filled: the credential is typed, not handed out by the page.
     await expect(page.getByPlaceholder(/Benutzername|Username/)).toHaveValue('');
     await expect(page.getByPlaceholder(/^(Passwort|Password)$/)).toHaveValue('');
-    // Nor is the personal form advertised here; it lives at #/admin.
+    // There is no second form to reach from here any more: the per-person
+    // e-mail login is gone, and #/admin is a separate page with its own password.
     await expect(page.getByRole('button', { name: /Persönlicher Zugang|Personal access/ })).toHaveCount(0);
+    await expect(page.getByPlaceholder(/E-Mail|^Email$/)).toHaveCount(0);
     await signInWithTeamCredential(page);
 
     // The password alone gets nobody in — the picker stands between.
@@ -100,15 +102,17 @@ test.describe('Team login', () => {
     await expect(page.getByRole('button', { name: /^Coachee Games$/ })).toBeVisible();
   });
 
-  test('#/admin opens on the personal form — the team credential cannot open the console', async ({ page }) => {
+  test('#/admin asks for its OWN password, not the team one', async ({ page }) => {
     await stubLoginFlow(page);
     await page.goto('/#/admin');
 
-    await expect(page.getByPlaceholder(/E-Mail|^Email$/)).toBeVisible();
-    await expect(page.getByPlaceholder(/Benutzername|Username/)).toHaveCount(0);
-    // Still one click from the everyday screen, for an admin who is there to coach.
-    await page.getByRole('button', { name: /Zurück zur Team-Anmeldung|Back to team sign-in/ }).click();
+    // The console no longer sits behind the app's gate (main.tsx): it renders
+    // its own username + password form, and the copy says as much so nobody
+    // stands there typing the team credential.
+    await expect(page.getByText(/Eigener Zugang für diese Seite|This page has its own login/)).toBeVisible();
     await expect(page.getByPlaceholder(/Benutzername|Username/)).toBeVisible();
+    // And there is no e-mail field anywhere — that login does not exist now.
+    await expect(page.getByPlaceholder(/E-Mail|^Email$/)).toHaveCount(0);
   });
 
   test('the name in the header reopens the picker without asking for the password', async ({ page }) => {

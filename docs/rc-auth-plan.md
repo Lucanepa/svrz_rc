@@ -1,5 +1,26 @@
 # Plan: Per-RC authentication and row-based access
 
+> ## Superseded in full (2026-08-26): the per-person login is gone
+>
+> Everything below about per-RC e-mail + password logins, PINs, `is_admin` and
+> the forgot-password flow describes code that **no longer exists**. Kept as the
+> record of what was tried and why it was dropped; do not use it as a reference
+> for how auth works today. For that, see the "API Authentication Model" section
+> of `infrastructure.md`.
+>
+> What replaced it, in one paragraph: there is **one** way into the app (the
+> shared team credential, then the name picker — a claim, never a proof), and
+> the two things a shared secret cannot carry each got their own password on
+> `#/admin`, typed into the same form: `admin` for the console, and the chair's
+> own username for the survey answers and private notes. Admin rights do not
+> open the chair's tabs and her password does not open the console. All three
+> passwords are stored as scrypt hashes in `app_settings` and are changed from
+> Admin → Einstellungen → Passwörter; the env vars are only the bootstrap.
+>
+> The credential quoted below (`Saison26-27`) was **live in production while
+> this repository was public**, from 2026-08-11 to 2026-08-26. It has been
+> rotated and there is no longer any password baked into the code.
+
 > ## Superseded in part (2026-08-11): shared team login + RC picker
 >
 > Per-RC passwords proved to be more login admin than the group wanted. The

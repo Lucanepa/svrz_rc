@@ -65,3 +65,44 @@ export function normalizeCoacheeGroup(value?: string): string {
 
 // Kept for backwards-compatible imports.
 void normalizeToken;
+
+// Groups are STORED in German — they travel verbatim into the filed feedback,
+// which is always German — so English is a display layer and nothing else.
+// Anything not listed here (a group somebody typed by hand) shows as typed.
+const GROUP_EN = new Map<string, string>([
+  ['beförderung?', 'Promotion?'],
+  ['befördert', 'Promoted'],
+  ['rückstufung?', 'Demotion?'],
+  ['rückstufung', 'Demoted'],
+  ['rc gewünscht', 'RC requested'],
+  ['varia', 'Misc'],
+  ['sr-spiel', 'SR game'],
+  ['lr', 'Line judge'],
+]);
+
+/** "Neu-SR 2025/26" carries a year, so it is matched by shape, not by name. */
+const NEW_SR_DE = /^neu-sr\s+(.+)$/i;
+
+/** Split a groups field into its individual groups. A bare 2- or 4-digit part
+ *  is the tail of a season ("Neu-SR 2025/26"), not a group of its own. */
+export function splitCoacheeGroups(value?: string): string[] {
+  const out: string[] = [];
+  for (const part of (value || '').split(/[/,]/).map((s) => s.trim()).filter(Boolean)) {
+    if (/^\d{2}(\d{2})?$/.test(part) && out.length) out[out.length - 1] += `/${part}`;
+    else out.push(part);
+  }
+  return out;
+}
+
+/** Display label for a coachee's group(s), translated when the app is in EN. */
+export function groupLabel(value: string | undefined, lang: string): string {
+  const groups = splitCoacheeGroups(value);
+  if (lang === 'DE') return groups.join(' / ');
+  return groups
+    .map((g) => {
+      const newSr = NEW_SR_DE.exec(g);
+      if (newSr) return `New SR ${newSr[1]}`;
+      return GROUP_EN.get(g.toLowerCase()) ?? g;
+    })
+    .join(' / ');
+}

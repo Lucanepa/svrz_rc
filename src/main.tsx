@@ -7,6 +7,7 @@ import AdminConsole from './components/AdminConsole.tsx';
 import SignaturePage from './components/SignaturePage.tsx';
 import SurveyPage from './components/SurveyPage.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
+import { UiHost } from './components/ui';
 import { enableDemo, isDemoMode } from './lib/demo';
 import { installLogging, clientLog } from './lib/logger';
 import './index.css';
@@ -93,6 +94,7 @@ clientLog.info('app.route', `mounting "${kind}"`, { hash: window.location.hash |
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>
+    <>
     {kind === 'admin' ? (
       // Deliberately NOT behind AuthGate. The admin page used to sit behind the
       // app's own login, which worked while a personal e-mail login existed to
@@ -112,6 +114,12 @@ createRoot(document.getElementById('root')!).render(
         <App />
       </AuthGate>
     )}
+    {/* Sibling of the routed page, not a wrapper: confirm dialogs and toasts
+        are driven imperatively from module scope, so every route — app, admin,
+        signature and survey alike — needs the host on screen, and none of them
+        should have to render it itself. */}
+    <UiHost />
+    </>
     </ErrorBoundary>
   </StrictMode>,
 );

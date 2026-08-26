@@ -54,13 +54,18 @@ test('a game can be given back from the row that shows it', async ({ page }) => 
   const giveBack = page.getByRole('button', { name: 'Give game back' }).first();
   await expect(giveBack).toBeVisible();
 
-  // Dismissed: the game stays. Nothing is handed back on a mis-tap.
-  page.once('dialog', (d) => d.dismiss());
+  // Cancelled: the game stays. Nothing is handed back on a mis-tap.
+  // The confirmation is the app's own modal now, so the order is the reverse of
+  // a native dialog's: click the button, then answer what appears.
   await giveBack.click();
+  await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+  await page.getByTestId('confirm-cancel').click();
+  await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
   expect(assigned).toHaveLength(0);
 
-  page.once('dialog', (d) => d.accept());
   await giveBack.click();
+  await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+  await page.getByTestId('confirm-accept').click();
   await expect.poll(() => assigned.length).toBe(1);
   expect(assigned[0].url).toContain('/api/games/g1/assign-rc');
   // Empty name = release. The server only ever let a coach clear their own.

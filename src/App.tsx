@@ -47,6 +47,7 @@ import AppSpinner from './components/AppSpinner';
 import { useRcAuth } from './components/AuthGate';
 import { isDemoMode, getSentMail, demoTips, type DemoEmail } from './lib/demo';
 import { BUILD_INFO } from './lib/buildInfo';
+import { confirmDialog, toast } from './components/ui';
 
 // Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
 // "ITA" — never a fabricated or TBD value (the red TBD is a UI-only concept).
@@ -1099,20 +1100,31 @@ export default function App() {
       .catch(err => { if (!cancelled) setIcalError(err instanceof Error ? err.message : String(err)); });
     return () => { cancelled = true; };
   }, [showCalendarModal, formData.lang]);
-  // Mints a new token and drops the old one. The confirm is not ceremony: the
-  // links already handed out are in other people's calendar apps, and those
-  // simply stop updating with no error anyone will notice.
+  // Mints a new token and drops the old one. The confirm dialog is not
+  // ceremony: the links already handed out are in other people's calendar apps,
+  // and those simply stop updating with no error anyone will notice.
   const [icalRotating, setIcalRotating] = useState(false);
   const regenerateIcalUrl = async () => {
-    const warning = formData.lang === 'DE'
-      ? 'Neuen Link erzeugen? Der bisherige Link hört auf zu funktionieren — Kalender, die ihn abonniert haben, aktualisieren sich nicht mehr und müssen neu abonniert werden.'
-      : 'Generate a new link? The current one stops working — calendars subscribed to it will no longer update and have to subscribe again.';
-    if (!window.confirm(warning)) return;
+    const de = formData.lang === 'DE';
+    const ok = await confirmDialog({
+      title: de ? 'Neuen Link erzeugen?' : 'Generate a new link?',
+      message: de
+        ? 'Der bisherige Link hört auf zu funktionieren — Kalender, die ihn abonniert haben, aktualisieren sich nicht mehr und müssen neu abonniert werden.'
+        : 'The current one stops working — calendars subscribed to it will no longer update and have to subscribe again.',
+      confirmLabel: de ? 'Neu erzeugen' : 'Regenerate',
+      cancelLabel: de ? 'Abbrechen' : 'Cancel',
+      tone: 'danger',
+      lang: formData.lang,
+    });
+    if (!ok) return;
     setIcalRotating(true);
     setIcalError('');
     try {
       setIcalInfo(await getIcalSubscription(formData.lang, true));
+      toast.success(de ? 'Neuer Kalender-Link erzeugt.' : 'New calendar link generated.', { lang: formData.lang });
     } catch (err) {
+      // The error stays inline under the field — toasting it too would say the
+      // same thing twice.
       setIcalError(err instanceof Error ? err.message : String(err));
     } finally {
       setIcalRotating(false);
@@ -1729,6 +1741,9 @@ export default function App() {
 
   // Give a taken game back: clears the RC assignment, so the game (and its
   // coachees' other games) reappear in the open games list.
+  // Reports whether it went through — the failure path is handled here (inline
+  // notice + resync), so a caller that wants to confirm the hand-back cannot
+  // tell from a rejection and needs this answer instead.
   const handleUnassignGame = async (gameId: string) => {
     const previousRc = eligibleGames.find((g) => g.id === gameId)?.assignedRc;
     try {
@@ -1740,9 +1755,11 @@ export default function App() {
         outstandingGames: cs.outstandingGames.filter((g) => g.gameId !== gameId),
       })));
       refreshAfterAssignment(previousRc);
+      return true;
     } catch (err) {
       setBackendNotice(localizeRuntimeError(err instanceof Error ? err.message : String(err), formData.lang));
       void syncGamesQuietly();
+      return false;
     }
   };
 
@@ -1784,12 +1801,26 @@ export default function App() {
   // same server call, with a confirmation because the game becomes free for
   // everyone the moment it goes through.
   const giveBackFromHome = async (gameId: string, label: string, german: boolean) => {
-    const ask = german
-      ? `„${label}" abgeben? Das Spiel ist danach wieder für alle Referee Coaches frei.`
-      : `Give back "${label}"? The game becomes available to every referee coach again.`;
-    if (!window.confirm(ask)) return;
-    await handleUnassignGame(gameId);
+    const ok = await confirmDialog({
+      title: german ? `„${label}" abgeben?` : `Give back "${label}"?`,
+      message: german
+        ? 'Das Spiel ist danach wieder für alle Referee Coaches frei.'
+        : 'The game becomes available to every referee coach again.',
+      confirmLabel: german ? 'Abgeben' : 'Give back',
+      cancelLabel: german ? 'Abbrechen' : 'Cancel',
+      tone: 'danger',
+      lang: german ? 'DE' : 'EN',
+    });
+    if (!ok) return;
+    const done = await handleUnassignGame(gameId);
     await loadHome();
+    // Only on the way through — a failure already put its own notice on screen.
+    if (done) {
+      toast.success(
+        german ? `„${label}" abgegeben.` : `Gave back "${label}".`,
+        { lang: german ? 'DE' : 'EN' },
+      );
+    }
   };
 
   const applyCoacheeToMeta = (coachee: Coachee) => {
@@ -3514,15 +3545,26 @@ export default function App() {
                     can't switch, so there it just labels the logout. */}
                 {rcAuth.rcName && rcAuth.sharedSession && (
                   <button
-                    onClick={() => {
+                    onClick={() => { void (async () => {
                       // Ask BEFORE the hand-off, not after: an item queued under
                       // the outgoing coach can only ever be sent as that coach,
                       // so switching now is what strands it.
-                      if (outboxPending > 0 && !confirm(formData.lang === 'DE'
-                        ? `${outboxPending} Feedback wartet noch auf Übermittlung und kann nur von ${rcAuth.rcName} gesendet werden. Trotzdem wechseln?`
-                        : `${outboxPending} feedback submission is still waiting to send and can only be sent by ${rcAuth.rcName}. Switch anyway?`)) return;
+                      if (outboxPending > 0) {
+                        const de = formData.lang === 'DE';
+                        const ok = await confirmDialog({
+                          title: de ? 'Trotzdem wechseln?' : 'Switch anyway?',
+                          message: de
+                            ? `${outboxPending} Feedback wartet noch auf Übermittlung und kann nur von ${rcAuth.rcName} gesendet werden.`
+                            : `${outboxPending} feedback submission is still waiting to send and can only be sent by ${rcAuth.rcName}.`,
+                          confirmLabel: de ? 'Wechseln' : 'Switch',
+                          cancelLabel: de ? 'Abbrechen' : 'Cancel',
+                          tone: 'danger',
+                          lang: formData.lang,
+                        });
+                        if (!ok) return;
+                      }
                       rcAuth.switchRc();
-                    }}
+                    })(); }}
                     className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
                     title={formData.lang === 'DE' ? `Angemeldet als ${rcAuth.rcName} — wechseln` : `Signed in as ${rcAuth.rcName} — switch`}
                   >
@@ -5646,10 +5688,16 @@ export default function App() {
             </div>
             <div className="p-6 border-t border-stone-100 flex justify-end gap-3">
               <button 
-                onClick={() => {
-                  navigator.clipboard.writeText(JSON.stringify(formData, null, 2));
-                  alert(t.copied);
-                }}
+                onClick={() => { void (async () => {
+                  try {
+                    await navigator.clipboard.writeText(JSON.stringify(formData, null, 2));
+                    toast.success(t.copied, { lang: formData.lang });
+                  } catch {
+                    // Clipboard access denied (or no secure context) — say so
+                    // instead of letting the rejected promise vanish.
+                    toast.error(formData.lang === 'DE' ? 'Kopieren fehlgeschlagen.' : 'Copying failed.', { lang: formData.lang });
+                  }
+                })(); }}
                 className="bg-red-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-red-700 transition-all shadow-lg shadow-red-200"
               >
                 {t.copy}

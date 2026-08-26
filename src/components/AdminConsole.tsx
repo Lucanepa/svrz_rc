@@ -31,6 +31,7 @@ import {
   type SurveyConfig, type SurveyQuestion, type SurveyScaleId,
 } from '../lib/survey';
 import { bySurname } from '../lib/coacheeName';
+import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
 import LevelText from './LevelText';
 import { Skeleton, SkeletonRows } from './Skeleton';
@@ -104,8 +105,17 @@ const STR = {
     formKey: 'Kennung',
     formKeyHint: 'Unter dieser Kennung werden die Antworten gespeichert. Sie bleibt fest, auch wenn du die Frage umformulierst — so bleiben alte Antworten zur Frage lesbar.',
     formUp: 'Nach oben', formDown: 'Nach unten',
-    formDelete: (q: string) => `Frage «${q}» entfernen? Bereits gegebene Antworten bleiben gespeichert und erscheinen im RC-Feedback unter ihrer Kennung.`,
-    formResetConfirm: 'Alle Änderungen verwerfen und den Standard-Fragebogen wiederherstellen?',
+    // Confirm dialogs take a short title and the consequence as the body — the
+    // native confirm() had to cram both into one string.
+    formDelete: (q: string) => `Frage «${q}» entfernen?`,
+    formDeleteNote: 'Bereits gegebene Antworten bleiben gespeichert und erscheinen im RC-Feedback unter ihrer Kennung.',
+    // The questionnaire only reaches the server via the Speichern button below,
+    // so these two name the draft — a green "entfernt" for an edit that is still
+    // one tab switch away from being thrown out would be a plain lie.
+    formDeleteOk: 'Frage entfernt — noch nicht gespeichert.',
+    formResetTitle: 'Alle Änderungen verwerfen?',
+    formResetConfirm: 'Der Standard-Fragebogen wird wiederhergestellt.',
+    formResetOk: 'Standard-Fragebogen wiederhergestellt — noch nicht gespeichert.',
     formNeedsText: 'Jede Frage braucht einen deutschen Text.',
     formSaved: 'Gespeichert ✓',
     formLangNote: 'Der Fragebogen ist zweisprachig — Schiedsrichter:innen wählen DE oder EN. Bleibt ein Feld leer, wird die andere Sprache angezeigt.',
@@ -116,10 +126,15 @@ const STR = {
     firstName: 'Vorname', lastName: 'Nachname', level: 'Niveau', stage: 'Niveau', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
     noCoachees: (s: string) => `Keine Coachees für ${s} — importiere eine xlsx.`,
-    delCoachee: (n: string) => `Coachee „${n}" löschen?`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
+    delCoachee: (n: string) => `Coachee „${n}" löschen?`, delCoacheeOk: (n: string) => `Coachee „${n}" gelöscht.`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
     noRcs: 'Keine Referee Coaches.', loadFailed: 'Laden fehlgeschlagen.',
-    delGroup: (n: string) => `Gruppe „${n}" löschen? Coachees behalten den Eintrag, bis er dort geändert wird.`,
-    renameGroupWarn: (o: string, n: string) => `„${o}" in „${n}" umbenennen? Coachees mit „${o}" behalten die alte Schreibweise und erscheinen als eigene Gruppe.`, delRc: (n: string) => `RC „${n}" löschen?`, inactive: 'inaktiv',
+    delGroup: (n: string) => `Gruppe „${n}" löschen?`,
+    delGroupNote: 'Coachees behalten den Eintrag, bis er dort geändert wird.',
+    delGroupOk: (n: string) => `Gruppe „${n}" gelöscht.`,
+    renameGroupWarn: (o: string, n: string) => `„${o}" in „${n}" umbenennen?`,
+    renameGroupNote: (o: string) => `Coachees mit „${o}" behalten die alte Schreibweise und erscheinen als eigene Gruppe.`,
+    renameGroupOk: (o: string, n: string) => `„${o}" in „${n}" umbenannt.`,
+    delRc: (n: string) => `RC „${n}" löschen?`, delRcOk: (n: string) => `RC „${n}" gelöscht.`, inactive: 'inaktiv',
     colName: 'Name', colActions: 'Aktionen',
     mgTitle: 'Manuelles Spiel / Testspiel',
     mgHint: 'Für Spiele, die nicht aus VolleyManager kommen. Die SR-Namen müssen exakt einem Coachee entsprechen, sonst findet das Feedback keinen Empfänger. Testspiele danach wieder löschen.',
@@ -140,13 +155,16 @@ const STR = {
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
+    mgDeleteOk: (n: string) => `Spiel „${n}" gelöscht.`,
     shortcutToggle: 'Admin-Link in der Toolbar zeigen (nur Anzeige — gibt keine Rechte)',
     games: 'Spiele', overview: 'Übersicht',
     niveau: 'Niveau',
     nvHint: 'Auf welche Spiele ein SR dieser Stufe im Fokus steht — pro Kategorie und Rolle. Angeklickt heisst: das Spiel erscheint in der Spielliste des Coachees. Nichts angeklickt heisst: in dieser Kategorie und Rolle keine Fokus-Spiele („x" in der offiziellen Tabelle).',
     nvOfficial: 'Offizielle Tabelle, Stand 9. April 2026',
     nvReset: 'Auf offizielle Tabelle zurücksetzen',
-    nvResetConfirm: 'Alle Abweichungen verwerfen und die offizielle Tabelle wiederherstellen?',
+    nvResetTitle: 'Alle Abweichungen verwerfen?',
+    nvResetConfirm: 'Die offizielle Tabelle wird wiederhergestellt.',
+    nvResetOk: 'Offizielle Tabelle wiederhergestellt.',
     nvNoChanges: 'Keine Abweichung von der offiziellen Tabelle',
     nvFocus: 'Fokus-Spiele',
     nvNotBlocking: 'Der Fokus blendet nur aus, er sperrt nichts: RC schalten jederzeit auf „Alle Spiele" um und können auch ein Spiel ausserhalb des Fokus übernehmen und beurteilen.',
@@ -194,7 +212,9 @@ const STR = {
     importFail: (e: string) => `Import fehlgeschlagen: ${e}`,
     groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppe(n)', toApp: 'Zur App',
     target: 'Fokus-Spiele', targetHint: 'Auf welche Spiele dieser SR im Fokus steht. Standard: automatisch aus dem Niveau (offizielle SVRZ-Tabelle, Tab „Niveau").',
-    targetAuto: 'Auto (Niveau)', targetAll: 'Alle Spiele', targetCustom: 'Eigen', targetRoles: 'Rolle(n)', targetLeagues: 'Ligen', chooseLeagues: 'Ligen wählen', edit: 'Bearbeiten', deleteLabel: 'Löschen', done: 'Fertig',
+    targetAuto: 'Auto (Niveau)', targetAll: 'Alle Spiele', targetCustom: 'Eigen', targetRoles: 'Rolle(n)', targetLeagues: 'Ligen', chooseLeagues: 'Ligen wählen', edit: 'Bearbeiten', deleteLabel: 'Löschen', resetLabel: 'Zurücksetzen', renameLabel: 'Umbenennen', done: 'Fertig',
+    // Body text for the confirms whose title already names what disappears.
+    undoWarn: 'Das kann nicht rückgängig gemacht werden.',
     colMandate: 'Pensum', mandateLabel: 'Pensum (Beobachtungen pro Saison)',
     mandateHint: (fallback: number) => `Wie viele Beobachtungen dieser RC pro Saison übernimmt. Leer = Standard (${fallback}). 0 ist erlaubt und schränkt nichts ein — das Pensum ist rein informativ.`,
     defaultGoal: 'Standard-Pensum',
@@ -243,8 +263,12 @@ const STR = {
     formKey: 'Key',
     formKeyHint: 'Answers are stored under this key. It stays fixed even when you reword the question, so older answers keep reading against it.',
     formUp: 'Move up', formDown: 'Move down',
-    formDelete: (q: string) => `Remove the question “${q}”? Answers already given stay stored and show up under their key in RC feedback.`,
-    formResetConfirm: 'Discard every change and restore the default questionnaire?',
+    formDelete: (q: string) => `Remove the question “${q}”?`,
+    formDeleteNote: 'Answers already given stay stored and show up under their key in RC feedback.',
+    formDeleteOk: 'Question removed — not saved yet.',
+    formResetTitle: 'Discard every change?',
+    formResetConfirm: 'The default questionnaire is restored.',
+    formResetOk: 'Default questionnaire restored — not saved yet.',
     formNeedsText: 'Every question needs German text.',
     formSaved: 'Saved ✓',
     formLangNote: 'The form is bilingual — referees pick DE or EN. A field left empty falls back to the other language.',
@@ -255,10 +279,15 @@ const STR = {
     firstName: 'First name', lastName: 'Last name', level: 'Level', stage: 'Niveau', group: 'Group', email: 'Email', phone: 'Phone',
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
     noCoachees: (s: string) => `No coachees for ${s} — import an xlsx.`,
-    delCoachee: (n: string) => `Delete coachee "${n}"?`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
+    delCoachee: (n: string) => `Delete coachee "${n}"?`, delCoacheeOk: (n: string) => `Coachee "${n}" deleted.`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
     noRcs: 'No referee coaches.', loadFailed: 'Could not load.',
-    delGroup: (n: string) => `Delete group "${n}"? Coachees keep the value until it is changed on them.`,
-    renameGroupWarn: (o: string, n: string) => `Rename "${o}" to "${n}"? Coachees carrying "${o}" keep the old spelling and show up as a separate group.`, delRc: (n: string) => `Delete RC "${n}"?`, inactive: 'inactive',
+    delGroup: (n: string) => `Delete group "${n}"?`,
+    delGroupNote: 'Coachees keep the value until it is changed on them.',
+    delGroupOk: (n: string) => `Group "${n}" deleted.`,
+    renameGroupWarn: (o: string, n: string) => `Rename "${o}" to "${n}"?`,
+    renameGroupNote: (o: string) => `Coachees carrying "${o}" keep the old spelling and show up as a separate group.`,
+    renameGroupOk: (o: string, n: string) => `Renamed "${o}" to "${n}".`,
+    delRc: (n: string) => `Delete RC "${n}"?`, delRcOk: (n: string) => `RC "${n}" deleted.`, inactive: 'inactive',
     colName: 'Name', colActions: 'Actions',
     mgTitle: 'Manual game / test game',
     mgHint: 'For games VolleyManager does not carry. Referee names must match a coachee exactly, otherwise the feedback has no recipient. Delete test games afterwards.',
@@ -279,13 +308,16 @@ const STR = {
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
+    mgDeleteOk: (n: string) => `Game "${n}" deleted.`,
     shortcutToggle: 'Show the admin link in their toolbar (display only — grants nothing)',
     games: 'Games', overview: 'Overview',
     niveau: 'Levels',
     nvHint: 'Which games a referee at this level is focused on — per category and role. Lit means the game shows up in that coachee\'s game list. Nothing lit means no focused games in this category and role (an "x" in the official table).',
     nvOfficial: 'Official table, as of 9 April 2026',
     nvReset: 'Reset to the official table',
-    nvResetConfirm: 'Discard every deviation and restore the official table?',
+    nvResetTitle: 'Discard every deviation?',
+    nvResetConfirm: 'The official table is restored.',
+    nvResetOk: 'Official table restored.',
     nvNoChanges: 'No deviation from the official table',
     nvFocus: 'Focused games',
     nvNotBlocking: 'The focus only hides, it never blocks: coaches can switch to "All games" at any time, and take and assess a game outside the focus.',
@@ -333,7 +365,8 @@ const STR = {
     importFail: (e: string) => `Import failed: ${e}`,
     groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Group(s)', toApp: 'To app',
     target: 'Focused games', targetHint: 'Which games this referee is focused on. Default: automatic from the level (official SVRZ table, "Levels" tab).',
-    targetAuto: 'Auto (level)', targetAll: 'All games', targetCustom: 'Custom', targetRoles: 'Role(s)', targetLeagues: 'Leagues', chooseLeagues: 'Choose leagues', edit: 'Edit', deleteLabel: 'Delete', done: 'Done',
+    targetAuto: 'Auto (level)', targetAll: 'All games', targetCustom: 'Custom', targetRoles: 'Role(s)', targetLeagues: 'Leagues', chooseLeagues: 'Choose leagues', edit: 'Edit', deleteLabel: 'Delete', resetLabel: 'Reset', renameLabel: 'Rename', done: 'Done',
+    undoWarn: 'This cannot be undone.',
     colMandate: 'Target', mandateLabel: 'Season target (observations)',
     mandateHint: (fallback: number) => `How many observations this coach takes on per season. Empty = the default (${fallback}). 0 is allowed and restricts nothing — the target is informative only.`,
     defaultGoal: 'Default season target',
@@ -487,12 +520,14 @@ export default function AdminConsole() {
   }, []);
   // Stored as overrides only: a row that still matches the published table is
   // left out, so a future correction to it reaches this console untouched.
+  // Returns whether the write stuck, the same way saveGroups does: the reset
+  // button toasts a success, and a rolled-back save must not earn one.
   const saveNiveau = useCallback(async (next: NiveauMatrix) => {
     let previous: NiveauMatrix = {};
     setNiveauTable((current) => { previous = current; return next; });
     setSettingsError('');
-    try { await putSettings({ niveau_table: niveauOverrides(next) }); }
-    catch (e) { setNiveauTable(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
+    try { await putSettings({ niveau_table: niveauOverrides(next) }); return true; }
+    catch (e) { setNiveauTable(previous); setSettingsError(e instanceof Error ? e.message : String(e)); return false; }
   }, []);
   const saveMandates = useCallback(async (next: RcMandateMap) => {
     let previous: RcMandateMap = {};
@@ -650,12 +685,12 @@ export default function AdminConsole() {
         )}
         {!isPresident && <>
         <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} /></div>
-        <div hidden={tab !== 'rcs'}><RcsAdmin t={t} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
+        <div hidden={tab !== 'rcs'}><RcsAdmin t={t} lang={lang} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'overview'}><OverviewAdmin t={t} /></div>
-        <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
+        <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} lang={lang} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
@@ -781,7 +816,7 @@ function TargetEditor({ t, target, onChange, leagueOptions }: { t: T; target: Co
 // window — each level becomes a card with one labelled row per cell. The league
 // chips sit in a grid that reflows with the layout, so nothing overflows at any
 // width in between.
-function NiveauAdmin({ t, table, onTable, loading }: { t: T; table: NiveauMatrix; onTable: (next: NiveauMatrix) => void; loading: boolean }) {
+function NiveauAdmin({ t, lang, table, onTable, loading }: { t: T; lang: Lang; table: NiveauMatrix; onTable: (next: NiveauMatrix) => Promise<boolean>; loading: boolean }) {
   const columns: { id: NiveauColumn; label: string }[] = [
     { id: 'H1', label: `${t.nvMen} ${t.nv1sr}` },
     { id: 'H2', label: `${t.nvMen} ${t.nv2sr}` },
@@ -801,9 +836,12 @@ function NiveauAdmin({ t, table, onTable, loading }: { t: T; table: NiveauMatrix
     onTable({ ...table, [key]: { ...table[key], [column]: next } });
   };
 
-  const reset = () => {
-    if (changedCells > 0 && !window.confirm(t.nvResetConfirm)) return;
-    onTable(resolveNiveauTable(null));
+  const reset = async () => {
+    if (changedCells > 0 && !(await confirmDialog({ title: t.nvResetTitle, message: t.nvResetConfirm, confirmLabel: t.resetLabel, tone: 'danger', lang }))) return;
+    // Awaited, not fire-and-forget: onTable is an optimistic save that rolls the
+    // matrix back on a rejected PUT, and a green toast over a restored deviation
+    // is the one lie the whole migration was meant to avoid.
+    if (await onTable(resolveNiveauTable(null))) toast.success(t.nvResetOk, { lang });
   };
 
   // A grid, not a wrapping row: six leagues land as one row of six on a phone
@@ -941,7 +979,7 @@ function NiveauAdmin({ t, table, onTable, loading }: { t: T; table: NiveauMatrix
             )}
             <button
               type="button"
-              onClick={reset}
+              onClick={() => { void reset(); }}
               disabled={changedCells === 0}
               className="ml-auto inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
             ><RotateCcw size={13} /> {t.nvReset}</button>
@@ -988,7 +1026,14 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
   };
   const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await guard(async () => { await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm({ first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '' }); await reload(); }); };
   const saveEdit = async (id: string) => { const full_name = `${editForm.first_name} ${editForm.last_name}`.trim(); await guard(async () => { await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>); setEditId(null); await reload(); }); };
-  const remove = async (c: Coachee) => { if (!confirm(t.delCoachee(c.full_name))) return; await guard(async () => { await deleteCoachee(c.id); await reload(); }); };
+  const remove = async (c: Coachee) => {
+    if (!(await confirmDialog({ title: t.delCoachee(c.full_name), message: t.undoWarn, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
+    // guard() puts a failure in `notice`, which is on screen right below the
+    // list — only a clean run gets a toast, so nothing is reported twice.
+    let done = false;
+    await guard(async () => { await deleteCoachee(c.id); await reload(); done = true; });
+    if (done) toast.success(t.delCoacheeOk(c.full_name), { lang });
+  };
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     setImporting(true); setNotice('');
@@ -1142,7 +1187,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
   );
 }
 
-function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: RcMandateMap; defaultGoal: number; onMandates: (next: RcMandateMap) => void }) {
+function RcsAdmin({ t, lang, mandates, defaultGoal, onMandates }: { t: T; lang: Lang; mandates: RcMandateMap; defaultGoal: number; onMandates: (next: RcMandateMap) => void }) {
   const [rcs, setRcs] = useState<RcPerson[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({ first_name: '', last_name: '', email: '', phone: '' });
@@ -1179,7 +1224,15 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
   };
   const add = async () => { if (!form.first_name && !form.last_name) return; await guard(async () => { await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); }); };
   const saveEdit = async (id: string) => { await guard(async () => { await updateRcPerson(id, editForm); setEditId(null); await reload(); }); };
-  const remove = async (r: RcPerson) => { if (!confirm(t.delRc(`${r.first_name} ${r.last_name}`))) return; await guard(async () => { await deleteRcPerson(r.id); await reload(); }); };
+  const remove = async (r: RcPerson) => {
+    const name = `${r.first_name} ${r.last_name}`;
+    if (!(await confirmDialog({ title: t.delRc(name), message: t.undoWarn, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
+    // As above: guard() surfaces the failure in `notice`, so the toast only
+    // fires when the delete actually went through.
+    let done = false;
+    await guard(async () => { await deleteRcPerson(r.id); await reload(); done = true; });
+    if (done) toast.success(t.delRcOk(name), { lang });
+  };
   // The season goal ("Pensum") per RC, as a plain number of observations.
   //
   // It was a Full/Half switch, which had no way to describe the coaches who owe
@@ -1610,11 +1663,19 @@ function SurveyFormAdmin({ t, lang }: { t: T; lang: Lang }) {
     return { ...c, questions: qs };
   });
 
-  const remove = (i: number) => {
+  const remove = async (i: number) => {
     const q = cfg?.questions[i];
     if (!q) return;
-    if (!window.confirm(t.formDelete(q.DE || q.EN || q.id))) return;
+    if (!(await confirmDialog({ title: t.formDelete(q.DE || q.EN || q.id), message: t.formDeleteNote, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
     setCfg((c) => (c ? { ...c, questions: c.questions.filter((_, n) => n !== i) } : c));
+    // info, not success: nothing was written — save() below is what persists.
+    toast.info(t.formDeleteOk, { lang });
+  };
+
+  const resetForm = async () => {
+    if (!(await confirmDialog({ title: t.formResetTitle, message: t.formResetConfirm, confirmLabel: t.resetLabel, tone: 'danger', lang }))) return;
+    setCfg(defaults);
+    toast.info(t.formResetOk, { lang });
   };
 
   const add = () => setCfg((c) => (c
@@ -1698,7 +1759,7 @@ function SurveyFormAdmin({ t, lang }: { t: T; lang: Lang }) {
             {t.formQuestions} <span className="font-normal text-stone-400">· {t.formCount(cfg.questions.length)}</span>
           </h2>
           <button
-            onClick={() => { if (window.confirm(t.formResetConfirm)) setCfg(defaults); }}
+            onClick={() => { void resetForm(); }}
             className={cn(btnGhost, 'shrink-0')} title={t.tplReset}
           ><RotateCcw size={13} /> <span className="hidden sm:inline">{t.tplReset}</span></button>
         </div>
@@ -1724,7 +1785,7 @@ function SurveyFormAdmin({ t, lang }: { t: T; lang: Lang }) {
                     className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-stone-200 text-stone-500 hover:bg-stone-100 disabled:opacity-30"><ChevronUp size={14} /></button>
                   <button onClick={() => move(i, 1)} disabled={i === cfg.questions.length - 1} title={t.formDown} aria-label={t.formDown}
                     className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-stone-200 text-stone-500 hover:bg-stone-100 disabled:opacity-30"><ChevronDown size={14} /></button>
-                  <button onClick={() => remove(i)} title={t.deleteLabel} aria-label={t.deleteLabel}
+                  <button onClick={() => { void remove(i); }} title={t.deleteLabel} aria-label={t.deleteLabel}
                     className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-stone-200 text-red-600 hover:bg-red-50"><Trash2 size={14} /></button>
                 </div>
               </div>
@@ -2052,9 +2113,10 @@ function ManualGameAdmin({ t, lang }: { t: T; lang: Lang }) {
     finally { setBusy(false); }
   };
   const remove = async (id: string, label: string) => {
-    if (!confirm(t.mgConfirmDelete(label))) return;
+    if (!(await confirmDialog({ title: t.mgConfirmDelete(label), message: t.undoWarn, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
     setBusy(true); setErr('');
-    try { await deleteGame(id); if (made?.id === id) setMade(null); await reload(q); }
+    // The failure keeps its inline `err` line; the toast only marks the success.
+    try { await deleteGame(id); if (made?.id === id) setMade(null); await reload(q); toast.success(t.mgDeleteOk(label), { lang }); }
     catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   };
@@ -2538,28 +2600,40 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
   const [groupsError, setGroupsError] = useState('');
   // Optimistic, but no longer silent: a rejected save (expired session, 500)
   // used to leave the new list on screen as if it had been stored.
+  // Returns whether the write stuck, so a caller can toast the success without
+  // claiming one for a save that rolled back.
   const saveGroups = async (next: string[]) => {
     const previous = groups;
     onGroups(next);
     setGroupsError('');
-    try { await putSettings({ groups: next }); }
-    catch (e) { onGroups(previous); setGroupsError(e instanceof Error ? e.message : String(e)); }
+    try { await putSettings({ groups: next }); return true; }
+    catch (e) { onGroups(previous); setGroupsError(e instanceof Error ? e.message : String(e)); return false; }
   };
   const addGroup = () => { const v = ng.trim(); if (!v || groups.includes(v)) return; setNg(''); void saveGroups([...groups, v].sort()); };
-  const delGroup = (i: number) => { if (!confirm(t.delGroup(groups[i]))) return; void saveGroups(groups.filter((_, idx) => idx !== i)); };
-  const saveEditGroup = (i: number) => {
+  // Filtered by NAME, not by the index: the dialog is awaited, and the list can
+  // be re-sorted under an open dialog the same way it can under an open edit row
+  // (see saveEditGroup). Names are unique here — addGroup and the rename both
+  // refuse a duplicate.
+  const delGroup = async (i: number) => {
+    const name = groups[i];
+    if (!(await confirmDialog({ title: t.delGroup(name), message: t.delGroupNote, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
+    if (await saveGroups(groups.filter((g) => g !== name))) toast.success(t.delGroupOk(name), { lang });
+  };
+  const saveEditGroup = async (i: number) => {
     const v = gv.trim();
     // Re-resolved by NAME, not by the index the edit started at: the list is
     // re-sorted on every save, so adding or deleting a group while this row was
-    // open retargeted the rename onto a different group. The confirm() named the
-    // real victim, which is the only reason it was survivable.
+    // open retargeted the rename onto a different group. The confirm dialog names
+    // the real victim, which is the only reason it was survivable.
     const original = gi != null ? giName : groups[i];
     const at = groups.indexOf(original);
     if (at < 0) { setGi(null); return; } // renamed or deleted underneath us
     // Coachees carry the group name as a string, so a rename splits the cohort
     // into two spellings that every filter treats as different groups.
-    if (v && v !== original && !confirm(t.renameGroupWarn(original, v))) { setGi(null); return; }
-    if (v) { const next = groups.slice(); next[at] = v; void saveGroups(Array.from(new Set(next)).sort()); }
+    if (v && v !== original && !(await confirmDialog({ title: t.renameGroupWarn(original, v), message: t.renameGroupNote(original), confirmLabel: t.renameLabel, lang }))) { setGi(null); return; }
+    // The save stays fire-and-forget so the editor closes on the same tick it
+    // always did; only the toast waits to hear that the write stuck.
+    if (v) { const next = groups.slice(); next[at] = v; void saveGroups(Array.from(new Set(next)).sort()).then((ok) => { if (ok && v !== original) toast.success(t.renameGroupOk(original, v), { lang }); }); }
     setGi(null);
   };
   const save = async () => { await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
@@ -2604,14 +2678,14 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
           {groups.map((g, i) => gi === i ? (
             <div key={g} className="py-2 flex items-center gap-2">
               <input className={input} value={gv} onChange={(e) => setGv(e.target.value)} />
-              <button onClick={() => saveEditGroup(i)} className={btnPrimary}><Check size={15} /></button>
+              <button onClick={() => { void saveEditGroup(i); }} className={btnPrimary}><Check size={15} /></button>
               <button onClick={() => setGi(null)} className={btnGhost}><X size={14} /></button>
             </div>
           ) : (
             <div key={g} className="py-2 flex items-center gap-3">
               <span className="flex-1 text-sm text-stone-800">{g}</span>
               <button onClick={() => { setGi(i); setGiName(g); setGv(g); }} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
-              <button onClick={() => delGroup(i)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+              <button onClick={() => { void delGroup(i); }} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
             </div>
           ))}
           {groups.length === 0 && <p className="py-4 text-center text-xs text-stone-400">—</p>}

@@ -63,10 +63,15 @@ test('an edit is stored as an override of that row alone, and Reset undoes it', 
   expect(Object.keys(saved[saved.length - 1].niveau_table)).toEqual(['N3-3']);
   expect(saved[saved.length - 1].niveau_table['N3-3'].H1).toEqual(['3', '4']);
 
-  page.once('dialog', (d) => d.accept());
+  // Reset asks first — the deviations on screen are somebody's deliberate work.
+  // The confirmation is the app's own modal, so it is click, then answer.
   await page.getByRole('button', { name: 'Auf offizielle Tabelle zurücksetzen' }).click();
+  await expect(page.getByTestId('confirm-dialog')).toBeVisible();
+  await expect(page.getByTestId('confirm-dialog')).toContainText(/offiziell/i);
+  await page.getByTestId('confirm-accept').click();
   await expect(page.getByText('Keine Abweichung von der offiziellen Tabelle')).toBeVisible();
-  expect(Object.keys(saved[saved.length - 1].niveau_table)).toEqual([]);
+  // Polled: the save that carries the reset leaves after the screen has updated.
+  await expect.poll(() => Object.keys(saved[saved.length - 1].niveau_table)).toEqual([]);
 });
 
 test('the table says the focus hides rather than blocks', async ({ page }) => {

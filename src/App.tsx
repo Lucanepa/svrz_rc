@@ -126,6 +126,7 @@ const UI_STRINGS = {
     active: "Aktiv",
     inactive: "Inaktiv",
     noObservation: "Keine Beobachtung",
+    plannedObservation: "Beobachtung geplant",
     furtherObservation: "Weitere Beobachtung nötig",
     completedObservation: "Beobachtung abgeschlossen",
     chooseAction: "Aktion wählen",
@@ -251,6 +252,7 @@ const UI_STRINGS = {
     active: "Active",
     inactive: "Inactive",
     noObservation: "No Observation",
+    plannedObservation: "Observation Planned",
     furtherObservation: "Further Observation Needed",
     completedObservation: "Observation Completed",
     chooseAction: "Choose Action",
@@ -451,12 +453,20 @@ function LeagueLabel({ text }: { text: string }) {
   );
 }
 
-/** Referee name rendered with a clear coachee highlight (amber chip + badge). */
-function CoacheeName({ name }: { name: string }) {
+/** An observation an RC has already booked for a coachee: their next taken game. */
+type PlannedObs = { game: EligibleGame; role: string; rc: string };
+
+/** Referee name rendered with a clear coachee highlight (amber chip + badge).
+ *  The Niveau rides in the badge — the games list is where an RC decides whom
+ *  to watch, and until now "which level is this one?" meant a trip to the
+ *  Coachees tab and back. */
+function CoacheeName({ name, level }: { name: string; level?: string }) {
   return (
     <span className="inline-flex items-center gap-1.5 rounded-md bg-amber-100 border border-amber-300 px-1.5 py-0.5 font-bold text-amber-900">
       {name}
-      <span className="rounded bg-amber-300/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-900">Coachee</span>
+      <span className="rounded bg-amber-300/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-900">
+        Coachee{level ? ` · ${level}` : ''}
+      </span>
     </span>
   );
 }
@@ -861,7 +871,12 @@ export default function App() {
   // `doneList` powers the "already observed" list at the bottom of Home; each
   // entry keeps its coachee id so the row can open the filed feedback.
   type HomeDone = { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result?: string; coacheeName: string; coacheeId: string };
-  const [homeData, setHomeData] = useState<{ done: number; planned: number; outstanding: number; nextGames: rcCoachSummaryGame[]; missingGames: rcCoachSummaryGame[]; doneList: HomeDone[] } | null>(null);
+  // The coach summary is per coachee, so a game with two coachees on the
+  // whistle arrives twice. Home lists appointments — one row per game — and
+  // carries the other referee(s) along for the subtitle. The per-coachee split
+  // stays in the Coachees / RC detail views.
+  type HomeGame = rcCoachSummaryGame & { extraReferees?: string[] };
+  const [homeData, setHomeData] = useState<{ done: number; planned: number; outstanding: number; nextGames: HomeGame[]; missingGames: HomeGame[]; doneList: HomeDone[] } | null>(null);
   const [homeLoading, setHomeLoading] = useState(false);
   const [listPage, setListPage] = useState(0);
   const LIST_PAGE_SIZE = 50;
@@ -1441,8 +1456,29 @@ export default function App() {
       if (!isCurrentLoad('home', gen)) return;
       const myRow = overview.find((r) => norm(r.fullName) === norm(myName));
       const byDate = (a: rcCoachSummaryGame, b: rcCoachSummaryGame) => a.gameDate.localeCompare(b.gameDate);
-      const nextGames = summary.flatMap((cs) => cs.plannedGames).sort(byDate);
-      const missingGames = summary.flatMap((cs) => cs.outstandingGames).sort(byDate);
+      // The summary is per coachee, so a game with two coachees on the whistle
+      // arrives twice and Home listed the same appointment twice — while the
+      // "planned" counter beside it, which the server counts per game, said one
+      // less. Collapse to one row per game and name both referees on it.
+      const perGame = (games: rcCoachSummaryGame[]): HomeGame[] => {
+        const byId = new Map<string, HomeGame>();
+        for (const g of games) {
+          // Without an id there is nothing to merge on — keep the row as it is
+          // rather than folding unrelated games together under an empty key.
+          const key = g.gameId || `${g.gameDate}|${g.teams}|${g.refereeName}`;
+          const seen = byId.get(key);
+          if (!seen) { byId.set(key, { ...g }); continue; }
+          if (g.refereeName && g.refereeName !== seen.refereeName && !(seen.extraReferees ?? []).includes(g.refereeName)) {
+            seen.extraReferees = [...(seen.extraReferees ?? []), g.refereeName];
+          }
+          // "No coachee on this game" only holds if it holds for every entry.
+          if (!g.noCoachee) seen.noCoachee = false;
+          if (!seen.result && g.result) seen.result = g.result;
+        }
+        return [...byId.values()];
+      };
+      const nextGames = perGame(summary.flatMap((cs) => cs.plannedGames)).sort(byDate);
+      const missingGames = perGame(summary.flatMap((cs) => cs.outstandingGames)).sort(byDate);
       const done = myRow?.done ?? summary.reduce((n, cs) => n + cs.doneFeedbacks.length, 0);
       // Observations already filed, newest first — shown at the bottom of Home.
       const doneList: HomeDone[] = summary
@@ -1558,9 +1594,25 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Taking a game (or giving one back) moves it in or out of a coach's planned
+  // list, which Home reads from the server. Without this the dashboard kept the
+  // figures it loaded with, and the game only showed up after a page reload.
+  // Both the old and the new holder count, so handing a game back refreshes too.
+  const refreshAfterAssignment = (...affected: Array<string | undefined>) => {
+    const me = rcAuth.rcName ? normName(rcAuth.rcName) : '';
+    if (me && affected.some((n) => n && normName(n) === me)) {
+      // One overview request feeds both the counters and the dashboard.
+      const overview = refreshRcOverview();
+      void loadHome(overview);
+    } else if (rcOverviewData.length > 0) {
+      void refreshRcOverview();
+    }
+  };
+
   // Give a taken game back: clears the RC assignment, so the game (and its
   // coachees' other games) reappear in the open games list.
   const handleUnassignGame = async (gameId: string) => {
+    const previousRc = eligibleGames.find((g) => g.id === gameId)?.assignedRc;
     try {
       await assignRcToGame(gameId, '');
       setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: '' } : g));
@@ -1569,7 +1621,7 @@ export default function App() {
         plannedGames: cs.plannedGames.filter((g) => g.gameId !== gameId),
         outstandingGames: cs.outstandingGames.filter((g) => g.gameId !== gameId),
       })));
-      void refreshRcOverview();
+      refreshAfterAssignment(previousRc);
     } catch (err) {
       setBackendNotice(err instanceof Error ? err.message : String(err));
     }
@@ -1684,6 +1736,17 @@ export default function App() {
     } finally {
       setLoadingCalendar(false);
     }
+  };
+
+  // Everything a filed observation changes: the games list (the role closes),
+  // the coachee statuses, the calendar dots, the RC overview counters and the
+  // dashboard — one shared overview request feeds the last two. Every path that
+  // files one goes through here: the form, the offline flush, and the upload of
+  // a paper form. They each used to refresh a different subset, so which views
+  // were stale depended on how the observation had been submitted.
+  const refreshAfterFeedback = () => {
+    const overview = refreshRcOverview();
+    return Promise.allSettled([refreshGames(), refreshCoachees(), refreshCalendarGames(), overview, loadHome(overview)]);
   };
 
   const loadCoacheeGames = async (coachee: Coachee) => {
@@ -1875,11 +1938,24 @@ export default function App() {
     setActionTargetCoachee(coachee);
   };
 
-  const coacheeBalls = (coachee: Coachee) => {
+  // "Di 15.09." / "Tue 15/09" — the date shorthand the dashboard rows use.
+  const shortDate = (d: string) => {
+    const dt = new Date(d);
+    return Number.isNaN(dt.getTime())
+      ? d
+      : dt.toLocaleDateString(formData.lang === 'DE' ? 'de-CH' : 'en-GB', { weekday: 'short', day: '2-digit', month: '2-digit' });
+  };
+
+  const coacheeBalls = (coachee: Coachee, plannedObs?: PlannedObs) => {
     const isActive = (coachee.stage || 'active') !== 'inactive';
     const status = coachee.observation_status;
     const balls: Array<{ color: string; title: string; key: string }> = [];
-    if (isActive && (status?.hasNoObservation ?? false)) {
+    // An RC has taken one of their games, so the honest status is "booked".
+    // "Keine Beobachtung" on a coachee whose observation is already scheduled
+    // read as untouched and sent coaches looking for a game to take.
+    if (isActive && plannedObs) {
+      balls.push({ key: 'planned', color: 'bg-sky-100 text-sky-800', title: t.plannedObservation });
+    } else if (isActive && (status?.hasNoObservation ?? false)) {
       balls.push({ key: 'none', color: 'bg-amber-100 text-amber-800', title: t.noObservation });
     }
     if (isActive && (status?.hasFurtherObservationNeeded ?? false)) {
@@ -2046,6 +2122,10 @@ export default function App() {
           ? `${t.saveOkNoEmail} ${result.emailWarning}`
           : t.manualUploadSuccess);
       }
+      // An uploaded paper form is a filed observation like any other: without
+      // this the game stayed on the open list and the coachee kept reading
+      // "no observation" until the next page load.
+      void refreshAfterFeedback();
       setTimeout(() => setManualUploadCoachee(null), 2000);
     } catch (err: unknown) {
       setManualUploadNotice(`${t.manualUploadError} ${err instanceof Error ? err.message : ''}`);
@@ -2187,11 +2267,9 @@ export default function App() {
         setBackendNotice(formData.lang === 'DE'
           ? `${sent} ausstehende Übermittlung${sent > 1 ? 'en' : ''} gesendet.`
           : `${sent} pending submission${sent > 1 ? 's' : ''} sent.`);
-        // Refresh data that a synced submission changes.
-        void refreshGames();
-        // Refresh the dashboard/summary regardless of the visible tab, so
-        // switching back to Home never shows counters from before the sync.
-        void loadHome();
+        // Regardless of the visible tab, so switching back to Home (or to the
+        // coachee list) never shows the state from before the sync.
+        void refreshAfterFeedback();
       }
     } finally {
       setFlushing(false);
@@ -2255,12 +2333,9 @@ export default function App() {
         setDemoMail(mail);
         if (mail.length > 0) setDemoMailOpen(true);
       }
-      // A filed observation changes the games list, the coachee statuses, the
-      // RC overview and the dashboard counters. Refresh them together in the
-      // background (one shared overview request) so every other tab is already
-      // up to date when the coach navigates back to it.
-      const overview = refreshRcOverview();
-      void Promise.allSettled([refreshGames(), refreshCoachees(), overview, loadHome(overview)]);
+      // Refreshed in the background so every other tab is already up to date
+      // when the coach navigates back to it.
+      void refreshAfterFeedback();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(`${t.saveError} ${localizeRuntimeError(reason, formData.lang)}`);
@@ -2694,17 +2769,26 @@ export default function App() {
     return map;
   }, [coachees, seasonStartYear]);
 
-  const filteredGames = useMemo(() => {
-    const gameTime = (d: string) => {
-      const t = new Date(d).getTime();
-      return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+  // Niveau for the amber Coachee badge in the games list.
+  const coacheeLevelOf = (name: string) => {
+    const c = coacheeByName.get(normName(name || ''));
+    return c ? levelDisplay(c.referee_level, c.stage).text : undefined;
+  };
+
+  // Observations already booked: an RC took one of the coachee's games and the
+  // feedback for that role is still open. Keyed by the coachee's canonical full
+  // name, and it keeps the game itself so the Coachees tab can say which one,
+  // when and by whom instead of labelling the referee "no observation".
+  const plannedObsByCoachee = useMemo(() => {
+    const map = new Map<string, PlannedObs>();
+    const today = new Date().toISOString().slice(0, 10);
+    // Upcoming beats past; among upcoming the soonest wins, among past the most
+    // recent — so the row always names the game a coach would ask about.
+    const beatsPlanned = (a: string, b: string) => {
+      const [au, bu] = [a >= today, b >= today];
+      if (au !== bu) return au;
+      return au ? a < b : a > b;
     };
-    const q = listSearch.toLowerCase();
-    // Referees already covered this season: an RC took one of their games and the
-    // observation is still pending (role not yet in feedbackClosedRoles), so none
-    // of their games need to stay on the open list. Once the feedback is filed,
-    // coverage lifts and needsObservation (latest "further visit" answer) governs.
-    const coveredRefs = new Set<string>();
     for (const g of eligibleGames) {
       if (!g.assignedRc) continue;
       const sd = new Date(g.date);
@@ -2715,9 +2799,28 @@ export default function App() {
         // Resolve through the name map (handles "First Last" vs "Last First")
         // so coverage is keyed by the coachee's canonical full name.
         const cc = coacheeByName.get(normName(r));
-        coveredRefs.add(normName(cc?.full_name || r));
+        const key = normName(cc?.full_name || r);
+        const prev = map.get(key);
+        // With several taken games, name the next one to come. A taken game
+        // that is already past is still worth showing (its feedback is open),
+        // but only when nothing upcoming can take its place.
+        if (!prev || beatsPlanned(g.date, prev.game.date)) map.set(key, { game: g, role, rc: g.assignedRc });
       }
     }
+    return map;
+  }, [eligibleGames, coacheeByName, seasonFrom, seasonTo]);
+
+  const filteredGames = useMemo(() => {
+    const gameTime = (d: string) => {
+      const t = new Date(d).getTime();
+      return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+    };
+    const q = listSearch.toLowerCase();
+    // Referees already covered this season: an RC took one of their games and the
+    // observation is still pending (role not yet in feedbackClosedRoles), so none
+    // of their games need to stay on the open list. Once the feedback is filed,
+    // coverage lifts and needsObservation (latest "further visit" answer) governs.
+    const coveredRefs = plannedObsByCoachee;
     return eligibleGames.filter((g) => {
       if (q && !(
         (g.matchNo || '').toLowerCase().includes(q) ||
@@ -2814,7 +2917,7 @@ export default function App() {
       // timestamps rather than strings so a stray offset cannot reorder a day,
       // and anything undated sinks to the bottom instead of leading.
       .sort((a, b) => gameTime(a.date) - gameTime(b.date));
-  }, [eligibleGames, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
+  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
 
   // Any filter can shrink a list below the page currently shown, and the pager
   // itself disappears under one page of rows — leaving a blank list with no
@@ -3318,7 +3421,7 @@ export default function App() {
                 if (eg) handleSelectGame(eg, g.refereeName);
                 else { setListTab('games'); setListSearch(g.teams); }
               };
-              const gameRow = (g: rcCoachSummaryGame, key: string) => (
+              const gameRow = (g: HomeGame, key: string) => (
                 <button
                   key={key}
                   onClick={() => startFromSummary(g)}
@@ -3329,7 +3432,7 @@ export default function App() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-stone-800 truncate">{g.teams}</p>
-                    <p className="text-xs text-stone-500 truncate">{g.league} · {g.refereeName}</p>
+                    <p className="text-xs text-stone-500 truncate">{g.league} · {[g.refereeName, ...(g.extraReferees ?? [])].filter(Boolean).join(', ')}</p>
                     <MatchResult result={g.result} className="mt-0.5" />
                   </div>
                   <Eye size={15} className="text-stone-400 shrink-0" />
@@ -3784,7 +3887,8 @@ export default function App() {
                     </div>
                     <div className="divide-y divide-stone-200">
                       {filteredCoachees.slice(coacheesPage * LIST_PAGE_SIZE, (coacheesPage + 1) * LIST_PAGE_SIZE).map((coachee) => {
-                        const balls = coacheeBalls(coachee);
+                        const plannedObs = plannedObsByCoachee.get(normName(coachee.full_name || ''));
+                        const balls = coacheeBalls(coachee, plannedObs);
                         const groupStr = normalizeCoacheeGroup(coachee.groups) || '';
                         const sr1 = games1SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
                         const sr2 = games2SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
@@ -3814,6 +3918,20 @@ export default function App() {
                                     </span>
                                   )}
                                 </div>
+                                {/* The booked observation, spelled out: which
+                                    game, when, in which role, and whose it is —
+                                    otherwise the pill above raises the question
+                                    it doesn't answer. */}
+                                {plannedObs && (
+                                  <div className="mt-1 flex items-start gap-1.5 text-xs text-sky-700">
+                                    <CalendarDays size={13} className="mt-px shrink-0 text-sky-500" />
+                                    <span className="min-w-0">
+                                      {shortDate(plannedObs.game.date)} · {plannedObs.game.homeTeam} vs {plannedObs.game.awayTeam}
+                                      {plannedObs.game.league ? ` · ${plannedObs.game.league}` : ''} · {plannedObs.role}
+                                      {plannedObs.rc ? ` · RC ${plannedObs.rc}` : ''}
+                                    </span>
+                                  </div>
+                                )}
                               </div>
                               <div className="flex flex-wrap items-center gap-1 sm:pt-0.5 sm:shrink-0 sm:justify-end sm:max-w-[45%]">
                                 {balls.length > 0 ? balls.map((ball) => (
@@ -4053,7 +4171,7 @@ export default function App() {
                                     <Users size={14} className="w-3.5 text-stone-400 shrink-0" />
                                     <span className="font-medium text-stone-400">1SR</span>
                                     {r1 ? (
-                                      r1IsCoachee ? <CoacheeName name={r1} /> : <span className="font-semibold text-stone-700">{r1}</span>
+                                      r1IsCoachee ? <CoacheeName name={r1} level={coacheeLevelOf(r1)} /> : <span className="font-semibold text-stone-700">{r1}</span>
                                     ) : (
                                       <span className="text-stone-300">–</span>
                                     )}
@@ -4062,7 +4180,7 @@ export default function App() {
                                     <div className="flex items-center gap-1.5">
                                       <span className="w-3.5 shrink-0" />
                                       <span className="font-medium text-stone-400">2SR</span>
-                                      {r2IsCoachee ? <CoacheeName name={r2} /> : <span className="font-semibold text-stone-700">{r2}</span>}
+                                      {r2IsCoachee ? <CoacheeName name={r2} level={coacheeLevelOf(r2)} /> : <span className="font-semibold text-stone-700">{r2}</span>}
                                     </div>
                                   )}
                                 </div>
@@ -4091,7 +4209,7 @@ export default function App() {
                                             await assignRcToGame(game.id, rcName);
                                             setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
                                             // Keep the Referee Coaches overview counts fresh.
-                                            if (rcOverviewData.length > 0) void refreshRcOverview();
+                                            refreshAfterAssignment(game.assignedRc, rcName);
                                           } catch (err) {
                                             setBackendNotice(err instanceof Error ? err.message : String(err));
                                           }
@@ -4122,7 +4240,7 @@ export default function App() {
                                           try {
                                             await assignRcToGame(game.id, rcName);
                                             setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
-                                            if (rcOverviewData.length > 0) void refreshRcOverview();
+                                            refreshAfterAssignment(rcName);
                                           } catch (err) {
                                             setBackendNotice(err instanceof Error ? err.message : String(err));
                                           }

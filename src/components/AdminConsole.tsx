@@ -7,6 +7,7 @@ import {
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
   getCredentials, setCredential, requestCredentialCode, type CredentialSlotInfo,
+  getAdminShortcutRcs, setAdminShortcutRcs,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame, listManualGames,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
@@ -107,6 +108,7 @@ const STR = {
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
+    shortcutToggle: 'Admin-Link in der Toolbar zeigen (nur Anzeige — gibt keine Rechte)',
     credentials: 'Passwörter', credentialsHint: 'Diese Passwörter öffnen die App und diese Seite. Sie werden nur als Hash gespeichert — ein gesetztes Passwort kann nicht wieder angezeigt, sondern nur ersetzt werden. Notiere es dir jetzt.',
     credShared: 'Team-Login (App)', credSharedHint: 'Das Passwort, das alle Referee Coaches für die App benutzen.',
     credAdmin: 'Admin (diese Seite)', credAdminHint: 'Öffnet diese Konsole.',
@@ -193,6 +195,7 @@ const STR = {
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
+    shortcutToggle: 'Show the admin link in their toolbar (display only — grants nothing)',
     credentials: 'Passwords', credentialsHint: 'These passwords open the app and this page. Only a hash is stored — a password that has been set cannot be shown again, only replaced. Write it down now.',
     credShared: 'Team login (app)', credSharedHint: 'The password every referee coach uses for the app.',
     credAdmin: 'Admin (this page)', credAdminHint: 'Opens this console.',
@@ -823,6 +826,10 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
   // no referee coaches".
   const [notice, setNotice] = useState('');
   const [loadFailed, setLoadFailed] = useState(false);
+  // Who gets the #/admin shortcut drawn in their toolbar. NOT a permission —
+  // see the comment on the button in App.tsx. Ticking somebody here shows them
+  // a link; the console behind it still asks for the admin password.
+  const [shortcutRcs, setShortcutRcs] = useState<string[]>([]);
   const guard = async (action: () => Promise<void>) => {
     setNotice('');
     try { await action(); }
@@ -835,6 +842,14 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => { getAdminShortcutRcs().then(setShortcutRcs).catch(() => setShortcutRcs([])); }, []);
+  const toggleShortcut = async (r: RcPerson) => {
+    const next = shortcutRcs.includes(r.id) ? shortcutRcs.filter((x) => x !== r.id) : [...shortcutRcs, r.id];
+    const previous = shortcutRcs;
+    setShortcutRcs(next); // optimistic; a rejected save rolls back and says so
+    try { await setAdminShortcutRcs(next); }
+    catch (e) { setShortcutRcs(previous); setNotice(e instanceof Error ? e.message : String(e)); }
+  };
   const add = async () => { if (!form.first_name && !form.last_name) return; await guard(async () => { await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); }); };
   const saveEdit = async (id: string) => { await guard(async () => { await updateRcPerson(id, editForm); setEditId(null); await reload(); }); };
   const remove = async (r: RcPerson) => { if (!confirm(t.delRc(`${r.first_name} ${r.last_name}`))) return; await guard(async () => { await deleteRcPerson(r.id); await reload(); }); };
@@ -888,6 +903,11 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
   // Shared by the desktop table and the mobile cards so the two can't drift.
   const rowActions = (r: RcPerson) => (
     <>
+      <button onClick={() => void toggleShortcut(r)}
+        className={cn(btnGhost, shortcutRcs.includes(r.id) && 'text-slate-900 border-slate-300')}
+        title={t.shortcutToggle}>
+        {shortcutRcs.includes(r.id) ? <ShieldCheck size={13} /> : <Lock size={13} />}
+      </button>
       <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost} title={t.edit}><Pencil size={13} /></button>
       <button onClick={() => remove(r)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
     </>
@@ -984,10 +1004,11 @@ function RcsAdmin({ t, mandates, defaultGoal, onMandates }: { t: T; mandates: Rc
                     <td className="py-2.5 pr-3 text-stone-500 whitespace-nowrap">{r.phone}</td>
                     <td className="py-2.5 pr-3">{mandateToggle(r)}</td>
                     <td className="py-2.5">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button onClick={() => { setEditId(r.id); setEditForm(r); }} className={btnGhost} title={t.edit}><Pencil size={13} /></button>
-                        <button onClick={() => remove(r)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
-                      </div>
+                      {/* rowActions, not a copy of it. This cell held its own
+                          duplicate of the same two buttons, which is precisely
+                          the drift the helper exists to prevent — and it had
+                          already drifted once. */}
+                      <div className="flex items-center justify-end gap-1.5">{rowActions(r)}</div>
                     </td>
                   </tr>
                 </React.Fragment>

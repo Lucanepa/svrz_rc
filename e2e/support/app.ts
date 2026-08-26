@@ -51,6 +51,8 @@ export type StubOptions = {
   admin?: boolean;
   /** Let this session read the president-only surfaces. */
   surveyReader?: boolean;
+  /** Draw the #/admin shortcut in the toolbar. Cosmetic — grants nothing. */
+  adminShortcut?: boolean;
 };
 
 /**
@@ -67,6 +69,7 @@ export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promi
       rc: { id: RC.id, name },
       admin: opts.admin ? { email: 'admin@example.ch' } : null,
       surveyReader: Boolean(opts.surveyReader),
+      adminShortcut: Boolean(opts.adminShortcut),
     },
   }));
   await page.route('**/api/admin/auth/status', (r) => r.fulfill({

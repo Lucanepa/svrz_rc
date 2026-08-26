@@ -3388,6 +3388,11 @@ export default function App() {
                 <button
                   onClick={() => { window.location.hash = '/admin'; }}
                   className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
+                  // The label is hidden below sm, which left an icon with no
+                  // accessible name on every phone — the same trap the console's
+                  // tab bar already names itself out of. `title` is not a
+                  // substitute: it is a sentence, and it changes with language.
+                  aria-label="Admin"
                   title={isPrivileged
                     ? 'Admin'
                     : (formData.lang === 'DE' ? 'Admin-Bereich — Anmeldung erforderlich' : 'Admin area — sign-in required')}

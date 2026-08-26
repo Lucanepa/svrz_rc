@@ -127,8 +127,8 @@ const UI_STRINGS = {
     inactive: "Inaktiv",
     noObservation: "Keine Beobachtung",
     plannedObservation: "Beobachtung geplant",
+    uploadedObservation: "Beobachtung hochgeladen",
     furtherObservation: "Weitere Beobachtung nötig",
-    completedObservation: "Beobachtung abgeschlossen",
     chooseAction: "Aktion wählen",
     openGames: "Spiele",
     openFeedback: "Feedbacks",
@@ -253,8 +253,8 @@ const UI_STRINGS = {
     inactive: "Inactive",
     noObservation: "No Observation",
     plannedObservation: "Observation Planned",
+    uploadedObservation: "Observation Uploaded",
     furtherObservation: "Further Observation Needed",
-    completedObservation: "Observation Completed",
     chooseAction: "Choose Action",
     openGames: "Games",
     openFeedback: "Feedback",
@@ -451,6 +451,18 @@ function LeagueLabel({ text }: { text: string }) {
       )}
     </>
   );
+}
+
+/** 1 → "1st", 2 → "2nd", 13 → "13th". German just counts: "2." */
+function englishOrdinal(n: number): string {
+  const teens = n % 100;
+  if (teens >= 11 && teens <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
 }
 
 /** An observation an RC has already booked for a coachee: their next taken game. */
@@ -998,6 +1010,8 @@ export default function App() {
   const [resultUnlocked, setResultUnlocked] = useState(false);
   const [showJson, setShowJson] = useState(false);
   const [eligibleGames, setEligibleGames] = useState<EligibleGame[]>([]);
+  // A pending RC assignment held back by the "already observed" notice.
+  const [takeNotice, setTakeNotice] = useState<{ gameId: string; rcName: string; previousRc?: string; observed: Array<{ name: string; count: number }> } | null>(null);
   const [rcPeople, setRcPeople] = useState<RefereeCoachPerson[]>([]);
   const [calendarGames, setCalendarGames] = useState<CalendarGameStatus[]>([]);
   const [selectedGameId, setSelectedGameId] = useState('');
@@ -1609,6 +1623,52 @@ export default function App() {
     }
   };
 
+  const applyRcAssignment = async (gameId: string, rcName: string, previousRc?: string) => {
+    try {
+      await assignRcToGame(gameId, rcName);
+      setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: rcName } : g));
+      refreshAfterAssignment(previousRc, rcName);
+    } catch (err) {
+      setBackendNotice(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  // Coachees on this game who have already been observed this season. A second
+  // look is a legitimate thing to plan, so this never blocks the assignment —
+  // it just makes sure it is a decision and not something discovered afterwards.
+  const observedCoacheesOnGame = (game: EligibleGame) => {
+    const seen = new Set<string>();
+    const out: Array<{ name: string; count: number; plannedBy?: string; plannedOn?: string }> = [];
+    for (const r of [game.firstReferee, game.secondReferee]) {
+      if (!r) continue;
+      const c = coacheeByName.get(normName(r));
+      if (!c) continue;
+      const name = c.full_name || r;
+      const key = normName(name);
+      if (seen.has(key)) continue;
+      const count = observationCount(c);
+      // A booking on ANOTHER game counts as coverage too: two coaches taking
+      // the same coachee in the same week is the duplicate nobody notices,
+      // because neither observation has been filed yet.
+      const booked = plannedObsByCoachee.get(key);
+      const elsewhere = booked && booked.game.id !== game.id ? booked : undefined;
+      if (count === 0 && !elsewhere) continue;
+      seen.add(key);
+      out.push({ name, count, plannedBy: elsewhere?.rc, plannedOn: elsewhere?.game.date });
+    }
+    return out;
+  };
+
+  const requestRcAssignment = (game: EligibleGame, rcName: string) => {
+    // Clearing an assignment needs no warning — nobody is being observed twice.
+    const observed = rcName ? observedCoacheesOnGame(game) : [];
+    if (observed.length > 0) {
+      setTakeNotice({ gameId: game.id, rcName, previousRc: game.assignedRc, observed });
+      return;
+    }
+    void applyRcAssignment(game.id, rcName, game.assignedRc);
+  };
+
   // Give a taken game back: clears the RC assignment, so the game (and its
   // coachees' other games) reappear in the open games list.
   const handleUnassignGame = async (gameId: string) => {
@@ -1930,8 +1990,7 @@ export default function App() {
 
   const handleCoacheeAction = (coachee: Coachee) => {
     setDetailCoachee(null);
-    const observationCount = coachee.observation_status?.count ?? coachee.observations_count ?? 0;
-    if (observationCount === 0) {
+    if (observationCount(coachee) === 0) {
       void loadCoacheeGames(coachee);
       return;
     }
@@ -1946,23 +2005,39 @@ export default function App() {
       : dt.toLocaleDateString(formData.lang === 'DE' ? 'de-CH' : 'en-GB', { weekday: 'short', day: '2-digit', month: '2-digit' });
   };
 
+  // Observations are counted, not just flagged: a coachee can be watched more
+  // than once a season, so the second one says so. First one stays unnumbered —
+  // "1. Beobachtung geplant" would be noise on the common case.
+  const obsLabel = (n: number, kind: 'planned' | 'uploaded') => {
+    const base = kind === 'planned' ? t.plannedObservation : t.uploadedObservation;
+    if (n <= 1) return base;
+    return formData.lang === 'DE' ? `${n}. ${base}` : `${englishOrdinal(n)} ${base}`;
+  };
+
+  const observationCount = (coachee: Coachee) =>
+    coachee.observation_status?.count ?? coachee.observations_count ?? 0;
+
   const coacheeBalls = (coachee: Coachee, plannedObs?: PlannedObs) => {
     const isActive = (coachee.stage || 'active') !== 'inactive';
     const status = coachee.observation_status;
     const balls: Array<{ color: string; title: string; key: string }> = [];
-    // An RC has taken one of their games, so the honest status is "booked".
-    // "Keine Beobachtung" on a coachee whose observation is already scheduled
-    // read as untouched and sent coaches looking for a game to take.
+    const filed = observationCount(coachee);
+    // Filed observations first, then the one still out on a taken game — read
+    // together they are the season so far: "hochgeladen, 2. geplant".
+    if (filed > 0 || status?.hasCompletedObservation) {
+      balls.push({ key: 'done', color: 'bg-emerald-100 text-emerald-800', title: obsLabel(Math.max(filed, 1), 'uploaded') });
+    }
+    // An RC has taken one of their games, so the honest status is "booked" —
+    // and it stays booked until the feedback is uploaded. "Keine Beobachtung"
+    // on a coachee whose observation is already scheduled read as untouched and
+    // sent coaches looking for a game to take.
     if (isActive && plannedObs) {
-      balls.push({ key: 'planned', color: 'bg-sky-100 text-sky-800', title: t.plannedObservation });
-    } else if (isActive && (status?.hasNoObservation ?? false)) {
+      balls.push({ key: 'planned', color: 'bg-sky-100 text-sky-800', title: obsLabel(filed + 1, 'planned') });
+    } else if (isActive && filed === 0 && (status?.hasNoObservation ?? false)) {
       balls.push({ key: 'none', color: 'bg-amber-100 text-amber-800', title: t.noObservation });
     }
     if (isActive && (status?.hasFurtherObservationNeeded ?? false)) {
       balls.push({ key: 'further', color: 'bg-orange-100 text-orange-800', title: t.furtherObservation });
-    }
-    if (status?.hasCompletedObservation) {
-      balls.push({ key: 'done', color: 'bg-emerald-100 text-emerald-800', title: t.completedObservation });
     }
     return balls;
   };
@@ -4203,17 +4278,7 @@ export default function App() {
                                       <select
                                         value={game.assignedRc || ''}
                                         onClick={(e) => e.stopPropagation()}
-                                        onChange={async (e) => {
-                                          const rcName = e.target.value;
-                                          try {
-                                            await assignRcToGame(game.id, rcName);
-                                            setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
-                                            // Keep the Referee Coaches overview counts fresh.
-                                            refreshAfterAssignment(game.assignedRc, rcName);
-                                          } catch (err) {
-                                            setBackendNotice(err instanceof Error ? err.message : String(err));
-                                          }
-                                        }}
+                                        onChange={(e) => requestRcAssignment(game, e.target.value)}
                                         className="h-9 px-3 text-sm border border-stone-300 rounded-md bg-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-red-400 transition-colors hover:border-stone-400 flex-1 min-w-[14rem] max-w-sm cursor-pointer"
                                       >
                                         <option value="">-</option>
@@ -4233,17 +4298,10 @@ export default function App() {
                                       <span className="text-sm font-medium text-stone-700">{game.assignedRc}</span>
                                     ) : (
                                       <button
-                                        onClick={async (e) => {
+                                        onClick={(e) => {
                                           e.stopPropagation();
-                                          const rcName = rcAuth.rcName ?? '';
-                                          if (!rcName) return;
-                                          try {
-                                            await assignRcToGame(game.id, rcName);
-                                            setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, assignedRc: rcName } : g));
-                                            refreshAfterAssignment(rcName);
-                                          } catch (err) {
-                                            setBackendNotice(err instanceof Error ? err.message : String(err));
-                                          }
+                                          if (!rcAuth.rcName) return;
+                                          requestRcAssignment(game, rcAuth.rcName);
                                         }}
                                         className="h-9 px-3 text-sm font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
                                       >
@@ -5570,6 +5628,71 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* "Already observed" notice — shown before an assignment goes through,
+          never after; the RC decides whether a second look is what they want. */}
+      {takeNotice && (() => {
+        const de = formData.lang === 'DE';
+        const self = !!rcAuth.rcName && normName(takeNotice.rcName) === normName(rcAuth.rcName);
+        // Written as whole sentences per case: a coachee can be here for a
+        // filed observation, for one somebody else has booked, or for both.
+        const sentence = (o: { count: number; plannedBy?: string; plannedOn?: string }) => {
+          const filed = o.count > 0
+            ? (de
+              ? `wurde diese Saison bereits ${o.count > 1 ? `${o.count}× ` : ''}beobachtet.`
+              : `has already been observed ${o.count > 1 ? `${o.count}× ` : ''}this season.`)
+            : '';
+          if (!o.plannedBy) return filed;
+          const when = shortDate(o.plannedOn || '');
+          const booked = o.count > 0
+            ? (de
+              ? ` Zudem ist am ${when} eine Beobachtung durch ${o.plannedBy} geplant.`
+              : ` Another observation is booked for ${when} by ${o.plannedBy}.`)
+            : (de
+              ? `hat bereits eine geplante Beobachtung am ${when} durch ${o.plannedBy}.`
+              : `already has an observation booked for ${when} by ${o.plannedBy}.`);
+          return `${filed}${booked}`;
+        };
+        return (
+          <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
+            <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6">
+              <h3 className="text-lg font-bold text-stone-900 flex items-center gap-2">
+                <Info size={18} className="text-amber-500" />
+                {de ? 'Hinweis' : 'Notice'}
+              </h3>
+              <ul className="mt-3 space-y-1.5 text-sm text-stone-700">
+                {takeNotice.observed.map((o) => (
+                  <li key={o.name}>
+                    <span className="font-semibold">{o.name}</span> {sentence(o)}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-3 text-sm text-stone-500">
+                {de
+                  ? `Spiel trotzdem ${self ? 'übernehmen' : 'zuweisen'}?`
+                  : `${self ? 'Take' : 'Assign'} the game anyway?`}
+              </p>
+              <div className="mt-5 flex gap-2">
+                <button
+                  onClick={() => setTakeNotice(null)}
+                  className="flex-1 h-10 rounded-lg border border-stone-300 text-sm hover:bg-stone-50 transition-colors"
+                >
+                  {de ? 'Abbrechen' : 'Cancel'}
+                </button>
+                <button
+                  onClick={() => {
+                    void applyRcAssignment(takeNotice.gameId, takeNotice.rcName, takeNotice.previousRc);
+                    setTakeNotice(null);
+                  }}
+                  className="flex-1 h-10 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors"
+                >
+                  {de ? (self ? 'Trotzdem übernehmen' : 'Trotzdem zuweisen') : (self ? 'Take anyway' : 'Assign anyway')}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* JSON Modal */}
       {showJson && (

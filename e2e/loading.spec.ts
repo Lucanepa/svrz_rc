@@ -61,37 +61,6 @@ test('every season-scoped request is for the season the server named', async ({ 
   expect(seen.some((s) => s.path === 'summary')).toBe(true);
 });
 
-// Signed in as an admin: Referee Coaches is an admin tab now, and its list is
-// the only way into a detail page. The shared fetch it guards is unchanged --
-// Home claims the summary for the signed-in coach, and opening that same coach's
-// detail must read it rather than ask for the identical payload again.
-test('opening the RC detail tab reuses what Home already fetched', async ({ page }) => {
-  await stubSignedInApp(page, { admin: true });
-  await page.route('**/api/settings', (r) => r.fulfill({
-    json: {
-      default_season: SERVER_SEASON, test_mode: false, groups: [],
-      coachee_targets: {}, rc_mandates: {}, default_goal: 10,
-    },
-  }));
-  await page.route('**/api/rc-overview*', (r) => r.fulfill({
-    json: [{ id: RC.id, fullName: RC.name, done: 0, outstanding: 0, planned: 0 }],
-  }));
-  await page.route('**/api/rc-overview/*/coachees*', (r) => r.fulfill({ json: [] }));
-
-  const seen = await trackSeasons(page);
-  await page.goto('/');
-  await expect(page.locator('h1')).toContainText('Coaching Feedback');
-  await page.waitForTimeout(2000);
-  const before = seen.filter((s) => s.path === 'summary').length;
-
-  await page.getByRole('button', { name: /Referee Coaches/ }).click();
-  // Scoped to the list: the sign-out button in the header carries the same name.
-  await page.locator('div.divide-y').getByText(RC.name, { exact: true }).click();
-  await expect(page.getByRole('heading', { name: RC.name })).toBeVisible();
-  await page.waitForTimeout(1500);
-
-  expect(seen.filter((s) => s.path === 'summary').length).toBe(before);
-});
 
 test.describe('what a wait looks like', () => {
   const SLOW = 20_000;
@@ -118,6 +87,11 @@ test.describe('what a wait looks like', () => {
       if (++n > slowSummaryAfter) await new Promise((res) => setTimeout(res, SLOW));
       await r.fulfill({ json: [] });
     });
+    // The on-demand load the second test leans on.
+    await page.route('**/api/coachees/*/feedbacks*', async (r) => {
+      if (slowSummaryAfter > 0) await new Promise((res) => setTimeout(res, SLOW));
+      await r.fulfill({ json: [] });
+    });
   }
 
   test('the first load of a session gets the branded spinner', async ({ page }) => {
@@ -131,19 +105,11 @@ test.describe('what a wait looks like', () => {
     expect(await page.locator('.animate-pulse').count()).toBe(0);
   });
 
-  test('a load after the app is up gets skeleton rows instead', async ({ page }) => {
-    await stubOverview(page, 2);
-    await page.goto('/');
-    await expect(page.locator('h1')).toContainText('Coaching Feedback');
-    await page.waitForTimeout(2000);
-
-    // A colleague's detail is fetched on demand, so this wait happens well
-    // after the bootstrap has finished.
-    await page.getByRole('button', { name: /Referee Coaches/ }).click();
-    await page.getByText('Beat Beispiel').first().click();
-    await page.waitForTimeout(1200);
-
-    expect(await page.locator('.animate-pulse').count()).toBeGreaterThan(0);
-    expect(await page.locator('.svrz-orbit').count()).toBe(0);
-  });
+  // GAP, deliberately left visible: there used to be a test here proving that a
+  // load AFTER the bootstrap draws skeleton rows rather than the branded orbit
+  // spinner. Its only trigger was the admin-only RC detail screen, which moved
+  // to the console — and neither the coachee feedback list nor anything else
+  // reachable from the coach app reproduced the same late load. The behaviour
+  // is still implemented (SkeletonRows in App.tsx); it is the trigger that is
+  // missing. Re-pin it against the next on-demand fetch added to this app.
 });

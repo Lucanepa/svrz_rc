@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX } from 'lucide-react';
+import { CalendarDays, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
@@ -8,6 +8,7 @@ import {
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
   getCredentials, setCredential, requestCredentialCode, type CredentialSlotInfo,
   getAdminShortcutRcs, setAdminShortcutRcs,
+  loadRcOverview, listRefereeCoachPeople, assignRcToGame,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame, listManualGames,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
@@ -22,7 +23,7 @@ import {
 } from '../lib/niveauTargets';
 import { SURVEY_QUESTIONS, questionLabel, type SurveyQuestion } from '../lib/survey';
 import { bySurname } from '../lib/coacheeName';
-import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap } from '../types';
+import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
 import LevelText from './LevelText';
 import { Skeleton, SkeletonRows } from './Skeleton';
 import { BUILD_INFO } from '../lib/buildInfo';
@@ -109,6 +110,14 @@ const STR = {
     mgNone: 'Keine Testspiele vorhanden.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
     shortcutToggle: 'Admin-Link in der Toolbar zeigen (nur Anzeige — gibt keine Rechte)',
+    games: 'Spiele', overview: 'Übersicht',
+    gamesHint: 'Ein Spiel einem Referee Coach zuteilen. Die RC übernehmen ihre Spiele sonst selbst — das hier ist der Weg, es für jemanden zu tun.',
+    gamesSearch: 'Spiel, Team, Liga oder Halle suchen …',
+    gamesNone: 'Keine Spiele gefunden.',
+    gamesUnassigned: 'Nur ohne RC',
+    ovHint: 'Saisonstand aller Referee Coaches. Die RC selbst sehen in der App nur ihre eigene Zeile.',
+    ovName: 'Referee Coach', ovDone: 'Erledigt', ovPlanned: 'Geplant', ovOutstanding: 'Ausstehend',
+    ovNone: 'Noch keine Daten für diese Saison.',
     credentials: 'Passwörter', credentialsHint: 'Diese Passwörter öffnen die App und diese Seite. Sie werden nur als Hash gespeichert — ein gesetztes Passwort kann nicht wieder angezeigt, sondern nur ersetzt werden. Notiere es dir jetzt.',
     credShared: 'Team-Login (App)', credSharedHint: 'Das Passwort, das alle Referee Coaches für die App benutzen.',
     credAdmin: 'Admin (diese Seite)', credAdminHint: 'Öffnet diese Konsole.',
@@ -196,6 +205,14 @@ const STR = {
     mgNone: 'No test games.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
     shortcutToggle: 'Show the admin link in their toolbar (display only — grants nothing)',
+    games: 'Games', overview: 'Overview',
+    gamesHint: 'Assign a game to a referee coach. Coaches normally take their own games — this is how you do it for someone.',
+    gamesSearch: 'Search game, team, league or venue …',
+    gamesNone: 'No games found.',
+    gamesUnassigned: 'Unassigned only',
+    ovHint: 'Season progress for every referee coach. Coaches themselves only ever see their own row in the app.',
+    ovName: 'Referee coach', ovDone: 'Done', ovPlanned: 'Planned', ovOutstanding: 'Outstanding',
+    ovNone: 'No data for this season yet.',
     credentials: 'Passwords', credentialsHint: 'These passwords open the app and this page. Only a hash is stored — a password that has been set cannot be shown again, only replaced. Write it down now.',
     credShared: 'Team login (app)', credSharedHint: 'The password every referee coach uses for the app.',
     credAdmin: 'Admin (this page)', credAdminHint: 'Opens this console.',
@@ -282,7 +299,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 
 // Console tabs live in the URL as #/admin/<tab>, so each one is linkable and
 // the Back button steps between them.
-const ADMIN_TABS = ['coachees', 'rcs', 'emails', 'survey', 'notes', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'emails', 'survey', 'notes', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 const adminTabFromHash = (): AdminTab => {
   const m = /^#\/?admin\/([a-z]+)/i.exec(window.location.hash);
@@ -474,6 +491,8 @@ export default function AdminConsole() {
   ] : [
     { id: 'coachees', label: t.coachees, icon: <Users size={15} /> },
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
+    { id: 'games', label: t.games, icon: <CalendarDays size={15} /> },
+    { id: 'overview', label: t.overview, icon: <Target size={15} /> },
     { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
     { id: 'logs', label: t.logs, icon: <ScrollText size={15} /> },
     { id: 'settings', label: t.settings, icon: <SettingsIcon size={15} /> },
@@ -490,7 +509,9 @@ export default function AdminConsole() {
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} aria-label={t.logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
-        <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', isPresident ? 'grid-cols-2' : 'grid-cols-5')}>
+        {/* Seven across this container leaves ~118px each and every second
+            label truncates, so the admin bar wraps to two comfortable rows. */}
+        <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', isPresident ? 'grid-cols-2' : 'grid-cols-4')}>
           {tabs.map((tb) => (
             // min-w-0 + truncate: the label is hidden below sm, leaving an icon
             // with no accessible name — so the button carries the name itself.
@@ -515,6 +536,8 @@ export default function AdminConsole() {
         <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} /></div>
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
+        <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} /></div>
+        <div hidden={tab !== 'overview'}><OverviewAdmin t={t} /></div>
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
@@ -1640,6 +1663,154 @@ function GameImportCard({ lang }: { lang: Lang }) {
 // which is the same operation as rotating it — and the value shows once, right
 // after saving, because whoever changes the team password has to go and tell
 // twenty coaches what it is now.
+// Season progress across every referee coach. This lived in the coach app
+// behind an "is this an admin" check, which meant the app had two personalities
+// depending on who was looking. Admin reporting belongs with the other admin
+// reporting; the coach app now shows a coach their own row and nothing else.
+function OverviewAdmin({ t }: { t: T }) {
+  const [rows, setRows] = useState<RcOverviewEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    loadRcOverview()
+      .then((r) => setRows(Array.isArray(r) ? r : []))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false));
+  }, []);
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-stone-700">{t.overview}</h2>
+      <p className="mt-1 text-xs text-stone-500">{t.ovHint}</p>
+      {error && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
+      {loading ? (
+        <div className="mt-3 flex items-center gap-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /></div>
+      ) : rows.length === 0 ? (
+        <p className="mt-3 text-sm text-stone-400">{t.ovNone}</p>
+      ) : (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wide text-stone-400 border-b border-stone-200">
+                <th className="py-2 pr-3 font-semibold">{t.ovName}</th>
+                <th className="py-2 pr-3 font-semibold text-right">{t.ovDone}</th>
+                <th className="py-2 pr-3 font-semibold text-right">{t.ovPlanned}</th>
+                <th className="py-2 font-semibold text-right">{t.ovOutstanding}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50/70">
+                  <td className="py-2 pr-3 font-medium text-stone-800 whitespace-nowrap">{r.fullName}</td>
+                  <td className="py-2 pr-3 text-right text-green-700 font-semibold">{r.done}</td>
+                  <td className="py-2 pr-3 text-right text-blue-700 font-semibold">{r.planned}</td>
+                  {/* Outstanding is the number worth acting on, so it is the one that shouts. */}
+                  <td className={cn('py-2 text-right font-semibold', r.outstanding > 0 ? 'text-amber-700' : 'text-stone-400')}>{r.outstanding}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// Assigning a game to a coach. The coach app only ever lets someone take a game
+// FOR THEMSELVES — the server refuses anything else (see /api/games/:id/assign-rc)
+// unless the request carries an admin session. This is that exception, moved
+// out of the coach app and into the console where it is obviously an admin act.
+function GamesAdmin({ t, lang }: { t: T; lang: Lang }) {
+  const [games, setGames] = useState<EligibleGame[]>([]);
+  const [people, setPeople] = useState<{ id: string; fullName: string }[]>([]);
+  const [q, setQ] = useState('');
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [g, p] = await Promise.all([loadEligibleGames(), listRefereeCoachPeople()]);
+      setGames(Array.isArray(g) ? g : []);
+      setPeople(Array.isArray(p) ? p : []);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void reload(); }, [reload]);
+
+  const assign = async (game: EligibleGame, rcName: string) => {
+    setError(''); setBusy(game.id);
+    const previous = games;
+    // Optimistic, then reconciled by the reload. A rejected assign rolls the
+    // row back and says why rather than leaving a name that never landed.
+    setGames((cur) => cur.map((x) => (x.id === game.id ? { ...x, assignedRc: rcName } : x)));
+    try { await assignRcToGame(game.id, rcName); await reload(); }
+    catch (e) { setGames(previous); setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(''); }
+  };
+
+  const needle = q.trim().toLowerCase();
+  const shown = games.filter((g) => {
+    if (unassignedOnly && g.assignedRc) return false;
+    if (!needle) return true;
+    return [g.matchNo, g.league, g.location, g.homeTeam, g.awayTeam, g.firstReferee, g.secondReferee, g.assignedRc]
+      .some((v) => (v || '').toLowerCase().includes(needle));
+  });
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-stone-700">{t.games}</h2>
+      <p className="mt-1 text-xs text-stone-500">{t.gamesHint}</p>
+      {error && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <input className={cn(input, 'flex-1 min-w-[16rem]')} placeholder={t.gamesSearch} value={q} onChange={(e) => setQ(e.target.value)} />
+        <button onClick={() => setUnassignedOnly((v) => !v)} className={cn(btnGhost, unassignedOnly && 'text-red-600 border-red-200')}>
+          {t.gamesUnassigned}
+        </button>
+      </div>
+      {loading ? (
+        <div className="mt-3 flex items-center gap-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /></div>
+      ) : shown.length === 0 ? (
+        <p className="mt-3 text-sm text-stone-400">{t.gamesNone}</p>
+      ) : (
+        <div className="mt-3 space-y-2 max-h-[70vh] overflow-y-auto">
+          {shown.slice(0, 300).map((g) => (
+            <div key={g.id} className="rounded-xl border border-stone-200 p-3">
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
+                <span className="font-medium text-stone-800">{g.homeTeam} – {g.awayTeam}</span>
+                <span className="text-xs text-stone-500">{g.league} · #{g.matchNo}</span>
+              </div>
+              <p className="mt-0.5 text-xs text-stone-500">
+                {new Date(g.date).toLocaleDateString(lang === 'DE' ? 'de-CH' : 'en-GB')} · {g.location}
+                {g.firstReferee ? ` · 1SR ${g.firstReferee}` : ''}
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <label className="text-xs font-medium text-stone-500">RC:</label>
+                <select
+                  className={cn(input, 'flex-1 min-w-[12rem] max-w-sm cursor-pointer')}
+                  value={g.assignedRc || ''}
+                  disabled={busy === g.id}
+                  onChange={(e) => void assign(g, e.target.value)}
+                >
+                  <option value="">–</option>
+                  {people.map((p) => <option key={p.id} value={p.fullName}>{p.fullName}</option>)}
+                </select>
+                {busy === g.id && <Loader2 size={14} className="animate-spin text-stone-400" />}
+              </div>
+            </div>
+          ))}
+          {shown.length > 300 && (
+            // Said out loud rather than silently truncated: a list that stops at
+            // 300 without mentioning it reads as "that is all of them".
+            <p className="text-xs text-stone-400">… {shown.length - 300} more — narrow the search.</p>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function CredentialsAdmin({ t }: { t: T }) {
   const [slots, setSlots] = useState<CredentialSlotInfo[]>([]);
   const [minLength, setMinLength] = useState(10);

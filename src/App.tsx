@@ -172,7 +172,6 @@ const UI_STRINGS = {
     phone: "Telefon",
     emailLabel: "E-Mail",
     noNotes: "Keine Notizen vorhanden.",
-    rcOverview: "Referee Coaches",
     rcDone: "Erledigt",
     rcOutstanding: "Ausstehend",
     rcPlanned: "Geplant",
@@ -298,7 +297,6 @@ const UI_STRINGS = {
     phone: "Phone",
     emailLabel: "Email",
     noNotes: "No notes yet.",
-    rcOverview: "Referee Coaches",
     rcDone: "Done",
     rcOutstanding: "Outstanding",
     rcPlanned: "Planned",
@@ -340,7 +338,7 @@ type FeedbackSubView = 'coachees' | 'coacheeGames' | 'calendar' | 'feedbackForm'
 // belong to other roots and are handled in main.tsx.
 type AppRoute = {
   subView: FeedbackSubView;
-  listTab: 'home' | 'coachees' | 'games' | 'rcOverview';
+  listTab: 'home' | 'coachees' | 'games';
   rc: string | null;
 };
 
@@ -355,7 +353,6 @@ function routeToHash(r: AppRoute): string {
   if (r.subView === 'feedbackForm') return '#/form';
   if (r.subView === 'coacheeGames') return '#/coachee-games';
   if (r.subView === 'calendar') return '#/calendar';
-  if (r.listTab === 'rcOverview') return r.rc ? `#/rc/${encodeURIComponent(r.rc)}` : '#/rc';
   return `#/${r.listTab}`;
 }
 
@@ -370,7 +367,6 @@ function parseHash(hash: string, restorable: boolean): AppRoute {
     case 'calendar': return { ...DEFAULT_ROUTE, subView: 'calendar' };
     case 'form': return restorable ? { ...DEFAULT_ROUTE, subView: 'feedbackForm' } : { ...DEFAULT_ROUTE, listTab: 'games' };
     case 'coachee-games': return restorable ? { ...DEFAULT_ROUTE, subView: 'coacheeGames' } : { ...DEFAULT_ROUTE, listTab: 'coachees' };
-    case 'rc': return { ...DEFAULT_ROUTE, listTab: 'rcOverview', rc: tail || null };
     case 'coachees': return { ...DEFAULT_ROUTE, listTab: 'coachees' };
     case 'games': return { ...DEFAULT_ROUTE, listTab: 'games' };
     default: return DEFAULT_ROUTE;
@@ -892,13 +888,18 @@ export default function App() {
   // so the Home tab has no dashboard to show it — only a "Willkommen." dead
   // end. Every route that would put such a session on Home puts it on the RC
   // list instead, which is the screen it came for.
+  // A session with a console cookie and no RC name is not a coach, and this app
+  // has nothing for it now that admin work lives entirely on the admin page.
+  // Rather than inventing a landing screen, send it where it was going.
   const homelessAdmin = !rcAuth.rcName && rcAuth.isAdminSession;
-  const landingTab = (tab: AppRoute['listTab']): AppRoute['listTab'] =>
-    tab === 'home' && homelessAdmin ? 'rcOverview' : tab;
+  useEffect(() => {
+    if (homelessAdmin) window.location.hash = '/admin';
+  }, [homelessAdmin]);
+  const landingTab = (tab: AppRoute['listTab']): AppRoute['listTab'] => tab;
   // Legacy in-app database panel: no control switches to it any more, so it
   // stays out of the URL scheme.
   const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>(initialRoute.subView);
-  const [listTab, setListTab] = useState<'home' | 'coachees' | 'games' | 'rcOverview'>(() => landingTab(initialRoute.listTab));
+  const [listTab, setListTab] = useState<'home' | 'coachees' | 'games'>(() => landingTab(initialRoute.listTab));
   // `doneList` powers the "already observed" list at the bottom of Home; each
   // entry keeps its coachee id so the row can open the filed feedback.
   type HomeDone = { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result?: string; coacheeName: string; coacheeId: string };
@@ -923,7 +924,6 @@ export default function App() {
   const [rcOverviewData, setRcOverviewData] = useState<RcOverviewEntry[]>([]);
   const [rcOverviewLoading, setRcOverviewLoading] = useState(false);
   const [rcDetailTab, setRcDetailTab] = useState<'planned' | 'outstanding' | 'done'>('planned');
-  const [selectedRcName, setSelectedRcName] = useState<string | null>(initialRoute.rc);
   const [rcCoachSummaryData, setrcCoachSummaryData] = useState<rcCoachSummary[]>([]);
   const [rcCoachSummaryLoading, setrcCoachSummaryLoading] = useState(false);
   // Distinguishes a failed load from a genuinely empty season — the detail view
@@ -1070,8 +1070,9 @@ export default function App() {
   // How many tabs the nav actually renders: Home drops out for a session with no
   // dashboard, Referee Coaches for one with no admin rights. An odd count leaves
   // the last tile alone on the second mobile row, so it takes the full width.
-  const tabCount = (homelessAdmin ? 0 : 1) + 2 + (isPrivileged ? 1 : 0);
-  const oddTabOut = tabCount % 2 === 1 ? 'max-sm:col-span-2' : undefined;
+  // Three tabs in a two-column grid on a phone leaves the last one alone on its
+  // row; it spans the width instead of sitting half-empty.
+  const oddTabOut = 'max-sm:col-span-2';
   // Identity that owns any outbox item created now — a queued submission is only
   // ever sent back under this same identity, never a different coach's.
   const outboxOwnerId = rcAuth.rcId || (isPrivileged ? 'admin' : 'anon');
@@ -1214,7 +1215,7 @@ export default function App() {
   // ── URL ↔ view sync ────────────────────────────────────────────────
   // State → URL. pushState (not location.hash) so this never fires the
   // hashchange listener in main.tsx, and each view becomes a Back step.
-  const currentHash = routeToHash({ subView: feedbackSubView, listTab, rc: selectedRcName });
+  const currentHash = routeToHash({ subView: feedbackSubView, listTab, rc: null });
   const didSyncHashRef = useRef(false);
   useEffect(() => {
     if (isForeignHash(window.location.hash)) return; // main.tsx is switching roots
@@ -1240,7 +1241,6 @@ export default function App() {
       // could never get past it.
       if (tab !== r.listTab) didSyncHashRef.current = false;
       setListTab(tab);
-      setSelectedRcName(r.rc);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
@@ -1340,7 +1340,7 @@ export default function App() {
         srName: srName || prev.meta.srName,
         srNiveau: metaNiveau(coachee) || prev.meta.srNiveau,
         gruppe: normalizeCoacheeGroup(coachee?.groups) || prev.meta.gruppe,
-        rc: (!isPrivileged && rcAuth.rcName) ? rcAuth.rcName : (selectedGame.assignedRc || prev.meta.rc),
+        rc: rcAuth.rcName || selectedGame.assignedRc || prev.meta.rc,
       },
     }));
   }, [selectedGameId, selectedGame?.assignedRc, formData.role, coachees, selectedCoacheeId, openFeedbackId]);
@@ -1626,15 +1626,6 @@ export default function App() {
   // Selecting an RC — by click, by deep link (#/rc/Name) or via Back — drives
   // the detail view. One place decides whether a fetch is needed, so no path
   // can double-load and none can leave the view without data.
-  useEffect(() => {
-    if (!selectedRcName) return;
-    const key = `${selectedRcName}|${seasonStartYear}`;
-    if (rcSummaryKey === key) { pickRcDetailTab(rcCoachSummaryData); return; }
-    if (rcSummaryAttemptRef.current === key) return; // in flight, or already failed
-    rcSummaryAttemptRef.current = key;
-    void loadRcSummary(selectedRcName);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRcName, rcSummaryKey, seasonStartYear]);
 
   // Track connectivity; flush the outbox when we come back online.
   useEffect(() => {
@@ -1911,7 +1902,7 @@ export default function App() {
 
   const openFeedbackRecord = (record: FeedbackRecord) => {
     setOpenFeedbackId(record.id || null);
-    setOpenFeedbackMine(isPrivileged || (!!rcAuth.rcName && normName(record.rc_name || '') === normName(rcAuth.rcName)));
+    setOpenFeedbackMine(!!rcAuth.rcName && normName(record.rc_name || '') === normName(rcAuth.rcName));
     const payload = record.feedback_json;
     if (payload) {
       setFormData(normalizeLoadedFeedback(payload));
@@ -3497,7 +3488,7 @@ export default function App() {
               </button>
             </div>
             {/* Toggle tabs */}
-            <div className={cn("mb-3 grid grid-cols-2 gap-2", tabCount === 4 ? "sm:grid-cols-4" : "sm:grid-cols-3")}>
+            <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
               {/* Hidden rather than left to bounce off the redirect: a tab that
                   answers a click by highlighting a different one is worse than
                   no tab. See homelessAdmin. */}
@@ -3530,7 +3521,7 @@ export default function App() {
                 onClick={() => { setListTab('games'); setListSearch(''); setListPage(0); }}
                 className={cn(
                   "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
-                  !isPrivileged && oddTabOut,
+                  oddTabOut,
                   listTab === 'games'
                     ? "bg-slate-900 text-white"
                     : "bg-stone-100 text-stone-600 hover:bg-stone-200"
@@ -3538,25 +3529,6 @@ export default function App() {
               >
                 {t.gamePool}
               </button>
-              {/* An admin surface. For a coach this listed a dozen names of which
-                  only their own row opened, and that row says what Home already
-                  says — while the endpoint behind it handed over every coach's
-                  counters to anyone holding a session. The API agrees now: a
-                  plain RC is served its own row and nothing else. */}
-              {isPrivileged && (
-                <button
-                  onClick={() => { setListTab('rcOverview'); setSelectedRcName(null); }}
-                  className={cn(
-                    "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
-                    oddTabOut,
-                    listTab === 'rcOverview'
-                      ? "bg-slate-900 text-white"
-                      : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                  )}
-                >
-                  {t.rcOverview}
-                </button>
-              )}
             </div>
 
             {/* Home dashboard */}
@@ -4355,19 +4327,11 @@ export default function App() {
                                   {/* RC selector + actions */}
                                   <div className="flex flex-wrap items-center gap-3">
                                     <label className="text-xs font-medium text-stone-500">RC:</label>
-                                    {isPrivileged ? (
-                                      <select
-                                        value={game.assignedRc || ''}
-                                        onClick={(e) => e.stopPropagation()}
-                                        onChange={(e) => requestRcAssignment(game, e.target.value)}
-                                        className="h-9 px-3 text-sm border border-stone-300 rounded-md bg-white shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-red-400 transition-colors hover:border-stone-400 flex-1 min-w-[14rem] max-w-sm cursor-pointer"
-                                      >
-                                        <option value="">-</option>
-                                        {rcPeople.map((rc) => (
-                                          <option key={rc.id} value={rc.fullName}>{rc.fullName}</option>
-                                        ))}
-                                      </select>
-                                    ) : game.assignedRc && game.assignedRc === rcAuth.rcName ? (
+                                    {/* Assigning a game to someone else is an admin act and lives in
+                                        the admin console now. Here a coach takes or releases their own
+                                        game and nothing else — which is all the server ever allowed
+                                        without an admin session anyway. */}
+                                    {game.assignedRc && game.assignedRc === rcAuth.rcName ? (
                                       <button
                                         onClick={(e) => { e.stopPropagation(); void handleUnassignGame(game.id); }}
                                         className="h-9 px-3 text-sm font-medium rounded-md border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 transition-colors"
@@ -4389,46 +4353,14 @@ export default function App() {
                                         {formData.lang === 'DE' ? 'Spiel übernehmen' : 'Take game'}
                                       </button>
                                     )}
-                                    {isPrivileged && (
-                                      <button
-                                        // Flags coming from VolleyManager are read-only here — the
-                                        // marking lives in VM and comes back on the next sync.
-                                        disabled={game.vmFlagged}
-                                        onClick={async (e) => {
-                                          e.stopPropagation();
-                                          const next = !game.starred;
-                                          try {
-                                            await setGameStarred(game.id, next);
-                                            setEligibleGames((prev) => prev.map((g) => g.id === game.id ? { ...g, starred: next } : g));
-                                          } catch (err) {
-                                            setBackendNotice(err instanceof Error ? err.message : String(err));
-                                          }
-                                        }}
-                                        className={cn(
-                                          'h-9 px-3 text-sm font-medium rounded-md border transition-colors inline-flex items-center gap-1.5',
-                                          game.starred
-                                            ? 'border-amber-300 bg-amber-50 text-amber-700'
-                                            : 'border-stone-300 bg-white text-stone-600',
-                                          game.vmFlagged ? 'cursor-default opacity-90' : game.starred ? 'hover:bg-amber-100' : 'hover:bg-stone-50',
-                                        )}
-                                        title={game.vmFlagged
-                                          ? (formData.lang === 'DE'
-                                            ? 'Aus VolleyManager übernommen (RD/RSV-Markierung) — hier nicht änderbar.'
-                                            : 'Taken from VolleyManager (RD/RSV marking) — not editable here.')
-                                          : (formData.lang === 'DE' ? 'Für eine Beobachtung vormerken' : 'Flag for observation')}
-                                      >
-                                        <Star size={14} className={cn(game.starred && 'fill-amber-500 text-amber-500')} />
-                                        {game.vmFlagged
-                                          ? (formData.lang === 'DE' ? 'Vorgemerkt (VM)' : 'Flagged (VM)')
-                                          : game.starred
-                                            ? (formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged')
-                                            : (formData.lang === 'DE' ? 'Vormerken' : 'Flag')}
-                                      </button>
-                                    )}
+                                    {/* Flagging a game "we want this observed" is an admin act;
+                                        it moved to the console's Games tab. The endpoint behind it
+                                        was always /api/admin/games/:id/star. */}
                                     {(() => {
-                                      // A plain RC can only observe a game they hold; admins can observe
-                                      // any assigned game. The server enforces this too.
-                                      const canObserve = isPrivileged ? !!game.assignedRc : (!!game.assignedRc && game.assignedRc === rcAuth.rcName);
+                                      // You observe the games you hold. There used to be an admin
+                                      // exception here; admin work moved to the console, and this app
+                                      // is now the same app whoever is looking at it.
+                                      const canObserve = !!game.assignedRc && game.assignedRc === rcAuth.rcName;
                                       return (
                                     <button
                                       onClick={() => handleSelectGame(game)}
@@ -4585,208 +4517,6 @@ export default function App() {
                   );
                 })()}
               </>
-            )}
-
-            {/* RC Overview tab content */}
-            {listTab === 'rcOverview' && (
-              <div>
-                {!rcOverviewLoading && !selectedRcName && rcOverviewData.length > 0 && (
-                  <div className="flex justify-end mb-2">
-                    <button
-                      onClick={() => void refreshRcOverview()}
-                      className="text-xs text-stone-400 hover:text-stone-600 flex items-center gap-1"
-                    >
-                      <RefreshCw size={12} />
-                      {formData.lang === 'DE' ? 'Aktualisieren' : 'Refresh'}
-                    </button>
-                  </div>
-                )}
-                {(booting || rcOverviewLoading) && rcOverviewData.length === 0 && !selectedRcName ? (
-                  // Only when there is nothing to show yet — a background
-                  // refresh keeps the current table on screen.
-                  <ListLoading label={t.loading} first={booting} rows={6} framed />
-                ) : selectedRcName ? (
-                  <div>
-                    <button
-                      onClick={() => setSelectedRcName(null)}
-                      className="flex items-center gap-1.5 text-sm text-stone-600 hover:text-stone-900 mb-4"
-                    >
-                      <ArrowLeft size={16} />
-                      {t.rcBackToOverview}
-                    </button>
-                    <h3 className="text-base font-semibold text-stone-800 mb-4">{selectedRcName}</h3>
-                    {(booting || rcCoachSummaryLoading) && rcCoachSummaryData.length === 0 ? (
-                      <ListLoading label={t.loading} first={booting} rows={5} pill={false} framed className="py-16" />
-                    ) : rcCoachSummaryFailed ? (
-                      <div className="text-sm text-stone-600 flex flex-col items-start gap-2">
-                        <p>{formData.lang === 'DE' ? 'RC-Daten konnten nicht geladen werden.' : 'Could not load RC data.'}</p>
-                        <button
-                          onClick={() => { rcSummaryAttemptRef.current = null; setRcCoachSummaryFailed(false); void loadRcSummary(selectedRcName!); }}
-                          className="inline-flex items-center gap-1.5 text-red-700 hover:underline"
-                        >
-                          <RefreshCw size={14} /> {formData.lang === 'DE' ? 'Erneut versuchen' : 'Retry'}
-                        </button>
-                      </div>
-                    ) : rcCoachSummaryData.length === 0 ? (
-                      <p className="text-sm text-stone-500">{t.rcNoData}</p>
-                    ) : (
-                      (() => {
-                        // Game-centric view: one row per game, all its coachees merged onto it.
-                        // `coacheeId`/`role` are only set for done rows — they let a filed
-                        // observation be reopened (the summary carries no feedback id).
-                        type RcGameRow = { gameId?: string; gameDate: string; league: string; teams: string; names: string[]; coacheeId?: string; role?: string; noCoachee?: boolean; result?: string };
-                        const collect = (m: Map<string, RcGameRow>, key: string, base: Omit<RcGameRow, 'names'>, name: string) => {
-                          const row = m.get(key) ?? { ...base, names: [] };
-                          if (name && !row.names.includes(name)) row.names.push(name);
-                          m.set(key, row);
-                        };
-                        const plannedM = new Map<string, RcGameRow>();
-                        const outstandingM = new Map<string, RcGameRow>();
-                        const doneM = new Map<string, RcGameRow>();
-                        for (const cs of rcCoachSummaryData) {
-                          for (const g of cs.plannedGames) collect(plannedM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams, noCoachee: g.noCoachee, result: g.result }, g.refereeName);
-                          for (const g of cs.outstandingGames) collect(outstandingM, g.gameId || `${g.gameDate}|${g.teams}`, { gameId: g.gameId, gameDate: g.gameDate, league: g.league, teams: g.teams, noCoachee: g.noCoachee, result: g.result }, g.refereeName);
-                          for (const fb of cs.doneFeedbacks) collect(doneM, `${fb.gameDate}|${fb.teams}`, { gameDate: fb.gameDate, league: fb.league, teams: fb.teams, coacheeId: cs.coacheeId, role: fb.role, result: fb.result }, fb.role ? `${cs.coacheeName} (${fb.role})` : cs.coacheeName);
-                        }
-                        const de2 = formData.lang === 'DE';
-                        const sections = [
-                          // Chip colours match the overview counters: planned is
-                          // blue (nothing to do yet), open amber, done green.
-                          { key: 'planned' as const, title: t.rcPlannedGames, short: de2 ? 'Geplant' : 'Planned', chip: 'bg-blue-100 text-blue-700', rows: [...plannedM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
-                          { key: 'outstanding' as const, title: t.rcOutstandingGames, short: de2 ? 'Offen' : 'Open', chip: 'bg-amber-100 text-amber-700', rows: [...outstandingM.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate)), clickable: true },
-                          { key: 'done' as const, title: t.rcDoneFeedbacks, short: de2 ? 'Erledigt' : 'Done', chip: 'bg-green-100 text-green-700', rows: [...doneM.values()].sort((a, b) => b.gameDate.localeCompare(a.gameDate)), clickable: false, opensFeedback: true },
-                        ];
-                        const active = sections.find((s) => s.key === rcDetailTab) ?? sections[0];
-                        return (
-                          <div>
-                            {/* Equal-width tabs with the count on its own line: the full
-                                labels ("Outstanding Games (1)") wrapped to three ragged
-                                lines and gave tiny tap targets on a phone. */}
-                            <div className="grid grid-cols-3 gap-2 mb-3" role="tablist">
-                              {sections.map((s) => (
-                                <button
-                                  key={s.key}
-                                  role="tab"
-                                  aria-selected={rcDetailTab === s.key}
-                                  onClick={() => setRcDetailTab(s.key)}
-                                  className={cn(
-                                    'flex flex-col items-center justify-center gap-0.5 h-14 px-2 rounded-xl font-medium transition-colors',
-                                    rcDetailTab === s.key ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200',
-                                  )}
-                                >
-                                  <span className="text-base font-bold leading-none">{s.rows.length}</span>
-                                  <span className="text-[11px] leading-tight text-center">
-                                    <span className="sm:hidden">{s.short}</span>
-                                    <span className="hidden sm:inline">{s.title}</span>
-                                  </span>
-                                </button>
-                              ))}
-                            </div>
-                            <div className="border border-stone-200 rounded-lg overflow-hidden">
-                              {active.rows.length === 0 ? (
-                                <p className="text-sm text-stone-500 px-4 py-6 text-center">{t.rcNoFeedbacks}</p>
-                              ) : (
-                                <div className="divide-y divide-stone-100 px-4 py-1">
-                                  {active.rows.map((g, i) => {
-                                    const d = new Date(g.gameDate);
-                                    const dateStr = !isNaN(d.getTime()) ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}` : g.gameDate;
-                                    const eg = active.clickable && g.gameId ? eligibleGames.find((x) => x.id === g.gameId) : undefined;
-                                    // Planned/outstanding start an observation; done rows reopen the filed feedback.
-                                    const open = eg
-                                      ? () => handleSelectGame(eg, g.names.length === 1 ? g.names[0] : undefined)
-                                      : ('opensFeedback' in active && active.opensFeedback && g.coacheeId)
-                                        ? () => void openDoneObservation({ coacheeId: g.coacheeId!, gameDate: g.gameDate, role: g.role })
-                                        : undefined;
-                                    return (
-                                      <div
-                                        key={i}
-                                        onClick={open}
-                                        onKeyDown={open ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } } : undefined}
-                                        tabIndex={open ? 0 : undefined}
-                                        role={open ? 'button' : undefined}
-                                        className={cn('text-xs text-stone-600 py-2 sm:flex sm:flex-wrap sm:items-center sm:gap-x-3 sm:gap-y-1', open && 'cursor-pointer hover:bg-stone-50 focus-visible:bg-stone-50 focus-visible:outline-none')}
-                                        title={open
-                                          ? (active.key === 'done'
-                                            ? (formData.lang === 'DE' ? 'Feedback öffnen' : 'Open feedback')
-                                            : (formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation'))
-                                          : undefined}
-                                      >
-                                        {/* Phone: date+league, then the fixture, then people/actions.
-                                            `sm:contents` restores the original one-line desktop row. */}
-                                        <div className="flex items-center gap-2 sm:contents">
-                                          <span className="font-medium text-stone-700 sm:w-20">{dateStr}</span>
-                                          <span className="text-stone-400 sm:w-14">{g.league}</span>
-                                        </div>
-                                        <p className="mt-0.5 text-sm font-medium text-stone-800 sm:mt-0 sm:text-xs sm:font-normal sm:text-stone-600 sm:flex-1 sm:min-w-[10rem] sm:truncate">
-                                          {g.teams}
-                                        </p>
-                                        <MatchResult result={g.result} className="mt-0.5 sm:mt-0 sm:shrink-0" />
-                                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 sm:mt-0 sm:contents">
-                                          <span className="flex flex-wrap items-center gap-1.5">
-                                            {g.names.map((n) => (
-                                              <span
-                                                key={n}
-                                                className={cn('inline-flex items-center px-2 py-0.5 rounded-full', g.noCoachee ? 'border border-dashed border-stone-300 text-stone-500' : active.chip)}
-                                                title={g.noCoachee ? (formData.lang === 'DE' ? 'Kein Coachee — dieses Spiel kann nicht beobachtet werden' : 'Not a coachee — this game cannot be observed') : undefined}
-                                              >{n}</span>
-                                            ))}
-                                          </span>
-                                          {open && <Eye size={12} className="text-stone-400 shrink-0" />}
-                                          {active.clickable && g.gameId && (
-                                            <button
-                                              onClick={(e) => { e.stopPropagation(); void handleUnassignGame(g.gameId!); }}
-                                              className="shrink-0 inline-flex items-center gap-1 px-2 py-1 sm:py-0.5 rounded border border-stone-200 text-stone-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-colors"
-                                              title={formData.lang === 'DE' ? 'Spiel abgeben — wieder in der Spielliste sichtbar' : 'Give the game back — visible again in the games list'}
-                                            >
-                                              <X size={11} />{formData.lang === 'DE' ? 'Abgeben' : 'Give back'}
-                                            </button>
-                                          )}
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })()
-                    )}
-                  </div>
-                ) : rcOverviewData.length === 0 ? (
-                  <p className="text-sm text-stone-500 py-4">{t.rcNoData}</p>
-                ) : (
-                  <div className="border border-stone-200 rounded divide-y divide-stone-200">
-                    {rcOverviewData.map((rc) => {
-                      const canOpen = isPrivileged || rc.fullName === rcAuth.rcName;
-                      return (
-                      <div
-                        key={rc.id}
-                        onClick={canOpen ? () => setSelectedRcName(rc.fullName) : undefined}
-                        className={cn("px-4 py-3 transition-colors", canOpen ? "hover:bg-stone-50 cursor-pointer" : "opacity-75")}
-                      >
-                        <div className="font-medium text-sm text-stone-800">{rc.fullName}</div>
-                        {/* Another coach's workload is their business — only admins
-                            (and the coach themselves) see the counters. */}
-                        {canOpen && (
-                          <div className="mt-1.5 flex items-center gap-2">
-                            <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-green-100 text-green-700" title={t.rcDone}>
-                              {rc.done} {formData.lang === 'DE' ? 'erledigt' : 'done'}
-                            </span>
-                            <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700" title={t.rcOutstanding}>
-                              {rc.outstanding} {formData.lang === 'DE' ? 'offen' : 'open'}
-                            </span>
-                            <span className="inline-flex items-center justify-center text-xs px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-700" title={t.rcPlanned}>
-                              {rc.planned} {formData.lang === 'DE' ? 'geplant' : 'planned'}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
             )}
 
             {backendNotice && (
@@ -5059,7 +4789,7 @@ export default function App() {
           <MetaField label={t.refLevel} value={formData.meta.srNiveau} onChange={v => updateMeta('srNiveau', v)} />
           <MetaField label={t.group} value={formData.meta.gruppe} onChange={v => updateMeta('gruppe', v)} />
 
-          <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2" readOnly={!isPrivileged} />
+          <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2" readOnly />
           <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2" readOnly={!!selectedGame?.game_result && !resultUnlocked} onUnlock={() => setResultUnlocked(true)} lang={formData.lang} />
         </div>
 
@@ -5986,7 +5716,7 @@ export default function App() {
           coachee={manualUploadCoachee}
           coachees={coachees}
           rcPeople={rcPeople}
-          fixedRcName={isPrivileged ? null : rcAuth.rcName}
+          fixedRcName={rcAuth.rcName}
           lang={formData.lang}
           notice={manualUploadNotice}
           noticeIsError={Boolean(manualUploadNotice) && manualUploadNotice !== t.manualUploadSuccess && !manualUploadNotice.startsWith(t.saveOkNoEmail)}

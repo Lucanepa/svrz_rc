@@ -38,6 +38,7 @@ import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
 import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
+import { bySurname } from './lib/coacheeName';
 import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
@@ -382,6 +383,15 @@ function getRefereeForRole(game: EligibleGame, role: FeedbackFormData['role']) {
 
 function normName(value: string): string {
   return value.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, ' ');
+}
+
+/** Coachees are per-season rows. Everything the games list derives — is this
+ *  referee a coachee, at what Niveau, in which group — has to read the row for
+ *  the season on screen, or last season's people leak back onto this season's
+ *  games wearing last season's badge. Rows with no season predate the field and
+ *  are treated as season-agnostic. */
+function isInSeason(coachee: Coachee, season: number): boolean {
+  return typeof coachee.season !== 'number' || coachee.season === season;
 }
 
 function asInputDate(value: string): string {
@@ -1295,7 +1305,11 @@ export default function App() {
       return false;
     };
     const srNorm = normalizeName(srName || '');
-    const coacheeByName = coachees.find((c) => matchesNorm(c, srNorm));
+    // Prefer this season's row: `find` over the raw list answers in load order,
+    // which is last season's copy for anyone imported twice. Falling back to any
+    // season beats refusing to prefill (the server re-resolves by game date).
+    const coacheeByName = coachees.find((c) => isInSeason(c, seasonStartYear) && matchesNorm(c, srNorm))
+      ?? coachees.find((c) => matchesNorm(c, srNorm));
     // Fall back to the navigated-from coachee only if they aren't the *other* referee of this game
     const otherRef = getRefereeForRole(selectedGame, formData.role === '1. SR' ? '2. SR' : '1. SR');
     const otherNorm = normalizeName(otherRef || '');
@@ -2772,6 +2786,7 @@ export default function App() {
     () => {
       const names = new Set<string>();
       for (const c of coachees) {
+        if (!isInSeason(c, seasonStartYear)) continue;
         const fn = normName(c.full_name || '');
         if (fn) names.add(fn);
         // Also add reversed name order (server stores both variants)
@@ -2784,11 +2799,12 @@ export default function App() {
       }
       return names;
     },
-    [coachees],
+    [coachees, seasonStartYear],
   );
   const coacheeLevels = useMemo(
-    () => [...new Set(coachees.map((c) => levelDisplay(c.referee_level, c.stage).text))].sort(),
-    [coachees],
+    () => [...new Set(coachees.filter((c) => isInSeason(c, seasonStartYear))
+      .map((c) => levelDisplay(c.referee_level, c.stage).text))].sort(),
+    [coachees, seasonStartYear],
   );
   const gameLeagues = useMemo(
     () => Array.from(new Set<string>(eligibleGames.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort(),
@@ -2817,7 +2833,7 @@ export default function App() {
   const filteredCoachees = useMemo(() => {
     const q = listSearch.toLowerCase();
     const filtered = coachees.filter((c) => {
-      if (typeof c.season === 'number' && c.season !== seasonStartYear) return false;
+      if (!isInSeason(c, seasonStartYear)) return false;
       // Groups are matched in both languages: the badge in the games list may
       // read "Promotion?" while the record still says "Beförderung?".
       if (q && !(c.full_name || '').toLowerCase().includes(q) && !levelDisplay(c.referee_level, c.stage).text.toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q) && !groupLabel(c.groups, 'EN').toLowerCase().includes(q)) return false;
@@ -2840,7 +2856,8 @@ export default function App() {
     };
     const dir = listSortAsc ? 1 : -1;
     filtered.sort((a, b) => {
-      if (listSortBy === 'name') return dir * (a.full_name || '').localeCompare(b.full_name || '');
+      // Shown as "Vorname Nachname", ordered by surname — see bySurname.
+      if (listSortBy === 'name') return dir * bySurname(a, b);
       if (listSortBy === 'level') return dir * levelDisplay(a.referee_level, a.stage).text.localeCompare(levelDisplay(b.referee_level, b.stage).text);
       return dir * (statusPriority(a) - statusPriority(b));
     });
@@ -2850,8 +2867,11 @@ export default function App() {
   const coacheeByName = useMemo(() => {
     const map = new Map<string, Coachee>();
     // Coachees are per-season records; the same person can have one per season.
-    // Insert the selected season's records last so they win the name key.
-    const ordered = [...coachees].sort((a, b) =>
+    // Rows from OTHER seasons are not in this map at all — they are not coachees
+    // now, and a name that only resolves through them must not badge a game.
+    // Among what is left (this season's rows plus seasonless ones), the selected
+    // season's record is inserted last so it wins the name key.
+    const ordered = coachees.filter((c) => isInSeason(c, seasonStartYear)).sort((a, b) =>
       Number(a.season === seasonStartYear) - Number(b.season === seasonStartYear));
     for (const c of ordered) {
       const fn = normName(c.full_name || '');

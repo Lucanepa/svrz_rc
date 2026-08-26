@@ -2209,30 +2209,80 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
   };
 }
 
-async function getCoacheeNameSet(prefetchedCoachees?: AnyRecord[]): Promise<Set<string>> {
-  const coachees = prefetchedCoachees ?? await listCoacheesWithFallbackSort();
-  const names = new Set<string>();
+/** The season a game belongs to (Sept-Apr, named by its starting year), or null
+ *  when it carries no usable date. Null means "match any season" rather than
+ *  "drop it" — an undated fixture is a data gap, not a reason to hide a game. */
+function seasonOfGame(value: unknown): number | null {
+  const text = asText(value);
+  if (!text) return null;
+  const d = new Date(text);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.getMonth() >= 8 ? d.getFullYear() : d.getFullYear() - 1;
+}
 
-  const addVariant = (value: unknown) => {
-    const normalized = normalizeName(value);
-    if (normalized) {
-      names.add(normalized);
-    }
-  };
+// Coachees are per-season rows: a referee coached in 25/26 who was not imported
+// for 26/27 is NOT a coachee this season. Matching games against one flat set of
+// every name ever imported put last season's people back on this season's game
+// list, wearing last season's Niveau and groups on the badge — a group that no
+// longer exists at all. So names are indexed BY season, and a game is matched
+// against the season its OWN date falls in, not against whichever season the
+// reader happens to have open.
+//
+// Rows with no season (imports predating the field) stay season-agnostic and
+// match everywhere — the same rule the coachee list applies.
+type CoacheeNameIndex = {
+  /** Names that are coachees in `season`; null matches every season. */
+  forSeason: (season: number | null) => Set<string>;
+  /** Distinct names across all seasons — for diagnostics, not for matching. */
+  size: number;
+};
+
+async function getCoacheeNameIndex(prefetchedCoachees?: AnyRecord[]): Promise<CoacheeNameIndex> {
+  const coachees = prefetchedCoachees ?? await listCoacheesWithFallbackSort();
+  const bySeason = new Map<number, Set<string>>();
+  const seasonless = new Set<string>();
+  const everyone = new Set<string>();
 
   for (const coachee of coachees) {
     const firstName = asText(coachee.first_name ?? coachee.vorname);
     const lastName = asText(coachee.last_name ?? coachee.nachname);
+    // Number(null) and Number('') are both 0 — a falsy season must not be read
+    // as the year zero, or every seasonless row lands in a bucket of its own.
+    const raw = coachee.season;
+    const season = raw == null || raw === '' ? Number.NaN : Number(raw);
+    let target = seasonless;
+    if (Number.isFinite(season)) {
+      target = bySeason.get(season) ?? new Set<string>();
+      bySeason.set(season, target);
+    }
 
-    addVariant(coachee.full_name);
-    addVariant(coachee.name);
-    addVariant(coachee.coachee_name);
-    addVariant(coachee.referee_name);
-    addVariant(`${firstName} ${lastName}`.trim());
-    addVariant(`${lastName} ${firstName}`.trim());
+    for (const variant of [
+      coachee.full_name,
+      coachee.name,
+      coachee.coachee_name,
+      coachee.referee_name,
+      `${firstName} ${lastName}`.trim(),
+      `${lastName} ${firstName}`.trim(),
+    ]) {
+      const normalized = normalizeName(variant);
+      if (!normalized) continue;
+      target.add(normalized);
+      everyone.add(normalized);
+    }
   }
 
-  return names;
+  const merged = new Map<number, Set<string>>();
+  return {
+    size: everyone.size,
+    forSeason: (season) => {
+      if (season == null || !Number.isFinite(season)) return everyone;
+      const cached = merged.get(season);
+      if (cached) return cached;
+      const set = new Set<string>([...(bySeason.get(season) ?? []), ...seasonless]);
+      merged.set(season, set);
+      return set;
+    },
+  };
 }
 
 async function listCoacheesWithFallbackSort(): Promise<AnyRecord[]> {
@@ -2254,13 +2304,13 @@ async function listCoacheesWithFallbackSort(): Promise<AnyRecord[]> {
 
 async function getEligibleGames() {
   await ensureAdminAuth();
-  const coacheeNameSet = await getCoacheeNameSet();
+  const coacheeNames = await getCoacheeNameIndex();
 
-  if (coacheeNameSet.size === 0) return [];
+  if (coacheeNames.size === 0) return [];
 
-  const matchesCoachee = (value: unknown) => {
+  const matchesCoachee = (season: number | null, value: unknown) => {
     const text = normalizeName(value);
-    return text ? coacheeNameSet.has(text) : false;
+    return text ? coacheeNames.forSeason(season).has(text) : false;
   };
 
   // Fetch all games in a single request and filter in-memory
@@ -2287,9 +2337,10 @@ async function getEligibleGames() {
     }
   })();
 
-  const games = allGames.filter((game) =>
-    matchesCoachee(game.first_referee) || matchesCoachee(game.second_referee),
-  );
+  const games = allGames.filter((game) => {
+    const season = seasonOfGame(game.match_date);
+    return matchesCoachee(season, game.first_referee) || matchesCoachee(season, game.second_referee);
+  });
 
   return games.map((game) => ({
     id: game.id,
@@ -2478,18 +2529,20 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
   const { from, to } = resolveSyncWindow(windowInput);
   const { jar, csrfToken, windowUniqueId } = await vmLogin(vmUsername, vmPassword);
   const { items } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
-  const coacheeNames = await getCoacheeNameSet();
+  const coacheeNames = await getCoacheeNameIndex();
+  // Per row, because a sync window can straddle a season boundary and last
+  // season's coachees must not pull this season's games in (or vice versa).
+  const hasCoacheeOnRow = (row: Record<string, unknown>) => {
+    const names = coacheeNames.forSeason(seasonOfGame(row.match_date));
+    const assignedPeople = Array.isArray(row._assigned_people) ? row._assigned_people : [];
+    return assignedPeople.map((name) => normalizeName(name)).some((name) => names.has(name));
+  };
 
   const transformed = items
     .map((raw) => transformVmGame(raw as Record<string, unknown>))
     .filter((row) => asText(row.match_no));
 
-  const matchedRows = transformed.filter((row) => {
-    const assignedPeople = Array.isArray(row._assigned_people) ? row._assigned_people : [];
-    return assignedPeople
-      .map((name) => normalizeName(name))
-      .some((name) => coacheeNames.has(name));
-  });
+  const matchedRows = transformed.filter(hasCoacheeOnRow);
 
   let imported = 0;
   for (const row of matchedRows) {
@@ -2581,33 +2634,31 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
   const { from, to } = resolveSyncWindow(windowInput);
   const { jar, csrfToken, windowUniqueId } = await vmLogin(vmUsername, vmPassword);
   const { items } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
-  const coacheeNames = await getCoacheeNameSet();
+  const coacheeNames = await getCoacheeNameIndex();
+  // Per row, because a sync window can straddle a season boundary and last
+  // season's coachees must not pull this season's games in (or vice versa).
+  const hasCoacheeOnRow = (row: Record<string, unknown>) => {
+    const names = coacheeNames.forSeason(seasonOfGame(row.match_date));
+    const assignedPeople = Array.isArray(row._assigned_people) ? row._assigned_people : [];
+    return assignedPeople.map((name) => normalizeName(name)).some((name) => names.has(name));
+  };
 
   const transformed = items
     .map((raw) => transformVmGame(raw as Record<string, unknown>))
     .filter((row) => asText(row.match_no));
   const requestedMatchNo = asText((windowInput as Record<string, unknown>).matchNo ?? (windowInput as Record<string, unknown>).match_no);
 
-  const matchedRows = transformed.filter((row) => {
-    const assignedPeople = Array.isArray(row._assigned_people) ? row._assigned_people : [];
-    return assignedPeople
-      .map((name) => normalizeName(name))
-      .some((name) => coacheeNames.has(name));
-  });
-  const unmatchedRows = transformed.filter((row) => {
-    const assignedPeople = Array.isArray(row._assigned_people) ? row._assigned_people : [];
-    return !assignedPeople
-      .map((name) => normalizeName(name))
-      .some((name) => coacheeNames.has(name));
-  });
+  const matchedRows = transformed.filter(hasCoacheeOnRow);
+  const unmatchedRows = transformed.filter((row) => !hasCoacheeOnRow(row));
 
   const unmatchedNameCounts = new Map<string, number>();
   for (const row of unmatchedRows) {
+    const names = coacheeNames.forSeason(seasonOfGame(row.match_date));
     const assignedPeople = Array.isArray(row._assigned_people) ? row._assigned_people : [];
     for (const name of assignedPeople) {
       const displayName = asText(name);
       const normalized = normalizeName(displayName);
-      if (!normalized || coacheeNames.has(normalized)) {
+      if (!normalized || names.has(normalized)) {
         continue;
       }
       unmatchedNameCounts.set(displayName, (unmatchedNameCounts.get(displayName) ?? 0) + 1);
@@ -2635,14 +2686,15 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
     ? (() => {
         const assignedPeople = Array.isArray(matchNoLookup._assigned_people) ? matchNoLookup._assigned_people : [];
         const normalizedAssigned = assignedPeople.map((name) => normalizeName(name));
-        const matchedNames = assignedPeople.filter((name) => coacheeNames.has(normalizeName(name)));
+        const seasonNames = coacheeNames.forSeason(seasonOfGame(matchNoLookup.match_date));
+        const matchedNames = assignedPeople.filter((name) => seasonNames.has(normalizeName(name)));
         return {
           match_no: asText(matchNoLookup.match_no),
           league: asText(matchNoLookup.league),
           match_date: asText(matchNoLookup.match_date),
           assigned_people: assignedPeople,
           normalized_assigned_people: normalizedAssigned,
-          has_coachee_match: normalizedAssigned.some((name) => coacheeNames.has(name)),
+          has_coachee_match: normalizedAssigned.some((name) => seasonNames.has(name)),
           matched_people: matchedNames,
           raw: rawMatchItem ?? null,
         };
@@ -4062,11 +4114,11 @@ type PresidentNoteEntry = {
   updatedAt: string;
 };
 
-/** Season a date belongs to, named by its starting year (Sept–Apr). */
+/** Season a date belongs to, named by its starting year (Sept–Apr). Undated
+ *  input keeps its old answer (the current calendar year) — president-note keys
+ *  are written with it and must not shift. */
 function seasonOfDate(value: string): number {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return new Date().getFullYear();
-  return d.getMonth() >= 8 ? d.getFullYear() : d.getFullYear() - 1;
+  return seasonOfGame(value) ?? new Date().getFullYear();
 }
 
 const presidentNotesKey = (season: number) => `${PRESIDENT_NOTES_PREFIX}${season}`;
@@ -4582,7 +4634,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
     const feedbackGameIds = new Set(rcFeedbacks.map((fb) => String(fb.game || '')));
 
     // Get coachee name set for referee matching
-    const coacheeNameSet = await getCoacheeNameSet();
+    const coacheeNames = await getCoacheeNameIndex();
 
     // Group by coachee
     const coacheeMap = new Map<string, {
@@ -4638,7 +4690,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       for (const ref of [game.first_referee, game.second_referee]) {
         const refName = asText(ref);
         if (!refName) continue;
-        if (!coacheeNameSet.has(normalizeName(refName))) continue;
+        if (!coacheeNames.forSeason(seasonOfGame(game.match_date)).has(normalizeName(refName))) continue;
         matched = true;
         const entry = getOrCreate(refName, '');
         const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: refName, result };

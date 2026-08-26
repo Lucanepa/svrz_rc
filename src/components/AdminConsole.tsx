@@ -20,6 +20,7 @@ import {
   type CoacheeTarget, type CoacheeTargetMap, type TargetRole,
 } from '../lib/niveauTargets';
 import { SURVEY_QUESTIONS, questionLabel, type SurveyQuestion } from '../lib/survey';
+import { bySurname } from '../lib/coacheeName';
 import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap } from '../types';
 import LevelText from './LevelText';
 import { Skeleton, SkeletonRows } from './Skeleton';
@@ -646,7 +647,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
 
   const reload = useCallback(async () => { setLoading(true); try { setAll(await listCoachees()); } catch (e) { setNotice(String(e)); } finally { setLoading(false); } }, []);
   useEffect(() => { void reload(); }, [reload]);
-  const rows = all.filter((c) => (typeof c.season === 'number' ? c.season === season : false)).sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
+  const rows = all.filter((c) => (typeof c.season === 'number' ? c.season === season : false)).sort(bySurname);
 
   // Same reason as RcsAdmin: a failed write left the console looking like it
   // had worked.

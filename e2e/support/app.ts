@@ -65,6 +65,14 @@ export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promi
   const name = opts.signedInAs ?? RC.name;
   // Catch-all first, so an endpoint nobody named still answers something valid.
   await page.route('**/api/**', (r) => r.fulfill({ json: [] }));
+  // The live stream, answered as a stream. Left to the catch-all it came back as
+  // JSON, and EventSource logged a MIME-type error into every test's console —
+  // noise that one spec asserts the absence of, for good reason.
+  await page.route('**/api/events', (r) => r.fulfill({
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache' },
+    body: 'retry: 60000\n\n',
+  }));
   await page.route('**/api/auth/me', (r) => r.fulfill({
     json: {
       rc: { id: RC.id, name },

@@ -36,6 +36,7 @@ import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
+import { subscribeLive } from './lib/liveEvents';
 import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname } from './lib/coacheeName';
@@ -1035,6 +1036,11 @@ export default function App() {
   const [resultUnlocked, setResultUnlocked] = useState(false);
   const [showJson, setShowJson] = useState(false);
   const [eligibleGames, setEligibleGames] = useState<EligibleGame[]>([]);
+  // Read by the live-event handler, which needs to know who held a game BEFORE
+  // the pushed change without making its effect depend on the whole list — that
+  // dependency would tear the stream down and rebuild it on every refresh.
+  const eligibleGamesRef = useRef<EligibleGame[]>([]);
+  useEffect(() => { eligibleGamesRef.current = eligibleGames; }, [eligibleGames]);
   // A pending RC assignment held back by the "already observed" notice.
   const [takeNotice, setTakeNotice] = useState<{ gameId: string; rcName: string; previousRc?: string; observed: Array<{ name: string; count: number }> } | null>(null);
   const [rcPeople, setRcPeople] = useState<RefereeCoachPerson[]>([]);
@@ -1763,12 +1769,34 @@ export default function App() {
     }
   };
 
-  // Whoever takes or gives back a game changes what everyone else may take, and
-  // nothing pushes that out: a coach who left the list open would keep seeing
-  // "übernehmen" on a game that is gone, and only learn otherwise by tapping it.
-  // So the visible tab refetches on its own — on an interval while the tab is in
-  // the foreground, and immediately when the window is looked at again, which is
-  // when a phone left on the games list comes back after somebody else's tap.
+  // Whoever takes or gives back a game changes what everyone else may take. The
+  // API pushes that out over /api/events, and this applies it the moment it
+  // lands: an assignment is patched into the row by id — the payload says who
+  // holds it now, so there is nothing to go and ask.
+  const [liveConnected, setLiveConnected] = useState(false);
+  useEffect(() => {
+    if (!rcAuth.rcName) return;
+    return subscribeLive((event) => {
+      if (event.type === 'game.assignment') {
+        setEligibleGames((prev) => prev.map((g) => (g.id === event.gameId ? { ...g, assignedRc: event.assignedRc } : g)));
+        // Counters and "next appointments" are per coach, so they only move when
+        // the game changed hands to or from this one.
+        const mine = normName(event.assignedRc || '') === normName(rcAuth.rcName || '');
+        const wasMine = eligibleGamesRef.current.some((g) => g.id === event.gameId && normName(g.assignedRc || '') === normName(rcAuth.rcName || ''));
+        if (mine || wasMine) void loadHome();
+      } else if (event.type === 'games.synced') {
+        void syncGamesQuietly();
+      } else if (event.type === 'settings.changed') {
+        void loadSettings();
+      }
+    }, setLiveConnected);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rcAuth.rcName]);
+
+  // The poll stays, as the answer to a stream that quietly died — a hotel WiFi,
+  // a proxy that eats text/event-stream, an iOS tab suspended in the background.
+  // While the stream is live it drops to a slow heartbeat; when it is not, it is
+  // the only thing keeping the list honest and goes back to 45 seconds.
   useEffect(() => {
     if (!rcAuth.rcName) return;
     const refresh = () => {
@@ -1785,7 +1813,7 @@ export default function App() {
       last = now;
       refresh();
     };
-    const timer = window.setInterval(refresh, 45_000);
+    const timer = window.setInterval(refresh, liveConnected ? 300_000 : 45_000);
     window.addEventListener('focus', onWake);
     document.addEventListener('visibilitychange', onWake);
     return () => {
@@ -1794,7 +1822,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', onWake);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listTab, rcAuth.rcName, seasonStartYear]);
+  }, [listTab, rcAuth.rcName, seasonStartYear, liveConnected]);
 
   // Handing a game back used to mean finding it in the games list and opening
   // its card. From Home it is one tap on the row that already shows it — the

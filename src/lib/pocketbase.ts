@@ -6,7 +6,7 @@ import { isDemoMode } from './demo';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
-function apiUrl(path: string): string {
+export function apiUrl(path: string): string {
   // Keep local dev behavior (`/api/...`) when no explicit API base is configured.
   if (!API_BASE_URL) return path;
   const normalizedBase = API_BASE_URL.replace(/\/+$/, '');

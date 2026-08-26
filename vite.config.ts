@@ -47,7 +47,10 @@ export default defineConfig(() => {
               // cross-origin request when the match starts at index 0, and in
               // production the API is a different origin (rc-api.lucanepa.com) —
               // so the pattern matched nothing and offline data never worked.
-              urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/'),
+              // /api/events is a live stream, not a document: caching it would
+              // store a response that never ends, and replaying it offline would
+              // hand the app an hour-old frame as if it had just arrived.
+              urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/') && url.pathname !== '/api/events',
               method: 'GET',
               handler: 'NetworkFirst',
               options: {

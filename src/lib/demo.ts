@@ -186,7 +186,7 @@ let _store: DemoStore | null = null;
 
 function buildStore(): DemoStore {
   // referee_level = Niveau (N1–N4), stage = Stufe (numeric). Each coachee's
-  // games are set at their target Liga so they survive the "Matching only"
+  // games are set at their focus Liga so they survive the "In focus only"
   // (Niveau-target) filter — see NIVEAU_TABLE in niveauTargets.ts.
   const coachees: Coachee[] = [
     {

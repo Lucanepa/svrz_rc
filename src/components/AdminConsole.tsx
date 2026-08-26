@@ -53,7 +53,7 @@ function mapGroups(s: string): string {
   return out.map((g) => GROUP_MAP[g] || g).join('/');
 }
 
-export const STR = {
+const STR = {
   DE: {
     admin: 'Admin', logout: 'Abmelden', login: 'Anmelden', adminUser: 'Benutzername', adminPw: 'Admin-Passwort',
     // Which half was wrong is deliberately not said — the server does not tell
@@ -115,16 +115,18 @@ export const STR = {
     shortcutToggle: 'Admin-Link in der Toolbar zeigen (nur Anzeige — gibt keine Rechte)',
     games: 'Spiele', overview: 'Übersicht',
     niveau: 'Niveau',
-    nvHint: 'Welche Spiele als Beobachtung zählen — pro Niveau/Stufe, Kategorie und Rolle. Angeklickt heisst: das Spiel erscheint in der Spielliste des Coachees. Nichts angeklickt heisst: in dieser Kategorie und Rolle keine Zielspiele („x" in der offiziellen Tabelle).',
+    nvHint: 'Auf welche Spiele ein SR dieser Stufe im Fokus steht — pro Kategorie und Rolle. Angeklickt heisst: das Spiel erscheint in der Spielliste des Coachees. Nichts angeklickt heisst: in dieser Kategorie und Rolle keine Fokus-Spiele („x" in der offiziellen Tabelle).',
     nvOfficial: 'Offizielle Tabelle, Stand 9. April 2026',
     nvReset: 'Auf offizielle Tabelle zurücksetzen',
     nvResetConfirm: 'Alle Abweichungen verwerfen und die offizielle Tabelle wiederherstellen?',
     nvNoChanges: 'Keine Abweichung von der offiziellen Tabelle',
+    nvFocus: 'Fokus-Spiele',
+    nvNotBlocking: 'Der Fokus blendet nur aus, er sperrt nichts: RC schalten jederzeit auf „Alle Spiele" um und können auch ein Spiel ausserhalb des Fokus übernehmen und beurteilen.',
     nvChanged: (n: number) => `${n} Zelle${n === 1 ? '' : 'n'} weicht von der offiziellen Tabelle ab`,
     nvMen: 'Herren', nvWomen: 'Damen', nvU23: 'U23',
     nv1sr: '1. SR', nv2sr: '2. SR',
-    nvU23Note: 'nur 1. SR',
-    nvU23Men: 'HU23 · Männer', nvU23Women: 'DU23 · Frauen',
+    nvU23Men: 'HU23', nvU23Women: 'DU23',
+    nvU23MenNote: 'U23 Männer', nvU23WomenNote: 'U23 Frauen',
     nvLevel: 'Niveau · Stufe',
     nvLegend: 'NL = Nationalliga · Zahl = Liga · U23: 1.–3. Liga (im VolleyManager „Stärkeklasse")',
     nvFam: {
@@ -163,7 +165,7 @@ export const STR = {
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} neu, ${u} aktualisiert (von ${t}).`,
     importFail: (e: string) => `Import fehlgeschlagen: ${e}`,
     groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppe(n)', toApp: 'Zur App',
-    target: 'Ziel-Spiele', targetHint: 'Welche Spiele für diesen SR relevant sind. Standard: automatisch aus dem Niveau (offizielle SVRZ-Tabelle).',
+    target: 'Fokus-Spiele', targetHint: 'Auf welche Spiele dieser SR im Fokus steht. Standard: automatisch aus dem Niveau (offizielle SVRZ-Tabelle, Tab „Niveau").',
     targetAuto: 'Auto (Niveau)', targetAll: 'Alle Spiele', targetCustom: 'Eigen', targetRoles: 'Rolle(n)', targetLeagues: 'Ligen', chooseLeagues: 'Ligen wählen', edit: 'Bearbeiten', deleteLabel: 'Löschen', done: 'Fertig',
     colMandate: 'Pensum', mandateLabel: 'Pensum (Beobachtungen pro Saison)',
     mandateHint: (fallback: number) => `Wie viele Beobachtungen dieser RC pro Saison übernimmt. Leer = Standard (${fallback}). 0 ist erlaubt und schränkt nichts ein — das Pensum ist rein informativ.`,
@@ -229,16 +231,18 @@ export const STR = {
     shortcutToggle: 'Show the admin link in their toolbar (display only — grants nothing)',
     games: 'Games', overview: 'Overview',
     niveau: 'Levels',
-    nvHint: 'Which games count as an observation — per level, category and role. Lit means the game shows up in that coachee\'s game list. Nothing lit means no target games in this category and role (an "x" in the official table).',
+    nvHint: 'Which games a referee at this level is focused on — per category and role. Lit means the game shows up in that coachee\'s game list. Nothing lit means no focused games in this category and role (an "x" in the official table).',
     nvOfficial: 'Official table, as of 9 April 2026',
     nvReset: 'Reset to the official table',
     nvResetConfirm: 'Discard every deviation and restore the official table?',
     nvNoChanges: 'No deviation from the official table',
+    nvFocus: 'Focused games',
+    nvNotBlocking: 'The focus only hides, it never blocks: coaches can switch to "All games" at any time, and take and assess a game outside the focus.',
     nvChanged: (n: number) => `${n} cell${n === 1 ? '' : 's'} differ${n === 1 ? 's' : ''} from the official table`,
     nvMen: 'Men', nvWomen: 'Women', nvU23: 'U23',
     nv1sr: '1st ref', nv2sr: '2nd ref',
-    nvU23Note: '1st ref only',
-    nvU23Men: 'HU23 · men', nvU23Women: 'DU23 · women',
+    nvU23Men: 'HU23', nvU23Women: 'DU23',
+    nvU23MenNote: 'U23 men', nvU23WomenNote: 'U23 women',
     nvLevel: 'Niveau · Stufe',
     nvLegend: 'NL = national league · digit = Liga · U23: 1.–3. Liga (“Stärkeklasse” in VolleyManager)',
     nvFam: {
@@ -277,7 +281,7 @@ export const STR = {
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} new, ${u} updated (of ${t}).`,
     importFail: (e: string) => `Import failed: ${e}`,
     groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Group(s)', toApp: 'To app',
-    target: 'Target games', targetHint: 'Which games are relevant for this referee. Default: automatic from the Niveau (official SVRZ table).',
+    target: 'Focused games', targetHint: 'Which games this referee is focused on. Default: automatic from the level (official SVRZ table, "Levels" tab).',
     targetAuto: 'Auto (level)', targetAll: 'All games', targetCustom: 'Custom', targetRoles: 'Role(s)', targetLeagues: 'Leagues', chooseLeagues: 'Choose leagues', edit: 'Edit', deleteLabel: 'Delete', done: 'Done',
     colMandate: 'Target', mandateLabel: 'Season target (observations)',
     mandateHint: (fallback: number) => `How many observations this coach takes on per season. Empty = the default (${fallback}). 0 is allowed and restricts nothing — the target is informative only.`,
@@ -713,18 +717,19 @@ function TargetEditor({ t, target, onChange, leagueOptions }: { t: T; target: Co
 // plus HU23/DU23 as 1. SR). A cell is a SET of leagues, because the paper writes
 // "DU23 2. + 3. Liga" — see NIVEAU_TABLE.
 //
-// Two layouts, no sideways scroll in either: the table needs ~700px and appears
-// from md up; below that (every phone) each level becomes a card with one
-// labelled row per cell. The league chips wrap inside their cell, so nothing
-// overflows even when the window lands between the two.
-export function NiveauAdmin({ t, table, onTable, loading }: { t: T; table: NiveauMatrix; onTable: (next: NiveauMatrix) => void; loading: boolean }) {
+// Two layouts, and neither ever scrolls sideways: the table needs ~750px of the
+// container, so it appears from lg up; below that — every phone, and a narrow
+// window — each level becomes a card with one labelled row per cell. The league
+// chips sit in a grid that reflows with the layout, so nothing overflows at any
+// width in between.
+function NiveauAdmin({ t, table, onTable, loading }: { t: T; table: NiveauMatrix; onTable: (next: NiveauMatrix) => void; loading: boolean }) {
   const columns: { id: NiveauColumn; label: string }[] = [
     { id: 'H1', label: `${t.nvMen} ${t.nv1sr}` },
     { id: 'H2', label: `${t.nvMen} ${t.nv2sr}` },
     { id: 'D1', label: `${t.nvWomen} ${t.nv1sr}` },
     { id: 'D2', label: `${t.nvWomen} ${t.nv2sr}` },
-    { id: 'JH', label: t.nvU23Men },
-    { id: 'JD', label: t.nvU23Women },
+    { id: 'JH', label: `${t.nvU23Men} ${t.nv1sr}` },
+    { id: 'JD', label: `${t.nvU23Women} ${t.nv1sr}` },
   ];
   const changedCells = NIVEAU_LEVELS.reduce((n, key) => n + columns.filter((c) => !sameCell(table[key][c.id], NIVEAU_TABLE[key][c.id])).length, 0);
   const changedRows = NIVEAU_LEVELS.filter((key) => !sameNiveauRow(table[key], NIVEAU_TABLE[key]));
@@ -742,11 +747,16 @@ export function NiveauAdmin({ t, table, onTable, loading }: { t: T; table: Nivea
     onTable(resolveNiveauTable(null));
   };
 
+  // A grid, not a wrapping row: six leagues land as one row of six on a phone
+  // (where the cell has the card's full width) and as a tidy 3 + 3 block in the
+  // narrow table columns, instead of the ragged "NL 1 2 3 4 / 5" a flex wrap
+  // produces. U23 has three, so it is one row everywhere.
   const cell = (key: string, column: NiveauColumn) => {
     const values = table[key][column];
     const changed = !sameCell(values, NIVEAU_TABLE[key][column]);
+    const u23 = column === 'JH' || column === 'JD';
     return (
-      <span className={cn('inline-flex flex-wrap justify-center gap-1 rounded-lg p-1', changed && 'bg-amber-50 ring-1 ring-amber-300')}>
+      <span className={cn('grid w-fit gap-1 rounded-lg p-1', u23 ? 'grid-cols-3' : 'grid-cols-6 lg:grid-cols-3', changed && 'bg-amber-50 ring-1 ring-amber-300')}>
         {divisionsFor(column).map((d) => {
           const on = values.includes(d);
           return (
@@ -757,7 +767,7 @@ export function NiveauAdmin({ t, table, onTable, loading }: { t: T; table: Nivea
               aria-label={`${key} · ${columns.find((c) => c.id === column)?.label} · ${d === 'NL' ? 'NL' : `${d}. Liga`}`}
               onClick={() => toggle(key, column, d)}
               className={cn(
-                'h-6 min-w-[26px] px-1 rounded-md border text-[11px] font-medium tabular-nums transition-colors',
+                'h-6 min-w-[26px] px-1 rounded-md border text-[11px] font-medium tabular-nums leading-none transition-colors',
                 on ? 'bg-slate-900 text-white border-transparent' : 'bg-white border-stone-300 text-stone-400 hover:bg-stone-100 hover:text-stone-600',
               )}
             >{d}</button>
@@ -773,30 +783,45 @@ export function NiveauAdmin({ t, table, onTable, loading }: { t: T; table: Nivea
   return (
     <div className="bg-white rounded-2xl border border-stone-200/70 shadow-sm p-4 sm:p-5">
       <div className="flex flex-wrap items-start gap-2 mb-1">
-        <h2 className="text-base font-semibold text-stone-800">{t.niveau}</h2>
+        <h2 className="text-base font-semibold text-stone-800">{t.niveau} · {t.nvFocus}</h2>
         <span className="ml-auto text-[11px] text-stone-400 border border-stone-200 rounded-full px-2.5 py-1">{t.nvOfficial}</span>
       </div>
-      <p className="text-xs text-stone-500 mb-3 max-w-2xl">{t.nvHint}</p>
+      <p className="text-xs text-stone-500 max-w-2xl">{t.nvHint}</p>
+      {/* Asked out loud the first time somebody read this table: an unlit cell
+          looks like a ban. It is not — it decides the default view, nothing
+          else — and that belongs next to the grid, not in a wiki. */}
+      <p className="text-xs text-stone-400 mb-3 mt-1 max-w-2xl">{t.nvNotBlocking}</p>
 
       {loading ? <SkeletonRows rows={9} /> : (
         <>
-          {/* Desktop: the whole table at a glance. */}
-          <div className="hidden md:block border border-stone-200 rounded-xl overflow-hidden">
+          {/* Desktop: the whole table at a glance. It needs ~750px of the
+              container, which arrives at lg — below that the cards take over. */}
+          <div className="hidden lg:block border border-stone-200 rounded-xl overflow-hidden">
             <table className="w-full table-fixed border-collapse text-sm">
               <thead>
-                <tr className="bg-stone-50 text-[10px] uppercase tracking-wider text-stone-500">
-                  <th rowSpan={2} className="w-[132px] text-left font-semibold px-3 py-2 border-b border-stone-200">{t.nvLevel}</th>
-                  <th colSpan={2} className="font-semibold px-2 py-2 border-b border-l border-stone-200">{t.nvMen}</th>
-                  <th colSpan={2} className="font-semibold px-2 py-2 border-b border-l border-stone-200">{t.nvWomen}</th>
-                  <th colSpan={2} className="font-semibold px-2 py-2 border-b border-l border-stone-200">{t.nvU23} <span className="normal-case tracking-normal text-stone-400">· {t.nvU23Note}</span></th>
+                {/* Two header rows that line up column by column: the category
+                    on top, the role directly under it — HU23 and DU23 included,
+                    which is why they are groups of their own rather than a
+                    shared "U23" whose second row would carry genders where the
+                    others carry roles. */}
+                <tr className="bg-stone-50 text-xs text-stone-600">
+                  <th rowSpan={2} className="w-[132px] text-left font-semibold px-3 py-2 border-b border-stone-200 align-top">{t.nvLevel}</th>
+                  <th colSpan={2} className="font-semibold px-2 pt-2 pb-1">{t.nvMen}</th>
+                  <th colSpan={2} className="font-semibold px-2 pt-2 pb-1 border-l border-stone-200">{t.nvWomen}</th>
+                  <th className="font-semibold px-2 pt-2 pb-1 border-l border-stone-200">
+                    {t.nvU23Men}<span className="block text-[10px] font-normal text-stone-400">{t.nvU23MenNote}</span>
+                  </th>
+                  <th className="font-semibold px-2 pt-2 pb-1">
+                    {t.nvU23Women}<span className="block text-[10px] font-normal text-stone-400">{t.nvU23WomenNote}</span>
+                  </th>
                 </tr>
-                <tr className="bg-stone-50 text-[10px] uppercase tracking-wider text-stone-400">
-                  <th className="font-medium px-2 pb-2 border-b border-l border-stone-200">{t.nv1sr}</th>
-                  <th className="font-medium px-2 pb-2 border-b border-stone-200">{t.nv2sr}</th>
-                  <th className="font-medium px-2 pb-2 border-b border-l border-stone-200">{t.nv1sr}</th>
-                  <th className="font-medium px-2 pb-2 border-b border-stone-200">{t.nv2sr}</th>
-                  <th className="font-medium px-2 pb-2 border-b border-l border-stone-200">{t.nvU23Men}</th>
-                  <th className="font-medium px-2 pb-2 border-b border-stone-200">{t.nvU23Women}</th>
+                <tr className="bg-stone-50 text-[11px] text-stone-400">
+                  <th className="font-normal px-2 pb-2 border-b border-stone-200">{t.nv1sr}</th>
+                  <th className="font-normal px-2 pb-2 border-b border-stone-200">{t.nv2sr}</th>
+                  <th className="font-normal px-2 pb-2 border-b border-l border-stone-200">{t.nv1sr}</th>
+                  <th className="font-normal px-2 pb-2 border-b border-stone-200">{t.nv2sr}</th>
+                  <th className="font-normal px-2 pb-2 border-b border-l border-stone-200">{t.nv1sr}</th>
+                  <th className="font-normal px-2 pb-2 border-b border-stone-200">{t.nv1sr}</th>
                 </tr>
               </thead>
               <tbody>
@@ -824,18 +849,22 @@ export function NiveauAdmin({ t, table, onTable, loading }: { t: T; table: Nivea
             </table>
           </div>
 
-          {/* Phones: the table needs ~700px, so each level gets a card instead. */}
-          <div className="md:hidden space-y-2.5">
-            {NIVEAU_LEVELS.map((key) => (
+          {/* Phones and narrow windows: one card per level. */}
+          <div className="lg:hidden space-y-2.5">
+            {NIVEAU_LEVELS.map((key, i) => (
               <div key={key} className="border border-stone-200 rounded-xl p-3">
-                <div className="flex items-baseline gap-2 mb-2">
+                <div className="mb-2">
                   <span className="font-mono text-xs font-semibold text-stone-800">{key}</span>
-                  <span className="text-[10px] leading-tight text-stone-400 truncate">{familyNote(key)}</span>
+                  {(i === 0 || family(key) !== family(NIVEAU_LEVELS[i - 1])) && familyNote(key) && (
+                    <span className="block text-[10px] leading-tight text-stone-400">{familyNote(key)}</span>
+                  )}
                 </div>
-                <div className="grid grid-cols-[minmax(0,7.5rem)_1fr] gap-x-3 gap-y-1.5 items-center">
+                {/* 5.5rem for the label leaves a phone enough room for all six
+                    leagues on one line — see the grid in cell(). */}
+                <div className="grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-1 items-center">
                   {columns.map((c) => (
                     <React.Fragment key={c.id}>
-                      <span className="text-[11px] text-stone-500 truncate">{c.label}</span>
+                      <span className="text-[10px] text-stone-500 truncate">{c.label}</span>
                       <span className="min-w-0">{cell(key, c.id)}</span>
                     </React.Fragment>
                   ))}

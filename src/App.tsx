@@ -4147,13 +4147,13 @@ export default function App() {
                         : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
                     )}
                     title={formData.lang === 'DE'
-                      ? 'Nur Spiele, die zum Niveau/Ziel der Coachees passen (Standard). Antippen, um alle Spiele zu zeigen.'
-                      : "Only games matching the coachees' level/target (default). Tap to show all games."}
+                      ? 'Nur Spiele im Fokus der Coachees, aus ihrem Niveau (Standard). Antippen, um alle Spiele zu zeigen.'
+                      : "Only games in the coachees' focus, from their level (default). Tap to show all games."}
                   >
                     <Target size={14} />
                     {showAllLevels
                       ? (formData.lang === 'DE' ? 'Alle Spiele' : 'All games')
-                      : (formData.lang === 'DE' ? 'Nur passende' : 'Matching only')}
+                      : (formData.lang === 'DE' ? 'Nur im Fokus' : 'In focus only')}
                   </button>
                 </div>
 
@@ -4588,17 +4588,17 @@ export default function App() {
                     <div className="flex items-center justify-between gap-2 px-4 py-2 bg-emerald-50 border-b border-emerald-200 text-xs text-emerald-800">
                       <span>
                         {showAllLevels
-                          ? (formData.lang === 'DE' ? 'Alle Spiele werden angezeigt (Niveau-Filter aus).' : 'Showing all games (level filter off).')
+                          ? (formData.lang === 'DE' ? 'Alle Spiele werden angezeigt (Fokus-Filter aus).' : 'Showing all games (focus filter off).')
                           : (formData.lang === 'DE'
-                            ? `${hiddenByTarget} Spiel(e) ausserhalb des Niveaus ausgeblendet.`
-                            : `${hiddenByTarget} game(s) outside the level hidden.`)}
+                            ? `${hiddenByTarget} Spiel(e) ausserhalb des Fokus ausgeblendet.`
+                            : `${hiddenByTarget} game(s) outside the focus hidden.`)}
                       </span>
                       <button
                         onClick={() => setShowAllLevels((v) => !v)}
                         className="shrink-0 normal-case font-medium px-2 py-0.5 border rounded border-emerald-300 hover:bg-emerald-100"
                       >
                         {showAllLevels
-                          ? (formData.lang === 'DE' ? 'Nur passende' : 'Matching only')
+                          ? (formData.lang === 'DE' ? 'Nur im Fokus' : 'In focus only')
                           : (formData.lang === 'DE' ? 'Alle anzeigen' : 'Show all')}
                       </button>
                     </div>

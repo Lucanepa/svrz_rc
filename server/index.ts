@@ -2105,6 +2105,10 @@ function extractLineJudgeName(item: Record<string, unknown>, convocationKey: str
 function juniorLeagueText(leagueNames: string, groupName: string, genderSymbol: string): string {
   const haystack = `${leagueNames} ${groupName}`;
   if (!/u\s?23|junior/i.test(haystack)) return '';
+  // Only the U23 championship. A cup, a qualification round or a Finalissima is
+  // not league play, and naming one "HU23 2. Liga" would file it under a league
+  // cell it does not belong to.
+  if (/cup|quali|finalissima|playoff|play-off/i.test(haystack)) return '';
   const male = genderSymbol === '♂' || /\b[mh]u\s?23\b|MÄNNER|MAENNER|HERREN|\bMEN\b/i.test(haystack);
   const female = genderSymbol === '♀' || /\b[dwf]u\s?23\b|FRAUEN|DAMEN|\bWOMEN\b/i.test(haystack);
   if (male === female) return ''; // neither said, or both — not ours to guess

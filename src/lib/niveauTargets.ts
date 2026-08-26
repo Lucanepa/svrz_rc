@@ -177,6 +177,13 @@ export function parseLeague(raw: string): ParsedLeague {
   const male = /♂|herren|männer|maenner/.test(s);
   const female = /♀|damen|frauen/.test(s);
 
+  // Cup, qualification and finals rounds are not league play, and the junior
+  // categories below U23 have no row in the official table at all. Their names
+  // also carry digits a league parse would misread — "Finalissima U16 ♀" read
+  // as Damen 1. Liga, which is how an N2 coachee's U16 final ended up counting
+  // as a 1.-Liga observation. Inconclusive on purpose: shown, never pruned.
+  if (/cup|quali|finalissima|playoff|play-off/.test(s) || /u\s?1[0-9]|u\s?2[02]/.test(s)) return miss;
+
   if (s.includes('u23') || s.includes('junior')) {
     // Drop the U23 token BEFORE looking for a digit — the "2" in "MU23" would
     // otherwise read as 2. Liga.

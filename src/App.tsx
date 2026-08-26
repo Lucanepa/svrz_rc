@@ -910,11 +910,6 @@ export default function App() {
   type HomeGame = rcCoachSummaryGame & { extraReferees?: string[] };
   const [homeData, setHomeData] = useState<{ done: number; planned: number; outstanding: number; nextGames: HomeGame[]; missingGames: HomeGame[]; doneList: HomeDone[] } | null>(null);
   const [homeLoading, setHomeLoading] = useState(false);
-  // Home used to cut both of its lists at eight rows with nothing said about
-  // it, so a coach with nine planned games read "9" in the counter beside a
-  // list of eight and had no way to reach the ninth.
-  const [showAllNext, setShowAllNext] = useState(false);
-  const [showAllDone, setShowAllDone] = useState(false);
   const [listPage, setListPage] = useState(0);
   const LIST_PAGE_SIZE = 50;
   const [listSearch, setListSearch] = useState('');
@@ -1665,13 +1660,33 @@ export default function App() {
     }
   };
 
+  // Refetch the games in the background: no skeleton, no cleared notice, no
+  // change to what is selected. Used by the freshness poll below and after a
+  // rejected assignment, where the list on screen is provably behind.
+  const gamesSyncInFlight = useRef(false);
+  const syncGamesQuietly = async () => {
+    if (gamesSyncInFlight.current || !hasPocketBaseConfig()) return;
+    gamesSyncInFlight.current = true;
+    try {
+      setEligibleGames(await loadEligibleGames());
+    } catch {
+      // A failed background refresh is not news — the list simply stays as it is.
+    } finally {
+      gamesSyncInFlight.current = false;
+    }
+  };
+
   const applyRcAssignment = async (gameId: string, rcName: string, previousRc?: string) => {
     try {
       await assignRcToGame(gameId, rcName);
       setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: rcName } : g));
       refreshAfterAssignment(previousRc, rcName);
     } catch (err) {
-      setBackendNotice(err instanceof Error ? err.message : String(err));
+      // The server refuses to hand over a game somebody else holds (409). That
+      // answer only ever reaches a screen that was already out of date, so the
+      // row is corrected in the same breath as the message.
+      setBackendNotice(localizeRuntimeError(err instanceof Error ? err.message : String(err), formData.lang));
+      void syncGamesQuietly();
     }
   };
 
@@ -1725,9 +1740,43 @@ export default function App() {
       })));
       refreshAfterAssignment(previousRc);
     } catch (err) {
-      setBackendNotice(err instanceof Error ? err.message : String(err));
+      setBackendNotice(localizeRuntimeError(err instanceof Error ? err.message : String(err), formData.lang));
+      void syncGamesQuietly();
     }
   };
+
+  // Whoever takes or gives back a game changes what everyone else may take, and
+  // nothing pushes that out: a coach who left the list open would keep seeing
+  // "übernehmen" on a game that is gone, and only learn otherwise by tapping it.
+  // So the visible tab refetches on its own — on an interval while the tab is in
+  // the foreground, and immediately when the window is looked at again, which is
+  // when a phone left on the games list comes back after somebody else's tap.
+  useEffect(() => {
+    if (!rcAuth.rcName) return;
+    const refresh = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (listTab === 'games') void syncGamesQuietly();
+      else if (listTab === 'home') void loadHome();
+    };
+    // Coming back to the window is the moment worth reacting to; the interval is
+    // the fallback for a screen nobody touches.
+    let last = 0;
+    const onWake = () => {
+      const now = Date.now();
+      if (now - last < 15_000) return;
+      last = now;
+      refresh();
+    };
+    const timer = window.setInterval(refresh, 45_000);
+    window.addEventListener('focus', onWake);
+    document.addEventListener('visibilitychange', onWake);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onWake);
+      document.removeEventListener('visibilitychange', onWake);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listTab, rcAuth.rcName, seasonStartYear]);
 
   // Handing a game back used to mean finding it in the games list and opening
   // its card. From Home it is one tap on the row that already shows it — the
@@ -3686,21 +3735,14 @@ export default function App() {
                           <CalendarDays size={15} className="text-stone-400" />
                           {de ? 'Nächste Termine' : 'Next appointments'}
                         </h3>
+                        {/* Every one of them: this list is the answer to the
+                            counter beside it, and a cut-off row is a game the
+                            coach has no other way to reach from here. */}
                         {homeData.nextGames.length === 0 ? (
                           <p className="text-sm text-stone-400 py-3">{de ? 'Keine geplanten Spiele.' : 'No planned games.'}</p>
                         ) : (
                           <div className="space-y-1.5">
-                            {(showAllNext ? homeData.nextGames : homeData.nextGames.slice(0, 8)).map((g, i) => gameRow(g, `next-${g.gameId}-${i}`))}
-                            {!showAllNext && homeData.nextGames.length > 8 && (
-                              <button
-                                onClick={() => setShowAllNext(true)}
-                                className="w-full py-2 text-xs font-medium text-stone-500 hover:text-stone-700 rounded-lg border border-dashed border-stone-300 hover:bg-stone-50 transition-colors"
-                              >
-                                {de
-                                  ? `${homeData.nextGames.length - 8} weitere anzeigen`
-                                  : `Show ${homeData.nextGames.length - 8} more`}
-                              </button>
-                            )}
+                            {homeData.nextGames.map((g, i) => gameRow(g, `next-${g.gameId}-${i}`))}
                           </div>
                         )}
                       </div>
@@ -3718,7 +3760,7 @@ export default function App() {
                           <p className="text-sm text-stone-400 py-3">{de ? 'Noch keine Beobachtung erfasst.' : 'No observations filed yet.'}</p>
                         ) : (
                           <div className="space-y-1.5">
-                            {(showAllDone ? homeData.doneList : homeData.doneList.slice(0, 8)).map((f, i) => (
+                            {homeData.doneList.map((f, i) => (
                               <button
                                 key={`done-${f.coacheeId}-${f.gameDate}-${i}`}
                                 onClick={() => void openDoneObservation(f)}
@@ -3738,16 +3780,6 @@ export default function App() {
                                 <Eye size={15} className="text-stone-400 shrink-0" />
                               </button>
                             ))}
-                            {!showAllDone && homeData.doneList.length > 8 && (
-                              <button
-                                onClick={() => setShowAllDone(true)}
-                                className="w-full py-2 text-xs font-medium text-stone-500 hover:text-stone-700 rounded-lg border border-dashed border-stone-300 hover:bg-stone-50 transition-colors"
-                              >
-                                {de
-                                  ? `${homeData.doneList.length - 8} weitere anzeigen`
-                                  : `Show ${homeData.doneList.length - 8} more`}
-                              </button>
-                            )}
                           </div>
                         )}
                       </div>

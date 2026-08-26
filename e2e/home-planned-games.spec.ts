@@ -33,15 +33,13 @@ test.beforeEach(async ({ page }) => {
   }));
 });
 
-test('every planned game the counter promises is reachable', async ({ page }) => {
+test('every planned game the counter promises is listed', async ({ page }) => {
   await page.goto('/#/home');
   await expect(page.getByText('Planned', { exact: true })).toBeVisible();
 
+  // All of them, however many there are: the list is the answer to the counter
+  // beside it, and a row that is cut off is a game with no way back.
   const rows = page.getByRole('button', { name: /Heim \d+ vs Gast \d+/ });
-  await expect(rows).toHaveCount(8);
-  // The rest are not dropped in silence — they are behind a control that says
-  // how many there are.
-  await page.getByRole('button', { name: 'Show 2 more' }).click();
   await expect(rows).toHaveCount(10);
 });
 

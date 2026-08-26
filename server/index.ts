@@ -2685,6 +2685,8 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
     } catch { /* not stored, or the lookup failed — nothing to rename */ }
   }
 
+  publishLive({ type: 'games.synced', imported, renamed });
+
   return {
     imported,
     renamed,
@@ -2901,6 +2903,74 @@ async function runVmAuthCheck(debug = false) {
     ...(debug ? { trace } : {}),
   };
 }
+
+// ── Live updates ──────────────────────────────────────────────────────
+// Taking a game changes what every other coach may take, and until now that
+// only travelled by the client asking again. The clients keep asking — the poll
+// is the fallback and must stay — but a change now also goes out the moment it
+// happens.
+//
+// Server-sent events, not a WebSocket: this is one-way, the writes already have
+// REST endpoints, and a plain HTTP stream passes through the Cloudflare tunnel
+// without a second protocol to authenticate and reconnect by hand.
+//
+// One process serves this API, so the bus is the set of open responses. Every
+// publisher goes through publishLive() rather than writing to clients directly,
+// so the day this runs as two replicas the fan-out can move to PocketBase's own
+// realtime feed behind that one function, and nothing else changes.
+type LiveEvent = { type: string } & Record<string, unknown>;
+const liveClients = new Set<ExpressResponse>();
+// A ceiling, so a client that reconnects in a loop cannot pin memory. Far above
+// what ~15 coaches with a few tabs each will ever open.
+const LIVE_CLIENT_LIMIT = 200;
+const LIVE_HEARTBEAT_MS = 25_000;
+
+function publishLive(event: LiveEvent) {
+  if (liveClients.size === 0) return;
+  const frame = `data: ${JSON.stringify(event)}\n\n`;
+  for (const client of liveClients) {
+    try {
+      client.write(frame);
+    } catch {
+      // A dead socket is not news — 'close' takes it out of the set.
+      liveClients.delete(client);
+    }
+  }
+}
+
+app.get('/api/events', requireRcSession, (req: Request, res: ExpressResponse) => {
+  if (liveClients.size >= LIVE_CLIENT_LIMIT) {
+    res.status(503).json({ error: 'Too many live connections.' });
+    return;
+  }
+  // no-transform and X-Accel-Buffering stop a proxy from holding the stream
+  // back until it has "enough" to forward — which turns live into an hour late.
+  res.status(200).set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+  req.socket.setKeepAlive(true);
+  req.socket.setNoDelay(true);
+  req.setTimeout(0);
+  // The browser's own reconnect delay: no client code needed for a dropped
+  // connection, and the poll covers the gap either way.
+  res.write('retry: 5000\n\n');
+  liveClients.add(res);
+
+  // Cloudflare drops an idle stream at ~100s. The heartbeat also tells a phone
+  // coming out of the background whether its connection actually survived.
+  const heartbeat = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch { /* 'close' cleans up */ }
+  }, LIVE_HEARTBEAT_MS);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    liveClients.delete(res);
+  });
+});
 
 app.get('/api/health', async (_req: Request, res: ExpressResponse) => {
   try {
@@ -3289,6 +3359,9 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
     if ('niveau_table' in body && body.niveau_table && typeof body.niveau_table === 'object') {
       await setSetting('niveau_table', JSON.stringify(sanitizeNiveauTable(body.niveau_table)));
     }
+    // Named keys rather than the values: a listener only needs to know that its
+    // copy is stale, and the settings endpoint is where it goes to find out.
+    publishLive({ type: 'settings.changed', keys: Object.keys(body) });
     if ('default_goal' in body) {
       const n = Math.round(Number(body.default_goal));
       await setSetting('default_goal', Number.isFinite(n) && n > 0 ? String(n) : '');
@@ -4750,6 +4823,12 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
       // Both sides of a handover change: clearing the lot beats working out who
       // the previous holder was, and the map holds one entry per RC.
       icalGamesCache.clear();
+      publishLive({
+        type: 'game.assignment',
+        gameId,
+        matchNo: asText((updated as AnyRecord).match_no),
+        assignedRc: asText((updated as AnyRecord).assigned_rc),
+      });
       return { status: 200, body: { ok: true, id: (updated as AnyRecord).id, assignedRc: asText((updated as AnyRecord).assigned_rc) } };
     });
     res.status(outcome.status).json(outcome.body);

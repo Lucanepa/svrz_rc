@@ -910,6 +910,11 @@ export default function App() {
   type HomeGame = rcCoachSummaryGame & { extraReferees?: string[] };
   const [homeData, setHomeData] = useState<{ done: number; planned: number; outstanding: number; nextGames: HomeGame[]; missingGames: HomeGame[]; doneList: HomeDone[] } | null>(null);
   const [homeLoading, setHomeLoading] = useState(false);
+  // Home used to cut both of its lists at eight rows with nothing said about
+  // it, so a coach with nine planned games read "9" in the counter beside a
+  // list of eight and had no way to reach the ninth.
+  const [showAllNext, setShowAllNext] = useState(false);
+  const [showAllDone, setShowAllDone] = useState(false);
   const [listPage, setListPage] = useState(0);
   const LIST_PAGE_SIZE = 50;
   const [listSearch, setListSearch] = useState('');
@@ -1722,6 +1727,19 @@ export default function App() {
     } catch (err) {
       setBackendNotice(err instanceof Error ? err.message : String(err));
     }
+  };
+
+  // Handing a game back used to mean finding it in the games list and opening
+  // its card. From Home it is one tap on the row that already shows it — the
+  // same server call, with a confirmation because the game becomes free for
+  // everyone the moment it goes through.
+  const giveBackFromHome = async (gameId: string, label: string, german: boolean) => {
+    const ask = german
+      ? `„${label}" abgeben? Das Spiel ist danach wieder für alle Referee Coaches frei.`
+      : `Give back "${label}"? The game becomes available to every referee coach again.`;
+    if (!window.confirm(ask)) return;
+    await handleUnassignGame(gameId);
+    await loadHome();
   };
 
   const applyCoacheeToMeta = (coachee: Coachee) => {
@@ -3549,21 +3567,33 @@ export default function App() {
                 else { setListTab('games'); setListSearch(g.teams); }
               };
               const gameRow = (g: HomeGame, key: string) => (
-                <button
+                <div
                   key={key}
-                  onClick={() => startFromSummary(g)}
-                  className="w-full text-left px-3 py-2.5 rounded-lg border border-stone-200 bg-white hover:border-red-300 hover:bg-red-50/40 transition-colors flex items-center gap-3"
+                  className="flex items-stretch rounded-lg border border-stone-200 bg-white overflow-hidden focus-within:border-red-300 hover:border-red-300 transition-colors"
                 >
-                  <div className="flex flex-col items-center justify-center w-12 shrink-0">
-                    <span className="text-[11px] font-semibold text-red-600 leading-tight">{fmtDate(g.gameDate)}</span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-stone-800 truncate">{g.teams}</p>
-                    <p className="text-xs text-stone-500 truncate">{g.league} · {[g.refereeName, ...(g.extraReferees ?? [])].filter(Boolean).join(', ')}</p>
-                    <MatchResult result={g.result} className="mt-0.5" />
-                  </div>
-                  <Eye size={15} className="text-stone-400 shrink-0" />
-                </button>
+                  <button
+                    onClick={() => startFromSummary(g)}
+                    className="min-w-0 flex-1 text-left px-3 py-2.5 hover:bg-red-50/40 transition-colors flex items-center gap-3"
+                  >
+                    <div className="flex flex-col items-center justify-center w-12 shrink-0">
+                      <span className="text-[11px] font-semibold text-red-600 leading-tight">{fmtDate(g.gameDate)}</span>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-stone-800 truncate">{g.teams}</p>
+                      <p className="text-xs text-stone-500 truncate">{g.league} · {[g.refereeName, ...(g.extraReferees ?? [])].filter(Boolean).join(', ')}</p>
+                      <MatchResult result={g.result} className="mt-0.5" />
+                    </div>
+                    <Eye size={15} className="text-stone-400 shrink-0" />
+                  </button>
+                  <button
+                    onClick={() => void giveBackFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
+                    aria-label={de ? 'Spiel abgeben' : 'Give game back'}
+                    title={de ? 'Spiel abgeben — es wird wieder für alle frei' : 'Give the game back — it becomes free for everyone'}
+                    className="shrink-0 px-3 border-l border-stone-200 text-stone-400 hover:bg-stone-50 hover:text-red-600 transition-colors"
+                  >
+                    <RotateCcw size={15} />
+                  </button>
+                </div>
               );
               if (!rcAuth.rcName) {
                 return <p className="text-sm text-stone-500 py-6 text-center">{de ? 'Willkommen.' : 'Welcome.'}</p>;
@@ -3660,7 +3690,17 @@ export default function App() {
                           <p className="text-sm text-stone-400 py-3">{de ? 'Keine geplanten Spiele.' : 'No planned games.'}</p>
                         ) : (
                           <div className="space-y-1.5">
-                            {homeData.nextGames.slice(0, 8).map((g, i) => gameRow(g, `next-${g.gameId}-${i}`))}
+                            {(showAllNext ? homeData.nextGames : homeData.nextGames.slice(0, 8)).map((g, i) => gameRow(g, `next-${g.gameId}-${i}`))}
+                            {!showAllNext && homeData.nextGames.length > 8 && (
+                              <button
+                                onClick={() => setShowAllNext(true)}
+                                className="w-full py-2 text-xs font-medium text-stone-500 hover:text-stone-700 rounded-lg border border-dashed border-stone-300 hover:bg-stone-50 transition-colors"
+                              >
+                                {de
+                                  ? `${homeData.nextGames.length - 8} weitere anzeigen`
+                                  : `Show ${homeData.nextGames.length - 8} more`}
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
@@ -3678,7 +3718,7 @@ export default function App() {
                           <p className="text-sm text-stone-400 py-3">{de ? 'Noch keine Beobachtung erfasst.' : 'No observations filed yet.'}</p>
                         ) : (
                           <div className="space-y-1.5">
-                            {homeData.doneList.slice(0, 8).map((f, i) => (
+                            {(showAllDone ? homeData.doneList : homeData.doneList.slice(0, 8)).map((f, i) => (
                               <button
                                 key={`done-${f.coacheeId}-${f.gameDate}-${i}`}
                                 onClick={() => void openDoneObservation(f)}
@@ -3698,6 +3738,16 @@ export default function App() {
                                 <Eye size={15} className="text-stone-400 shrink-0" />
                               </button>
                             ))}
+                            {!showAllDone && homeData.doneList.length > 8 && (
+                              <button
+                                onClick={() => setShowAllDone(true)}
+                                className="w-full py-2 text-xs font-medium text-stone-500 hover:text-stone-700 rounded-lg border border-dashed border-stone-300 hover:bg-stone-50 transition-colors"
+                              >
+                                {de
+                                  ? `${homeData.doneList.length - 8} weitere anzeigen`
+                                  : `Show ${homeData.doneList.length - 8} more`}
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>

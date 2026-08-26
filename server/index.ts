@@ -2406,6 +2406,17 @@ async function getEligibleGames() {
     return text ? coacheeNames.forSeason(season).has(text) : false;
   };
 
+  // A referee coach on the whistle next to one of their coachees. Nobody marks
+  // these anywhere — they fall out of the roster — and they are the games where
+  // the coaching happens on the court rather than from the stands, so they are
+  // worth telling apart. Computed rather than stored: both rosters change
+  // during a season, and a stored flag would keep yesterday's answer.
+  const rcNames = new Set((await getActiveRcPeople()).map((p) => normalizeName(p.fullName)));
+  const isRcName = (value: unknown) => {
+    const text = normalizeName(value);
+    return text ? rcNames.has(text) : false;
+  };
+
   // Fetch all games in a single request and filter in-memory
   // to avoid PocketBase 414 (URI too long) and 429 (rate limit) errors
   const allGames = await (async () => {
@@ -2450,6 +2461,14 @@ async function getEligibleGames() {
     isRdGame: Boolean(game.is_rd_game),
     isLdGame: Boolean(game.is_ld_game),
     isRsvGame: Boolean(game.is_rsv_game),
+    // Either way round: the coach may be the 1. or the 2. SR of the pair.
+    isRcGame: (() => {
+      const season = seasonOfGame(game.match_date);
+      const first = game.first_referee;
+      const second = game.second_referee;
+      return (isRcName(first) && matchesCoachee(season, second))
+        || (isRcName(second) && matchesCoachee(season, first));
+    })(),
     game_result: asText(game.game_result),
     // The sync stores a precise plus-code/lat-lng link per venue. Left out of
     // the projection the UI fell back to a free-text Google search of the hall

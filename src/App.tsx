@@ -1010,6 +1010,7 @@ export default function App() {
   const [gameFilterNeedsObs, setGameFilterNeedsObs] = useState(true);
   const [gameFilterShowInactive, setGameFilterShowInactive] = useState(false);
   const [gameFilterRd, setGameFilterRd] = useState(false);
+  const [gameFilterRcGame, setGameFilterRcGame] = useState(false);
   const [gameFilterLd, setGameFilterLd] = useState(false);
   const [gameFilterRcAssigned, setGameFilterRcAssigned] = useState(false);
   // Show only games an admin flagged as "we'd like this one observed".
@@ -3048,6 +3049,7 @@ export default function App() {
       if (gameFilterLeagues.length > 0 && !gameFilterLeagues.includes(g.league || '')) return false;
       if (gameFilterRd && !g.isRdGame) return false;
       if (gameFilterLd && !g.isLdGame) return false;
+      if (gameFilterRcGame && !g.isRcGame) return false;
       if (gameFilterStarred && !g.starred) return false;
       // Games a coach has taken are hidden by default (they live under the RC in
       // the Referee Coaches tab); the toggle flips to showing only taken games.
@@ -3114,7 +3116,7 @@ export default function App() {
       // timestamps rather than strings so a stray offset cannot reorder a day,
       // and anything undated sinks to the bottom instead of leading.
       .sort((a, b) => gameTime(a.date) - gameTime(b.date));
-  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets, niveauTable]);
+  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets, niveauTable]);
 
   // Any filter can shrink a list below the page currently shown, and the pager
   // itself disappears under one page of rows — leaving a blank list with no
@@ -3888,7 +3890,7 @@ export default function App() {
                     className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                   />
                   {(() => {
-                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo, gameFilterRd, gameFilterLd, gameFilterRcAssigned].filter(Boolean).length;
+                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo, gameFilterRd, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned].filter(Boolean).length;
                     return (
                       <button
                         onClick={() => setFiltersOpen(!filtersOpen)}
@@ -3993,6 +3995,18 @@ export default function App() {
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterRd ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
                       <span>RD Game</span>
+                    </button>
+                    <button
+                      onClick={() => setGameFilterRcGame(!gameFilterRcGame)}
+                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
+                      title={formData.lang === 'DE'
+                        ? 'Spiele, in denen ein Referee Coach neben einem Coachee pfeift.'
+                        : 'Games where a referee coach whistles next to a coachee.'}
+                    >
+                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterRcGame ? "bg-amber-500" : "bg-stone-300")}>
+                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterRcGame ? "translate-x-4.5" : "translate-x-0.5")} />
+                      </span>
+                      <span>{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
                     </button>
                     <button
                       onClick={() => setGameFilterLd(!gameFilterLd)}
@@ -4308,6 +4322,14 @@ export default function App() {
                                   {game.matchNo && <span>#{game.matchNo}</span>}
                                   {game.isRdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>}
                                   {game.isLdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>}
+                                  {game.isRcGame && (
+                                    <span
+                                      className="px-2 py-1 rounded text-xs font-bold leading-none bg-sky-100 text-sky-800 border border-sky-300"
+                                      title={formData.lang === 'DE'
+                                        ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
+                                        : 'A referee coach is whistling next to a coachee here.'}
+                                    >{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
+                                  )}
                                   {game.starred && (
                                     <span
                                       className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300"

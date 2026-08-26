@@ -61,6 +61,9 @@ export interface EligibleGame {
   isRdGame?: boolean;
   isLdGame?: boolean;
   isRsvGame?: boolean;
+  // A referee coach whistling next to one of their coachees — computed from the
+  // two rosters by /api/eligible-games, never stored on the game.
+  isRcGame?: boolean;
   // "We want this one observed" highlight: set by an admin (see starred_games)
   // or derived from VolleyManager's RD/RSV markings.
   starred?: boolean;

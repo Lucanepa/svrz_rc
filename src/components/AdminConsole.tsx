@@ -30,6 +30,7 @@ import {
   answerLabel, questionLabel, surveyQuestionId,
   type SurveyConfig, type SurveyQuestion, type SurveyScaleId,
 } from '../lib/survey';
+import { subscribeLive } from '../lib/liveEvents';
 import { bySurname } from '../lib/coacheeName';
 import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
@@ -507,6 +508,30 @@ export default function AdminConsole() {
       .then((games) => { setLeagueOptions(Array.from(new Set(games.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort()); })
       .catch(() => {});
   }, [authed, role]);
+  // Guards the subscription below: while one of our own saves is in flight the
+  // pushed copy is older than what is on screen.
+  const settingsSavesInFlight = useRef(0);
+  // The console is its own React root, so it subscribes to /api/events for
+  // itself. Two admins editing the Niveau matrix at the same time each worked
+  // from the copy they had loaded, and the second save silently won.
+  useEffect(() => {
+    if (!authed || role !== 'admin') return;
+    return subscribeLive((event) => {
+      if (event.type !== 'settings.changed') return;
+      if (settingsSavesInFlight.current > 0) return;
+      getSettings()
+        .then((s) => {
+          setGroups(s.groups || []);
+          setCoacheeTargets(s.coachee_targets || {});
+          setRcMandates(s.rc_mandates || {});
+          setNiveauTable(resolveNiveauTable(s.niveau_table || null));
+          if (s.default_goal) setDefaultGoal(s.default_goal);
+          if (s.default_season) setDefaultSeason(s.default_season);
+          setTestMode(Boolean(s.test_mode));
+        })
+        .catch(() => { /* the next save or reload brings it back */ });
+    });
+  }, [authed, role]);
   // Optimistic with a rollback, like the test-mode toggle next to them. Left
   // silent, a rejected save (expired admin session, 500) showed the new mandate
   // or target as stored while the RC's season goal quietly stayed as it was.
@@ -515,8 +540,10 @@ export default function AdminConsole() {
     let previous: CoacheeTargetMap = {};
     setCoacheeTargets((current) => { previous = current; return next; });
     setSettingsError('');
+    settingsSavesInFlight.current += 1;
     try { await putSettings({ coachee_targets: next }); }
     catch (e) { setCoacheeTargets(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
+    finally { settingsSavesInFlight.current -= 1; }
   }, []);
   // Stored as overrides only: a row that still matches the published table is
   // left out, so a future correction to it reaches this console untouched.
@@ -526,15 +553,19 @@ export default function AdminConsole() {
     let previous: NiveauMatrix = {};
     setNiveauTable((current) => { previous = current; return next; });
     setSettingsError('');
+    settingsSavesInFlight.current += 1;
     try { await putSettings({ niveau_table: niveauOverrides(next) }); return true; }
     catch (e) { setNiveauTable(previous); setSettingsError(e instanceof Error ? e.message : String(e)); return false; }
+    finally { settingsSavesInFlight.current -= 1; }
   }, []);
   const saveMandates = useCallback(async (next: RcMandateMap) => {
     let previous: RcMandateMap = {};
     setRcMandates((current) => { previous = current; return next; });
     setSettingsError('');
+    settingsSavesInFlight.current += 1;
     try { await putSettings({ rc_mandates: next }); }
     catch (e) { setRcMandates(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
+    finally { settingsSavesInFlight.current -= 1; }
   }, []);
   // Optimistic, but not silent: its two neighbours (groups, mandates) were fixed
   // for exactly this — a rejected save left the new number on screen with no
@@ -2426,6 +2457,14 @@ function GamesAdmin({ t, lang }: { t: T; lang: Lang }) {
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
                 <span className="font-medium text-stone-800">{g.homeTeam} – {g.awayTeam}</span>
                 <span className="text-xs text-stone-500">{g.league} · #{g.matchNo}</span>
+                {g.isRcGame && (
+                  <span
+                    className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-sky-100 text-sky-800 border border-sky-300"
+                    title={lang === 'DE'
+                      ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
+                      : 'A referee coach is whistling next to a coachee here.'}
+                  >{lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
+                )}
               </div>
               <p className="mt-0.5 text-xs text-stone-500">
                 {new Date(g.date).toLocaleDateString(lang === 'DE' ? 'de-CH' : 'en-GB')} · {g.location}

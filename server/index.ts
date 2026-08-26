@@ -2395,6 +2395,33 @@ async function listCoacheesWithFallbackSort(): Promise<AnyRecord[]> {
   }
 }
 
+// A referee coach on the whistle next to one of their coachees. Nobody marks
+// these anywhere — they fall out of the two rosters — and they are the games
+// where the coaching happens on the court rather than from the stands, so they
+// are worth telling apart. Either way round: the coach may be the 1. or the 2.
+// SR of the pair.
+//
+// Computed, never stored. Both rosters change during a season, and a flag
+// written onto the game when it was imported would keep answering with the
+// roster of the day the sync ran.
+async function makeRcGameTest(): Promise<(game: AnyRecord) => boolean> {
+  const coacheeNames = await getCoacheeNameIndex();
+  const rcNames = new Set((await getActiveRcPeople()).map((p) => normalizeName(p.fullName)));
+  return (game: AnyRecord) => {
+    const names = coacheeNames.forSeason(seasonOfGame(game.match_date));
+    const isCoachee = (value: unknown) => {
+      const text = normalizeName(value);
+      return text ? names.has(text) : false;
+    };
+    const isRc = (value: unknown) => {
+      const text = normalizeName(value);
+      return text ? rcNames.has(text) : false;
+    };
+    return (isRc(game.first_referee) && isCoachee(game.second_referee))
+      || (isRc(game.second_referee) && isCoachee(game.first_referee));
+  };
+}
+
 async function getEligibleGames() {
   await ensureAdminAuth();
   const coacheeNames = await getCoacheeNameIndex();
@@ -2406,16 +2433,7 @@ async function getEligibleGames() {
     return text ? coacheeNames.forSeason(season).has(text) : false;
   };
 
-  // A referee coach on the whistle next to one of their coachees. Nobody marks
-  // these anywhere — they fall out of the roster — and they are the games where
-  // the coaching happens on the court rather than from the stands, so they are
-  // worth telling apart. Computed rather than stored: both rosters change
-  // during a season, and a stored flag would keep yesterday's answer.
-  const rcNames = new Set((await getActiveRcPeople()).map((p) => normalizeName(p.fullName)));
-  const isRcName = (value: unknown) => {
-    const text = normalizeName(value);
-    return text ? rcNames.has(text) : false;
-  };
+  const isRcGame = await makeRcGameTest();
 
   // Fetch all games in a single request and filter in-memory
   // to avoid PocketBase 414 (URI too long) and 429 (rate limit) errors
@@ -2461,14 +2479,7 @@ async function getEligibleGames() {
     isRdGame: Boolean(game.is_rd_game),
     isLdGame: Boolean(game.is_ld_game),
     isRsvGame: Boolean(game.is_rsv_game),
-    // Either way round: the coach may be the 1. or the 2. SR of the pair.
-    isRcGame: (() => {
-      const season = seasonOfGame(game.match_date);
-      const first = game.first_referee;
-      const second = game.second_referee;
-      return (isRcName(first) && matchesCoachee(season, second))
-        || (isRcName(second) && matchesCoachee(season, first));
-    })(),
+    isRcGame: isRcGame(game),
     game_result: asText(game.game_result),
     // The sync stores a precise plus-code/lat-lng link per venue. Left out of
     // the projection the UI fell back to a free-text Google search of the hall
@@ -5283,6 +5294,9 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
     // means nothing matches.
     if (nameFilterParts.length === 0) { res.json([]); return; }
 
+    // Same rule the open games list uses, so a game cannot be an RC game in one
+    // list and an ordinary one in the other.
+    const isRcGame = await makeRcGameTest();
     const games = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date,-created',
@@ -5316,6 +5330,7 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
         firstLineJudge: assigned.firstLineJudge,
         secondLineJudge: assigned.secondLineJudge,
         assignedRoles,
+        isRcGame: isRcGame(game),
         starred: starredIds.has(String(game.id)),
         // The client type has always promised these; without them the "already
         // taken by another RC" badge could never appear against the real API,

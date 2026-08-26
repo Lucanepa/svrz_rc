@@ -4812,8 +4812,16 @@ export default function App() {
                                 </span>
                               )}
                             </div>
-                            <div className="text-xs text-stone-500 mt-1">
-                              {formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}
+                            <div className="text-xs text-stone-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                              <span>{formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}</span>
+                              {game.isRcGame && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-sky-100 text-sky-800 border border-sky-300"
+                                  title={formData.lang === 'DE'
+                                    ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
+                                    : 'A referee coach is whistling next to a coachee here.'}
+                                >{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
+                              )}
                             </div>
                             {/* Normally nothing here — an upcoming game has no
                                 score. It shows up for a fixture that has just

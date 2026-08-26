@@ -139,7 +139,7 @@ SMTP_FROM="coaching-feedback@svrz.ch"
 # NOT the survey address — the survey goes to SURVEY_NOTIFY_EMAIL below, and
 # that mailbox is deliberately not on this list: this one carries every
 # referee's full written assessment.
-FEEDBACK_CC="rc_coaching@volleyball.lucanepa.com"
+FEEDBACK_CC="rc_coaching@openvolley.app"
 FEEDBACK_EMAIL_TEST="1"              # 1 => redirect all emails to test recipient
 FEEDBACK_TEST_RECIPIENT="you@..."
 
@@ -254,8 +254,11 @@ Three layers, plus capability tokens:
    only replaced.
 
    **Changing one takes a second factor.** `POST /api/admin/credentials/challenge`
-   mails a 6-digit code to `CREDENTIAL_2FA_EMAIL` (falling back to
-   `POCKETBASE_ADMIN_EMAIL`); `PUT /api/admin/credentials` refuses without it.
+   mails a 6-digit code to `CREDENTIAL_2FA_EMAIL_<SLOT>` if set, else
+   `CREDENTIAL_2FA_EMAIL`. There is no fallback to `POCKETBASE_ADMIN_EMAIL` —
+   that is `rc-admin@svrz.local`, so the old fallback silently mailed codes into
+   a mailbox that does not exist. The chair's slot points at a different mailbox
+   from the two operational ones on purpose; `PUT /api/admin/credentials` refuses without it.
    The code is bound to the console cookie that asked for it **and** to the one
    slot it was issued for, is single-use, expires in 10 minutes and dies after 5
    wrong guesses. Reading which usernames are live needs only the admin session;

@@ -60,8 +60,8 @@ const RC = { id: 'demo-rc-1', name: 'Max Muster', email: 'max.muster@example.com
 
 // Mirrors the real feedback mail (server/index.ts buildFeedbackEmailText + the
 // to/cc/bcc rules) so the demo can SHOW exactly what would be sent, un-sent.
-const MAIL_FROM = 'SVRZ Referee Coaching <rc_coaching@volleyball.lucanepa.com>';
-const COACHING_MAILBOX = 'rc_coaching@volleyball.lucanepa.com'; // real FEEDBACK_CC → BCC
+const MAIL_FROM = 'SVRZ Referee Coaching <rc_coaching@openvolley.app>';
+const COACHING_MAILBOX = 'rc_coaching@openvolley.app'; // real FEEDBACK_CC → BCC
 // Shaped like the real post-visit survey link but with a token that was never
 // minted — the demo shows the mail, it doesn't hand out a live form.
 const SURVEY_URL = 'https://svrz-rc.openvolley.app/#/survey/demo0000000000000000000000000000';

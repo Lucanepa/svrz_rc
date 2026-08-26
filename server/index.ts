@@ -66,7 +66,7 @@ if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) 
 // of the configured address. Used by every outbound mail (feedback, PIN, OTP).
 const MAIL_FROM = {
   name: process.env.SMTP_FROM_NAME || 'SVRZ Referee Coaching',
-  address: process.env.SMTP_FROM || 'rc_coaching@volleyball.lucanepa.com',
+  address: process.env.SMTP_FROM || 'rc_coaching@openvolley.app',
 };
 const MAIL_APP_URL = process.env.APP_PUBLIC_URL || 'https://svrz-rc.openvolley.app/';
 
@@ -3098,10 +3098,20 @@ type CredChallenge = { slot: CredentialSlot; hash: string; salt: string; expires
 const credChallenges = new Map<string, CredChallenge>();
 const credChallengeRl: RateLimitStore = new Map();
 
-// Where the code goes. Its own variable so it can be an address the admin
-// actually reads, falling back to the PocketBase superuser account — which is
-// by definition an address whoever runs this deployment controls.
-const CRED_2FA_EMAIL = process.env.CREDENTIAL_2FA_EMAIL || process.env.POCKETBASE_ADMIN_EMAIL || '';
+// Where the code goes, per door. The chair's password and the two operational
+// ones are guarded by different people, so they are guarded by different
+// mailboxes: whoever can read the RC coaching mailbox cannot thereby reach for
+// the chair's channel, and vice versa.
+//
+// There is deliberately NO fallback to POCKETBASE_ADMIN_EMAIL. That address is
+// the one the superuser account was created with — rc-admin@svrz.local on this
+// deployment — so the fallback did not fail, it "succeeded" into a mailbox that
+// does not exist, and the code was never coming. Unset now means the challenge
+// says so out loud.
+function credential2faRecipient(slot: CredentialSlot): string {
+  const perSlot = process.env[`CREDENTIAL_2FA_EMAIL_${slot.toUpperCase()}`] || '';
+  return (perSlot || process.env.CREDENTIAL_2FA_EMAIL || '').trim();
+}
 
 /** Keyed by the cookie, not the username: one session's code is useless in another. */
 function credChallengeKey(req: Request): string {
@@ -3149,17 +3159,18 @@ app.post('/api/admin/credentials/challenge', requireAdminSession, async (req: Re
   if (!rl.allowed) { denyRateLimited(req, res, 'cred-2fa:ip', rl.retryAfterMs); return; }
   const slot = asText((req.body ?? {}).slot) as CredentialSlot;
   if (!CREDENTIAL_SLOTS.includes(slot)) { res.status(400).json({ error: 'Unbekannter Zugang.' }); return; }
-  if (!CRED_2FA_EMAIL) {
+  const recipient = credential2faRecipient(slot);
+  if (!recipient) {
     // Said plainly rather than as a 500: the operator needs to know this is a
     // missing setting, and that the env vars are still the way out.
     log.error('auth.credentials', 'no 2FA recipient configured', { slot }, ctx);
-    res.status(503).json({ error: 'Kein Empfänger für den Bestätigungscode konfiguriert (CREDENTIAL_2FA_EMAIL).' });
+    res.status(503).json({ error: `Kein Empfänger für den Bestätigungscode konfiguriert (CREDENTIAL_2FA_EMAIL_${slot.toUpperCase()} oder CREDENTIAL_2FA_EMAIL).` });
     return;
   }
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
   const salt = randomBytes(16).toString('hex');
   try {
-    await sendCredentialCodeEmail(CRED_2FA_EMAIL, code, slot);
+    await sendCredentialCodeEmail(recipient, code, slot);
   } catch (error) {
     log.error('auth.credentials', 'could not send the confirmation code', { slot, error }, ctx);
     res.status(503).json({ error: 'Der Bestätigungscode konnte nicht gesendet werden.' });
@@ -3168,8 +3179,8 @@ app.post('/api/admin/credentials/challenge', requireAdminSession, async (req: Re
   credChallenges.set(credChallengeKey(req), {
     slot, salt, hash: hashSecret(code, salt), expiresAt: Date.now() + CRED_2FA_TTL_MS, attempts: 0,
   });
-  log.info('auth.credentials', 'confirmation code sent', { slot, to: maskEmail(CRED_2FA_EMAIL) }, ctx);
-  res.json({ ok: true, sentTo: maskEmail(CRED_2FA_EMAIL), expiresInMs: CRED_2FA_TTL_MS });
+  log.info('auth.credentials', 'confirmation code sent', { slot, to: maskEmail(recipient) }, ctx);
+  res.json({ ok: true, sentTo: maskEmail(recipient), expiresInMs: CRED_2FA_TTL_MS });
 });
 
 /** Spends the code. Returns an error string, or '' when the change may proceed. */

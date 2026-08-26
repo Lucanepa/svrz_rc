@@ -41,9 +41,15 @@ async function stubLoginFlow(page: Page): Promise<{ setPhase: (p: Phase) => void
   return { setPhase: (p: Phase) => { phase = p; } };
 }
 
+// A stand-in, not the real credential. The API is stubbed here, so what gets
+// typed is irrelevant to the assertions — and the last time this file carried
+// the live team password, that password was also the one baked into the code
+// and shipped to a public repository.
+const FAKE_TEAM_PW = 'not-a-real-password';
+
 async function signInWithTeamCredential(page: Page): Promise<void> {
   await page.getByPlaceholder(/Benutzername|Username/).fill('Referee-Coaching');
-  await page.getByPlaceholder(/^(Passwort|Password)$/).fill('Saison26-27');
+  await page.getByPlaceholder(/^(Passwort|Password)$/).fill(FAKE_TEAM_PW);
   await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();
 }
 

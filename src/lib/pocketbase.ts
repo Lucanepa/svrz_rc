@@ -432,8 +432,14 @@ export type IcalSubscription = {
 // per RC — so the URLs are handed out by the server rather than assembled here.
 // No demo branch: the demo makes zero backend calls, and a subscription link
 // that resolves to nothing would be worse than not offering one.
-export async function getIcalSubscription(lang: 'DE' | 'EN'): Promise<IcalSubscription> {
-  const response = await fetch(apiUrl(`/api/ical/me?lang=${lang.toLowerCase()}`), { credentials: 'include' });
+// `rotate` mints a new token, which stops every calendar already subscribed to
+// the old URL from resolving. That is the point: it is the only way to take a
+// leaked feed link back, short of deactivating the coach.
+export async function getIcalSubscription(lang: 'DE' | 'EN', rotate = false): Promise<IcalSubscription> {
+  const response = await fetch(
+    apiUrl(`/api/ical/me?lang=${lang.toLowerCase()}${rotate ? '&rotate=1' : ''}`),
+    { credentials: 'include' },
+  );
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -772,12 +778,32 @@ export async function getCredentials(): Promise<{ slots: CredentialSlotInfo[]; m
   return r.json() as Promise<{ slots: CredentialSlotInfo[]; minLength: number }>;
 }
 
-export async function setCredential(slot: string, username: string, password: string): Promise<void> {
+// Step one of a password change: the server mails a code and tells us, in
+// masked form, where it went — so the person changing it can tell at a glance
+// whether they are going to receive it.
+export async function requestCredentialCode(slot: string): Promise<{ sentTo: string }> {
+  const r = await fetch(apiUrl('/api/admin/credentials/challenge'), {
+    credentials: 'include',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slot }),
+  });
+  if (!r.ok) throw await apiError(r, 'Could not send the confirmation code');
+  return r.json() as Promise<{ sentTo: string }>;
+}
+
+// Step two. `feedsRevoked` comes back true when the team password moved, which
+// also invalidates every calendar subscription URL — worth saying out loud,
+// because coaches will need a new link.
+export async function setCredential(
+  slot: string, username: string, password: string, code: string,
+): Promise<{ feedsRevoked?: boolean }> {
   const r = await fetch(apiUrl('/api/admin/credentials'), {
     credentials: 'include',
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ slot, username, password }),
+    body: JSON.stringify({ slot, username, password, code }),
   });
   if (!r.ok) throw await apiError(r, 'Could not save the password');
+  return r.json() as Promise<{ feedsRevoked?: boolean }>;
 }

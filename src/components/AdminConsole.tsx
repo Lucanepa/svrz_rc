@@ -6,7 +6,7 @@ import {
   getAdminAuthStatus, adminUiLogin, logoutAdmin, getAuthMe, getGamesSyncStatus,
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
-  getCredentials, setCredential, type CredentialSlotInfo,
+  getCredentials, setCredential, requestCredentialCode, type CredentialSlotInfo,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, getReminderPreview, createGame, deleteGame, listManualGames,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
@@ -111,6 +111,11 @@ const STR = {
     credAdmin: 'Admin (diese Seite)', credAdminHint: 'Öffnet diese Konsole.',
     credPresident: 'RC-Präsidium', credPresidentHint: 'Öffnet nur die Umfrage- und Notiz-Tabs. Admin-Rechte öffnen diese nicht.',
     credUser: 'Benutzername', credNew: 'Neues Passwort', credSave: 'Passwort setzen',
+    credSendCode: 'Bestätigungscode senden', credCode: '6-stelliger Code',
+    credCodeSent: (to: string) => `Code an ${to} gesendet. 10 Minuten gültig.`,
+    credCodeWhy: 'Eine Passwortänderung wird per E-Mail-Code bestätigt.',
+    credChangeCancel: 'Abbrechen',
+    credFeedsRevoked: 'Alle Kalender-Abos wurden ungültig — die RC brauchen einen neuen Link (Kalender-Dialog in der App).',
     credSaved: (u: string) => `Gespeichert. Ab sofort gilt: ${u} + das neue Passwort.`,
     credFromEnv: 'Noch aus der Server-Konfiguration',
     credNeverSet: 'Nicht gesetzt — dieser Zugang ist geschlossen',
@@ -192,6 +197,11 @@ const STR = {
     credAdmin: 'Admin (this page)', credAdminHint: 'Opens this console.',
     credPresident: 'RC chair', credPresidentHint: 'Opens the survey and notes tabs only. Admin rights do not open those.',
     credUser: 'Username', credNew: 'New password', credSave: 'Set password',
+    credSendCode: 'Send confirmation code', credCode: '6-digit code',
+    credCodeSent: (to: string) => `Code sent to ${to}. Valid for 10 minutes.`,
+    credCodeWhy: 'A password change is confirmed with an emailed code.',
+    credChangeCancel: 'Cancel',
+    credFeedsRevoked: 'Every calendar subscription is now invalid — coaches need a fresh link (calendar dialog in the app).',
     credSaved: (u: string) => `Saved. From now on: ${u} + the new password.`,
     credFromEnv: 'Still from the server configuration',
     credNeverSet: 'Not set — this door is closed',
@@ -1611,10 +1621,14 @@ function GameImportCard({ lang }: { lang: Lang }) {
 function CredentialsAdmin({ t }: { t: T }) {
   const [slots, setSlots] = useState<CredentialSlotInfo[]>([]);
   const [minLength, setMinLength] = useState(10);
-  const [drafts, setDrafts] = useState<Record<string, { username: string; password: string }>>({});
+  const [drafts, setDrafts] = useState<Record<string, { username: string; password: string; code: string }>>({});
   const [busy, setBusy] = useState('');
   const [saved, setSaved] = useState('');
   const [error, setError] = useState('');
+  // Which slot has a live code out, and where it went. Only one at a time: the
+  // server binds the code to this session AND to one slot, so a second request
+  // replaces the first rather than running beside it.
+  const [challenge, setChallenge] = useState<{ slot: string; sentTo: string } | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -1634,16 +1648,26 @@ function CredentialsAdmin({ t }: { t: T }) {
     president: { title: t.credPresident, hint: t.credPresidentHint },
   };
 
+  const sendCode = async (slot: CredentialSlotInfo) => {
+    setError(''); setSaved(''); setBusy(slot.slot);
+    try {
+      const { sentTo } = await requestCredentialCode(slot.slot);
+      setChallenge({ slot: slot.slot, sentTo });
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(''); }
+  };
+
   const save = async (slot: CredentialSlotInfo) => {
-    const draft = drafts[slot.slot] ?? { username: slot.username, password: '' };
+    const draft = drafts[slot.slot] ?? { username: slot.username, password: '', code: '' };
     setError(''); setSaved('');
     if (draft.password.length < minLength) { setError(t.credTooShort(minLength)); return; }
     setBusy(slot.slot);
     try {
       const username = draft.username.trim() || slot.username;
-      await setCredential(slot.slot, username, draft.password);
-      setDrafts((d) => ({ ...d, [slot.slot]: { username, password: '' } }));
-      setSaved(t.credSaved(username));
+      const result = await setCredential(slot.slot, username, draft.password, draft.code.trim());
+      setDrafts((d) => ({ ...d, [slot.slot]: { username, password: '', code: '' } }));
+      setChallenge(null);
+      setSaved(t.credSaved(username) + (result?.feedsRevoked ? ` ${t.credFeedsRevoked}` : ''));
       await reload();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(''); }
@@ -1657,9 +1681,10 @@ function CredentialsAdmin({ t }: { t: T }) {
       {saved && <p className="mt-2 text-xs text-green-800 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{saved}</p>}
       <div className="mt-3 space-y-4">
         {slots.map((slot) => {
-          const draft = drafts[slot.slot] ?? { username: slot.username, password: '' };
-          const set = (patch: Partial<{ username: string; password: string }>) =>
+          const draft = drafts[slot.slot] ?? { username: slot.username, password: '', code: '' };
+          const set = (patch: Partial<{ username: string; password: string; code: string }>) =>
             setDrafts((d) => ({ ...d, [slot.slot]: { ...draft, ...patch } }));
+          const armed = challenge?.slot === slot.slot;
           return (
             <div key={slot.slot} className="rounded-xl border border-stone-200 p-3">
               <p className="text-sm font-medium text-stone-800">{labels[slot.slot]?.title ?? slot.slot}</p>
@@ -1669,18 +1694,40 @@ function CredentialsAdmin({ t }: { t: T }) {
                   : slot.source === 'unset' ? t.credNeverSet
                   : t.credChangedAt(new Date(slot.updatedAt ?? '').toLocaleDateString(), slot.updatedBy ?? '')}
               </p>
-              <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                <input className={input} value={draft.username} aria-label={t.credUser} placeholder={t.credUser}
-                  autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false}
-                  onChange={(e) => set({ username: e.target.value })} />
-                <input className={input} value={draft.password} type="text" aria-label={t.credNew} placeholder={t.credNew}
-                  autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false}
-                  onChange={(e) => set({ password: e.target.value })} />
-                <button className={btnPrimary} disabled={busy === slot.slot || draft.password.length < minLength}
-                  onClick={() => void save(slot)}>
-                  {busy === slot.slot ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} {t.credSave}
-                </button>
-              </div>
+              {!armed ? (
+                // Nothing is editable until a code has been asked for: a change
+                // starts by proving you can read the mailbox, not by typing.
+                <div className="mt-2 flex items-center gap-2">
+                  <button className={btnGhost} disabled={busy === slot.slot} onClick={() => void sendCode(slot)}>
+                    {busy === slot.slot ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />} {t.credSendCode}
+                  </button>
+                  <span className="text-[11px] text-stone-400">{t.credCodeWhy}</span>
+                </div>
+              ) : (
+                <>
+                  <p className="mt-2 text-[11px] text-green-800">{t.credCodeSent(challenge.sentTo)}</p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,7rem)_auto]">
+                    <input className={input} value={draft.username} aria-label={t.credUser} placeholder={t.credUser}
+                      autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                      onChange={(e) => set({ username: e.target.value })} />
+                    <input className={input} value={draft.password} type="text" aria-label={t.credNew} placeholder={t.credNew}
+                      autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                      onChange={(e) => set({ password: e.target.value })} />
+                    <input className={input} value={draft.code} aria-label={t.credCode} placeholder={t.credCode}
+                      inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                      onChange={(e) => set({ code: e.target.value.replace(/\D/g, '') })} />
+                    <button className={btnPrimary}
+                      disabled={busy === slot.slot || draft.password.length < minLength || draft.code.trim().length !== 6}
+                      onClick={() => void save(slot)}>
+                      {busy === slot.slot ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} {t.credSave}
+                    </button>
+                  </div>
+                  <button className="mt-2 text-[11px] text-stone-400 hover:text-stone-600"
+                    onClick={() => { setChallenge(null); set({ password: '', code: '' }); }}>
+                    {t.credChangeCancel}
+                  </button>
+                </>
+              )}
             </div>
           );
         })}

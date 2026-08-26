@@ -1075,6 +1075,25 @@ export default function App() {
       .catch(err => { if (!cancelled) setIcalError(err instanceof Error ? err.message : String(err)); });
     return () => { cancelled = true; };
   }, [showCalendarModal, formData.lang]);
+  // Mints a new token and drops the old one. The confirm is not ceremony: the
+  // links already handed out are in other people's calendar apps, and those
+  // simply stop updating with no error anyone will notice.
+  const [icalRotating, setIcalRotating] = useState(false);
+  const regenerateIcalUrl = async () => {
+    const warning = formData.lang === 'DE'
+      ? 'Neuen Link erzeugen? Der bisherige Link hört auf zu funktionieren — Kalender, die ihn abonniert haben, aktualisieren sich nicht mehr und müssen neu abonniert werden.'
+      : 'Generate a new link? The current one stops working — calendars subscribed to it will no longer update and have to subscribe again.';
+    if (!window.confirm(warning)) return;
+    setIcalRotating(true);
+    setIcalError('');
+    try {
+      setIcalInfo(await getIcalSubscription(formData.lang, true));
+    } catch (err) {
+      setIcalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIcalRotating(false);
+    }
+  };
   const copyIcalUrl = async () => {
     if (!icalInfo) return;
     try {
@@ -5587,6 +5606,18 @@ export default function App() {
                     ? `Alle ${icalInfo.count} Spiele als .ics herunterladen`
                     : `Download all ${icalInfo.count} games as .ics`}
                 </a>
+
+                {/* The link is the whole credential — anyone holding it reads
+                    this calendar, with no login. This is how you take it back
+                    if it ends up somewhere it should not be. */}
+                <button
+                  onClick={() => void regenerateIcalUrl()}
+                  disabled={icalRotating}
+                  className="h-9 inline-flex items-center justify-center gap-1.5 text-xs font-medium text-stone-500 hover:text-stone-700 disabled:text-stone-300 transition-colors"
+                >
+                  {icalRotating ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />}
+                  {formData.lang === 'DE' ? 'Neuen Link erzeugen' : 'Generate a new link'}
+                </button>
 
                 <div className="rounded-lg bg-stone-50 border border-stone-200 px-3 py-2.5 text-[11px] leading-relaxed text-stone-500 space-y-1.5">
                   <p>

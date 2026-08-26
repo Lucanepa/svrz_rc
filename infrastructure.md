@@ -252,9 +252,32 @@ Three layers, plus capability tokens:
    slot never written in the console falls back to its variable. Hashes never
    leave the server, and a password that has been set cannot be read back —
    only replaced.
+
+   **Changing one takes a second factor.** `POST /api/admin/credentials/challenge`
+   mails a 6-digit code to `CREDENTIAL_2FA_EMAIL` (falling back to
+   `POCKETBASE_ADMIN_EMAIL`); `PUT /api/admin/credentials` refuses without it.
+   The code is bound to the console cookie that asked for it **and** to the one
+   slot it was issued for, is single-use, expires in 10 minutes and dies after 5
+   wrong guesses. Reading which usernames are live needs only the admin session;
+   changing one does not. Under `TEST_MODE` the code is printed to the server
+   console instead of mailed, so a test deployment can still rotate a password.
+   If mail is down, the env vars remain the escape hatch.
 4. **Capability tokens** in the URL for the two pages that have no session at
    all: `#/sign/<slug>` (signature capture) and `#/survey/<token>` (post-visit
-   survey, sent to referees who are not app users).
+   survey, sent to referees who are not app users) — plus the calendar feed
+   token, which is the credential in a subscription URL a calendar app cannot
+   log in with.
+
+   The feed token used to be derived from the RC's id alone, which made it
+   **unrevocable**: anyone holding the team password could pick any name, call
+   `/api/ical/me`, and keep that coach's feed forever — through every later
+   rotation of the password they obtained it with. It now hangs off a per-person
+   random secret in `app_settings` (`ical_secrets`), minted on demand and never
+   by the public lookup. Rotating the team password drops the whole map, so
+   every feed handed out under the old password dies with it; a coach can also
+   rotate only their own from the calendar dialog. Both cost every subscribed
+   calendar a re-subscribe, which is the price of being able to take a leaked
+   link back at all.
 
 `GET /api/auth/me` reports the state the client needs to route on:
 `{ rc, admin, surveyReader, shared, needsIdentity }` — where `needsIdentity`

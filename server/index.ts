@@ -575,6 +575,9 @@ setInterval(() => {
       if (now >= entry.resetAt) store.delete(ip);
     }
   }
+  for (const [key, entry] of credChallenges) {
+    if (now > entry.expiresAt) credChallenges.delete(key);
+  }
 }, 10 * 60 * 1000);
 
 function unique(values: string[]): string[] {
@@ -3079,6 +3082,116 @@ const SLOT_ENV: Record<CredentialSlot, { username: string; password: string }> =
   president: { username: PRESIDENT_UI_USERNAME, password: PRESIDENT_UI_PASSWORD },
 };
 
+// ── Second factor for a password change ───────────────────────────────
+// Holding an admin session is enough to READ which usernames are live. It is
+// deliberately NOT enough to change one: a borrowed laptop, a session left open
+// on a shared machine, or a stolen console cookie would otherwise be able to
+// lock the real admin out of every door at once — including the chair's, which
+// admin rights are not supposed to reach at all. So a change costs a code that
+// arrives somewhere else.
+//
+// The code is bound to the console cookie that asked for it, so it cannot be
+// read out of one session's mailbox and spent from another.
+const CRED_2FA_TTL_MS = 10 * 60 * 1000;
+const CRED_2FA_MAX_ATTEMPTS = 5;
+type CredChallenge = { slot: CredentialSlot; hash: string; salt: string; expiresAt: number; attempts: number };
+const credChallenges = new Map<string, CredChallenge>();
+const credChallengeRl: RateLimitStore = new Map();
+
+// Where the code goes. Its own variable so it can be an address the admin
+// actually reads, falling back to the PocketBase superuser account — which is
+// by definition an address whoever runs this deployment controls.
+const CRED_2FA_EMAIL = process.env.CREDENTIAL_2FA_EMAIL || process.env.POCKETBASE_ADMIN_EMAIL || '';
+
+/** Keyed by the cookie, not the username: one session's code is useless in another. */
+function credChallengeKey(req: Request): string {
+  return createHash('sha256').update(getCookieValue(req, ADMIN_SESSION_COOKIE)).digest('hex');
+}
+
+/** j.doe@example.com -> j••••@example.com. Enough to recognise, not to learn. */
+function maskEmail(address: string): string {
+  const [user, domain] = address.split('@');
+  if (!user || !domain) return '•••';
+  return `${user.slice(0, 1)}${'•'.repeat(Math.max(3, user.length - 1))}@${domain}`;
+}
+
+async function sendCredentialCodeEmail(to: string, code: string, slotLabel: string): Promise<void> {
+  if (await isEmailTestMode()) {
+    // The code is printed rather than merely suppressed. Test mode turns off
+    // every outbound mail, so without this a password change is not "mail-free"
+    // — it is impossible, and the one environment where you want to rehearse
+    // rotating a credential is the one where you cannot. Server console only:
+    // never the activity log, which admins read and which ships off the box.
+    console.log(`[cred-2fa] TEST_MODE — not sent to ${to}; code is ${code}`);
+    return;
+  }
+  const html = emailShell(
+    '<h1 style="margin:0 0 6px;font-size:20px;font-weight:700;color:#1c1917;">Bestätigungscode</h1>'
+    + `<p style="margin:0 0 14px;font-size:14px;color:#44403c;">Jemand ändert gerade das Passwort für <strong>${escapeHtml(slotLabel)}</strong> in der Referee-Coaching-Administration. Mit diesem Code wird die Änderung bestätigt:</p>`
+    + emailCodeBox(code)
+    + '<p style="margin:22px 0 0;font-size:13px;color:#78716c;line-height:1.6;">Der Code ist 10 Minuten gültig und kann nur einmal verwendet werden. Hast du das nicht ausgelöst, wurde das Passwort NICHT geändert — aber jemand hat Zugriff auf eine Admin-Sitzung. Ändere in dem Fall umgehend das Admin-Passwort.</p>',
+  );
+  await sendMailResilient({
+    from: MAIL_FROM,
+    to,
+    subject: 'Bestätigungscode – Passwortänderung SVRZ Referee Coaching',
+    text: `Bestätigungscode für die Passwortänderung (${slotLabel}):\n\n    ${code}\n\n`
+      + `Gültig für 10 Minuten, einmalig verwendbar.\n\n`
+      + `Hast du das nicht ausgelöst, wurde nichts geändert — aber jemand hat Zugriff auf eine Admin-Sitzung. Ändere dann sofort das Admin-Passwort.\n\n${MAIL_APP_URL}`,
+    html,
+    attachments: emailAttachments(),
+  });
+}
+
+app.post('/api/admin/credentials/challenge', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  const ctx = reqCtx(req);
+  const rl = checkRateLimit(credChallengeRl, ctx.ip, 5, 15 * 60 * 1000);
+  if (!rl.allowed) { denyRateLimited(req, res, 'cred-2fa:ip', rl.retryAfterMs); return; }
+  const slot = asText((req.body ?? {}).slot) as CredentialSlot;
+  if (!CREDENTIAL_SLOTS.includes(slot)) { res.status(400).json({ error: 'Unbekannter Zugang.' }); return; }
+  if (!CRED_2FA_EMAIL) {
+    // Said plainly rather than as a 500: the operator needs to know this is a
+    // missing setting, and that the env vars are still the way out.
+    log.error('auth.credentials', 'no 2FA recipient configured', { slot }, ctx);
+    res.status(503).json({ error: 'Kein Empfänger für den Bestätigungscode konfiguriert (CREDENTIAL_2FA_EMAIL).' });
+    return;
+  }
+  const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+  const salt = randomBytes(16).toString('hex');
+  try {
+    await sendCredentialCodeEmail(CRED_2FA_EMAIL, code, slot);
+  } catch (error) {
+    log.error('auth.credentials', 'could not send the confirmation code', { slot, error }, ctx);
+    res.status(503).json({ error: 'Der Bestätigungscode konnte nicht gesendet werden.' });
+    return;
+  }
+  credChallenges.set(credChallengeKey(req), {
+    slot, salt, hash: hashSecret(code, salt), expiresAt: Date.now() + CRED_2FA_TTL_MS, attempts: 0,
+  });
+  log.info('auth.credentials', 'confirmation code sent', { slot, to: maskEmail(CRED_2FA_EMAIL) }, ctx);
+  res.json({ ok: true, sentTo: maskEmail(CRED_2FA_EMAIL), expiresInMs: CRED_2FA_TTL_MS });
+});
+
+/** Spends the code. Returns an error string, or '' when the change may proceed. */
+function consumeCredChallenge(req: Request, slot: CredentialSlot, code: string): string {
+  const key = credChallengeKey(req);
+  const entry = credChallenges.get(key);
+  if (!entry) return 'Kein Bestätigungscode angefordert. Bitte einen neuen Code senden.';
+  if (Date.now() > entry.expiresAt) { credChallenges.delete(key); return 'Der Code ist abgelaufen. Bitte einen neuen anfordern.'; }
+  if (entry.attempts >= CRED_2FA_MAX_ATTEMPTS) { credChallenges.delete(key); return 'Zu viele Fehlversuche. Bitte einen neuen Code anfordern.'; }
+  // The code was issued FOR one door. Without this, a code sent for the team
+  // password would open the admin one, which is the more valuable of the two.
+  if (entry.slot !== slot) { return 'Der Code gehört zu einem anderen Zugang.'; }
+  const attempt = Buffer.from(hashSecret(code, entry.salt), 'hex');
+  const expected = Buffer.from(entry.hash, 'hex');
+  if (attempt.length !== expected.length || !timingSafeEqual(attempt, expected)) {
+    entry.attempts += 1;
+    return 'Code ungültig.';
+  }
+  credChallenges.delete(key); // single use
+  return '';
+}
+
 app.get('/api/admin/credentials', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
     const stored = await readCredentials();
@@ -3123,11 +3236,22 @@ app.put('/api/admin/credentials', requireAdminSession, async (req: Request, res:
       res.status(400).json({ error: 'Das Passwort darf den Benutzernamen nicht enthalten.' });
       return;
     }
+    const codeError = consumeCredChallenge(req, slot, asText(body.code).trim());
+    if (codeError) { log.warn('auth.credentials', 'rejected: 2FA', { slot, reason: codeError }, ctx); res.status(403).json({ error: codeError }); return; }
     const by = asText(verifyAdminSession(req).email) || 'admin';
     await writeCredentials((current) => ({ ...current, [slot]: makeCredential(username, password, by) }));
+    // Rotating the team password means the old one is loose. Every calendar
+    // feed token handed out under it is loose too — they were obtained by
+    // picking a name behind that password — so they go at the same moment.
+    // Coaches get a fresh URL from the calendar dialog; see issueIcalToken.
+    let feedsRevoked = false;
+    if (slot === 'shared') {
+      try { await revokeAllIcalFeeds(); feedsRevoked = true; }
+      catch (revokeErr) { log.error('auth.credentials', 'feed revocation failed', { error: String(revokeErr) }, ctx); }
+    }
     // The VALUE is never logged — only that it moved, and who moved it.
-    log.info('auth.credentials', 'password changed', { slot, username, by }, ctx);
-    res.json({ ok: true, slot, username });
+    log.info('auth.credentials', 'password changed', { slot, username, by, feedsRevoked }, ctx);
+    res.json({ ok: true, slot, username, feedsRevoked });
   } catch (error) {
     log.error('auth.credentials', 'could not store the credential', { error }, ctx);
     res.status(500).json({ error: safeError(error) });
@@ -5094,23 +5218,86 @@ const ICAL_CACHE_TTL_MS = 5 * 60 * 1000;
 const ICAL_EVENT_DURATION_MS = 2 * 60 * 60 * 1000;
 
 // The subscription URL carries no cookie, so the token in it IS the credential.
-// Derived rather than stored, so it is stable: a URL that changed each time the
-// dialog opened would silently strand every calendar already subscribed to the
-// previous one. Deriving it from the RC's id also means deactivating an RC
-// revokes their feed, since the lookup below only walks active people. Set
-// ICAL_TOKEN_VERSION to something else to invalidate every feed at once.
-function icalTokenFor(rcId: string): string {
+// It has to be stable — a URL that changed each time the dialog opened would
+// silently strand every calendar already subscribed to the previous one — but
+// it used to be derived from the RC's id ALONE, and that made it worse than a
+// stable URL: it made it an unrevocable one.
+//
+// The hole that closes here: the team password is one secret everybody knows,
+// so it gets rotated. Anyone holding it could pick any name off the picker,
+// call /api/ical/me, and walk away with that coach's feed token — which then
+// kept working forever, through the rotation, because nothing about it depended
+// on the password it was obtained with. A credential you rotate turned into one
+// you cannot. Deactivating the RC was the only revocation, and that locks the
+// real coach out too.
+//
+// So the token now hangs off a per-person random secret kept in app_settings.
+// Rotating the team password DROPS the whole map (see the credentials route),
+// which is exactly right: you rotate because the old password is loose, and
+// every feed handed out under it dies with it. A coach can also rotate just
+// their own, and a fresh URL is one dialog away.
+const ICAL_SECRETS_KEY = 'ical_secrets';
+let icalSecretsCache: { data: Record<string, string>; expiresAt: number } | null = null;
+
+async function readIcalSecrets(): Promise<Record<string, string>> {
+  if (icalSecretsCache && icalSecretsCache.expiresAt > Date.now()) return icalSecretsCache.data;
+  let data: Record<string, string> = {};
+  try {
+    const rec = await getSettingRecord(ICAL_SECRETS_KEY);
+    const parsed = rec ? JSON.parse(asText(rec.value)) : {};
+    if (parsed && typeof parsed === 'object') data = parsed as Record<string, string>;
+  } catch (error) {
+    console.error('[ical] could not read feed secrets:', error);
+  }
+  icalSecretsCache = { data, expiresAt: Date.now() + 60 * 1000 };
+  return data;
+}
+
+async function mutateIcalSecrets(mutate: (current: Record<string, string>) => Record<string, string>): Promise<void> {
+  await withSettingLock(ICAL_SECRETS_KEY, async () => {
+    let current: Record<string, string> = {};
+    try {
+      const rec = await getSettingRecord(ICAL_SECRETS_KEY);
+      const parsed = rec ? JSON.parse(asText(rec.value)) : {};
+      if (parsed && typeof parsed === 'object') current = parsed as Record<string, string>;
+    } catch { current = {}; }
+    await setSetting(ICAL_SECRETS_KEY, JSON.stringify(mutate(current)));
+  });
+  icalSecretsCache = null;
+}
+
+/** Every outstanding feed URL stops working. Called when the team password moves. */
+async function revokeAllIcalFeeds(): Promise<void> {
+  await mutateIcalSecrets(() => ({}));
+}
+
+function icalTokenFrom(rcId: string, secret: string): string {
   return createHmac('sha256', ADMIN_SESSION_SECRET)
-    .update(`ical:v${ICAL_TOKEN_VERSION}:${rcId}`)
+    .update(`ical:v${ICAL_TOKEN_VERSION}:${rcId}:${secret}`)
     .digest('base64url');
+}
+
+// Minted on demand, and ONLY here — the lookup below never creates one, so
+// probing /api/ical/<guess> cannot populate a secret for anybody.
+async function issueIcalToken(rcId: string, rotate = false): Promise<string> {
+  const existing = (await readIcalSecrets())[rcId];
+  if (existing && !rotate) return icalTokenFrom(rcId, existing);
+  const secret = randomBytes(24).toString('base64url');
+  await mutateIcalSecrets((current) => ({ ...current, [rcId]: secret }));
+  return icalTokenFrom(rcId, secret);
 }
 
 async function rcByIcalToken(token: string): Promise<ActiveRcPerson | null> {
   if (!token || token.length > 128) return null;
   const given = Buffer.from(token);
+  const secrets = await readIcalSecrets();
   let found: ActiveRcPerson | null = null;
   for (const person of await getActiveRcPeople()) {
-    const expected = Buffer.from(icalTokenFor(person.id));
+    const secret = secrets[person.id];
+    // No secret means no feed was ever handed out for this person — and after a
+    // revocation that is everyone, until they open the dialog again.
+    if (!secret) continue;
+    const expected = Buffer.from(icalTokenFrom(person.id, secret));
     // No early exit: every candidate is compared either way, so how long the
     // answer takes says nothing about which RC — or how many — nearly matched.
     if (expected.length === given.length && timingSafeEqual(expected, given)) found = person;
@@ -5368,7 +5555,13 @@ app.get('/api/ical/me', requireRcSession, async (req: Request, res: ExpressRespo
     }
     const lang: IcalLang = asText(req.query.lang).toUpperCase() === 'EN' ? 'EN' : 'DE';
     const base = publicApiBase(req);
-    const path = `/api/ical/${icalTokenFor(person.id)}.ics?lang=${lang.toLowerCase()}`;
+    // `rotate=1` is the "my link leaked / I handed my phone on" button: it mints
+    // a new secret, so the URL every previously-subscribed calendar holds stops
+    // resolving. Anything else reuses the standing one, which is what keeps a
+    // working subscription working.
+    const rotate = asText(req.query.rotate) === '1';
+    if (rotate) log.info('ical.rotate', 'feed link regenerated', { rcId: person.id, name: person.fullName }, reqCtx(req));
+    const path = `/api/ical/${await issueIcalToken(person.id, rotate)}.ics?lang=${lang.toLowerCase()}`;
     res.json({
       name: person.fullName,
       count: (await getCachedGamesForRc(person)).length,

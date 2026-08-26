@@ -110,13 +110,16 @@ export type RcAuth = {
   isAdminSession: boolean;
   /** Signed in to the app — the name was chosen off a list, not proven. */
   sharedSession: boolean;
+  /** Draw the #/admin shortcut. Cosmetic: the name behind it was picked, not
+   *  proven, so this decides a button and never an access decision. */
+  adminShortcut: boolean;
   /** Reopens the picker without signing out. */
   switchRc: () => void;
   logout: () => void;
 };
 
 const RcAuthContext = createContext<RcAuth>({
-  rcId: null, rcName: null, isAdminSession: false, sharedSession: false,
+  rcId: null, rcName: null, isAdminSession: false, sharedSession: false, adminShortcut: false,
   switchRc: () => {}, logout: () => {},
 });
 
@@ -152,6 +155,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [rcId, setRcId] = useState<string | null>(null);
   const [rcName, setRcName] = useState<string | null>(null);
   const [isAdminSession, setIsAdminSession] = useState(false);
+  const [adminShortcut, setAdminShortcut] = useState(false);
   const [sharedSession, setSharedSession] = useState(false);
 
   // Picker state.
@@ -195,6 +199,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setRcName(me.rc?.name ?? null);
     setIsAdminSession(Boolean(me.admin));
     setSharedSession(Boolean(me.shared));
+    setAdminShortcut(Boolean(me.adminShortcut));
     setAuthed(Boolean(me.rc || me.admin));
   }, []);
 
@@ -309,6 +314,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setRcName(null);
       setSharedSession(false);
       setIsAdminSession(false);
+      setAdminShortcut(false);
       setPassword('');
       setChosenRcId(null);
       setRoster(null);
@@ -328,7 +334,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   }
   if (authed) {
     return (
-      <RcAuthContext.Provider value={{ rcId, rcName, isAdminSession, sharedSession, switchRc, logout }}>
+      <RcAuthContext.Provider value={{ rcId, rcName, isAdminSession, sharedSession, adminShortcut, switchRc, logout }}>
         {children}
       </RcAuthContext.Provider>
     );

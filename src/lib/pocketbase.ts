@@ -166,6 +166,8 @@ export type AuthMe = {
   surveyReader?: boolean;
   /** Signed in to the app (there is only the team credential now). */
   shared?: boolean;
+  /** Draw the #/admin shortcut for this session. Cosmetic — never a permission. */
+  adminShortcut?: boolean;
   /** Signed in, but no RC named yet — show the picker, not the login screen. */
   needsIdentity?: boolean;
 };
@@ -761,6 +763,23 @@ export async function listSurveyResponses(): Promise<SurveyResponse[]> {
   const res = await fetch(apiUrl('/api/survey-responses'), { credentials: 'include' });
   if (!res.ok) throw new Error('Could not load survey responses');
   return res.json();
+}
+
+// Which RCs see the #/admin shortcut in their toolbar. Cosmetic only: the name
+// on a session is picked, not proven, so this cannot gate anything.
+export async function getAdminShortcutRcs(): Promise<string[]> {
+  const r = await fetch(apiUrl('/api/admin/shortcut-rcs'), { credentials: 'include' });
+  if (!r.ok) throw await apiError(r, 'Could not load the list');
+  return (await r.json() as { rcIds: string[] }).rcIds ?? [];
+}
+
+export async function setAdminShortcutRcs(rcIds: string[]): Promise<void> {
+  const r = await fetch(apiUrl('/api/admin/shortcut-rcs'), {
+    credentials: 'include', method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rcIds }),
+  });
+  if (!r.ok) throw await apiError(r, 'Could not save the list');
 }
 
 // ── Credentials (admin console) ───────────────────────────────────────

@@ -3122,6 +3122,35 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
+// Which RCs get the #/admin shortcut drawn in their toolbar. A list of ids in
+// app_settings, edited from the admin console. Grants nothing — see the comment
+// at /api/auth/me — so a wrong entry here costs somebody a button, not access.
+const ADMIN_SHORTCUT_KEY = 'admin_shortcut_rcs';
+
+async function readAdminShortcutRcs(): Promise<string[]> {
+  const rec = await getSettingRecord(ADMIN_SHORTCUT_KEY);
+  if (!rec) return [];
+  try {
+    const parsed = JSON.parse(asText(rec.value));
+    return Array.isArray(parsed) ? parsed.map((v) => String(v)).filter(Boolean) : [];
+  } catch { return []; }
+}
+
+app.get('/api/admin/shortcut-rcs', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try { res.json({ rcIds: await readAdminShortcutRcs() }); }
+  catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.put('/api/admin/shortcut-rcs', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const raw = (req.body ?? {}) as Record<string, unknown>;
+    const ids = Array.isArray(raw.rcIds) ? raw.rcIds.map((v) => String(v)).filter(Boolean) : [];
+    await setSetting(ADMIN_SHORTCUT_KEY, JSON.stringify([...new Set(ids)]));
+    log.info('admin.shortcut', 'shortcut list updated', { count: ids.length }, reqCtx(req));
+    res.json({ ok: true, rcIds: ids });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
 // ── Credentials (admin) ───────────────────────────────────────────────
 // Reading tells the console which usernames are live and when each password was
 // last changed. It never returns a hash or a salt: there is nothing here that
@@ -3663,6 +3692,17 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
   // the client mirrors the server's answer rather than a record's flag, so it
   // is never shown a door the API would slam.
   const surveyReader = verifyPresidentSession(req).ok;
+  // Whether to DRAW the shortcut to #/admin in the coach toolbar. Cosmetic,
+  // and it has to stay that way: the name on an app session was picked off a
+  // list, never proven, so anyone holding the team password can make this true
+  // by choosing a different name. It decides one button, and the page behind
+  // that button asks for the admin password regardless of how you got there.
+  //
+  // It exists because the alternative is showing ~14 referee coaches a locked
+  // door none of them can open. Deliberately NOT called anything with "admin"
+  // or "is" in it: the last flag on this record that read like a permission
+  // was honoured as one.
+  let adminShortcut = verifyAdminSession(req).ok || verifyPresidentSession(req).ok;
   if (session.ok && session.rcId) {
     try {
       // resolveRcSession, not a bare lookup: it also re-checks that the name on
@@ -3694,7 +3734,11 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
   // anybody. It also covers a session whose chosen RC has since been
   // deactivated — that sends them back to the picker, not to the login screen,
   // because their password is still perfectly good.
-  res.json({ rc, admin, surveyReader, shared, needsIdentity: shared && !rc });
+  if (!adminShortcut && rc) {
+    try { adminShortcut = (await readAdminShortcutRcs()).includes(rc.id); }
+    catch (error) { console.error('[auth/me] shortcut list unreadable:', error); }
+  }
+  res.json({ rc, admin, surveyReader, shared, adminShortcut, needsIdentity: shared && !rc });
 });
 
 // The everyday way in: one username and password for the whole team. Opens a
@@ -6577,9 +6621,25 @@ async function findCoacheeRecord(
   });
 }
 
-async function findCoacheeByRefereeName(refereeName: string, season: number | null): Promise<AnyRecord | null> {
+// `strictSeason` refuses the fallback above: a row from ANOTHER season is not
+// this season's coachee, so it is not a recipient either. The games list already
+// makes such a game unpickable, so the only way one reaches here is DB state
+// that predates that rule — a game taken before it landed, a manual game typed
+// in the admin console, or a coachee row removed after a coach took the game.
+// Rows with no season at all predate the field and still count, as everywhere.
+async function findCoacheeByRefereeName(
+  refereeName: string,
+  season: number | null,
+  opts: { strictSeason?: boolean } = {},
+): Promise<AnyRecord | null> {
   try {
-    return (await findCoacheeRecord(refereeName, season)).coachee;
+    const coachee = (await findCoacheeRecord(refereeName, season)).coachee;
+    if (opts.strictSeason && season != null && Number.isFinite(season)) {
+      const raw = coachee.season;
+      const rowSeason = raw == null || raw === '' ? null : Number(raw);
+      if (rowSeason != null && rowSeason !== Math.trunc(season)) return null;
+    }
+    return coachee;
   } catch (error) {
     // Only "no such coachee" is an ordinary answer here. Swallowing everything
     // made a broken filter or an unreachable PocketBase look like "nobody on
@@ -6624,9 +6684,23 @@ async function buildDueReminders(): Promise<ReminderPlan[]> {
     for (const [roleLabel, refField] of [['1. SR', 'first_referee'], ['2. SR', 'second_referee']] as const) {
       const refereeName = asText(game[refField]);
       if (!refereeName) continue;
-      const coachee = await findCoacheeByRefereeName(refereeName, seasonOfDate(asText(game.match_date)));
+      const gameSeason = seasonOfDate(asText(game.match_date));
+      const coachee = await findCoacheeByRefereeName(refereeName, gameSeason, { strictSeason: true });
       const email = coachee ? singleAddress(coachee.email) : '';
-      if (!coachee || !email) continue; // not a coachee, or no usable address on file
+      if (!coachee || !email) {
+        // Silence here is how this job hides: it once reported "0 sent, 0
+        // skipped (of 0 due)" every morning for a month and read like a quiet
+        // Tuesday. Say who was dropped and why, so the Protokoll can be asked.
+        recordLog({
+          lvl: 'warn', src: 'server', evt: 'reminder.skip',
+          msg: `No reminder for ${refereeName} (${roleLabel}) on ${asText(game.match_no) || game.id}`,
+          data: {
+            reason: coachee ? 'no e-mail on file' : `not a coachee in ${gameSeason}`,
+            referee: refereeName, season: gameSeason, rc: rcName,
+          },
+        });
+        continue;
+      }
       const built = buildTemplatedEmail({
         tpl,
         vars: emailVars({

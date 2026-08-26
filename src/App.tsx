@@ -3368,13 +3368,23 @@ export default function App() {
                   <Languages size={14} />
                   <span>{formData.lang}</span>
                 </button>
-                {/* Always here, privileged or not. It used to appear only for
-                    admins, which worked while admin rights came from an RC's own
-                    login — but the team credential grants none, so on the
-                    everyday session the door vanished and #/admin had to be
-                    typed by hand. The lock says "there is something here you
-                    have to sign in for"; it gives nothing away, since the route
-                    behind it asks for admin credentials regardless. */}
+                {/* Shown to the people who actually use the console, not to
+                    all fourteen coaches. It briefly appeared for everyone —
+                    admin rights used to come from an RC's own login, so when
+                    that login went the door vanished and #/admin had to be
+                    typed by hand; putting it back for everybody fixed that and
+                    left most of the team a locked door they can't open.
+
+                    `adminShortcut` is COSMETIC and has to stay that way. It is
+                    true for a console session, or when the name picked on this
+                    device is on a list an admin keeps. That name was chosen off
+                    a picker, never proven, so anyone with the team password can
+                    make it true by picking differently — which costs them a
+                    button and nothing else, because the page behind it asks for
+                    the admin password regardless. Do not read it as a
+                    permission; the last flag here that looked like one was
+                    honoured as one. */}
+                {(isPrivileged || rcAuth.adminShortcut) && (
                 <button
                   onClick={() => { window.location.hash = '/admin'; }}
                   className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
@@ -3385,6 +3395,7 @@ export default function App() {
                   {isPrivileged ? <ShieldAlert size={14} /> : <Lock size={14} />}
                   <span className="hidden sm:inline">Admin</span>
                 </button>
+                )}
                 <button
                   onClick={() => setShowInfoModal(true)}
                   className="sm:hidden h-9 inline-flex items-center justify-center px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"

@@ -425,7 +425,9 @@ const ok = <T>(v: T): Promise<T> => Promise.resolve(v);
 // ── Handlers (mirror the pocketbase.ts signatures) ────────────────────
 
 export function getAuthMe(): Promise<AuthMe> {
-  return ok({ rc: { id: RC.id, name: RC.name }, admin: null });
+  // No adminShortcut: the guide videos are recorded through here, and a coach
+  // watching one should see the toolbar a coach actually gets.
+  return ok({ rc: { id: RC.id, name: RC.name }, admin: null, adminShortcut: false });
 }
 
 export function getAdminAuthStatus(): Promise<AdminAuthStatus> {

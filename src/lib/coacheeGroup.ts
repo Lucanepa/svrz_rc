@@ -1,87 +1,57 @@
-const GROUP_LABELS = new Map<string, string>([
-  ['neu-sr 2025/26', 'Neu-SR 2025/26'],
-  ['neu-sr 25/26', 'Neu-SR 2025/26'],
-  ['neu-sr 2024/25', 'Neu-SR 2024/25'],
-  ['neu-sr 24/25', 'Neu-SR 2024/25'],
-  ['beförderung?', 'Beförderung?'],
-  ['befoerderung?', 'Beförderung?'],
-  ['beförderung?', 'Beförderung?'],
-  ['b?', 'Beförderung?'],
-  ['rückstufung?', 'Rückstufung?'],
-  ['rueckstufung?', 'Rückstufung?'],
-  ['rückstufung', 'Rückstufung'],
-  ['rueckstufung', 'Rückstufung'],
-  ['r?', 'Rückstufung?'],
-  ['befördert', 'Befördert'],
-  ['beförderung', 'Befördert'],
-  ['befoerdert', 'Befördert'],
-  ['befoerderung', 'Befördert'],
-  ['beforderung', 'Befördert'],
-  ['b', 'Befördert'],
-  ['rc gewünscht', 'RC Gewünscht'],
-  ['rc gewuenscht', 'RC Gewünscht'],
-  ['2. sr', '2. SR'],
-  ['2.sr', '2. SR'],
-  ['2 sr', '2. SR'],
-  ['2sr', '2. SR'],
-  ['varia', 'Varia'],
-  ['coaching', 'Coaching'],
-  ['sr-spiel', 'SR-Spiel'],
-  ['sr spiel', 'SR-Spiel'],
-  ['lr', 'LR'],
-]);
-
+// The vocabulary the DATABASE actually speaks. Every live row was written by the
+// xlsx import (AdminConsole's GROUP_MAP), so its spellings are the real ones:
+// "Beförderung", "2. Schiedsrichter", "Neu-Schiedsrichter 26/27". This list used
+// to offer "Befördert", "2. SR" and "Neu-SR 2025/26" alongside them — same
+// concepts, different strings — and the picker unions it with the groups in use,
+// so a coach was shown BOTH spellings and either click was accepted. Picking the
+// unused one splits a cohort in two for good.
+//
+// The season-shaped group is deliberately absent: the union supplies the current
+// cohort ("Neu-Schiedsrichter 26/27") on its own, so no year is maintained here
+// and none can go stale.
 export const COACHEE_GROUP_OPTIONS = [
-  'Neu-SR 2025/26',
-  'Neu-SR 2024/25',
   'Beförderung?',
-  'Befördert',
+  'Beförderung',
   'Rückstufung?',
   'Rückstufung',
   'RC Gewünscht',
-  '2. SR',
+  '2. Schiedsrichter',
   'Varia',
   'Coaching',
   'SR-Spiel',
   'LR',
 ] as const;
 
-function normalizeToken(token: string): string {
-  const cleaned = token.trim();
-  if (!cleaned) {
-    return '';
-  }
-  const key = cleaned.toLowerCase().replace(/\s+/g, ' ');
-  if (GROUP_LABELS.has(key)) {
-    return GROUP_LABELS.get(key) as string;
-  }
-  return cleaned.replace(/\b\p{L}/gu, (char) => char.toUpperCase());
-}
-
 export function normalizeCoacheeGroup(value?: string): string {
   // Groups are now managed full-word values — display them verbatim.
   return (value || '').trim();
 }
 
-// Kept for backwards-compatible imports.
-void normalizeToken;
-
 // Groups are STORED in German — they travel verbatim into the filed feedback,
 // which is always German — so English is a display layer and nothing else.
 // Anything not listed here (a group somebody typed by hand) shows as typed.
+// Keyed on what is IN the database, not on what this file once wished were. The
+// four spellings the import writes went untranslated for as long as they have
+// existed, so half of an English reader's badges were in German. The older
+// spellings stay listed: legacy rows still carry them and must not regress.
 const GROUP_EN = new Map<string, string>([
   ['beförderung?', 'Promotion?'],
+  ['beförderung', 'Promoted'],
   ['befördert', 'Promoted'],
   ['rückstufung?', 'Demotion?'],
   ['rückstufung', 'Demoted'],
   ['rc gewünscht', 'RC requested'],
+  ['1. schiedsrichter', '1st referee'],
+  ['2. schiedsrichter', '2nd referee'],
+  ['2. sr', '2nd referee'],
   ['varia', 'Misc'],
   ['sr-spiel', 'SR game'],
   ['lr', 'Line judge'],
 ]);
 
-/** "Neu-SR 2025/26" carries a year, so it is matched by shape, not by name. */
-const NEW_SR_DE = /^neu-sr\s+(.+)$/i;
+/** "Neu-Schiedsrichter 26/27" carries a year, so it is matched by shape, not by
+ *  name. Both spellings: the import writes the long one, older rows the short. */
+const NEW_SR_DE = /^neu-(?:sr|schiedsrichter)\s+(.+)$/i;
 
 /** Split a groups field into its individual groups. A bare 2- or 4-digit part
  *  is the tail of a season ("Neu-SR 2025/26"), not a group of its own. */

@@ -12,8 +12,14 @@ import { stubSignedInApp, RC, COACHEE, GAME } from './support/app';
  * all 925 scored games in production use.
  */
 
-/** "3:0" and the three sets, as the compact lists write them. */
-const OVERALL = /3\s*:\s*0/;
+/** "3:0" and the three sets, as the compact lists write them.
+ *
+ *  The digit guards are not decoration. Without them this also matches the
+ *  clock inside the build stamp in the footer — "Build <sha> · 26.08.2026,
+ *  13:09" contains "3:0" — so the "no score renders nothing" case below failed
+ *  in CI for any build made between 13:00 and 13:09 (and 03:0x, and 23:0x) and
+ *  passed every other minute of the day. */
+const OVERALL = /(?<!\d)3\s*:\s*0(?!\d)/;
 const SETS = '25:15 | 25:21 | 25:14';
 
 // The games list splits each set across the two team rows instead, so a row

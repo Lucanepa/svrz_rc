@@ -39,7 +39,7 @@ import { getStoredLang, setStoredLang } from './lib/prefs';
 import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname } from './lib/coacheeName';
-import { keepGame, levelKey, levelDisplay, isTargetActive, type CoacheeTargetMap, type TargetRole } from './lib/niveauTargets';
+import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
 import { Skeleton, SkeletonRows } from './components/Skeleton';
@@ -962,6 +962,9 @@ export default function App() {
   const [emailTestMode, setEmailTestMode] = useState(false);
   // Per-coachee level/role targets (drives "watch at their level" game filtering).
   const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
+  // The SR-Niveau table in force: the official one, with the admin's edits
+  // (Admin → Niveau) laid over it.
+  const [niveauTable, setNiveauTable] = useState<NiveauMatrix>(() => resolveNiveauTable(null));
   // Season observation goal: what a full mandate owes, halved for the RCs the
   // admin has marked as being on a half mandate.
   const [rcMandates, setRcMandates] = useState<RcMandateMap>({});
@@ -980,6 +983,7 @@ export default function App() {
       const s = await getSettings();
       setEmailTestMode(Boolean(s.test_mode));
       setCoacheeTargets(s.coachee_targets ?? {});
+      setNiveauTable(resolveNiveauTable(s.niveau_table ?? null));
       setRcMandates(s.rc_mandates ?? {});
       if (s.default_goal) setDefaultGoal(s.default_goal);
       if (!s.default_season) return seasonStartYear;
@@ -3028,10 +3032,10 @@ export default function App() {
         const coacheeRefs = refRoles
           .map((r) => ({ ...r, c: coacheeByName.get(normName(r.name)) }))
           .filter((r): r is { name: string; role: TargetRole; c: Coachee } => Boolean(r.c));
-        const anyTargeted = coacheeRefs.some((r) => isTargetActive(coacheeTargets[r.c.id], levelKey(r.c.referee_level, r.c.stage)));
+        const anyTargeted = coacheeRefs.some((r) => isTargetActive(coacheeTargets[r.c.id], levelKey(r.c.referee_level, r.c.stage), niveauTable));
         if (coacheeRefs.length > 0 && anyTargeted) {
           const keep = coacheeRefs.some((r) =>
-            keepGame({ league: g.league || '', role: r.role, target: coacheeTargets[r.c.id], levelKey: levelKey(r.c.referee_level, r.c.stage) }));
+            keepGame({ league: g.league || '', role: r.role, target: coacheeTargets[r.c.id], levelKey: levelKey(r.c.referee_level, r.c.stage), table: niveauTable }));
           if (!keep) return false;
         }
       }
@@ -3043,7 +3047,7 @@ export default function App() {
       // timestamps rather than strings so a stray offset cannot reorder a day,
       // and anything undated sinks to the bottom instead of leading.
       .sort((a, b) => gameTime(a.date) - gameTime(b.date));
-  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets]);
+  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets, niveauTable]);
 
   // Any filter can shrink a list below the page currently shown, and the pager
   // itself disappears under one page of rows — leaving a blank list with no
@@ -4569,8 +4573,8 @@ export default function App() {
                 if (g.assignedRoles.includes('1. SR')) roles.push('1SR');
                 if (g.assignedRoles.includes('2. SR')) roles.push('2SR');
                 if (roles.length === 0) return true; // not an SR role (e.g. line judge) → keep
-                if (!isTargetActive(target, lvlKey)) return true;
-                return roles.some((role) => keepGame({ league: g.league || '', role, target, levelKey: lvlKey }));
+                if (!isTargetActive(target, lvlKey, niveauTable)) return true;
+                return roles.some((role) => keepGame({ league: g.league || '', role, target, levelKey: lvlKey, table: niveauTable }));
               };
               const visibleGames = coacheeGames.filter(matchesTarget);
               const hiddenByTarget = coacheeGames.length - visibleGames.length;
@@ -4580,7 +4584,7 @@ export default function App() {
               const pastGames = showAllPastGames ? allPastGames : allPastGames.filter((game) => feedbackByGameId.has(game.id));
               return (
                 <div>
-                  {(hiddenByTarget > 0 || (showAllLevels && isTargetActive(target, lvlKey))) && (
+                  {(hiddenByTarget > 0 || (showAllLevels && isTargetActive(target, lvlKey, niveauTable))) && (
                     <div className="flex items-center justify-between gap-2 px-4 py-2 bg-emerald-50 border-b border-emerald-200 text-xs text-emerald-800">
                       <span>
                         {showAllLevels

@@ -2096,6 +2096,25 @@ function extractLineJudgeName(item: Record<string, unknown>, convocationKey: str
   );
 }
 
+/** League text for a U23 game, or '' when this is not one (or when the group
+ *  name says too little to name it). VolleyManager writes the Stärkeklasse the
+ *  official SR-Niveau table calls a Liga, so "Männer U23 1. Stärkeklasse"
+ *  becomes "HU23 1. Liga" — the wording the Niveau matrix in the admin console
+ *  is written in. Returning '' leaves the previous league text in place, so a
+ *  group name we cannot read costs nothing. */
+function juniorLeagueText(leagueNames: string, groupName: string, genderSymbol: string): string {
+  const haystack = `${leagueNames} ${groupName}`;
+  if (!/u\s?23|junior/i.test(haystack)) return '';
+  const male = genderSymbol === '♂' || /\b[mh]u\s?23\b|MÄNNER|MAENNER|HERREN|\bMEN\b/i.test(haystack);
+  const female = genderSymbol === '♀' || /\b[dwf]u\s?23\b|FRAUEN|DAMEN|\bWOMEN\b/i.test(haystack);
+  if (male === female) return ''; // neither said, or both — not ours to guess
+  // Strip the U23 token first: the "2" in "MU23" is not a league number.
+  const rest = groupName.replace(/[mdwfh]?u\s?23/ig, ' ');
+  const liga = rest.match(/([1-3])\s*\.?\s*(?:st(?:ä|ae)rkeklasse|liga|sk)\b/i) || rest.match(/\b([1-3])\b/);
+  if (!liga) return '';
+  return `${male ? 'HU23' : 'DU23'} ${liga[1]}. Liga`;
+}
+
 function transformVmGame(item: Record<string, unknown>): Record<string, unknown> {
   const game = (item.game ?? {}) as Record<string, unknown>;
   const encounter = (game.encounter ?? {}) as Record<string, unknown>;
@@ -2120,7 +2139,15 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
   const groupDisplay = asText(group.displayName);
   const groupMatch = groupDisplay.match(/Gruppe\s+([A-Z0-9]+)/) || groupDisplay.match(/\|\s*([A-Z0-9]+)\s*$/);
   const groupSuffix = groupMatch ? groupMatch[1] : '';
-  const leagueText = [leagueShort, genderSymbol, groupSuffix].filter(Boolean).join(' ');
+  // U23 is one league ("SVRZ | U23") whose groups carry everything that tells
+  // its games apart: "Männer U23 1. Stärkeklasse", "Frauen U23 3. Stärkeklasse".
+  // Neither the gender fallback above (it only reads league/category names) nor
+  // the group suffix (only "Gruppe X" or a trailing "| X") picks that up, so
+  // every U23 group used to land as a bare "U23" — indistinguishable, and the
+  // Niveau filter could say nothing about it. Spelled in the vocabulary of the
+  // official SR-Niveau table: HU23 / DU23 + Liga.
+  const juniorText = juniorLeagueText(`${leagueShort} ${leagueFullName}`, groupDisplay || asText(group.name), genderSymbol);
+  const leagueText = juniorText || [leagueShort, genderSymbol, groupSuffix].filter(Boolean).join(' ');
   const firstReferee =
     extractRefereeName(item, 'activeRefereeConvocationFirstHeadReferee')
     || asText(item.activeFirstHeadRefereeName);
@@ -3045,6 +3072,37 @@ function acquireGameLock(gameId: string): Promise<() => void> {
 // negative, or beyond a plainly unreasonable ceiling is dropped rather than
 // stored, so a bad payload cannot put nonsense on the chair's overview.
 const MANDATE_MAX = 200;
+// The SR-Niveau table is a filter over everyone's game lists, so a malformed
+// entry here could empty one. Only the nine published level keys survive, and
+// only the leagues a column can actually hold: NL + 1..5 for Herren/Damen,
+// 1..3 for HU23/DU23 (the U23 Stärkeklassen the official table calls Ligen).
+const NIVEAU_LEVEL_KEYS = ['N4-3', 'N4-2', 'N4-1', 'N3-3', 'N3-2', 'N3-1', 'N2-2', 'N2-1', 'N1'];
+const NIVEAU_COLUMN_DIVISIONS: Record<string, string[]> = {
+  H1: ['NL', '1', '2', '3', '4', '5'],
+  H2: ['NL', '1', '2', '3', '4', '5'],
+  D1: ['NL', '1', '2', '3', '4', '5'],
+  D2: ['NL', '1', '2', '3', '4', '5'],
+  JH: ['1', '2', '3'],
+  JD: ['1', '2', '3'],
+};
+function sanitizeNiveauTable(raw: unknown): Record<string, Record<string, string[]>> {
+  const out: Record<string, Record<string, string[]>> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const key of NIVEAU_LEVEL_KEYS) {
+    const stored = (raw as Record<string, unknown>)[key];
+    if (!stored || typeof stored !== 'object') continue;
+    const cells = stored as Record<string, unknown>;
+    const row: Record<string, string[]> = {};
+    for (const [column, allowed] of Object.entries(NIVEAU_COLUMN_DIVISIONS)) {
+      const value = cells[column];
+      const wanted = Array.isArray(value) ? value.map((v) => String(v).trim()) : [];
+      row[column] = allowed.filter((d) => wanted.includes(d));
+    }
+    out[key] = row;
+  }
+  return out;
+}
+
 function sanitizeMandates(raw: unknown): Record<string, 'half' | number> {
   const out: Record<string, 'half' | number> = {};
   if (!raw || typeof raw !== 'object') return out;
@@ -3087,6 +3145,12 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
     try { rc_mandates = sanitizeMandates(mandatesRec ? JSON.parse(asText(mandatesRec.value)) : {}); } catch { rc_mandates = {}; }
     const defaultGoalRec = await getSettingRecord('default_goal');
     const default_goal = defaultGoalRec ? Number(asText(defaultGoalRec.value)) || null : null;
+    // Edits to the official SR-Niveau table, by level key. Only the rows an
+    // admin actually changed are stored; the rest come from the table shipped
+    // in the client, so a corrected transcription reaches everyone untouched.
+    const niveauRec = await getSettingRecord('niveau_table');
+    let niveau_table: Record<string, unknown> = {};
+    try { niveau_table = sanitizeNiveauTable(niveauRec ? JSON.parse(asText(niveauRec.value)) : {}); } catch { niveau_table = {}; }
     let default_season = rec ? Number(asText(rec.value)) || null : null;
     if (default_season == null) {
       // No explicit default set — fall back to the latest season that has coachee data.
@@ -3098,7 +3162,7 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
         if (Number.isFinite(latest)) default_season = latest;
       } catch { /* keep null */ }
     }
-    res.json({ default_season, test_mode: await isEmailTestMode(), groups, coachee_targets, rc_mandates, default_goal });
+    res.json({ default_season, test_mode: await isEmailTestMode(), groups, coachee_targets, rc_mandates, default_goal, niveau_table });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -3113,6 +3177,9 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
     }
     if ('rc_mandates' in body && body.rc_mandates && typeof body.rc_mandates === 'object') {
       await setSetting('rc_mandates', JSON.stringify(sanitizeMandates(body.rc_mandates)));
+    }
+    if ('niveau_table' in body && body.niveau_table && typeof body.niveau_table === 'object') {
+      await setSetting('niveau_table', JSON.stringify(sanitizeNiveauTable(body.niveau_table)));
     }
     if ('default_goal' in body) {
       const n = Math.round(Number(body.default_goal));

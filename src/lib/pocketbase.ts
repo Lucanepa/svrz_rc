@@ -1,5 +1,5 @@
 import type { EligibleGame, FeedbackFormData, RcMandateMap, RcOverviewEntry, rcCoachSummary } from '../types';
-import type { CoacheeTargetMap } from './niveauTargets';
+import type { CoacheeTargetMap, NiveauMatrix } from './niveauTargets';
 import * as demo from './demo';
 import { isDemoMode } from './demo';
 
@@ -702,6 +702,9 @@ export type Settings = {
   coachee_targets?: CoacheeTargetMap;
   rc_mandates?: RcMandateMap;
   default_goal?: number | null;
+  // Only the rows an admin changed; everything else follows the official table
+  // shipped in niveauTargets.ts.
+  niveau_table?: NiveauMatrix;
 };
 export async function getSettings(): Promise<Settings> {
   if (isDemoMode()) return demo.getSettings();
@@ -709,7 +712,7 @@ export async function getSettings(): Promise<Settings> {
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
-export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number }): Promise<void> {
+export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number; niveau_table?: NiveauMatrix }): Promise<void> {
   const r = await fetch(apiUrl('/api/admin/settings'), {
     method: 'PUT', credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

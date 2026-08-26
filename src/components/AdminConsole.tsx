@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarDays, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX } from 'lucide-react';
+import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
@@ -19,7 +19,10 @@ import {
 } from '../lib/pocketbase';
 import {
   levelKey, levelDisplay, hasNiveauRules, summarizeTarget, isTargetActive,
+  resolveNiveauTable, niveauOverrides, sameNiveauRow, divisionsFor,
+  NIVEAU_LEVELS, NIVEAU_TABLE,
   type CoacheeTarget, type CoacheeTargetMap, type TargetRole,
+  type NiveauMatrix, type NiveauColumn,
 } from '../lib/niveauTargets';
 import { SURVEY_QUESTIONS, questionLabel, type SurveyQuestion } from '../lib/survey';
 import { bySurname } from '../lib/coacheeName';
@@ -50,7 +53,7 @@ function mapGroups(s: string): string {
   return out.map((g) => GROUP_MAP[g] || g).join('/');
 }
 
-const STR = {
+export const STR = {
   DE: {
     admin: 'Admin', logout: 'Abmelden', login: 'Anmelden', adminUser: 'Benutzername', adminPw: 'Admin-Passwort',
     // Which half was wrong is deliberately not said — the server does not tell
@@ -111,6 +114,25 @@ const STR = {
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
     shortcutToggle: 'Admin-Link in der Toolbar zeigen (nur Anzeige — gibt keine Rechte)',
     games: 'Spiele', overview: 'Übersicht',
+    niveau: 'Niveau',
+    nvHint: 'Welche Spiele als Beobachtung zählen — pro Niveau/Stufe, Kategorie und Rolle. Angeklickt heisst: das Spiel erscheint in der Spielliste des Coachees. Nichts angeklickt heisst: in dieser Kategorie und Rolle keine Zielspiele („x" in der offiziellen Tabelle).',
+    nvOfficial: 'Offizielle Tabelle, Stand 9. April 2026',
+    nvReset: 'Auf offizielle Tabelle zurücksetzen',
+    nvResetConfirm: 'Alle Abweichungen verwerfen und die offizielle Tabelle wiederherstellen?',
+    nvNoChanges: 'Keine Abweichung von der offiziellen Tabelle',
+    nvChanged: (n: number) => `${n} Zelle${n === 1 ? '' : 'n'} weicht von der offiziellen Tabelle ab`,
+    nvMen: 'Herren', nvWomen: 'Damen', nvU23: 'U23',
+    nv1sr: '1. SR', nv2sr: '2. SR',
+    nvU23Note: 'nur 1. SR',
+    nvU23Men: 'HU23 · Männer', nvU23Women: 'DU23 · Frauen',
+    nvLevel: 'Niveau · Stufe',
+    nvLegend: 'NL = Nationalliga · Zahl = Liga · U23: 1.–3. Liga (im VolleyManager „Stärkeklasse")',
+    nvFam: {
+      N4: 'regionaler SR ohne Ausbildung zum 2. SR',
+      N3: 'regionaler SR mit Ausbildung zum 2. SR',
+      N2: 'regionaler SR für nationale Spiele 1. Liga',
+      N1: 'Nationalkader',
+    } as Record<string, string>,
     gamesHint: 'Ein Spiel einem Referee Coach zuteilen. Die RC übernehmen ihre Spiele sonst selbst — das hier ist der Weg, es für jemanden zu tun.',
     gamesSearch: 'Spiel, Team, Liga oder Halle suchen …',
     gamesNone: 'Keine Spiele gefunden.',
@@ -206,6 +228,25 @@ const STR = {
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
     shortcutToggle: 'Show the admin link in their toolbar (display only — grants nothing)',
     games: 'Games', overview: 'Overview',
+    niveau: 'Levels',
+    nvHint: 'Which games count as an observation — per level, category and role. Lit means the game shows up in that coachee\'s game list. Nothing lit means no target games in this category and role (an "x" in the official table).',
+    nvOfficial: 'Official table, as of 9 April 2026',
+    nvReset: 'Reset to the official table',
+    nvResetConfirm: 'Discard every deviation and restore the official table?',
+    nvNoChanges: 'No deviation from the official table',
+    nvChanged: (n: number) => `${n} cell${n === 1 ? '' : 's'} differ${n === 1 ? 's' : ''} from the official table`,
+    nvMen: 'Men', nvWomen: 'Women', nvU23: 'U23',
+    nv1sr: '1st ref', nv2sr: '2nd ref',
+    nvU23Note: '1st ref only',
+    nvU23Men: 'HU23 · men', nvU23Women: 'DU23 · women',
+    nvLevel: 'Niveau · Stufe',
+    nvLegend: 'NL = national league · digit = Liga · U23: 1.–3. Liga (“Stärkeklasse” in VolleyManager)',
+    nvFam: {
+      N4: 'regional referee, not trained as 2nd ref',
+      N3: 'regional referee, trained as 2nd ref',
+      N2: 'regional referee for national 1. Liga games',
+      N1: 'national squad',
+    } as Record<string, string>,
     gamesHint: 'Assign a game to a referee coach. Coaches normally take their own games — this is how you do it for someone.',
     gamesSearch: 'Search game, team, league or venue …',
     gamesNone: 'No games found.',
@@ -299,7 +340,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 
 // Console tabs live in the URL as #/admin/<tab>, so each one is linkable and
 // the Back button steps between them.
-const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'emails', 'survey', 'notes', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'niveau', 'emails', 'survey', 'notes', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 const adminTabFromHash = (): AdminTab => {
   const m = /^#\/?admin\/([a-z]+)/i.exec(window.location.hash);
@@ -328,6 +369,8 @@ export default function AdminConsole() {
   // id) who are on a half mandate and owe half of it.
   const [rcMandates, setRcMandates] = useState<RcMandateMap>({});
   const [defaultGoal, setDefaultGoal] = useState<number>(OBSERVATION_GOAL);
+  // The SR-Niveau table in force — official values with the admin's edits on top.
+  const [niveauTable, setNiveauTable] = useState<NiveauMatrix>(() => resolveNiveauTable(null));
   const [leagueOptions, setLeagueOptions] = useState<string[]>([]);
   const [defaultSeason, setDefaultSeason] = useState<number>(CUR_SEASON);
   const [lang, setLang] = useState<Lang>(() => {
@@ -362,6 +405,7 @@ export default function AdminConsole() {
       .then((s) => {
         setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); setCoacheeTargets(s.coachee_targets || {});
         setRcMandates(s.rc_mandates || {}); if (s.default_goal) setDefaultGoal(s.default_goal);
+        setNiveauTable(resolveNiveauTable(s.niveau_table || null));
         if (s.default_season) setDefaultSeason(s.default_season);
       })
       .catch(() => {})
@@ -380,6 +424,15 @@ export default function AdminConsole() {
     setSettingsError('');
     try { await putSettings({ coachee_targets: next }); }
     catch (e) { setCoacheeTargets(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
+  }, []);
+  // Stored as overrides only: a row that still matches the published table is
+  // left out, so a future correction to it reaches this console untouched.
+  const saveNiveau = useCallback(async (next: NiveauMatrix) => {
+    let previous: NiveauMatrix = {};
+    setNiveauTable((current) => { previous = current; return next; });
+    setSettingsError('');
+    try { await putSettings({ niveau_table: niveauOverrides(next) }); }
+    catch (e) { setNiveauTable(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
   }, []);
   const saveMandates = useCallback(async (next: RcMandateMap) => {
     let previous: RcMandateMap = {};
@@ -493,6 +546,7 @@ export default function AdminConsole() {
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
     { id: 'games', label: t.games, icon: <CalendarDays size={15} /> },
     { id: 'overview', label: t.overview, icon: <Target size={15} /> },
+    { id: 'niveau', label: t.niveau, icon: <Gauge size={15} /> },
     { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
     { id: 'logs', label: t.logs, icon: <ScrollText size={15} /> },
     { id: 'settings', label: t.settings, icon: <SettingsIcon size={15} /> },
@@ -509,8 +563,8 @@ export default function AdminConsole() {
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} aria-label={t.logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
-        {/* Seven across this container leaves ~118px each and every second
-            label truncates, so the admin bar wraps to two comfortable rows. */}
+        {/* Eight across this container leaves ~103px each and every second
+            label truncates, so the admin bar wraps to two rows of four. */}
         <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', isPresident ? 'grid-cols-2' : 'grid-cols-4')}>
           {tabs.map((tb) => (
             // min-w-0 + truncate: the label is hidden below sm, leaving an icon
@@ -533,11 +587,12 @@ export default function AdminConsole() {
           <p className="mb-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{settingsError}</p>
         )}
         {!isPresident && <>
-        <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} /></div>
+        <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} /></div>
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'overview'}><OverviewAdmin t={t} /></div>
+        <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
@@ -653,7 +708,168 @@ function TargetEditor({ t, target, onChange, leagueOptions }: { t: T; target: Co
   );
 }
 
-function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, leagueOptions }: { t: T; lang: Lang; groups: string[]; defaultSeason: number; targets: CoacheeTargetMap; onTargets: (next: CoacheeTargetMap) => void; leagueOptions: string[] }) {
+// Admin → Niveau. The official SVRZ table "Übersicht SR-Niveau und Stufe" as an
+// editable matrix: nine levels down, six cells across (Herren/Damen × 1./2. SR,
+// plus HU23/DU23 as 1. SR). A cell is a SET of leagues, because the paper writes
+// "DU23 2. + 3. Liga" — see NIVEAU_TABLE.
+//
+// Two layouts, no sideways scroll in either: the table needs ~700px and appears
+// from md up; below that (every phone) each level becomes a card with one
+// labelled row per cell. The league chips wrap inside their cell, so nothing
+// overflows even when the window lands between the two.
+export function NiveauAdmin({ t, table, onTable, loading }: { t: T; table: NiveauMatrix; onTable: (next: NiveauMatrix) => void; loading: boolean }) {
+  const columns: { id: NiveauColumn; label: string }[] = [
+    { id: 'H1', label: `${t.nvMen} ${t.nv1sr}` },
+    { id: 'H2', label: `${t.nvMen} ${t.nv2sr}` },
+    { id: 'D1', label: `${t.nvWomen} ${t.nv1sr}` },
+    { id: 'D2', label: `${t.nvWomen} ${t.nv2sr}` },
+    { id: 'JH', label: t.nvU23Men },
+    { id: 'JD', label: t.nvU23Women },
+  ];
+  const changedCells = NIVEAU_LEVELS.reduce((n, key) => n + columns.filter((c) => !sameCell(table[key][c.id], NIVEAU_TABLE[key][c.id])).length, 0);
+  const changedRows = NIVEAU_LEVELS.filter((key) => !sameNiveauRow(table[key], NIVEAU_TABLE[key]));
+
+  const toggle = (key: string, column: NiveauColumn, division: string) => {
+    const current = table[key][column];
+    const next = current.includes(division)
+      ? current.filter((d) => d !== division)
+      : divisionsFor(column).filter((d) => d === division || current.includes(d));
+    onTable({ ...table, [key]: { ...table[key], [column]: next } });
+  };
+
+  const reset = () => {
+    if (changedCells > 0 && !window.confirm(t.nvResetConfirm)) return;
+    onTable(resolveNiveauTable(null));
+  };
+
+  const cell = (key: string, column: NiveauColumn) => {
+    const values = table[key][column];
+    const changed = !sameCell(values, NIVEAU_TABLE[key][column]);
+    return (
+      <span className={cn('inline-flex flex-wrap justify-center gap-1 rounded-lg p-1', changed && 'bg-amber-50 ring-1 ring-amber-300')}>
+        {divisionsFor(column).map((d) => {
+          const on = values.includes(d);
+          return (
+            <button
+              key={d}
+              type="button"
+              aria-pressed={on}
+              aria-label={`${key} · ${columns.find((c) => c.id === column)?.label} · ${d === 'NL' ? 'NL' : `${d}. Liga`}`}
+              onClick={() => toggle(key, column, d)}
+              className={cn(
+                'h-6 min-w-[26px] px-1 rounded-md border text-[11px] font-medium tabular-nums transition-colors',
+                on ? 'bg-slate-900 text-white border-transparent' : 'bg-white border-stone-300 text-stone-400 hover:bg-stone-100 hover:text-stone-600',
+              )}
+            >{d}</button>
+          );
+        })}
+      </span>
+    );
+  };
+
+  const family = (key: string) => key.split('-')[0];
+  const familyNote = (key: string) => t.nvFam[family(key)] || '';
+
+  return (
+    <div className="bg-white rounded-2xl border border-stone-200/70 shadow-sm p-4 sm:p-5">
+      <div className="flex flex-wrap items-start gap-2 mb-1">
+        <h2 className="text-base font-semibold text-stone-800">{t.niveau}</h2>
+        <span className="ml-auto text-[11px] text-stone-400 border border-stone-200 rounded-full px-2.5 py-1">{t.nvOfficial}</span>
+      </div>
+      <p className="text-xs text-stone-500 mb-3 max-w-2xl">{t.nvHint}</p>
+
+      {loading ? <SkeletonRows rows={9} /> : (
+        <>
+          {/* Desktop: the whole table at a glance. */}
+          <div className="hidden md:block border border-stone-200 rounded-xl overflow-hidden">
+            <table className="w-full table-fixed border-collapse text-sm">
+              <thead>
+                <tr className="bg-stone-50 text-[10px] uppercase tracking-wider text-stone-500">
+                  <th rowSpan={2} className="w-[132px] text-left font-semibold px-3 py-2 border-b border-stone-200">{t.nvLevel}</th>
+                  <th colSpan={2} className="font-semibold px-2 py-2 border-b border-l border-stone-200">{t.nvMen}</th>
+                  <th colSpan={2} className="font-semibold px-2 py-2 border-b border-l border-stone-200">{t.nvWomen}</th>
+                  <th colSpan={2} className="font-semibold px-2 py-2 border-b border-l border-stone-200">{t.nvU23} <span className="normal-case tracking-normal text-stone-400">· {t.nvU23Note}</span></th>
+                </tr>
+                <tr className="bg-stone-50 text-[10px] uppercase tracking-wider text-stone-400">
+                  <th className="font-medium px-2 pb-2 border-b border-l border-stone-200">{t.nv1sr}</th>
+                  <th className="font-medium px-2 pb-2 border-b border-stone-200">{t.nv2sr}</th>
+                  <th className="font-medium px-2 pb-2 border-b border-l border-stone-200">{t.nv1sr}</th>
+                  <th className="font-medium px-2 pb-2 border-b border-stone-200">{t.nv2sr}</th>
+                  <th className="font-medium px-2 pb-2 border-b border-l border-stone-200">{t.nvU23Men}</th>
+                  <th className="font-medium px-2 pb-2 border-b border-stone-200">{t.nvU23Women}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {NIVEAU_LEVELS.map((key, i) => {
+                  // The four Niveau families each carry one explanation, on the
+                  // row that opens them — repeating it on every Stufe is noise.
+                  const opensFamily = i === 0 || family(key) !== family(NIVEAU_LEVELS[i - 1]);
+                  return (
+                  <tr key={key} className={cn('border-b border-stone-100 last:border-0', i > 0 && opensFamily && 'border-t-2 border-t-stone-200')}>
+                    <td className="px-3 py-2 align-middle">
+                      <span className="font-mono text-xs font-medium text-stone-800">{key}</span>
+                      {opensFamily && familyNote(key) && (
+                        <span className="block text-[10px] leading-tight text-stone-400">{familyNote(key)}</span>
+                      )}
+                    </td>
+                    {columns.map((c) => (
+                      <td key={c.id} className={cn('px-2 py-2 text-center align-middle', (c.id === 'H1' || c.id === 'D1' || c.id === 'JH') && 'border-l border-stone-100')}>
+                        {cell(key, c.id)}
+                      </td>
+                    ))}
+                  </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Phones: the table needs ~700px, so each level gets a card instead. */}
+          <div className="md:hidden space-y-2.5">
+            {NIVEAU_LEVELS.map((key) => (
+              <div key={key} className="border border-stone-200 rounded-xl p-3">
+                <div className="flex items-baseline gap-2 mb-2">
+                  <span className="font-mono text-xs font-semibold text-stone-800">{key}</span>
+                  <span className="text-[10px] leading-tight text-stone-400 truncate">{familyNote(key)}</span>
+                </div>
+                <div className="grid grid-cols-[minmax(0,7.5rem)_1fr] gap-x-3 gap-y-1.5 items-center">
+                  {columns.map((c) => (
+                    <React.Fragment key={c.id}>
+                      <span className="text-[11px] text-stone-500 truncate">{c.label}</span>
+                      <span className="min-w-0">{cell(key, c.id)}</span>
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mt-3 pt-3 border-t border-stone-100">
+            <span className={cn('text-[11px]', changedCells > 0 ? 'text-amber-700 font-medium' : 'text-stone-400')}>
+              {changedCells > 0 ? t.nvChanged(changedCells) : t.nvNoChanges}
+            </span>
+            {changedRows.length > 0 && (
+              <span className="text-[11px] text-stone-400 font-mono truncate">{changedRows.join(', ')}</span>
+            )}
+            <button
+              type="button"
+              onClick={reset}
+              disabled={changedCells === 0}
+              className="ml-auto inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
+            ><RotateCcw size={13} /> {t.nvReset}</button>
+          </div>
+          <p className="mt-2 text-[10px] text-stone-400">{t.nvLegend}</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function sameCell(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v, i) => b[i] === v);
+}
+
+function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, leagueOptions, niveauTable }: { t: T; lang: Lang; groups: string[]; defaultSeason: number; targets: CoacheeTargetMap; onTargets: (next: CoacheeTargetMap) => void; leagueOptions: string[]; niveauTable: NiveauMatrix }) {
   const [targetEditId, setTargetEditId] = useState<string | null>(null);
   const [season, setSeason] = useState(defaultSeason);
   const seasonTouched = useRef(false);
@@ -815,14 +1031,14 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
               </div>
               <div className="flex items-center gap-1.5 mt-1 pl-0.5">
                 <span className="text-[11px] text-stone-400">{t.target}:</span>
-                <span className={cn('text-[11px] font-medium', isTargetActive(targets[c.id], levelKey(c.referee_level, c.stage)) ? 'text-emerald-700' : 'text-stone-400')}>{(() => {
+                <span className={cn('text-[11px] font-medium', isTargetActive(targets[c.id], levelKey(c.referee_level, c.stage), niveauTable) ? 'text-emerald-700' : 'text-stone-400')}>{(() => {
                   const key = levelKey(c.referee_level, c.stage);
                   const tgt = targets[c.id];
                   // Auto mode with no derivable rules because the Niveau/Stufe is still TBD
-                  if ((!tgt || tgt.mode === 'auto') && !hasNiveauRules(key) && levelDisplay(c.referee_level, c.stage).tbd) {
+                  if ((!tgt || tgt.mode === 'auto') && !hasNiveauRules(key, niveauTable) && levelDisplay(c.referee_level, c.stage).tbd) {
                     return <>Auto (<span className="text-red-600 font-semibold">TBD</span>)</>;
                   }
-                  return summarizeTarget(tgt, key, lang);
+                  return summarizeTarget(tgt, key, lang, niveauTable);
                 })()}</span>
               </div>
               {targetEditId === c.id && (

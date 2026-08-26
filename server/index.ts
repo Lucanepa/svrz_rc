@@ -3104,10 +3104,13 @@ const credChallengeRl: RateLimitStore = new Map();
 // the chair's channel, and vice versa.
 //
 // There is deliberately NO fallback to POCKETBASE_ADMIN_EMAIL. That address is
-// the one the superuser account was created with — rc-admin@svrz.local on this
-// deployment — so the fallback did not fail, it "succeeded" into a mailbox that
-// does not exist, and the code was never coming. Unset now means the challenge
-// says so out loud.
+// incidental — it is whatever the superuser account happened to be created
+// with, and for most of this app's life that was rc-admin@svrz.local, a mailbox
+// that does not exist. The fallback therefore did not fail: it "succeeded",
+// logged success, and returned a masked address that read as ordinary, while
+// the code was never coming. The address is a real one again now, which is
+// exactly why it must not be relied on: whether the door out of a lost password
+// works should not depend on how somebody once named a database account.
 function credential2faRecipient(slot: CredentialSlot): string {
   const perSlot = process.env[`CREDENTIAL_2FA_EMAIL_${slot.toUpperCase()}`] || '';
   return (perSlot || process.env.CREDENTIAL_2FA_EMAIL || '').trim();

@@ -255,9 +255,11 @@ Three layers, plus capability tokens:
 
    **Changing one takes a second factor.** `POST /api/admin/credentials/challenge`
    mails a 6-digit code to `CREDENTIAL_2FA_EMAIL_<SLOT>` if set, else
-   `CREDENTIAL_2FA_EMAIL`. There is no fallback to `POCKETBASE_ADMIN_EMAIL` —
-   that is `rc-admin@svrz.local`, so the old fallback silently mailed codes into
-   a mailbox that does not exist. The chair's slot points at a different mailbox
+   `CREDENTIAL_2FA_EMAIL`. There is deliberately no fallback to
+   `POCKETBASE_ADMIN_EMAIL`: that address is incidental to how the database
+   account was named, and while it was `rc-admin@svrz.local` the old fallback
+   silently mailed codes into a mailbox that did not exist — reporting success
+   the whole time. The chair's slot points at a different mailbox
    from the two operational ones on purpose; `PUT /api/admin/credentials` refuses without it.
    The code is bound to the console cookie that asked for it **and** to the one
    slot it was issued for, is single-use, expires in 10 minutes and dies after 5

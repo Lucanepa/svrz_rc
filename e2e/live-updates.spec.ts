@@ -20,9 +20,14 @@ test('a game taken elsewhere leaves the list on a pushed event, with no refetch'
     listFetches += 1;
     return r.fulfill({ json: [{ ...GAME, id: 'g1', assignedRc: '' }] });
   });
-  await page.route('**/api/events', (r) => r.fulfill(sse([
-    JSON.stringify({ type: 'game.assignment', gameId: 'g1', matchNo: '402430', assignedRc: 'Bea Beispiel' }),
-  ])));
+  // Held back a moment: without it the push can land before the first render,
+  // and the test would be asserting on a row that never appeared.
+  await page.route('**/api/events', async (r) => {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    await r.fulfill(sse([
+      JSON.stringify({ type: 'game.assignment', gameId: 'g1', matchNo: '402430', assignedRc: 'Bea Beispiel' }),
+    ]));
+  });
 
   await page.goto('/#/games');
   await expect(page.getByText(GAME.homeTeam)).toBeVisible();

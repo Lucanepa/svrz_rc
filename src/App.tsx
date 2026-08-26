@@ -4072,7 +4072,7 @@ export default function App() {
                       <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterRd ? "bg-amber-500" : "bg-stone-300")}>
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterRd ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
-                      <span>RD Game</span>
+                      <span>{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>
                     </button>
                     <button
                       onClick={() => setGameFilterRcGame(!gameFilterRcGame)}
@@ -4093,7 +4093,7 @@ export default function App() {
                       <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterLd ? "bg-violet-500" : "bg-stone-300")}>
                         <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterLd ? "translate-x-4.5" : "translate-x-0.5")} />
                       </span>
-                      <span>LD Game</span>
+                      <span>{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>
                     </button>
                     <button
                       onClick={() => setGameFilterRcAssigned(!gameFilterRcAssigned)}

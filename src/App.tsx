@@ -381,6 +381,10 @@ function getRefereeForRole(game: EligibleGame, role: FeedbackFormData['role']) {
   return role === '1. SR' ? game.firstReferee : game.secondReferee;
 }
 
+/** Function filter: both referees on the game are coachees — one trip, two
+ *  observations, which is the game a coach wants to find first. */
+const BOTH_SR = '1SR + 2SR';
+
 function normName(value: string): string {
   return value.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, ' ');
 }
@@ -856,17 +860,21 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder, lang }:
           {options.length === 0 ? (
             <div className="px-2 py-2 text-sm text-stone-400 italic">{lang === 'DE' ? 'Keine Optionen' : 'No options'}</div>
           ) : options.map((opt) => (
+            // A name is the whole point of the row, so it wraps rather than
+            // truncating: "Dario Stefano Quattrini" cut to "Dario Stefano Qua…"
+            // is indistinguishable from the next Dario. The box aligns to the
+            // first line so a two-line name still reads as one option.
             <label
               key={opt}
-              className="flex items-center gap-2 px-2 py-1.5 text-sm hover:bg-stone-50 cursor-pointer"
+              className="flex items-start gap-2 px-2 py-1.5 text-sm hover:bg-stone-50 cursor-pointer"
             >
               <input
                 type="checkbox"
                 checked={selected.includes(opt)}
                 onChange={() => toggle(opt)}
-                className="h-3.5 w-3.5 rounded border-stone-300 accent-red-600"
+                className="h-3.5 w-3.5 mt-0.5 shrink-0 rounded border-stone-300 accent-red-600"
               />
-              <span className="truncate">{opt}</span>
+              <span className="min-w-0 break-words">{opt}</span>
             </label>
           ))}
         </div>
@@ -2964,8 +2972,14 @@ export default function App() {
       if (gameFilterFunction.length > 0) {
         const r1IsCoachee = coacheeNames.has(normName(g.firstReferee || ''));
         const r2IsCoachee = coacheeNames.has(normName(g.secondReferee || ''));
+        // Still a union across what is ticked, so "1SR" + "1SR + 2SR" reads as
+        // "a 1SR coachee, or both" rather than cancelling out. BOTH_SR needs a
+        // second referee by construction, so single-referee games drop out.
         const match = gameFilterFunction.some((fn) =>
-          fn === '1SR' ? r1IsCoachee : fn === '2SR' ? r2IsCoachee : false,
+          fn === '1SR' ? r1IsCoachee
+            : fn === '2SR' ? r2IsCoachee
+              : fn === BOTH_SR ? (r1IsCoachee && r2IsCoachee)
+                : false,
         );
         if (!match) return false;
       }
@@ -3940,7 +3954,10 @@ export default function App() {
                       </span>
                       <span>{formData.lang === 'DE' ? 'RC zugewiesen' : 'RC assigned'}</span>
                     </button>
-                    <div className="flex-1 min-w-[140px]">
+                    {/* Twice the growth of its neighbours: these options are
+                        full names, while Level, Funktion and Liga hold codes a
+                        few characters long. */}
+                    <div className="flex-[2] min-w-[200px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
                         {formData.lang === 'DE' ? 'Coachee' : 'Coachee'}
                       </label>
@@ -3970,13 +3987,15 @@ export default function App() {
                       </label>
                       <MultiSelectDropdown
                         lang={formData.lang}
-                        options={['1SR', '2SR']}
+                        options={['1SR', '2SR', BOTH_SR]}
                         selected={gameFilterFunction}
                         onChange={setGameFilterFunction}
                         placeholder={formData.lang === 'DE' ? 'Alle' : 'All'}
                       />
                     </div>
-                    <div className="flex-1 min-w-[140px]">
+                    {/* Capped: "1L ♀ C" needs nothing like the width it was
+                        taking from the Coachee box beside it. */}
+                    <div className="flex-1 min-w-[120px] max-w-[170px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
                         {formData.lang === 'DE' ? 'Liga' : 'League'}
                       </label>

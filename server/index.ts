@@ -2582,8 +2582,31 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
     imported += 1;
   }
 
+  // Games we ALREADY have keep their league text current even when this sync
+  // finds no coachee on them. Only coachee rows are ever persisted, so a game
+  // whose description changed after it was stored — the U23 rename being the
+  // case in point — would otherwise carry the old text for good, and the one
+  // that decides whether it is in a coachee's focus is exactly that text.
+  // Nothing is created here and no other field is touched: a row with no
+  // coachee on it is not this sync's to rewrite, its stale name is.
+  let renamed = 0;
+  for (const row of transformed) {
+    if (hasCoacheeOnRow(row)) continue;
+    const matchNo = asText(row.match_no);
+    const league = asText(row.league);
+    if (!matchNo || !league) continue;
+    try {
+      const existing = await withCollection(collectionCandidates.games, (games) =>
+        games.getFirstListItem<AnyRecord>(`match_no = "${escapeFilterValue(matchNo)}"`));
+      if (!existing || asText(existing.league) === league) continue;
+      await withCollection(collectionCandidates.games, (games) => games.update(existing.id, { league }));
+      renamed += 1;
+    } catch { /* not stored, or the lookup failed — nothing to rename */ }
+  }
+
   return {
     imported,
+    renamed,
     totalFetched: items.length,
     from,
     to,

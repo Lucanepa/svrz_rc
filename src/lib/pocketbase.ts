@@ -505,7 +505,7 @@ export async function loadrcCoachSummary(rcName: string, season?: number): Promi
   return response.json() as Promise<rcCoachSummary[]>;
 }
 
-export type GamesSyncResult = { imported: number; totalFetched: number; from: string; to: string };
+export type GamesSyncResult = { imported: number; renamed?: number; totalFetched: number; from: string; to: string };
 
 export async function syncGames(payload?: { date?: string; from?: string; to?: string }): Promise<GamesSyncResult> {
   const response = await fetch(apiUrl('/api/games/sync'), {

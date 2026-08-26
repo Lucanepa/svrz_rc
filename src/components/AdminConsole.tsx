@@ -2602,8 +2602,15 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
   // used to leave the new list on screen as if it had been stored.
   // Returns whether the write stuck, so a caller can toast the success without
   // claiming one for a save that rolled back.
+  // `groups` is a prop captured at render, and every group write now spans an
+  // awaited dialog — long enough for an optimistic add to roll back underneath
+  // it. Rebuilding the list from a render-time snapshot would silently resurrect
+  // a group whose save the server had already rejected, so both writers read
+  // the latest list through this ref instead.
+  const groupsRef = useRef(groups);
+  useEffect(() => { groupsRef.current = groups; }, [groups]);
   const saveGroups = async (next: string[]) => {
-    const previous = groups;
+    const previous = groupsRef.current;
     onGroups(next);
     setGroupsError('');
     try { await putSettings({ groups: next }); return true; }
@@ -2617,7 +2624,9 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
   const delGroup = async (i: number) => {
     const name = groups[i];
     if (!(await confirmDialog({ title: t.delGroup(name), message: t.delGroupNote, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
-    if (await saveGroups(groups.filter((g) => g !== name))) toast.success(t.delGroupOk(name), { lang });
+    const current: string[] = groupsRef.current;
+    if (!current.includes(name)) return; // deleted, or rolled back, under the dialog
+    if (await saveGroups(current.filter((g) => g !== name))) toast.success(t.delGroupOk(name), { lang });
   };
   const saveEditGroup = async (i: number) => {
     const v = gv.trim();
@@ -2630,10 +2639,15 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
     if (at < 0) { setGi(null); return; } // renamed or deleted underneath us
     // Coachees carry the group name as a string, so a rename splits the cohort
     // into two spellings that every filter treats as different groups.
-    if (v && v !== original && !(await confirmDialog({ title: t.renameGroupWarn(original, v), message: t.renameGroupNote(original), confirmLabel: t.renameLabel, lang }))) { setGi(null); return; }
+    if (v && v !== original && !(await confirmDialog({ title: t.renameGroupWarn(original, v), message: t.renameGroupNote(original), confirmLabel: t.renameLabel, lang }))) return;
     // The save stays fire-and-forget so the editor closes on the same tick it
     // always did; only the toast waits to hear that the write stuck.
-    if (v) { const next = groups.slice(); next[at] = v; void saveGroups(Array.from(new Set(next)).sort()).then((ok) => { if (ok && v !== original) toast.success(t.renameGroupOk(original, v), { lang }); }); }
+    // Re-resolved AFTER the dialog, against the freshest list, for the same
+    // reason `at` was resolved by name rather than by index.
+    const current: string[] = groupsRef.current;
+    const nowAt = current.indexOf(original);
+    if (nowAt < 0) { setGi(null); return; }
+    if (v) { const next = current.slice(); next[nowAt] = v; void saveGroups(Array.from(new Set(next)).sort()).then((ok) => { if (ok && v !== original) toast.success(t.renameGroupOk(original, v), { lang }); }); }
     setGi(null);
   };
   const save = async () => { await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };

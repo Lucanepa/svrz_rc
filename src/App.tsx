@@ -1800,12 +1800,17 @@ export default function App() {
   // its card. From Home it is one tap on the row that already shows it — the
   // same server call, with a confirmation because the game becomes free for
   // everyone the moment it goes through.
-  const giveBackFromHome = async (gameId: string, label: string, german: boolean) => {
+  // Shared by the Home row and the games list: both hand a game back, so both
+  // ask the same question, in the same words, and both confirm it the same way.
+  // The label lives in the MESSAGE, not the title — a full team-vs-team string
+  // rendered as the title was four lines of bold on a phone, with the verb and
+  // the question mark 55 characters apart.
+  const giveBackGame = async (gameId: string, label: string, german: boolean, after?: () => Promise<void>) => {
     const ok = await confirmDialog({
-      title: german ? `„${label}" abgeben?` : `Give back "${label}"?`,
+      title: german ? 'Spiel abgeben?' : 'Give game back?',
       message: german
-        ? 'Das Spiel ist danach wieder für alle Referee Coaches frei.'
-        : 'The game becomes available to every referee coach again.',
+        ? `„${label}" ist danach wieder für alle Referee Coaches frei.`
+        : `"${label}" becomes available to every referee coach again.`,
       confirmLabel: german ? 'Abgeben' : 'Give back',
       cancelLabel: german ? 'Abbrechen' : 'Cancel',
       tone: 'danger',
@@ -1813,7 +1818,7 @@ export default function App() {
     });
     if (!ok) return;
     const done = await handleUnassignGame(gameId);
-    await loadHome();
+    if (after) await after();
     // Only on the way through — a failure already put its own notice on screen.
     if (done) {
       toast.success(
@@ -1822,6 +1827,9 @@ export default function App() {
       );
     }
   };
+
+  const giveBackFromHome = (gameId: string, label: string, german: boolean) =>
+    giveBackGame(gameId, label, german, loadHome);
 
   const applyCoacheeToMeta = (coachee: Coachee) => {
     // A filed record is a document about ONE referee, already signed and sent.
@@ -4483,7 +4491,7 @@ export default function App() {
                                         without an admin session anyway. */}
                                     {game.assignedRc && game.assignedRc === rcAuth.rcName ? (
                                       <button
-                                        onClick={(e) => { e.stopPropagation(); void handleUnassignGame(game.id); }}
+                                        onClick={(e) => { e.stopPropagation(); void giveBackGame(game.id, `${game.homeTeam} vs ${game.awayTeam}`, formData.lang === 'DE'); }}
                                         className="h-9 px-3 text-sm font-medium rounded-md border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 transition-colors"
                                       >
                                         <X size={14} className="inline mr-1 -mt-0.5" />

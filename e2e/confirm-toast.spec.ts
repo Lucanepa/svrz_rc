@@ -61,9 +61,12 @@ test('the modal names what it is about to do, and Cancel does none of it', async
 
   const dialog = page.getByTestId('confirm-dialog');
   await expect(dialog).toBeVisible();
+  await expect(page.getByTestId('confirm-title')).toContainText('Give game back');
   // Which game is the whole point: a confirmation that does not name it is a
-  // coin toss, and this row sits beside an identical one.
-  await expect(page.getByTestId('confirm-title')).toContainText('Heim 1 vs Gast 1');
+  // coin toss, and this row sits beside an identical one. The label lives in the
+  // message rather than the title — as a title it wrapped to four bold lines on
+  // a phone and pushed the verb away from the question mark.
+  await expect(page.getByTestId('confirm-message')).toContainText('Heim 1 vs Gast 1');
   // And what it costs — the game goes back to everyone, not into a bin.
   await expect(page.getByTestId('confirm-message')).toContainText(/referee coach/i);
 

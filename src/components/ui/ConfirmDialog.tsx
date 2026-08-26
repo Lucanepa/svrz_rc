@@ -11,6 +11,15 @@ export default function ConfirmDialog() {
   const entry = useSyncExternalStore(subscribeConfirm, getConfirmSnapshot);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const acceptRef = useRef<HTMLButtonElement | null>(null);
+  // Backdrop dismissal needs two guards that native confirm() never needed,
+  // because it blocked the event loop and could not receive a stray click.
+  // `pressedBackdrop` demands the press START on the backdrop, so a text
+  // selection dragged out of the panel does not answer "no"; `openedAtRef`
+  // ignores the backdrop for a moment after opening, so double-clicking the
+  // button that opened the dialog cannot have its second click land on the
+  // freshly painted overlay and silently cancel.
+  const pressedBackdrop = useRef(false);
+  const openedAtRef = useRef(0);
   const baseId = useId();
   const titleId = `${baseId}-title`;
   const messageId = `${baseId}-message`;
@@ -36,6 +45,10 @@ export default function ConfirmDialog() {
   // Focus the confirm button per dialog, so a queued second one does not leave
   // focus stranded on the first one's (now gone) button.
   useEffect(() => { if (open) acceptRef.current?.focus(); }, [open, id]);
+
+  // Per dialog, not per open: a queued second dialog paints under a pointer that
+  // may still be coming down on the first one's position.
+  useEffect(() => { if (open) { openedAtRef.current = Date.now(); pressedBackdrop.current = false; } }, [open, id]);
 
   useEffect(() => {
     if (!open) return;
@@ -78,7 +91,12 @@ export default function ConfirmDialog() {
   return (
     <div
       className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print"
-      onClick={() => settleConfirm(entry.id, false)}
+      onMouseDown={(e) => { pressedBackdrop.current = e.target === e.currentTarget; }}
+      onClick={(e) => {
+        if (e.target !== e.currentTarget || !pressedBackdrop.current) return;
+        if (Date.now() - openedAtRef.current < 400) return;
+        settleConfirm(entry.id, false);
+      }}
     >
       <div
         ref={panelRef}

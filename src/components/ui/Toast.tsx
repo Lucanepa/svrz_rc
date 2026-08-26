@@ -30,14 +30,16 @@ function ToastRow({ item }: { item: ToastItem }) {
 
   const Icon = ICONS[item.kind];
   const accent = ACCENT[item.kind];
-  const isError = item.kind === 'error';
 
   return (
     <div
       data-testid="toast"
       data-toast-kind={item.kind}
-      role={isError ? 'alert' : undefined}
-      aria-live={isError ? 'assertive' : undefined}
+      // Deliberately NO role/aria-live on the card. role="alert" is itself a
+      // live region, and nesting one inside the container's role="status" made
+      // several screen readers announce an error toast twice. Errors in this app
+      // always also land inline (setErr/setNotice/setIcalError), so the polite
+      // container announcement is a supplement, not the only signal.
       // Pointer events, and only a real mouse: a tap fires pointerenter with no
       // pointerleave to follow it, so a mis-tap on the toast — it sits over the
       // Home row buttons on a phone — used to park it on screen for good.
@@ -46,7 +48,10 @@ function ToastRow({ item }: { item: ToastItem }) {
       onFocus={() => setPaused(true)}
       onBlur={() => setPaused(false)}
       className={cn(
-        'pointer-events-auto w-full sm:w-auto sm:min-w-[15rem] max-w-sm bg-white rounded-xl shadow-lg',
+        // pointer-events-none below sm: the stack sits over the Home game-row
+        // buttons on a phone, and a 4-second toast must never eat a courtside
+        // tap. The dismiss button re-enables events for itself.
+        'pointer-events-none sm:pointer-events-auto w-full sm:w-auto sm:min-w-[15rem] max-w-sm bg-white rounded-xl shadow-lg',
         'border border-stone-200 border-l-4 flex items-start gap-2.5 py-3 pl-3 pr-2',
         accent.border,
       )}
@@ -58,7 +63,7 @@ function ToastRow({ item }: { item: ToastItem }) {
         data-testid="toast-dismiss"
         aria-label={item.lang === 'EN' ? 'Dismiss notification' : 'Meldung schliessen'}
         onClick={() => dismissToast(item.id)}
-        className="shrink-0 h-6 w-6 inline-flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
+        className="pointer-events-auto shrink-0 h-10 w-10 sm:h-7 sm:w-7 -my-1.5 sm:my-0 inline-flex items-center justify-center rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
       >
         <X size={14} />
       </button>

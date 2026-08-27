@@ -61,3 +61,14 @@ test('a third set played to 15 is a best-of-three decider, not a mistake', async
   await expect(page.getByText(/the winner needs at least/)).toHaveCount(0);
   await expect(page.getByText(/is not possible/)).toHaveCount(0);
 });
+
+test('the two teams stand where their own numbers do', async ({ page }) => {
+  // The boxes said nothing about which side was which: the pairing is on the
+  // TEAMS row above, but which column belongs to whom was left to the reader,
+  // and the result row was three quarters empty.
+  const cell = page.locator('label', { hasText: /^(RESULT|ERGEBNIS)$/i }).locator('xpath=..');
+  await expect(cell).toContainText('VBC Züri Unterland');
+  await expect(cell).toContainText('Volley Näfels II');
+  // Home to the left of the colon, away to the right.
+  await expect(cell).toHaveText(/VBC Züri Unterland[^]*Volley Näfels II/);
+});

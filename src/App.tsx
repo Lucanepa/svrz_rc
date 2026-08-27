@@ -5176,7 +5176,7 @@ export default function App() {
           <MetaField label={t.group} value={formData.meta.gruppe} onChange={v => updateMeta('gruppe', v)} />
           <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2 md:col-span-1 print:col-span-1" readOnly />
 
-          <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2 md:col-span-4 print:col-span-4" readOnly={!!selectedGame?.game_result && !resultUnlocked} onUnlock={() => setResultUnlocked(true)} lang={formData.lang} />
+          <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} teams={formData.meta.mannschaften} className="col-span-2 md:col-span-4 print:col-span-4" readOnly={!!selectedGame?.game_result && !resultUnlocked} onUnlock={() => setResultUnlocked(true)} lang={formData.lang} />
         </div>
 
         {/* Legend */}
@@ -6510,7 +6510,19 @@ function MetaField({ label, value, onChange, type = "text", className = "", read
   );
 }
 
-function ResultField({ label, value, onChange, readOnly = false, onUnlock, lang, className = "" }: { label: string; value: string; onChange: (v: string) => void; readOnly?: boolean; onUnlock?: () => void; lang: 'DE' | 'EN'; className?: string }) {
+/** "VBC Züri Unterland - Volley Näfels II" as its two halves, or nothing.
+ *
+ *  Only an unambiguous split counts: a dash with spaces around it is how both
+ *  the form and the sync write the pairing, while a team called "Bern-Muri"
+ *  must not become two teams. */
+function splitTeams(teams: string): [string, string] | null {
+  const parts = String(teams ?? '').split(/\s+[-–—]\s+/);
+  if (parts.length !== 2) return null;
+  const [home, away] = parts.map((p) => p.trim());
+  return home && away ? [home, away] : null;
+}
+
+function ResultField({ label, value, onChange, teams = '', readOnly = false, onUnlock, lang, className = "" }: { label: string; value: string; onChange: (v: string) => void; teams?: string; readOnly?: boolean; onUnlock?: () => void; lang: 'DE' | 'EN'; className?: string }) {
   // parseResult reads both the "3:1 | 25:20, …" this field writes and the
   // "3:1 (25:20 / …)" the VolleyManager sync writes — every synced game uses
   // the latter, whose set scores the old split-on-"|" parser dropped silently.
@@ -6564,15 +6576,22 @@ function ResultField({ label, value, onChange, readOnly = false, onUnlock, lang,
     setIssue?.index === i ? 'border-red-500 bg-red-50 text-red-700' : 'border-stone-300',
   );
   const ROMAN = ['I', 'II', 'III', 'IV', 'V'];
+  const pair = splitTeams(teams);
   return (
     <div className={cn("border-r border-b border-stone-900 p-1.5 flex flex-col min-h-[48px]", className)}>
       <label className="block text-[8px] uppercase font-black text-stone-400 leading-none mb-1">{label}</label>
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center gap-1">
+          {/* The row is a quarter full and the boxes say nothing about which
+              side is which, so the teams stand where their numbers do: home to
+              the left of the colon, away to the right — for the sets below as
+              much as for the count above them. */}
+          {pair && <span className="text-[10px] font-semibold text-stone-500 truncate max-w-[10rem] text-right print:max-w-none">{pair[0]}</span>}
           {/* Computed from the sets below, never typed. */}
           <output className={sbox} aria-label={lang === 'DE' ? 'Sätze Heim' : 'Home sets'}>{home || '–'}</output>
           <span className="text-stone-400 font-bold">:</span>
           <output className={sbox} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'}>{away || '–'}</output>
+          {pair && <span className="text-[10px] font-semibold text-stone-500 truncate max-w-[10rem] print:max-w-none">{pair[1]}</span>}
           {bad && <span className="text-[9px] text-red-600 leading-tight ml-1 no-print">{error}</span>}
           {/* A score already on the game may have come from the coach who filed
               the other referee — so it can be wrong, and locking it would leave

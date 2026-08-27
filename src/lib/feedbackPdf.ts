@@ -668,12 +668,21 @@ function drawRemarks(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
   // the first segment's origin is known.
   sheet.y += 24;
 
-  const blocks: { label: string; value: string; name: string; minH: number }[] = [
+  const allBlocks: { label: string; value: string; name: string; minH: number }[] = [
     { label: t.remarks, value: data.results.bemerkungen, name: 'remarks', minH: 34 },
     { label: t.highlights, value: data.results.highlights || '', name: 'highlights', minH: 22 },
     { label: t.improvements, value: data.results.improvements || '', name: 'improvements', minH: 22 },
     { label: t.goalsNext, value: data.results.goals || '', name: 'goals', minH: 22 },
   ];
+  // A heading over an empty band is an instruction, and this page is often
+  // printed to be written on by hand — three of them turn an open page into a
+  // form to be complied with. So a sub-heading only appears where there is text
+  // under it, and a page with nothing written keeps one open area of the height
+  // all four bands would have had.
+  const written = allBlocks.filter((b, i) => i === 0 || (!sheet.blank && (b.value || '').trim() !== ''));
+  const blocks = written.length === 1
+    ? [{ ...written[0], minH: allBlocks.reduce((total, b) => total + b.minH, 0) }]
+    : written;
 
   for (const [index, block] of blocks.entries()) {
     sheet.font('normal', 8, INK);

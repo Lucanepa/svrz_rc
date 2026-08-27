@@ -2266,9 +2266,15 @@ export default function App() {
 
   const handleDownloadPdf = async () => {
     const { buildFeedbackPdf } = await loadPdfBuilder();
-    const pdf = buildFeedbackPdf(formData);
+    // The PDF is always German — it is the document the referee is sent and
+    // files, and the coaching vocabulary it is written in is German whatever
+    // language the coach set the app to. The emailed copy already did this; the
+    // downloaded one carried the UI language, so the same observation existed
+    // as two different documents.
+    const pdfData = toGermanFormData(formData);
+    const pdf = buildFeedbackPdf(pdfData);
 
-    const file = new File([pdf.output('blob')], pdfFilename(formData), { type: 'application/pdf' });
+    const file = new File([pdf.output('blob')], pdfFilename(pdfData), { type: 'application/pdf' });
     if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
       await navigator.share({
         title: t.title,

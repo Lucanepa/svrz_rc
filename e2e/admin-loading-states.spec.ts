@@ -9,12 +9,18 @@ import { stubSignedInApp } from './support/app';
 // "nobody is being coached this season". All three were on screen for as long
 // as their request took, on every single load.
 
-/** A route that answers only when the test says so. */
-function gated(page: Page, url: string, json: unknown) {
+/** A route that answers only when the test says so.
+ *
+ *  Awaited before the page is opened, not merely started: `page.route` installs
+ *  over CDP, and on a loaded machine that can land after the app has already
+ *  asked. The request then fell through to the catch-all in stubSignedInApp,
+ *  which answers `[]` — settings with no season in them — and the test failed
+ *  one assertion later, looking like a bug in the code under test. */
+async function gated(page: Page, url: string, json: unknown) {
   let open: () => void = () => {};
   const held = new Promise<void>((resolve) => { open = resolve; });
-  const routed = page.route(url, async (route) => { await held; await route.fulfill({ json }); });
-  return { open: async () => { await routed; open(); } };
+  await page.route(url, async (route) => { await held; await route.fulfill({ json }); });
+  return { open: () => open() };
 }
 
 const SETTINGS = {
@@ -25,9 +31,9 @@ const SYNC = { status: { at: new Date().toISOString(), ok: true, imported: 4, to
 
 test('the console holds its answers until it has them', async ({ page }) => {
   await stubSignedInApp(page, { admin: true });
-  const settings = gated(page, '**/api/settings', SETTINGS);
-  const sync = gated(page, '**/api/admin/games/sync-status', SYNC);
-  const manual = gated(page, '**/api/admin/games/manual*', []);
+  const settings = await gated(page, '**/api/settings', SETTINGS);
+  const sync = await gated(page, '**/api/admin/games/sync-status', SYNC);
+  const manual = await gated(page, '**/api/admin/games/manual*', []);
 
   await page.goto('/#/admin');
   await page.getByRole('button', { name: /Einstellungen|Settings/ }).click();
@@ -42,9 +48,9 @@ test('the console holds its answers until it has them', async ({ page }) => {
   // ...and the alarm colour is not worn while waiting for the thing it alarms about.
   await expect(page.locator('.bg-red-50', { hasText: /Spiel-Import|Game import/ })).toHaveCount(0);
 
-  await settings.open();
-  await sync.open();
-  await manual.open();
+  settings.open();
+  sync.open();
+  manual.open();
 
   // Now they may.
   await expect(page.getByText(/4 importiert|4 imported/)).toBeVisible();
@@ -61,17 +67,46 @@ test('the coachee list waits for the season it is filtered by', async ({ page })
       { id: 'c2', full_name: 'Last Season', email: 'b@example.ch', season: 2025 },
     ],
   }));
-  const settings = gated(page, '**/api/settings', SETTINGS);
+  const settings = await gated(page, '**/api/settings', SETTINGS);
 
   await page.goto('/#/admin');
+  // Anchored on a control that does not depend on any fetch, so the absence
+  // checks below cannot pass merely because nothing has rendered yet.
+  await expect(page.getByLabel(/xlsx importieren|Import xlsx/)).toBeAttached();
+
   // The local guess for "current season" is August's, not the stored answer, so
   // showing rows now means showing last season's people under this season's
   // heading — which is what happened.
-  // Both mounted tabs say it; the coachee one is the subject here.
-  await expect(page.getByText(/Lädt…|Loading…/).first()).toBeVisible();
   await expect(page.getByText('Last Season')).toHaveCount(0);
+  await expect(page.getByText('This Season')).toHaveCount(0);
 
-  await settings.open();
-  await expect(page.getByText('This Season')).toBeVisible();
+  settings.open();
+  await expect(page.getByText('This Season')).toBeVisible({ timeout: 15000 });
   await expect(page.getByText('Last Season')).toHaveCount(0);
+});
+
+test('the console asks once, not on every render', async ({ page }) => {
+  // The guard that drops stale answers is handed to `useCallback` as a
+  // dependency, so it has to keep its identity across renders. A fresh object
+  // per render re-creates the loader, which re-runs the effect that calls it,
+  // which sets state, which renders again — a list that reloads itself forever,
+  // and every answer stale by the time it lands.
+  await stubSignedInApp(page, { admin: true });
+  let coacheeCalls = 0;
+  await page.route('**/api/coachees*', (r) => { coacheeCalls += 1; return r.fulfill({ json: [] }); });
+  let logCalls = 0;
+  await page.route('**/api/admin/logs?*', (r) => { logCalls += 1; return r.fulfill({ json: { entries: [], total: 0, lastSeq: 0, stats: {} } }); });
+
+  await page.goto('/#/admin');
+  await expect(page.getByLabel(/xlsx importieren|Import xlsx/)).toBeAttached();
+  await page.waitForTimeout(800);
+  const settled = coacheeCalls;
+  await page.waitForTimeout(1500);
+
+  // Counted twice rather than compared to a number: StrictMode mounts every
+  // effect twice in dev, so "how many" is not the property — "does it stop" is.
+  expect(coacheeCalls).toBe(settled);
+  expect(coacheeCalls).toBeLessThan(4);
+  // The log tail polls every three seconds — and only while its own tab is open.
+  expect(logCalls).toBe(0);
 });

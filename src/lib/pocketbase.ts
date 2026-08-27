@@ -576,7 +576,9 @@ export async function deleteRcPerson(id: string) {
 // For fixtures VolleyManager doesn't carry, and for throwaway games used to
 // test the whole observation → PDF → e-mail flow against real infrastructure.
 export type NewGame = {
-  match_date: string;   // required, ISO
+  match_date: string;   // required: a bare YYYY-MM-DD
+  /** HH:MM, read as Swiss wall-clock time by the server. Defaults to 20:00. */
+  match_time?: string;
   match_no?: string;
   league?: string;
   location?: string;

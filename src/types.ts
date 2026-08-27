@@ -64,6 +64,10 @@ export interface EligibleGame {
   // A referee coach whistling next to one of their coachees — computed from the
   // two rosters by /api/eligible-games, never stored on the game.
   isRcGame?: boolean;
+  // A game the admin console created by hand — a fixture VolleyManager does not
+  // carry, or a throwaway used to walk the whole flow through. Always listed,
+  // whoever its referees are, and badged so nobody mistakes it for a fixture.
+  isManual?: boolean;
   // "We want this one observed" highlight: set by an admin (see starred_games)
   // or derived from VolleyManager's RD/RSV markings.
   starred?: boolean;

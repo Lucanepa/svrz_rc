@@ -163,11 +163,18 @@ test.describe('Manual game name pickers', () => {
     await page.locator('#mg-ref2').fill('pfeifer');
     await page.getByRole('button', { name: /Peter Pfeifer/ }).click();
 
+    // The kick-off is a field, and it is Swiss wall-clock time: the form used to
+    // append "20:00:00.000Z", which is 22:00 in Zurich in summer.
+    await page.locator('#mg-time').fill('14:30');
+
     await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
     await expect(page.getByText(/(Angelegt|Created): TEST-2/)).toBeVisible();
-    const sent = posted as unknown as { first_referee_id: string; second_referee_id: string };
+    const sent = posted as unknown as { first_referee_id: string; second_referee_id: string; match_date: string; match_time: string };
     // The name is what prints; this is what the feedback will match on.
     expect(sent.first_referee_id).toBe('90002');
     expect(sent.second_referee_id).toBe('90001');
+    // A bare date and a wall clock — the region is the server's to apply.
+    expect(sent.match_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(sent.match_time).toBe('14:30');
   });
 });

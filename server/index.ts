@@ -2511,8 +2511,13 @@ async function makeRcGameTest(): Promise<(game: AnyRecord) => boolean> {
 async function getEligibleGames() {
   await ensureAdminAuth();
   const coacheeNames = await getCoacheeNameIndex();
+  // A test game exists to be walked through, so it is on the list whatever its
+  // referees are. Filtered out with everything else, it could only be reached
+  // from the admin console that made it — which is not where the flow it is
+  // testing lives.
+  const manual = await getManualGameIds();
 
-  if (coacheeNames.size === 0) return [];
+  if (coacheeNames.size === 0 && manual.size === 0) return [];
 
   const matchesCoachee = (season: number | null, value: unknown) => {
     const text = normalizeName(value);
@@ -2546,6 +2551,7 @@ async function getEligibleGames() {
   })();
 
   const games = allGames.filter((game) => {
+    if (manual.has(String(game.id))) return true;
     const season = seasonOfGame(game.match_date);
     return matchesCoachee(season, game.first_referee) || matchesCoachee(season, game.second_referee);
   });
@@ -2566,6 +2572,9 @@ async function getEligibleGames() {
     isLdGame: Boolean(game.is_ld_game),
     isRsvGame: Boolean(game.is_rsv_game),
     isRcGame: isRcGame(game),
+    // Said out loud on the row: "Test 1 vs Test 2" on a Tuesday is obvious to
+    // whoever made it and to nobody else.
+    isManual: manual.has(String(game.id)),
     game_result: asText(game.game_result),
     // The sync stores a precise plus-code/lat-lng link per venue. Left out of
     // the projection the UI fell back to a free-text Google search of the hall
@@ -5039,10 +5048,14 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
     const d = (req.body ?? {}) as Record<string, unknown>;
     const requestedDate = asText(d.match_date);
     if (!requestedDate) { res.status(400).json({ error: 'match_date ist erforderlich.' }); return; }
-    // A bare date is a date, not midnight UTC: pin the kick-off to 20:00 in the
-    // region, the way a real fixture is stored. The form sends exactly that.
+    // A bare date is a date, not midnight UTC: the kick-off comes as a separate
+    // wall-clock time and is read in the region, the way a real fixture is
+    // stored. 20:00 when the form sends none — the ordinary evening slot.
     const bareDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate);
-    const matchDate = bareDate ? zonedInstantIso(requestedDate, 20) : requestedDate;
+    const clock = /^(\d{1,2}):(\d{2})$/.exec(asText(d.match_time));
+    const hour = clock ? Math.min(23, Number(clock[1])) : 20;
+    const minute = clock ? Math.min(59, Number(clock[2])) : 0;
+    const matchDate = bareDate ? zonedInstantIso(requestedDate, hour, minute) : requestedDate;
     if (!matchDate || Number.isNaN(new Date(matchDate).getTime())) { res.status(400).json({ error: 'match_date ist kein gültiges Datum.' }); return; }
     // The form picks its three people off a list, so the game can carry their
     // ids beside their names — the same argument as assigned_rc_id: a name
@@ -5702,7 +5715,7 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
       }),
     );
 
-    const starredIds = await getStarredGameIds();
+    const [starredIds, manualIds] = await Promise.all([getStarredGameIds(), getManualGameIds()]);
     const result = games.map((game) => {
       const assigned = getAssignedPeopleFromGameRecord(game);
       const roleMap: Array<[string, string]> = [
@@ -5728,6 +5741,9 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
         secondLineJudge: assigned.secondLineJudge,
         assignedRoles,
         isRcGame: isRcGame(game),
+        // Badged here too: the same game must not read as a fixture on one
+        // list and a throwaway on the other.
+        isManual: manualIds.has(String(game.id)),
         starred: starredIds.has(String(game.id)),
         // The client type has always promised these; without them the "already
         // taken by another RC" badge could never appear against the real API,

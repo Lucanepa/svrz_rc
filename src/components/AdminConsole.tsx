@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
@@ -140,7 +140,7 @@ const STR = {
     colName: 'Name', colActions: 'Aktionen',
     mgTitle: 'Manuelles Spiel / Testspiel',
     mgHint: 'Für Spiele, die nicht aus VolleyManager kommen. Die SR-Namen müssen exakt einem Coachee entsprechen, sonst findet das Feedback keinen Empfänger. Testspiele danach wieder löschen.',
-    mgDate: 'Datum', mgMatchNo: 'Spiel-Nr. (optional)', mgLeague: 'Liga', mgLocation: 'Ort',
+    mgDate: 'Datum / Anpfiff', mgTime: 'Anpfiff (Schweizer Zeit)', mgMatchNo: 'Spiel-Nr. (optional)', mgLeague: 'Liga', mgLocation: 'Ort',
     mgHome: 'Heim', mgAway: 'Gast', mgRef1: '1. SR (= Coachee)', mgRef2: '2. SR', mgRc: 'Referee Coach',
     mgCreate: 'Spiel anlegen', mgDelete: 'Löschen',
     mgCreated: (n: string) => `Angelegt: ${n}`,
@@ -308,7 +308,7 @@ const STR = {
     colName: 'Name', colActions: 'Actions',
     mgTitle: 'Manual game / test game',
     mgHint: 'For games VolleyManager does not carry. Referee names must match a coachee exactly, otherwise the feedback has no recipient. Delete test games afterwards.',
-    mgDate: 'Date', mgMatchNo: 'Match no. (optional)', mgLeague: 'League', mgLocation: 'Venue',
+    mgDate: 'Date / kick-off', mgTime: 'Kick-off (Swiss time)', mgMatchNo: 'Match no. (optional)', mgLeague: 'League', mgLocation: 'Venue',
     mgHome: 'Home', mgAway: 'Away', mgRef1: '1st referee (= coachee)', mgRef2: '2nd referee', mgRc: 'Referee coach',
     mgCreate: 'Create game', mgDelete: 'Delete',
     mgCreated: (n: string) => `Created: ${n}`,
@@ -420,9 +420,14 @@ type T = typeof STR['DE'];
  *  still the newest one. */
 function useFreshest() {
   const seq = useRef(0);
-  const take = useCallback(() => { seq.current += 1; return seq.current; }, []);
-  const isCurrent = useCallback((ticket: number) => ticket === seq.current, []);
-  return { take, isCurrent };
+  // One object for the life of the component. Returning a fresh literal changes
+  // the identity of every `useCallback` that lists it as a dependency, which
+  // changes the identity of the effect that calls it — and a list that reloads
+  // itself on every render is a worse race than the one this fixes.
+  return useMemo(() => ({
+    take: () => { seq.current += 1; return seq.current; },
+    isCurrent: (ticket: number) => ticket === seq.current,
+  }), []);
 }
 
 const input = 'h-9 w-full px-3 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500';
@@ -2621,7 +2626,10 @@ function refereeOptions(coachees: Coachee[], roster: RosterReferee[], notACoache
 // whole observation → PDF → e-mail flow against the real backend.
 function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolean }) {
   const today = new Date().toISOString().slice(0, 10);
-  const empty = { match_no: '', league: '', match_date: today, location: '', home_team: '', away_team: '', first_referee: '', second_referee: '', assigned_rc: '' };
+  // 20:00 is the ordinary evening kick-off; it is a field rather than a fixture
+  // because a test of "the game is tomorrow" mail, or of a Saturday afternoon
+  // fixture, needs its own time.
+  const empty = { match_no: '', league: '', match_date: today, match_time: '20:00', location: '', home_team: '', away_team: '', first_referee: '', second_referee: '', assigned_rc: '' };
   const [f, setF] = useState(empty);
   const [busy, setBusy] = useState(false);
   const [made, setMade] = useState<{ id: string; match_no?: string } | null>(null);
@@ -2687,11 +2695,12 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
   const create = async () => {
     setBusy(true); setErr('');
     try {
-      // The date goes as a date. The kick-off is pinned server-side, in the
+      // Date and time go as they were typed, and the server reads them in the
       // region's clock — appending "20:00:00.000Z" here made every test game
       // start at 22:00 Swiss time in summer.
       const created = await createGame({
         ...f,
+        match_time: f.match_time || '20:00',
         first_referee_id: svNumberFor(f.first_referee),
         second_referee_id: svNumberFor(f.second_referee),
       });
@@ -2717,7 +2726,11 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
       {dirErr && <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-3">{t.mgDirFail(dirErr)}</p>}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
         <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgDate}</span>
-          <input type="date" className={input} value={f.match_date} onChange={set('match_date')} /></label>
+          <div className="flex gap-2">
+            <input type="date" className={input} value={f.match_date} onChange={set('match_date')} />
+            {/* Read as Swiss time, not as UTC — see the server. */}
+            <input id="mg-time" type="time" className={cn(input, 'w-28 shrink-0')} value={f.match_time} onChange={set('match_time')} aria-label={t.mgTime} />
+          </div></label>
         <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgLeague}</span>
           <input className={input} placeholder="3L ♂" value={f.league} onChange={set('league')} /></label>
         <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgMatchNo}</span>

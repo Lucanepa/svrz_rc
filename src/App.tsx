@@ -4571,6 +4571,14 @@ export default function App() {
                                         : 'A referee coach is whistling next to a coachee here.'}
                                     >{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
                                   )}
+                                  {game.isManual && (
+                                    <span
+                                      className="px-2 py-1 rounded text-xs font-bold leading-none bg-violet-100 text-violet-800 border border-violet-300"
+                                      title={formData.lang === 'DE'
+                                        ? 'Von Hand angelegt — kein Spiel aus VolleyManager.'
+                                        : 'Created by hand — not a VolleyManager fixture.'}
+                                    >{formData.lang === 'DE' ? 'Testspiel' : 'Test game'}</span>
+                                  )}
                                   {game.starred && (
                                     <span
                                       className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300"
@@ -4984,6 +4992,14 @@ export default function App() {
                                     ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
                                     : 'A referee coach is whistling next to a coachee here.'}
                                 >{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
+                              )}
+                              {game.isManual && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-violet-100 text-violet-800 border border-violet-300"
+                                  title={formData.lang === 'DE'
+                                    ? 'Von Hand angelegt — kein Spiel aus VolleyManager.'
+                                    : 'Created by hand — not a VolleyManager fixture.'}
+                                >{formData.lang === 'DE' ? 'Testspiel' : 'Test game'}</span>
                               )}
                             </div>
                             {/* Normally nothing here — an upcoming game has no

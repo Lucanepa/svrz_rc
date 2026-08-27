@@ -6581,7 +6581,10 @@ function ResultField({ label, value, onChange, teams = '', readOnly = false, onU
     <div className={cn("border-r border-b border-stone-900 p-1.5 flex flex-col min-h-[48px]", className)}>
       <label className="block text-[8px] uppercase font-black text-stone-400 leading-none mb-1">{label}</label>
       <div className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-1">
+        {/* Centred: the cell is four columns wide and the score is the one
+            thing in it, so it sits in the middle of that space rather than
+            hugging the left edge with three quarters of the row empty. */}
+        <div className="flex items-center justify-center gap-1">
           {/* The row is a quarter full and the boxes say nothing about which
               side is which, so the teams stand where their numbers do: home to
               the left of the colon, away to the right — for the sets below as
@@ -6592,7 +6595,6 @@ function ResultField({ label, value, onChange, teams = '', readOnly = false, onU
           <span className="text-stone-400 font-bold">:</span>
           <output className={sbox} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'}>{away || '–'}</output>
           {pair && <span className="text-[10px] font-semibold text-stone-500 truncate max-w-[10rem] print:max-w-none">{pair[1]}</span>}
-          {bad && <span className="text-[9px] text-red-600 leading-tight ml-1 no-print">{error}</span>}
           {/* A score already on the game may have come from the coach who filed
               the other referee — so it can be wrong, and locking it would leave
               nobody able to fix it. */}
@@ -6608,15 +6610,17 @@ function ResultField({ label, value, onChange, teams = '', readOnly = false, onU
             </button>
           )}
         </div>
+        {/* On its own line, so a long message cannot shove the score off centre. */}
+        {bad && <p className="text-[9px] text-red-600 leading-tight text-center no-print">{error}</p>}
         {rows > 0 && (
           // Each set gets its own boxed cell with the number on top. Laid out
           // inline the digits ran together once they wrapped ("IV 22:25 V 12:15"),
           // so it was hard to see which score belonged to which set.
           <div className="rounded-md border border-stone-200 bg-stone-50/70 px-1.5 py-1">
-            <span className="block text-[8px] uppercase font-semibold text-stone-400 leading-none mb-1">
+            <span className="block text-[8px] uppercase font-semibold text-stone-400 leading-none mb-1 text-center">
               {lang === 'DE' ? 'Sätze' : 'sets'}
             </span>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap justify-center gap-1">
               {sets.map((s, i) => (
                 <div key={i} className="flex flex-col items-center gap-0.5 rounded border border-stone-200 bg-white px-1 py-0.5">
                   <span className="text-[9px] font-bold text-stone-400 leading-none">{ROMAN[i] ?? i + 1}</span>

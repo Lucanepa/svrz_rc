@@ -3824,6 +3824,9 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
     const season = body.season == null || body.season === '' ? null : Number(body.season);
 
     const contacts = await fetchVmRefereeContacts(username, password);
+    // The pickers read this same list; the fetch is the expensive half, so keep
+    // what it cost rather than making the console pay for it again.
+    await storeRefereeDirectory(contacts);
     // Index under both name orders — the XLSX and VM disagree on which comes
     // first, and normalizeName already folds case and accents.
     //
@@ -3965,6 +3968,68 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
     // list itself, and the admin who pressed the button is the one who can fix
     // it — so name the step instead of sending them to the container log.
     res.status(500).json({ error: upstreamError(error) });
+  }
+});
+
+// ── The referee directory the manual-game pickers offer ──────────────
+// Every licensed referee VolleyManager knows (137 on 2026-08-27), not only the
+// ~110 who are coachees: a test game may be aimed at anyone, and a name typed
+// by hand is a name nothing matches. Fetching the list costs a VM login and a
+// paged search, so it is kept in app_settings and refreshed by the contact
+// sync — which already holds exactly this answer in its hand.
+const REFEREE_DIRECTORY_KEY = 'vm_referees';
+type StoredReferee = { name: string; email: string; level: string };
+type RefereeDirectory = { at: string; people: StoredReferee[] };
+
+async function storeRefereeDirectory(contacts: VmRefereeContact[]): Promise<StoredReferee[]> {
+  const people = contacts
+    .map((c) => ({ name: `${c.firstName} ${c.lastName}`.trim(), email: c.email, level: c.level }))
+    .filter((p) => p.name);
+  await setSetting(REFEREE_DIRECTORY_KEY, JSON.stringify({ at: new Date().toISOString(), people }));
+  return people;
+}
+
+async function readRefereeDirectory(): Promise<RefereeDirectory> {
+  const record = await getSettingRecord(REFEREE_DIRECTORY_KEY);
+  if (!record) return { at: '', people: [] };
+  try {
+    const parsed = JSON.parse(asText(record.value)) as Partial<RefereeDirectory>;
+    return { at: asText(parsed.at), people: Array.isArray(parsed.people) ? parsed.people : [] };
+  } catch {
+    // A half-written setting is an empty directory, not a broken console.
+    return { at: '', people: [] };
+  }
+}
+
+// One VM login at a time. The console asks for this list every time the
+// settings tab opens, and an empty cache would otherwise start a fetch per tab.
+let refereeDirectoryFetch: Promise<StoredReferee[]> | null = null;
+function refreshRefereeDirectory(username: string, password: string): Promise<StoredReferee[]> {
+  if (!refereeDirectoryFetch) {
+    refereeDirectoryFetch = fetchVmRefereeContacts(username, password)
+      .then(storeRefereeDirectory)
+      .finally(() => { refereeDirectoryFetch = null; });
+  }
+  return refereeDirectoryFetch;
+}
+
+app.get('/api/admin/referees', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const cached = await readRefereeDirectory();
+    if (cached.people.length > 0 && asText(req.query.refresh) !== '1') { res.json(cached); return; }
+    const username = asText(process.env.VM_USERNAME);
+    const password = asText(process.env.VM_PASSWORD);
+    if (!username || !password) {
+      res.json({ ...cached, error: 'VM_USERNAME / VM_PASSWORD sind nicht gesetzt.' });
+      return;
+    }
+    res.json({ at: new Date().toISOString(), people: await refreshRefereeDirectory(username, password) });
+  } catch (error) {
+    // A directory that cannot be refreshed is not a broken form: the pickers
+    // still have the coachee list, and the console still creates games. Answer
+    // with whatever is on file and name the step that failed.
+    const cached = await readRefereeDirectory().catch(() => ({ at: '', people: [] as StoredReferee[] }));
+    res.json({ ...cached, error: upstreamError(error) });
   }
 });
 

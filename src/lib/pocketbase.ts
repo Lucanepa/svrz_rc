@@ -584,6 +584,20 @@ export type NewGame = {
   assigned_rc?: string;
 };
 
+// ── The referee directory ─────────────────────────────────────────────
+// Every licensed referee VolleyManager knows, cached server-side. Coachees are
+// a subset of it: a referee who is not one can be put on a game, but the
+// feedback for them has no recipient, which is why the pickers say so.
+export type RefereeDirectoryEntry = { name: string; email?: string; level?: string };
+export type RefereeDirectory = { at?: string; people: RefereeDirectoryEntry[]; error?: string };
+
+export async function listRefereeDirectory(): Promise<RefereeDirectory> {
+  const r = await fetch(apiUrl('/api/admin/referees'), { credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not load the referee list');
+  const d = (await r.json()) as Partial<RefereeDirectory>;
+  return { at: d.at, error: d.error, people: Array.isArray(d.people) ? d.people : [] };
+}
+
 export async function createGame(game: NewGame): Promise<{ id: string; match_no?: string }> {
   const r = await fetch(apiUrl('/api/admin/games'), {
     method: 'POST', credentials: 'include',

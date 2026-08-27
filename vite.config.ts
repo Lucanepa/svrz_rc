@@ -2,12 +2,19 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
 import path from 'path';
+import { readFileSync } from 'fs';
 import {defineConfig} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 const buildSha = (() => {
   try { return execSync('git rev-parse --short HEAD').toString().trim(); } catch { return 'dev'; }
 })();
+
+// The released version, from package.json — bumped with `npm version patch|minor|major`.
+// The SHA answers "exactly which build is this?" for a bug report; the version
+// answers "which release am I looking at?", which is the question a referee
+// holding a printed form can actually ask.
+const appVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
 
 export default defineConfig(() => {
   return {
@@ -91,6 +98,7 @@ export default defineConfig(() => {
     ],
     define: {
       __BUILD_SHA__: JSON.stringify(buildSha),
+      __APP_VERSION__: JSON.stringify(appVersion),
       __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     },
     resolve: {

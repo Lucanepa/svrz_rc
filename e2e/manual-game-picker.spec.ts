@@ -15,7 +15,22 @@ const COACHEES = [
   { id: 'c0', full_name: 'Luca Canepa', email: 'old.luca@example.ch', season: 2025 },
   { id: 'c2', full_name: 'Jürg Müller', email: 'juerg@example.ch', season: 2026 },
   { id: 'c3', full_name: 'Nina Ohnemail', email: '', season: 2026 },
+  // Filed surname-first, the way half the XLSX is.
+  { id: 'c4', full_name: 'Zwahlen Rita', first_name: 'Rita', last_name: 'Zwahlen', email: 'rita@example.ch', season: 2026 },
 ];
+
+// What VolleyManager holds: every licensed referee, coachee or not.
+const DIRECTORY = {
+  at: '2026-08-27T09:00:00Z',
+  people: [
+    { name: 'Peter Pfeifer', email: 'peter.pfeifer@example.ch', level: 'N2' },
+    // Already a coachee — the coachee row is the one that decides where the
+    // feedback goes, so this address must not be the one on offer.
+    { name: 'Luca Canepa', email: 'vm.luca@example.ch', level: 'N3' },
+    // The same person as the surname-first coachee above.
+    { name: 'Rita Zwahlen', email: 'vm.rita@example.ch', level: 'N4' },
+  ],
+};
 
 const RC_PEOPLE = [
   { id: 'rc1', fullName: 'Anna Muster', email: 'anna@example.ch' },
@@ -30,6 +45,7 @@ function fieldNote(page: Page, id: string) {
 async function openManualGameForm(page: Page) {
   await stubSignedInApp(page, { admin: true });
   await page.route('**/api/coachees*', (r) => r.fulfill({ json: COACHEES }));
+  await page.route('**/api/admin/referees*', (r) => r.fulfill({ json: DIRECTORY }));
   await page.route('**/api/referee-coach-people', (r) => r.fulfill({ json: RC_PEOPLE }));
   await page.route('**/api/admin/games/manual*', (r) => r.fulfill({ json: [] }));
   await page.goto('/#/admin');
@@ -43,7 +59,9 @@ test.describe('Manual game name pickers', () => {
     await page.locator('#mg-ref1').fill('canepa');
     const option = page.getByRole('button', { name: /Luca Canepa/ });
     await expect(option).toHaveCount(1); // one person, not one row per season
-    await expect(option).toContainText('luca@example.ch'); // the current season's address
+    // The current season's address, and the coachee's — not VolleyManager's.
+    await expect(option).toContainText('luca@example.ch');
+    await expect(option).not.toContainText('vm.luca@example.ch');
     await option.click();
 
     await expect(page.locator('#mg-ref1')).toHaveValue('Luca Canepa');
@@ -67,6 +85,30 @@ test.describe('Manual game name pickers', () => {
     await page.locator('#mg-ref1').fill('ohnemail');
     await page.getByRole('button', { name: /Nina Ohnemail/ }).click();
     await expect(fieldNote(page, 'mg-ref1')).toHaveText(/keine E-Mail|no email/);
+  });
+
+  test('a referee who is no coachee is offered, marked as unable to receive', async ({ page }) => {
+    await openManualGameForm(page);
+
+    // Not on the coachee list at all — but VolleyManager knows him, and the
+    // point of the list is that every referee can be put on a test game.
+    await page.locator('#mg-ref1').fill('pfeifer');
+    const option = page.getByRole('button', { name: /Peter Pfeifer/ });
+    await expect(option).toContainText('peter.pfeifer@example.ch');
+    // Said before the pick, not as a 422 at the end of a filled-in form.
+    await expect(option).toContainText(/kein Coachee|not a coachee/);
+    await option.click();
+    await expect(fieldNote(page, 'mg-ref1')).toHaveText(/kein Coachee|not a coachee/);
+  });
+
+  test('a coachee filed surname-first is not offered a second time as a stranger', async ({ page }) => {
+    await openManualGameForm(page);
+
+    await page.locator('#mg-ref1').fill('zwahlen');
+    const option = page.getByRole('button', { name: /Zwahlen|Rita/ });
+    await expect(option).toHaveCount(1);
+    await expect(option).toContainText('rita@example.ch');
+    await expect(option).not.toContainText(/kein Coachee|not a coachee/);
   });
 
   test('the referee coach field offers the RC roster, not the coachees', async ({ page }) => {

@@ -11,6 +11,7 @@ import {
   loadRcOverview, listRefereeCoachPeople, assignRcToGame,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
+  listRefereeDirectory, type RefereeDirectory, type RefereeDirectoryEntry,
   getSurveyConfig, putSurveyConfig,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
   syncGames, type GamesSyncStatus,
@@ -36,7 +37,7 @@ import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
 import LevelText from './LevelText';
 import { Skeleton, SkeletonRows } from './Skeleton';
-import { BUILD_INFO } from '../lib/buildInfo';
+import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
 
 type Lang = 'DE' | 'EN';
 const NOW = new Date();
@@ -147,6 +148,8 @@ const STR = {
     mgPickNone: 'Kein Treffer.',
     mgPickMore: (n: number) => `… ${n} weitere — Suche eingrenzen.`,
     mgPickUnknown: 'Nicht in der Liste — freier Text.',
+    mgPickNoCoachee: 'kein Coachee',
+    mgDirFail: (e: string) => `Schiedsrichterliste aus VolleyManager nicht erreichbar — die Auswahl zeigt nur Coachees. (${e})`,
     noEmail: 'keine E-Mail',
     syncTitle: 'Kontaktdaten aus VolleyManager',
     syncHint: 'Holt E-Mail und Telefon aus der VolleyManager-Schiedsrichterliste. Wer dort fehlt, wird auf den Spielen des Saison gesucht (sobald diese aufgeschaltet sind). Ohne E-Mail lässt sich kein Feedback abschicken.',
@@ -304,6 +307,8 @@ const STR = {
     mgPickNone: 'No match.',
     mgPickMore: (n: number) => `… ${n} more — narrow the search.`,
     mgPickUnknown: 'Not in the list — free text.',
+    mgPickNoCoachee: 'not a coachee',
+    mgDirFail: (e: string) => `The VolleyManager referee list could not be reached — the pickers show coachees only. (${e})`,
     noEmail: 'no email',
     syncTitle: 'Contact details from VolleyManager',
     syncHint: 'Pulls email and phone from the VolleyManager referee list. Anyone missing there is looked up on the season\'s games (once those are published). Feedback cannot be submitted without an email.',
@@ -755,7 +760,7 @@ export default function AdminConsole() {
           <CredentialsAdmin t={t} />
         </div>
         </>}
-        <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
+        <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">v{APP_VERSION} · Build {BUILD_INFO}</p>
         </main>
       </div>
 
@@ -2189,7 +2194,10 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
 
 // One entry in a name picker: the name that gets written onto the game, and the
 // address the feedback would actually reach.
-type PickPerson = { id: string; name: string; email?: string };
+// `warn` is why picking this person will not produce a mail — everything the
+// form can know before the send is attempted, said before the pick rather than
+// as a 422 at the end of a filled-in feedback form.
+type PickPerson = { id: string; name: string; email?: string; warn?: string };
 
 const foldName = (v: string) =>
   v.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, ' ');
@@ -2232,6 +2240,11 @@ function PersonPicker({ id, value, onChange, people, t }: {
   });
   const shown = matches.slice(0, 50);
   const exact = people.find((p) => foldName(p.name) === foldName(value));
+
+  // The address line, in both places it appears: under the field and on every
+  // row. Grey only when this pick would actually reach somebody.
+  const line = (p: PickPerson) => [p.email || t.noEmail, p.warn].filter(Boolean).join(' · ');
+  const reaches = (p: PickPerson) => Boolean(p.email) && !p.warn;
 
   const pick = (p: PickPerson) => { onChange(p.name); setOpen(false); };
   const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -2284,8 +2297,8 @@ function PersonPicker({ id, value, onChange, people, t }: {
               className={cn('w-full text-left px-3 py-1.5', i === hi && 'bg-stone-50')}
             >
               <span className="block text-sm text-stone-800 truncate">{p.name}</span>
-              <span className={cn('block text-[11px] truncate', p.email ? 'text-stone-400' : 'text-amber-600')}>
-                {p.email || t.noEmail}
+              <span className={cn('block text-[11px] truncate', reaches(p) ? 'text-stone-400' : 'text-amber-600')}>
+                {line(p)}
               </span>
             </button>
           ))}
@@ -2299,19 +2312,28 @@ function PersonPicker({ id, value, onChange, people, t }: {
       {/* Under the field, the consequence of what stands in it: which address
           the feedback would reach, or that this name is nobody the app knows. */}
       {hasList && value.trim() !== '' && (
-        <span className={cn('mt-0.5 block text-[11px] truncate', exact?.email ? 'text-stone-400' : 'text-amber-600')}>
-          {exact ? (exact.email || t.noEmail) : t.mgPickUnknown}
+        <span className={cn('mt-0.5 block text-[11px] truncate', exact && reaches(exact) ? 'text-stone-400' : 'text-amber-600')}>
+          {exact ? line(exact) : t.mgPickUnknown}
         </span>
       )}
     </div>
   );
 }
 
-/** The referee list the pickers offer: every coachee the app carries, one row
- *  per person rather than one per season — the same referee appears once for
- *  every season they were coached in, and three identical names with three
- *  addresses is not a list anyone can choose from. */
-function refereeOptions(coachees: Coachee[]): PickPerson[] {
+/** The list the referee pickers offer: every licensed referee VolleyManager
+ *  knows, with the coachees among them carrying the address the feedback would
+ *  actually use.
+ *
+ *  Coachees come first because they are the answer to the question the form is
+ *  really asking — a referee who is not one can be put on a game, but the
+ *  feedback submit refuses them ("nicht als Coachee erfasst"), so those rows
+ *  are marked rather than left to look ready.
+ *
+ *  One row per person, not one per season: the same referee has a coachee row
+ *  for every season they were coached in, and three identical names with three
+ *  addresses is not a list anyone can choose from. The newest row wins, which
+ *  is the row the server's own name lookup resolves to. */
+function refereeOptions(coachees: Coachee[], directory: RefereeDirectoryEntry[], notACoachee: string): PickPerson[] {
   const nameOf = (c: Coachee) => (c.full_name || `${c.first_name || ''} ${c.last_name || ''}`).trim();
   const best = new Map<string, Coachee>();
   for (const c of coachees) {
@@ -2325,7 +2347,29 @@ function refereeOptions(coachees: Coachee[]): PickPerson[] {
       || (c.season || 0) > (prev.season || 0)
       || ((c.season || 0) === (prev.season || 0) && !prev.email && !!c.email)) best.set(key, c);
   }
-  return [...best.values()].sort(bySurname).map((c) => ({ id: c.id, name: nameOf(c), email: c.email }));
+
+  // Both name orders count as "already a coachee". VolleyManager and the XLSX
+  // disagree on which of the two comes first — the contact sync indexes both
+  // for the same reason — and matching only one order would list half the
+  // coachees a second time, marked as strangers.
+  const known = new Set<string>();
+  for (const c of best.values()) {
+    known.add(foldName(nameOf(c)));
+    if (c.first_name && c.last_name) known.add(foldName(`${c.last_name} ${c.first_name}`));
+    else {
+      const parts = foldName(nameOf(c)).split(' ');
+      if (parts.length === 2) known.add(`${parts[1]} ${parts[0]}`);
+    }
+  }
+  const reversed = (n: string) => { const p = foldName(n).split(' '); return p.length === 2 ? `${p[1]} ${p[0]}` : ''; };
+
+  const options: PickPerson[] = [...best.values()].map((c) => ({ id: c.id, name: nameOf(c), email: c.email }));
+  for (const p of directory) {
+    const name = (p.name || '').trim();
+    if (!name || known.has(foldName(name)) || known.has(reversed(name))) continue;
+    options.push({ id: `vm:${foldName(name)}`, name, email: p.email, warn: notACoachee });
+  }
+  return options.sort((a, b) => bySurname({ full_name: a.name }, { full_name: b.name }));
 }
 
 // Settings are fetched once by the console shell and handed down — this tab
@@ -2344,6 +2388,9 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
   const [q, setQ] = useState('');
   const [refs, setRefs] = useState<PickPerson[]>([]);
   const [rcs, setRcs] = useState<PickPerson[]>([]);
+  // Only when the referee list could not be reached — the pickers then hold the
+  // coachees alone, which is a smaller list than the label promises.
+  const [dirErr, setDirErr] = useState('');
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
   const setName = (k: keyof typeof empty) => (v: string) => setF({ ...f, [k]: v });
 
@@ -2363,14 +2410,16 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
     if (!active || listsAsked) return;
     setListsAsked(true);
     void (async () => {
-      const [cs, ps] = await Promise.all([
+      const [cs, ps, dir] = await Promise.all([
         listCoachees().catch(() => [] as Coachee[]),
         listRefereeCoachPeople().catch(() => [] as RefereeCoachPerson[]),
+        listRefereeDirectory().catch((e: unknown) => ({ people: [], error: e instanceof Error ? e.message : String(e) }) as RefereeDirectory),
       ]);
-      setRefs(refereeOptions(cs));
+      setRefs(refereeOptions(cs, dir.people, t.mgPickNoCoachee));
       setRcs(ps.map((rc) => ({ id: rc.id, name: rc.fullName, email: rc.email })));
+      setDirErr(dir.error || '');
     })();
-  }, [active, listsAsked]);
+  }, [active, listsAsked, t]);
 
   const create = async () => {
     setBusy(true); setErr('');
@@ -2396,6 +2445,7 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
     <Card>
       <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.mgTitle}</h2>
       <p className="text-xs text-stone-400 mb-3">{t.mgHint}</p>
+      {dirErr && <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mb-3">{t.mgDirFail(dirErr)}</p>}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
         <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgDate}</span>
           <input type="date" className={input} value={f.match_date} onChange={set('match_date')} /></label>

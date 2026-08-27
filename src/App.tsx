@@ -48,7 +48,7 @@ import { Skeleton, SkeletonRows } from './components/Skeleton';
 import AppSpinner from './components/AppSpinner';
 import { useRcAuth } from './components/AuthGate';
 import { isDemoMode, getSentMail, demoTips, type DemoEmail } from './lib/demo';
-import { BUILD_INFO } from './lib/buildInfo';
+import { APP_VERSION, BUILD_INFO, VERSION_STAMP } from './lib/buildInfo';
 import { confirmDialog, toast } from './components/ui';
 
 // Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
@@ -5420,7 +5420,7 @@ export default function App() {
         </div>
 
         <div className="mt-6 pt-4 border-t border-stone-100 text-[9px] text-right text-stone-400 italic">
-          {t.version}: {t.versionDate} | Build {BUILD_INFO} | SVRZ Referee Coaching Tool
+          {t.version}: {t.versionDate} | {VERSION_STAMP} | SVRZ Referee Coaching Tool
         </div>
       </div>
 
@@ -6094,7 +6094,7 @@ export default function App() {
         />
       )}
       <p className="mx-auto max-w-5xl mt-6 pb-2 text-center text-[10px] text-stone-400 no-print">
-        Build {BUILD_INFO}
+        v{APP_VERSION} · Build {BUILD_INFO}
       </p>
     </div>
   );

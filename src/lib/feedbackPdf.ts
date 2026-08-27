@@ -15,7 +15,7 @@
 import { jsPDF } from 'jspdf';
 import qrcode from 'qrcode-generator';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
-import { BUILD_INFO } from './buildInfo';
+import { VERSION_STAMP } from './buildInfo';
 import { INTER_BOLD_B64, INTER_BOLD_ITALIC_B64, INTER_ITALIC_B64, INTER_REGULAR_B64 } from './pdfFonts';
 import { toRuns, type RichRun } from './richText';
 import {
@@ -1027,7 +1027,7 @@ function drawFooters(sheet: Sheet, t: Labels): void {
     sheet.stroke(HAIR, 0.5);
     doc.line(MARGIN, y - 9, MARGIN + CONTENT_W, y - 9);
     sheet.font('normal', 5.8, FAINT);
-    doc.text(`${t.version}: ${t.versionDate} | Build ${BUILD_INFO} | SVRZ Referee Coaching Tool`, MARGIN, y, { baseline: 'middle' });
+    doc.text(`${t.version}: ${t.versionDate} | ${VERSION_STAMP} | SVRZ Referee Coaching Tool`, MARGIN, y, { baseline: 'middle' });
     doc.text(`${t.page} ${page}/${total}`, MARGIN + CONTENT_W, y, { baseline: 'middle', align: 'right' });
   }
 }

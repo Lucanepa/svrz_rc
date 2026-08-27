@@ -5274,10 +5274,30 @@ function seasonDateFilter(seasonRaw: unknown): ((dateText: string) => boolean) |
   };
 }
 
+/** The season window, with test games let through.
+ *
+ *  A season runs September to April, and a test game is usually made today —
+ *  which in May, June, July or August is in no season at all. It then vanished
+ *  from every list in the app while sitting in the console that made it: the
+ *  one game whose whole purpose is to be walked through was the one game that
+ *  could not be. Their badge says what they are, so showing them out of season
+ *  misleads nobody. */
+function seasonFilterExceptManual(
+  seasonRaw: unknown,
+  manual: Set<string>,
+): (game: AnyRecord) => boolean {
+  const inSeason = seasonDateFilter(seasonRaw);
+  return (game: AnyRecord) => {
+    if (!inSeason) return true;
+    if (manual.has(String(game.id))) return true;
+    return inSeason(asText(game.match_date));
+  };
+}
+
 app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    const inSeason = seasonDateFilter(req.query.season);
+    const inSeason = seasonFilterExceptManual(req.query.season, await getManualGameIds());
     // 1. RC people
     const allPeople = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
       collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }),
@@ -5334,7 +5354,7 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
 
       for (const game of allGames) {
         if (!rcRefMatches(game.assigned_rc_id, game.assigned_rc, self)) continue;
-        if (inSeason && !inSeason(asText(game.match_date))) continue;
+        if (!inSeason(game)) continue;
         const gameDate = new Date(asText(game.match_date));
         const hasFeedback = fbGameIds.has(game.id);
 
@@ -5365,7 +5385,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
     // and pin the query to the session's own name — the id-backed identity.
     const rcName = rcAuth ? rcAuth.name : decodeURIComponent(String(req.params.rcName));
     const rcKey = normalizeName(rcName);
-    const inSeason = seasonDateFilter(req.query.season);
+    const inSeason = seasonFilterExceptManual(req.query.season, await getManualGameIds());
     // Who this page is about, as an identity. For a plain RC it is the session;
     // for an admin reading someone's detail it is whoever that name resolves to.
     // Rows carrying an id are matched on it, so a rename — or a second coach
@@ -5385,7 +5405,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       }),
     );
     const rcGames = allGames.filter((g) =>
-      isSubject(g.assigned_rc_id, g.assigned_rc) && (!inSeason || inSeason(asText(g.match_date))));
+      isSubject(g.assigned_rc_id, g.assigned_rc) && inSeason(g));
 
     // Fetch feedbacks for this RC
     const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -5427,7 +5447,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       const coacheeName = asText(coacheeRec?.full_name || coacheeRec?.name);
       const coacheeId = String(coacheeRec?.id || '');
       if (!coacheeName) continue;
-      if (inSeason && !inSeason(asText(gameRec?.match_date))) continue;
+      if (gameRec && !inSeason(gameRec)) continue;
       const entry = getOrCreate(coacheeName, coacheeId);
       entry.doneFeedbacks.push({
         gameDate: asText(gameRec?.match_date),

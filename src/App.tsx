@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useId } from 'react';
+import React, { useCallback, useState, useEffect, useRef, useMemo, useId } from 'react';
 import { Maximize2, Download, FileJson, Loader2, RefreshCw, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
@@ -1086,6 +1086,19 @@ export default function App() {
   });
   const seasonFrom = `${seasonStartYear}-09-01`;
   const seasonTo = `${seasonStartYear + 1}-04-30`;
+  /** Inside the season on screen — or a test game, which is exempt.
+   *
+   *  A season runs September to April, and a test game is usually made today,
+   *  which in May–August belongs to no season at all. It then disappeared from
+   *  every list while sitting in the console that had just created it. The row
+   *  says "Testspiel", so showing one out of season misleads nobody. */
+  const inSeasonOrManual = useCallback((g: { date?: string; isManual?: boolean }) => {
+    if (g.isManual) return true;
+    if (!g.date) return true;
+    const d = new Date(g.date);
+    if (Number.isNaN(d.getTime())) return true;
+    return d >= new Date(seasonFrom) && d <= new Date(seasonTo + 'T23:59:59');
+  }, [seasonFrom, seasonTo]);
   const [emailTestMode, setEmailTestMode] = useState(false);
   // Per-coachee level/role targets (drives "watch at their level" game filtering).
   const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
@@ -3206,8 +3219,7 @@ export default function App() {
     };
     for (const g of eligibleGames) {
       if (!g.assignedRc) continue;
-      const sd = new Date(g.date);
-      if (!Number.isNaN(sd.getTime()) && (sd < new Date(seasonFrom) || sd > new Date(seasonTo + 'T23:59:59'))) continue;
+      if (!inSeasonOrManual(g)) continue;
       const closed = g.feedbackClosedRoles || [];
       for (const [r, role] of [[g.firstReferee, '1. SR'], [g.secondReferee, '2. SR']] as Array<[string | undefined, string]>) {
         if (!r || closed.includes(role)) continue;
@@ -3223,7 +3235,7 @@ export default function App() {
       }
     }
     return map;
-  }, [eligibleGames, coacheeByName, seasonFrom, seasonTo]);
+  }, [eligibleGames, coacheeByName, inSeasonOrManual]);
 
   const filteredGames = useMemo(() => {
     const gameTime = (d: string) => {
@@ -3294,10 +3306,7 @@ export default function App() {
         if (new Date(g.date) > to) return false;
       }
       // Season bound (whole-app season scope)
-      if (g.date) {
-        const sd = new Date(g.date);
-        if (!Number.isNaN(sd.getTime()) && (sd < new Date(seasonFrom) || sd > new Date(seasonTo + 'T23:59:59'))) return false;
-      }
+      if (!inSeasonOrManual(g)) return false;
       // Coachee-aware filters: check if at least one referee passes
       if (gameFilterNeedsObs || !gameFilterShowInactive) {
         const refs = [g.firstReferee, g.secondReferee].filter(Boolean).map((r) => normName(r!));
@@ -3344,7 +3353,7 @@ export default function App() {
       // timestamps rather than strings so a stray offset cannot reorder a day,
       // and anything undated sinks to the bottom instead of leading.
       .sort((a, b) => gameTime(a.date) - gameTime(b.date));
-  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, seasonFrom, seasonTo, showAllLevels, coacheeTargets, niveauTable]);
+  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, inSeasonOrManual, showAllLevels, coacheeTargets, niveauTable]);
 
   // Any filter can shrink a list below the page currently shown, and the pager
   // itself disappears under one page of rows — leaving a blank list with no
@@ -4499,8 +4508,7 @@ export default function App() {
                   {!gameFilterRcAssigned && (() => {
                     const takenCount = eligibleGames.filter((g) => {
                       if (!g.assignedRc) return false;
-                      const sd = new Date(g.date);
-                      return Number.isNaN(sd.getTime()) || (sd >= new Date(seasonFrom) && sd <= new Date(seasonTo + 'T23:59:59'));
+                      return inSeasonOrManual(g);
                     }).length;
                     return takenCount > 0 ? (
                       <p className="mb-2 text-[11px] text-stone-400">

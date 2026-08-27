@@ -26,3 +26,21 @@ test('a test game is listed even with nobody coachable on it, and says what it i
   // The badge belongs to the test game, not to the fixture beside it.
   await expect(page.getByText('Volley Obfelden')).toBeVisible();
 });
+
+test('a test game dated out of season is still shown, an ordinary game is not', async ({ page }) => {
+  // A season runs September to April, and a test game is usually made today —
+  // which in May, June, July or August is in no season at all. It then vanished
+  // from every list in the app while sitting in the console that made it.
+  await stubSignedInApp(page);
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({
+    json: [
+      { ...GAME, id: 'g-aug-test', matchNo: 'TEST-2', date: '2026-08-28T18:00:00.000Z', homeTeam: 'VBC August Test', assignedRc: '', isManual: true },
+      { ...GAME, id: 'g-aug-real', matchNo: '402432', date: '2026-08-28T18:00:00.000Z', homeTeam: 'VBC August Real', assignedRc: '' },
+    ],
+  }));
+
+  await page.goto('/#/games');
+  await expect(page.getByText('VBC August Test')).toBeVisible();
+  // The season bound still holds for everything else.
+  await expect(page.getByText('VBC August Real')).toHaveCount(0);
+});

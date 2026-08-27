@@ -1437,6 +1437,11 @@ function mapIncomingGame(raw: Record<string, unknown>) {
     away_team: asText(raw.away_team ?? raw.team_away ?? raw.away),
     first_referee: asText(raw.first_referee ?? raw.referee_1 ?? raw.sr1 ?? raw.r1),
     second_referee: asText(raw.second_referee ?? raw.referee_2 ?? raw.sr2 ?? raw.r2),
+    // The SV-Nr. behind each name. Declared here as well as filled by the
+    // VolleyManager transform, so the shape upsertGame writes says out loud
+    // that a game carries who its referees are, not only what they are called.
+    first_referee_id: asText(raw.first_referee_id),
+    second_referee_id: asText(raw.second_referee_id),
     first_line_judge: asText(raw.first_line_judge ?? raw.lj1),
     second_line_judge: asText(raw.second_line_judge ?? raw.lj2),
     is_rd_game: Boolean(raw.is_rd_game),
@@ -2180,6 +2185,27 @@ function extractRefereeName(item: Record<string, unknown>, convocationKey: strin
   return asText(deepGet(convocation, 'indoorAssociationReferee', 'indoorReferee', 'person', 'displayName'));
 }
 
+/** The referee's Swiss Volley number, off the convocation VolleyManager already
+ *  sends with every game.
+ *
+ *  `person.associationId` is the same number the SVRZ "Schiedsrichter verwalten"
+ *  export calls SV-Nr. — verified 2026-08-27 against a live convocation and the
+ *  register (same number, same person). It is the whole reason a game need not
+ *  be matched to a person by the way a name happens to be spelled that day.
+ *
+ *  The search response carries the full object whatever the render config asks
+ *  for, so this costs no extra request and no extra column. */
+function extractRefereeId(item: Record<string, unknown>, convocationKey: string): string {
+  const convocation = item[convocationKey];
+  if (!convocation || typeof convocation !== 'object') {
+    return '';
+  }
+  const person = deepGet(convocation, 'indoorAssociationReferee', 'indoorReferee', 'person') as Record<string, unknown> | undefined;
+  if (!person || typeof person !== 'object') return '';
+  // externalId holds the same number; kept as a fallback rather than a guess.
+  return asText(person.associationId) || asText(person.externalId);
+}
+
 function extractLineJudgeName(item: Record<string, unknown>, convocationKey: string): string {
   const convocation = item[convocationKey];
   if (!convocation || typeof convocation !== 'object') {
@@ -2253,6 +2279,11 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
   const secondReferee =
     extractRefereeName(item, 'activeRefereeConvocationSecondHeadReferee')
     || asText(item.activeSecondHeadRefereeName);
+  // The names above are what the lists print; these are who they are. A game
+  // whose convocation is only a name (the `active…Name` fallback above) carries
+  // no number, and the readers fall back to matching the name, as before.
+  const firstRefereeId = extractRefereeId(item, 'activeRefereeConvocationFirstHeadReferee');
+  const secondRefereeId = extractRefereeId(item, 'activeRefereeConvocationSecondHeadReferee');
   const firstLineJudge =
     extractLineJudgeName(item, 'activeRefereeConvocationFirstLineJudge')
     || asText(item.activeFirstLineJudgeName);
@@ -2324,6 +2355,8 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
     away_team: asText(away.name),
     first_referee: firstReferee,
     second_referee: secondReferee,
+    first_referee_id: firstRefereeId,
+    second_referee_id: secondRefereeId,
     first_line_judge: firstLineJudge,
     second_line_judge: secondLineJudge,
     is_rd_game: isRdGame,

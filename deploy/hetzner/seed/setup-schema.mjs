@@ -56,9 +56,11 @@ const games = await ensure('games', [
   // (POST /api/admin/migrate-rc-ids).
   T('assigned_rc'),T('assigned_rc_id'),J('feedback_closed_roles'),J('source_payload'),
   // The same argument as assigned_rc_id, one row down: who the referees are,
-  // not how VolleyManager spelled them that day. Written by the manual-game
-  // form, which picks them off the roster; games imported from VolleyManager
-  // carry names only, and are still resolved by name.
+  // not how VolleyManager spelled them that day. The SV-Nr., filled by the
+  // nightly import off `person.associationId` on the convocation VolleyManager
+  // already sends with every game, and by the manual-game form off the
+  // register. Empty on a game whose convocation carried only a name, and on
+  // everything imported before 2026-08-27 — readers fall back to the name.
   T('first_referee_id'),T('second_referee_id')
 ]);
 // The referee roster, keyed by the Swiss Volley number — the only identifier in

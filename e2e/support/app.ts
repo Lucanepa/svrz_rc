@@ -122,7 +122,7 @@ export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promi
 
 /** Games tab → reveal held games → expand the fixture → open its feedback form. */
 export async function openFeedbackForm(page: Page): Promise<void> {
-  await page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ }).click();
+  await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
   // Games already held by a coach live behind this filter.
   await page.getByRole('button', { name: /^(Filters|Filter)$/ }).click();
   await page.getByRole('button', { name: /RC assigned|RC zugewiesen/ }).click();

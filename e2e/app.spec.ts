@@ -23,7 +23,7 @@ test.describe('App loads', () => {
 
   test('shows Coachees and Games tab buttons', async ({ page }) => {
     await expect(page.getByRole('button', { name: /^Coachees$/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^(Games|Spiele)$/ })).toBeVisible();
   });
 });
 
@@ -39,7 +39,7 @@ test.describe('Language toggle', () => {
 
 test.describe('Tab switching', () => {
   test('switches between Coachees and Games tabs', async ({ page }) => {
-    await page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ }).click();
+    await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
     await expect(page.getByRole('button', { name: /^(Filters|Filter)$/ })).toBeVisible();
 
     await page.getByRole('button', { name: /^Coachees$/ }).click();

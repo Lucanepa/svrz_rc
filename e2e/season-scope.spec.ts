@@ -44,7 +44,7 @@ async function openGames(page: import('@playwright/test').Page, coachees: unknow
   await page.route('**/api/coachees*', (r) => r.fulfill({ json: coachees }));
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [HER_GAME] }));
   await page.goto('/');
-  await page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ }).click();
+  await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
   await expect(page.getByText(HER_GAME.homeTeam).first()).toBeVisible();
 }
 

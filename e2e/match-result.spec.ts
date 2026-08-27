@@ -49,7 +49,7 @@ test.beforeEach(async ({ page }) => {
 
 test('the games list puts each team\'s set points on that team\'s row', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ }).click();
+  await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
   await page.getByRole('button', { name: /^(Filters|Filter)$/ }).click();
   await page.getByRole('button', { name: /RC assigned|RC zugewiesen/ }).click();
 

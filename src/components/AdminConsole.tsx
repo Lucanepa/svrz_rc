@@ -680,9 +680,9 @@ export default function AdminConsole() {
   ];
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 pb-16">
-      <header className="bg-white border-b border-stone-200/70 sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center gap-3">
+    <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 pb-24 lg:pb-16">
+      <header className="bg-white border-b border-stone-200/70 sticky top-0 z-20">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
           <SvrzLogo className="h-7 w-auto" />
           <span className="text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">{t.admin}</span>
           {testMode && <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-[11px] font-semibold px-2 py-0.5"><FlaskConical size={12} /> {t.testBadge}</span>}
@@ -690,25 +690,39 @@ export default function AdminConsole() {
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} aria-label={t.logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
-        {/* All nine across this container leaves ~90px each and every second
-            label truncates, so the admin bar wraps — three rows of three,
-            rather than four-four-and-a-lonely-ninth. */}
-        <div className={cn('max-w-4xl mx-auto px-4 pb-3 grid gap-2', isPresident ? 'grid-cols-2' : 'grid-cols-3')}>
-          {tabs.map((tb) => (
-            // min-w-0 + truncate: the label is hidden below sm, leaving an icon
-            // with no accessible name — so the button carries the name itself.
-            <button key={tb.id} onClick={() => setTab(tb.id)} aria-label={tb.label} aria-current={tab === tb.id ? 'page' : undefined} className={`h-11 min-w-0 px-1.5 inline-flex items-center justify-center gap-1.5 text-sm font-medium rounded-xl transition-colors ${tab === tb.id ? 'bg-slate-900 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}>
-              <span className="shrink-0">{tb.icon}</span>
-              <span className="hidden sm:inline truncate">{tb.label}</span>
-            </button>
-          ))}
-        </div>
       </header>
       {/* Tabs stay mounted: their data is fetched in one parallel batch on the
           first render after login, so switching tabs shows the finished page
           instead of starting that tab's request right then. Logs are the
           exception — they only poll while their tab is on screen. */}
-      <main className="max-w-4xl mx-auto px-4 pt-5">
+      {/* Nine destinations in a wrapped grid read as a wall of equal buttons —
+          nothing said which of them you were in without reading all nine. On a
+          wide screen they belong in a rail beside the page; on a phone there is
+          no room beside anything, so the same list sits along the bottom, where
+          a thumb is, and scrolls sideways rather than stealing three rows of
+          height from the page it is navigating. */}
+      <div className="max-w-6xl mx-auto px-4 flex gap-6">
+        <nav
+          aria-label={t.admin}
+          className="hidden lg:block w-56 shrink-0 sticky top-[68px] self-start pt-5 pb-8 space-y-1"
+        >
+          {tabs.map((tb) => (
+            <button
+              key={tb.id}
+              onClick={() => setTab(tb.id)}
+              aria-current={tab === tb.id ? 'page' : undefined}
+              className={cn(
+                'w-full h-10 px-3 inline-flex items-center gap-2.5 text-sm font-medium rounded-xl transition-colors text-left',
+                tab === tb.id ? 'bg-slate-900 text-white' : 'text-stone-600 hover:bg-stone-200/70',
+              )}
+            >
+              <span className="shrink-0">{tb.icon}</span>
+              <span className="truncate">{tb.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <main className="flex-1 min-w-0 pt-5">
         {/* Mandate/target saves are optimistic; when one is rejected the state
             rolls back and this is what says so. */}
         {settingsError && (
@@ -734,7 +748,35 @@ export default function AdminConsole() {
         </div>
         </>}
         <p className="mt-6 pb-3 text-center text-[10px] text-stone-400">Build {BUILD_INFO}</p>
-      </main>
+        </main>
+      </div>
+
+      {/* Phones and tablets: the same nav along the bottom. Scrolls sideways so
+          a ninth destination costs no height, and the page keeps room for it. */}
+      <nav
+        aria-label={t.admin}
+        className="lg:hidden fixed bottom-0 inset-x-0 z-20 bg-white/95 backdrop-blur border-t border-stone-200 overflow-x-auto"
+      >
+        <div className="flex gap-1 px-2 py-1.5 w-max min-w-full">
+          {tabs.map((tb) => (
+            <button
+              key={tb.id}
+              // A deep link can land on a destination the scroller has parked
+              // off-screen, and then nothing on the bar says where you are.
+              ref={tb.id === tab ? (el) => el?.scrollIntoView({ inline: 'center', block: 'nearest' }) : undefined}
+              onClick={() => setTab(tb.id)}
+              aria-current={tab === tb.id ? 'page' : undefined}
+              className={cn(
+                'shrink-0 min-w-[68px] px-2.5 py-1.5 inline-flex flex-col items-center gap-1 rounded-xl text-[10px] font-medium leading-none transition-colors',
+                tab === tb.id ? 'bg-slate-900 text-white' : 'text-stone-500 hover:bg-stone-100',
+              )}
+            >
+              <span className="shrink-0">{tb.icon}</span>
+              <span className="whitespace-nowrap">{tb.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
     </div>
   );
 }

@@ -105,7 +105,7 @@ test.describe('Team login', () => {
     await page.getByRole('button', { name: RC.name }).click();
     await page.getByRole('button', { name: 'Continue' }).click();
 
-    await expect(page.getByRole('button', { name: /^Coachee Games$/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Games$/ })).toBeVisible();
   });
 
   test('#/admin asks for its OWN password, not the team one', async ({ page }) => {

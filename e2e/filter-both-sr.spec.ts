@@ -35,7 +35,7 @@ async function openFilters(page: import('@playwright/test').Page) {
     json: { default_season: 2026, test_mode: false, groups: [], coachee_targets: {}, rc_mandates: {}, default_goal: 10 },
   }));
   await page.goto('/');
-  await page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ }).click();
+  await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
   await page.getByRole('button', { name: /^(Filters|Filter)$/ }).click();
 }
 
@@ -72,7 +72,7 @@ test('a long coachee name is not cut off in the dropdown', async ({ page }) => {
     json: [game('g9', 'Some Game', 'Dario Stefano Quattrini', '')],
   }));
   await page.goto('/');
-  await page.getByRole('button', { name: /Coachee Games|Coachee-Spiele/ }).click();
+  await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
   await page.getByRole('button', { name: /^(Filters|Filter)$/ }).click();
   await page.getByRole('button', { name: /All coachees|Alle Coachees/ }).click();
 

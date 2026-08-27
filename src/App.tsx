@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId } from 'react';
-import { Maximize2, Download, FileJson, Loader2, RefreshCw, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock } from 'lucide-react';
+import { Maximize2, Download, FileJson, Loader2, RefreshCw, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
@@ -13,6 +13,7 @@ import {
   listCoachees,
   loadCalendarGames,
   loadEligibleGames,
+  sendGameReminder,
   getAdminAuthStatus,
   saveFeedbackToPocketBase,
   updateCoachee,
@@ -2002,6 +2003,34 @@ export default function App() {
   const giveBackFromHome = (gameId: string, label: string, german: boolean) =>
     giveBackGame(gameId, label, german, loadHome);
 
+  // "Send the reminder now" — a confirm first, because it puts a mail in
+  // somebody's inbox and there is no unsending it.
+  const remindFromHome = async (gameId: string, label: string, german: boolean) => {
+    const ok = await confirmDialog({
+      title: german ? 'Erinnerung jetzt senden?' : 'Send the reminder now?',
+      message: german
+        ? `Die SR von „${label}" erhalten die Erinnerungs-Mail sofort — sonst ginge sie automatisch am Vortag um 10:00 raus. Du bekommst sie in Kopie.`
+        : `The referees of "${label}" get the reminder mail straight away — otherwise it would go out automatically at 10:00 the day before. You are copied in.`,
+      confirmLabel: german ? 'Senden' : 'Send',
+      lang: german ? 'DE' : 'EN',
+    });
+    if (!ok) return;
+    try {
+      const res = await sendGameReminder(gameId);
+      if (res.suppressed) {
+        toast.info(german
+          ? 'Test-Modus ist aktiv — es wurde keine E-Mail versendet.'
+          : 'Test mode is on — no e-mail was sent.', { lang: german ? 'DE' : 'EN' });
+      } else {
+        toast.success(german
+          ? `Erinnerung an ${res.sent} Empfänger gesendet.`
+          : `Reminder sent to ${res.sent} recipient(s).`, { lang: german ? 'DE' : 'EN' });
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e), { lang: german ? 'DE' : 'EN' });
+    }
+  };
+
   const applyCoacheeToMeta = (coachee: Coachee) => {
     // A filed record is a document about ONE referee, already signed and sent.
     // Tapping another coachee while it is open used to rewrite the name, Niveau
@@ -3865,7 +3894,9 @@ export default function App() {
                 if (eg) handleSelectGame(eg, g.refereeName);
                 else { setListTab('games'); setListSearch(g.teams); }
               };
-              const gameRow = (g: HomeGame, key: string) => (
+              // `canRemind` only for games still to come: reminding somebody
+              // about a match they have already refereed is noise.
+              const gameRow = (g: HomeGame, key: string, canRemind = false) => (
                 <div
                   key={key}
                   className="flex items-stretch rounded-lg border border-stone-200 bg-white overflow-hidden focus-within:border-red-300 hover:border-red-300 transition-colors"
@@ -3884,6 +3915,18 @@ export default function App() {
                     </div>
                     <Eye size={15} className="text-stone-400 shrink-0" />
                   </button>
+                  {canRemind && (
+                    <button
+                      onClick={() => void remindFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
+                      aria-label={de ? 'Erinnerung senden' : 'Send reminder'}
+                      title={de
+                        ? 'Erinnerungs-Mail jetzt senden — sonst automatisch am Vortag um 10:00'
+                        : 'Send the reminder mail now — otherwise automatically at 10:00 the day before'}
+                      className="shrink-0 px-3 border-l border-stone-200 text-stone-400 hover:bg-stone-50 hover:text-red-600 transition-colors"
+                    >
+                      <Mail size={15} />
+                    </button>
+                  )}
                   <button
                     onClick={() => void giveBackFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
                     aria-label={de ? 'Spiel abgeben' : 'Give game back'}
@@ -3992,7 +4035,7 @@ export default function App() {
                           <p className="text-sm text-stone-400 py-3">{de ? 'Keine geplanten Spiele.' : 'No planned games.'}</p>
                         ) : (
                           <div className="space-y-1.5">
-                            {homeData.nextGames.map((g, i) => gameRow(g, `next-${g.gameId}-${i}`))}
+                            {homeData.nextGames.map((g, i) => gameRow(g, `next-${g.gameId}-${i}`, true))}
                           </div>
                         )}
                       </div>

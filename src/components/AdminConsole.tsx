@@ -140,7 +140,7 @@ const STR = {
     colName: 'Name', colActions: 'Aktionen',
     mgTitle: 'Manuelles Spiel / Testspiel',
     mgHint: 'Für Spiele, die nicht aus VolleyManager kommen. Die SR-Namen müssen exakt einem Coachee entsprechen, sonst findet das Feedback keinen Empfänger. Testspiele danach wieder löschen.',
-    mgDate: 'Datum / Anpfiff', mgTime: 'Anpfiff (Schweizer Zeit)', mgMatchNo: 'Spiel-Nr. (optional)', mgLeague: 'Liga', mgLocation: 'Ort',
+    mgDate: 'Datum / Anpfiff', mgTime: 'Anpfiff (Schweizer Zeit)', mgGender: 'Geschlecht', mgMatchNo: 'Spiel-Nr. (optional)', mgLeague: 'Liga', mgLocation: 'Ort',
     mgHome: 'Heim', mgAway: 'Gast', mgRef1: '1. SR (= Coachee)', mgRef2: '2. SR', mgRc: 'Referee Coach',
     mgCreate: 'Spiel anlegen', mgDelete: 'Löschen',
     mgCreated: (n: string) => `Angelegt: ${n}`,
@@ -308,7 +308,7 @@ const STR = {
     colName: 'Name', colActions: 'Actions',
     mgTitle: 'Manual game / test game',
     mgHint: 'For games VolleyManager does not carry. Referee names must match a coachee exactly, otherwise the feedback has no recipient. Delete test games afterwards.',
-    mgDate: 'Date / kick-off', mgTime: 'Kick-off (Swiss time)', mgMatchNo: 'Match no. (optional)', mgLeague: 'League', mgLocation: 'Venue',
+    mgDate: 'Date / kick-off', mgTime: 'Kick-off (Swiss time)', mgGender: 'Gender', mgMatchNo: 'Match no. (optional)', mgLeague: 'League', mgLocation: 'Venue',
     mgHome: 'Home', mgAway: 'Away', mgRef1: '1st referee (= coachee)', mgRef2: '2nd referee', mgRc: 'Referee coach',
     mgCreate: 'Create game', mgDelete: 'Delete',
     mgCreated: (n: string) => `Created: ${n}`,
@@ -2643,6 +2643,13 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
   const [dirErr, setDirErr] = useState('');
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
   const setName = (k: keyof typeof empty) => (v: string) => setF({ ...f, [k]: v });
+  // The league is one string ("3L ♂"), because that is what a game carries and
+  // what every reader of a league parses. The form splits it in two only to
+  // offer the symbol as a choice rather than as something to be typed.
+  const leagueGender = /[♂♀]/.exec(f.league)?.[0] ?? '';
+  const leagueName = f.league.replace(/[♂♀]/g, '').replace(/\s+/g, ' ').trim();
+  const setLeague = (name: string, gender: string) =>
+    setF({ ...f, league: [name.trim(), gender].filter(Boolean).join(' ') });
 
   // The search reloads on every keystroke, so the answers can arrive out of
   // order; and until the first one lands there are no test games to report,
@@ -2732,7 +2739,23 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
             <input id="mg-time" type="time" className={cn(input, 'w-28 shrink-0')} value={f.match_time} onChange={set('match_time')} aria-label={t.mgTime} />
           </div></label>
         <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgLeague}</span>
-          <input className={input} placeholder="3L ♂" value={f.league} onChange={set('league')} /></label>
+          <div className="flex gap-2">
+            <input className={input} placeholder="3L" value={leagueName} onChange={(e) => setLeague(e.target.value, leagueGender)} />
+            {/* VolleyManager writes the league with the gender on it ("3L ♂ A"),
+                and everything that reads a league — the Niveau matrix, the
+                filters, the mail — reads that symbol. A test game typed without
+                one is a league nothing recognises. */}
+            <select
+              className={cn(input, 'w-16 shrink-0 cursor-pointer')}
+              value={leagueGender}
+              aria-label={t.mgGender}
+              onChange={(e) => setLeague(leagueName, e.target.value)}
+            >
+              <option value="">–</option>
+              <option value="♂">♂</option>
+              <option value="♀">♀</option>
+            </select>
+          </div></label>
         <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgMatchNo}</span>
           <input className={input} value={f.match_no} onChange={set('match_no')} /></label>
         <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgHome}</span>

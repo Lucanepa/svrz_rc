@@ -22,18 +22,20 @@ export type SurveyChoice = { value: string; DE: string; EN: string };
 // Admins pick a SCALE, not individual options. The values are what lands in the
 // database, so letting them be edited would silently split every historical
 // answer off from the new ones — an editable scale is a broken aggregate.
-export type SurveyScaleId = 'yesno' | 'agreement' | 'cooperation';
+export type SurveyScaleId = 'yesno' | 'agreement' | 'rating15' | 'cooperation';
 
 const YES_NO: SurveyChoice[] = [
   { value: 'yes', DE: 'Ja', EN: 'Yes' },
   { value: 'no', DE: 'Nein', EN: 'No' },
 ];
 
+// Capitalised: each one is a line of its own on the form, and the value stored
+// is the number, so the wording is display and nothing else.
 const AGREEMENT: SurveyChoice[] = [
-  { value: '4', DE: 'trifft voll und ganz zu', EN: 'strongly agree' },
-  { value: '3', DE: 'trifft eher zu', EN: 'somewhat agree' },
-  { value: '2', DE: 'trifft eher nicht zu', EN: 'somewhat disagree' },
-  { value: '1', DE: 'trifft nicht zu', EN: 'do not agree' },
+  { value: '4', DE: 'Trifft voll und ganz zu', EN: 'Strongly agree' },
+  { value: '3', DE: 'Trifft eher zu', EN: 'Somewhat agree' },
+  { value: '2', DE: 'Trifft eher nicht zu', EN: 'Somewhat disagree' },
+  { value: '1', DE: 'Trifft nicht zu', EN: 'Do not agree' },
 ];
 
 // Same A–E scale the coaching form itself uses — wording kept identical to
@@ -46,9 +48,21 @@ const COOPERATION: SurveyChoice[] = [
   { value: 'E', DE: 'E: Deutlich nicht erreicht', EN: 'E: Clearly not achieved' },
 ];
 
+// A plain 1–5, best first like every other scale here. Only the two ends carry
+// a word: the numbers in between need no translation, and an English half that
+// merely repeats the digit would print "4 · 4".
+const RATING_1_5: SurveyChoice[] = [
+  { value: '5', DE: '5 — sehr gut', EN: '5 — very good' },
+  { value: '4', DE: '4', EN: '' },
+  { value: '3', DE: '3', EN: '' },
+  { value: '2', DE: '2', EN: '' },
+  { value: '1', DE: '1 — ungenügend', EN: '1 — poor' },
+];
+
 export const SURVEY_SCALES: Record<SurveyScaleId, { DE: string; EN: string; options: SurveyChoice[] }> = {
   yesno: { DE: 'Ja / Nein', EN: 'Yes / No', options: YES_NO },
   agreement: { DE: 'Zustimmung (4 Stufen)', EN: 'Agreement (4 levels)', options: AGREEMENT },
+  rating15: { DE: 'Bewertung 1–5', EN: 'Rating 1–5', options: RATING_1_5 },
   cooperation: { DE: 'Bewertung A–E', EN: 'Rating A–E', options: COOPERATION },
 };
 export const SURVEY_SCALE_IDS = Object.keys(SURVEY_SCALES) as SurveyScaleId[];
@@ -88,15 +102,18 @@ export const DEFAULT_SURVEY_QUESTIONS: SurveyQuestion[] = [
   { id: 'answers_explain', kind: 'text',
     DE: 'Erläuterung',
     EN: 'Explanation',
-    hintDE: 'Wenn du die Frage oben mit «trifft nicht zu» beantwortet hast, bitte erläutern:',
-    hintEN: 'If you answered "do not agree" above, please explain:' },
+    hintDE: 'Wenn du die Frage oben mit «Trifft nicht zu» beantwortet hast, bitte erläutern:',
+    hintEN: 'If you answered "Do not agree" above, please explain:' },
   { id: 'positive', kind: 'text',
     DE: 'Was war positiv?',
     EN: 'What was positive?' },
   { id: 'missed', kind: 'text',
     DE: 'Was hast du vermisst?',
     EN: 'What did you miss?' },
-  { id: 'cooperation', kind: 'choice', scale: 'cooperation',
+  // 1–5 rather than the coaching form's A–E: this question is answered by the
+  // referee, not by a coach reading a criteria table, and A–E means nothing
+  // away from that table. The A–E scale stays available for anyone who wants it.
+  { id: 'cooperation', kind: 'choice', scale: 'rating15',
     DE: 'Wie hast du die Zusammenarbeit mit dem / der anderen Schiedsrichter:in empfunden?',
     EN: 'How did you find the cooperation with the other referee?' },
   { id: 'anything', kind: 'text',

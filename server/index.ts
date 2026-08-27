@@ -1093,7 +1093,14 @@ ${MAIL_FONT_LINK}
 // fixed, so a bad edit can never break rendering or leak raw HTML. Stored in
 // app_settings as JSON under `email_template_<kind>`.
 type EmailTemplateKind = 'feedback' | 'reminder' | 'survey';
-type EmailTemplate = { subject: string; heading: string; intro: string; outro: string };
+// The English half sits UNDER the German, never instead of it: the referee list
+// is Swiss-German first and the mail has always been German, but a third of the
+// region's referees read the English one more comfortably — and the survey page
+// the mail links to has been bilingual since it was ported.
+type EmailTemplate = {
+  subject: string; heading: string; intro: string; outro: string;
+  headingEn?: string; introEn?: string; outroEn?: string;
+};
 
 const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
   feedback: {
@@ -1103,6 +1110,9 @@ const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
     // English aliases below still work for a template written the other way.
     intro: 'Hallo {{name}}\n\nHier ist das Feedback zu deinem Einsatz als {{rolle}}. Der vollständige Bericht ist als PDF angehängt.',
     outro: 'Wir freuen uns über dein Feedback zum Coaching-Erlebnis:',
+    headingEn: 'Referee coaching feedback',
+    introEn: 'Hello {{name}}\n\nHere is the feedback on your appearance as {{rolle}}. The full report is attached as a PDF.',
+    outroEn: 'We would be glad to hear how you found the coaching:',
   },
   // Goes to the RC commission, not back to the coachee — always German, and
   // deliberately thin: the fixed detail rows underneath already carry who,
@@ -1131,6 +1141,21 @@ Ort/Halle: {{halle}}
 
 Bei Fragen oder falls sich am Einsatz etwas ändert, melde dich bitte rechtzeitig.`,
     outro: 'Sportliche Grüsse\n{{coach}}',
+    introEn: `Dear {{vorname}},
+
+your next appointment will be accompanied as part of our referee coaching: {{coach}} will be there as your coach, to support you and to work on your development together with you.
+
+Appointment details:
+
+Date: {{datum}}
+Time: {{uhrzeit}}
+Match: {{heim}} – {{gast}} ({{liga}})
+Venue: {{halle}}
+
+{{coachVorname}} will say hello on site. The coaching is not an examination — afterwards you take the time for a conversation together, to consolidate strengths and to discuss where you can develop.
+
+If you have questions, or if anything about the appointment changes, please get in touch in good time.`,
+    outroEn: 'Best regards\n{{coach}}',
   },
 };
 
@@ -1153,11 +1178,26 @@ async function getEmailTemplate(kind: EmailTemplateKind): Promise<EmailTemplate>
     // Subject must never be blank (a blank subject is a broken mail); heading is
     // optional — blank simply renders no title line.
     const req = (v: unknown, d: string) => (typeof v === 'string' && v.trim() ? v : d);
-    return {
+    const de = {
       subject: req(p.subject, def.subject),
       heading: str(p.heading, def.heading),
       intro: str(p.intro, def.intro),
       outro: str(p.outro, def.outro),
+    };
+    // The English half follows what was stored; where nothing was, the shipped
+    // English stands in — but ONLY while the German beside it is still the
+    // shipped German. Once somebody rewrites a paragraph, the translation under
+    // it is no longer a translation of anything, and printing it would be worse
+    // than printing nothing.
+    const en = (stored: unknown, deText: string, defDe: string, defEn?: string) => {
+      if (typeof stored === 'string') return stored;
+      return deText === defDe ? (defEn ?? '') : '';
+    };
+    return {
+      ...de,
+      headingEn: en(p.headingEn, de.heading, def.heading, def.headingEn),
+      introEn: en(p.introEn, de.intro, def.intro, def.introEn),
+      outroEn: en(p.outroEn, de.outro, def.outro, def.outroEn),
     };
   } catch { return def; }
 }
@@ -1250,17 +1290,43 @@ const EMAIL_PLACEHOLDER_ALIASES = ['coachee', 'rc', 'date', 'time', 'location', 
 const EMAIL_PLACEHOLDERS_SURVEY = ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'spielNr'];
 
 // Admin-edited prose → escaped HTML paragraphs (blank line = new paragraph).
-function textBlockHtml(text: string): string {
+function textBlockHtml(text: string, colour: string = MAIL_INK): string {
   const t = String(text ?? '').trim();
   if (!t) return '';
   return t.split(/\n{2,}/).map((p) =>
-    `<p style="margin:0 0 14px;${mailText(14, MAIL_INK)}">${escapeHtml(p).replace(/\n/g, '<br />')}</p>`,
+    `<p style="margin:0 0 14px;${mailText(14, colour)}">${escapeHtml(p).replace(/\n/g, '<br />')}</p>`,
   ).join('');
 }
 
+/** The German block, and the English one under it in the muted ink.
+ *
+ *  Under, not beside: an e-mail client is a column of text, and two languages
+ *  interleaved line by line is neither. The reader who wants the German stops
+ *  at the paragraph break; the reader who wants the English carries on. */
+function bilingualBlockHtml(de: string, en?: string): string {
+  return textBlockHtml(de) + textBlockHtml(en ?? '', MAIL_MUTED);
+}
+
+/** The same, for the plain-text part: a rule between the two, because a blank
+ *  line is invisible to a screen reader and to anyone quoting the mail back. */
+function bilingualText(de: string, en?: string): string {
+  const d = String(de ?? '').trim();
+  const e = String(en ?? '').trim();
+  if (!d && !e) return '';
+  if (!e) return `${d}\n\n`;
+  if (!d) return `${e}\n\n`;
+  return `${d}\n\n--\n\n${e}\n\n`;
+}
+
+/** A label may carry its English under it as "Spiel Nr.|Match no." — one field
+ *  rather than two columns, so the value stays where the eye expects it. */
 function detailRowsHtml(rows: Array<[string, string]>): string {
+  const label = (k: string) => {
+    const [de, en] = k.split('|');
+    return escapeHtml(de) + (en ? `<br /><span style="${mailText(12, MAIL_MUTED, 'font-weight:400;')}">${escapeHtml(en)}</span>` : '');
+  };
   const body = rows.filter(([, v]) => v).map(([k, v]) =>
-    `<tr><td style="padding:6px 12px 6px 0;font-weight:600;white-space:nowrap;vertical-align:top;color:${MAIL_INK_SOFT};">${escapeHtml(k)}</td><td style="padding:6px 0;color:${MAIL_INK};">${escapeHtml(v)}</td></tr>`,
+    `<tr><td style="padding:6px 12px 6px 0;font-weight:600;white-space:nowrap;vertical-align:top;color:${MAIL_INK_SOFT};">${label(k)}</td><td style="padding:6px 0;color:${MAIL_INK};">${escapeHtml(v)}</td></tr>`,
   ).join('');
   return body ? `<table style="width:100%;border-collapse:collapse;${mailText(14, MAIL_INK)}margin:0 0 18px;">${body}</table>` : '';
 }
@@ -1293,6 +1359,9 @@ function buildTemplatedEmail(opts: {
   const heading = r(opts.tpl.heading);
   const intro = r(opts.tpl.intro);
   const outro = r(opts.tpl.outro);
+  const headingEn = r(opts.tpl.headingEn ?? '');
+  const introEn = r(opts.tpl.introEn ?? '');
+  const outroEn = r(opts.tpl.outroEn ?? '');
   const tips = (opts.tips || '').trim();
   // The app's own section idiom: an inset stone panel under a small uppercase
   // label, with the brand rule down the side. (It used to be an emerald box —
@@ -1301,29 +1370,35 @@ function buildTemplatedEmail(opts: {
     ? `<div style="margin:18px 0;padding:14px 18px;border-left:3px solid ${MAIL_BRAND};background:${MAIL_PANEL};border-radius:0 12px 12px 0;"><h2 style="margin:0 0 6px;${mailText(11, MAIL_MUTED, 'font-weight:700;letter-spacing:1.2px;text-transform:uppercase;')}">Tipps &amp; Tricks</h2><p style="margin:0;${mailText(14, MAIL_INK, 'white-space:pre-wrap;')}">${escapeHtml(tips)}</p></div>`
     : '';
   const surveyHtml = opts.surveyUrl
-    ? `<div style="margin-top:20px;"><a href="${escapeHtml(opts.surveyUrl)}" style="display:inline-block;padding:11px 24px;background:${MAIL_BRAND};color:#ffffff;text-decoration:none;border-radius:10px;${mailText(14, '#ffffff', 'font-weight:600;line-height:1;')}">Feedback geben</a></div>`
+    ? `<div style="margin-top:20px;"><a href="${escapeHtml(opts.surveyUrl)}" style="display:inline-block;padding:11px 24px;background:${MAIL_BRAND};color:#ffffff;text-decoration:none;border-radius:10px;${mailText(14, '#ffffff', 'font-weight:600;line-height:1;')}">Feedback geben · Give feedback</a></div>`
     : '';
-  const footerHtml = opts.footerNote
-    ? `<p style="margin:18px 0 0;${mailText(12, MAIL_MUTED)}">${escapeHtml(opts.footerNote)}</p>`
+  // "Text|English" where a note carries both, like the detail rows.
+  const [footNote, footNoteEn] = String(opts.footerNote ?? '').split('|');
+  const footerHtml = footNote
+    ? `<p style="margin:18px 0 0;${mailText(12, MAIL_MUTED)}">${escapeHtml(footNote)}${footNoteEn ? `<br />${escapeHtml(footNoteEn)}` : ''}</p>`
+    : '';
+  const headingHtml = heading.trim()
+    ? `<h1 style="margin:0 0 4px;${mailText(20, MAIL_INK, `font-weight:700;line-height:1.3;${MAIL_DISPLAY}`)}">${escapeHtml(heading)}</h1>`
+      + (headingEn.trim() ? `<p style="margin:0 0 16px;${mailText(14, MAIL_MUTED, `line-height:1.3;${MAIL_DISPLAY}`)}">${escapeHtml(headingEn)}</p>` : '')
     : '';
   const html = emailShell(
-    (heading.trim() ? `<h1 style="margin:0 0 16px;${mailText(20, MAIL_INK, `font-weight:700;line-height:1.3;${MAIL_DISPLAY}`)}">${escapeHtml(heading)}</h1>` : '')
-    + textBlockHtml(intro)
+    headingHtml
+    + bilingualBlockHtml(intro, introEn)
     + detailRowsHtml(opts.rows)
     + qaBlocksHtml(opts.qa ?? [])
     + tipsHtml
-    + textBlockHtml(outro)
+    + bilingualBlockHtml(outro, outroEn)
     + surveyHtml
     + footerHtml,
   );
-  let text = heading.trim() ? `${heading}\n\n` : '';
-  if (intro.trim()) text += `${intro.trim()}\n\n`;
-  for (const [k, v] of opts.rows) if (v) text += `${k}: ${v}\n`;
+  let text = heading.trim() ? `${heading}${headingEn.trim() ? ` · ${headingEn}` : ''}\n\n` : '';
+  text += bilingualText(intro, introEn);
+  for (const [k, v] of opts.rows) if (v) text += `${k.replace('|', ' · ')}: ${v}\n`;
   for (const [q, a] of opts.qa ?? []) if (a) text += `\n${q}\n${a}\n`;
   if (tips) text += `\n--- Tipps & Tricks ---\n${tips}\n`;
-  if (outro.trim()) text += `\n${outro.trim()}\n`;
+  text += `\n${bilingualText(outro, outroEn)}`;
   if (opts.surveyUrl) text += `\n${opts.surveyUrl}\n`;
-  if (opts.footerNote) text += `\n${opts.footerNote}\n`;
+  if (footNote) text += `\n${footNote}${footNoteEn ? `\n${footNoteEn}` : ''}\n`;
   return { subject: r(opts.tpl.subject), html, text };
 }
 
@@ -7027,7 +7102,13 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       // token is a capability: whoever holds it can answer, once, as the
       // referee. It must not travel to anyone else.
       const renderFeedbackMail = (linkForThisCopy: string) => buildTemplatedEmail({
-        tpl: feedbackTpl,
+        // The outro IS the survey's lead-in ("Wir freuen uns über dein Feedback
+        // zum Coaching-Erlebnis:"), so without the button it is a sentence that
+        // stops at a colon and promises something the mail does not contain.
+        // That is what the copies have looked like all along, and what a report
+        // filed against the register looks like — there is no token for
+        // somebody who is not a coachee.
+        tpl: linkForThisCopy ? feedbackTpl : { ...feedbackTpl, outro: '' },
         vars: emailVars({
           refereeName,
           rcName: asText(formData.meta?.rc),
@@ -7041,17 +7122,17 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           role: String(role),
         }),
         rows: [
-          ['Spiel Nr.', matchNo],
-          ['Liga', asText(game.league)],
-          ['Datum', formattedDate],
-          ['Ort', asText(game.location)],
-          ['Mannschaften', `${asText(game.home_team)} vs ${asText(game.away_team)}`],
-          ['Beurteilte Rolle', String(role)],
+          ['Spiel Nr.|Match no.', matchNo],
+          ['Liga|League', asText(game.league)],
+          ['Datum|Date', formattedDate],
+          ['Ort|Venue', asText(game.location)],
+          ['Mannschaften|Teams', `${asText(game.home_team)} vs ${asText(game.away_team)}`],
+          ['Beurteilte Rolle|Role assessed', String(role)],
           ['Referee Coach', asText(formData.meta?.rc)],
         ],
         tips: String(tipsAndTricks || ''),
         surveyUrl: linkForThisCopy,
-        footerNote: 'Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt.',
+        footerNote: 'Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt.|The full coaching report is attached as a PDF.',
       });
       const built = renderFeedbackMail(surveyUrl);
       // The copy for everyone who is not the referee. Identical but for the link.
@@ -7502,7 +7583,15 @@ async function buildDueReminders(): Promise<ReminderPlan[]> {
       filter: `match_date >= "${shiftIsoDate(target, -1)}" && match_date < "${shiftIsoDate(target, 2)}"`,
       sort: 'match_date',
     }));
-  const games = candidates.filter((g) => zonedDateOf(asText(g.match_date)) === target);
+  return buildRemindersFor(candidates.filter((g) => zonedDateOf(asText(g.match_date)) === target));
+}
+
+/** The reminder mails a set of games would produce. Split out of the daily job
+ *  so a coach can send one by hand from the app: same template, same recipient
+ *  rules, same skip reasons in the Protokoll — one code path, so "send it now"
+ *  cannot quietly differ from what tomorrow morning would have sent. */
+async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
+  await ensureAdminAuth();
   const tpl = await getEmailTemplate('reminder');
   const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
   const plans: ReminderPlan[] = [];
@@ -7612,6 +7701,85 @@ async function runMatchReminders(): Promise<{ sent: number; skipped: number; sup
   }
   return { sent, skipped, suppressed: false, due: plans.length };
 }
+
+/** Mark these reminders as sent, under the same key the daily job uses, so a
+ *  mail sent by hand today is not sent again by the cron tomorrow morning. */
+async function markRemindersSent(plans: ReminderPlan[], stamp: (plan: ReminderPlan) => string): Promise<void> {
+  if (plans.length === 0) return;
+  await withSettingLock('reminder_sent', async () => {
+    const rec = await getSettingRecord('reminder_sent');
+    let already: string[] = [];
+    try { already = rec ? JSON.parse(asText(rec.value)) as string[] : []; } catch { already = []; }
+    const keys = plans.map((p) => `${stamp(p)}:${p.gameId}:${p.role}`);
+    const today = getTomorrowDate();
+    const keep = [...new Set([...already, ...keys])].filter((k) => k.slice(0, 10) >= today);
+    await setSetting('reminder_sent', JSON.stringify(keep));
+  });
+}
+
+// One game's reminder, sent now, by the coach who holds it.
+//
+// The daily job runs at 10:00 the day before and is off unless the commission
+// turns it on; a coach who has just taken a game the day after tomorrow, or who
+// wants the referee to know today, had no way to say so. This is that — the
+// same template, the same recipients, the same rules about who is a coachee,
+// and it stamps the daily job's own dedupe key so tomorrow's run does not send
+// it a second time.
+app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const gameId = String(req.params.id);
+    const game = await withCollection(collectionCandidates.games, (c) => c.getOne<AnyRecord>(gameId));
+    const rcAuth = rcAuthByReq.get(req);
+    // A coach may only remind for a game they hold. An admin session (no rcAuth)
+    // may do it for any — the console is where somebody else's game is handled.
+    if (rcAuth && !rcRefMatches(game.assigned_rc_id, game.assigned_rc, rcAuth)) {
+      res.status(403).json({ error: 'Dieses Spiel gehört einem anderen Referee Coach.' });
+      return;
+    }
+    if (!rcRefPresent(game.assigned_rc_id, game.assigned_rc)) {
+      res.status(400).json({ error: 'Für ein Spiel ohne Referee Coach gibt es keine Erinnerung.' });
+      return;
+    }
+
+    const plans = await buildRemindersFor([game]);
+    if (plans.length === 0) {
+      // The same reasons the daily job logs: nobody on this game is a coachee
+      // of its season, or the coachee has no address.
+      res.status(422).json({ error: 'Keine Empfänger: die SR dieses Spiels sind keine Coachees dieser Saison (oder haben keine E-Mail).' });
+      return;
+    }
+
+    if (await isEmailTestMode()) {
+      res.json({ sent: 0, suppressed: true, recipients: plans.map((p) => p.to) });
+      return;
+    }
+
+    const delivered: ReminderPlan[] = [];
+    for (const plan of plans) {
+      await sendMailResilient({
+        from: MAIL_FROM,
+        to: plan.to,
+        cc: plan.cc.length ? plan.cc : undefined,
+        replyTo: plan.cc[0] || undefined,
+        subject: plan.subject,
+        html: plan.html,
+        text: plan.text,
+        attachments: emailAttachments(),
+      });
+      delivered.push(plan);
+    }
+    // Stamped with the game's own day, which is the key the 10:00 run computes
+    // for it — see runMatchReminders.
+    await markRemindersSent(delivered, () => zonedDateOf(asText(game.match_date)));
+    log.info('reminder.manual', 'reminder sent by hand', {
+      game: asText(game.match_no) || gameId, by: rcAuth?.name || 'admin', recipients: delivered.length,
+    });
+    res.json({ sent: delivered.length, suppressed: false, recipients: delivered.map((p) => p.to) });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
 
 // ── Email templates + reminder admin API ──────────────────────────────
 app.get('/api/admin/email-templates', requireAdminSession, async (_req: Request, res: ExpressResponse) => {

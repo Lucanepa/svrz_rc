@@ -470,6 +470,18 @@ export async function listRefereeCoachPeople(): Promise<RefereeCoachPerson[]> {
   return response.json() as Promise<RefereeCoachPerson[]>;
 }
 
+/** Send the day-before reminder for one game now.
+ *
+ *  The unattended job runs at 10:00 the day before and only when the commission
+ *  has switched it on; this is the coach saying "send it now" for a game they
+ *  hold. Same template and same recipients, and it stamps the job's own dedupe
+ *  key so tomorrow's run does not send it twice. */
+export async function sendGameReminder(gameId: string): Promise<{ sent: number; suppressed: boolean; recipients: string[] }> {
+  const r = await fetch(apiUrl(`/api/games/${gameId}/reminder`), { method: 'POST', credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not send the reminder');
+  return r.json();
+}
+
 export async function assignRcToGame(gameId: string, assignedRc: string): Promise<void> {
   if (isDemoMode()) return demo.assignRcToGame(gameId, assignedRc);
   const response = await fetch(apiUrl(`/api/games/${gameId}/assign-rc`), {

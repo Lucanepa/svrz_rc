@@ -859,6 +859,10 @@ const collectionCandidates = {
   coachees: unique([process.env.PB_COACHEES_COLLECTION || 'coachees', 'coachees', 'svrz_coachees']),
   observations: unique([process.env.PB_OBSERVATIONS_COLLECTION || 'observations', 'observations', 'svrz_observations']),
   refereeCoachPeople: unique([process.env.PB_REFEREE_COACH_PEOPLE_COLLECTION || 'referee_coaches', 'referee_coaches', 'referee_coach_people']),
+  // The licensed-referee roster, keyed by Swiss Volley number. Its own
+  // collection and not a shape of `coachees`: a referee is a person the region
+  // licenses, a coachee is a person a coach is assigned to for one season.
+  referees: unique([process.env.PB_REFEREES_COLLECTION || 'referees', 'referees', 'svrz_referees']),
   refereeCoaches: unique([
     process.env.PB_REFEREE_COACH_FEEDBACK_COLLECTION || process.env.PB_REFEREE_COACHES_COLLECTION || 'referee_coach_feedbacks',
     'referee_coach_feedbacks',
@@ -3971,12 +3975,65 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
   }
 });
 
-// ── The referee directory the manual-game pickers offer ──────────────
-// Every licensed referee VolleyManager knows (137 on 2026-08-27), not only the
-// ~110 who are coachees: a test game may be aimed at anyone, and a name typed
-// by hand is a name nothing matches. Fetching the list costs a VM login and a
+// ── The referee roster ───────────────────────────────────────────────
+// Every licensed referee, keyed by SV-Nr. — the Swiss Volley number, which is
+// the only identifier here that survives a marriage, an accent, or a list filed
+// surname-first. Names are what print; the number is what matches.
+//
+// It comes from the SVRZ "Schiedsrichter verwalten" XLSX (143 referees on
+// 2026-08-24, against ~110 people on the coachee list), imported from the admin
+// console. Until that import has run once, the pickers fall back to the
+// VolleyManager contact list cached below, which knows names and addresses but
+// no numbers.
+// Raised when the deploy is ahead of the database: the collection or the column
+// this write needs was added to setup-schema.mjs but that script has not been
+// re-run. It is the one failure here an admin can actually fix, so it must
+// reach them as a sentence rather than as "Internal server error".
+class SchemaOutOfDateError extends Error {}
+
+type RefereeRow = {
+  sv_number: string; first_name: string; last_name: string; full_name: string;
+  email: string; phone: string; gender: string; level: string; stage: string;
+  lr_level: string; license_association: string;
+  license_active: boolean; retired: boolean; dispensed: boolean; language: string;
+};
+
+const refereeText = (row: AnyRecord, field: string) => asText(row[field]);
+
+function refereeFromRecord(row: AnyRecord) {
+  const full = refereeText(row, 'full_name')
+    || `${refereeText(row, 'first_name')} ${refereeText(row, 'last_name')}`.trim();
+  return {
+    id: refereeText(row, 'sv_number'),
+    name: full,
+    email: refereeText(row, 'email'),
+    phone: refereeText(row, 'phone'),
+    level: refereeText(row, 'level'),
+    stage: refereeText(row, 'stage'),
+    lrLevel: refereeText(row, 'lr_level'),
+    licenseActive: row.license_active !== false,
+    association: refereeText(row, 'license_association'),
+  };
+}
+
+/** The roster, or nothing. A collection that does not exist yet (setup-schema
+ *  not re-run after this deploy) is an empty roster, not a broken console: the
+ *  pickers still have the coachee list and the console still creates games. */
+async function listRefereeRecords(): Promise<AnyRecord[]> {
+  try {
+    return await withCollection(collectionCandidates.referees, (c) =>
+      c.getFullList<AnyRecord>({ sort: 'last_name,first_name' }));
+  } catch (error) {
+    recordLog({ lvl: 'warn', src: 'server', evt: 'referees.unavailable', msg: safeError(error) });
+    return [];
+  }
+}
+
+// ── The VolleyManager contact list, cached ───────────────────────────
+// What the pickers had before the roster existed, and what they fall back to
+// until the XLSX has been imported once. Fetching it costs a VM login and a
 // paged search, so it is kept in app_settings and refreshed by the contact
-// sync — which already holds exactly this answer in its hand.
+// sync, which already holds exactly this answer in its hand.
 const REFEREE_DIRECTORY_KEY = 'vm_referees';
 type StoredReferee = { name: string; email: string; level: string };
 type RefereeDirectory = { at: string; people: StoredReferee[] };
@@ -4013,25 +4070,161 @@ function refreshRefereeDirectory(username: string, password: string): Promise<St
   return refereeDirectoryFetch;
 }
 
+// What the manual-game pickers read. The roster answers when it has been
+// imported; before that, the VolleyManager cache does, and `source` says which
+// so the console can tell an admin the list is the lesser one.
 app.get('/api/admin/referees', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
+    await ensureAdminAuth();
+    const roster = await listRefereeRecords();
+    if (roster.length > 0) {
+      res.json({ source: 'roster', people: roster.map(refereeFromRecord) });
+      return;
+    }
     const cached = await readRefereeDirectory();
-    if (cached.people.length > 0 && asText(req.query.refresh) !== '1') { res.json(cached); return; }
+    if (cached.people.length > 0 && asText(req.query.refresh) !== '1') {
+      res.json({ source: 'volleymanager', at: cached.at, people: cached.people.map((p) => ({ id: '', ...p })) });
+      return;
+    }
     const username = asText(process.env.VM_USERNAME);
     const password = asText(process.env.VM_PASSWORD);
     if (!username || !password) {
-      res.json({ ...cached, error: 'VM_USERNAME / VM_PASSWORD sind nicht gesetzt.' });
+      res.json({ source: 'volleymanager', at: cached.at, people: [], error: 'VM_USERNAME / VM_PASSWORD sind nicht gesetzt.' });
       return;
     }
-    res.json({ at: new Date().toISOString(), people: await refreshRefereeDirectory(username, password) });
+    const people = await refreshRefereeDirectory(username, password);
+    res.json({ source: 'volleymanager', at: new Date().toISOString(), people: people.map((p) => ({ id: '', ...p })) });
   } catch (error) {
-    // A directory that cannot be refreshed is not a broken form: the pickers
-    // still have the coachee list, and the console still creates games. Answer
-    // with whatever is on file and name the step that failed.
+    // A list that cannot be refreshed is not a broken form: the pickers still
+    // have the coachee list, and the console still creates games. Answer with
+    // whatever is on file and name the step that failed.
     const cached = await readRefereeDirectory().catch(() => ({ at: '', people: [] as StoredReferee[] }));
-    res.json({ ...cached, error: upstreamError(error) });
+    res.json({ source: 'volleymanager', at: cached.at, people: cached.people.map((p) => ({ id: '', ...p })), error: upstreamError(error) });
   }
 });
+
+// The XLSX import. Upserts on SV-Nr., never on a name: re-importing next
+// season's export has to update Marie Müller-Meier's row rather than add her a
+// second time under her new surname.
+app.post('/api/admin/referees/import', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const rows = Array.isArray((req.body ?? {}).referees) ? ((req.body as AnyRecord).referees as AnyRecord[]) : [];
+    const existing = await withCollection(collectionCandidates.referees, (c) =>
+      c.getFullList<AnyRecord>({ fields: 'id,sv_number' })).catch((error: unknown) => {
+      // The collection is created by setup-schema.mjs, which has to be re-run
+      // after this deploy. Said here rather than as "Missing collection
+      // context", which reads like a bug in the console.
+      if (isMissingCollectionError(error)) {
+        throw new SchemaOutOfDateError('Die Sammlung „referees" fehlt in PocketBase — bitte setup-schema.mjs neu ausführen.');
+      }
+      throw error;
+    });
+    const byNumber = new Map<string, AnyRecord>();
+    for (const e of existing) byNumber.set(asText(e.sv_number), e);
+
+    const importedAt = new Date().toISOString();
+    let created = 0, updated = 0, skipped = 0;
+    for (const r of rows) {
+      const svNumber = asText(r.sv_number);
+      const first = asText(r.first_name);
+      const last = asText(r.last_name);
+      // No number, no row. A referee list whose key is a name is the problem
+      // this table exists to end, and half a row would reintroduce it.
+      if (!svNumber || (!first && !last)) { skipped++; continue; }
+      const payload: RefereeRow = {
+        sv_number: svNumber,
+        first_name: first,
+        last_name: last,
+        full_name: asText(r.full_name) || `${first} ${last}`.trim(),
+        email: asText(r.email),
+        phone: asText(r.phone),
+        gender: asText(r.gender),
+        level: asText(r.level),
+        stage: asText(r.stage),
+        lr_level: asText(r.lr_level),
+        license_association: asText(r.license_association),
+        license_active: r.license_active !== false,
+        retired: r.retired === true,
+        dispensed: r.dispensed === true,
+        language: asText(r.language),
+      };
+      const found = byNumber.get(svNumber);
+      if (found) { await withCollection(collectionCandidates.referees, (c) => c.update(found.id, { ...payload, imported_at: importedAt })); updated++; }
+      else {
+        const rec = await withCollection(collectionCandidates.referees, (c) => c.create<AnyRecord>({ ...payload, imported_at: importedAt }));
+        // A file listing the same number twice updates its own new row instead
+        // of creating a duplicate the unique key would then have to resolve.
+        byNumber.set(svNumber, rec);
+        created++;
+      }
+    }
+
+    const linked = await linkCoacheesToReferees();
+    res.json({ created, updated, skipped, total: rows.length, ...linked });
+  } catch (error) {
+    if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+/** Writes the SV-Nr. onto every coachee whose name resolves to exactly one
+ *  referee. This is the one place a name is still matched to a number — after
+ *  it, the number is what everything else uses.
+ *
+ *  Ambiguity is reported, never resolved: two referees answering to one name is
+ *  precisely how a coaching report ends up in a stranger's inbox, and the
+ *  contact sync already refuses that same coin flip. */
+async function linkCoacheesToReferees(): Promise<{ linked: number; alreadyLinked: number; unmatched: string[]; ambiguousNames: string[] }> {
+  const referees = await listRefereeRecords();
+  if (referees.length === 0) return { linked: 0, alreadyLinked: 0, unmatched: [], ambiguousNames: [] };
+
+  // Indexed under both name orders, because the exports disagree about which
+  // half of a name comes first — the same reason the contact sync does it.
+  const byName = new Map<string, AnyRecord[]>();
+  const indexUnder = (key: string, row: AnyRecord) => {
+    if (!key) return;
+    const bucket = byName.get(key);
+    if (bucket) { if (!bucket.some((x) => x.id === row.id)) bucket.push(row); } else byName.set(key, [row]);
+  };
+  for (const r of referees) {
+    const first = asText(r.first_name), last = asText(r.last_name);
+    indexUnder(normalizeName(`${first} ${last}`), r);
+    indexUnder(normalizeName(`${last} ${first}`), r);
+    indexUnder(normalizeName(asText(r.full_name)), r);
+  }
+
+  const coachees = await listCoacheesWithFallbackSort();
+  let linked = 0, alreadyLinked = 0;
+  let columnVerified = false;
+  const unmatched: string[] = [];
+  const ambiguousNames: string[] = [];
+  for (const coachee of coachees) {
+    const name = asText(coachee.full_name) || `${asText(coachee.first_name)} ${asText(coachee.last_name)}`.trim();
+    if (!name) continue;
+    if (asText(coachee.referee_id)) { alreadyLinked++; continue; }
+    const hit = byName.get(normalizeName(name))
+      ?? byName.get(normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`));
+    if (!hit || hit.length === 0) { if (unmatched.length < 50) unmatched.push(name); continue; }
+    if (hit.length > 1) { if (ambiguousNames.length < 50) ambiguousNames.push(name); continue; }
+    const svNumber = asText(hit[0].sv_number);
+    await withCollection(collectionCandidates.coachees, (c) => c.update(coachee.id, { referee_id: svNumber }));
+    // PocketBase silently drops a write to a column the collection has not
+    // declared, so "linked" would be a lie if setup-schema.mjs had not run.
+    // Read the first one back; if it did not stick, say so rather than report a
+    // number of links that do not exist.
+    if (!columnVerified) {
+      const check = await withCollection(collectionCandidates.coachees, (c) =>
+        c.getOne<AnyRecord>(coachee.id, { fields: 'id,referee_id' }));
+      if (asText(check.referee_id) !== svNumber) {
+        throw new SchemaOutOfDateError('Die Spalte „referee_id" fehlt auf den Coachees — bitte setup-schema.mjs neu ausführen.');
+      }
+      columnVerified = true;
+    }
+    linked++;
+  }
+  return { linked, alreadyLinked, unmatched, ambiguousNames };
+}
 
 // ── Auth endpoints (team session + console session) ──────────────────
 app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
@@ -4772,15 +4965,34 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
     const matchDate = asText(d.match_date);
     if (!matchDate) { res.status(400).json({ error: 'match_date ist erforderlich.' }); return; }
     if (Number.isNaN(new Date(matchDate).getTime())) { res.status(400).json({ error: 'match_date ist kein gültiges Datum.' }); return; }
-    // The form now picks the coach off the roster, so the game can carry the id
-    // beside the name the way a taken game does — ownership then survives a
-    // rename instead of depending on the spelling. An unknown name still
-    // writes: manual games exist for what the roster does not carry.
+    // The form picks its three people off a list, so the game can carry their
+    // ids beside their names — the same argument as assigned_rc_id: a name
+    // changes and two people can normalise to the same string, at which point
+    // the game is about whoever the sort happened to reach first. An unknown
+    // name still writes, with an empty id: manual games exist for exactly the
+    // fixtures the lists do not carry.
     const rcName = asText(d.assigned_rc);
     const rcId = rcName
       ? (await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]))
         .find((p) => normalizeName(p.fullName) === normalizeName(rcName))?.id || ''
       : '';
+    // The client sends the number it picked; this checks it is a number the
+    // roster actually holds, so a hand-edited request cannot file a game under
+    // a referee who does not exist.
+    const roster = await listRefereeRecords();
+    const refereeId = (claimed: unknown, name: string): string => {
+      const wanted = asText(claimed);
+      if (wanted && roster.some((r) => asText(r.sv_number) === wanted)) return wanted;
+      // No id offered (or one that matches nothing): resolve the name, but only
+      // when it names exactly one referee.
+      const hits = roster.filter((r) => {
+        const first = asText(r.first_name), last = asText(r.last_name);
+        return normalizeName(name) === normalizeName(`${first} ${last}`)
+          || normalizeName(name) === normalizeName(`${last} ${first}`)
+          || normalizeName(name) === normalizeName(asText(r.full_name));
+      });
+      return hits.length === 1 ? asText(hits[0].sv_number) : '';
+    };
     const created = await withCollection(collectionCandidates.games, (c) => c.create<AnyRecord>({
       // A recognisable default so a manual game is obvious in any list.
       match_no: asText(d.match_no) || `TEST-${Date.now().toString().slice(-6)}`,
@@ -4791,6 +5003,8 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
       away_team: asText(d.away_team),
       first_referee: asText(d.first_referee),
       second_referee: asText(d.second_referee),
+      first_referee_id: refereeId(d.first_referee_id, asText(d.first_referee)),
+      second_referee_id: refereeId(d.second_referee_id, asText(d.second_referee)),
       assigned_rc: rcName,
       assigned_rc_id: rcId,
     }));
@@ -6460,7 +6674,11 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     let coacheeResult: { collection: ReturnType<typeof pb.collection>; coachee: AnyRecord };
     try {
       // Season comes from the GAME, not from whatever the console has selected.
-      coacheeResult = await findCoacheeRecord(refereeName, seasonOfDate(asText(game.match_date)));
+      coacheeResult = await findCoacheeRecord(
+        refereeName,
+        seasonOfDate(asText(game.match_date)),
+        asText(game[role === '1. SR' ? 'first_referee_id' : 'second_referee_id']),
+      );
     } catch (lookupError) {
       // The referee simply isn't on the coachee list — someone has to add them.
       // Answered as a 500 this looked like a server fault and the offline
@@ -7016,24 +7234,45 @@ async function coacheeNameFilterAsync(refereeName: string): Promise<string> {
 async function findCoacheeRecord(
   refereeName: string,
   season: number | null,
+  // The SV-Nr. the game carries for this slot, when it carries one. Tried
+  // first: it is the same person tomorrow whatever the sheet calls them, and
+  // resolving it costs the same single query the name does.
+  refereeId = '',
 ): Promise<{ collection: ReturnType<typeof pb.collection>; coachee: AnyRecord }> {
   const nameFilter = await coacheeNameFilterAsync(refereeName);
   return withCollection(collectionCandidates.coachees, async (collection) => {
-    if (season != null && Number.isFinite(season)) {
-      try {
-        return {
-          collection,
-          coachee: await collection.getFirstListItem<AnyRecord>(`(${nameFilter}) && season = ${Math.trunc(season)}`),
-        };
-      } catch (error) {
-        // No row for THIS season: a referee carried over without being
-        // re-imported, or a game outside the season window. Fall through rather
-        // than refuse — a slightly stale row still beats no recipient at all.
-        if (!isRecordNotFound(error)) throw error;
+    const seasonThenNewest = async (filter: string): Promise<AnyRecord | null> => {
+      if (season != null && Number.isFinite(season)) {
+        try {
+          return await collection.getFirstListItem<AnyRecord>(`(${filter}) && season = ${Math.trunc(season)}`);
+        } catch (error) {
+          // No row for THIS season: a referee carried over without being
+          // re-imported, or a game outside the season window. Fall through
+          // rather than refuse — a slightly stale row still beats no recipient
+          // at all.
+          if (!isRecordNotFound(error)) throw error;
+        }
       }
+      try {
+        // Newest season first, so a referee matching several rows resolves to
+        // the most recent one deterministically instead of by rowid.
+        return await collection.getFirstListItem<AnyRecord>(filter, { sort: '-season' });
+      } catch (error) {
+        if (isRecordNotFound(error)) return null;
+        throw error;
+      }
+    };
+
+    if (refereeId) {
+      const byId = await seasonThenNewest(`referee_id = "${escapeFilterValue(refereeId)}"`);
+      // An id that matches nothing is a coachee list that has not been linked
+      // yet, not a wrong game — so fall through to the name rather than refuse.
+      if (byId) return { collection, coachee: byId };
     }
-    // Newest season first, so a name matching several rows resolves to the most
-    // recent one deterministically instead of by rowid.
+    const byName = await seasonThenNewest(nameFilter);
+    if (byName) return { collection, coachee: byName };
+    // Kept as a throw: every caller reads "no such coachee" off this error, and
+    // returning null here would make each of them invent the same check.
     return {
       collection,
       coachee: await collection.getFirstListItem<AnyRecord>(nameFilter, { sort: '-season' }),
@@ -7050,10 +7289,10 @@ async function findCoacheeRecord(
 async function findCoacheeByRefereeName(
   refereeName: string,
   season: number | null,
-  opts: { strictSeason?: boolean } = {},
+  opts: { strictSeason?: boolean; refereeId?: string } = {},
 ): Promise<AnyRecord | null> {
   try {
-    const coachee = (await findCoacheeRecord(refereeName, season)).coachee;
+    const coachee = (await findCoacheeRecord(refereeName, season, opts.refereeId ?? '')).coachee;
     if (opts.strictSeason && season != null && Number.isFinite(season)) {
       const raw = coachee.season;
       const rowSeason = raw == null || raw === '' ? null : Number(raw);
@@ -7105,7 +7344,10 @@ async function buildDueReminders(): Promise<ReminderPlan[]> {
       const refereeName = asText(game[refField]);
       if (!refereeName) continue;
       const gameSeason = seasonOfDate(asText(game.match_date));
-      const coachee = await findCoacheeByRefereeName(refereeName, gameSeason, { strictSeason: true });
+      const coachee = await findCoacheeByRefereeName(refereeName, gameSeason, {
+        strictSeason: true,
+        refereeId: asText(game[`${refField}_id`]),
+      });
       const email = coachee ? singleAddress(coachee.email) : '';
       if (!coachee || !email) {
         // Silence here is how this job hides: it once reported "0 sent, 0

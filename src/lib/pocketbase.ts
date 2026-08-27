@@ -35,6 +35,9 @@ export type Coachee = {
   groups?: string;
   season?: number;
   notes?: string;
+  /** The SV-Nr. of the referee this coachee is, once the register import has
+   *  linked them. Empty for a coachee whose name answered to two referees. */
+  referee_id?: string;
   last_feedback_at?: string;
   feedback_entries?: unknown[];
   observations_count?: number;
@@ -581,21 +584,82 @@ export type NewGame = {
   away_team?: string;
   first_referee?: string;
   second_referee?: string;
+  // The SV-Nr. behind each name, when it was picked off the roster rather than
+  // typed. The server checks it against the roster before storing it.
+  first_referee_id?: string;
+  second_referee_id?: string;
   assigned_rc?: string;
 };
 
-// ── The referee directory ─────────────────────────────────────────────
-// Every licensed referee VolleyManager knows, cached server-side. Coachees are
-// a subset of it: a referee who is not one can be put on a game, but the
-// feedback for them has no recipient, which is why the pickers say so.
-export type RefereeDirectoryEntry = { name: string; email?: string; level?: string };
-export type RefereeDirectory = { at?: string; people: RefereeDirectoryEntry[]; error?: string };
+// ── The referee roster ────────────────────────────────────────────────
+// Every licensed referee, keyed by SV-Nr. — the Swiss Volley number. Coachees
+// are a subset: a referee who is not one can stand on a game, but the feedback
+// for them has no recipient, which is why the pickers say so.
+//
+// `id` is empty for a row that came from the VolleyManager fallback, which the
+// server serves until the XLSX has been imported once — that list knows names
+// and addresses but no numbers.
+export type RosterReferee = {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  level?: string;
+  stage?: string;
+  lrLevel?: string;
+  association?: string;
+  licenseActive?: boolean;
+};
+export type RefereeRoster = {
+  source?: 'roster' | 'volleymanager';
+  at?: string;
+  people: RosterReferee[];
+  error?: string;
+};
 
-export async function listRefereeDirectory(): Promise<RefereeDirectory> {
+export async function listReferees(): Promise<RefereeRoster> {
   const r = await fetch(apiUrl('/api/admin/referees'), { credentials: 'include' });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not load the referee list');
-  const d = (await r.json()) as Partial<RefereeDirectory>;
-  return { at: d.at, error: d.error, people: Array.isArray(d.people) ? d.people : [] };
+  const d = (await r.json()) as Partial<RefereeRoster>;
+  return { source: d.source, at: d.at, error: d.error, people: Array.isArray(d.people) ? d.people : [] };
+}
+
+// The SVRZ "Schiedsrichter verwalten" export, parsed in the browser and sent as
+// rows. Upserted on sv_number, never on a name.
+export type RefereeImportRow = {
+  sv_number: string;
+  first_name: string;
+  last_name: string;
+  full_name?: string;
+  email?: string;
+  phone?: string;
+  gender?: string;
+  level?: string;
+  stage?: string;
+  lr_level?: string;
+  license_association?: string;
+  license_active?: boolean;
+  retired?: boolean;
+  dispensed?: boolean;
+  language?: string;
+};
+export type RefereeImportResult = {
+  created: number; updated: number; skipped: number; total: number;
+  // The second half of the import: coachee rows that now carry their SV-Nr.
+  linked: number; alreadyLinked: number;
+  unmatched: string[];
+  // Coachees whose name answers to more than one referee. Nothing is written
+  // for them — guessing puts one person's report in another's inbox.
+  ambiguousNames: string[];
+};
+
+export async function importReferees(referees: RefereeImportRow[]): Promise<RefereeImportResult> {
+  const r = await fetch(apiUrl('/api/admin/referees/import'), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ referees }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Import failed');
+  return r.json();
 }
 
 export async function createGame(game: NewGame): Promise<{ id: string; match_no?: string }> {

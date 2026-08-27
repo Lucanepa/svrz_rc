@@ -11,7 +11,7 @@ import {
   loadRcOverview, listRefereeCoachPeople, assignRcToGame,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
-  listRefereeDirectory, type RefereeDirectory, type RefereeDirectoryEntry,
+  listReferees, importReferees, type RefereeRoster, type RosterReferee, type RefereeImportRow,
   getSurveyConfig, putSurveyConfig,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
   syncGames, type GamesSyncStatus,
@@ -160,6 +160,15 @@ const STR = {
     syncNotFoundList: 'Nicht in VolleyManager gefunden',
     syncAmbiguous: 'Mehrdeutiger Name — nichts übernommen, bitte von Hand prüfen',
     syncMissingEmail: (n: number, total: number) => `${n} von ${total} Coachees haben keine E-Mail — für diese kann kein Feedback abgeschickt werden.`,
+    rosterTitle: 'Schiedsrichter-Register (SV-Nr.)',
+    rosterHint: 'Die SVRZ-Liste „Schiedsrichter verwalten" als xlsx — alle lizenzierten SR, nicht nur die Coachees. Schlüssel ist die SV-Nr.: Namen ändern sich, Nummern nicht. Der Import verknüpft jeden Coachee einmalig mit seiner Nummer; ab dann zählt die Nummer, nicht die Schreibweise.',
+    rosterImport: 'Register importieren',
+    rosterCount: (n: number) => `${n} Schiedsrichter im Register`,
+    rosterEmpty: 'Register noch leer — die Auswahl im Testspiel-Formular zeigt bis dahin die VolleyManager-Liste (ohne Nummern).',
+    rosterResult: (created: number, updated: number, linked: number) => `${created} neu, ${updated} aktualisiert · ${linked} Coachees mit ihrer SV-Nr. verknüpft.`,
+    rosterAmbiguous: 'Mehrdeutiger Name — keine Nummer gesetzt, bitte von Hand prüfen',
+    rosterUnmatched: 'Coachees ohne Eintrag im Register',
+    rosterFail: (e: string) => `Import fehlgeschlagen: ${e}`,
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
@@ -319,6 +328,15 @@ const STR = {
     syncNotFoundList: 'Not found in VolleyManager',
     syncAmbiguous: 'Ambiguous name — nothing written, please check by hand',
     syncMissingEmail: (n: number, total: number) => `${n} of ${total} coachees have no email — feedback cannot be submitted for them.`,
+    rosterTitle: 'Referee register (SV no.)',
+    rosterHint: 'The SVRZ "Schiedsrichter verwalten" list as xlsx — every licensed referee, not only the coachees. The SV number is the key: names change, numbers do not. The import links each coachee to their number once; after that the number decides, not the spelling.',
+    rosterImport: 'Import register',
+    rosterCount: (n: number) => `${n} referees in the register`,
+    rosterEmpty: 'Register still empty — until it is filled, the test-game pickers show the VolleyManager list (which carries no numbers).',
+    rosterResult: (created: number, updated: number, linked: number) => `${created} new, ${updated} updated · ${linked} coachees linked to their SV number.`,
+    rosterAmbiguous: 'Ambiguous name — no number written, please check by hand',
+    rosterUnmatched: 'Coachees with no entry in the register',
+    rosterFail: (e: string) => `Import failed: ${e}`,
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
@@ -406,29 +424,99 @@ const fieldLabel = 'block text-[11px] font-semibold uppercase tracking-wide text
 const XLSX_MAX_BYTES = 8 * 1024 * 1024;
 const XLSX_MAX_ROWS = 5_000;
 
-async function parseXlsx(file: File): Promise<ImportRow[]> {
+const NAME_COLS = ['nachname', 'name', 'last', 'lastname'];
+
+/** The sheet, its header row, and a way to ask where a column is.
+ *
+ *  The header is not always the first row: VolleyManager's "Schiedsrichter
+ *  verwalten" export spends row 1 on its own title and puts the column names on
+ *  row 3, which reads as a title-only header and imported zero rows. Take the
+ *  first row that actually carries a name column instead. */
+async function readSheet(file: File): Promise<{ rows: unknown[][]; headerRow: number; col: (names: string[]) => number; header: string[] } | null> {
   if (file.size > XLSX_MAX_BYTES) {
     throw new Error(`Die Datei ist zu gross (${Math.round(file.size / 1024 / 1024)} MB, max. 8 MB).`);
   }
   const XLSX = await import('xlsx');
   const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
   const sheet = wb.Sheets[wb.SheetNames[0]];
-  const allRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
-  if (allRows.length > XLSX_MAX_ROWS) {
-    throw new Error(`Die Datei hat ${allRows.length} Zeilen (max. ${XLSX_MAX_ROWS}).`);
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
+  if (rows.length > XLSX_MAX_ROWS) {
+    throw new Error(`Die Datei hat ${rows.length} Zeilen (max. ${XLSX_MAX_ROWS}).`);
   }
-  const rows = allRows;
-  if (!rows.length) return [];
-  const NAME_COLS = ['nachname', 'name', 'last', 'lastname'];
+  if (!rows.length) return null;
   const cells = (row: unknown) => (row as unknown[]).map((h) => String(h).trim().toLowerCase());
-  // The header is not always the first row: VolleyManager's "Schiedsrichter
-  // verwalten" export spends row 1 on its own title and puts the column names on
-  // row 2, which read as a title-only header and imported zero rows. Take the
-  // first row that actually carries a name column instead.
   const headerRow = rows.slice(0, 10).findIndex((row) => cells(row).some((h) => NAME_COLS.includes(h)));
-  if (headerRow < 0) return [];
+  if (headerRow < 0) return null;
   const header = cells(rows[headerRow]);
   const col = (names: string[]) => { for (const n of names) { const i = header.indexOf(n); if (i >= 0) return i; } return -1; };
+  return { rows, headerRow, col, header };
+}
+
+const cellText = (row: unknown[], i: number) => (i < 0 ? '' : String(row[i] ?? '').trim());
+// "Ja"/"Nein" is how the export writes a boolean.
+const cellYes = (row: unknown[], i: number) => /^(ja|yes|true|1)$/i.test(cellText(row, i));
+
+/** The SVRZ "Schiedsrichter verwalten" export, read for the roster: the SV-Nr.
+ *  first of all, since a list of referees keyed by name is the problem the
+ *  roster exists to end. Birthdate, address and Pensum are in the file and are
+ *  deliberately not read — the app has no use for them. */
+async function parseRefereeXlsx(file: File): Promise<RefereeImportRow[]> {
+  const sheet = await readSheet(file);
+  if (!sheet) return [];
+  const { rows, headerRow, col } = sheet;
+  const ci = {
+    sv: col(['sv-nr.', 'sv-nr', 'sv nr.', 'sv nr', 'svnr', 'sv-nummer', 'lizenznummer', 'lizenz-nr.']),
+    last: col(NAME_COLS),
+    first: col(['vorname', 'first', 'firstname']),
+    email: col(['e-mail-adresse', 'email', 'e-mail', 'mail', 'emailadresse', 'e mail']),
+    phone: col(['telefon-nr.', 'telefon-nr', 'telefon', 'telefonnummer', 'phone', 'mobile', 'natel', 'handy', 'tel', 'tel.']),
+    gender: col(['geschlecht', 'gender']),
+    level: col(['niveau', 'level']),
+    stage: col(['niveaustufe', 'stufe', 'stage']),
+    lr: col(['lr-niveau', 'lr niveau', 'linienrichter-niveau']),
+    association: col(['lizenzverband', 'verband']),
+    active: col(['aktive lizenz', 'lizenz aktiv', 'aktiv']),
+    retired: col(['zurückgetreten', 'zurueckgetreten', 'retired']),
+    dispensed: col(['dispensiert', 'dispensed']),
+    language: col(['korrespondenz-sprache', 'korrespondenzsprache', 'sprache', 'language']),
+  };
+  // Without the number this file is just another name list, and importing it
+  // would fill the roster with rows nothing can key on.
+  if (ci.sv < 0) throw new Error('Der Datei fehlt die Spalte „SV-Nr." — das ist der Schlüssel des Registers.');
+  const out: RefereeImportRow[] = [];
+  for (const raw of rows.slice(headerRow + 1)) {
+    const r = raw as unknown[];
+    const sv = cellText(r, ci.sv).replace(/\.0$/, '');
+    const first = cellText(r, ci.first);
+    const last = cellText(r, ci.last);
+    if (!sv || (!first && !last)) continue;
+    out.push({
+      sv_number: sv,
+      first_name: first,
+      last_name: last,
+      full_name: `${first} ${last}`.trim(),
+      email: cellText(r, ci.email),
+      phone: cellText(r, ci.phone),
+      gender: cellText(r, ci.gender),
+      level: cellText(r, ci.level),
+      stage: cellText(r, ci.stage).replace(/\.0$/, ''),
+      lr_level: cellText(r, ci.lr),
+      license_association: cellText(r, ci.association),
+      // A missing column must not read as "licence withdrawn", so an absent
+      // column is an active licence and only an explicit "Nein" is not.
+      license_active: ci.active < 0 ? true : cellYes(r, ci.active),
+      retired: cellYes(r, ci.retired),
+      dispensed: cellYes(r, ci.dispensed),
+      language: cellText(r, ci.language),
+    });
+  }
+  return out;
+}
+
+async function parseXlsx(file: File): Promise<ImportRow[]> {
+  const sheet = await readSheet(file);
+  if (!sheet) return [];
+  const { rows, headerRow, col, header } = sheet;
   const ci = { last: col(NAME_COLS), first: col(['vorname', 'first', 'firstname']), email: col(['email', 'e-mail', 'mail', 'e-mail-adresse', 'emailadresse', 'e mail']), phone: col(['telefon', 'telefon-nr.', 'telefon-nr', 'telefonnummer', 'phone', 'mobile', 'natel', 'handy', 'tel', 'tel.']), level: col(['niveau', 'level']), stage: col(['niveaustufe', 'stufe', 'stage']), group: col(['gruppe', 'group', 'groups']), notes: col(['bemerkung', 'bemerkungen', 'notizen', 'notes', 'note', 'kommentar']) };
   // Notes often live in an unnamed column right after Gruppe.
   if (ci.notes < 0 && ci.group >= 0 && !header[ci.group + 1]) ci.notes = ci.group + 1;
@@ -1081,6 +1169,77 @@ function sameCell(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => b[i] === v);
 }
 
+/** The referee register: import the SVRZ XLSX, see what it holds, and see which
+ *  coachees it could not put a number on.
+ *
+ *  The number is the point. Every other list in this app is keyed by a name —
+ *  and a name is spelled two ways in two exports, changes on marriage, and is
+ *  shared by two people often enough that the contact sync has to refuse those
+ *  cases outright. */
+function RefereeRosterAdmin({ t, onLinked }: { t: T; onLinked: () => void }) {
+  const [roster, setRoster] = useState<RefereeRoster | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const [err, setErr] = useState('');
+  const [ambiguous, setAmbiguous] = useState<string[]>([]);
+  const [unmatched, setUnmatched] = useState<string[]>([]);
+
+  const reload = useCallback(async () => {
+    try { setRoster(await listReferees()); } catch { setRoster({ people: [] }); }
+  }, []);
+  useEffect(() => { void reload(); }, [reload]);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setBusy(true); setNote(''); setErr(''); setAmbiguous([]); setUnmatched([]);
+    try {
+      const rows = await parseRefereeXlsx(file);
+      if (!rows.length) { setErr(t.noRows); return; }
+      const res = await importReferees(rows);
+      setNote(t.rosterResult(res.created, res.updated, res.linked));
+      setAmbiguous(res.ambiguousNames ?? []);
+      setUnmatched(res.unmatched ?? []);
+      await reload();
+      // The import wrote referee_id onto coachee rows; the list above is now
+      // one version behind what it is showing.
+      onLinked();
+    } catch (e) { setErr(t.rosterFail(e instanceof Error ? e.message : String(e))); }
+    finally { setBusy(false); }
+  };
+
+  const count = roster?.people.length ?? 0;
+  const hasRegister = roster?.source === 'roster' && count > 0;
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-2 mb-1">
+        <h2 className="text-sm font-semibold text-stone-700">{t.rosterTitle}</h2>
+        <label className={cn(btnPrimary, 'ml-auto cursor-pointer', busy && 'opacity-60 pointer-events-none')}>
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+          <span>{t.rosterImport}</span>
+          <input type="file" accept=".xlsx" className="hidden" onChange={(e) => void onFile(e)} />
+        </label>
+      </div>
+      <p className="text-xs text-stone-400">{t.rosterHint}</p>
+      <p className="mt-2 text-xs text-stone-500">{hasRegister ? t.rosterCount(count) : t.rosterEmpty}</p>
+      {note && <p className="mt-2 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{note}</p>}
+      {err && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{err}</p>}
+      {/* Ambiguous first, and in amber: it is the one outcome that needs a
+          person to decide, where "not in the register" is merely a gap. */}
+      {ambiguous.length > 0 && (
+        <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+          {t.rosterAmbiguous}: {ambiguous.join(', ')}
+        </p>
+      )}
+      {unmatched.length > 0 && (
+        <p className="mt-2 text-xs text-stone-500">{t.rosterUnmatched}: {unmatched.join(', ')}</p>
+      )}
+    </Card>
+  );
+}
+
 function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, leagueOptions, niveauTable }: { t: T; lang: Lang; groups: string[]; defaultSeason: number; targets: CoacheeTargetMap; onTargets: (next: CoacheeTargetMap) => void; leagueOptions: string[]; niveauTable: NiveauMatrix }) {
   const [targetEditId, setTargetEditId] = useState<string | null>(null);
   const [season, setSeason] = useState(defaultSeason);
@@ -1185,6 +1344,11 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
           )}
         </div>
       </Card>
+      {/* The roster the coachee list is a subset of. It sits under the coachee
+          import because that is the order the work happens in — register first,
+          then who is being coached this season out of it — and because the
+          import's second half writes into the coachees above. */}
+      <RefereeRosterAdmin t={t} onLinked={() => void reload()} />
       <Card>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
           <input className={cn(input, 'sm:col-span-3')} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
@@ -2197,7 +2361,7 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
 // `warn` is why picking this person will not produce a mail — everything the
 // form can know before the send is attempted, said before the pick rather than
 // as a 422 at the end of a filled-in feedback form.
-type PickPerson = { id: string; name: string; email?: string; warn?: string };
+type PickPerson = { id: string; name: string; email?: string; warn?: string; svNumber?: string };
 
 const foldName = (v: string) =>
   v.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, ' ');
@@ -2320,20 +2484,19 @@ function PersonPicker({ id, value, onChange, people, t }: {
   );
 }
 
-/** The list the referee pickers offer: every licensed referee VolleyManager
- *  knows, with the coachees among them carrying the address the feedback would
- *  actually use.
+/** The list the referee pickers offer: every referee in the register, with the
+ *  coachees among them carrying the address the feedback would actually use.
  *
- *  Coachees come first because they are the answer to the question the form is
- *  really asking — a referee who is not one can be put on a game, but the
- *  feedback submit refuses them ("nicht als Coachee erfasst"), so those rows
- *  are marked rather than left to look ready.
+ *  Coachees are matched to the register by SV-Nr. where the import could link
+ *  them, and by name where it could not — a coachee whose name answered to two
+ *  referees is deliberately left unlinked, and a name is all that is left for
+ *  those. Everyone else is offered too, marked: a referee who is no coachee can
+ *  stand on a game, but the feedback submit refuses them, and that is worth
+ *  saying before the form is filled in rather than after.
  *
- *  One row per person, not one per season: the same referee has a coachee row
- *  for every season they were coached in, and three identical names with three
- *  addresses is not a list anyone can choose from. The newest row wins, which
- *  is the row the server's own name lookup resolves to. */
-function refereeOptions(coachees: Coachee[], directory: RefereeDirectoryEntry[], notACoachee: string): PickPerson[] {
+ *  Coachee rows the register does not carry are appended rather than dropped —
+ *  a register imported months ago is not a reason to make somebody unpickable. */
+function refereeOptions(coachees: Coachee[], roster: RosterReferee[], notACoachee: string): PickPerson[] {
   const nameOf = (c: Coachee) => (c.full_name || `${c.first_name || ''} ${c.last_name || ''}`).trim();
   const best = new Map<string, Coachee>();
   for (const c of coachees) {
@@ -2343,31 +2506,54 @@ function refereeOptions(coachees: Coachee[], directory: RefereeDirectoryEntry[],
     const prev = best.get(key);
     // The later season wins; at equal seasons the row that carries an address
     // does, because one without an address cannot receive the test mail at all.
+    // This is the row the server's own lookup resolves a name to, so it is the
+    // row whose address the picker must show.
     if (!prev
       || (c.season || 0) > (prev.season || 0)
       || ((c.season || 0) === (prev.season || 0) && !prev.email && !!c.email)) best.set(key, c);
   }
 
-  // Both name orders count as "already a coachee". VolleyManager and the XLSX
-  // disagree on which of the two comes first — the contact sync indexes both
-  // for the same reason — and matching only one order would list half the
-  // coachees a second time, marked as strangers.
-  const known = new Set<string>();
+  // Two ways in, because the link is not always there: by number when the
+  // import could set one, by either name order when it could not. The exports
+  // disagree about which half of a name comes first — the same reason the
+  // contact sync indexes both.
+  const byNumber = new Map<string, Coachee>();
+  const byName = new Map<string, Coachee>();
+  const claimed = new Set<string>();
   for (const c of best.values()) {
-    known.add(foldName(nameOf(c)));
-    if (c.first_name && c.last_name) known.add(foldName(`${c.last_name} ${c.first_name}`));
+    const id = c.referee_id;
+    if (id) byNumber.set(String(id), c);
+    const name = nameOf(c);
+    byName.set(foldName(name), c);
+    if (c.first_name && c.last_name) byName.set(foldName(`${c.last_name} ${c.first_name}`), c);
     else {
-      const parts = foldName(nameOf(c)).split(' ');
-      if (parts.length === 2) known.add(`${parts[1]} ${parts[0]}`);
+      const parts = foldName(name).split(' ');
+      if (parts.length === 2) byName.set(`${parts[1]} ${parts[0]}`, c);
     }
   }
-  const reversed = (n: string) => { const p = foldName(n).split(' '); return p.length === 2 ? `${p[1]} ${p[0]}` : ''; };
 
-  const options: PickPerson[] = [...best.values()].map((c) => ({ id: c.id, name: nameOf(c), email: c.email }));
-  for (const p of directory) {
-    const name = (p.name || '').trim();
-    if (!name || known.has(foldName(name)) || known.has(reversed(name))) continue;
-    options.push({ id: `vm:${foldName(name)}`, name, email: p.email, warn: notACoachee });
+  const options: PickPerson[] = [];
+  for (const r of roster) {
+    const name = (r.name || '').trim();
+    if (!name) continue;
+    const parts = foldName(name).split(' ');
+    const coachee = (r.id ? byNumber.get(r.id) : undefined)
+      ?? byName.get(foldName(name))
+      ?? (parts.length === 2 ? byName.get(`${parts[1]} ${parts[0]}`) : undefined);
+    if (coachee) claimed.add(coachee.id);
+    options.push({
+      id: r.id ? `sv:${r.id}` : `vm:${foldName(name)}`,
+      svNumber: r.id,
+      name,
+      // A coachee's address is the one the mail uses; the register's copy is
+      // only what VolleyManager has on file for a referee nobody coaches.
+      email: coachee ? coachee.email : r.email,
+      warn: coachee ? undefined : notACoachee,
+    });
+  }
+  for (const c of best.values()) {
+    if (claimed.has(c.id)) continue;
+    options.push({ id: c.id, svNumber: c.referee_id, name: nameOf(c), email: c.email });
   }
   return options.sort((a, b) => bySurname({ full_name: a.name }, { full_name: b.name }));
 }
@@ -2410,22 +2596,33 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
     if (!active || listsAsked) return;
     setListsAsked(true);
     void (async () => {
-      const [cs, ps, dir] = await Promise.all([
+      const [cs, ps, roster] = await Promise.all([
         listCoachees().catch(() => [] as Coachee[]),
         listRefereeCoachPeople().catch(() => [] as RefereeCoachPerson[]),
-        listRefereeDirectory().catch((e: unknown) => ({ people: [], error: e instanceof Error ? e.message : String(e) }) as RefereeDirectory),
+        listReferees().catch((e: unknown) => ({ people: [], error: e instanceof Error ? e.message : String(e) }) as RefereeRoster),
       ]);
-      setRefs(refereeOptions(cs, dir.people, t.mgPickNoCoachee));
+      setRefs(refereeOptions(cs, roster.people, t.mgPickNoCoachee));
       setRcs(ps.map((rc) => ({ id: rc.id, name: rc.fullName, email: rc.email })));
-      setDirErr(dir.error || '');
+      setDirErr(roster.error || '');
     })();
   }, [active, listsAsked, t]);
+
+  // Which SV-Nr. stands behind the name in a field, if the name came off the
+  // register. Read back from the option list rather than tracked in state: the
+  // field is still free text, and a name edited after being picked must not
+  // keep the number of whoever was picked before it.
+  const svNumberFor = (name: string) => refs.find((p) => foldName(p.name) === foldName(name))?.svNumber || '';
 
   const create = async () => {
     setBusy(true); setErr('');
     try {
       // The games collection stores a datetime — pin a plausible kick-off.
-      const created = await createGame({ ...f, match_date: `${f.match_date} 20:00:00.000Z` });
+      const created = await createGame({
+        ...f,
+        match_date: `${f.match_date} 20:00:00.000Z`,
+        first_referee_id: svNumberFor(f.first_referee),
+        second_referee_id: svNumberFor(f.second_referee),
+      });
       setMade({ id: created.id, match_no: created.match_no });
       setF(empty);
       await reload(q);

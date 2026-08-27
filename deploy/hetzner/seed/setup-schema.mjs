@@ -54,7 +54,28 @@ const games = await ensure('games', [
   // point either could give away the other's game. Written together; readers
   // prefer the id and fall back to the name for rows not yet backfilled
   // (POST /api/admin/migrate-rc-ids).
-  T('assigned_rc'),T('assigned_rc_id'),J('feedback_closed_roles'),J('source_payload')
+  T('assigned_rc'),T('assigned_rc_id'),J('feedback_closed_roles'),J('source_payload'),
+  // The same argument as assigned_rc_id, one row down: who the referees are,
+  // not how VolleyManager spelled them that day. Written by the manual-game
+  // form, which picks them off the roster; games imported from VolleyManager
+  // carry names only, and are still resolved by name.
+  T('first_referee_id'),T('second_referee_id')
+]);
+// The referee roster, keyed by the Swiss Volley number — the only identifier in
+// this system that does not change when somebody marries, adds an accent or is
+// filed surname-first. Imported from the SVRZ "Schiedsrichter verwalten" XLSX,
+// which carries 143 referees where the coachee list carries ~110: not every
+// referee is coached, but any of them can stand on a game.
+//
+// Deliberately NOT a copy of the whole export. Birthdate, street address and
+// Pensum are in the file and are none of this app's business; what is kept is
+// identity (number + name), the two ways to reach someone, and the level —
+// including the Niveaustufe, which VolleyManager's API refuses to expose and
+// which therefore has no other source.
+await ensure('referees', [
+  T('sv_number'),T('first_name'),T('last_name'),T('full_name'),T('email'),T('phone'),
+  T('gender'),T('level'),T('stage'),T('lr_level'),T('license_association'),
+  B('license_active'),B('retired'),B('dispensed'),T('language'),T('imported_at')
 ]);
 const coachees = await ensure('coachees', [
   T('full_name'),T('first_name'),T('last_name'),T('email'),T('phone'),
@@ -63,7 +84,12 @@ const coachees = await ensure('coachees', [
   // PocketBase drops keys a collection doesn't declare, so without these the
   // notes editor saved into the void and the xlsx import — which projects
   // `id,full_name,season` — answered 400.
-  T('notes'),NUM('season')
+  T('notes'),NUM('season'),
+  // Which referee this row is, by Swiss Volley number. The name stays the thing
+  // that prints; this is the thing that matches. Filled by the referee import
+  // where the name resolves to exactly one referee, and by nothing else — a
+  // coachee whose name is ambiguous keeps an empty id rather than a guessed one.
+  T('referee_id')
 ]);
 const rcs = await ensure('referee_coaches', [
   T('first_name'),T('last_name'),T('email'),T('phone'),B('active'),

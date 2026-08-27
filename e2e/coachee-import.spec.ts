@@ -20,7 +20,9 @@ async function importFile(page: import('@playwright/test').Page, buf: Buffer) {
     await r.fulfill({ json: { created: 1, updated: 0, total: 1 } });
   });
   await page.goto('/#/admin');
-  await page.locator('input[type="file"][accept=".xlsx"]').setInputFiles({
+  // By its label, not by "the xlsx input": the console has two of those now —
+  // this one and the referee register's.
+  await page.getByLabel(/xlsx importieren|Import xlsx/).setInputFiles({
     name: 'coachees.xlsx',
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     buffer: buf,

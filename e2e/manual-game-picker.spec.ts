@@ -16,19 +16,22 @@ const COACHEES = [
   { id: 'c2', full_name: 'Jürg Müller', email: 'juerg@example.ch', season: 2026 },
   { id: 'c3', full_name: 'Nina Ohnemail', email: '', season: 2026 },
   // Filed surname-first, the way half the XLSX is.
-  { id: 'c4', full_name: 'Zwahlen Rita', first_name: 'Rita', last_name: 'Zwahlen', email: 'rita@example.ch', season: 2026 },
+  { id: 'c4', full_name: 'Zwahlen Rita', first_name: 'Rita', last_name: 'Zwahlen', email: 'rita@example.ch', season: 2026, referee_id: '90003' },
 ];
 
-// What VolleyManager holds: every licensed referee, coachee or not.
+// The register: every licensed referee, coachee or not, keyed by SV-Nr.
 const DIRECTORY = {
-  at: '2026-08-27T09:00:00Z',
+  source: 'roster',
   people: [
-    { name: 'Peter Pfeifer', email: 'peter.pfeifer@example.ch', level: 'N2' },
+    { id: '90001', name: 'Peter Pfeifer', email: 'peter.pfeifer@example.ch', level: 'N2' },
     // Already a coachee — the coachee row is the one that decides where the
     // feedback goes, so this address must not be the one on offer.
-    { name: 'Luca Canepa', email: 'vm.luca@example.ch', level: 'N3' },
-    // The same person as the surname-first coachee above.
-    { name: 'Rita Zwahlen', email: 'vm.rita@example.ch', level: 'N4' },
+    { id: '90002', name: 'Luca Canepa', email: 'vm.luca@example.ch', level: 'N3' },
+    // The same person as the surname-first coachee above, and linked by number
+    // rather than by the spelling the two lists disagree on.
+    { id: '90003', name: 'Rita Zwahlen', email: 'vm.rita@example.ch', level: 'N4' },
+    { id: '90004', name: 'Jürg Müller', email: 'vm.juerg@example.ch', level: 'N2' },
+    { id: '90005', name: 'Nina Ohnemail', email: 'vm.nina@example.ch', level: 'N4' },
   ],
 };
 
@@ -140,6 +143,31 @@ test.describe('Manual game name pickers', () => {
     await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
     await expect(page.getByText(/(Angelegt|Created): TEST-1/)).toBeVisible();
     expect(posted).not.toBeNull();
-    expect((posted as unknown as { first_referee: string }).first_referee).toBe('Gastspieler Ohne Akte');
+    const sent = posted as unknown as { first_referee: string; first_referee_id: string };
+    expect(sent.first_referee).toBe('Gastspieler Ohne Akte');
+    // Nobody in the register, so no number to send — and none invented.
+    expect(sent.first_referee_id).toBe('');
+  });
+
+  test('a referee picked off the register puts their SV number on the game', async ({ page }) => {
+    await openManualGameForm(page);
+
+    let posted: Record<string, unknown> | null = null;
+    await page.route('**/api/admin/games', (r) => {
+      posted = r.request().postDataJSON();
+      return r.fulfill({ status: 201, json: { id: 'g-new', match_no: 'TEST-2' } });
+    });
+
+    await page.locator('#mg-ref1').fill('canepa');
+    await page.getByRole('button', { name: /Luca Canepa/ }).click();
+    await page.locator('#mg-ref2').fill('pfeifer');
+    await page.getByRole('button', { name: /Peter Pfeifer/ }).click();
+
+    await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
+    await expect(page.getByText(/(Angelegt|Created): TEST-2/)).toBeVisible();
+    const sent = posted as unknown as { first_referee_id: string; second_referee_id: string };
+    // The name is what prints; this is what the feedback will match on.
+    expect(sent.first_referee_id).toBe('90002');
+    expect(sent.second_referee_id).toBe('90001');
   });
 });

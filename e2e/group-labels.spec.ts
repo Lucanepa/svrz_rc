@@ -17,6 +17,10 @@ const COACHEES = [
   coachee('d', 'Ddd Four', 'Beförderung?/Varia'),
   // Not a group anyone maintains — whatever was typed shows as typed.
   coachee('e', 'Eee Five', 'Referee Coaching'),
+  // The legacy participle, which a few old rows still carry and which really
+  // does mean it happened.
+  coachee('f', 'Fff Six', 'Befördert'),
+  coachee('g', 'Ggg Seven', 'Rückstufung'),
 ];
 
 test('the groups actually stored are shown in English, not left in German', async ({ page }) => {
@@ -26,10 +30,14 @@ test('the groups actually stored are shown in English, not left in German', asyn
   await page.getByRole('button', { name: /^Coachees$/ }).click();
   await expect(page.getByText('Aaa One')).toBeVisible();
 
-  await expect(page.getByText('Promoted', { exact: true })).toBeVisible();
+  // The noun, not the participle: "Beförderung" is the cohort up for promotion,
+  // not people it has already happened to.
+  await expect(page.getByText('Promotion', { exact: true })).toBeVisible();
   await expect(page.getByText('New SR 26/27', { exact: true })).toBeVisible();
   await expect(page.getByText('2nd referee', { exact: true })).toBeVisible();
   await expect(page.getByText('Promotion? / Misc', { exact: true })).toBeVisible();
+  await expect(page.getByText('Promoted', { exact: true })).toBeVisible();
+  await expect(page.getByText('Demotion', { exact: true })).toBeVisible();
   // Unknown groups still pass through untouched rather than being dropped.
   await expect(page.getByText('Referee Coaching', { exact: true })).toBeVisible();
 

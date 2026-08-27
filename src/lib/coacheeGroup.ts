@@ -35,11 +35,16 @@ export function normalizeCoacheeGroup(value?: string): string {
 // existed, so half of an English reader's badges were in German. The older
 // spellings stay listed: legacy rows still carry them and must not regress.
 const GROUP_EN = new Map<string, string>([
+  // "Beförderung" and "Rückstufung" are nouns — the cohort being watched with a
+  // view to moving them, not people it has already happened to. Reading them as
+  // participles said the opposite: a coachee up for promotion was labelled
+  // "Promoted" beside their unchanged Niveau. "Befördert" IS the participle, and
+  // legacy rows still carry it.
   ['beförderung?', 'Promotion?'],
-  ['beförderung', 'Promoted'],
+  ['beförderung', 'Promotion'],
   ['befördert', 'Promoted'],
   ['rückstufung?', 'Demotion?'],
-  ['rückstufung', 'Demoted'],
+  ['rückstufung', 'Demotion'],
   ['rc gewünscht', 'RC requested'],
   ['1. schiedsrichter', '1st referee'],
   ['2. schiedsrichter', '2nd referee'],

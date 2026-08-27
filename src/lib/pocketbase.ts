@@ -452,6 +452,10 @@ export async function getIcalSubscription(lang: 'DE' | 'EN', rotate = false): Pr
 export type RefereeCoachPerson = {
   id: string;
   fullName: string;
+  // The endpoint has always sent it; the picker in the manual-game form is the
+  // first caller that shows it, so a test game can be aimed at an address
+  // whose inbox you can actually open.
+  email?: string;
 };
 
 export async function listRefereeCoachPeople(): Promise<RefereeCoachPerson[]> {

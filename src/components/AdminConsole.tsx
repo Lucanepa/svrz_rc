@@ -15,7 +15,7 @@ import {
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
   syncGames, type GamesSyncStatus,
   type PresidentNote,
-  type Coachee, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplateKind, type EmailTemplates, type ReminderPreview, type ManualGame,
+  type Coachee, type RefereeCoachPerson, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplateKind, type EmailTemplates, type ReminderPreview, type ManualGame,
   type LogEntry, type LogSession, type SurveyResponse,
 } from '../lib/pocketbase';
 import {
@@ -119,7 +119,7 @@ const STR = {
     formResetOk: 'Standard-Fragebogen wiederhergestellt — noch nicht gespeichert.',
     formNeedsText: 'Jede Frage braucht einen deutschen Text.',
     formSaved: 'Gespeichert ✓',
-    formLangNote: 'Der Fragebogen ist zweisprachig — Schiedsrichter:innen wählen DE oder EN. Bleibt ein Feld leer, wird die andere Sprache angezeigt.',
+    formLangNote: 'Der Fragebogen zeigt beide Sprachen — zuerst Deutsch, darunter Englisch. Bleibt eine Seite leer, steht nur die andere da.',
     reminderEnabled: 'Erinnerungen aktiv', reminderEnabledHint: 'Wenn aus, wird am Vortag nichts versendet. Der Testmodus unterdrückt den Versand zusätzlich.',
     reminderPreview: 'Vorschau: morgen', reminderPreviewHint: 'Zeigt exakt, was morgen versendet würde — es wird nichts gesendet.',
     reminderNone: 'Für morgen stehen keine Erinnerungen an.',
@@ -143,6 +143,10 @@ const STR = {
     mgHome: 'Heim', mgAway: 'Gast', mgRef1: '1. SR (= Coachee)', mgRef2: '2. SR', mgRc: 'Referee Coach',
     mgCreate: 'Spiel anlegen', mgDelete: 'Löschen',
     mgCreated: (n: string) => `Angelegt: ${n}`,
+    mgPickSearch: 'Name suchen …',
+    mgPickNone: 'Kein Treffer.',
+    mgPickMore: (n: number) => `… ${n} weitere — Suche eingrenzen.`,
+    mgPickUnknown: 'Nicht in der Liste — wird als freier Text übernommen.',
     noEmail: 'keine E-Mail',
     syncTitle: 'Kontaktdaten aus VolleyManager',
     syncHint: 'Holt E-Mail und Telefon aus der VolleyManager-Schiedsrichterliste. Wer dort fehlt, wird auf den Spielen des Saison gesucht (sobald diese aufgeschaltet sind). Ohne E-Mail lässt sich kein Feedback abschicken.',
@@ -272,7 +276,7 @@ const STR = {
     formResetOk: 'Default questionnaire restored — not saved yet.',
     formNeedsText: 'Every question needs German text.',
     formSaved: 'Saved ✓',
-    formLangNote: 'The form is bilingual — referees pick DE or EN. A field left empty falls back to the other language.',
+    formLangNote: 'The form shows both languages, German first and English underneath. Leave one side empty and only the other is printed.',
     reminderEnabled: 'Reminders active', reminderEnabledHint: 'When off, nothing is sent the day before. Test mode suppresses sending as well.',
     reminderPreview: 'Preview: tomorrow', reminderPreviewHint: 'Shows exactly what would be sent tomorrow — nothing is sent.',
     reminderNone: 'No reminders due for tomorrow.',
@@ -296,6 +300,10 @@ const STR = {
     mgHome: 'Home', mgAway: 'Away', mgRef1: '1st referee (= coachee)', mgRef2: '2nd referee', mgRc: 'Referee coach',
     mgCreate: 'Create game', mgDelete: 'Delete',
     mgCreated: (n: string) => `Created: ${n}`,
+    mgPickSearch: 'Search name …',
+    mgPickNone: 'No match.',
+    mgPickMore: (n: number) => `… ${n} more — narrow the search.`,
+    mgPickUnknown: 'Not in the list — kept as free text.',
     noEmail: 'no email',
     syncTitle: 'Contact details from VolleyManager',
     syncHint: 'Pulls email and phone from the VolleyManager referee list. Anyone missing there is looked up on the season\'s games (once those are published). Feedback cannot be submitted without an email.',
@@ -743,7 +751,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}>
           <SettingsAdmin t={t} lang={lang} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} />
-          <ManualGameAdmin t={t} lang={lang} />
+          <ManualGameAdmin t={t} lang={lang} active={tab === 'settings'} />
           <CredentialsAdmin t={t} />
         </div>
         </>}
@@ -2179,12 +2187,136 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
   );
 }
 
+// One entry in a name picker: the name that gets written onto the game, and the
+// address the feedback would actually reach.
+type PickPerson = { id: string; name: string; email?: string };
+
+const foldName = (v: string) =>
+  v.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, ' ');
+
+/** A name field backed by the list of people the app knows. Typing filters it
+ *  accent-blind ("Muller" finds "Müller") and every row carries the e-mail
+ *  beside the name — aiming a test game at an inbox you can open is the whole
+ *  reason to pick from a list instead of typing. Free text still goes through:
+ *  a game may carry a referee who is nobody's coachee, and the old form could
+ *  write one. */
+function PersonPicker({ id, value, onChange, people, t }: {
+  id: string;
+  value: string;
+  onChange: (name: string) => void;
+  people: PickPerson[];
+  t: T;
+}) {
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(0);
+  const box = useRef<HTMLDivElement>(null);
+
+  // A click anywhere else closes the list. Without this it stays open on top of
+  // the fields below and hides them.
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => { if (box.current && !box.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', away);
+    return () => document.removeEventListener('pointerdown', away);
+  }, [open]);
+
+  const terms = foldName(value).split(' ').filter(Boolean);
+  const matches = people.filter((p) => {
+    const hay = `${foldName(p.name)} ${foldName(p.email || '')}`;
+    return terms.every((term) => hay.includes(term));
+  });
+  const shown = matches.slice(0, 50);
+  const exact = people.find((p) => foldName(p.name) === foldName(value));
+
+  const pick = (p: PickPerson) => { onChange(p.name); setOpen(false); };
+  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') { setOpen(false); return; }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!open) { setOpen(true); setHi(0); return; }
+      setHi((i) => Math.min(shown.length - 1, Math.max(0, i + (e.key === 'ArrowDown' ? 1 : -1))));
+      return;
+    }
+    if (e.key === 'Enter' && open && shown[hi]) { e.preventDefault(); pick(shown[hi]); }
+  };
+
+  return (
+    <div ref={box} className="relative">
+      <input
+        id={id}
+        className={input}
+        value={value}
+        placeholder={t.mgPickSearch}
+        autoComplete="off"
+        onChange={(e) => { onChange(e.target.value); setOpen(true); setHi(0); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKey}
+      />
+      {open && (
+        <div className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-stone-200 bg-white shadow-lg">
+          {shown.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-stone-400">{t.mgPickNone}</p>
+          ) : shown.map((p, i) => (
+            <button
+              key={p.id}
+              type="button"
+              // pointerdown, not click: the blur a click starts with would close
+              // the list before the click itself ever lands on a row.
+              onPointerDown={(e) => { e.preventDefault(); pick(p); }}
+              onMouseEnter={() => setHi(i)}
+              className={cn('w-full text-left px-3 py-1.5', i === hi && 'bg-stone-50')}
+            >
+              <span className="block text-sm text-stone-800 truncate">{p.name}</span>
+              <span className={cn('block text-[11px] truncate', p.email ? 'text-stone-400' : 'text-amber-600')}>
+                {p.email || t.noEmail}
+              </span>
+            </button>
+          ))}
+          {matches.length > shown.length && (
+            // Said out loud rather than silently truncated — a list that stops
+            // at 50 without mentioning it reads as "that is all of them".
+            <p className="px-3 py-1.5 text-[11px] text-stone-400">{t.mgPickMore(matches.length - shown.length)}</p>
+          )}
+        </div>
+      )}
+      {/* Under the field, the consequence of what stands in it: which address
+          the feedback would reach, or that this name is nobody the app knows. */}
+      {value.trim() !== '' && (
+        <span className={cn('mt-0.5 block text-[11px] truncate', exact?.email ? 'text-stone-400' : 'text-amber-600')}>
+          {exact ? (exact.email || t.noEmail) : t.mgPickUnknown}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** The referee list the pickers offer: every coachee the app carries, one row
+ *  per person rather than one per season — the same referee appears once for
+ *  every season they were coached in, and three identical names with three
+ *  addresses is not a list anyone can choose from. */
+function refereeOptions(coachees: Coachee[]): PickPerson[] {
+  const nameOf = (c: Coachee) => (c.full_name || `${c.first_name || ''} ${c.last_name || ''}`).trim();
+  const best = new Map<string, Coachee>();
+  for (const c of coachees) {
+    const name = nameOf(c);
+    if (!name) continue;
+    const key = foldName(name);
+    const prev = best.get(key);
+    // The later season wins; at equal seasons the row that carries an address
+    // does, because one without an address cannot receive the test mail at all.
+    if (!prev
+      || (c.season || 0) > (prev.season || 0)
+      || ((c.season || 0) === (prev.season || 0) && !prev.email && !!c.email)) best.set(key, c);
+  }
+  return [...best.values()].sort(bySurname).map((c) => ({ id: c.id, name: nameOf(c), email: c.email }));
+}
+
 // Settings are fetched once by the console shell and handed down — this tab
 // never issues its own /api/settings request.
 // Create (and delete) a one-off game. VolleyManager is the normal source; this
 // covers fixtures it doesn't carry and throwaway games used to exercise the
 // whole observation → PDF → e-mail flow against the real backend.
-function ManualGameAdmin({ t, lang }: { t: T; lang: Lang }) {
+function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolean }) {
   const today = new Date().toISOString().slice(0, 10);
   const empty = { match_no: '', league: '', match_date: today, location: '', home_team: '', away_team: '', first_referee: '', second_referee: '', assigned_rc: '' };
   const [f, setF] = useState(empty);
@@ -2193,12 +2325,35 @@ function ManualGameAdmin({ t, lang }: { t: T; lang: Lang }) {
   const [err, setErr] = useState('');
   const [list, setList] = useState<ManualGame[]>([]);
   const [q, setQ] = useState('');
+  const [refs, setRefs] = useState<PickPerson[]>([]);
+  const [rcs, setRcs] = useState<PickPerson[]>([]);
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
+  const setName = (k: keyof typeof empty) => (v: string) => setF({ ...f, [k]: v });
 
   const reload = useCallback(async (search = '') => {
     try { setList(await listManualGames(search)); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
   }, []);
   useEffect(() => { void reload(); }, [reload]);
+
+  // Read once, and only once this tab is actually on screen: /api/coachees is
+  // the console's most expensive read and the coachee tab already issues it on
+  // mount. Neither list changes while the form is open, so a picker that
+  // re-fetched per keystroke would only add latency. A list that fails to load
+  // leaves the field a plain text box rather than blocking the form — typing
+  // the name by hand is what this form did before.
+  const [listsAsked, setListsAsked] = useState(false);
+  useEffect(() => {
+    if (!active || listsAsked) return;
+    setListsAsked(true);
+    void (async () => {
+      const [cs, ps] = await Promise.all([
+        listCoachees().catch(() => [] as Coachee[]),
+        listRefereeCoachPeople().catch(() => [] as RefereeCoachPerson[]),
+      ]);
+      setRefs(refereeOptions(cs));
+      setRcs(ps.map((rc) => ({ id: rc.id, name: rc.fullName, email: rc.email })));
+    })();
+  }, [active, listsAsked]);
 
   const create = async () => {
     setBusy(true); setErr('');
@@ -2237,12 +2392,16 @@ function ManualGameAdmin({ t, lang }: { t: T; lang: Lang }) {
           <input className={input} value={f.away_team} onChange={set('away_team')} /></label>
         <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgLocation}</span>
           <input className={input} value={f.location} onChange={set('location')} /></label>
-        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRef1}</span>
-          <input className={input} value={f.first_referee} onChange={set('first_referee')} /></label>
-        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRef2}</span>
-          <input className={input} value={f.second_referee} onChange={set('second_referee')} /></label>
-        <label className="flex flex-col gap-1"><span className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRc}</span>
-          <input className={input} value={f.assigned_rc} onChange={set('assigned_rc')} /></label>
+        {/* The three name fields are pickers, not free text boxes: a feedback
+            mail only has a recipient if the name matches a person the app
+            knows, and the only way to see which address that is, is to have
+            the list say so. */}
+        <div className="flex flex-col gap-1"><label htmlFor="mg-ref1" className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRef1}</label>
+          <PersonPicker id="mg-ref1" value={f.first_referee} onChange={setName('first_referee')} people={refs} t={t} /></div>
+        <div className="flex flex-col gap-1"><label htmlFor="mg-ref2" className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRef2}</label>
+          <PersonPicker id="mg-ref2" value={f.second_referee} onChange={setName('second_referee')} people={refs} t={t} /></div>
+        <div className="flex flex-col gap-1"><label htmlFor="mg-rc" className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRc}</label>
+          <PersonPicker id="mg-rc" value={f.assigned_rc} onChange={setName('assigned_rc')} people={rcs} t={t} /></div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button onClick={create} disabled={busy || !f.match_date} className={btnPrimary}>

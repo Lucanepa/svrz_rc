@@ -4707,6 +4707,15 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
     const matchDate = asText(d.match_date);
     if (!matchDate) { res.status(400).json({ error: 'match_date ist erforderlich.' }); return; }
     if (Number.isNaN(new Date(matchDate).getTime())) { res.status(400).json({ error: 'match_date ist kein gültiges Datum.' }); return; }
+    // The form now picks the coach off the roster, so the game can carry the id
+    // beside the name the way a taken game does — ownership then survives a
+    // rename instead of depending on the spelling. An unknown name still
+    // writes: manual games exist for what the roster does not carry.
+    const rcName = asText(d.assigned_rc);
+    const rcId = rcName
+      ? (await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]))
+        .find((p) => normalizeName(p.fullName) === normalizeName(rcName))?.id || ''
+      : '';
     const created = await withCollection(collectionCandidates.games, (c) => c.create<AnyRecord>({
       // A recognisable default so a manual game is obvious in any list.
       match_no: asText(d.match_no) || `TEST-${Date.now().toString().slice(-6)}`,
@@ -4717,7 +4726,8 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
       away_team: asText(d.away_team),
       first_referee: asText(d.first_referee),
       second_referee: asText(d.second_referee),
-      assigned_rc: asText(d.assigned_rc),
+      assigned_rc: rcName,
+      assigned_rc_id: rcId,
     }));
     await withSettingLock('manual_games', async () => {
       const manual = await getManualGameIds();

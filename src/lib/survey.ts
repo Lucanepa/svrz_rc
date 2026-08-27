@@ -243,6 +243,26 @@ export function t(entry: { DE: string; EN: string }, lang: SurveyLang): string {
   return entry[lang];
 }
 
+/**
+ * Both languages, German first — which is how the form is shown.
+ *
+ * Referees used to pick DE or EN, and the pick decided what a question said. A
+ * referee whose German is shaky had to notice the toggle first, and the mail
+ * that carries the link is German either way; anyone who did not notice simply
+ * read a form they half understood. Showing both costs a line per question and
+ * removes the choice from the reader entirely.
+ *
+ * A field filled in only one language returns that one — printing an empty
+ * second line would look like something is missing.
+ */
+export function bothLangs(entry: { DE?: string; EN?: string } | undefined): { de: string; en: string } {
+  const de = (entry?.DE || '').trim();
+  const en = (entry?.EN || '').trim();
+  // Identical in both (a name, a number, "OK") is one line, not two.
+  if (!de || !en || de === en) return { de: de || en, en: '' };
+  return { de, en };
+}
+
 export function questionLabel(q: SurveyQuestion, lang: SurveyLang): string {
   return lang === 'DE' ? q.DE : q.EN;
 }

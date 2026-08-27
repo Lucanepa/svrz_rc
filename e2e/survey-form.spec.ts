@@ -54,7 +54,10 @@ test.describe('the survey page', () => {
     await page.locator('textarea').fill('Die Blockschatten-Erklärung.');
     await page.getByRole('button', { name: /Absenden|Submit/ }).click();
 
-    await expect(page.getByText(/Danke für deine Rückmeldung|Thank you/)).toBeVisible();
+    // Both languages, German first: the form no longer asks the referee to pick
+    // one, so the thank-you says it twice.
+    await expect(page.getByText('Danke für deine Rückmeldung!')).toBeVisible();
+    await expect(page.getByText('Thank you for your feedback!')).toBeVisible();
     expect(body).toBeTruthy();
     // Answers are keyed by the question's stable id, which is what makes a
     // reworded question keep its history.

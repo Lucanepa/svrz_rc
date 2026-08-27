@@ -6727,6 +6727,13 @@ const FEEDBACK_ROLES = ['1. SR', '2. SR'];
 // VolleyManager's contact sync, none of which check the shape. Anything that is
 // not exactly one address is treated as no address at all.
 const SINGLE_EMAIL_RE = /^[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>"]+$/;
+/** Two addresses that reach the same inbox. Compared case-insensitively, which
+ *  is how every mail server treats the domain and how every one that matters
+ *  here treats the local part too. */
+function sameMailbox(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase() && a.trim() !== '';
+}
+
 function singleAddress(value: unknown): string {
   const v = asText(value).trim();
   return SINGLE_EMAIL_RE.test(v) ? v : '';
@@ -7235,7 +7242,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         // second one only differs by the survey link it leaves out. Nothing is
         // withheld by dropping it: the address already has the fuller message.
         const copyRecipients = [...(mailCc ?? []), ...(mailBcc ?? [])]
-          .filter((address) => address.trim().toLowerCase() !== mailTo.trim().toLowerCase());
+          .filter((address) => !sameMailbox(address, mailTo));
         if (copyRecipients.length > 0) {
           await sendMailResilient({
             from: MAIL_FROM,
@@ -7589,7 +7596,7 @@ async function findCoacheeByRefereeName(
 }
 
 type ReminderPlan = {
-  gameId: string; role: string; to: string; cc: string[];
+  gameId: string; role: string; to: string; cc: string[]; replyTo: string;
   subject: string; text: string; html: string; coachee: string; rc: string; match: string;
 };
 
@@ -7696,7 +7703,13 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
         rows: [], // the reminder carries its details inline in the template text
       });
       plans.push({
-        gameId: String(game.id), role: roleLabel, to: email, cc: rcEmail ? [rcEmail] : [],
+        gameId: String(game.id), role: roleLabel, to: email,
+        // The coach is copied so they see what their referee was told — unless
+        // they ARE the referee, which is every test game somebody makes for
+        // themselves. To and Cc on one mailbox is a message that looks sent
+        // twice. The reply address stays theirs either way.
+        cc: rcEmail && !sameMailbox(rcEmail, email) ? [rcEmail] : [],
+        replyTo: rcEmail,
         subject: built.subject, text: built.text, html: built.html,
         coachee: recipientName, rc: rcName,
         match: `${asText(game.home_team)} – ${asText(game.away_team)}`,
@@ -7733,7 +7746,7 @@ async function runMatchReminders(): Promise<{ sent: number; skipped: number; sup
         from: MAIL_FROM,
         to: p.to,
         cc: p.cc.length ? p.cc : undefined,
-        replyTo: p.cc[0] || undefined,
+        replyTo: p.replyTo || undefined,
         subject: p.subject,
         html: p.html,
         text: p.text,
@@ -7817,7 +7830,7 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
         from: MAIL_FROM,
         to: plan.to,
         cc: plan.cc.length ? plan.cc : undefined,
-        replyTo: plan.cc[0] || undefined,
+        replyTo: plan.replyTo || undefined,
         subject: plan.subject,
         html: plan.html,
         text: plan.text,

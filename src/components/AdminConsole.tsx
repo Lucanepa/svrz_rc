@@ -407,6 +407,24 @@ const STR = {
 } as const;
 type T = typeof STR['DE'];
 
+/** Take the freshest answer, drop the rest.
+ *
+ *  A list that reloads on a keystroke can be answered out of order: the fetch
+ *  for "can" starts before the fetch for "ca" and lands after it, and the reader
+ *  is left looking at results for a query they have already moved past. The log
+ *  tail has the same problem from the other side — its three-second poll
+ *  overtakes a filter that was typed a moment ago and puts the unfiltered tail
+ *  back on screen.
+ *
+ *  Each request takes a ticket; an answer is applied only while its ticket is
+ *  still the newest one. */
+function useFreshest() {
+  const seq = useRef(0);
+  const take = useCallback(() => { seq.current += 1; return seq.current; }, []);
+  const isCurrent = useCallback((ticket: number) => ticket === seq.current, []);
+  return { take, isCurrent };
+}
+
 const input = 'h-9 w-full px-3 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500';
 const btnPrimary = 'inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:bg-stone-300 transition-colors';
 const btnGhost = 'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors';
@@ -830,8 +848,8 @@ export default function AdminConsole() {
           <p className="mb-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{settingsError}</p>
         )}
         {!isPresident && <>
-        <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} /></div>
-        <div hidden={tab !== 'rcs'}><RcsAdmin t={t} lang={lang} mandates={rcMandates} defaultGoal={defaultGoal} onMandates={saveMandates} /></div>
+        <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} settingsLoading={settingsLoading} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} /></div>
+        <div hidden={tab !== 'rcs'}><RcsAdmin t={t} lang={lang} mandates={rcMandates} defaultGoal={defaultGoal} settingsLoading={settingsLoading} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} /></div>
@@ -1243,7 +1261,7 @@ function RefereeRosterAdmin({ t, onLinked }: { t: T; onLinked: () => void }) {
   );
 }
 
-function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, leagueOptions, niveauTable }: { t: T; lang: Lang; groups: string[]; defaultSeason: number; targets: CoacheeTargetMap; onTargets: (next: CoacheeTargetMap) => void; leagueOptions: string[]; niveauTable: NiveauMatrix }) {
+function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, targets, onTargets, leagueOptions, niveauTable }: { t: T; lang: Lang; groups: string[]; defaultSeason: number; settingsLoading: boolean; targets: CoacheeTargetMap; onTargets: (next: CoacheeTargetMap) => void; leagueOptions: string[]; niveauTable: NiveauMatrix }) {
   const [targetEditId, setTargetEditId] = useState<string | null>(null);
   const [season, setSeason] = useState(defaultSeason);
   const seasonTouched = useRef(false);
@@ -1261,8 +1279,24 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
   const [editId, setEditId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '' });
 
-  const reload = useCallback(async () => { setLoading(true); try { setAll(await listCoachees()); } catch (e) { setNotice(String(e)); } finally { setLoading(false); } }, []);
+  // Reloaded after every write, so two quick edits can have their answers cross
+  // — and the older list would then put a deleted coachee back on screen.
+  const list = useFreshest();
+  const reload = useCallback(async () => {
+    const ticket = list.take();
+    setLoading(true);
+    try {
+      const rows = await listCoachees();
+      if (list.isCurrent(ticket)) setAll(rows);
+    } catch (e) { if (list.isCurrent(ticket)) setNotice(String(e)); }
+    finally { if (list.isCurrent(ticket)) setLoading(false); }
+  }, [list]);
   useEffect(() => { void reload(); }, [reload]);
+  // The rows are filtered by season, and the season comes from settings, which
+  // arrive after the coachees do. Rendering in between showed last season's
+  // list under this season's heading for as long as that took — the local
+  // fallback (`CUR_SEASON`) is August's guess, not the stored answer.
+  const settling = loading || (settingsLoading && !seasonTouched.current);
   const rows = all.filter((c) => (typeof c.season === 'number' ? c.season === season : false)).sort(bySurname);
 
   // Same reason as RcsAdmin: a failed write left the console looking like it
@@ -1375,9 +1409,11 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
         </div>
       </Card>
       <Card>
-        <p className="text-xs text-stone-400 mb-2">{loading ? t.loading : t.count(rows.length, seasonLabel(season))}</p>
+        <p className="text-xs text-stone-400 mb-2">{settling ? t.loading : t.count(rows.length, seasonLabel(season))}</p>
         <div className="divide-y divide-stone-100">
-          {rows.map((c) => editId === c.id ? (
+          {/* Held whole: a row list filtered by a season that is still being
+              read is last season's people under this season's heading. */}
+          {!settling && rows.map((c) => editId === c.id ? (
             <div key={c.id} className="py-2 grid grid-cols-2 gap-2 sm:grid-cols-12 items-center">
               <input className={cn(input, 'sm:col-span-3')} value={editForm.first_name} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
               <input className={cn(input, 'sm:col-span-3')} value={editForm.last_name} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
@@ -1432,15 +1468,15 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, targets, onTargets, lea
               )}
             </div>
           ))}
-          {loading && all.length === 0 && <SkeletonRows rows={6} />}
-          {!loading && rows.length === 0 && <p className="py-8 text-center text-sm text-stone-400">{t.noCoachees(seasonLabel(season))}</p>}
+          {settling && <SkeletonRows rows={6} />}
+          {!settling && rows.length === 0 && <p className="py-8 text-center text-sm text-stone-400">{t.noCoachees(seasonLabel(season))}</p>}
         </div>
       </Card>
     </>
   );
 }
 
-function RcsAdmin({ t, lang, mandates, defaultGoal, onMandates }: { t: T; lang: Lang; mandates: RcMandateMap; defaultGoal: number; onMandates: (next: RcMandateMap) => void }) {
+function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates }: { t: T; lang: Lang; mandates: RcMandateMap; defaultGoal: number; settingsLoading: boolean; onMandates: (next: RcMandateMap) => void }) {
   const [rcs, setRcs] = useState<RcPerson[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({ first_name: '', last_name: '', email: '', phone: '' });
@@ -1460,12 +1496,21 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, onMandates }: { t: T; lang: 
     try { await action(); }
     catch (e) { setNotice(e instanceof Error ? e.message : String(e)); }
   };
+  // Same as the coachee list: reloaded after every write, so an older answer
+  // must not be allowed to land on top of a newer one.
+  const roster = useFreshest();
   const reload = useCallback(async () => {
+    const ticket = roster.take();
     setLoading(true);
-    try { setRcs(await listRcPeopleFull()); setLoadFailed(false); }
-    catch (e) { setLoadFailed(true); setNotice(e instanceof Error ? e.message : String(e)); }
-    finally { setLoading(false); }
-  }, []);
+    try {
+      const rows = await listRcPeopleFull();
+      if (!roster.isCurrent(ticket)) return;
+      setRcs(rows); setLoadFailed(false);
+    } catch (e) {
+      if (!roster.isCurrent(ticket)) return;
+      setLoadFailed(true); setNotice(e instanceof Error ? e.message : String(e));
+    } finally { if (roster.isCurrent(ticket)) setLoading(false); }
+  }, [roster]);
   useEffect(() => { void reload(); }, [reload]);
   useEffect(() => { getAdminShortcutRcs().then(setShortcutRcs).catch(() => setShortcutRcs([])); }, []);
   const toggleShortcut = async (r: RcPerson) => {
@@ -1558,11 +1603,13 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, onMandates }: { t: T; lang: 
         </div>
       </Card>
       <Card>
-        <p className="text-xs text-stone-400 mb-2">{loading ? t.loading : t.rcCount(rcs.length)}</p>
+        {/* Each row prints a season goal, and a goal is a mandate times the
+            default — both of which arrive with the settings, after this list. */}
+        <p className="text-xs text-stone-400 mb-2">{loading || settingsLoading ? t.loading : t.rcCount(rcs.length)}</p>
         {/* Phones: one card per coach. The table needs ~720px, so on a phone it
             clipped the e-mail and pushed the actions off-screen entirely. */}
         <div className="sm:hidden space-y-2">
-          {rcs.map((r) => editId === r.id ? (
+          {!loading && !settingsLoading && rcs.map((r) => editId === r.id ? (
             <div key={r.id} className="rounded-xl border border-stone-200 p-3 space-y-2">
               <div className="grid grid-cols-2 gap-2">
                 <input className={input} placeholder={t.firstName} value={editForm.first_name || ''} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
@@ -1608,7 +1655,7 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, onMandates }: { t: T; lang: 
               </tr>
             </thead>
             <tbody className="divide-y divide-stone-100">
-              {rcs.map((r) => editId === r.id ? (
+              {!loading && !settingsLoading && rcs.map((r) => editId === r.id ? (
                 <tr key={r.id}>
                   <td className="py-2 pr-3">
                     <div className="flex gap-1.5">
@@ -1650,8 +1697,8 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, onMandates }: { t: T; lang: 
           </table>
         </div>
         {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}
-        {loading && rcs.length === 0 && <SkeletonRows rows={6} />}
-        {!loading && rcs.length === 0 && (
+        {(loading || settingsLoading) && <SkeletonRows rows={6} />}
+        {!loading && !settingsLoading && rcs.length === 0 && (
           <p className="py-8 text-center text-sm text-stone-400">{loadFailed ? t.loadFailed : t.noRcs}</p>
         )}
       </Card>
@@ -2244,17 +2291,23 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
   const [expanded, setExpanded] = useState<number | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
+  const tail = useFreshest();
   const load = useCallback(async () => {
+    const ticket = tail.take();
     try {
       const res = await getAdminLogs({ limit: 800, q, level, src, sid });
+      // A poll started before the filter was typed answers after it, and the
+      // unfiltered tail lands back on screen for three seconds.
+      if (!tail.isCurrent(ticket)) return;
       setEntries(res.entries);
       setErr('');
     } catch (e) {
+      if (!tail.isCurrent(ticket)) return;
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (tail.isCurrent(ticket)) setLoading(false);
     }
-  }, [q, level, src, sid]);
+  }, [q, level, src, sid, tail]);
 
   // Poll only while the tab is visible and Live is on — an admin console left
   // open on another tab shouldn't hit the API every 3 seconds forever.
@@ -2583,9 +2636,24 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
   const setName = (k: keyof typeof empty) => (v: string) => setF({ ...f, [k]: v });
 
+  // The search reloads on every keystroke, so the answers can arrive out of
+  // order; and until the first one lands there are no test games to report,
+  // which is not the same as there being none.
+  const games = useFreshest();
+  const [listed, setListed] = useState(false);
   const reload = useCallback(async (search = '') => {
-    try { setList(await listManualGames(search)); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
-  }, []);
+    const ticket = games.take();
+    try {
+      const rows = await listManualGames(search);
+      if (!games.isCurrent(ticket)) return;
+      setList(rows);
+    } catch (e) {
+      if (!games.isCurrent(ticket)) return;
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (games.isCurrent(ticket)) setListed(true);
+    }
+  }, [games]);
   useEffect(() => { void reload(); }, [reload]);
 
   // Read once, and only once this tab is actually on screen: /api/coachees is
@@ -2619,10 +2687,11 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
   const create = async () => {
     setBusy(true); setErr('');
     try {
-      // The games collection stores a datetime — pin a plausible kick-off.
+      // The date goes as a date. The kick-off is pinned server-side, in the
+      // region's clock — appending "20:00:00.000Z" here made every test game
+      // start at 22:00 Swiss time in summer.
       const created = await createGame({
         ...f,
-        match_date: `${f.match_date} 20:00:00.000Z`,
         first_referee_id: svNumberFor(f.first_referee),
         second_referee_id: svNumberFor(f.second_referee),
       });
@@ -2690,7 +2759,9 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
             onChange={(e) => { setQ(e.target.value); void reload(e.target.value); }}
           />
         </div>
-        {list.length === 0 ? (
+        {!listed ? (
+          <SkeletonRows rows={2} />
+        ) : list.length === 0 ? (
           <p className="text-xs text-stone-400">{t.mgNone}</p>
         ) : (
           <div className="divide-y divide-stone-100">
@@ -2727,6 +2798,11 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
 // answer anywhere in the console and meant waiting for tomorrow's cron.
 function GameImportCard({ lang }: { lang: Lang }) {
   const [sync, setSync] = useState<GamesSyncStatus | null>(null);
+  // Whether the status has been ASKED for and answered — distinct from "there
+  // is no status". Without it this card opened red on every console load,
+  // saying "Status nicht abrufbar" for as long as the request took: an alarm
+  // about the nightly import raised by nothing but a pending fetch.
+  const [loaded, setLoaded] = useState(false);
   const [running, setRunning] = useState(false);
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
@@ -2737,7 +2813,8 @@ function GameImportCard({ lang }: { lang: Lang }) {
       // Anything that is not the object we expect (an array, a string) is no
       // status at all: reading .cron off it printed "schedule undefined".
       .then((s) => setSync(s && typeof s === 'object' && !Array.isArray(s) ? s : null))
-      .catch(() => setSync(null));
+      .catch(() => setSync(null))
+      .finally(() => setLoaded(true));
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -2770,7 +2847,7 @@ function GameImportCard({ lang }: { lang: Lang }) {
   // `sync.status` is null before the first run and undefined if the
   // payload is not what we expect — `!== null` was true for both, and
   // then reading .ok threw and took the whole console down with it.
-  const bad = (sync?.status ? !sync.status.ok : false) || stale;
+  const bad = loaded && ((sync?.status ? !sync.status.ok : false) || stale);
   const when = (iso: string) => {
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? '–' : d.toLocaleString('de-CH', { dateStyle: 'short', timeStyle: 'short' });
@@ -2801,8 +2878,10 @@ function GameImportCard({ lang }: { lang: Lang }) {
                 </div>
               )}
             </>
-          ) : (
+          ) : loaded ? (
             <div>{de ? 'Status nicht abrufbar.' : 'Status unavailable.'}</div>
+          ) : (
+            <Skeleton className="h-3.5 w-64" />
           )}
         </div>
         {/* Runs the same import the cron runs, over the same window. Slow (a
@@ -3001,6 +3080,7 @@ function CredentialsAdmin({ t }: { t: T }) {
   // server binds the code to this session AND to one slot, so a second request
   // replaces the first rather than running beside it.
   const [challenge, setChallenge] = useState<{ slot: string; sentTo: string } | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -3011,6 +3091,7 @@ function CredentialsAdmin({ t }: { t: T }) {
       setSlots(Array.isArray(data?.slots) ? data.slots : []);
       if (Number.isFinite(data?.minLength)) setMinLength(data.minLength);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setLoaded(true); }
   }, []);
   useEffect(() => { void reload(); }, [reload]);
 
@@ -3052,6 +3133,9 @@ function CredentialsAdmin({ t }: { t: T }) {
       {error && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
       {saved && <p className="mt-2 text-xs text-green-800 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{saved}</p>}
       <div className="mt-3 space-y-4">
+        {/* Three passwords open this app; an empty card while they load reads as
+            "none configured", which is the one thing it must never say. */}
+        {!loaded && <SkeletonRows rows={3} />}
         {slots.map((slot) => {
           const draft = drafts[slot.slot] ?? { username: slot.username, password: '', code: '' };
           const set = (patch: Partial<{ username: string; password: string; code: string }>) =>
@@ -3235,7 +3319,8 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
               <button onClick={() => { void delGroup(i); }} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
             </div>
           ))}
-          {groups.length === 0 && <p className="py-4 text-center text-xs text-stone-400">—</p>}
+          {loading && groups.length === 0 && <SkeletonRows rows={3} />}
+          {!loading && groups.length === 0 && <p className="py-4 text-center text-xs text-stone-400">—</p>}
         </div>
         {groupsError && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{groupsError}</p>}
       </Card>
@@ -3243,9 +3328,15 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
         <div className="flex items-start gap-3">
           <FlaskConical size={18} className={testMode ? 'text-amber-600 mt-0.5' : 'text-stone-400 mt-0.5'} />
           <div className="flex-1"><h2 className="text-sm font-semibold text-stone-700">{t.testTitle}</h2><p className="text-xs text-stone-400">{t.testHint}</p></div>
-          <button onClick={toggleTest} disabled={loading} role="switch" aria-checked={testMode} className={`relative inline-flex h-7 w-12 shrink-0 rounded-full transition-colors ${testMode ? 'bg-amber-500' : 'bg-stone-300'}`}><span className={`inline-block h-6 w-6 rounded-full bg-white shadow transform transition-transform mt-0.5 ${testMode ? 'translate-x-5' : 'translate-x-0.5'}`} /></button>
+          <button onClick={toggleTest} disabled={loading} role="switch" aria-checked={loading ? undefined : testMode} className={cn('relative inline-flex h-7 w-12 shrink-0 rounded-full transition-colors', testMode ? 'bg-amber-500' : 'bg-stone-300', loading && 'opacity-50')}><span className={`inline-block h-6 w-6 rounded-full bg-white shadow transform transition-transform mt-0.5 ${testMode ? 'translate-x-5' : 'translate-x-0.5'}`} /></button>
         </div>
-        <p className={`mt-2 text-xs font-medium ${testMode ? 'text-amber-700' : 'text-green-600'}`}>{testMode ? t.testOn : t.testOff}</p>
+        {/* Held until the setting has actually been read. `testMode` starts
+            false, so this line used to announce "E-Mails werden versendet" on
+            every console load — including the loads where the truth was the
+            opposite. */}
+        {loading
+          ? <Skeleton className="mt-2 h-4 w-56" />
+          : <p className={`mt-2 text-xs font-medium ${testMode ? 'text-amber-700' : 'text-green-600'}`}>{testMode ? t.testOn : t.testOff}</p>}
       </Card>
     </>
   );

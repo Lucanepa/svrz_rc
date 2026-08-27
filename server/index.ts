@@ -1181,6 +1181,26 @@ function zonedParts(instant: number): { year: string; month: string; day: string
   };
 }
 
+/** A wall-clock time in the region, as the UTC instant it actually is.
+ *
+ *  The manual-game form used to pin "20:00:00.000Z" — twenty hundred hours UTC,
+ *  which is 22:00 in Zurich in summer and 21:00 in winter. Everything that
+ *  prints a game converts to Europe/Zurich (fmtTimeDe, the app, the calendar
+ *  feed), so a fixture entered as an evening game read as a late-night one.
+ *
+ *  The offset is measured rather than assumed: format the guessed instant in
+ *  the region, see how far the clock there has moved from it, and shift by that
+ *  much. That handles both CET and CEST without a table, and the DST switch
+ *  itself is a Sunday morning — no kick-off lives in the hour that goes missing. */
+function zonedInstantIso(date: string, hour: number, minute = 0): string {
+  const [y, m, d] = date.split('-').map(Number);
+  if (!y || !m || !d) return '';
+  const guess = Date.UTC(y, m - 1, d, hour, minute, 0);
+  const seen = zonedParts(guess);
+  const offset = Date.UTC(Number(seen.year), Number(seen.month) - 1, Number(seen.day), Number(seen.hour), Number(seen.minute)) - guess;
+  return new Date(guess - offset).toISOString();
+}
+
 function fmtDateDe(value: string): string {
   const moment = icalMoment(value);
   if (!moment) return asText(value);
@@ -5017,9 +5037,13 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
   try {
     await ensureAdminAuth();
     const d = (req.body ?? {}) as Record<string, unknown>;
-    const matchDate = asText(d.match_date);
-    if (!matchDate) { res.status(400).json({ error: 'match_date ist erforderlich.' }); return; }
-    if (Number.isNaN(new Date(matchDate).getTime())) { res.status(400).json({ error: 'match_date ist kein gültiges Datum.' }); return; }
+    const requestedDate = asText(d.match_date);
+    if (!requestedDate) { res.status(400).json({ error: 'match_date ist erforderlich.' }); return; }
+    // A bare date is a date, not midnight UTC: pin the kick-off to 20:00 in the
+    // region, the way a real fixture is stored. The form sends exactly that.
+    const bareDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate);
+    const matchDate = bareDate ? zonedInstantIso(requestedDate, 20) : requestedDate;
+    if (!matchDate || Number.isNaN(new Date(matchDate).getTime())) { res.status(400).json({ error: 'match_date ist kein gültiges Datum.' }); return; }
     // The form picks its three people off a list, so the game can carry their
     // ids beside their names — the same argument as assigned_rc_id: a name
     // changes and two people can normalise to the same string, at which point

@@ -813,6 +813,33 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
   );
 }
 
+// A filter toggle. An active filter changes what the whole list shows, so it
+// says so on the button and not only in the little switch inside it — the
+// switch alone was a 20px colour cue on a bar of six identical white pills.
+function FilterToggle({ on, onToggle, label, title, dotClass }: {
+  on: boolean; onToggle: () => void; label: string; title?: string; dotClass: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={on}
+      title={title}
+      className={cn(
+        'h-9 px-3 border rounded-md text-sm flex items-center gap-2 whitespace-nowrap transition-colors cursor-pointer select-none',
+        on
+          ? 'border-red-500 ring-1 ring-red-500/25 bg-red-50/60 text-red-700 font-medium'
+          : 'border-stone-300 bg-white text-stone-600 hover:bg-stone-50',
+      )}
+    >
+      <span className={cn('relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors', on ? dotClass : 'bg-stone-300')}>
+        <span className={cn('inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5', on ? 'translate-x-4.5' : 'translate-x-0.5')} />
+      </span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
 function MultiSelectDropdown({ options, selected, onChange, placeholder, lang }: {
   options: string[];
   selected: string[];
@@ -3024,6 +3051,26 @@ export default function App() {
     return map;
   }, [coachees, seasonStartYear]);
 
+  // Which of the filter toggles have anything to act on. Computed over every
+  // loaded game rather than the filtered list: deriving it from what is on
+  // screen would make one active filter erase its neighbours' controls.
+  const filterAvailability = useMemo(() => {
+    const found = { rd: false, ld: false, rcGame: false, assigned: false, inactive: false };
+    for (const g of eligibleGames) {
+      if (g.isRdGame) found.rd = true;
+      if (g.isLdGame) found.ld = true;
+      if (g.isRcGame) found.rcGame = true;
+      if (g.assignedRc) found.assigned = true;
+      if (!found.inactive) {
+        for (const name of [g.firstReferee, g.secondReferee]) {
+          const c = name ? coacheeByName.get(normName(name)) : undefined;
+          if (c && (c.stage || 'active') === 'inactive') { found.inactive = true; break; }
+        }
+      }
+    }
+    return found;
+  }, [eligibleGames, coacheeByName]);
+
   // Niveau and group for the amber Coachee badge in the games list.
   const coacheeLevelOf = (name: string) => {
     const c = coacheeByName.get(normName(name || ''));
@@ -3124,6 +3171,11 @@ export default function App() {
       // the panel (and its "start observation" button) out from under the user.
       if (gameFilterRcAssigned && !g.assignedRc) return false;
       if (!gameFilterRcAssigned && g.assignedRc && g.id !== expandedGameId) return false;
+      // A referee coach is already on the whistle next to the coachee here, so
+      // there is nothing for a second coach to take. Out of the list unless the
+      // RC-Spiel filter asks for them — and never yanked out from under an open
+      // row, same as a game somebody else just took.
+      if (!gameFilterRcGame && g.isRcGame && g.id !== expandedGameId) return false;
       if (gameFilterDateFrom) {
         const from = new Date(gameFilterDateFrom);
         if (new Date(g.date) < from) return false;
@@ -4047,63 +4099,65 @@ export default function App() {
                 {/* Collapsible filter panel */}
                 {filtersOpen && (
                   <div className="flex flex-wrap items-end gap-2 mb-3 p-3 bg-stone-50 border border-stone-200 rounded-md">
-                    <button
-                      onClick={() => setGameFilterNeedsObs(!gameFilterNeedsObs)}
-                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
-                    >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterNeedsObs ? "bg-red-600" : "bg-stone-300")}>
-                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
-                      </span>
-                      <span>{formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}</span>
-                    </button>
-                    <button
-                      onClick={() => setGameFilterShowInactive(!gameFilterShowInactive)}
-                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
-                    >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterShowInactive ? "bg-red-600" : "bg-stone-300")}>
-                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
-                      </span>
-                      <span>{formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}</span>
-                    </button>
-                    <button
-                      onClick={() => setGameFilterRd(!gameFilterRd)}
-                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
-                    >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterRd ? "bg-amber-500" : "bg-stone-300")}>
-                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterRd ? "translate-x-4.5" : "translate-x-0.5")} />
-                      </span>
-                      <span>{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>
-                    </button>
-                    <button
-                      onClick={() => setGameFilterRcGame(!gameFilterRcGame)}
-                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
-                      title={formData.lang === 'DE'
-                        ? 'Spiele, in denen ein Referee Coach neben einem Coachee pfeift.'
-                        : 'Games where a referee coach whistles next to a coachee.'}
-                    >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterRcGame ? "bg-amber-500" : "bg-stone-300")}>
-                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterRcGame ? "translate-x-4.5" : "translate-x-0.5")} />
-                      </span>
-                      <span>{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
-                    </button>
-                    <button
-                      onClick={() => setGameFilterLd(!gameFilterLd)}
-                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
-                    >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterLd ? "bg-violet-500" : "bg-stone-300")}>
-                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterLd ? "translate-x-4.5" : "translate-x-0.5")} />
-                      </span>
-                      <span>{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>
-                    </button>
-                    <button
-                      onClick={() => setGameFilterRcAssigned(!gameFilterRcAssigned)}
-                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
-                    >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", gameFilterRcAssigned ? "bg-green-500" : "bg-stone-300")}>
-                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", gameFilterRcAssigned ? "translate-x-4.5" : "translate-x-0.5")} />
-                      </span>
-                      <span>{formData.lang === 'DE' ? 'RC zugewiesen' : 'RC assigned'}</span>
-                    </button>
+                    {/* A toggle for a marking no game in the list carries is a
+                        control that can only ever empty the list, so it is not
+                        offered — unless it is the one currently switched on,
+                        which must stay reachable to be switched off again. */}
+                    <FilterToggle
+                      on={gameFilterNeedsObs}
+                      onToggle={() => setGameFilterNeedsObs(!gameFilterNeedsObs)}
+                      dotClass="bg-red-600"
+                      label={formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}
+                    />
+                    {(filterAvailability.inactive || gameFilterShowInactive) && (
+                      <FilterToggle
+                        on={gameFilterShowInactive}
+                        onToggle={() => setGameFilterShowInactive(!gameFilterShowInactive)}
+                        dotClass="bg-red-600"
+                        label={formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
+                      />
+                    )}
+                    {(filterAvailability.rd || gameFilterRd) && (
+                      <FilterToggle
+                        on={gameFilterRd}
+                        onToggle={() => setGameFilterRd(!gameFilterRd)}
+                        dotClass="bg-amber-500"
+                        title={formData.lang === 'DE'
+                          ? 'Im VolleyManager für eine SR-Beobachtung markiert.'
+                          : 'Marked in VolleyManager for referee supervision.'}
+                        label={formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}
+                      />
+                    )}
+                    {(filterAvailability.rcGame || gameFilterRcGame) && (
+                      <FilterToggle
+                        on={gameFilterRcGame}
+                        onToggle={() => setGameFilterRcGame(!gameFilterRcGame)}
+                        dotClass="bg-sky-500"
+                        title={formData.lang === 'DE'
+                          ? 'Ein Referee Coach pfeift hier neben einem Coachee. Sonst ausgeblendet — solche Spiele sind nicht zu übernehmen.'
+                          : 'A referee coach whistles next to a coachee here. Hidden otherwise — these are not games to take.'}
+                        label={formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}
+                      />
+                    )}
+                    {(filterAvailability.ld || gameFilterLd) && (
+                      <FilterToggle
+                        on={gameFilterLd}
+                        onToggle={() => setGameFilterLd(!gameFilterLd)}
+                        dotClass="bg-violet-500"
+                        title={formData.lang === 'DE'
+                          ? 'Im VolleyManager ist eine Linienrichter-Beobachtung markiert.'
+                          : 'VolleyManager has a line-judge supervision marked on this game.'}
+                        label={formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}
+                      />
+                    )}
+                    {(filterAvailability.assigned || gameFilterRcAssigned) && (
+                      <FilterToggle
+                        on={gameFilterRcAssigned}
+                        onToggle={() => setGameFilterRcAssigned(!gameFilterRcAssigned)}
+                        dotClass="bg-green-500"
+                        label={formData.lang === 'DE' ? 'RC zugewiesen' : 'RC assigned'}
+                      />
+                    )}
                     {/* Twice the growth of its neighbours: these options are
                         full names, while Level, Funktion and Liga hold codes a
                         few characters long. */}

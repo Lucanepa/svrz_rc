@@ -1355,7 +1355,12 @@ export default function App() {
     const srName = getRefereeForRole(selectedGame, formData.role);
     // Match the coachee against the referee currently being observed (handles first/last name order)
     const coacheeById = coachees.find((c) => c.id === selectedCoacheeId);
-    const normalizeName = (name: string) => name.toLowerCase().trim().split(/\s+/).sort().join(' ');
+    // Fold accents, like normName does everywhere else. Without it VolleyManager's
+    // "Kevin León Peña de los Santos" missed the imported "Kevin Leon Peña de los
+    // Santos", so the games list badged him a coachee — that lookup DOES fold —
+    // while this one found nobody and left Niveau and Gruppe empty on his form
+    // and in the PDF the coachee receives.
+    const normalizeName = (name: string) => normName(name).split(' ').sort().join(' ');
     const matchesNorm = (c: Coachee, norm: string) => {
       if (!norm) return false;
       if (normalizeName(c.full_name || '') === norm) return true;
@@ -5023,7 +5028,10 @@ export default function App() {
             already-closed observation must not accept edits to its header
             either, or the screen shows numbers the filed PDF never had. */}
         <div className={cn(
-          "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-[1fr_1fr_1fr_2fr] print:grid-cols-[1fr_1fr_1fr_2fr] border-t border-l border-stone-900 mb-4",
+          // Four even-ish columns rather than 1/1/1/2: the referee row carries
+          // four fields now, and the result underneath gets the whole width it
+          // needs for a set-by-set score.
+          "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-[1.4fr_1fr_1fr_1.6fr] print:grid-cols-[1.4fr_1fr_1fr_1.6fr] border-t border-l border-stone-900 mb-4",
           formDisabled && 'pointer-events-none opacity-60',
         )}>
           <MetaField label={t.matchNo} value={formData.meta.spielNr} onChange={v => updateMeta('spielNr', v)} />
@@ -5033,12 +5041,14 @@ export default function App() {
           
           <MetaField label={t.teams} value={formData.meta.mannschaften} onChange={v => updateMeta('mannschaften', v)} className="col-span-2 md:col-span-4 print:col-span-4" />
 
-          <MetaField label={formData.role} value={formData.meta.srName} onChange={v => updateMeta('srName', v)} className="col-span-2" />
+          {/* Who was observed, at what level, in which group, by whom — one
+              line, because they are read together. */}
+          <MetaField label={formData.role} value={formData.meta.srName} onChange={v => updateMeta('srName', v)} className="col-span-2 md:col-span-1 print:col-span-1" />
           <MetaField label={t.refLevel} value={formData.meta.srNiveau} onChange={v => updateMeta('srNiveau', v)} />
           <MetaField label={t.group} value={formData.meta.gruppe} onChange={v => updateMeta('gruppe', v)} />
+          <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2 md:col-span-1 print:col-span-1" readOnly />
 
-          <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2" readOnly />
-          <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2" readOnly={!!selectedGame?.game_result && !resultUnlocked} onUnlock={() => setResultUnlocked(true)} lang={formData.lang} />
+          <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} className="col-span-2 md:col-span-4 print:col-span-4" readOnly={!!selectedGame?.game_result && !resultUnlocked} onUnlock={() => setResultUnlocked(true)} lang={formData.lang} />
         </div>
 
         {/* Legend */}

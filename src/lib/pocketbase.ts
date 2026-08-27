@@ -632,11 +632,21 @@ export type EmailTemplates = {
   // A plain array is the pre-3-templates shape, which a cached response can
   // still be; read it as "the same list for every kind".
   placeholders: Record<string, string[]> | string[];
+  // What the server will actually substitute, including the English aliases it
+  // does not advertise. Absent on an older server — then the advertised list is
+  // all we know.
+  accepted?: Record<string, string[]>;
 };
 
 export function placeholdersFor(t: EmailTemplates, kind: EmailTemplateKind): string[] {
   if (Array.isArray(t.placeholders)) return t.placeholders;
   return t.placeholders?.[kind] ?? [];
+}
+
+/** The names that render — used to decide what to warn about, which is a
+ *  different question from what to offer. */
+export function acceptedPlaceholdersFor(t: EmailTemplates, kind: EmailTemplateKind): string[] {
+  return t.accepted?.[kind] ?? placeholdersFor(t, kind);
 }
 export type ReminderPreview = {
   enabled: boolean;

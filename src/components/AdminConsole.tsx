@@ -10,7 +10,7 @@ import {
   getAdminShortcutRcs, setAdminShortcutRcs,
   loadRcOverview, listRefereeCoachPeople, assignRcToGame,
   getSettings, putSettings, loadEligibleGames,
-  getEmailTemplates, putEmailTemplates, placeholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
+  getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
   getSurveyConfig, putSurveyConfig,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
   syncGames, type GamesSyncStatus,
@@ -1481,11 +1481,28 @@ function TemplateField({ value, onChange, rows, singleLine, known }: {
   // A fixed one-row box clips a subject that wraps on a narrow screen, and a
   // scrollbar on a single line reads worse than a second line does. Grow to
   // fit instead — the mirror is sized by this wrapper, so it follows.
+  //
+  // Measured on a ResizeObserver, not on value alone: the console mounts every
+  // tab and hides the inactive ones with `hidden`, and an element in a
+  // display:none subtree reports scrollHeight 0. The first measurement
+  // therefore collapsed the box to its two borders, nothing re-measured it when
+  // the tab was finally shown, and the subject sat below a 2px sliver of a
+  // field. The observer fires when it gets a size, which is exactly then.
   useEffect(() => {
     const el = field.current;
     if (!singleLine || !el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+    const fit = () => {
+      // Still hidden: measuring now would write that collapsed height back.
+      if (el.scrollHeight === 0 && el.clientHeight === 0) return;
+      const next = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+      if (el.style.height === next) return; // guard: our own write re-triggers the observer
+      el.style.height = 'auto';
+      el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [value, singleLine]);
   return (
     <div className="relative bg-white rounded-lg">
@@ -1507,7 +1524,10 @@ function TemplateField({ value, onChange, rows, singleLine, known }: {
         onChange={(e) => onChange(singleLine ? e.target.value.replace(/[\r\n]+/g, ' ') : e.target.value)}
         className={cn(
           FIELD_METRICS,
-          'tpl-field relative w-full rounded-lg border border-stone-300 bg-transparent text-transparent caret-stone-900 focus:outline-none focus:ring-2 focus:ring-red-400',
+          // block: a textarea is inline by default, and the line box under it
+          // left the wrapper — and with it the absolutely-positioned mirror —
+          // six pixels taller than the field it is supposed to trace.
+          'tpl-field relative block w-full rounded-lg border border-stone-300 bg-transparent text-transparent caret-stone-900 focus:outline-none focus:ring-2 focus:ring-red-400',
           singleLine ? 'resize-none overflow-hidden' : 'resize-y',
         )}
       />
@@ -1568,7 +1588,11 @@ function EmailsAdmin({ t }: { t: T }) {
     // A server that predates this template kind simply has no entry for it.
     const blank: EmailTemplate = { subject: '', heading: '', intro: '', outro: '' };
     const tpl = data[kind] ?? data.defaults?.[kind] ?? blank;
-    const known = new Set(placeholdersFor(data, kind));
+    // Two different questions: which names to offer as chips, and which ones
+    // render. Warning about the second using the first told admins that the
+    // app's own default template would send empty values.
+    const offered = new Set(placeholdersFor(data, kind));
+    const known = new Set(acceptedPlaceholdersFor(data, kind));
     const unknownUsed = [tpl.subject, tpl.heading, tpl.intro, tpl.outro].some((v) => hasUnknownPlaceholder(v, known));
     return (
       <Card>
@@ -1601,7 +1625,9 @@ function EmailsAdmin({ t }: { t: T }) {
         </div>
         <p className="mt-3 text-[11px] text-stone-400">
           {t.tplPlaceholders}{' '}
-          {[...known].map((p) => (
+          {/* Offered, not accepted: the aliases render but are not advertised,
+              and a chip for each would double this list to no purpose. */}
+          {[...offered].map((p) => (
             <code key={p} className="inline-block mx-0.5 rounded bg-blue-50 border border-blue-100 px-1 py-0.5 text-[10px] text-blue-600">{`{{${p}}}`}</code>
           ))}
         </p>

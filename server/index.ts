@@ -1093,9 +1093,11 @@ type EmailTemplate = { subject: string; heading: string; intro: string; outro: s
 
 const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
   feedback: {
-    subject: 'SR-Coaching Feedback – Spiel {{matchNo}} ({{date}})',
+    subject: 'SR-Coaching Feedback – Spiel {{spielNr}} ({{datum}})',
     heading: 'SR-Coaching Feedback',
-    intro: 'Hallo {{coachee}}\n\nHier ist das Feedback zu deinem Einsatz als {{role}}. Der vollständige Bericht ist als PDF angehängt.',
+    // The documented German names, the ones the editor lists as chips. The
+    // English aliases below still work for a template written the other way.
+    intro: 'Hallo {{name}}\n\nHier ist das Feedback zu deinem Einsatz als {{rolle}}. Der vollständige Bericht ist als PDF angehängt.',
     outro: 'Wir freuen uns über dein Feedback zum Coaching-Erlebnis:',
   },
   // Goes to the RC commission, not back to the coachee — always German, and
@@ -1214,6 +1216,14 @@ function emailVars(o: {
 // What the guided editor offers for a mail built around a game. Names only —
 // emailVars() also answers to English aliases, kept working but not advertised.
 const EMAIL_PLACEHOLDERS_MATCH = ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'uhrzeit', 'heim', 'gast', 'liga', 'halle', 'spielNr', 'rolle'];
+
+// Everything emailVars() answers to but does not advertise. The editor warns
+// about a placeholder it does not recognise — "renders empty when it is sent" —
+// so a name that DOES render has to be in this list, or the warning is a lie
+// about a template that works. It was one: the shipped default used {{coachee}}
+// and {{role}}, and the editor flagged both.
+const EMAIL_PLACEHOLDER_ALIASES = ['coachee', 'rc', 'date', 'time', 'location', 'homeTeam', 'awayTeam', 'match', 'league', 'matchNo', 'role'];
+const EMAIL_PLACEHOLDERS_SURVEY = ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'spielNr'];
 
 // Admin-edited prose → escaped HTML paragraphs (blank line = new paragraph).
 function textBlockHtml(text: string): string {
@@ -7107,7 +7117,14 @@ app.get('/api/admin/email-templates', requireAdminSession, async (_req: Request,
       placeholders: {
         feedback: EMAIL_PLACEHOLDERS_MATCH,
         reminder: EMAIL_PLACEHOLDERS_MATCH,
-        survey: ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'spielNr'],
+        survey: EMAIL_PLACEHOLDERS_SURVEY,
+      },
+      // What renders, as opposed to what is offered: the chips stay German, and
+      // a template using an alias is left in peace instead of being warned about.
+      accepted: {
+        feedback: [...EMAIL_PLACEHOLDERS_MATCH, ...EMAIL_PLACEHOLDER_ALIASES],
+        reminder: [...EMAIL_PLACEHOLDERS_MATCH, ...EMAIL_PLACEHOLDER_ALIASES],
+        survey: [...EMAIL_PLACEHOLDERS_SURVEY, 'coachee', 'rc', 'date', 'matchNo'],
       },
     });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }

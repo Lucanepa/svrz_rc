@@ -4305,21 +4305,38 @@ app.post('/api/admin/referees/import', requireAdminSession, async (req: Request,
   }
 });
 
-/** The address the register holds for a referee, when their name names exactly
- *  one of them. Used only to give a TEST game a recipient: a throwaway fixture
- *  is filed against whoever stood on it, and that is usually nobody's coachee.
- *  Ambiguity answers nothing, for the reason it always does here. */
-async function refereeRegisterEmail(name: string): Promise<{ email: string; ambiguous: boolean }> {
+/** The contact the register holds for a referee. Used only to give a TEST game
+ *  a recipient: a throwaway fixture is filed against whoever stood on it, and
+ *  that is usually nobody's coachee.
+ *
+ *  The SV-Nr. is asked first and answers alone — it is the identity the manual
+ *  game form records precisely so that a name never has to be matched. Only a
+ *  game without one falls back to the name, where ambiguity answers nothing,
+ *  for the reason it always does here. */
+async function refereeRegisterContact(
+  name: string,
+  svNumber = '',
+): Promise<{ email: string; name: string; ambiguous: boolean }> {
+  const rows = await listRefereeRecords();
+  const wantedId = asText(svNumber);
+  if (wantedId) {
+    const byId = rows.find((r) => asText(r.sv_number) === wantedId);
+    if (byId) {
+      const person = refereeFromRecord(byId);
+      return { email: singleAddress(person.email), name: person.name || name, ambiguous: false };
+    }
+  }
   const wanted = normalizeName(name);
-  if (!wanted) return { email: '', ambiguous: false };
-  const hits = (await listRefereeRecords()).filter((r) => {
+  if (!wanted) return { email: '', name: '', ambiguous: false };
+  const hits = rows.filter((r) => {
     const first = asText(r.first_name), last = asText(r.last_name);
     return wanted === normalizeName(`${first} ${last}`)
       || wanted === normalizeName(`${last} ${first}`)
       || wanted === normalizeName(asText(r.full_name));
   });
-  if (hits.length !== 1) return { email: '', ambiguous: hits.length > 1 };
-  return { email: singleAddress(asText(hits[0].email)), ambiguous: false };
+  if (hits.length !== 1) return { email: '', name: '', ambiguous: hits.length > 1 };
+  const person = refereeFromRecord(hits[0]);
+  return { email: singleAddress(person.email), name: person.name || name, ambiguous: false };
 }
 
 /** Writes the SV-Nr. onto every coachee whose name resolves to exactly one
@@ -6915,7 +6932,12 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       // outbox retried it forever instead of surfacing the fix.
       if (!isRecordNotFound(lookupError)) throw lookupError;
       const isTestGame = (await getManualGameIds()).has(String(game.id));
-      const fromRegister = isTestGame ? await refereeRegisterEmail(refereeName) : { email: '', ambiguous: false };
+      const fromRegister = isTestGame
+        ? await refereeRegisterContact(
+          refereeName,
+          asText(game[role === '1. SR' ? 'first_referee_id' : 'second_referee_id']),
+        )
+        : { email: '', name: '', ambiguous: false };
       if (!fromRegister.email) {
         res.status(422).json({
           error: isTestGame
@@ -7594,6 +7616,7 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
   await ensureAdminAuth();
   const tpl = await getEmailTemplate('reminder');
   const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
+  const manualIds = await getManualGameIds();
   const plans: ReminderPlan[] = [];
   for (const game of games) {
     if (!rcRefPresent(game.assigned_rc_id, game.assigned_rc)) continue; // only games an RC has taken
@@ -7605,16 +7628,40 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
       : people.find((p) => normalizeName(p.fullName) === normalizeName(game.assigned_rc));
     const rcName = holder?.fullName || asText(game.assigned_rc);
     const rcEmail = singleAddress(holder?.email);
+    // A test fixture is exempt from the season window everywhere else, and has
+    // to be here too: one typed in August belongs to a season that ended in
+    // April, so a strict lookup refuses the very coachee standing on it.
+    const isTest = manualIds.has(String(game.id));
+    // Nobody referees both ends of one match. A game naming the same person
+    // twice is a typo — or a test fixture filled in quickly — and sending them
+    // the identical mail twice is how "why did I get two e-mails?" starts.
+    const already = new Set<string>();
     for (const [roleLabel, refField] of [['1. SR', 'first_referee'], ['2. SR', 'second_referee']] as const) {
       const refereeName = asText(game[refField]);
       if (!refereeName) continue;
       const gameSeason = seasonOfDate(asText(game.match_date));
+      const refereeId = asText(game[`${refField}_id`]);
+      const person = refereeId || normalizeName(refereeName);
+      if (already.has(person)) continue;
+      already.add(person);
       const coachee = await findCoacheeByRefereeName(refereeName, gameSeason, {
-        strictSeason: true,
-        refereeId: asText(game[`${refField}_id`]),
+        strictSeason: !isTest,
+        refereeId,
       });
-      const email = coachee ? singleAddress(coachee.email) : '';
-      if (!coachee || !email) {
+      let email = coachee ? singleAddress(coachee.email) : '';
+      let recipientName = coachee ? asText(coachee.full_name) || refereeName : refereeName;
+      // The same fallback the feedback submit uses, for the same reason: a test
+      // game's whole purpose is to walk the flow through, and the referee on
+      // one is usually nobody's coachee. Without this the one game created to
+      // test the reminder is the one game that can never produce one.
+      const fromRegister = !email && isTest
+        ? await refereeRegisterContact(refereeName, refereeId)
+        : { email: '', name: '', ambiguous: false };
+      if (fromRegister.email) {
+        email = fromRegister.email;
+        recipientName = fromRegister.name || refereeName;
+      }
+      if (!email) {
         // Silence here is how this job hides: it once reported "0 sent, 0
         // skipped (of 0 due)" every morning for a month and read like a quiet
         // Tuesday. Say who was dropped and why, so the Protokoll can be asked.
@@ -7622,7 +7669,11 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
           lvl: 'warn', src: 'server', evt: 'reminder.skip',
           msg: `No reminder for ${refereeName} (${roleLabel}) on ${asText(game.match_no) || game.id}`,
           data: {
-            reason: coachee ? 'no e-mail on file' : `not a coachee in ${gameSeason}`,
+            reason: isTest
+              ? (fromRegister.ambiguous
+                ? 'test game: the name matches several referees in the register'
+                : 'test game: neither a coachee nor a single register entry')
+              : coachee ? 'no e-mail on file' : `not a coachee in ${gameSeason}`,
             referee: refereeName, season: gameSeason, rc: rcName,
           },
         });
@@ -7631,7 +7682,7 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
       const built = buildTemplatedEmail({
         tpl,
         vars: emailVars({
-          refereeName: asText(coachee.full_name) || refereeName,
+          refereeName: recipientName,
           rcName,
           matchNo: asText(game.match_no),
           league: asText(game.league),
@@ -7647,7 +7698,7 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
       plans.push({
         gameId: String(game.id), role: roleLabel, to: email, cc: rcEmail ? [rcEmail] : [],
         subject: built.subject, text: built.text, html: built.html,
-        coachee: asText(coachee.full_name) || refereeName, rc: rcName,
+        coachee: recipientName, rc: rcName,
         match: `${asText(game.home_team)} – ${asText(game.away_team)}`,
       });
     }
@@ -7744,9 +7795,14 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
 
     const plans = await buildRemindersFor([game]);
     if (plans.length === 0) {
-      // The same reasons the daily job logs: nobody on this game is a coachee
-      // of its season, or the coachee has no address.
-      res.status(422).json({ error: 'Keine Empfänger: die SR dieses Spiels sind keine Coachees dieser Saison (oder haben keine E-Mail).' });
+      // The same reasons the daily job logs — named, because "no recipients" on
+      // its own sends a coach looking in the wrong place.
+      const isTest = (await getManualGameIds()).has(String(game.id));
+      res.status(422).json({
+        error: isTest
+          ? 'Keine Empfänger: die SR dieses Testspiels sind weder Coachees noch eindeutig im Schiedsrichter-Register. Bitte im Admin-Bereich einen Namen aus der Liste wählen.'
+          : 'Keine Empfänger: die SR dieses Spiels sind keine Coachees dieser Saison (oder haben keine E-Mail).',
+      });
       return;
     }
 

@@ -70,6 +70,77 @@ const REGULAR_SET_TARGET = 25;
 const DECIDING_SET_TARGET = 15;
 
 /**
+ * What is wrong with one set, or null if nothing is.
+ *
+ * `targets` is what the set could have been played to: 25 for a regular set,
+ * 15 for a decider — and BOTH for a third set, which is a decider in the
+ * best-of-three the junior competitions play and an ordinary set otherwise.
+ * The set has to satisfy one of them; the message names the first, which is the
+ * ordinary case.
+ */
+export function validateSet(set: SetScore, setNo: number, targets: number[], lang: 'DE' | 'EN'): string | null {
+  const de = lang === 'DE';
+  const h = Number(set.h);
+  const a = Number(set.a);
+  if (!isSetComplete(set) || !Number.isFinite(h) || !Number.isFinite(a)) {
+    return de ? `Satz ${setNo}: Punkte fehlen.` : `Set ${setNo}: points are missing.`;
+  }
+  if (h === a) {
+    return de
+      ? `Satz ${setNo} (${h}:${a}): ein Satz kann nicht unentschieden enden.`
+      : `Set ${setNo} (${h}:${a}): a set cannot end level.`;
+  }
+  const winner = Math.max(h, a);
+  const loser = Math.min(h, a);
+  const against = (target: number): string | null => {
+    if (winner < target) {
+      return de
+        ? `Satz ${setNo} (${h}:${a}): der Sieger braucht mindestens ${target} Punkte.`
+        : `Set ${setNo} (${h}:${a}): the winner needs at least ${target} points.`;
+    }
+    if (winner - loser < 2) {
+      return de
+        ? `Satz ${setNo} (${h}:${a}): mindestens 2 Punkte Vorsprung.`
+        : `Set ${setNo} (${h}:${a}): a two-point lead is required.`;
+    }
+    // Past the target the set runs until someone leads by exactly two, so a
+    // 27:20 never happened.
+    if (winner > target && winner - loser > 2) {
+      return de
+        ? `Satz ${setNo} (${h}:${a}): über ${target} endet der Satz bei 2 Punkten Vorsprung.`
+        : `Set ${setNo} (${h}:${a}): past ${target} the set ends at a two-point lead.`;
+    }
+    return null;
+  };
+  const failures = targets.map(against);
+  return failures.some((f) => f === null) ? null : failures[0];
+}
+
+/** Which targets a set can have been played to, by its position alone.
+ *
+ *  Mid-entry nobody knows yet whether this is a best-of-three, so the third set
+ *  is allowed to be either — 15:13 and 25:20 are both real third sets. The
+ *  fifth is only ever a decider. */
+export function targetsForSet(setNo: number): number[] {
+  if (setNo === 5) return [DECIDING_SET_TARGET];
+  if (setNo === 3) return [REGULAR_SET_TARGET, DECIDING_SET_TARGET];
+  return [REGULAR_SET_TARGET];
+}
+
+/** The first set that could not have been played that way, while typing.
+ *
+ *  Sets still empty are the normal state halfway through entry and say nothing;
+ *  a set with points in it is checked the moment both numbers are there. */
+export function findSetError(sets: SetScore[], lang: 'DE' | 'EN'): { index: number; message: string } | null {
+  for (let i = 0; i < sets.length; i += 1) {
+    if (!isSetComplete(sets[i])) continue;
+    const message = validateSet(sets[i], i + 1, targetsForSet(i + 1), lang);
+    if (message) return { index: i, message };
+  }
+  return null;
+}
+
+/**
  * Null when the result is a result a volleyball match could actually produce.
  * Best-of-5 is the normal case; several junior leagues play best-of-3, where
  * 2:0 / 2:1 is complete and the deciding set is the third.
@@ -117,29 +188,11 @@ export function validateResult(value: string, lang: 'DE' | 'EN'): string | null 
     if (!Number.isFinite(sh) || !Number.isFinite(sa) || sets[i].h === '' || sets[i].a === '') {
       return de ? `Satz ${setNo}: Punkte fehlen.` : `Set ${setNo}: points are missing.`;
     }
+    // Here the match score is known, so the decider is known too — one target,
+    // not the two the field has to allow while the score is still being typed.
     const target = setNo === decidingSet ? DECIDING_SET_TARGET : REGULAR_SET_TARGET;
-    const winner = Math.max(sh, sa);
-    const loser = Math.min(sh, sa);
-    if (sh === sa) {
-      return de ? `Satz ${setNo} (${sh}:${sa}): ein Satz kann nicht unentschieden enden.` : `Set ${setNo} (${sh}:${sa}): a set cannot end level.`;
-    }
-    if (winner < target) {
-      return de
-        ? `Satz ${setNo} (${sh}:${sa}): der Sieger braucht mindestens ${target} Punkte.`
-        : `Set ${setNo} (${sh}:${sa}): the winner needs at least ${target} points.`;
-    }
-    if (winner - loser < 2) {
-      return de
-        ? `Satz ${setNo} (${sh}:${sa}): mindestens 2 Punkte Vorsprung.`
-        : `Set ${setNo} (${sh}:${sa}): a two-point lead is required.`;
-    }
-    // Past the target the set runs until someone leads by exactly two, so a
-    // 27:20 never happened.
-    if (winner > target && winner - loser > 2) {
-      return de
-        ? `Satz ${setNo} (${sh}:${sa}): über ${target} endet der Satz bei 2 Punkten Vorsprung.`
-        : `Set ${setNo} (${sh}:${sa}): past ${target} the set ends at a two-point lead.`;
-    }
+    const setError = validateSet(sets[i], setNo, [target], lang);
+    if (setError) return setError;
     if (sh > sa) homeSetsWon += 1; else awaySetsWon += 1;
   }
 

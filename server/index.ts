@@ -4230,6 +4230,23 @@ app.post('/api/admin/referees/import', requireAdminSession, async (req: Request,
   }
 });
 
+/** The address the register holds for a referee, when their name names exactly
+ *  one of them. Used only to give a TEST game a recipient: a throwaway fixture
+ *  is filed against whoever stood on it, and that is usually nobody's coachee.
+ *  Ambiguity answers nothing, for the reason it always does here. */
+async function refereeRegisterEmail(name: string): Promise<{ email: string; ambiguous: boolean }> {
+  const wanted = normalizeName(name);
+  if (!wanted) return { email: '', ambiguous: false };
+  const hits = (await listRefereeRecords()).filter((r) => {
+    const first = asText(r.first_name), last = asText(r.last_name);
+    return wanted === normalizeName(`${first} ${last}`)
+      || wanted === normalizeName(`${last} ${first}`)
+      || wanted === normalizeName(asText(r.full_name));
+  });
+  if (hits.length !== 1) return { email: '', ambiguous: hits.length > 1 };
+  return { email: singleAddress(asText(hits[0].email)), ambiguous: false };
+}
+
 /** Writes the SV-Nr. onto every coachee whose name resolves to exactly one
  *  referee. This is the one place a name is still matched to a number — after
  *  it, the number is what everything else uses.
@@ -6786,33 +6803,58 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       return;
     }
 
-    let coacheeResult: { collection: ReturnType<typeof pb.collection>; coachee: AnyRecord };
+    // Who this report is about, and where it goes.
+    //
+    // Normally that is a coachee row: the report is filed against it, counted
+    // on it, and mailed to the address on it. A TEST game is the exception —
+    // its whole purpose is to walk the flow through, and the referee standing
+    // on one is usually nobody's coachee. Rather than refuse the very game the
+    // console created for this, the report is then addressed from the referee
+    // register and filed against no coachee at all: nothing is counted, nothing
+    // is written onto anybody's record, and the mail goes out exactly as it
+    // would for a real one.
+    let coachee: AnyRecord | null = null;
+    let coacheeCollection: ReturnType<typeof pb.collection> | null = null;
+    let coacheeEmail = '';
     try {
       // Season comes from the GAME, not from whatever the console has selected.
-      coacheeResult = await findCoacheeRecord(
+      const found = await findCoacheeRecord(
         refereeName,
         seasonOfDate(asText(game.match_date)),
         asText(game[role === '1. SR' ? 'first_referee_id' : 'second_referee_id']),
       );
+      coachee = found.coachee;
+      coacheeCollection = found.collection;
+      coacheeEmail = singleAddress(coachee.email);
+      if (!coacheeEmail) {
+        res.status(400).json({
+          error: asText(coachee.email)
+            ? 'Die E-Mail-Adresse des Coachees ist ungültig (genau eine Adresse erwartet). Bitte im Admin-Panel korrigieren.'
+            : 'Coachee has no email address. Add an email in the admin panel before submitting feedback.',
+        });
+        return;
+      }
     } catch (lookupError) {
       // The referee simply isn't on the coachee list — someone has to add them.
       // Answered as a 500 this looked like a server fault and the offline
       // outbox retried it forever instead of surfacing the fix.
       if (!isRecordNotFound(lookupError)) throw lookupError;
-      res.status(422).json({ error: `"${refereeName}" ist nicht als Coachee erfasst. Bitte im Admin-Bereich anlegen.` });
-      return;
-    }
-    const coachee = coacheeResult.coachee;
-    const coacheeCollection = coacheeResult.collection;
-
-    const coacheeEmail = singleAddress(coachee.email);
-    if (!coacheeEmail) {
-      res.status(400).json({
-        error: asText(coachee.email)
-          ? 'Die E-Mail-Adresse des Coachees ist ungültig (genau eine Adresse erwartet). Bitte im Admin-Panel korrigieren.'
-          : 'Coachee has no email address. Add an email in the admin panel before submitting feedback.',
+      const isTestGame = (await getManualGameIds()).has(String(game.id));
+      const fromRegister = isTestGame ? await refereeRegisterEmail(refereeName) : { email: '', ambiguous: false };
+      if (!fromRegister.email) {
+        res.status(422).json({
+          error: isTestGame
+            ? (fromRegister.ambiguous
+              ? `Testspiel: „${refereeName}" steht mehrfach im Schiedsrichter-Register — bitte einen eindeutigen Namen eintragen.`
+              : `Testspiel: „${refereeName}" ist weder Coachee noch im Schiedsrichter-Register — es gibt keine Adresse, an die das Feedback gehen könnte.`)
+            : `"${refereeName}" ist nicht als Coachee erfasst. Bitte im Admin-Bereich anlegen.`,
+        });
+        return;
+      }
+      coacheeEmail = fromRegister.email;
+      log.info('feedback.submit', 'test game filed against the referee register', {
+        game: asText(game.match_no) || game.id, referee: refereeName,
       });
-      return;
     }
 
     // Phase 2 — Save (existing logic)
@@ -6824,7 +6866,10 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     const created = await withCollection<AnyRecord>(collectionCandidates.refereeCoaches, (collection) =>
       collection.create({
         game: game.id,
-        coachee: coachee.id,
+        // Empty on a test game filed against the register — there is no coachee
+        // row to point at, and inventing one is how a throwaway ends up in
+        // somebody's coaching history.
+        coachee: coachee ? coachee.id : '',
         rc_name: asText(formData.meta?.rc),
         // Same identity the observation is linked to, one line up: the session's
         // own id for an RC submit, the resolved name for an admin's.
@@ -6851,10 +6896,13 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       return;
     }
     const attachmentName = attachmentFilename(String(pdfFilename || 'feedback.pdf'), attachmentType);
-    const priorEntries = Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries : [];
+    const priorEntries = coachee && Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries : [];
     let observationId = '';
     try {
-      await coacheeCollection.update(coachee.id, {
+      // Writes onto a coachee, so it is skipped when there is none: a test game
+      // filed against the register leaves the report and the mail behind it and
+      // nothing else.
+      if (coachee && coacheeCollection) await coacheeCollection.update(coachee.id, {
         feedback_entries: [
           ...priorEntries,
           {
@@ -6869,7 +6917,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
 
       const grades = buildGradesPayload(formData);
       const observationPayload: Record<string, unknown> = {
-        coachee: coachee.id,
+        coachee: coachee ? coachee.id : '',
         referee_coach: refereeCoachPersonId,
         game: game.id,
         coachee_function: mapCoacheeFunction(role),
@@ -6889,10 +6937,15 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       if (gameResult) observationPayload.game_result = gameResult;
       observationPayload.second_observation = asBoolean(formData.results?.secondBesuch, false);
 
-      const observation = await withCollection<AnyRecord>(collectionCandidates.observations, (collection) =>
-        collection.create(observationPayload),
-      );
-      observationId = observation.id;
+      // An observation is what a season's target counts, so a throwaway must
+      // not add to it — and one pointing at no coachee would be counted by
+      // nobody and readable by no one.
+      if (coachee) {
+        const observation = await withCollection<AnyRecord>(collectionCandidates.observations, (collection) =>
+          collection.create(observationPayload),
+        );
+        observationId = observation.id;
+      }
 
       // Upload the filed document to the feedback record. A manual upload may
       // be a phone photo of a paper form, so the type comes from the bytes.
@@ -6914,13 +6967,15 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         try { await withCollection(collectionCandidates.observations, (c) => c.delete(observationId)); }
         catch (e) { rollbackClean = false; log.error('feedback.submit', 'rollback: observation delete failed', { feedbackId: created.id, observationId, error: String(e) }); }
       }
-      try {
-        const fresh = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(coachee.id));
-        const cur = Array.isArray(fresh.feedback_entries) ? fresh.feedback_entries as AnyRecord[] : [];
-        await coacheeCollection.update(coachee.id, {
-          feedback_entries: cur.filter((e) => asText((e as AnyRecord).referee_coaches_id) !== created.id),
-        });
-      } catch (e) { rollbackClean = false; log.error('feedback.submit', 'rollback: coachee entry cleanup failed', { feedbackId: created.id, coacheeId: coachee.id, error: String(e) }); }
+      if (coachee && coacheeCollection) {
+        try {
+          const fresh = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(coachee.id));
+          const cur = Array.isArray(fresh.feedback_entries) ? fresh.feedback_entries as AnyRecord[] : [];
+          await coacheeCollection.update(coachee.id, {
+            feedback_entries: cur.filter((e) => asText((e as AnyRecord).referee_coaches_id) !== created.id),
+          });
+        } catch (e) { rollbackClean = false; log.error('feedback.submit', 'rollback: coachee entry cleanup failed', { feedbackId: created.id, coacheeId: coachee.id, error: String(e) }); }
+      }
       if (rollbackClean) {
         try { await withCollection(collectionCandidates.refereeCoaches, (c) => c.delete(created.id)); }
         catch (e) { log.error('feedback.submit', 'rollback: feedback delete failed', { feedbackId: created.id, error: String(e) }); }

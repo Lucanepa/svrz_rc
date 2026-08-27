@@ -38,7 +38,7 @@ import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
 import { subscribeLive } from './lib/liveEvents';
 import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml } from './lib/richText';
-import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
+import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname } from './lib/coacheeName';
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
@@ -6537,7 +6537,14 @@ function ResultField({ label, value, onChange, readOnly = false, onUnlock, lang,
   // Only complain once something is actually filled in, and never about the
   // sets still to come — that is the normal state halfway through entry.
   const pending = /^(Bitte alle|Please enter all|Bitte das Ergebnis|Please enter the result)/;
-  const error = completed > 0 ? validateResult(value, lang) : null;
+  // A set is checked the moment both its numbers are there: 12:23 is not a set
+  // anybody played, and saying so while it is being typed is the whole point.
+  // The MATCH score is derived from the sets, so before the third set is won it
+  // reads "1:1 is not possible" — true, and useless, and it was the only thing
+  // this field said for the entire time a score was being entered. It is asked
+  // for once the match is actually decided.
+  const setIssue = findSetError(sets, lang);
+  const error = setIssue?.message ?? (completed > 0 && decided ? validateResult(value, lang) : null);
   const bad = !!error && !pending.test(error);
   const c2 = (v: string) => v.replace(/\D/g, '').slice(0, 2);
   const setPoint = (i: number, side: 'h' | 'a', v: string) => {
@@ -6547,8 +6554,15 @@ function ResultField({ label, value, onChange, readOnly = false, onUnlock, lang,
     const t = tallyFromSets(next);
     onChange(next.length === 0 ? '' : formatResult(String(t.home), String(t.away), next));
   };
-  const sbox = cn('w-7 h-7 flex items-center justify-center text-sm font-bold rounded border', bad ? 'border-red-500 bg-red-50 text-red-700' : 'border-stone-400 bg-white text-stone-800');
-  const pbox = 'w-7 h-6 text-center text-[11px] font-medium rounded border border-stone-300 outline-none focus:ring-2 focus:ring-red-500';
+  // Red on the derived match score only when the match score is what is wrong.
+  // A bad set marks the set; making both shout leaves the reader hunting.
+  const sbox = cn('w-7 h-7 flex items-center justify-center text-sm font-bold rounded border', bad && !setIssue ? 'border-red-500 bg-red-50 text-red-700' : 'border-stone-400 bg-white text-stone-800');
+  const pbox = (i: number) => cn(
+    'w-7 h-6 text-center text-[11px] font-medium rounded border outline-none focus:ring-2 focus:ring-red-500',
+    // Marked on the set that is wrong, not on the row as a whole: with five of
+    // them the message alone leaves the reader counting boxes.
+    setIssue?.index === i ? 'border-red-500 bg-red-50 text-red-700' : 'border-stone-300',
+  );
   const ROMAN = ['I', 'II', 'III', 'IV', 'V'];
   return (
     <div className={cn("border-r border-b border-stone-900 p-1.5 flex flex-col min-h-[48px]", className)}>
@@ -6588,9 +6602,9 @@ function ResultField({ label, value, onChange, readOnly = false, onUnlock, lang,
                 <div key={i} className="flex flex-col items-center gap-0.5 rounded border border-stone-200 bg-white px-1 py-0.5">
                   <span className="text-[9px] font-bold text-stone-400 leading-none">{ROMAN[i] ?? i + 1}</span>
                   <div className="flex items-center gap-0.5">
-                    <input inputMode="numeric" maxLength={2} value={s.h} readOnly={readOnly} onChange={e => setPoint(i, 'h', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Heim' : 'home'}`} />
+                    <input inputMode="numeric" maxLength={2} value={s.h} readOnly={readOnly} onChange={e => setPoint(i, 'h', e.target.value)} className={pbox(i)} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Heim' : 'home'}`} />
                     <span className="text-stone-300 text-[10px]">:</span>
-                    <input inputMode="numeric" maxLength={2} value={s.a} readOnly={readOnly} onChange={e => setPoint(i, 'a', e.target.value)} className={pbox} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Gast' : 'away'}`} />
+                    <input inputMode="numeric" maxLength={2} value={s.a} readOnly={readOnly} onChange={e => setPoint(i, 'a', e.target.value)} className={pbox(i)} aria-label={`${lang === 'DE' ? 'Satz' : 'Set'} ${i + 1} ${lang === 'DE' ? 'Gast' : 'away'}`} />
                   </div>
                 </div>
               ))}

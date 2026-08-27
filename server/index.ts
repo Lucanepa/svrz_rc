@@ -2012,6 +2012,25 @@ function mapSrGoal(value: unknown): string | undefined {
   return raw;
 }
 
+// The remarks a coach writes can now carry bold, italic, underline, strike and
+// colour — a restricted HTML subset (src/lib/richText.ts) that the PDF lays out
+// as runs. The observations collection is a DATA record, not a document: the
+// words belong there and the formatting belongs in the PDF, so it is flattened
+// on the way in. Anything written before this is plain text and passes through
+// untouched.
+function richTextToPlain(value: unknown): string {
+  return asText(value)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(?:b|strong|i|em|u|s|strike|del|span|font)\b[^>]*>/gi, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    // Last, or "&amp;lt;" would decode twice into a tag that was never there.
+    .replace(/&amp;/g, '&');
+}
+
 function buildGradesPayload(formData: unknown) {
   const sections = Array.isArray((formData as { sections?: unknown[] })?.sections)
     ? (formData as { sections: Array<{ title?: string; items?: unknown[] }> }).sections
@@ -6447,7 +6466,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         game: game.id,
         coachee_function: mapCoacheeFunction(role),
         grades,
-        remarks: asText(formData.results?.bemerkungen),
+        remarks: richTextToPlain(formData.results?.bemerkungen),
       };
 
       const gameLevel = mapGameLevel(formData.results?.spielniveau);

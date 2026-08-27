@@ -37,6 +37,7 @@ import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOut
 import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
 import { subscribeLive } from './lib/liveEvents';
+import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml } from './lib/richText';
 import { parseResult, formatResult, validateResult, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname } from './lib/coacheeName';
@@ -513,10 +514,103 @@ function pdfFilename(formData: FeedbackFormData): string {
   return `${match}-${role}.pdf`;
 }
 
+// One editable surface, used both inline and in the full-screen editor.
+//
+// Uncontrolled on purpose: writing `value` back into the DOM on every keystroke
+// puts the caret at position zero, which is the classic contenteditable bug. The
+// DOM is authoritative while the field has focus, and the incoming value is only
+// applied when it differs from what is already rendered.
+function RichSurface({ value, onChange, placeholder, className, style, autoFocus, onFocus }: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  className?: string;
+  style?: React.CSSProperties;
+  autoFocus?: boolean;
+  onFocus?: () => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const next = richToEditableHtml(value);
+    // Comparing against what we last emitted, not against innerHTML verbatim:
+    // the browser normalises its own markup and would otherwise look changed
+    // after every keystroke.
+    if (domToRich(el) !== value) el.innerHTML = next;
+  }, [value]);
+  useEffect(() => {
+    if (autoFocus) ref.current?.focus();
+  }, [autoFocus]);
+  return (
+    <div
+      ref={ref}
+      contentEditable
+      suppressContentEditableWarning
+      role="textbox"
+      aria-multiline="true"
+      aria-label={placeholder}
+      data-placeholder={placeholder}
+      onFocus={onFocus}
+      onInput={() => { const el = ref.current; if (el) onChange(domToRich(el)); }}
+      onBlur={() => { const el = ref.current; if (el) onChange(domToRich(el)); }}
+      // Paste as text, then let the toolbar add formatting: pasting from Word
+      // otherwise drags in fonts, sizes and background colours that the subset
+      // would drop anyway, mid-sentence and invisibly.
+      onPaste={(e) => {
+        e.preventDefault();
+        const text = e.clipboardData.getData('text/plain');
+        document.execCommand('insertText', false, text);
+      }}
+      className={cn('rich-surface outline-none whitespace-pre-wrap break-words', className)}
+      style={style}
+    />
+  );
+}
+
+const RICH_COLOURS = ['#1c1917', '#b91c1c', '#b45309', '#15803d', '#1d4ed8', '#7e22ce'];
+
+/** The formatting toolbar. execCommand is deprecated and still the only thing
+ *  every browser implements for a contenteditable selection; the output is
+ *  normalised by domToRich on the way out, so what it emits does not matter. */
+function RichToolbar({ de, onCommand, onBullet, children }: {
+  de: boolean;
+  onCommand: (command: string, value?: string) => void;
+  onBullet: () => void;
+  children?: React.ReactNode;
+}) {
+  const btn = 'h-8 min-w-8 px-2 rounded-lg border border-stone-200 text-xs font-medium text-stone-700 hover:bg-stone-100 transition-colors';
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button type="button" title={de ? 'Fett' : 'Bold'} aria-label={de ? 'Fett' : 'Bold'} onMouseDown={(e) => e.preventDefault()} onClick={() => onCommand('bold')} className={cn(btn, 'font-bold')}>B</button>
+      <button type="button" title={de ? 'Kursiv' : 'Italic'} aria-label={de ? 'Kursiv' : 'Italic'} onMouseDown={(e) => e.preventDefault()} onClick={() => onCommand('italic')} className={cn(btn, 'italic')}>I</button>
+      <button type="button" title={de ? 'Unterstrichen' : 'Underline'} aria-label={de ? 'Unterstrichen' : 'Underline'} onMouseDown={(e) => e.preventDefault()} onClick={() => onCommand('underline')} className={cn(btn, 'underline')}>U</button>
+      <button type="button" title={de ? 'Durchgestrichen' : 'Strikethrough'} aria-label={de ? 'Durchgestrichen' : 'Strikethrough'} onMouseDown={(e) => e.preventDefault()} onClick={() => onCommand('strikeThrough')} className={cn(btn, 'line-through')}>S</button>
+      <span className="mx-0.5 h-5 w-px bg-stone-200" />
+      {RICH_COLOURS.map((colour) => (
+        <button
+          key={colour}
+          type="button"
+          title={de ? 'Textfarbe' : 'Text colour'}
+          aria-label={`${de ? 'Textfarbe' : 'Text colour'} ${colour}`}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => onCommand('foreColor', colour)}
+          className="h-6 w-6 rounded-full border border-stone-300 hover:scale-110 transition-transform"
+          style={{ backgroundColor: colour }}
+        />
+      ))}
+      <span className="mx-0.5 h-5 w-px bg-stone-200" />
+      <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onBullet} className={btn}>• {de ? 'Aufzählung' : 'Bullet'}</button>
+      {children}
+    </div>
+  );
+}
+
 // Long-form field: the inline box grows with its content, and the expand button
 // opens a full-screen editor. On a phone the fixed 3-row box was unusable — the
 // keyboard covers the page and the form scrolls away under you while typing.
-// The value stays plain text, so the PDF and the e-mail need no HTML handling.
+// The value is the restricted HTML subset in src/lib/richText.ts — the same
+// string the PDF lays out as runs and the e-mail renders.
 function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeight, className }: {
   value: string;
   onChange: (v: string) => void;
@@ -527,26 +621,21 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const inlineRef = useRef<HTMLTextAreaElement | null>(null);
-  const grow = (el: HTMLTextAreaElement | null) => {
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  };
-  useEffect(() => { grow(inlineRef.current); }, [value]);
-  // Plain-text bullets: renders correctly in the PDF and the e-mail as-is.
-  const addBullet = () => onChange(value ? `${value.replace(/\s+$/, '')}\n• ` : '• ');
   const de = lang === 'DE';
+  // Plain-text bullets: renders correctly in the PDF and the e-mail as-is.
+  const addBullet = () => {
+    const plain = richToPlain(value);
+    onChange(value ? `${value.replace(/\s+$/, '')}${plain ? '\n' : ''}• ` : '• ');
+  };
   return (
     <>
       <div className="relative">
-        <textarea
-          ref={inlineRef}
-          className={cn('w-full text-xs leading-relaxed resize-none overflow-hidden outline-none bg-white placeholder:text-stone-300 border border-stone-200 rounded p-2 pr-8', className)}
-          style={{ minHeight }}
-          placeholder={placeholder}
+        <RichSurface
           value={value}
-          onChange={(e) => { onChange(e.target.value); grow(e.target); }}
+          onChange={onChange}
+          placeholder={placeholder}
+          className={cn('w-full text-xs leading-relaxed bg-white border border-stone-200 rounded p-2 pr-8', className)}
+          style={{ minHeight }}
         />
         <button
           type="button"
@@ -560,7 +649,9 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
       </div>
       {open && (
         <div className="no-print fixed inset-0 z-50 bg-stone-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4">
-          <div className="bg-white w-full sm:max-w-2xl h-[92dvh] sm:h-auto sm:max-h-[85vh] rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col">
+          {/* A full-screen editor with no dialog role is a page a screen reader
+              reads straight through, form behind and all. */}
+          <div role="dialog" aria-modal="true" aria-label={label} className="bg-white w-full sm:max-w-2xl h-[92dvh] sm:h-auto sm:max-h-[85vh] rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col">
             <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-stone-200">
               <h3 className="text-sm font-semibold text-stone-800">{label}</h3>
               <button type="button" onClick={() => setOpen(false)} className="text-stone-400 hover:text-stone-600" aria-label={de ? 'Schliessen' : 'Close'}>
@@ -568,21 +659,28 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
               </button>
             </div>
             <div className="flex items-center gap-2 px-4 py-2 border-b border-stone-100">
-              <button
-                type="button"
-                onClick={addBullet}
-                className="h-8 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"
-              >
-                • {de ? 'Aufzählung' : 'Bullet'}
-              </button>
-              <span className="ml-auto text-[11px] text-stone-400">{value.length}</span>
+              <RichToolbar
+                de={de}
+                onCommand={(command, commandValue) => {
+                  // styleWithCSS off: the browser emits <b>/<i>/<font color>
+                  // rather than inline styles, which is closer to the stored
+                  // subset — though domToRich normalises either way.
+                  document.execCommand('styleWithCSS', false, 'false');
+                  document.execCommand(command, false, commandValue);
+                }}
+                onBullet={addBullet}
+              />
+              <span className="ml-auto text-[11px] text-stone-400">{richToPlain(value).length}</span>
             </div>
-            <textarea
+            <RichSurface
               autoFocus
               value={value}
+              onChange={onChange}
               placeholder={placeholder}
-              onChange={(e) => onChange(e.target.value)}
-              className="flex-1 w-full resize-none outline-none px-4 py-3 text-sm leading-relaxed placeholder:text-stone-300"
+              // min-height, because a div is not a textarea: flex-1 inside an
+              // auto-height dialog collapses to nothing when it is empty, and
+              // the writing area then sits behind the backdrop.
+              className="flex-1 w-full overflow-auto px-4 py-3 text-sm leading-relaxed min-h-[45vh] sm:min-h-[280px]"
             />
             <div className="px-4 py-3 border-t border-stone-200 text-right">
               <button

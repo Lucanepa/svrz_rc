@@ -16,7 +16,8 @@ import { jsPDF } from 'jspdf';
 import qrcode from 'qrcode-generator';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
 import { BUILD_INFO } from './buildInfo';
-import { INTER_BOLD_B64, INTER_REGULAR_B64 } from './pdfFonts';
+import { INTER_BOLD_B64, INTER_BOLD_ITALIC_B64, INTER_ITALIC_B64, INTER_REGULAR_B64 } from './pdfFonts';
+import { toRuns, type RichRun } from './richText';
 import {
   FeedbackFormData,
   LEGEND,
@@ -198,6 +199,10 @@ class Sheet {
     this.doc.addFont('Inter-Regular.ttf', 'Inter', 'normal');
     this.doc.addFileToVFS('Inter-Bold.ttf', INTER_BOLD_B64);
     this.doc.addFont('Inter-Bold.ttf', 'Inter', 'bold');
+    // The italic faces are registered on first use, not here: jsPDF embeds every
+    // font that has been registered into the file it writes, so registering them
+    // up front would add ~90 KB of italics to every e-mail attachment, including
+    // the overwhelming majority that contain none.
     this.doc.setLineHeightFactor(1.15);
     // One chokepoint for every string that reaches the page — see pdfSafeText.
     const rawText = this.doc.text.bind(this.doc);
@@ -210,7 +215,21 @@ class Sheet {
     )) as jsPDF['text'];
   }
 
-  font(weight: 'normal' | 'bold', size: number, colour: Rgb = INK): this {
+  private italicReady = false;
+  /** Register the slanted faces the moment something asks for one. jsPDF has no
+   *  synthetic slant — an italic run without a registered face comes out
+   *  silently upright — but it also embeds whatever is registered. */
+  private ensureItalic(): void {
+    if (this.italicReady) return;
+    this.doc.addFileToVFS('Inter-Italic.ttf', INTER_ITALIC_B64);
+    this.doc.addFont('Inter-Italic.ttf', 'Inter', 'italic');
+    this.doc.addFileToVFS('Inter-BoldItalic.ttf', INTER_BOLD_ITALIC_B64);
+    this.doc.addFont('Inter-BoldItalic.ttf', 'Inter', 'bolditalic');
+    this.italicReady = true;
+  }
+
+  font(weight: 'normal' | 'bold' | 'italic' | 'bolditalic', size: number, colour: Rgb = INK): this {
+    if (weight === 'italic' || weight === 'bolditalic') this.ensureItalic();
     this.doc.setFont('Inter', weight);
     this.doc.setFontSize(size);
     this.doc.setTextColor(...colour);
@@ -607,6 +626,102 @@ function drawResultsRow(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
  * stretched. Placing the words individually is also the only way to keep the
  * per-line page-break control the remarks block needs.
  */
+/** The registered face a run needs. Four, because bold and italic combine. */
+function runStyle(run: RichRun): 'normal' | 'bold' | 'italic' | 'bolditalic' {
+  if (run.bold && run.italic) return 'bolditalic';
+  if (run.bold) return 'bold';
+  if (run.italic) return 'italic';
+  return 'normal';
+}
+
+function runColour(run: RichRun): Rgb {
+  if (!run.color) return INK;
+  const hex = run.color.replace('#', '');
+  return [
+    parseInt(hex.slice(0, 2), 16),
+    parseInt(hex.slice(2, 4), 16),
+    parseInt(hex.slice(4, 6), 16),
+  ];
+}
+
+/** One measurable piece of a line: a word or the space between two words. */
+type RunToken = { text: string; run: RichRun; space: boolean; w: number };
+
+function tokenise(sheet: Sheet, runs: RichRun[], size: number): RunToken[] {
+  const tokens: RunToken[] = [];
+  for (const run of runs) {
+    // Split on spaces but keep them: they are what justification stretches, and
+    // dropping them would glue an italic word to the roman one after it.
+    for (const piece of run.text.split(/(\s+)/)) {
+      if (!piece) continue;
+      sheet.font(runStyle(run), size);
+      tokens.push({ text: piece, run, space: /^\s+$/.test(piece), w: sheet.doc.getTextWidth(piece) });
+    }
+  }
+  return tokens;
+}
+
+/** Greedy wrap over runs. Returns visual lines, each still a list of runs, so a
+ *  bold word broken across two lines stays bold on both. */
+function wrapRuns(sheet: Sheet, runs: RichRun[], width: number, size: number): RichRun[][] {
+  const tokens = tokenise(sheet, runs, size);
+  const lines: RichRun[][] = [];
+  let line: RunToken[] = [];
+  let used = 0;
+  const flush = () => {
+    // Trailing spaces would be justified into the margin.
+    while (line.length && line[line.length - 1].space) line.pop();
+    lines.push(line.map((t) => ({ ...t.run, text: t.text })));
+    line = [];
+    used = 0;
+  };
+  for (const token of tokens) {
+    if (token.space && used === 0) continue; // no line starts with a space
+    if (used + token.w > width && used > 0) flush();
+    if (!token.space || used > 0) { line.push(token); used += token.w; }
+  }
+  if (line.length) flush();
+  return lines.length ? lines : [[]];
+}
+
+/**
+ * Draw one visual line of runs, justified like drawProseLine does for plain
+ * text: the extra width goes into the spaces, never inside a word.
+ */
+function drawRunLine(sheet: Sheet, runs: RichRun[], x: number, y: number, width: number, justify: boolean, size: number): void {
+  const { doc } = sheet;
+  const tokens = tokenise(sheet, runs, size);
+  if (!tokens.length) return;
+  const spaces = tokens.filter((t) => t.space).length;
+  const textW = tokens.reduce((sum, t) => sum + t.w, 0);
+  const spaceW = tokens.find((t) => t.space)?.w ?? 0;
+  // Same restraint as the plain path: a line of two words stretched across the
+  // column is not justified, it is broken.
+  const extra = justify && spaces > 0 && width > textW && (width - textW) / spaces <= spaceW * 4
+    ? (width - textW) / spaces
+    : 0;
+
+  let cx = x;
+  for (const token of tokens) {
+    const w = token.w + (token.space ? extra : 0);
+    if (!token.space) {
+      sheet.font(runStyle(token.run), size, runColour(token.run));
+      doc.text(token.text, cx, y, { baseline: 'middle' });
+      if (token.run.underline || token.run.strike) {
+        const [r, g, b] = runColour(token.run);
+        doc.setDrawColor(r, g, b);
+        doc.setLineWidth(0.4);
+        // Underline sits below the baseline, the strike through the middle of
+        // the x-height — both derived from the size so they follow the text.
+        const ly = token.run.underline ? y + size * 0.38 : y - size * 0.02;
+        doc.line(cx, ly, cx + token.w, ly);
+      }
+    }
+    cx += w;
+  }
+  sheet.font('normal', size, INK);
+}
+
 function drawProseLine(sheet: Sheet, line: string, x: number, y: number, width: number, justify: boolean): void {
   const { doc } = sheet;
   const words = justify ? line.trim().split(/\s+/).filter(Boolean) : [];
@@ -686,7 +801,17 @@ function drawRemarks(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
 
   for (const [index, block] of blocks.entries()) {
     sheet.font('normal', 8, INK);
-    const lines = sheet.blank ? [] : sheet.wrap(block.value, CONTENT_W - 20);
+    // Runs, not strings: the coach's remarks can be bold, italic, underlined,
+    // struck through or coloured, and the wrap has to measure each piece with
+    // its own face or a bold sentence overruns the column.
+    const lines: RichRun[][] = [];
+    if (!sheet.blank) {
+      for (const hardLine of toRuns(block.value)) {
+        // A blank line is the paragraph separator and has to survive the wrap.
+        if (!hardLine.length) { lines.push([]); continue; }
+        lines.push(...wrapRuns(sheet, hardLine, CONTENT_W - 20, 8));
+      }
+    }
 
     // Never strand a heading at the foot of a page: keep it with its first two
     // lines, or move the whole thing down.
@@ -716,9 +841,9 @@ function drawRemarks(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
       // short closing line to the full column is exactly what justification
       // should not do. A blank line is the paragraph separator.
       const next = lines[i + 1];
-      const endsParagraph = next === undefined || next.trim() === '';
-      const justify = line.trim() !== '' && !endsParagraph;
-      drawProseLine(sheet, line, MARGIN + 10, sheet.y + 5, textW, justify);
+      const isBlank = (l: RichRun[] | undefined) => l === undefined || l.every((r) => r.text.trim() === '');
+      const justify = !isBlank(line) && !isBlank(next);
+      drawRunLine(sheet, line, MARGIN + 10, sheet.y + 5, textW, justify, 8);
       sheet.y += 10.5;
     }
     // Keep a writable band even when the coach left the field empty, so the

@@ -52,6 +52,21 @@
    pixels later than the real ones. The selection stays translucent for the same
    reason: an opaque one would paint over the only visible copy of the text. */
 .tpl-field { scrollbar-gutter: stable; }
+
+/* The contenteditable the remarks are written in. A placeholder needs faking —
+   there is no attribute for it — and the formatting has to look on screen like
+   it will in the PDF, so <s> and <u> are spelled out rather than left to the
+   browser's defaults. */
+.rich-surface:empty::before,
+.rich-surface:has(> br:only-child)::before {
+  content: attr(data-placeholder);
+  color: var(--color-stone-300, #d6d3d1);
+  pointer-events: none;
+}
+.rich-surface b, .rich-surface strong { font-weight: 700; }
+.rich-surface i, .rich-surface em { font-style: italic; }
+.rich-surface u { text-decoration: underline; }
+.rich-surface s { text-decoration: line-through; }
 .tpl-field::selection { background-color: rgb(59 130 246 / 0.25); }
 
 /* Reusable elevation helpers */

@@ -33,9 +33,15 @@ const CHARSET = [
   '€™←↑→↓✓✔□☐',
 ].join('');
 
+// Four faces, because the remarks the coach writes can now be bold, italic or
+// both, and jsPDF picks a registered face — it has no synthetic slant to fall
+// back on. Each one is subset to the same charset, so the cost is four small
+// tables rather than four fonts.
 const WEIGHTS = [
   { file: '400Regular/Inter_400Regular.ttf', name: 'INTER_REGULAR' },
   { file: '700Bold/Inter_700Bold.ttf', name: 'INTER_BOLD' },
+  { file: '400Regular_Italic/Inter_400Regular_Italic.ttf', name: 'INTER_ITALIC' },
+  { file: '700Bold_Italic/Inter_700Bold_Italic.ttf', name: 'INTER_BOLD_ITALIC' },
 ];
 
 const parts = [];

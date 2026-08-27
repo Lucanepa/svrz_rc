@@ -7126,7 +7126,13 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         // otherwise.
         emailSent = true;
 
-        const copyRecipients = [...(mailCc ?? []), ...(mailBcc ?? [])];
+        // The same mailbox does not need it twice. A coach who is also the
+        // referee on the game — which is every test game somebody makes for
+        // themselves — was sent the report and then the copy of it, and the
+        // second one only differs by the survey link it leaves out. Nothing is
+        // withheld by dropping it: the address already has the fuller message.
+        const copyRecipients = [...(mailCc ?? []), ...(mailBcc ?? [])]
+          .filter((address) => address.trim().toLowerCase() !== mailTo.trim().toLowerCase());
         if (copyRecipients.length > 0) {
           await sendMailResilient({
             from: MAIL_FROM,

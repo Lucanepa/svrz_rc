@@ -4220,12 +4220,33 @@ async function linkCoacheesToReferees(): Promise<{ linked: number; alreadyLinked
     const bucket = byName.get(key);
     if (bucket) { if (!bucket.some((x) => x.id === row.id)) bucket.push(row); } else byName.set(key, [row]);
   };
+  // Every word of a referee's registered name, for the fallback below.
+  const words = new Map<string, Set<string>>();
   for (const r of referees) {
     const first = asText(r.first_name), last = asText(r.last_name);
     indexUnder(normalizeName(`${first} ${last}`), r);
     indexUnder(normalizeName(`${last} ${first}`), r);
     indexUnder(normalizeName(asText(r.full_name)), r);
+    words.set(r.id, new Set(normalizeName(`${first} ${last}`).split(' ').filter(Boolean)));
   }
+
+  /** The coaching sheet writes the name a coach uses; the register writes the
+   *  name on the licence, middle names and all — "Kevin Peña" against "Kevin
+   *  León Peña de los Santos". Eleven of the 135 coachee rows were exactly
+   *  that on 2026-08-27.
+   *
+   *  So: every word of the shorter name must appear in the longer one, and
+   *  exactly one referee may qualify. Two words minimum, because a lone
+   *  surname is not a claim about a person — it is a claim about a family. */
+  const byWords = (name: string): AnyRecord | null => {
+    const parts = new Set(normalizeName(name).split(' ').filter(Boolean));
+    if (parts.size < 2) return null;
+    const hits = referees.filter((r) => {
+      const full = words.get(r.id);
+      return full ? [...parts].every((part) => full.has(part)) : false;
+    });
+    return hits.length === 1 ? hits[0] : null;
+  };
 
   const coachees = await listCoacheesWithFallbackSort();
   let linked = 0, alreadyLinked = 0;
@@ -4238,9 +4259,10 @@ async function linkCoacheesToReferees(): Promise<{ linked: number; alreadyLinked
     if (asText(coachee.referee_id)) { alreadyLinked++; continue; }
     const hit = byName.get(normalizeName(name))
       ?? byName.get(normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`));
-    if (!hit || hit.length === 0) { if (unmatched.length < 50) unmatched.push(name); continue; }
-    if (hit.length > 1) { if (ambiguousNames.length < 50) ambiguousNames.push(name); continue; }
-    const svNumber = asText(hit[0].sv_number);
+    if (hit && hit.length > 1) { if (ambiguousNames.length < 50) ambiguousNames.push(name); continue; }
+    const referee = hit?.[0] ?? byWords(name);
+    if (!referee) { if (unmatched.length < 50) unmatched.push(name); continue; }
+    const svNumber = asText(referee.sv_number);
     await withCollection(collectionCandidates.coachees, (c) => c.update(coachee.id, { referee_id: svNumber }));
     // PocketBase silently drops a write to a column the collection has not
     // declared, so "linked" would be a lie if setup-schema.mjs had not run.

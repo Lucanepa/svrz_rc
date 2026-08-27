@@ -1211,6 +1211,9 @@ function RefereeRosterAdmin({ t, onLinked }: { t: T; onLinked: () => void }) {
 
   const count = roster?.people.length ?? 0;
   const hasRegister = roster?.source === 'roster' && count > 0;
+  // Until the first read comes back there is nothing true to say — "Register
+  // noch leer" while it loads is a sentence that is wrong more often than right.
+  const status = roster === null ? '' : hasRegister ? t.rosterCount(count) : t.rosterEmpty;
 
   return (
     <Card>
@@ -1223,7 +1226,7 @@ function RefereeRosterAdmin({ t, onLinked }: { t: T; onLinked: () => void }) {
         </label>
       </div>
       <p className="text-xs text-stone-400">{t.rosterHint}</p>
-      <p className="mt-2 text-xs text-stone-500">{hasRegister ? t.rosterCount(count) : t.rosterEmpty}</p>
+      {status && <p className="mt-2 text-xs text-stone-500">{status}</p>}
       {note && <p className="mt-2 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{note}</p>}
       {err && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{err}</p>}
       {/* Ambiguous first, and in amber: it is the one outcome that needs a

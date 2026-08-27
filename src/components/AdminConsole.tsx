@@ -146,7 +146,7 @@ const STR = {
     mgPickSearch: 'Name suchen …',
     mgPickNone: 'Kein Treffer.',
     mgPickMore: (n: number) => `… ${n} weitere — Suche eingrenzen.`,
-    mgPickUnknown: 'Nicht in der Liste — wird als freier Text übernommen.',
+    mgPickUnknown: 'Nicht in der Liste — freier Text.',
     noEmail: 'keine E-Mail',
     syncTitle: 'Kontaktdaten aus VolleyManager',
     syncHint: 'Holt E-Mail und Telefon aus der VolleyManager-Schiedsrichterliste. Wer dort fehlt, wird auf den Spielen des Saison gesucht (sobald diese aufgeschaltet sind). Ohne E-Mail lässt sich kein Feedback abschicken.',
@@ -303,7 +303,7 @@ const STR = {
     mgPickSearch: 'Search name …',
     mgPickNone: 'No match.',
     mgPickMore: (n: number) => `… ${n} more — narrow the search.`,
-    mgPickUnknown: 'Not in the list — kept as free text.',
+    mgPickUnknown: 'Not in the list — free text.',
     noEmail: 'no email',
     syncTitle: 'Contact details from VolleyManager',
     syncHint: 'Pulls email and phone from the VolleyManager referee list. Anyone missing there is looked up on the season\'s games (once those are published). Feedback cannot be submitted without an email.',
@@ -2212,7 +2212,8 @@ function PersonPicker({ id, value, onChange, people, t }: {
   const box = useRef<HTMLDivElement>(null);
 
   // A click anywhere else closes the list. Without this it stays open on top of
-  // the fields below and hides them.
+  // the fields below and hides them — three fields tabbed through in a row left
+  // three lists hanging over the form.
   useEffect(() => {
     if (!open) return;
     const away = (e: PointerEvent) => { if (box.current && !box.current.contains(e.target as Node)) setOpen(false); };
@@ -2220,6 +2221,10 @@ function PersonPicker({ id, value, onChange, people, t }: {
     return () => document.removeEventListener('pointerdown', away);
   }, [open]);
 
+  // No list means the fetch failed (or has not landed yet). The field then
+  // behaves as the plain text box it used to be, rather than telling the admin
+  // that every name they know is unknown.
+  const hasList = people.length > 0;
   const terms = foldName(value).split(' ').filter(Boolean);
   const matches = people.filter((p) => {
     const hay = `${foldName(p.name)} ${foldName(p.email || '')}`;
@@ -2250,16 +2255,28 @@ function PersonPicker({ id, value, onChange, people, t }: {
         autoComplete="off"
         onChange={(e) => { onChange(e.target.value); setOpen(true); setHi(0); }}
         onFocus={() => setOpen(true)}
+        // Tab moves focus without a click, so the pointerdown guard above never
+        // fires; this is what closes the list behind a field being left.
+        onBlur={(e) => { if (!box.current?.contains(e.relatedTarget as Node)) setOpen(false); }}
         onKeyDown={onKey}
       />
-      {open && (
-        <div className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-stone-200 bg-white shadow-lg">
+      {open && hasList && (
+        <div
+          className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-stone-200 bg-white shadow-lg"
+          // Keeps the field focused while the list is being used — dragging its
+          // scrollbar would otherwise blur the input and close what it scrolls.
+          onPointerDown={(e) => e.preventDefault()}
+        >
           {shown.length === 0 ? (
             <p className="px-3 py-2 text-xs text-stone-400">{t.mgPickNone}</p>
           ) : shown.map((p, i) => (
             <button
               key={p.id}
               type="button"
+              // Arrowing past the bottom of a long list has to bring the row
+              // into view, or the highlight walks off screen and the list looks
+              // stuck on its last visible name.
+              ref={i === hi ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
               // pointerdown, not click: the blur a click starts with would close
               // the list before the click itself ever lands on a row.
               onPointerDown={(e) => { e.preventDefault(); pick(p); }}
@@ -2281,7 +2298,7 @@ function PersonPicker({ id, value, onChange, people, t }: {
       )}
       {/* Under the field, the consequence of what stands in it: which address
           the feedback would reach, or that this name is nobody the app knows. */}
-      {value.trim() !== '' && (
+      {hasList && value.trim() !== '' && (
         <span className={cn('mt-0.5 block text-[11px] truncate', exact?.email ? 'text-stone-400' : 'text-amber-600')}>
           {exact ? (exact.email || t.noEmail) : t.mgPickUnknown}
         </span>

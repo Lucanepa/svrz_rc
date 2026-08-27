@@ -22,6 +22,11 @@ const RC_PEOPLE = [
   { id: 'rc2', fullName: 'Beat Zimmermann', email: 'beat@example.ch' },
 ];
 
+/** The line under a picker: which address the feedback would reach. */
+function fieldNote(page: Page, id: string) {
+  return page.locator(`#${id} ~ span`);
+}
+
 async function openManualGameForm(page: Page) {
   await stubSignedInApp(page, { admin: true });
   await page.route('**/api/coachees*', (r) => r.fulfill({ json: COACHEES }));
@@ -42,9 +47,10 @@ test.describe('Manual game name pickers', () => {
     await option.click();
 
     await expect(page.locator('#mg-ref1')).toHaveValue('Luca Canepa');
-    // The address stays on screen after the pick — that is what makes it
-    // possible to check which inbox the test mail should land in.
-    await expect(page.getByText('luca@example.ch')).toBeVisible();
+    // The address stays under the field after the pick — that is what makes it
+    // possible to check which inbox the test mail should land in. Scoped to the
+    // field: the coachee tab is mounted (hidden) and prints addresses too.
+    await expect(fieldNote(page, 'mg-ref1')).toHaveText('luca@example.ch');
   });
 
   test('the search is accent-blind, so "muller" finds Müller', async ({ page }) => {
@@ -60,7 +66,7 @@ test.describe('Manual game name pickers', () => {
 
     await page.locator('#mg-ref1').fill('ohnemail');
     await page.getByRole('button', { name: /Nina Ohnemail/ }).click();
-    await expect(page.getByText(/keine E-Mail|no email/)).toBeVisible();
+    await expect(fieldNote(page, 'mg-ref1')).toHaveText(/keine E-Mail|no email/);
   });
 
   test('the referee coach field offers the RC roster, not the coachees', async ({ page }) => {
@@ -87,10 +93,10 @@ test.describe('Manual game name pickers', () => {
     });
 
     await page.locator('#mg-ref1').fill('Gastspieler Ohne Akte');
-    await expect(page.getByText(/Nicht in der Liste|Not in the list/)).toBeVisible();
+    await expect(fieldNote(page, 'mg-ref1')).toHaveText(/Nicht in der Liste|Not in the list/);
 
     await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
-    await expect(page.getByText(/Angelegt|Created/)).toBeVisible();
+    await expect(page.getByText(/(Angelegt|Created): TEST-1/)).toBeVisible();
     expect(posted).not.toBeNull();
     expect((posted as unknown as { first_referee: string }).first_referee).toBe('Gastspieler Ohne Akte');
   });

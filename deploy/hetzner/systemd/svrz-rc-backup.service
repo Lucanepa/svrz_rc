@@ -1,0 +1,18 @@
+# Installed to /etc/systemd/system/ on lenovoserver. Tracked here so the schedule
+# is part of the repo rather than folklore on one host.
+[Unit]
+Description=Consistent PocketBase snapshot for svrz_rc
+Documentation=file:///home/lucanepa/svrz_rc/deploy/hetzner/backup-pb.sh
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=lucanepa
+Group=lucanepa
+# The host runs several other stacks; a backup is never the urgent thing.
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/home/lucanepa/svrz_rc/deploy/hetzner/backup-pb.sh
+StandardOutput=append:/home/lucanepa/svrz-rc-backup.log
+StandardError=append:/home/lucanepa/svrz-rc-backup.log

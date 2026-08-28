@@ -1,0 +1,14 @@
+[Unit]
+Description=Nightly consistent PocketBase snapshot for svrz_rc
+
+[Timer]
+# 02:45 — before borg-backup.timer (~03:05) picks the host up, so the offsite
+# archive of the night contains the coherent zip rather than only the live files.
+OnCalendar=*-*-* 02:45:00
+# A host that was asleep at 02:45 still takes its snapshot when it wakes; without
+# this a laptop-class server simply skips nights.
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

@@ -711,9 +711,57 @@ Two consequences worth knowing:
 
 ## Backups
 
-`deploy/hetzner/pb_data` is a bind mount and the only copy of every feedback,
-PDF, president's note and PIN hash. Nothing in this repo backs it up — arrange a
-periodic snapshot of that directory (and verify a restore) outside it.
+`deploy/hetzner/pb_data` is a bind mount and the only live copy of every
+feedback, PDF, president's note and credential hash. Two things protect it, and
+they do different jobs.
+
+**1. A consistent nightly snapshot — `deploy/hetzner/backup-pb.sh`**, scheduled
+by `svrz-rc-backup.timer` at 02:45 (units tracked in `deploy/hetzner/systemd/`).
+It asks PocketBase itself for the snapshot through `POST /api/backups`, driven
+from inside the API container so no superuser credential is ever read out onto
+the host. That matters: borg copies `data.db` at the filesystem level while
+PocketBase is writing, and SQLite in WAL mode is mid-transaction at arbitrary
+moments — a file-level copy of a live database is a copy that *usually* restores.
+The zip is moved out of `pb_data` (a backup inside the directory it backs up is
+not a second copy), verified by opening it and checking `data.db` is present and
+plausibly sized, and rotated at 14 local copies. Logs to
+`~/svrz-rc-backup.log`; on failure it also appends to `~/BACKUP-FAILED-svrz-rc`,
+because the failure mode that actually hurts is the silent one.
+
+Note PocketBase validates the backup NAME: lowercase, digits and hyphens only.
+An ISO timestamp's `T` is rejected with a 400 "Must be in a valid format".
+
+**2. Offsite — the host's `borg-backup.timer`** (~03:05, to a Synology over
+Tailscale, 30 daily / 4 weekly / 6 monthly). It archives `/` with no exclusion
+covering this project, so `pb_data` and the snapshot zips both travel. Ordering
+is deliberate: the 02:45 snapshot exists before borg runs, so the offsite archive
+of any given night contains a known-restorable artifact and not only the live
+files.
+
+**Verify a restore, don't assume one.** Rehearsed 2026-08-28:
+
+```bash
+python3 - <<'PY'
+import zipfile, sqlite3, glob
+src = sorted(glob.glob('/home/lucanepa/svrz_rc/backups/svrz-rc-*.zip'))[-1]
+zipfile.ZipFile(src).extractall('/tmp/restore-check')
+con = sqlite3.connect('file:/tmp/restore-check/data.db?mode=ro', uri=True)
+print(con.execute('PRAGMA integrity_check').fetchone()[0])
+print(con.execute('SELECT count(*) FROM coachees').fetchone()[0], 'coachees')
+PY
+```
+
+**The failure that has actually happened:** borg failed on 27 and 28.08.2026
+(`rc=2`, the NAS unreachable over Tailscale) and nothing said so — the last good
+offsite archive was 26.08. Nothing alerts on a failed timer, so the snapshot
+script prints how old the newest successful borg run is and warns past 48h. If
+that warning appears, check the NAS is up (`ping` its Tailscale IP) before
+assuming the backup is fine.
+
+Superseded copies of `svrz-api.env` are consolidated into
+`svrz-api.env-history-<date>.tar.gz` (0600) rather than left as loose `.bak-*`
+files. They are still plaintext secrets on disk; `gpg` is available on the host
+if that is ever worth hardening properly.
 
 ## Data Import Status (Current Snapshot)
 

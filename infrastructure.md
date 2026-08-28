@@ -209,6 +209,59 @@ Created by `deploy/hetzner/seed/setup-schema.mjs`, which is tracked in this
 repo. It is additive and safe to re-run against the live DB — that is how a
 column the app has started writing gets added.
 
+### `parked_drafts` (the server copy of unfinished work)
+
+A backup of an observation the coach has not finished, written **always, not on
+request**. Every other copy of a draft is device-local (`src/lib/formDraft.ts`,
+IndexedDB), which is right until the phone is lost, stolen, wiped or simply dead
+— and then the work goes with it, along with two signatures nobody can collect a
+second time. That failure gives no warning, so it is not something a coach can
+usefully be asked about in advance.
+
+**What this means for the data at rest:** every in-progress observation in the
+association — ratings, written remarks, and both signature images — is on this
+server while it is being written, and not only on the coach's phone. Reads are
+scoped to the session's own RC, so no colleague and no admin console password
+opens another coach's unfinished work. Rows are pruned to 45 days or the newest
+12 per coach, and a draft is deleted outright the moment its report is filed,
+reset or discarded — so the table holds work in progress and nothing else.
+
+The frontend shows this rather than asking about it: the form's save line reads
+"Auf dem Server gesichert" once a park has succeeded, with the signatures called
+out in its tooltip.
+
+Common fields: `owner_id`, `game_id`, `role`, `updated_at`, `schema`, `payload`.
+
+`owner_id` is the RC's id **from the session**, never from a request body. Every
+read and every write filters on it, so a coach cannot fetch, overwrite or delete
+a colleague's unfinished observation — the rule is spelled out in full over
+`/api/drafts/parked` in `server/index.ts`. An admin console session gets 403
+here for the same reason it does on `/api/ical/me`: a parked draft belongs to a
+person, and a console session is not one.
+
+`payload` is one role's `DraftRecord` minus its identity fields (`id`,
+`ownerId`, `submissionKey`) and always status `editing`. Both signature images
+travel — they are the reason the feature exists — because a parked draft only
+ever comes back to the coach who parked it. The server stores it opaquely: it
+files nothing, mails nothing and creates no observation from it. `updated_at` is
+the device's clock (it decides which of two copies is newer); the autodate
+`updated` column is the server's own, which is the one to trust when a tablet
+boots in 1970. Rows are pruned per owner after 45 days, and beyond the newest 12.
+
+Created by `deploy/hetzner/seed/setup-schema.mjs` like the collections above.
+**After deploying the code, apply it on the API host** — the container has both
+node and the script, and its own env resolves `http://pocketbase:8090`:
+
+```bash
+docker exec svrz-rc-svrz-api-1 node deploy/hetzner/seed/setup-schema.mjs
+```
+
+It is additive and safe to re-run. Until it has run, parking answers
+`Die Sammlung „parked_drafts" fehlt in PocketBase` on a write — said out loud
+rather than silently succeeding, because a coach told their work is safe when it
+is nowhere is the one failure this feature must not have. Reads stay quiet and
+answer "nothing parked", which is true.
+
 ## API Authentication Model
 
 Three layers, plus capability tokens:
@@ -333,6 +386,9 @@ reachable without a session.
 - `GET /api/ical/me`: the calling RC's subscription links (`url`, `webcalUrl`, `downloadUrl`). RC session required; an admin-only session gets 403, because the feed belongs to a person and an admin console session is not one.
 - `GET /api/ical/:token.ics`: **public** — the RC's assigned games as iCalendar, past and future. No login is possible for a calendar client, so the token in the path is the whole credential: an HMAC of the RC's id under `ADMIN_SESSION_SECRET`, stable per person, and only honoured for RCs that are still active. `?lang=de|en` picks the event language, `?download=1` flips the response to an attachment. The request log redacts the token. Rendered per request but memoised for 5 min, so a badly-behaved poller cannot pull the games collection repeatedly.
 - `POST /api/feedback/submit`: main workflow submit (save + PDF + email + closure).
+- `GET /api/drafts/parked`: this coach's parked (unfinished) drafts — metadata and payload, newest first. Owner comes from the session; nothing parked is an empty list, never a 404.
+- `PUT|POST /api/drafts/parked/:gameId`: park (upsert) the draft set for one game, both roles in one call. POST is accepted as well as PUT because the send that survives a page going away (`sendBeacon` / `fetch` with `keepalive`) can only POST — it caps the body near 64 KiB, so it fits a draft with no signatures yet. Own rate-limit bucket keyed by RC id, and its own 2 MB body limit — checked ahead of the JSON parser, since a draft carries up to four signature PNGs as data URLs.
+- `DELETE /api/drafts/parked/:gameId`: unpark one game, both roles. Removing nothing is a success.
 - `POST /api/admin/migrate-source-payload`: one-time migration utility.
 
 ## How To Do Common Operations

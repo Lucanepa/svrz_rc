@@ -1,7 +1,7 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId } from 'react';
 import { Maximize2, Download, FileJson, Loader2, RefreshCw, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import { INITIAL_DATA, FeedbackFormData, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
+import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
   CalendarGameStatus,
   Coachee,
@@ -31,14 +31,24 @@ import {
   savePresidentNote,
   getIcalSubscription,
   settlePendingLogout,
+  parkDrafts,
+  listParkedDrafts,
+  unparkDrafts,
   type IcalSubscription,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
+import {
+  draftKey, putDrafts, listDrafts, getGameDrafts, setDraftStatus, deleteDraft, pruneDrafts,
+  draftStoreAvailable, requestPersistentStorage, encodeDraftFile, decodeDraftFile,
+  draftFileName, resumeHint, setResumeHint, clearResumeHint,
+  draftIsStale, draftAgeDays, claimDraft, releaseDraft, subscribeDraftClaims,
+  DRAFT_SCHEMA, DRAFT_MAX_BYTES, type DraftRecord, type DraftFilePart, type DraftClaimNotice,
+} from './lib/formDraft';
 import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
 import { subscribeLive } from './lib/liveEvents';
-import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml } from './lib/richText';
+import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml, sanitizeRich } from './lib/richText';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname } from './lib/coacheeName';
@@ -207,6 +217,47 @@ const UI_STRINGS = {
     muHighlights: "Positiv / Stärken", muImprovements: "Verbesserungspotenzial",
     muGoals: "Ziele / Nächste Schritte", muRemarks: "Bemerkungen",
     muChooseFile: "Datei wählen", muNoFile: "Keine Datei ausgewählt", muUploading: "Lädt…",
+    // Entwürfe: eine angefangene Beobachtung, die auf diesem Gerät liegt.
+    draftSaving: "Entwurf wird gespeichert…",
+    draftSaved: "Entwurf gespeichert",
+    draftSaveFailed: "Entwurf konnte nicht gespeichert werden — bitte als Datei sichern.",
+    draftSaveAsFile: "Als Datei sichern",
+    draftExport: "Entwurf sichern",
+    draftImport: "Entwurf laden",
+    draftExportOk: "Entwurf als Datei gesichert.",
+    draftImportOk: "Entwurf geladen.",
+    draftRestored: "Entwurf wiederhergestellt.",
+    draftHeading: "Nicht abgeschlossene Beobachtung",
+    draftHeadingPlural: "Nicht abgeschlossene Beobachtungen",
+    draftUnsentHeading: "Nicht gesendete Beobachtung",
+    draftUnsentHeadingPlural: "Nicht gesendete Beobachtungen",
+    draftResume: "Weiterarbeiten",
+    draftDiscard: "Verwerfen",
+    draftDiscardTitle: "Entwurf verwerfen?",
+    draftDiscardMsg: "Die gespeicherten Eingaben zu diesem Spiel werden gelöscht. Das lässt sich nicht rückgängig machen.",
+    draftBadge: "Entwurf",
+    draftUnsentBadge: "Nicht gesendet",
+    draftQueued: "Wird gesendet — wartet in der Warteschlange.",
+    draftFiled: "Bereits eingereicht.",
+    draftRoleClosed: "Für diese Rolle wurde bereits ein Bericht eingereicht.",
+    draftGameMissing: "Dieses Spiel steht gerade nicht in deiner Spielliste — der Entwurf bleibt gespeichert. Sobald die Liste wieder geladen ist, kannst du weiterarbeiten.",
+    draftNoStore: "Dieses Gerät kann keine Entwürfe speichern (privater Modus?). Bitte den Entwurf als Datei sichern, bevor du die Seite schliesst.",
+    draftImportBadFile: "Das ist keine SVRZ-Entwurfsdatei.",
+    draftImportTooNew: "Diese Datei stammt aus einer neueren Version der App. Bitte die App aktualisieren (Seite neu laden).",
+    draftImportBroken: "Die Datei ist beschädigt und konnte nicht gelesen werden.",
+    draftImportTooBig: "Die Datei ist zu gross (max. 4 MB).",
+    draftImportEmpty: "Dieser Entwurf enthält nichts, was geladen werden könnte.",
+    draftImportReplaceTitle: "Vorhandenen Entwurf ersetzen?",
+    draftScoreChanged: "Das Spiel trägt inzwischen ein anderes Resultat.",
+    draftUseGameScore: "Resultat des Spiels übernehmen",
+    draftOtherTab: "Diese Beobachtung ist in einem anderen Tab geöffnet. Beide Tabs speichern in denselben Entwurf — arbeite nur in einem weiter, sonst überschreibt der eine den anderen.",
+    parkHint: "So geht die Beobachtung nicht verloren, wenn das Gerät kaputt geht oder verloren geht. Die Unterschriften werden mitgespeichert.",
+    parkedAt: "Auf dem Server gesichert",
+    sigShareLink: "Link senden",
+    sigCopyLink: "Link kopieren",
+    sigLinkCopied: "Link kopiert.",
+    sigLinkHint: "Der Link öffnet sich auf dem Handy des Schiedsrichters. Dieses Fenster offen lassen, bis die Unterschrift da ist.",
+    parkFailed: "Die Server-Sicherung hat nicht geklappt — der Entwurf ist auf diesem Gerät gespeichert.",
   },
   EN: {
     title: "Referee Coaching Feedback",
@@ -331,6 +382,47 @@ const UI_STRINGS = {
     muHighlights: "Strengths", muImprovements: "Room for improvement",
     muGoals: "Goals / next steps", muRemarks: "Remarks",
     muChooseFile: "Choose file", muNoFile: "No file selected", muUploading: "Uploading…",
+    // Drafts: an observation started but not yet filed, held on this device.
+    draftSaving: "Saving draft…",
+    draftSaved: "Draft saved",
+    draftSaveFailed: "Draft could not be saved — please save it as a file.",
+    draftSaveAsFile: "Save as file",
+    draftExport: "Save draft",
+    draftImport: "Load draft",
+    draftExportOk: "Draft saved as a file.",
+    draftImportOk: "Draft loaded.",
+    draftRestored: "Draft restored.",
+    draftHeading: "Unfinished observation",
+    draftHeadingPlural: "Unfinished observations",
+    draftUnsentHeading: "Unsent observation",
+    draftUnsentHeadingPlural: "Unsent observations",
+    draftResume: "Resume",
+    draftDiscard: "Discard",
+    draftDiscardTitle: "Discard draft?",
+    draftDiscardMsg: "The saved entries for this game will be deleted. This cannot be undone.",
+    draftBadge: "Draft",
+    draftUnsentBadge: "Not sent",
+    draftQueued: "Being sent — waiting in the queue.",
+    draftFiled: "Already submitted.",
+    draftRoleClosed: "A report has already been filed for this role.",
+    draftGameMissing: "This game is not in your games list right now — the draft is kept. You can resume once the list has loaded.",
+    draftNoStore: "This device cannot store drafts (private mode?). Please save the draft as a file before you close the page.",
+    draftImportBadFile: "That is not an SVRZ draft file.",
+    draftImportTooNew: "This file was written by a newer version of the app. Please update the app (reload the page).",
+    draftImportBroken: "The file is damaged and could not be read.",
+    draftImportTooBig: "The file is too large (max 4 MB).",
+    draftImportEmpty: "This draft contains nothing that could be loaded.",
+    draftImportReplaceTitle: "Replace the existing draft?",
+    draftScoreChanged: "The game now carries a different result.",
+    draftUseGameScore: "Use the game's result",
+    draftOtherTab: "This observation is open in another tab. Both tabs save into the same draft — carry on in one of them only, or one will overwrite the other.",
+    parkHint: "So the observation survives a lost or broken device. The signatures are stored with it.",
+    parkedAt: "Backed up on the server",
+    sigShareLink: "Send link",
+    sigCopyLink: "Copy link",
+    sigLinkCopied: "Link copied.",
+    sigLinkHint: "The link opens on the referee's phone. Keep this dialog open until the signature arrives.",
+    parkFailed: "The server backup did not go through — the draft is saved on this device.",
   }
 };
 
@@ -514,6 +606,38 @@ function pdfFilename(formData: FeedbackFormData): string {
   const role = formData.role.replace('.', '').replace(/\s+/g, '');
   return `${match}-${role}.pdf`;
 }
+
+/**
+ * Work worth keeping on disk. Deliberately NOT the old `formIsDirty` predicate,
+ * which counted only signatures, ratings and results: a coach who had typed only
+ * the score or only the Tips & Tricks box read as "clean", and both are real
+ * work — the score is written onto the game when the report is filed, and the
+ * tips are mailed to the referee.
+ */
+function draftHasWork(fd: FeedbackFormData, tips: string): boolean {
+  return !!fd.signature || !!fd.rcSignature
+    || fd.sections.some((s) => s.items.some((i) => !!i.rating))
+    || Object.values(fd.results).some((v) => typeof v === 'string' && v.trim() !== '')
+    || !!(fd.meta.ergebnis || '').trim()
+    || !!tips.trim();
+}
+
+// Ratings leave the form keyed by criterion id, never by position, so a
+// catalogue that gains, loses or reorders an item can never shift a stored
+// draft's marks onto the wrong criterion.
+function ratingsFromSections(sections: AssessmentSection[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const s of sections) for (const i of s.items) if (i.rating) out[i.id] = i.rating;
+  return out;
+}
+
+// Every criterion id the current build knows, in either language. Handed to
+// decodeDraftFile so an imported file written against a catalogue this build no
+// longer recognises is rejected loudly instead of restored half-empty.
+const KNOWN_RATING_IDS: string[] = [SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN]
+  .flatMap((catalogue) => catalogue.flatMap((s) => s.items.map((i) => i.id)));
+
+const signUrlFor = (slug: string) => `${window.location.origin}${window.location.pathname}#/sign/${slug}`;
 
 // One editable surface, used both inline and in the full-screen editor.
 //
@@ -1212,6 +1336,24 @@ export default function App() {
   const [outboxForeign, setOutboxForeign] = useState<{ ownerId: string; count: number }[]>([]);
   const [outboxFailed, setOutboxFailed] = useState<OutboxItem[]>([]);
   const [flushing, setFlushing] = useState(false);
+  // Unfinished observations held on this device, for THIS coach only.
+  const [drafts, setDrafts] = useState<DraftRecord[]>([]);
+  // False where the device refuses to persist at all (private browsing, blocked
+  // IndexedDB). Then the exported file is the only durable copy there is, and
+  // the UI has to say so instead of quietly saving nothing.
+  const [draftStoreOk, setDraftStoreOk] = useState(true);
+  const [draftUnsaved, setDraftUnsaved] = useState(false);
+  const [draftSaveFailed, setDraftSaveFailed] = useState(false);
+  const [draftSavedAt, setDraftSavedAt] = useState(0);
+  // The game's own score, when a resumed draft disagrees with it. Filing writes
+  // the form's score onto the game, so a stale draft must not do that silently.
+  const [draftScoreConflict, setDraftScoreConflict] = useState('');
+  // Another tab of this browser is on the same observation. Advisory only — it
+  // never blocks the form, because a lock that strands work is worse than the
+  // overwrite it prevents.
+  const [draftClaimedElsewhere, setDraftClaimedElsewhere] = useState(false);
+  const [parkFailed, setParkFailed] = useState(false);
+  const [parkedOk, setParkedOk] = useState(false);
   const [backendNotice, setBackendNotice] = useState('');
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
   // Admin via the admin-console session or the in-app database login: keeps
@@ -1293,6 +1435,10 @@ export default function App() {
   // to acknowledge the discussion, the coach for what the form says; both use
   // the same pad and the same QR hand-off to a phone.
   const [sigTarget, setSigTarget] = useState<'referee' | 'rc'>('referee');
+  /** Bumped by updateSignature; see the comment there for why a token and not a
+   *  direct call. Batched with the form update, so the effect that watches it
+   *  runs on the commit that contains the signature. */
+  const [sigFlushToken, setSigFlushToken] = useState(0);
   const sigPadRef = useRef<SignaturePadHandle>(null);
   const sigSignerName = (target: 'referee' | 'rc') =>
     target === 'rc' ? (formData.meta.rc || '') : formData.meta.srName;
@@ -1307,7 +1453,43 @@ export default function App() {
         '2. SR': prev['2. SR'] ? { ...prev['2. SR'], formData: { ...prev['2. SR'].formData, rcSignature: data } } : null,
       }));
     }
+    // A captured signature cannot be retyped — it must not sit in a debounce
+    // window waiting for the next keystroke that may never come, and it is the
+    // one thing a lost device makes genuinely unrecoverable.
+    //
+    // Bumped, not called: the flush refs are assigned during RENDER, so calling
+    // them here would commit the form exactly as it was BEFORE the signature —
+    // React does not apply a setState synchronously inside an event handler.
+    // The effect below runs on the render that actually carries the ink.
+    setSigFlushToken((n) => n + 1);
   };
+
+  const canShareLink = typeof navigator !== 'undefined' && !!navigator.share;
+  /**
+   * Hand the signing link to the referee instead of holding a QR code up at
+   * them — the faster route when both are packing up. It goes to the referee's
+   * own phone, in the hall, while this dialog stays open waiting for it: the
+   * session is only watched while the dialog is, so the signature still belongs
+   * to the visit it was collected at.
+   */
+  const shareSignatureLink = async (slug: string) => {
+    const url = signUrlFor(slug);
+    const lang = formData.lang;
+    try {
+      if (navigator.share) { await navigator.share({ title: t.sigShareLink, url }); return; }
+      await navigator.clipboard.writeText(url);
+      toast.success(t.sigLinkCopied, { lang });
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return;   // the coach closed the sheet
+      // Clipboard access can be refused outright (permissions, an insecure
+      // context). The QR beside this button never needs either, so point at it
+      // rather than leaving a dead end.
+      toast.error(lang === 'DE'
+        ? 'Link konnte nicht kopiert werden — bitte den QR-Code verwenden.'
+        : 'Could not copy the link — please use the QR code.', { lang });
+    }
+  };
+
   const openSignatureModal = async (target: 'referee' | 'rc') => {
     setSigTarget(target);
     setSigModalOpen(true); setSigSlug(''); setSigError('');
@@ -1584,6 +1766,22 @@ export default function App() {
   // render's, not the mount render's, or a flush reloads the season that was
   // current when the tab opened.
   const flushOutboxNowRef = useRef<() => Promise<void>>(async () => {});
+  const flushDraftNowRef = useRef<() => Promise<void>>(async () => {});
+  /** The identity the work on screen belongs to. Without it the identity flip
+   *  ALONE would re-run the autosave effect and re-stamp the outgoing coach's
+   *  ratings and signatures under the incoming coach's key — a report filed as B
+   *  over A's ink. (`switchRc()` does not reload the page; it does unmount App,
+   *  which is why the park timer needs cancelling in the unmount cleanup.) */
+  const draftOwnerRef = useRef('');
+  /** Set synchronously while a game's drafts are being read, so the debounced
+   *  autosave cannot write the blank form over the draft it is about to load. */
+  const draftLoadingRef = useRef('');
+  /** Read synchronously from sessionStorage so the games-list auto-select cannot
+   *  claim the selection before a resume lands on top of it. */
+  const autoResumeRef = useRef<string>(resumeHint());
+  const didBootDraftsRef = useRef(false);
+  const parkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const parkImmediatelyRef = useRef<() => void>(() => {});
 
   const refreshGames = async () => {
     if (!hasPocketBaseConfig()) {
@@ -1597,7 +1795,9 @@ export default function App() {
       const games = await loadEligibleGames();
       if (!isCurrentLoad('games', gen)) return;
       setEligibleGames(games);
-      if (games.length > 0 && !selectedGameIdRef.current) {
+      // A pending draft resume gets to choose the game; auto-selecting the first
+      // one here would claim the selection before the restore lands on top.
+      if (games.length > 0 && !selectedGameIdRef.current && !autoResumeRef.current) {
         setSelectedGameId(games[0].id);
       }
     } catch (error) {
@@ -2051,6 +2251,10 @@ export default function App() {
   };
 
   const handleSelectGame = (game: EligibleGame | CoacheeGame, preferredRef?: string) => {
+    // First statement, before any setter: the outgoing game's last keystrokes
+    // are still only in the render being left behind.
+    void flushDraftNowRef.current();
+    parkImmediatelyRef.current();
     // The form binds to a game from the eligible list. A coachee's games list
     // also carries games where they are only a line judge — opening one gave a
     // form bound to nothing: the previous game's header still on screen and a
@@ -2122,6 +2326,13 @@ export default function App() {
         },
       };
     });
+
+    draftOwnerRef.current = outboxOwnerId;
+    // Claimed synchronously: the debounced autosave writes to the very key the
+    // stored draft occupies, so the blank form must not be allowed to overwrite
+    // the draft in the window before it loads.
+    draftLoadingRef.current = game.id;
+    void resumeDraftForGame(game.id);
   };
 
   const refreshCalendarGames = async () => {
@@ -2213,7 +2424,14 @@ export default function App() {
 
   const openFeedbackRecord = (record: FeedbackRecord) => {
     setOpenFeedbackId(record.id || null);
-    setOpenFeedbackMine(!!rcAuth.rcName && normName(record.rc_name || '') === normName(rcAuth.rcName));
+    // Id OR name, mirroring the server's rcRefMatches. Name alone was stricter
+    // than the rule the server actually enforces: correct an RC's spelling in
+    // the roster and their own filed observations stopped offering them the
+    // president-note box, even though a write would still have been accepted.
+    setOpenFeedbackMine(
+      (!!record.rc_id && record.rc_id === rcAuth.rcId)
+      || (!!rcAuth.rcName && normName(record.rc_name || '') === normName(rcAuth.rcName))
+    );
     const payload = record.feedback_json;
     if (payload) {
       setFormData(normalizeLoadedFeedback(payload));
@@ -2405,24 +2623,41 @@ export default function App() {
   };
 
   const handleDownloadPdf = async () => {
-    const { buildFeedbackPdf } = await loadPdfBuilder();
-    // The PDF is always German — it is the document the referee is sent and
-    // files, and the coaching vocabulary it is written in is German whatever
-    // language the coach set the app to. The emailed copy already did this; the
-    // downloaded one carried the UI language, so the same observation existed
-    // as two different documents.
-    const pdfData = toGermanFormData(formData);
-    const pdf = buildFeedbackPdf(pdfData);
+    // This button is the coach's rescue: it snapshots the form EXACTLY as it
+    // stands, half-filled and unsigned included, with none of the send-time
+    // validation. So it must never fail in silence — the whole call used to be
+    // an unguarded `void`, and the two ways it throws are the two moments it is
+    // most needed: the lazy chunk is gone after a deploy (the same failure
+    // submitSingleFeedback already handles), or the share sheet rejects.
+    const de = formData.lang === 'DE';
+    try {
+      const { buildFeedbackPdf } = await loadPdfBuilder();
+      // The PDF is always German — it is the document the referee is sent and
+      // files, and the coaching vocabulary it is written in is German whatever
+      // language the coach set the app to. The emailed copy already did this; the
+      // downloaded one carried the UI language, so the same observation existed
+      // as two different documents.
+      const pdfData = toGermanFormData(formData);
+      const pdf = buildFeedbackPdf(pdfData);
 
-    const file = new File([pdf.output('blob')], pdfFilename(pdfData), { type: 'application/pdf' });
-    if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
-      await navigator.share({
-        title: t.title,
-        files: [file],
-      });
-      return;
+      const file = new File([pdf.output('blob')], pdfFilename(pdfData), { type: 'application/pdf' });
+      if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          title: t.title,
+          files: [file],
+        });
+        return;
+      }
+      pdf.save(pdfFilename(formData));
+    } catch (err) {
+      // Dismissing the share sheet is a choice, not a failure — telling the
+      // coach their download broke because they changed their mind is worse
+      // than saying nothing.
+      if ((err as Error)?.name === 'AbortError') return;
+      toast.error(de
+        ? 'PDF konnte nicht erstellt werden (App-Update nötig). Bitte die Seite neu laden — deine Eingaben bleiben erhalten.'
+        : 'Could not build the PDF (app update needed). Please reload the page — your entries are kept.', { lang: formData.lang });
     }
-    pdf.save(pdfFilename(formData));
   };
 
   const handleDownloadEmptyForm = async (choice: '1SR' | '2SR' | 'both') => {
@@ -2604,6 +2839,15 @@ export default function App() {
     try {
       payload = await buildSubmitPayload();
       const result = await saveFeedbackToPocketBase(payload);
+      // Per role, the moment the server confirms it — never on the outer save
+      // returning, because the dual-mode loop can file '1. SR' and then throw on
+      // '2. SR'. The record is blanked to a tombstone: what survives is only the
+      // memory that this game+role was sent, which feedbackLocked cannot provide
+      // because it dies with the page.
+      void setDraftStatus(outboxOwnerId, selectedGame.id, fd.role, 'filed').catch(() => {});
+      // The local record is blanked to a tombstone, so the parked copy must not
+      // outlive it — it is a full signed assessment with nothing left to guard.
+      void unparkDrafts(selectedGame.id).catch(() => {});
       // The new record's id travels back so the sender can add a private note to
       // the RC president straight away, without reopening the game to find it.
       // Not in dual mode: two records are filed in one go and only one form is
@@ -2642,6 +2886,7 @@ export default function App() {
       // to a login screen is a reload and nothing persists the form.
       if (e.status === 401) {
         await enqueueFeedback(payload, label, outboxOwnerId);
+        void setDraftStatus(outboxOwnerId, selectedGame.id, fd.role, 'queued').catch(() => {});
         void refreshOutboxCount();
         return `${fd.role}: ${de
           ? 'Sitzung abgelaufen – Beobachtung zwischengespeichert. Bitte neu anmelden, sie wird dann automatisch gesendet.'
@@ -2652,6 +2897,11 @@ export default function App() {
       // Network failure / offline → hold it in the local outbox; it will be sent
       // (with real status) when connectivity returns. Never silently lost.
       await enqueueFeedback(payload, label, outboxOwnerId);
+      // Marked, NOT deleted. discardFailedOutbox hard-deletes terminal items,
+      // and terminal covers 400/403/422 — the FIXABLE errors. With the draft
+      // gone, one tap on Discard would destroy the only copy of a finished
+      // observation.
+      void setDraftStatus(outboxOwnerId, selectedGame.id, fd.role, 'queued').catch(() => {});
       void refreshOutboxCount();
       return `${fd.role}: ${de ? 'Offline gespeichert – wird gesendet, sobald du online bist.' : 'Saved offline – will send when you are back online.'}`;
     }
@@ -2686,7 +2936,15 @@ export default function App() {
     if (!navigator.onLine) return;
     setFlushing(true);
     try {
-      const { sent } = await flushOutbox(outboxOwnerId, sendOutbox, () => void refreshOutboxCount());
+      // The draft dies exactly when its outbox item does, and not a moment
+      // earlier: only the per-item outcome says WHICH submission actually went.
+      const { sent } = await flushOutbox(outboxOwnerId, sendOutbox, () => void refreshOutboxCount(),
+        (item, outcome) => {
+          if (outcome === 'sent' || outcome === 'duplicate') {
+            void setDraftStatus(outboxOwnerId, item.payload.gameId, item.payload.role, 'filed').catch(() => {});
+            void unparkDrafts(item.payload.gameId).catch(() => {});
+          }
+        });
       await refreshOutboxCount();
       if (sent > 0) {
         setBackendNotice(formData.lang === 'DE'
@@ -2703,7 +2961,15 @@ export default function App() {
   flushOutboxNowRef.current = flushOutboxNow;
 
   const discardFailedOutbox = async (id: string) => {
-    try { await discardOutboxItem(id); } finally { void refreshOutboxCount(); }
+    const item = outboxFailed.find((i) => i.id === id);
+    try {
+      // Hand the work back BEFORE the queue entry goes. Terminal means 400/403/422
+      // — a missing coachee e-mail, a wrong role/name pairing — all of which the
+      // coach can fix and resend. Discarding the queue entry must return them to
+      // an editable observation, not to nothing.
+      if (item) await setDraftStatus(outboxOwnerId, item.payload.gameId, item.payload.role, 'editing').catch(() => {});
+      await discardOutboxItem(id);
+    } finally { void refreshOutboxCount(); void refreshDrafts(); }
   };
 
   const retryFailedOutbox = async (id: string) => {
@@ -2717,6 +2983,9 @@ export default function App() {
       setBackendNotice(t.noGames);
       return;
     }
+    // Commit what is on screen before the send begins. If anything below throws
+    // in a way that reloads the page, the observation is already on disk.
+    await flushDraftNowRef.current();
     setSavingFeedback(true);
     setBackendNotice('');
     // submitSingleFeedback either sends (returns a notice), or on a NETWORK
@@ -2908,26 +3177,642 @@ export default function App() {
   }, [showConfirmModal, sigModalOpen, demoMailOpen, showInfoModal, showCalendarModal, showEmptyFormModal, detailCoachee]);
 
   const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
-  const formDisabled = feedbackLocked || isGameRoleClosed;
+  /**
+   * This role's submission has already left the form: it is sitting in the
+   * outbox ('queued') or the server has confirmed it ('filed').
+   *
+   * `feedbackLocked` cannot answer this — it lives in React state and dies with
+   * the page — and neither can the server for a report it deliberately left the
+   * role open for (a `closureFailed`, or one recommending a second visit). So
+   * after an offline send and a reload, tapping that game in the LIST handed the
+   * coach a blank, fully editable form for an observation already owed, and
+   * filing it again would send the referee a second report and a second PDF.
+   * The banner already refused to Resume such a role; this closes the other door.
+   */
+  const draftRoleSent: '' | 'queued' | 'filed' = (() => {
+    const rec = drafts.find((d) => d.gameId === selectedGameId && d.role === formData.role);
+    if (!rec) return '';
+    return rec.status === 'queued' ? 'queued' : rec.status === 'filed' ? 'filed' : '';
+  })();
+  const formDisabled = feedbackLocked || isGameRoleClosed || !!draftRoleSent;
 
-  // A half-filled observation lives only in React state — no draft, no
-  // beforeunload guard. The service-worker auto-update reloads the page as soon
-  // as a new build lands, so it has to know when that would destroy work.
+  // ── Drafts: the in-progress observation, held on this device ──────────
   //
-  // Keyed on the form CONTENT, not on the visible sub-view: merely tabbing away
-  // from the form (to the games list, say) does not save the work, so treating
-  // that as "clean" let the deferred reload fire and wipe a filled-in but
-  // unsubmitted observation the moment a coach glanced at another screen.
-  const formIsDirty = !formDisabled && (
-    !!formData.signature
-    || !!formData.rcSignature
-    || formData.sections.some((section) => section.items.some((item) => !!item.rating))
-    || Object.values(formData.results).some((value) => typeof value === 'string' && value.trim() !== '')
-  );
+  // A half-filled observation used to live only in React state, so a dead
+  // battery, an accidental tab close or an evicted PWA destroyed it outright.
+  // It is now committed to IndexedDB continuously, and the same work can be
+  // exported to a file and re-imported — on another device if need be.
+
+  const otherRole: FeedbackFormData['role'] = formData.role === '1. SR' ? '2. SR' : '1. SR';
+  const otherStash = dualFormData[otherRole];
+
+  // Every condition that makes writing a draft correct. `draftOwnerRef` is the
+  // load-bearing one: it is the identity the work on SCREEN belongs to, which
+  // is not the same thing as the identity currently signed in during the moment
+  // after a coach hand-off.
+  const draftContext = !!selectedGameId
+    && !openFeedbackId                      // a filed record is not a draft
+    && !formDisabled                        // locked or server-closed is not a draft
+    && !isDemoMode()                        // the demo promises nothing is stored
+    && draftStoreOk
+    && outboxOwnerId !== 'anon'
+    && draftOwnerRef.current === outboxOwnerId
+    && draftLoadingRef.current === '';
+
+  const draftWorth = draftHasWork(formData, tipsAndTricks)
+    || !!(otherStash && draftHasWork(otherStash.formData, otherStash.tipsAndTricks));
+
+  const buildDraftRecords = (owner: string): DraftRecord[] => {
+    const out: DraftRecord[] = [];
+    const push = (fd: FeedbackFormData, tips: string) => {
+      if (!draftHasWork(fd, tips)) return;
+      const prev = drafts.find((d) => d.gameId === selectedGameId && d.role === fd.role);
+      out.push({
+        id: draftKey(owner, selectedGameId, fd.role),
+        schema: DRAFT_SCHEMA, ownerId: owner, gameId: selectedGameId, role: fd.role,
+        updatedAt: Date.now(),
+        status: 'editing', submissionKey: '',
+        label: selectedGame ? `${selectedGame.homeTeam} vs ${selectedGame.awayTeam}` : '',
+        matchNo: selectedGame?.matchNo || '',
+        observationTarget, resultUnlocked,
+        coacheeId: selectedCoacheeId, coacheeName: selectedCoacheeName, coacheeLevel: selectedCoacheeLevel,
+        lang: fd.lang, meta: { ...fd.meta },
+        ratings: ratingsFromSections(fd.sections),
+        results: { ...fd.results } as Record<string, string>,
+        signature: fd.signature || '', rcSignature: fd.rcSignature || '',
+        tipsAndTricks: tips,
+        // Carried, not dropped: a field a NEWER build wrote survives a round
+        // trip through this one instead of being silently stripped.
+        extra: prev?.extra,
+      });
+    };
+    push(formData, tipsAndTricks);
+    if (otherStash) push(otherStash.formData, otherStash.tipsAndTricks);
+    return out;
+  };
+
+  const refreshDrafts = async () => {
+    // A read failure is a missing banner, not an error worth a red line. A
+    // WRITE failure is the one that matters, and it surfaces via draftSaveFailed.
+    try { setDrafts(await listDrafts(outboxOwnerId)); } catch { /* leave the list as it is */ }
+  };
+
+  /**
+   * The server backup, always on. Deliberately a second, much slower clock than
+   * the local commit: the device copy is what protects the last keystroke, this
+   * one only has to outlive the device itself. A park that fails while offline
+   * says nothing — a backup that nags in a hall with no signal is noise, and the
+   * next park catches up.
+   *
+   * It is unconditional rather than opt-in because the failure it guards against
+   * — a phone lost, stolen, drowned or simply dead — gives no warning and leaves
+   * the coach nothing to fall back on. The endpoint scopes every read to the
+   * session's own RC, so a parked draft is only ever visible to its author.
+   */
+  const parkNow = async (records: DraftRecord[], gameId: string) => {
+    if (records.length === 0 || !gameId) return;
+    // A parked draft belongs to a PERSON, so the server refuses a bare console
+    // session — correctly. Not attempting it there keeps that refusal from
+    // showing an admin a backup-failed warning on every observation they file.
+    if (outboxOwnerId === 'admin') return;
+    try {
+      await parkDrafts(gameId, records);
+      setParkFailed(false); setParkedOk(true);
+    } catch (err) {
+      // Only a server that ANSWERED and refused is worth a word: a missing
+      // collection, a rejected size, a rate limit. A failed fetch is just the
+      // gym's wifi, and the next park catches up.
+      if ((err as { reachedServer?: boolean })?.reachedServer) setParkFailed(true);
+    }
+  };
+  const parkSoon = () => {
+    const gameId = selectedGameId;
+    const owner = draftOwnerRef.current;
+    if (parkTimerRef.current) clearTimeout(parkTimerRef.current);
+    parkTimerRef.current = setTimeout(() => {
+      parkTimerRef.current = null;
+      // The STORE at fire time, never the snapshot this timer was armed with.
+      // Forty-five seconds is long enough for the work to LEAVE the form: a send
+      // blanks the record to a tombstone and deletes the parked copy, Discard and
+      // the reset dialog delete both. Re-uploading what the form happened to hold
+      // back then would put exactly what those paths destroyed back on the
+      // server, where the next device's boot merge would adopt it as live work.
+      void (async () => {
+        const live = await getGameDrafts(owner, gameId).catch(() => [] as DraftRecord[]);
+        // Filtered here rather than relying on parkDrafts' own filter: a list of
+        // pure tombstones would otherwise slip past parkNow's empty check and
+        // report a backup that no longer exists.
+        await parkNow(live.filter((d) => d.status === 'editing'), gameId);
+      })();
+    }, 45_000);
+  };
+  const parkImmediately = () => {
+    if (!draftContext) return;
+    if (parkTimerRef.current) { clearTimeout(parkTimerRef.current); parkTimerRef.current = null; }
+    const gameId = selectedGameId;
+    void (async () => {
+      // Through the same guard the autosave uses, rather than straight from the
+      // form: a role already filed or queued must not be re-parked out of the
+      // copy still sitting in memory.
+      const live = await putDrafts(buildDraftRecords(draftOwnerRef.current), true).catch(() => [] as DraftRecord[]);
+      await parkNow(live, gameId);
+    })();
+  };
+  parkImmediatelyRef.current = parkImmediately;
+
+  const commitDraft = async (): Promise<void> => {
+    if (!draftContext) { setDraftUnsaved(false); return; }
+    const records = buildDraftRecords(draftOwnerRef.current);
+    if (records.length === 0) { setDraftUnsaved(false); return; }
+    try {
+      // ONE transaction for both roles, so the fields the two forms mirror —
+      // the coach's signature and the score — commit together or not at all.
+      // The store refuses to demote a role that has already been sent, so park
+      // what it ACCEPTED rather than what this render offered it.
+      const written = await putDrafts(records, true);
+      void requestPersistentStorage();
+      // Nothing this form owns is still a draft — every record it offered had
+      // already been sent. Saying "Entwurf gespeichert" there would be a claim
+      // about a write that deliberately did not happen.
+      if (written.length === 0) { setDraftUnsaved(false); void refreshDrafts(); return; }
+      setResumeHint(selectedGameId);
+      setDraftUnsaved(false); setDraftSaveFailed(false); setDraftSavedAt(Date.now());
+      void refreshDrafts();
+      // The server backup rides on a much coarser clock than the local commit:
+      // IndexedDB is what protects the last keystroke, this only has to survive
+      // the device itself. Gated on the owner MATCHING, because the coach
+      // hand-off flushes this function under the outgoing identity while the
+      // session cookie already names the incoming one — parking there would
+      // file A's work under B's name on the server.
+      if (written.length > 0 && draftOwnerRef.current === outboxOwnerId) parkSoon();
+    } catch {
+      // Best-effort by construction: a draft write must NEVER throw into the
+      // submit path, or a full disk would stop a finished observation reaching
+      // the outbox. But it is SURFACED rather than swallowed — silence is right
+      // for a counter and wrong for "did my work save?".
+      setDraftSaveFailed(true);
+    }
+  };
+  flushDraftNowRef.current = commitDraft;
+
   useEffect(() => {
-    window.__svrzFormDirty = formIsDirty;
-    if (!formIsDirty) window.dispatchEvent(new Event('svrz:form-clean'));
-  }, [formIsDirty]);
+    // EVERY exit path clears the pending flag. A flag stuck true parks the
+    // service-worker reload for the life of the page.
+    if (!draftContext || !draftWorth) { setDraftUnsaved(false); return; }
+    setDraftUnsaved(true);
+    const timer = setTimeout(() => { void commitDraft(); }, 1200);
+    return () => clearTimeout(timer);
+  }, [formData, dualFormData, tipsAndTricks, observationTarget, resultUnlocked,
+      selectedCoacheeId, selectedCoacheeName, selectedCoacheeLevel,
+      selectedGameId, draftContext, draftWorth]);
+
+  useEffect(() => {
+    // `pagehide` and a hidden `visibilitychange` are what actually fire when
+    // iOS Safari kills a tab or an installed PWA — `beforeunload` does not fire
+    // there at all, which is exactly the case this whole feature exists for.
+    const flush = () => { void flushDraftNowRef.current(); parkImmediatelyRef.current(); };
+    const onHide = () => {
+      flush();
+      // Leaving, not merely backgrounding: a backgrounded tab still holds the
+      // work it must keep warning other tabs about.
+      releaseDraft();
+    };
+    const onVis = () => { if (document.visibilityState === 'hidden') flush(); };
+    window.addEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onVis);
+    window.__svrzFlushDraft = () => flushDraftNowRef.current();
+    return () => {
+      window.removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onVis);
+      // The park is a 45 s promise this component cannot keep past its own life.
+      // A coach hand-off UNMOUNTS App (AuthGate renders its children only while
+      // authed) and re-cookies the session under the incoming coach seconds
+      // later, so an armed timer would PUT the outgoing coach's ratings and both
+      // signatures under the incoming coach's owner_id — precisely what the
+      // owner check inside commitDraft exists to prevent. Cancelled rather than
+      // flushed: the IndexedDB copy is untouched, so at most the last 45 s of
+      // the SERVER backup is deferred to the next edit, and on logout the cookie
+      // is being revoked anyway.
+      if (parkTimerRef.current) { clearTimeout(parkTimerRef.current); parkTimerRef.current = null; }
+      // A commit suspended on its IndexedDB round trip resumes AFTER this
+      // cleanup and would arm a park the cleanup can no longer reach. Clearing
+      // the owner is what that resume's guard reads, so the late park is dropped.
+      draftOwnerRef.current = '';
+      releaseDraft();
+      delete window.__svrzFlushDraft;
+    };
+  }, []);
+
+  // Advisory cross-tab claim. `claimDraft` is idempotent for an unchanged
+  // triple and releases the previous observation itself, so this can run on
+  // every relevant render without bookkeeping of its own.
+  useEffect(() => {
+    if (!draftContext) { releaseDraft(); return; }
+    claimDraft(outboxOwnerId, selectedGameId, formData.role);
+  }, [draftContext, outboxOwnerId, selectedGameId, formData.role]);
+
+  useEffect(() => subscribeDraftClaims((n: DraftClaimNotice) => setDraftClaimedElsewhere(n.active)), []);
+
+  // Commit and back up a captured signature at once, on the render that has it.
+  // Fires for a cleared signature too — that also wants writing immediately.
+  useEffect(() => {
+    if (!sigFlushToken) return;
+    void flushDraftNowRef.current();
+    parkImmediatelyRef.current();
+  }, [sigFlushToken]);
+
+  // A resume that turns out to be impossible must hand the selection back to
+  // the games list, which deferred its own auto-select while a resume was pending.
+  const releaseAutoSelect = () => {
+    autoResumeRef.current = '';
+    clearResumeHint();
+    if (!selectedGameIdRef.current && eligibleGames.length > 0) setSelectedGameId(eligibleGames[0].id);
+  };
+
+  const formDataFromDraft = (d: DraftRecord, has2SR: boolean): FeedbackFormData => {
+    const role: FeedbackFormData['role'] = d.role === '2. SR' ? '2. SR' : '1. SR';
+    const lang: FeedbackFormData['lang'] = d.lang === 'EN' ? 'EN' : 'DE';
+    // Rebuilt from the catalogue in the DRAFT's own language and projected by
+    // item id — the inverse of toGermanFormData, and unlike normalizeLoadedFeedback
+    // it neither overlays by array index nor reads a previous game's 2-referee flag.
+    const catalogue = role === '1. SR'
+      ? adjustSectionsFor2SR(lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, has2SR)
+      : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
+    return {
+      ...INITIAL_DATA, role, lang,
+      meta: { ...INITIAL_DATA.meta, ...(d.meta || {}) },
+      results: { ...INITIAL_DATA.results, ...(d.results || {}) } as Results,
+      sections: catalogue.map((s) => ({
+        ...s, items: s.items.map((i) => ({ ...i, rating: d.ratings?.[i.id] || '' })),
+      })),
+      signature: d.signature || '',
+      // INITIAL_DATA leaves this undefined rather than '', and the difference is
+      // load-bearing for the mandatory-signature gate.
+      rcSignature: d.rcSignature || undefined,
+    };
+  };
+
+  const resumeDraft = (records: DraftRecord[]) => {
+    const editing = records.filter((d) => d.status === 'editing' && (d.schema ?? 1) <= DRAFT_SCHEMA);
+    if (editing.length === 0) { releaseAutoSelect(); draftLoadingRef.current = ''; return; }
+    const game = eligibleGames.find((g) => g.id === editing[0].gameId);
+    if (!game) { setBackendNotice(t.draftGameMissing); releaseAutoSelect(); draftLoadingRef.current = ''; return; }
+    const has2SR = !!game.secondReferee;   // THIS game, not a stale flag from the last one
+    const live = editing.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    const other = editing.find((d) => d.role !== live.role);
+
+    const stash: typeof dualFormData = { '1. SR': null, '2. SR': null };
+    if (other) stash[other.role] = { formData: formDataFromDraft(other, has2SR), tipsAndTricks: other.tipsAndTricks };
+
+    // A sibling already queued or filed cannot be sent as a pair: validateForm
+    // would demand a form for a role that is no longer editable, so collapse to
+    // the single role that IS restorable. A sibling that was merely never
+    // STARTED is a different thing — the visit is still the 'both' the coach
+    // chose, and this record is the only thing left saying so. Collapsing there
+    // silently filed one report on a two-referee visit.
+    const blocked = !other && records.some((d) => d.role !== live.role && d.status !== 'editing');
+    const target: '1SR' | '2SR' | 'both' =
+      blocked ? (live.role === '2. SR' ? '2SR' : '1SR') : live.observationTarget;
+
+    setSelectedGameId(game.id);
+    setSelectedCoacheeId(live.coacheeId);
+    setSelectedCoacheeName(live.coacheeName);
+    setSelectedCoacheeLevel(live.coacheeLevel);
+    setOpenFeedbackId(null); setOpenFeedbackMine(false); setFeedbackLocked(false);
+    setResultUnlocked(live.resultUnlocked);
+    setObservationTarget(target);
+    setFormData(formDataFromDraft(live, has2SR));
+    setTipsAndTricks(live.tipsAndTricks);
+    setDualFormData(stash);
+    setFeedbackSubView('feedbackForm');
+    draftOwnerRef.current = outboxOwnerId;
+    draftLoadingRef.current = '';
+    autoResumeRef.current = '';
+
+    // Filing writes the form's score onto the game, so a draft that disagrees
+    // with a score published since would overwrite it without anyone noticing.
+    // Put the disagreement in front of the coach instead.
+    setDraftScoreConflict(
+      live.resultUnlocked && game.game_result && game.game_result !== (live.meta.ergebnis || '')
+        ? game.game_result : ''
+    );
+  };
+
+  const resumeDraftForGame = async (gameId: string) => {
+    try {
+      const found = await getGameDrafts(outboxOwnerId, gameId);
+      const editing = found.filter((d) => d.status === 'editing' && (d.schema ?? 1) <= DRAFT_SCHEMA);
+      // No draft is the normal case: leave the fresh-game reset handleSelectGame
+      // already performed exactly as it is.
+      if (editing.length === 0) { draftLoadingRef.current = ''; return; }
+      // The unfiltered list: resumeDraft filters internally, and it needs to see
+      // a sibling that is queued or filed to tell that apart from one never started.
+      resumeDraft(found);
+      toast.success(t.draftRestored, { lang: formData.lang });
+    } catch { draftLoadingRef.current = ''; }
+  };
+
+  const discardDraft = async (gameId: string) => {
+    const ok = await confirmDialog({
+      title: t.draftDiscardTitle,
+      message: t.draftDiscardMsg,
+      confirmLabel: t.draftDiscard,
+      cancelLabel: formData.lang === 'DE' ? 'Abbrechen' : 'Cancel',
+      tone: 'danger',
+      lang: formData.lang,
+    });
+    if (!ok) return;
+    try { await deleteDraft(outboxOwnerId, gameId); } catch { /* nothing to undo */ }
+    // Discard means gone, including the server copy — leaving it parked would
+    // resurrect the work on the next device the coach signs in on.
+    void unparkDrafts(gameId).catch(() => {});
+    if (gameId === selectedGameId) {
+      // The form for THIS game is still in memory, and every flush path rebuilds
+      // its record from that memory — handleSelectGame flushes before it does
+      // anything else, so the next tap on the game wrote the discarded work
+      // straight back and handed it over with a "restored" toast. Discard has to
+      // take the copy on screen too, or "lässt sich nicht rückgängig machen" is
+      // undone by one tap.
+      doResetForm();
+    }
+    clearResumeHint();
+    void refreshDrafts();
+  };
+
+  // Boot: is there a store at all, is there anything old to retire, and was the
+  // coach on a form a moment ago?
+  useEffect(() => {
+    if (booting || didBootDraftsRef.current || outboxOwnerId === 'anon') return;
+    didBootDraftsRef.current = true;
+    void (async () => {
+      const available = await draftStoreAvailable();
+      setDraftStoreOk(available);
+      if (!available) { releaseAutoSelect(); return; }
+      try { await pruneDrafts(outboxOwnerId); } catch { /* a prune failure is not worth a word */ }
+      let mine: DraftRecord[] = [];
+      try { mine = await listDrafts(outboxOwnerId); } catch { /* ignore */ }
+      // Whatever this coach parked on the server, merged in. On a brand-new or
+      // wiped device this call is the ONLY thing that brings the work back.
+      let parked: DraftRecord[] = [];
+      try { parked = await listParkedDrafts(); } catch { /* offline, or nothing parked */ }
+      const adopt = parked.filter((p) => {
+        const local = mine.find((d) => d.id === p.id);
+        // A local 'queued' or 'filed' record ALWAYS wins: the parked copy
+        // predates the send, and restoring over it would re-arm a submission
+        // that has already gone.
+        if (!local) return true;
+        return local.status === 'editing' && p.updatedAt > local.updatedAt;
+      });
+      if (adopt.length > 0) {
+        try {
+          await putDrafts(adopt);
+          mine = await listDrafts(outboxOwnerId);
+        } catch { /* keep the local list */ }
+      }
+      setDrafts(mine);
+      const wanted = autoResumeRef.current;
+      const forGame = wanted
+        ? mine.filter((d) => d.gameId === wanted && d.status === 'editing' && (d.schema ?? 1) <= DRAFT_SCHEMA)
+        : [];
+      // Silent, no dialog: the tab is the same one the coach was typing in a
+      // second ago. A COLD start deliberately gets the banner instead — on a
+      // shared tablet, jumping into the previous session's screen would be wrong.
+      if (forGame.length > 0 && eligibleGames.some((g) => g.id === wanted)) {
+        draftOwnerRef.current = outboxOwnerId;
+        resumeDraft(mine.filter((d) => d.gameId === wanted));
+        toast.success(t.draftRestored, { lang: formData.lang });
+      } else {
+        releaseAutoSelect();
+      }
+    })();
+  }, [booting, outboxOwnerId, eligibleGames.length]);
+
+  // An owner flip that does NOT unmount — a privilege change, or a session that
+  // gains an RC id in place. The outgoing coach's form can still be on screen,
+  // so flush it under the OUTGOING id, then stop writing until the incoming
+  // coach picks a game of their own. (A hand-off through switchRc unmounts App
+  // instead; that path is covered by the lifecycle effect's cleanup.)
+  const lastDraftOwnerRef = useRef(outboxOwnerId);
+  useEffect(() => {
+    if (lastDraftOwnerRef.current === outboxOwnerId) return;
+    void commitDraft();
+    // Same reasoning as the unmount cleanup, for an owner flip that does NOT
+    // unmount (a privilege change turning 'anon'/'admin' into an RC id).
+    if (parkTimerRef.current) { clearTimeout(parkTimerRef.current); parkTimerRef.current = null; }
+    lastDraftOwnerRef.current = outboxOwnerId;
+    draftOwnerRef.current = '';
+    releaseDraft();
+    setDrafts([]); setDraftScoreConflict(''); setDraftSaveFailed(false);
+    setParkFailed(false); setParkedOk(false);
+    clearResumeHint();
+    void refreshDrafts();
+  }, [outboxOwnerId]);
+
+  const hasEditingDraft = (gameId: string) => drafts.some((d) => d.gameId === gameId && d.status === 'editing');
+  const draftIsOverdue = (gameId: string) => draftGroups.some((g) => g.gameId === gameId && g.overdue);
+
+  /**
+   * One row per game, newest first. `filed` tombstones are deliberately left
+   * out: they exist so a reload cannot re-arm a submission that already went,
+   * which is bookkeeping the coach has no action to take on. What earns a row is
+   * work that is unfinished ('editing') or still in flight ('queued').
+   */
+  const draftGroups = useMemo(() => {
+    const byGame = new Map<string, DraftRecord[]>();
+    for (const d of drafts) {
+      if (d.status === 'filed') continue;
+      const list = byGame.get(d.gameId) || [];
+      list.push(d);
+      byGame.set(d.gameId, list);
+    }
+    return Array.from(byGame.entries()).map(([gameId, list]) => {
+      const game = eligibleGames.find((g) => g.id === gameId);
+      const editing = list.filter((d) => d.status === 'editing');
+      return {
+        gameId,
+        list,
+        label: list[0].label || game?.matchNo || gameId,
+        updatedAt: list.reduce((max, d) => Math.max(max, d.updatedAt || 0), 0),
+        roles: list.map((d) => d.role).join(' · '),
+        queued: list.some((d) => d.status === 'queued'),
+        stale: editing.length > 0 && editing.every((d) => draftIsStale(d)),
+        ageDays: editing.length > 0 ? Math.min(...editing.map((d) => draftAgeDays(d))) : 0,
+        gameDate: game?.date || '',
+        /**
+         * The match is over and the report never went. An observation is written,
+         * signed and sent at the hall, so a draft that outlives its own game by a
+         * day is not a coach taking their time — it is a report the referee and
+         * the association are still waiting for. A day of slack, so a late match
+         * that runs past midnight is never accused of anything.
+         */
+        overdue: editing.length > 0 && !!game?.date
+          && Number.isFinite(Date.parse(game.date))
+          && Date.now() > Date.parse(game.date) + 24 * 60 * 60 * 1000,
+        // A role the server has since closed cannot be resumed, but the draft is
+        // never deleted for it — the coach discards it, or the age prune does.
+        allClosed: editing.length > 0 && editing.every((d) => !!game?.feedbackClosedRoles?.includes(d.role)),
+        resumable: editing.length > 0 && !!game,
+        missing: !game,
+        records: editing,
+      };
+    }).sort((a, b) => b.updatedAt - a.updatedAt);
+  }, [drafts, eligibleGames]);
+
+  const handleExportDraft = async () => {
+    const lang = formData.lang;
+    try {
+      // Built from LIVE React state, not from the store, so the rescue button
+      // still works while IndexedDB is refusing writes — which is precisely when
+      // a coach is told to press it. It needs no lazy chunk either, so unlike
+      // the PDF it cannot fail on the deploy the coach is trying to survive.
+      const records = buildDraftRecords(outboxOwnerId);
+      if (records.length === 0) { toast.error(t.draftImportEmpty, { lang }); return; }
+      const text = encodeDraftFile(records, {
+        game: selectedGame,
+        author: { ownerId: outboxOwnerId, name: rcAuth.rcName || '' },
+      });
+      const name = draftFileName({
+        id: selectedGame?.id || '', matchNo: selectedGame?.matchNo || '',
+        date: selectedGame?.date || '', league: selectedGame?.league || '',
+        location: selectedGame?.location || '',
+        homeTeam: selectedGame?.homeTeam || '', awayTeam: selectedGame?.awayTeam || '',
+        firstReferee: selectedGame?.firstReferee || '', secondReferee: selectedGame?.secondReferee || '',
+      }, lang);
+      const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+      const file = new File([blob], name, { type: 'application/json' });
+      // Share sheet first: on iOS and inside an installed PWA it is the only
+      // route into Files, AirDrop or WhatsApp — the mirror of handleDownloadPdf.
+      if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+        await navigator.share({ title: t.draftExport, files: [file] });
+        toast.success(t.draftExportOk, { lang });
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = name; a.click();
+      URL.revokeObjectURL(url);
+      toast.success(t.draftExportOk, { lang });
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return;   // the coach dismissed the share sheet
+      toast.error(t.draftSaveFailed, { lang });
+    }
+  };
+
+  const handleImportDraftFile = async (file: File) => {
+    const lang = formData.lang;
+    // Size checked BEFORE the read, so a huge file cannot stall a tablet first.
+    if (file.size > DRAFT_MAX_BYTES) { toast.error(t.draftImportTooBig, { lang }); return; }
+    let res;
+    try { res = decodeDraftFile(await file.text(), file.size, KNOWN_RATING_IDS); }
+    catch { toast.error(t.draftImportBroken, { lang }); return; }
+    if (!res.ok || !res.file) {
+      toast.error(res.reason === 'too-new' ? t.draftImportTooNew
+        : res.reason === 'kind' ? t.draftImportBadFile
+        : res.reason === 'empty' ? t.draftImportEmpty
+        : res.reason === 'too-big' ? t.draftImportTooBig
+        : t.draftImportBroken, { lang });
+      return;
+    }
+    const f = res.file;
+    // Bind to a game on THIS device. Without a bound game the form has no
+    // 2-referee flag and no send target, and the coach gets a dead form with
+    // no explanation.
+    const game = eligibleGames.find((g) => g.id === f.game.id)
+      ?? eligibleGames.find((g) => !!f.game.matchNo && g.matchNo === f.game.matchNo);
+    if (!game) { toast.error(t.draftGameMissing, { lang }); return; }
+
+    const foreign = !!f.author.ownerId && f.author.ownerId !== outboxOwnerId;
+    if (foreign) {
+      const ok = await confirmDialog({
+        title: lang === 'DE' ? 'Fremden Entwurf laden?' : 'Load someone else’s draft?',
+        message: lang === 'DE'
+          ? `Dieser Entwurf wurde von ${f.author.name || 'einer anderen Person'} geschrieben. Die Unterschriften werden NICHT übernommen — du unterschreibst selbst, und der Bericht wird unter deinem Namen eingereicht.`
+          : `This draft was written by ${f.author.name || 'another coach'}. The signatures are NOT carried over — you sign it yourself, and the report is filed under your name.`,
+        confirmLabel: lang === 'DE' ? 'Laden' : 'Load',
+        cancelLabel: lang === 'DE' ? 'Abbrechen' : 'Cancel',
+        tone: 'danger', lang,
+      });
+      if (!ok) return;
+    }
+    let existing: DraftRecord[] = [];
+    try { existing = await getGameDrafts(outboxOwnerId, game.id); } catch { /* treat as none */ }
+    if (existing.some((d) => d.status === 'editing')) {
+      const ok = await confirmDialog({
+        title: t.draftImportReplaceTitle,
+        message: `${f.game.homeTeam} vs ${f.game.awayTeam}. ` + (lang === 'DE'
+          ? 'Die gespeicherten Eingaben zu diesem Spiel werden ersetzt.'
+          : 'Your saved entries for this game will be replaced.'),
+        confirmLabel: lang === 'DE' ? 'Ersetzen' : 'Replace',
+        cancelLabel: lang === 'DE' ? 'Abbrechen' : 'Cancel',
+        tone: 'danger', lang,
+      });
+      if (!ok) return;
+    }
+    const records = f.drafts.map((p) => draftRecordFromFilePart(p, game, foreign));
+    try { await putDrafts(records); } catch { toast.error(t.draftSaveFailed, { lang }); return; }
+    await refreshDrafts();
+    draftOwnerRef.current = outboxOwnerId;
+    resumeDraft(records);            // imported and autosaved drafts take ONE path into the form
+    toast.success(t.draftImportOk, { lang });
+  };
+
+  const draftRecordFromFilePart = (p: DraftFilePart, game: EligibleGame, foreign: boolean): DraftRecord => {
+    const role: DraftRecord['role'] = p.role === '2. SR' ? '2. SR' : '1. SR';
+    // The rich-text fields reach innerHTML further down. That sink is already
+    // safe, but a file picked off disk is input from outside the app and is
+    // sanitised at the boundary, where the trust actually changes.
+    const results: Record<string, string> = { ...(p.results || {}) };
+    for (const key of ['bemerkungen', 'highlights', 'improvements', 'goals']) {
+      if (typeof results[key] === 'string') results[key] = sanitizeRich(results[key]);
+    }
+    return {
+      id: draftKey(outboxOwnerId, game.id, role),
+      schema: DRAFT_SCHEMA, ownerId: outboxOwnerId, gameId: game.id, role,
+      updatedAt: Date.now(), status: 'editing', submissionKey: '',
+      label: `${game.homeTeam} vs ${game.awayTeam}`, matchNo: game.matchNo || '',
+      observationTarget: p.observationTarget, resultUnlocked: !!p.resultUnlocked,
+      coacheeId: '', coacheeName: p.coacheeName || '', coacheeLevel: p.coacheeLevel || '',
+      lang: p.lang === 'EN' ? 'EN' : 'DE',
+      // Carrying coach A's ink into a report filed under coach B's name forges a
+      // document that the send-time validation would happily pass — it only ever
+      // checks that a signature string is non-empty.
+      meta: foreign ? { ...(p.meta || {}), rc: rcAuth.rcName || '' } : { ...(p.meta || {}) },
+      ratings: { ...(p.ratings || {}) },
+      results,
+      signature: foreign ? '' : (p.signature || ''),
+      rcSignature: foreign ? '' : (p.rcSignature || ''),
+      tipsAndTricks: p.tipsAndTricks || '',
+      extra: p.extra,
+    };
+  };
+
+  const formIsDirty = !formDisabled && draftHasWork(formData, tipsAndTricks);
+  /**
+   * Work that exists NOWHERE ELSE. This used to stay true until the whole
+   * observation was SENT, so a deploy could be postponed for the length of a
+   * match; it now covers only the ~1.2 s between a keystroke and the commit —
+   * or, when the device cannot store drafts at all (private mode, blocked
+   * IndexedDB, demo) or the write is failing, for as long as that lasts, which
+   * is exactly when postponing the reload is still the right answer.
+   */
+  const workUnsaved = formIsDirty && (!draftContext || draftUnsaved || draftSaveFailed);
+  useEffect(() => {
+    window.__svrzFormDirty = workUnsaved;
+    if (!workUnsaved) window.dispatchEvent(new Event('svrz:form-clean'));
+    // The effect had no cleanup, so unmounting while dirty left the flag up and
+    // blocked every reload for the life of the page.
+    return () => { window.__svrzFormDirty = false; };
+  }, [workUnsaved]);
+
+  useEffect(() => {
+    // The durable draft IS the close guard; this is only the fallback, and it is
+    // registered ONLY while the work really is unsaved — it does not fire on an
+    // iOS tab kill, it costs bfcache while attached, and it must never nag about
+    // work that is already on disk.
+    if (!workUnsaved) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [workUnsaved]);
 
   const selectedCoacheeInfo = useMemo(() => {
     const c = coachees.find(c => c.id === selectedCoacheeId);
@@ -2959,6 +3844,13 @@ export default function App() {
     setTipsAndTricks('');
     setDualFormData({ '1. SR': null, '2. SR': null });
     setShowConfirmModal(null);
+    // The confirm dialog promises everything is cleared — including the copy on
+    // disk, or "clear" would be a lie the next reload exposes.
+    void deleteDraft(outboxOwnerId, selectedGameId).catch(() => {});
+    void unparkDrafts(selectedGameId).catch(() => {});
+    clearResumeHint();
+    setDraftScoreConflict('');
+    void refreshDrafts();
   };
 
   const resetForm = () => {
@@ -2967,6 +3859,7 @@ export default function App() {
 
   const changeObservationTarget = (target: '1SR' | '2SR' | 'both') => {
     if (target === observationTarget) return;
+    void flushDraftNowRef.current();
     setObservationTarget(target);
     if (target === 'both') {
       // Keep the current role's form on screen; the other role starts blank (or from its stash) when switched to
@@ -3008,6 +3901,9 @@ export default function App() {
   };
 
   const toggleRole = () => {
+    // Flushed before the swap, so a crash can never leave the stashed role a
+    // role-switch of typing behind.
+    void flushDraftNowRef.current();
     const currentRole = formData.role;
     const newRole = currentRole === '1. SR' ? '2. SR' : '1. SR';
 
@@ -3069,6 +3965,7 @@ export default function App() {
   };
 
   const toggleLang = () => {
+    void flushDraftNowRef.current();
     setFormData(prev => {
       const newLang = prev.lang === 'DE' ? 'EN' : 'DE';
       // Remembered per device, so the gate and the app agree on the next visit.
@@ -3080,12 +3977,17 @@ export default function App() {
         newSections = newLang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN;
       }
 
-      // Map existing ratings to new sections
-      const mappedSections = newSections.map((section, sIdx) => ({
+      // Carry the ratings over BY ITEM ID, the way toGermanFormData already
+      // does. The old version overlaid them by position, which only held while
+      // the DE and EN catalogues stayed structurally identical — the day one of
+      // them gained, lost or reordered a criterion, a language switch would have
+      // shifted every mark below it onto the wrong criterion, silently.
+      const ratings = new Map(prev.sections.flatMap((s) => s.items.map((i) => [i.id, i.rating] as const)));
+      const mappedSections = newSections.map((section) => ({
         ...section,
-        items: section.items.map((item, iIdx) => ({
+        items: section.items.map((item) => ({
           ...item,
-          rating: prev.sections[sIdx]?.items[iIdx]?.rating || ''
+          rating: ratings.get(item.id) ?? ''
         }))
       }));
 
@@ -3513,6 +4415,18 @@ export default function App() {
           <Download size={18} />
           <span className="hidden sm:inline">{t.downloadPdf}</span>
         </button>
+        {/* The PDF is the document; this is the work. A PDF can be read but not
+            loaded back, so a coach who wants to carry an unfinished observation
+            to another device needs a file the app can re-open. */}
+        <button
+          onClick={() => void handleExportDraft()}
+          disabled={!draftWorth}
+          title={t.draftExport}
+          className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors disabled:opacity-50"
+        >
+          <FileJson size={18} />
+          <span className="hidden sm:inline">{t.draftExport}</span>
+        </button>
         {gameHas2SR && (
           <div className="flex items-center gap-2">
             <div
@@ -3629,6 +4543,75 @@ export default function App() {
           </div>
 
           <div className="bg-white p-3 sm:p-6 rounded-2xl shadow-card border border-stone-200/70">
+            {/* Unfinished work first: it is the only thing on this screen that
+                exists nowhere but this device, and the coach is the only one who
+                can decide what happens to it. */}
+            {draftGroups.length > 0 && (() => {
+              // A draft whose match is over is a different thing from one the
+              // coach is in the middle of, and it must not be able to hide among
+              // them: the whole banner changes colour and name so an unsent
+              // report is the loudest thing on the screen.
+              const overdueCount = draftGroups.filter((g) => g.overdue).length;
+              return (
+              <div className={cn('mb-3 rounded-lg border px-3 py-2 text-xs',
+                overdueCount > 0 ? 'border-red-300 bg-red-50' : 'border-stone-300 bg-stone-50')}>
+                <p className={cn('font-semibold mb-1 flex items-center gap-1.5',
+                  overdueCount > 0 ? 'text-red-800' : 'text-stone-700')}>
+                  {overdueCount > 0 ? <ShieldAlert size={13} /> : <RotateCcw size={13} />}
+                  {overdueCount > 0
+                    ? (overdueCount > 1 ? t.draftUnsentHeadingPlural : t.draftUnsentHeading)
+                    : (draftGroups.length > 1 ? t.draftHeadingPlural : t.draftHeading)}
+                </p>
+                <div className="space-y-1.5">
+                  {draftGroups.map((g) => (
+                    <div key={g.gameId} className="flex items-center gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-stone-800">{g.label}</p>
+                        <p className="truncate text-stone-500">
+                          {g.queued ? t.draftQueued
+                            : g.missing ? t.draftGameMissing
+                            : g.allClosed ? t.draftRoleClosed
+                            : `${g.roles} · ${new Date(g.updatedAt).toLocaleDateString(formData.lang === 'DE' ? 'de-CH' : 'en-GB')}`}
+                        </p>
+                        {/* The report the referee is still waiting for. */}
+                        {g.overdue && !g.queued && (
+                          <p className="truncate font-semibold text-red-700">
+                            {formData.lang === 'DE'
+                              ? `Nicht gesendet — Spiel vom ${new Date(g.gameDate).toLocaleDateString('de-CH')}.`
+                              : `Not sent — match of ${new Date(g.gameDate).toLocaleDateString('en-GB')}.`}
+                          </p>
+                        )}
+                        {/* An old draft is warned about, never deleted: a coach
+                            who parked an observation over a holiday must not come
+                            back to nothing. */}
+                        {g.stale && !g.overdue && (
+                          <p className="truncate text-amber-700">
+                            {formData.lang === 'DE'
+                              ? `Seit ${g.ageDays} Tagen nicht mehr bearbeitet — der Entwurf bleibt gespeichert.`
+                              : `Not touched for ${g.ageDays} days — the draft is kept.`}
+                          </p>
+                        )}
+                      </div>
+                      {g.resumable && !g.queued && !g.allClosed && (
+                        <button
+                          onClick={() => { draftOwnerRef.current = outboxOwnerId; resumeDraft(g.list); }}
+                          className="shrink-0 rounded border border-stone-300 bg-white px-2 py-0.5 font-semibold text-stone-700 hover:bg-stone-100"
+                        >
+                          {t.draftResume}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => void discardDraft(g.gameId)}
+                        className="shrink-0 rounded border border-stone-300 bg-white px-2 py-0.5 font-medium text-stone-600 hover:bg-stone-100"
+                      >
+                        {t.draftDiscard}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              );
+            })()}
             {/* Top row: language toggle + empty form download */}
             {isOffline && (
               <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
@@ -3712,6 +4695,27 @@ export default function App() {
                   <Languages size={14} />
                   <span>{formData.lang}</span>
                 </button>
+                {/* Rendered whether or not this device holds a draft — loading a
+                    file onto a FRESH device is the entire point of it. The input
+                    is hidden behind a label because the native control renders in
+                    the browser's language, not the app's. */}
+                <label className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors cursor-pointer">
+                  <Upload size={14} />
+                  <span>{t.draftImport}</span>
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    className="sr-only"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      // Cleared before the read, so picking the SAME file twice
+                      // still fires change — otherwise a failed import cannot be
+                      // retried without choosing something else first.
+                      e.target.value = '';
+                      if (f) void handleImportDraftFile(f);
+                    }}
+                  />
+                </label>
                 {/* Shown to the people who actually use the console, not to
                     all fourteen coaches. It briefly appeared for everyone —
                     admin rights used to come from an RC's own login, so when
@@ -3788,9 +4792,18 @@ export default function App() {
                         const de = formData.lang === 'DE';
                         const ok = await confirmDialog({
                           title: de ? 'Trotzdem wechseln?' : 'Switch anyway?',
-                          message: de
+                          // An unfinished draft is NOT a reason to block a
+                          // hand-off — nothing is stranded, it simply waits for
+                          // its author. Saying so stops the queued-item warning
+                          // from reading as "you are about to lose everything".
+                          message: (de
                             ? `${outboxPending} Feedback wartet noch auf Übermittlung und kann nur von ${rcAuth.rcName} gesendet werden.`
-                            : `${outboxPending} feedback submission is still waiting to send and can only be sent by ${rcAuth.rcName}.`,
+                            : `${outboxPending} feedback submission is still waiting to send and can only be sent by ${rcAuth.rcName}.`)
+                            + (drafts.some((d) => d.status === 'editing')
+                              ? (de
+                                ? ` Deine unfertige Beobachtung bleibt gespeichert und ist wieder da, wenn du dich als ${rcAuth.rcName} anmeldest.`
+                                : ` Your unfinished observation stays saved and comes back when you sign in as ${rcAuth.rcName}.`)
+                              : ''),
                           confirmLabel: de ? 'Wechseln' : 'Switch',
                           cancelLabel: de ? 'Abbrechen' : 'Cancel',
                           tone: 'danger',
@@ -4643,6 +5656,15 @@ export default function App() {
                                       {formData.lang === 'DE' ? 'Gewünscht' : 'Priority'}
                                     </span>
                                   )}
+                                  {hasEditingDraft(game.id) && (
+                                    <span
+                                      className={cn('px-2 py-1 rounded text-xs font-bold leading-none border',
+                                        draftIsOverdue(game.id)
+                                          ? 'bg-red-100 text-red-800 border-red-300'
+                                          : 'bg-stone-200 text-stone-700 border-stone-300')}
+                                      title={draftIsOverdue(game.id) ? t.draftUnsentHeading : t.draftHeading}
+                                    >{draftIsOverdue(game.id) ? t.draftUnsentBadge : t.draftBadge}</span>
+                                  )}
                                 </div>
                                 {/* Teams + result */}
                                 {(() => {
@@ -5178,6 +6200,67 @@ export default function App() {
 
       {feedbackSubView === 'feedbackForm' && (
       <>
+      {/* Where the coach finds out whether their work is safe. Silence here is
+          the one thing this feature cannot afford: the whole point is that
+          nobody has to wonder. */}
+      {!formDisabled && (
+        <div className="max-w-4xl mx-auto mb-3 no-print space-y-2">
+          {!draftStoreOk && (
+            <div className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs font-medium text-red-800">
+              <CloudOff size={14} className="shrink-0 mt-0.5" />
+              <span className="flex-1">{t.draftNoStore}</span>
+              <button onClick={() => void handleExportDraft()} className="shrink-0 rounded border border-red-300 bg-white px-2 py-0.5 font-semibold text-red-700 hover:bg-red-100">
+                {t.draftSaveAsFile}
+              </button>
+            </div>
+          )}
+          {draftSaveFailed && draftStoreOk && (
+            <div className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs font-medium text-red-800">
+              <ShieldAlert size={14} className="shrink-0 mt-0.5" />
+              <span className="flex-1">{t.draftSaveFailed}</span>
+              <button onClick={() => void handleExportDraft()} className="shrink-0 rounded border border-red-300 bg-white px-2 py-0.5 font-semibold text-red-700 hover:bg-red-100">
+                {t.draftSaveAsFile}
+              </button>
+            </div>
+          )}
+          {draftClaimedElsewhere && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+              <Copy size={14} className="shrink-0 mt-0.5" />
+              <span className="flex-1">{t.draftOtherTab}</span>
+            </div>
+          )}
+          {parkFailed && (
+            <p className="text-xs text-amber-700 flex items-start gap-1.5">
+              <CloudOff size={12} className="shrink-0 mt-0.5" />{t.parkFailed}
+            </p>
+          )}
+          {draftContext && draftWorth && !draftSaveFailed && (
+            <p className="text-xs text-stone-500 flex items-center gap-1.5">
+              {draftUnsaved
+                ? <><Loader2 size={12} className="animate-spin" />{t.draftSaving}</>
+                : <><ClipboardCheck size={12} className="text-green-600" />{t.draftSaved}{draftSavedAt ? ` · ${new Date(draftSavedAt).toLocaleTimeString(formData.lang === 'DE' ? 'de-CH' : 'en-GB', { hour: '2-digit', minute: '2-digit' })}` : ''}</>}
+              {/* Said plainly rather than buried: the observation, signatures
+                  included, is on the server as well as this device. */}
+              {parkedOk && !parkFailed && (
+                <span className="text-stone-400" title={t.parkHint}>· {t.parkedAt}</span>
+              )}
+            </p>
+          )}
+          {draftScoreConflict && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+              <span className="flex-1">
+                {t.draftScoreChanged} {formData.lang === 'DE' ? 'Entwurf' : 'Draft'}: <b>{formData.meta.ergebnis || '—'}</b> · {formData.lang === 'DE' ? 'Spiel' : 'Game'}: <b>{draftScoreConflict}</b>
+              </span>
+              <button
+                onClick={() => { updateMeta('ergebnis', draftScoreConflict); setDraftScoreConflict(''); }}
+                className="rounded border border-amber-400 bg-white px-2 py-0.5 font-semibold text-amber-800 hover:bg-amber-100"
+              >
+                {t.draftUseGameScore}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {/* Main Form Container */}
       <div className="max-w-4xl mx-auto bg-white p-4 md:p-8 shadow-xl border border-stone-200 print:shadow-none print:border-none print:p-0 print:max-w-none print:mx-0">
         
@@ -5548,16 +6631,23 @@ export default function App() {
         </div>
       )}
 
-      {(feedbackLocked || isGameRoleClosed) && (
+      {formDisabled && (
         <div className="max-w-4xl mx-auto mt-4 no-print">
           <div className="bg-stone-100 border border-stone-300 rounded-lg px-4 py-3 text-sm text-stone-600 font-medium">
-            {isGameRoleClosed ? t.gameClosed : t.feedbackLocked}
+            {isGameRoleClosed ? t.gameClosed
+              : draftRoleSent === 'queued' ? t.draftQueued
+              : draftRoleSent === 'filed' ? t.draftFiled
+              : t.feedbackLocked}
           </div>
         </div>
       )}
 
       {/* Save to database */}
-      {!feedbackLocked && !isGameRoleClosed && (
+      {/* Gated on the same three things as formDisabled. The greyed-out wrapper
+          below does not contain this button, so omitting draftRoleSent left the
+          Senden button live on a role whose report has already gone — with only
+          the blank form's own validation between it and a second submission. */}
+      {!formDisabled && (
         <div className="max-w-4xl mx-auto mt-4 flex justify-end no-print">
           <div className="flex flex-col items-end gap-2">
             {validationError && (
@@ -5719,6 +6809,19 @@ export default function App() {
                     <div className="flex flex-col items-center gap-2">
                       <div className="p-2 bg-white border border-stone-200 rounded-lg"><QRCodeSVG value={`${window.location.origin}${window.location.pathname}#/sign/${sigSlug}`} size={116} level="M" /></div>
                       <p className="text-[11px] text-stone-500 text-center">{formData.lang === 'DE' ? 'Mit dem Handy scannen und dort unterschreiben.' : 'Scan with a phone and sign there.'}</p>
+                      {/* Faster than holding a QR up at someone who is already
+                          packing their bag: the link lands in the referee's own
+                          phone. Still the same visit — this dialog is what
+                          watches the session, so it stays open until the ink
+                          arrives. */}
+                      <button
+                        onClick={() => void shareSignatureLink(sigSlug)}
+                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100"
+                      >
+                        {canShareLink ? <Send size={13} /> : <Copy size={13} />}
+                        {canShareLink ? t.sigShareLink : t.sigCopyLink}
+                      </button>
+                      <p className="text-[11px] text-stone-400 text-center">{t.sigLinkHint}</p>
                       <p className="text-[11px] text-amber-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> {formData.lang === 'DE' ? 'Warte auf Unterschrift…' : 'Waiting for signature…'}</p>
                     </div>
                   </>

@@ -6,6 +6,12 @@
 // stops auto-retrying and is surfaced to the coach to discard or fix. Every item
 // is tagged with the RC id that created it and is only ever sent back under that
 // same identity — so a queued item can never be submitted as a different coach.
+// In-progress observation drafts deliberately do NOT live in a second store in
+// this database but in their own (`formDraft.ts`): another store here means a
+// DB_VERSION bump, and `openDb()` below has no `onblocked` handler, so an
+// upgrade held open by a second window would surface as a rejected
+// `enqueueFeedback` — the one write in this app whose failure loses a completed
+// observation.
 
 export type OutboxPayload = {
   /**
@@ -166,20 +172,26 @@ async function withOutboxLock<T>(fn: () => Promise<T>, busy: () => Promise<T>): 
 
 // Send this owner's non-terminal items, oldest first. Guarded by a lock so
 // overlapping triggers (online event, mount, manual, interval) never double-send.
+// `onSettled` reports what the loop actually did with each item, once per item:
+// the caller keeps its own record of that submission (the draft store) in step
+// with the queue instead of having to guess the per-item outcome from the sent
+// count, which says nothing about WHICH items went.
 export async function flushOutbox(
   ownerId: string,
   send: (p: OutboxPayload) => Promise<SendResult>,
   onChange?: () => void,
+  onSettled?: (item: OutboxItem, outcome: SendResult['outcome']) => void,
 ): Promise<{ sent: number; pending: number }> {
   const idle = async () => ({ sent: 0, pending: (await outboxCounts(ownerId)).pending });
   if (flushing) return idle();
-  return withOutboxLock(() => flushOwned(ownerId, send, onChange), idle);
+  return withOutboxLock(() => flushOwned(ownerId, send, onChange, onSettled), idle);
 }
 
 async function flushOwned(
   ownerId: string,
   send: (p: OutboxPayload) => Promise<SendResult>,
   onChange?: () => void,
+  onSettled?: (item: OutboxItem, outcome: SendResult['outcome']) => void,
 ): Promise<{ sent: number; pending: number }> {
   if (flushing) return { sent: 0, pending: (await outboxCounts(ownerId)).pending };
   flushing = true;
@@ -198,6 +210,11 @@ async function flushOwned(
       } else {
         await putItem({ ...item, lastError: res.error }); // retry: keep, try again next flush
       }
+      // After the store is settled, and never allowed to throw: this handler is
+      // somebody else's bookkeeping, and a draft that fails to update must not
+      // abort the send loop — the item it belongs to is already gone from the
+      // queue, so a thrown error here would strand every item behind it.
+      try { onSettled?.(item, res.outcome); } catch { /* a draft bookkeeping failure must never strand a sent item */ }
       onChange?.();
     }
   } finally {

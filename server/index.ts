@@ -137,6 +137,20 @@ const modestJson = express.json({ limit: '256kb' });
 const BIG_BODY_PATH_RE = /^\/api\/feedback\/submit\/?$/i;
 app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
   if (CLIENT_LOG_PATH_RE.test(req.path)) { next(); return; }
+  // Parking a draft carries up to four signature PNGs as data URLs (two roles,
+  // referee and coach), which 256 kb cannot hold — but 32 mb is the PDF budget
+  // and has no business on a route a phone hits every few minutes. Its own
+  // middle limit, and the declared length is checked HERE, ahead of the parser,
+  // so an oversized park is refused before a byte of it is buffered or parsed
+  // and the answer names the cause instead of body-parser's generic 413.
+  if (PARK_BODY_PATH_RE.test(req.path)) {
+    if (Number(req.headers['content-length'] || 0) > PARK_MAX_BYTES) {
+      res.status(413).json({ error: 'Der Entwurf ist zu gross zum Parken.' });
+      return;
+    }
+    parkJson(req, res, next);
+    return;
+  }
   (BIG_BODY_PATH_RE.test(req.path) ? generousJson : modestJson)(req, res, next);
 });
 
@@ -188,6 +202,26 @@ function bodySummary(body: unknown): unknown {
 const CLIENT_LOG_PATH_RE = /^\/api\/client-logs\/?$/i;
 const CLIENT_LOG_BODY_LIMIT = '256kb';
 
+// Only the WRITE half of the parked-draft routes: /api/drafts/parked/<gameId>.
+// The bare /api/drafts/parked (the list) keeps the modest parser, so a GET
+// carrying a megabyte of JSON nobody reads is still refused at 256 kb.
+//
+// Strictly BELOW the payload column's own maxSize (2_000_000 — see J() in
+// deploy/hetzner/seed/setup-schema.mjs). A 2 MiB wire cap admitted a body the
+// column then refused, and that refusal came back as a 500 instead of the 413
+// this gate exists to give. The ~100 kB of headroom covers the keys the
+// sanitiser fills in for fields the client left out.
+//
+// Raising J()'s maxSize is NOT the fix: ensureFields in setup-schema.mjs is
+// additive-only, so a bigger number there never reaches the collection that
+// already exists. This constant is the only place the change takes effect.
+//
+// A real park lands far below either number: the cap bounds a wedged or hostile
+// client, it is not a working budget.
+const PARK_BODY_PATH_RE = /^\/api\/drafts\/parked\/[^/]+\/?$/i;
+const PARK_MAX_BYTES = 1_900_000;
+const parkJson = express.json({ limit: PARK_MAX_BYTES });
+
 // Two routes carry something its author was promised stays with the RC chair:
 // a coach's private note, and a referee's survey answers. This log is read by
 // every admin, so their bodies are reduced to shape — and the survey's
@@ -201,6 +235,13 @@ const CLIENT_LOG_BODY_LIMIT = '256kb';
 const CONFIDENTIAL_BODY_PATHS = [
   /^\/api\/feedback\/[^/]+\/president-note$/i,
   /^\/api\/survey\/[^/]+$/i,
+  // A parked draft is a coach's unfinished assessment of a named referee, and
+  // parkOwner refuses an admin console session on purpose. This log is READ
+  // through that same console session, so the body must not reach it by the
+  // back door — a 2.5 kB park sits under bodySummary's threshold and would land
+  // in the ring, the daily .jsonl and Admin -> Protokoll verbatim, referee name
+  // beside remarks the coach may never even file.
+  PARK_BODY_PATH_RE,
 ];
 
 function logBody(path: string, body: unknown): unknown {
@@ -7951,6 +7992,467 @@ app.get('/api/admin/reminders/preview', requireAdminSession, async (_req: Reques
       reminders: plans.map(({ html: _html, ...rest }) => rest),
     });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// ── Parked drafts: the opt-in server copy of unfinished work ──────────
+//
+// Every copy of an in-progress observation is device-local — src/lib/formDraft.ts
+// keeps them in IndexedDB — which is right until the device is lost, stolen,
+// wiped or simply dead, and then twenty minutes of work goes with it along with
+// two signatures nobody can collect a second time. Parking is the coach saying
+// "put a copy on the server as well". It is OPT-IN: nothing is parked unless
+// the coach asks for it, so a coach with nothing parked is the ordinary case
+// and never an error — every read here answers an empty list, not a 404.
+//
+// What the server does with a parked draft is store it, hand it back to the
+// coach who parked it, and delete it. It files nothing, mails nothing, closes
+// no role on a game and creates no observation: a parked draft is an unfinished
+// form, and /api/feedback/submit stays the only door anything is filed through.
+//
+// ── THE OWNERSHIP RULE, and it is absolute ──────────────────────────
+//
+// The owner is derived from the SESSION. It is never read from the request
+// body, never from a query parameter and never from the path — the only thing
+// a caller names is WHICH GAME to park, list or unpark. Every read and every
+// write leaves with `owner_id = "<this session's RC id>"` in its filter, so
+// there is no scope for a caller to widen: there is none to widen. A coach must
+// NEVER be able to fetch, overwrite or delete a colleague's unfinished
+// observation.
+//
+// The invariant a test asserts, stated so it can be asserted: park as coach A,
+// then as coach B the list comes back EMPTY; a park by B for A's game creates
+// B's own row and leaves A's untouched; a DELETE by B for A's game removes
+// nothing. None of the three depends on B being polite about what they send.
+//
+// An admin console session does not pass either — see parkOwner(). A parked
+// draft belongs to a person and an admin console session is not one, the same
+// line /api/ical/me draws for the same reason. That matters more here than
+// there: requireRcSession lets an admin through with no identity attached, and
+// the house convention reads "no identity" as full access, which is precisely
+// the reading this section must not inherit.
+const PARKED_DRAFTS_COLLECTION = 'parked_drafts';
+
+// Bounds on one stored row. Generous enough that no honest draft ever meets
+// them, tight enough that a wedged or hostile client cannot grow the collection
+// without limit. The wire size is capped separately and earlier, ahead of the
+// JSON parser — see PARK_MAX_BYTES.
+const PARK_MAX_ROLES = 2;
+const PARK_MAX_KEY_LEN = 80;
+const PARK_MAX_MAP_KEYS = 200;      // meta has ~10, ratings ~40, results ~9
+const PARK_MAX_FIELD_LEN = 50_000;  // one rich-text box, with room to spare
+const PARK_MAX_SHORT_LEN = 300;     // a name, a level, a match number
+// Below half the payload column's maxSize, so two full-length signatures cannot
+// reach it between them even before the other fields are counted. The wire cap
+// already turns such a body away with a 413; this is the second belt, on the
+// sanitiser's side, so nothing that gets past the parser can build a record the
+// column then refuses.
+const PARK_MAX_SIGNATURE_LEN = 900_000;
+const PARK_MAX_EXTRA_BYTES = 20_000;
+// A clock that is merely wrong is normal (a tablet whose battery died boots in
+// 1970); a clock a year ahead would pin its draft to the top of every list for
+// as long as the row lives. Anything beyond a day of skew is taken as unusable.
+const PARK_MAX_CLOCK_SKEW_MS = 24 * 60 * 60 * 1000;
+// The mirror of DRAFT_TTL_MS / DRAFT_MAX_PER_OWNER on the client, and the
+// numbers are deliberately the same ones. Here they carry more weight: a parked
+// draft is a signed assessment of a named referee sitting on a server, so it is
+// kept for as long as the work is plausibly still in progress and not one day
+// longer.
+const PARK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
+const PARK_MAX_PER_OWNER = 12;
+
+// Its own bucket, for the reason the survey writes have one: a coach parking on
+// a debounce must not be able to lock a hall out of signing, and a burst of
+// signatures must not stop a draft reaching safety.
+//
+// Keyed by RC id rather than by IP. A venue is one NAT and a training weekend
+// puts a dozen coaches behind it, so an IP bucket would spend the tenth
+// person's allowance on the first nine's honest work. Every route here is
+// authenticated, which is what makes the better key available at all.
+const parkAttempts: RateLimitStore = new Map();
+const PARK_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+const PARK_RATE_LIMIT_MAX = 90;
+function checkParkRateLimit(rcId: string) {
+  return checkRateLimit(parkAttempts, rcId, PARK_RATE_LIMIT_MAX, PARK_RATE_LIMIT_WINDOW_MS);
+}
+
+// Two devices of one coach can park the same game at the same moment, and the
+// upsert below is a read-then-write. Without this they each find no row and
+// each create one, and the collection quietly grows a duplicate that every
+// later read has to guess between. Same chain the settings maps and the game
+// closures use.
+const parkWrites = new Map<string, Promise<unknown>>();
+function withParkLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  return chainOnKey(parkWrites, key, fn);
+}
+
+/**
+ * The identity a parked draft belongs to, or null with the response already
+ * sent.
+ *
+ * Read from the session cookie and nowhere else. requireRcSession has already
+ * run, so what is left to reject is the admin console session it deliberately
+ * lets through without attaching an identity: there is no "my drafts" for a
+ * role, and defaulting a missing identity to full access — the convention
+ * everywhere else in this file — would hand every coach's unfinished work to
+ * anyone holding the console password.
+ */
+async function parkOwner(req: Request, res: ExpressResponse): Promise<ActiveRcPerson | null> {
+  const session = verifyRcSession(req);
+  const person = session.rcId ? (await getActiveRcPeople()).find((p) => p.id === session.rcId) : undefined;
+  if (!person) {
+    res.status(403).json({ error: 'Entwürfe parken gibt es nur für angemeldete Referee Coaches.' });
+    return null;
+  }
+  return person;
+}
+
+/** The DraftRecord shape as it is stored — see sanitizeParkedDraft for what is
+ *  missing from it and why. */
+type ParkedDraftPayload = {
+  schema: number;
+  role: string;
+  updatedAt: number;
+  label: string;
+  matchNo: string;
+  observationTarget: string;
+  resultUnlocked: boolean;
+  coacheeId: string;
+  coacheeName: string;
+  coacheeLevel: string;
+  lang: string;
+  meta: Record<string, string>;
+  ratings: Record<string, string>;
+  results: Record<string, string>;
+  signature: string;
+  rcSignature: string;
+  tipsAndTricks: string;
+  extra?: Record<string, unknown>;
+};
+
+// String(), not asText(): asText trims, and a draft has to come back exactly as
+// the coach left it — a half-typed line ending in a space is still where their
+// cursor was. Objects and arrays become '' rather than "[object Object]".
+function parkText(value: unknown, max: number): string {
+  if (typeof value === 'string') return value.slice(0, max);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).slice(0, max);
+  return '';
+}
+
+function parkMap(value: unknown, maxLen: number): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+  const source = value as Record<string, unknown>;
+  for (const key of Object.keys(source).slice(0, PARK_MAX_MAP_KEYS)) {
+    if (key.length > PARK_MAX_KEY_LEN) continue;
+    out[key] = parkText(source[key], maxLen);
+  }
+  return out;
+}
+
+// A signature is a data: URL or it is nothing. Anything else — an http(s) URL
+// above all — would turn a stored draft into a beacon that fires the moment the
+// form is restored, and an unfinished form has no business calling anywhere.
+function parkSignature(value: unknown): string {
+  const data = parkText(value, PARK_MAX_SIGNATURE_LEN);
+  return data.startsWith('data:image/') ? data : '';
+}
+
+// Forward compatibility, bounded. Keys a NEWER build wrote that neither this
+// server nor today's client has a field for travel through unread, so a coach
+// whose phone runs the new app does not get their draft back stripped by a
+// server that has not been deployed yet. Stored opaquely — the shape is by
+// definition unknown — and capped by serialised size for exactly that reason.
+function parkExtra(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  try {
+    const text = JSON.stringify(value);
+    if (!text || text.length > PARK_MAX_EXTRA_BYTES) return undefined;
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch { return undefined; }
+}
+
+/**
+ * One role's draft, reduced to what may be stored.
+ *
+ * DROPPED, and these are the three that matter:
+ *
+ *  - `ownerId`, and with it `id` (which is `${ownerId}|${gameId}|${role}`, i.e.
+ *    a second copy of the same claim). Both are the request body asserting
+ *    whose work this is, and the body does not get to say. The owner comes from
+ *    the session; the client rebuilds the key from the owner the server reports
+ *    back to it.
+ *  - `submissionKey`. It names an item in ONE device's outbox. A second device
+ *    replaying a key it never enqueued is a lie about where a submission came
+ *    from — and a parked draft is only ever 'editing', where the key is ''
+ *    anyway.
+ *  - `status`, which is not stored at all and therefore always reads back as
+ *    'editing'. 'queued' is in flight on the device holding the outbox item and
+ *    'filed' is a tombstone whose payload has already been blanked, so parking
+ *    either would let a second device resurrect an observation that is on its
+ *    way or already sent.
+ *
+ * KEPT on purpose: both signature images. They are the reason the feature
+ * exists — a coach whose phone died after the referee drove home cannot collect
+ * that ink again. The rule that strips signatures when a draft crosses to
+ * ANOTHER coach (the imported-file path) does not apply, because a parked draft
+ * only ever comes back to the coach who parked it: same person, same name on
+ * the report, nothing forged.
+ *
+ * Returns null when the role cannot be placed. Dropped, never defaulted — a
+ * defaulted role hands a 2. SR's marks back as a 1. SR form.
+ */
+function sanitizeParkedDraft(raw: unknown): ParkedDraftPayload | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const source = raw as Record<string, unknown>;
+  // No `gameId` is read here. The PATH names the game, for the same reason the
+  // session names the owner: one authority per fact, and it is never the part
+  // of the request that is cheapest to get wrong.
+  const role = parkText(source.role, PARK_MAX_KEY_LEN);
+  if (!FEEDBACK_ROLES.includes(role)) return null;
+
+  const schema = Number(source.schema);
+  const updatedAt = Number(source.updatedAt);
+  const target = parkText(source.observationTarget, PARK_MAX_KEY_LEN);
+
+  return {
+    // A record written by a newer client keeps its own number, so that client
+    // recognises it on the way back and an older one can skip it rather than
+    // half-restore it. Unreadable means 1, the schema every field here is.
+    schema: Number.isFinite(schema) && schema >= 1 ? Math.floor(schema) : 1,
+    role,
+    updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 && updatedAt <= Date.now() + PARK_MAX_CLOCK_SKEW_MS
+      ? Math.floor(updatedAt)
+      : Date.now(),
+    label: parkText(source.label, PARK_MAX_SHORT_LEN),
+    matchNo: parkText(source.matchNo, PARK_MAX_SHORT_LEN),
+    // An unreadable target is derived from the role rather than defaulted to
+    // '1SR': a 2. SR-only draft that comes back claiming '1SR' asks the coach
+    // to fill a form none of the stored work belongs to.
+    observationTarget: target === 'both' || target === '1SR' || target === '2SR'
+      ? target
+      : (role === '2. SR' ? '2SR' : '1SR'),
+    resultUnlocked: source.resultUnlocked === true,
+    coacheeId: parkText(source.coacheeId, PARK_MAX_SHORT_LEN),
+    coacheeName: parkText(source.coacheeName, PARK_MAX_SHORT_LEN),
+    coacheeLevel: parkText(source.coacheeLevel, PARK_MAX_SHORT_LEN),
+    lang: parkText(source.lang, 8) === 'EN' ? 'EN' : 'DE',
+    meta: parkMap(source.meta, PARK_MAX_FIELD_LEN),
+    ratings: parkMap(source.ratings, PARK_MAX_KEY_LEN),
+    results: parkMap(source.results, PARK_MAX_FIELD_LEN),
+    signature: parkSignature(source.signature),
+    rcSignature: parkSignature(source.rcSignature),
+    tipsAndTricks: parkText(source.tipsAndTricks, PARK_MAX_FIELD_LEN),
+    extra: parkExtra(source.extra),
+  };
+}
+
+// The rows this owner holds for one game. Every caller in this section goes
+// through here, so the owner clause cannot be forgotten at one of them.
+async function parkedRowsFor(ownerId: string, gameId: string): Promise<AnyRecord[]> {
+  return pb.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
+    filter: `owner_id = "${escapeFilterValue(ownerId)}" && game_id = "${escapeFilterValue(gameId)}"`,
+  });
+}
+
+/**
+ * Age and count cap, this owner only.
+ *
+ * Runs after a successful park rather than on a cron: the coach who is parking
+ * is the one whose rows are being bounded, and a sweep that only happens while
+ * somebody is actively using the feature cannot surprise anybody.
+ *
+ * The same owner filter as every other query here, so a prune can no more reach
+ * a colleague's row than a read can — and each id it deletes came from a row
+ * whose `owner_id` it had already matched.
+ */
+async function pruneParkedDrafts(ownerId: string): Promise<void> {
+  const rows = await pb.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
+    filter: `owner_id = "${escapeFilterValue(ownerId)}"`,
+    // `updated` (the server's autodate), NOT `updated_at` (the device's clock).
+    // A tablet whose battery died boots in 1970 and parks a row stamped 1970,
+    // which by the device clock is instantly older than any cutoff — the coach
+    // would watch their park succeed and then vanish in the same request.
+    // updated_at still decides which of two COPIES is newer, because that is a
+    // question about one device's edits; how long a row is KEPT is a question
+    // only the server's own clock can answer.
+    sort: '-updated',
+    fields: 'id,updated',
+  });
+  const cutoff = Date.now() - PARK_TTL_MS;
+  const doomed = rows.filter((row, index) => {
+    if (index >= PARK_MAX_PER_OWNER) return true;
+    const at = Date.parse(asText(row.updated));
+    // An unreadable date keeps the row. Deleting a coach's only copy of an
+    // unfinished observation is not a failure to make on a parse error.
+    return Number.isFinite(at) && at < cutoff;
+  });
+  for (const row of doomed) await pb.collection(PARKED_DRAFTS_COLLECTION).delete(row.id);
+}
+
+// The collection is created by deploy/hetzner/seed/setup-schema.mjs, which has
+// to be re-run after the deploy that ships this. On a READ that is answered as
+// "nothing parked" — absence is the normal state of this feature and an app
+// that has never parked anything must not show an error — but a WRITE that
+// silently succeeded into a missing collection would tell a coach their work is
+// safe when it is nowhere. Say what is wrong, in the words the admin needs.
+function parkSchemaError(): SchemaOutOfDateError {
+  return new SchemaOutOfDateError('Die Sammlung „parked_drafts" fehlt in PocketBase — bitte setup-schema.mjs neu ausführen.');
+}
+
+/** Everything this owner has parked, newest first: metadata and payload. */
+app.get('/api/drafts/parked', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  const owner = await parkOwner(req, res);
+  if (!owner) return;
+  const rl = checkParkRateLimit(owner.id);
+  if (!rl.allowed) { denyRateLimited(req, res, 'park', rl.retryAfterMs); return; }
+  try {
+    await ensureAdminAuth();
+    const rows = await pb.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
+      // The owner clause is the whole access control. There is no path by which
+      // a caller contributes to this filter.
+      filter: `owner_id = "${escapeFilterValue(owner.id)}"`,
+      // The server's own clock, for the same reason pruneParkedDrafts uses it:
+      // "newest first" must not be decided by a device that thinks it is 1970.
+      // The client re-sorts by the device stamp anyway — that is the one it
+      // compares a parked copy against a local one with.
+      sort: '-updated',
+    });
+    // `ownerId` travels so the client can key the restored records under the
+    // identity the SERVER resolved instead of the one it believes it is. The
+    // two agree today; if they ever stop agreeing, the server's answer is the
+    // one that decided what came back.
+    res.json({ ownerId: owner.id, drafts: rows.map(toParkedWire) });
+  } catch (error) {
+    if (isMissingCollectionError(error)) { res.json({ ownerId: owner.id, drafts: [] }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+function toParkedWire(row: AnyRecord) {
+  const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+    ? row.payload as Record<string, unknown>
+    : {};
+  return {
+    gameId: asText(row.game_id),
+    role: asText(row.role),
+    // Epoch milliseconds, the unit DraftRecord.updatedAt is already in. Stored
+    // as ISO text so the column sorts and reads in PocketBase, converted back
+    // here so the client never has to do it at the one place a slip would
+    // silently pick the older of two copies.
+    updatedAt: Date.parse(asText(row.updated_at)) || 0,
+    schema: Number(row.schema) || 1,
+    // When the SERVER last wrote the row, independent of the device clock that
+    // produced updatedAt. "Parked 10 minutes ago" is the sentence a coach can
+    // actually check against their own memory.
+    parkedAt: asText(row.updated) || asText(row.created),
+    draft: payload,
+  };
+}
+
+/**
+ * Park (upsert) the whole draft set for one game — both roles in one call, so
+ * the cross-role mirrors a dual visit carries (`rcSignature`, `meta.ergebnis`)
+ * can never be parked half a version apart.
+ *
+ * POST as well as PUT, same handler and same idempotent upsert. PUT is the
+ * honest verb; POST exists because the send that survives a page going away —
+ * `sendBeacon`, or `fetch` with `keepalive` — can only POST. That send caps the
+ * body at about 64 KiB, so it fits only a draft with no signatures captured yet
+ * — which is most of the time a coach spends on the form, and exactly the
+ * stretch where nothing else would have reached the server at all.
+ */
+async function handleParkDrafts(req: Request, res: ExpressResponse): Promise<void> {
+  const owner = await parkOwner(req, res);
+  if (!owner) return;
+  const rl = checkParkRateLimit(owner.id);
+  if (!rl.allowed) { denyRateLimited(req, res, 'park', rl.retryAfterMs); return; }
+  try {
+    const gameId = asText(req.params.gameId).slice(0, 64);
+    if (!gameId) { res.status(400).json({ error: 'gameId is required.' }); return; }
+
+    // Keyed by role, so a client that sends the same role twice parks it once
+    // instead of racing itself into two rows for one form.
+    const incoming = Array.isArray((req.body ?? {}).drafts) ? ((req.body as AnyRecord).drafts as unknown[]) : [];
+    const byRole = new Map<string, ParkedDraftPayload>();
+    for (const raw of incoming.slice(0, PARK_MAX_ROLES * 2)) {
+      const clean = sanitizeParkedDraft(raw);
+      if (clean) byRole.set(clean.role, clean);
+    }
+    if (byRole.size === 0) { res.status(400).json({ error: 'Nothing to park.' }); return; }
+
+    await ensureAdminAuth();
+    await withParkLock(`${owner.id}|${gameId}`, async () => {
+      const existing = await parkedRowsFor(owner.id, gameId).catch((error: unknown) => {
+        if (isMissingCollectionError(error)) throw parkSchemaError();
+        throw error;
+      });
+      for (const [role, draft] of byRole) {
+        const fields = {
+          // Written from the session on every single upsert, so a row cannot
+          // drift onto another owner even if one were somehow reached.
+          owner_id: owner.id,
+          game_id: gameId,
+          role,
+          updated_at: new Date(draft.updatedAt).toISOString(),
+          schema: draft.schema,
+          payload: draft,
+        };
+        // `existing` was already filtered to this owner, so the id being updated
+        // is by construction one of theirs.
+        const row = existing.find((r) => asText(r.role) === role);
+        if (row) await pb.collection(PARKED_DRAFTS_COLLECTION).update(row.id, fields);
+        else await pb.collection(PARKED_DRAFTS_COLLECTION).create(fields);
+      }
+    });
+    // Best-effort and deliberately after the answer's data is settled: a coach
+    // whose oldest draft could not be swept has still parked this one, and
+    // failing the request would throw away the write that just succeeded.
+    await withParkLock(owner.id, () => pruneParkedDrafts(owner.id)).catch((error: unknown) => {
+      log.warn('park.prune', 'could not prune parked drafts', { error: String(error) }, reqCtx(req));
+    });
+    res.json({ ok: true, parked: byRole.size });
+  } catch (error) {
+    if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+}
+
+app.put('/api/drafts/parked/:gameId', requireRcSession, handleParkDrafts);
+app.post('/api/drafts/parked/:gameId', requireRcSession, handleParkDrafts);
+
+/**
+ * Unpark one game — both roles, this owner only.
+ *
+ * Removing nothing is a success. The coach may have unparked from another
+ * device already, or never parked this game at all, and turning an idempotent
+ * cleanup into an error would make "the copy is gone" look like a failure to
+ * remove it.
+ */
+app.delete('/api/drafts/parked/:gameId', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  const owner = await parkOwner(req, res);
+  if (!owner) return;
+  const rl = checkParkRateLimit(owner.id);
+  if (!rl.allowed) { denyRateLimited(req, res, 'park', rl.retryAfterMs); return; }
+  try {
+    const gameId = asText(req.params.gameId).slice(0, 64);
+    if (!gameId) { res.status(400).json({ error: 'gameId is required.' }); return; }
+    await ensureAdminAuth();
+    const removed = await withParkLock(`${owner.id}|${gameId}`, async () => {
+      // Read this owner's rows and delete those ids — never a filtered delete
+      // built from the path, which is the one shape where a mistake in the
+      // filter reaches somebody else's work.
+      const rows = await parkedRowsFor(owner.id, gameId);
+      for (const row of rows) await pb.collection(PARKED_DRAFTS_COLLECTION).delete(row.id);
+      return rows.length;
+    });
+    res.json({ ok: true, removed });
+  } catch (error) {
+    // Nothing to delete because the collection does not exist yet is still
+    // "there is no parked copy of this game", which is what the caller asked to
+    // be true.
+    if (isMissingCollectionError(error)) { res.json({ ok: true, removed: 0 }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
 });
 
 // Anything that escapes a handler (including the CORS origin rejection and

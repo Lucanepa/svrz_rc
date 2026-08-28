@@ -139,6 +139,31 @@ await ensure('app_settings', [T('key'),T('value')]);
 // Cross-device signing sessions (#/sign/<slug>). Without it the signature pad
 // can never open, so no feedback can be completed.
 await ensure('signatures', [T('slug'),T('context'),T('signer'),T('data'),B('signed')]);
+// The opt-in server copy of an UNFINISHED observation. Every other copy of a
+// draft is device-local (src/lib/formDraft.ts, IndexedDB), which is right until
+// the phone is lost, stolen, wiped or simply dead — and then the work goes with
+// it, along with two signatures nobody can collect a second time. Nothing lands
+// here unless the coach asks for it, and an empty table is the ordinary state
+// of this feature, never an error.
+//
+// owner_id is the RC's id from the SESSION and never from a request body. It is
+// what every read and every write filters on, so a coach cannot reach a
+// colleague's unfinished observation — see the ownership rule spelled out over
+// /api/drafts/parked in server/index.ts.
+//
+// payload is one role's DraftRecord minus its identity fields (id, ownerId,
+// submissionKey) and always status 'editing'. The server stores it opaquely: it
+// files nothing, mails nothing and creates no observation from it. J() caps the
+// column at 2_000_000; the park route's own wire cap is set strictly BELOW that
+// (PARK_MAX_BYTES in server/index.ts), because a body this column would refuse
+// must be turned away with a 413 rather than accepted and then 500.
+//
+// updated_at is the DEVICE's clock, kept because it is what decides which of
+// two copies of a form is the newer one; `updated` (autodate) is the server's
+// own, which is the one to trust when a tablet boots in 1970.
+await ensure('parked_drafts', [
+  T('owner_id'),T('game_id'),T('role'),T('updated_at'),NUM('schema'),J('payload')
+]);
 console.log('SCHEMA_OK');
 
 // seed RCs (idempotent-ish: skip if any exist)

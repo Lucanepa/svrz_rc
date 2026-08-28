@@ -58,8 +58,17 @@ registerSW({
 if ('serviceWorker' in navigator) {
   let refreshing = false;
   let pendingReload = false;
-  const reloadIfSafe = () => {
+  const reloadIfSafe = async () => {
     if (refreshing) return;
+    try {
+      const flush = window.__svrzFlushDraft;
+      // Raced, not awaited outright: a wedged IndexedDB must not be able to pin
+      // the PWA to a dead build.
+      if (flush) await Promise.race([flush(), new Promise((r) => setTimeout(r, 1500))]);
+    } catch { /* fall through to the flag */ }
+    // Still true only when the work genuinely exists nowhere else — private
+    // browsing, blocked storage, demo, or a write that is failing. There the old
+    // parking behaviour is exactly right and is kept unchanged.
     if (window.__svrzFormDirty) { pendingReload = true; return; }
     refreshing = true;
     clientLog.info('sw.controllerchange', 'new service worker took control — reloading');
@@ -70,10 +79,10 @@ if ('serviceWorker' in navigator) {
     // therefore no stale build to escape — reloading there just interrupts the
     // user's first visit for nothing.
     if (!hadControllerAtStartup) return;
-    reloadIfSafe();
+    void reloadIfSafe();
   });
   // Retried whenever the form stops being dirty (sent, reset, or left).
-  window.addEventListener('svrz:form-clean', () => { if (pendingReload) reloadIfSafe(); });
+  window.addEventListener('svrz:form-clean', () => { if (pendingReload) void reloadIfSafe(); });
 }
 
 // Hash routes: #/admin[/tab] -> admin console; #/sign/<slug> -> public

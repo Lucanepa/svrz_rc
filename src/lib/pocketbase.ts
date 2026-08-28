@@ -1,6 +1,8 @@
 import type { EligibleGame, FeedbackFormData, RcMandateMap, RcOverviewEntry, rcCoachSummary } from '../types';
 import type { CoacheeTargetMap, NiveauMatrix } from './niveauTargets';
 import { normalizeSurveyConfig, type SurveyConfig } from './survey';
+import { draftKey, type DraftRecord } from './formDraft';
+import { sanitizeRich } from './richText';
 import * as demo from './demo';
 import { isDemoMode } from './demo';
 
@@ -54,6 +56,10 @@ export type FeedbackRecord = {
   id: string;
   role_assessed?: FeedbackFormData['role'];
   rc_name?: string;
+  /** The RC's roster id. Present on anything filed since ids were stored, and
+   *  what the SERVER matches on first (see rcRefMatches) — a name alone stops
+   *  matching the moment the roster spelling is corrected. */
+  rc_id?: string;
   submitted_at?: string;
   feedback_json?: FeedbackFormData;
   game?: string;
@@ -969,4 +975,241 @@ export async function setCredential(
   });
   if (!r.ok) throw await apiError(r, 'Could not save the password');
   return r.json() as Promise<{ feedsRevoked?: boolean }>;
+}
+
+// ── Parked drafts (the opt-in server copy of unfinished work) ─────────
+//
+// `formDraft.ts` holds every in-progress observation on the device, which is
+// right until the device is lost, stolen, wiped or simply dead — and then the
+// work goes with it, along with two signatures nobody can collect a second
+// time. Parking puts a copy on the server as well. It is OPT-IN, so having
+// nothing parked is the ordinary state: none of these three treats an empty
+// answer as a failure.
+//
+// The server derives the owner from the SESSION and refuses to read or write
+// another RC's parked draft, so nothing below sends an owner id — there is no
+// parameter for one. `listParkedDrafts` keys the records it hands back under
+// the owner the SERVER reported, not under whatever this client believes it is.
+
+/** What a park request carries per role: `DraftRecord` minus everything that
+ *  names a device or an identity. See `parkedWireFrom` for what is dropped. */
+type ParkedDraftWire = Omit<DraftRecord, 'id' | 'ownerId' | 'status' | 'submissionKey'>;
+
+type ParkedDraftRow = {
+  gameId: string;
+  role: string;
+  updatedAt: number;
+  schema: number;
+  /** When the SERVER last wrote it — ISO, independent of the device clock that
+   *  produced `updatedAt`. */
+  parkedAt: string;
+  draft: Record<string, unknown>;
+};
+
+/** An HTTP failure, marked the way `saveFeedbackToPocketBase` marks one, so a
+ *  caller can tell "reached the server and was rejected" (`reachedServer`,
+ *  worth surfacing) from "offline" (a thrown fetch with no such flag, worth
+ *  retrying silently — parking is a backup, and a backup that nags when the
+ *  hall has no signal is a backup nobody keeps switched on). */
+async function parkError(response: Response, fallback: string): Promise<Error & { status?: number; reachedServer?: boolean; retryAfterMs?: number }> {
+  const err = await apiError(response, fallback) as Error & { status?: number; reachedServer?: boolean; retryAfterMs?: number };
+  err.reachedServer = true;
+  return err;
+}
+
+/**
+ * One record, reduced to what may leave the device.
+ *
+ * DROPPED:
+ *  - `ownerId`, and with it `id` (which is `${ownerId}|${gameId}|${role}`, the
+ *    same claim twice). The server takes the owner from the session and ignores
+ *    anything the body says about it, so sending either would be theatre at
+ *    best and a lie the server has to defend against at worst.
+ *  - `submissionKey`. It names an item in THIS device's outbox; another device
+ *    replaying a key it never enqueued would be claiming a provenance it does
+ *    not have. Only an 'editing' record is ever parked, where the key is ''.
+ *  - `status`. The server stores none, so a parked draft always reads back as
+ *    'editing' — see the filter in `parkDrafts` for why nothing else may go.
+ *
+ * KEPT deliberately: both signature images. They are the reason to park at all
+ * — a coach whose phone died after the referee drove home cannot ask for that
+ * ink again — and unlike an exported file handed to a colleague, a parked draft
+ * only ever comes back to the coach who parked it, so nothing is forged.
+ */
+function parkedWireFrom(record: DraftRecord): ParkedDraftWire {
+  return {
+    schema: record.schema,
+    gameId: record.gameId,
+    role: record.role,
+    updatedAt: record.updatedAt,
+    label: record.label || '',
+    matchNo: record.matchNo || '',
+    observationTarget: record.observationTarget,
+    resultUnlocked: !!record.resultUnlocked,
+    coacheeId: record.coacheeId || '',
+    coacheeName: record.coacheeName || '',
+    coacheeLevel: record.coacheeLevel || '',
+    lang: record.lang,
+    meta: { ...(record.meta || {}) },
+    ratings: { ...(record.ratings || {}) },
+    results: { ...(record.results || {}) },
+    signature: record.signature || '',
+    rcSignature: record.rcSignature || '',
+    tipsAndTricks: record.tipsAndTricks || '',
+    extra: record.extra,
+  };
+}
+
+// The same reasoning as `decodeDraftFile`'s coercions: what comes back over the
+// wire is not trusted to be the shape it claims, and a number or a boolean is
+// converted rather than dropped because a writer that stored a score as a
+// number meant the score.
+function parkedText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+function parkedMap(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+  const source = value as Record<string, unknown>;
+  for (const key of Object.keys(source)) out[key] = parkedText(source[key]);
+  return out;
+}
+
+/** The four long-form boxes. They land in `el.innerHTML` through `RichSurface`,
+ *  and a restore is a boundary the same way an imported file is — so they are
+ *  sanitised on the way in, not trusted because they were once ours. */
+const PARKED_RICH_KEYS = ['bemerkungen', 'highlights', 'improvements', 'goals'];
+
+function parkedResults(value: unknown): Record<string, string> {
+  const results = parkedMap(value);
+  for (const key of PARKED_RICH_KEYS) {
+    if (results[key]) results[key] = sanitizeRich(results[key]);
+  }
+  return results;
+}
+
+/** Back into the shape the local store keys on. `ownerId` is the server's
+ *  answer, never a caller's — the key a restored record is written under has to
+ *  be the identity the server actually served it to. */
+function draftFromParked(ownerId: string, row: ParkedDraftRow): DraftRecord | null {
+  const gameId = parkedText(row && row.gameId);
+  // A row whose role cannot be placed is dropped rather than defaulted: it would
+  // come back as a 1. SR form carrying a 2. SR's marks.
+  if (!ownerId || !gameId || (row.role !== '1. SR' && row.role !== '2. SR')) return null;
+  const role: DraftRecord['role'] = row.role;
+  const d = (row.draft && typeof row.draft === 'object' && !Array.isArray(row.draft)
+    ? row.draft
+    : {}) as Record<string, unknown>;
+  const target = parkedText(d.observationTarget);
+  return {
+    id: draftKey(ownerId, gameId, role),
+    schema: Number(row.schema) || Number(d.schema) || 1,
+    ownerId,
+    gameId,
+    role,
+    updatedAt: Number(row.updatedAt) || Number(d.updatedAt) || 0,
+    // Only 'editing' is ever parked, and the server stores no status at all, so
+    // this is a statement of that fact rather than a value read back.
+    status: 'editing',
+    submissionKey: '',
+    label: parkedText(d.label),
+    matchNo: parkedText(d.matchNo),
+    observationTarget: target === 'both' ? 'both'
+      : target === '2SR' ? '2SR'
+      : target === '1SR' ? '1SR'
+      : (role === '2. SR' ? '2SR' : '1SR'),
+    resultUnlocked: d.resultUnlocked === true,
+    coacheeId: parkedText(d.coacheeId),
+    coacheeName: parkedText(d.coacheeName),
+    coacheeLevel: parkedText(d.coacheeLevel),
+    lang: parkedText(d.lang) === 'EN' ? 'EN' : 'DE',
+    meta: parkedMap(d.meta),
+    ratings: parkedMap(d.ratings),
+    results: parkedResults(d.results),
+    signature: parkedText(d.signature),
+    rcSignature: parkedText(d.rcSignature),
+    tipsAndTricks: parkedText(d.tipsAndTricks),
+    extra: d.extra && typeof d.extra === 'object' && !Array.isArray(d.extra)
+      ? d.extra as Record<string, unknown>
+      : undefined,
+  };
+}
+
+/**
+ * Park (upsert) one game's draft set on the server — both roles in one request,
+ * so the cross-role mirrors a dual visit carries (`rcSignature`,
+ * `meta.ergebnis`) can never be parked half a version apart.
+ *
+ * Only 'editing' records travel. 'queued' work is in flight in THIS device's
+ * outbox and 'filed' work is a tombstone whose payload has already been
+ * blanked, so parking either would let a second device restore a form over an
+ * observation that is on its way or already sent.
+ *
+ * Nothing to park is a no-op, not a request: a caller that flushes on every
+ * game change must be able to call this unconditionally.
+ */
+export async function parkDrafts(gameId: string, records: DraftRecord[]): Promise<{ parked: number }> {
+  // Demo mode makes no backend calls at all — "Nichts wird gespeichert oder
+  // versendet." has to keep being literally true.
+  if (isDemoMode()) return { parked: 0 };
+  const drafts = (records || [])
+    // A record for another game would be parked under this path and come back
+    // bound to the wrong match — a caller's bug, but not one worth storing.
+    .filter((r) => r && r.gameId === gameId && r.status === 'editing')
+    .map(parkedWireFrom);
+  if (!gameId || drafts.length === 0) return { parked: 0 };
+  const response = await fetch(apiUrl(`/api/drafts/parked/${encodeURIComponent(gameId)}`), {
+    credentials: 'include',
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ drafts }),
+  });
+  if (!response.ok) throw await parkError(response, 'Could not park the draft');
+  return response.json() as Promise<{ parked: number }>;
+}
+
+/**
+ * Everything this coach has parked, newest first.
+ *
+ * An empty list is the normal answer — parking is opt-in and most coaches will
+ * never have used it — so this never throws for "nothing found". It throws only
+ * when the server said no (`reachedServer`) or the network did.
+ */
+export async function listParkedDrafts(): Promise<DraftRecord[]> {
+  if (isDemoMode()) return [];
+  const response = await fetch(apiUrl('/api/drafts/parked'), { credentials: 'include' });
+  if (!response.ok) throw await parkError(response, 'Could not load the parked drafts');
+  const raw = await response.json() as { ownerId?: string; drafts?: ParkedDraftRow[] };
+  const ownerId = parkedText(raw && raw.ownerId);
+  const rows = Array.isArray(raw && raw.drafts) ? raw.drafts : [];
+  // No owner means the server told us nothing it served belongs to anybody it
+  // could name, and a record keyed under '' would be invisible to every reader
+  // in formDraft.ts anyway. Drop the lot rather than store orphans.
+  if (!ownerId) return [];
+  const out: DraftRecord[] = [];
+  for (const row of rows) {
+    const record = draftFromParked(ownerId, row);
+    if (record) out.push(record);
+  }
+  return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+/**
+ * Drop one game's parked copies — both roles.
+ *
+ * Removing nothing is a success: the coach may have unparked from another
+ * device already, or never parked this game at all, and "the copy is gone" is
+ * what the caller asked to be true either way.
+ */
+export async function unparkDrafts(gameId: string): Promise<{ removed: number }> {
+  if (isDemoMode() || !gameId) return { removed: 0 };
+  const response = await fetch(apiUrl(`/api/drafts/parked/${encodeURIComponent(gameId)}`), {
+    credentials: 'include',
+    method: 'DELETE',
+  });
+  if (!response.ok) throw await parkError(response, 'Could not remove the parked draft');
+  return response.json() as Promise<{ removed: number }>;
 }

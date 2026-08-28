@@ -130,3 +130,31 @@ export async function openFeedbackForm(page: Page): Promise<void> {
   await page.getByRole('button', { name: /Start observation|Beobachtung starten/ }).click();
   await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
 }
+
+/**
+ * The A–E control for one criterion of the open observation form.
+ *
+ * Both layouts are in the DOM at once — the desktop grid is `hidden sm:table`,
+ * the phone's card list `sm:hidden` — so this asks which one is VISIBLE rather
+ * than which one exists, the same test `fillFeedbackForm` in
+ * e2e/feedback-email.spec.ts already makes. Criteria are addressed by POSITION
+ * and not by their wording: the app picks its language off the browser's, so a
+ * spec that named a criterion would pass under one Playwright project's locale
+ * and silently match nothing under another. The two catalogues share their item
+ * ids and their order, which is what makes the index stable.
+ *
+ * A selected control carries that rating's colour class (`RATING_COLORS` in
+ * App.tsx) in both layouts, which is the only signal common to the two: the
+ * phone's button reads "B" whether or not the B is the one chosen.
+ */
+export async function ratingControl(
+  page: Page, criterionIndex: number, rating: 'A' | 'B' | 'C' | 'D' | 'E',
+) {
+  const column = ['A', 'B', 'C', 'D', 'E'].indexOf(rating);
+  const cells = page.locator('td.rating-cell');
+  if (await cells.count() > 0 && await cells.first().isVisible()) {
+    return page.locator('tr', { has: page.locator('td.rating-cell') })
+      .nth(criterionIndex).locator('td.rating-cell').nth(column);
+  }
+  return page.locator('div.sm\\:hidden.divide-y > div').nth(criterionIndex).locator('button').nth(column);
+}

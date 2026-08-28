@@ -51,15 +51,29 @@ Both services run via Docker Compose (`deploy/hetzner/docker-compose.yml`):
 
 Public ingress is the external Cloudflare Tunnel (`svrz-rc-api.openvolley.app` → `http://localhost:8787`); there is no Nginx/Certbot on the host. The tunnel is **dashboard-managed** (Zero Trust → Networks → Tunnels → Public Hostnames) — editing `/etc/cloudflared/config.yml` on the host changes nothing.
 
-Useful commands (run from `deploy/hetzner/` on the host):
+Useful commands (run from `deploy/hetzner/` on the host).
+
+**Always pass `-p svrz-rc`.** Compose otherwise names the project after the
+directory — `hetzner` — and builds a SECOND, parallel stack: a duplicate
+PocketBase bound to the same `./pb_data`, and an API that cannot start because
+the real one already holds `127.0.0.1:8787`. That happened on 28.08.2026; the
+port clash is the only reason two PocketBase processes did not stay up on one
+SQLite directory.
 
 ```bash
-docker compose ps
-docker compose up -d --build
-docker compose logs -f svrz-api
-docker compose logs -f pocketbase
-docker compose restart svrz-api
+docker compose -p svrz-rc ps
+docker compose -p svrz-rc up -d --build
+docker compose -p svrz-rc logs -f svrz-api
+docker compose -p svrz-rc logs -f pocketbase
+docker compose -p svrz-rc restart svrz-api
 ```
+
+Deploying the API means copying this repo over `/home/lucanepa/svrz_rc` on
+lenovoserver and rebuilding there — never `git pull` in that directory, which is
+not a checkout. Copy source only: `deploy/hetzner/pb_data`,
+`deploy/hetzner/logs`, `deploy/hetzner/svrz-api.env*` and every `.env*` are host
+state and must be excluded, and `--delete` must NOT be used (the host keeps
+timestamped secret backups that are not in git).
 
 ## Environment Variables
 

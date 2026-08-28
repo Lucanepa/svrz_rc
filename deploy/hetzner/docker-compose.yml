@@ -1,9 +1,24 @@
-# svrz_rc backend on Hetzner — PocketBase + API. Cloudflare Tunnel is external
-# (existing "hetzner-prod" tunnel). API published on 127.0.0.1:8787 for the
-# tunnel to route:  rc-api.lucanepa.com -> http://localhost:8787
+# svrz_rc backend — PocketBase + API.
+#
+# MOVED 12/13.08.2026 from the Hetzner VPS to lenovoserver, so that the Hetzner box
+# could be handed over to KSC Wiedikon containing nothing personal. The directory is
+# still called deploy/hetzner for continuity; it no longer runs there.
+#
+# Cloudflare Tunnel is external and now the "cloudflared-lenovo" tunnel
+# (7203f118-0227-48eb-9847-f8272bd0c879), which serves:
+#   rc-api.lucanepa.com  and  svrz-rc-api.openvolley.app  ->  http://svrz-api:8787
+#
+# ⚠ Routing is by SERVICE NAME over a shared docker network, not localhost:8787.
+# cloudflared runs as a container on a bridge network, so "localhost" there is
+# cloudflared itself. It reaches this stack because svrz-api also joins the
+# `stremio-trakt_default` network (aliased `tunnel` below) where cloudflared lives.
+# Attaching it here — rather than `docker network connect`-ing cloudflared to this
+# stack — is deliberate: a runtime connect is lost the moment that other compose
+# project recreates its container, and both hostnames would 502 with nothing in
+# this repo explaining why.
 #
 # Deploy: cd deploy/hetzner; restore ./pb_data; cp svrz-api.env.example svrz-api.env
-#         (fill secrets); docker compose up -d --build
+#         (fill secrets); docker compose -p svrz-rc up -d --build
 services:
   pocketbase:
     build:
@@ -38,8 +53,13 @@ services:
     ports:
       - "127.0.0.1:8787:8787"
     depends_on: [pocketbase]
-    networks: [svrz]
+    networks: [svrz, tunnel]
 
 networks:
   svrz:
     driver: bridge
+  # The network cloudflared-lenovo already sits on. External: this stack joins it,
+  # never creates or removes it.
+  tunnel:
+    external: true
+    name: stremio-trakt_default

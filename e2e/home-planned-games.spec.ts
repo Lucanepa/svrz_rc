@@ -39,7 +39,12 @@ test('every planned game the counter promises is listed', async ({ page }) => {
 
   // All of them, however many there are: the list is the answer to the counter
   // beside it, and a row that is cut off is a game with no way back.
-  const rows = page.getByRole('button', { name: /Heim \d+ vs Gast \d+/ });
+  // The row renders home and away on their own lines with no "vs" between them,
+  // so the button's accessible name is the two names with whitespace between.
+  // `teams` in the API payload still carries " vs " — that is the separator the
+  // app splits on — which is why the confirm text and the toast below still match
+  // the original string.
+  const rows = page.getByRole('button', { name: /Heim \d+\s+Gast \d+/ });
   await expect(rows).toHaveCount(10);
 });
 

@@ -5577,8 +5577,8 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       coacheeName: string;
       coacheeId: string;
       doneFeedbacks: { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result: string }[];
-      outstandingGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; noCoachee?: boolean; result: string }[];
-      plannedGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; noCoachee?: boolean; result: string }[];
+      outstandingGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; refereeRole?: string; noCoachee?: boolean; result: string }[];
+      plannedGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; refereeRole?: string; noCoachee?: boolean; result: string }[];
     }>();
 
     const getOrCreate = (name: string, id: string) => {
@@ -5623,13 +5623,17 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
 
       // Match referees to coachees
       let matched = false;
-      for (const ref of [game.first_referee, game.second_referee]) {
+      // Which slot a referee stands in IS the interesting half of the row on
+      // Home — a coach reads "who, and as what". It is free here (this loop is
+      // first-then-second by construction) and cannot be recovered later: the
+      // client only ever sees a name.
+      for (const [slot, ref] of [game.first_referee, game.second_referee].entries()) {
         const refName = asText(ref);
         if (!refName) continue;
         if (!coacheeNames.forSeason(seasonOfGame(game.match_date)).has(normalizeName(refName))) continue;
         matched = true;
         const entry = getOrCreate(refName, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: refName, result };
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: refName, refereeRole: slot === 0 ? '1. SR' : '2. SR', result };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {

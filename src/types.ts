@@ -316,6 +316,9 @@ export interface rcCoachSummaryGame {
   league: string;
   teams: string;
   refereeName: string;
+  /** Which slot this referee stands in on the game — '1. SR' or '2. SR'.
+   *  Absent on a row that names no coachee, where the label is both referees. */
+  refereeRole?: string;
   /** The match result string, in either of the two shapes parseResult reads.
    *  Empty for a game not played yet — which is most of `plannedGames`. */
   result?: string;

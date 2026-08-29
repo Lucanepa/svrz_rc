@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId } from 'react';
-import { Maximize2, Download, FileJson, Video, Loader2, RefreshCw, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail } from 'lucide-react';
+import { Maximize2, Download, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
@@ -1164,7 +1164,10 @@ export default function App() {
   // whistle arrives twice. Home lists appointments — one row per game — and
   // carries the other referee(s) along for the subtitle. The per-coachee split
   // stays in the Coachees / RC detail views.
-  type HomeGame = rcCoachSummaryGame & { extraReferees?: string[] };
+  /** `refs` is every coachee on the game with the slot they stand in. The merge
+   *  below folds one row per referee into one row per GAME, and a bare name
+   *  list could not say which of them was the 1. SR. */
+  type HomeGame = rcCoachSummaryGame & { refs?: Array<{ name: string; role: string }> };
   const [homeData, setHomeData] = useState<{ done: number; planned: number; outstanding: number; nextGames: HomeGame[]; missingGames: HomeGame[]; doneList: HomeDone[] } | null>(null);
   const [homeLoading, setHomeLoading] = useState(false);
   const [listPage, setListPage] = useState(0);
@@ -1901,9 +1904,12 @@ export default function App() {
           // rather than folding unrelated games together under an empty key.
           const key = g.gameId || `${g.gameDate}|${g.teams}|${g.refereeName}`;
           const seen = byId.get(key);
-          if (!seen) { byId.set(key, { ...g }); continue; }
-          if (g.refereeName && g.refereeName !== seen.refereeName && !(seen.extraReferees ?? []).includes(g.refereeName)) {
-            seen.extraReferees = [...(seen.extraReferees ?? []), g.refereeName];
+          if (!seen) {
+            byId.set(key, { ...g, refs: g.refereeName ? [{ name: g.refereeName, role: g.refereeRole || '' }] : [] });
+            continue;
+          }
+          if (g.refereeName && !(seen.refs ?? []).some((r) => r.name === g.refereeName)) {
+            seen.refs = [...(seen.refs ?? []), { name: g.refereeName, role: g.refereeRole || '' }];
           }
           // "No coachee on this game" only holds if it holds for every entry.
           if (!g.noCoachee) seen.noCoachee = false;
@@ -4494,7 +4500,9 @@ export default function App() {
                     key={tg}
                     onClick={() => changeObservationTarget(tg)}
                     title={tg === 'both'
-                      ? (formData.lang === 'DE' ? 'Beide Schiedsrichter beobachten' : 'Observe both referees')
+                      ? (formData.lang === 'DE'
+                        ? 'Beide Schiedsrichter in einem Besuch — je ein Formular, ein Senden für beide, und keines geht raus, bevor beide vollständig sind.'
+                        : 'Both referees on one visit — one form each, one send for both, and neither goes out until both are complete.')
                       : `${refName}${isCoachee ? ' (Coachee)' : ''}`}
                     className={cn(
                       "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors",
@@ -4513,10 +4521,15 @@ export default function App() {
                   onClick={toggleRole}
                   aria-label={`${t.switchRole} ${formData.role === '1. SR' ? '2. SR' : '1. SR'}`}
                   title={`${t.switchRole} ${formData.role === '1. SR' ? '2. SR' : '1. SR'}`}
-                  className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-red-700 transition-colors"
+                  className="flex items-center gap-1.5 bg-red-600 text-white px-3 py-2 rounded-lg shadow-sm hover:bg-red-700 transition-colors"
                 >
-                  <RefreshCw size={18} />
-                  <span className="hidden sm:inline">{t.switchRole} {formData.role === '1. SR' ? '2. SR' : '1. SR'}</span>
+                  {/* Two arrows over one another: this swaps between the two
+                      referees' forms. It used to be a circular refresh, which
+                      on a form full of unsaved work reads as "reload". The
+                      label stays on the phone too — the full sentence never
+                      fitted there, so the button was a bare icon. */}
+                  <ArrowLeftRight size={18} />
+                  <span className="text-sm font-medium">SR</span>
                 </button>
                 <div className="flex gap-1.5 text-xs font-medium">
                   <span className={dualFormData['1. SR'] || formData.role === '1. SR' ? 'text-green-600' : 'text-stone-400'}>
@@ -4538,8 +4551,17 @@ export default function App() {
             {dualMode && (
               <p className="w-full text-xs text-stone-500">
                 {formData.lang === 'DE'
-                  ? 'Beide Schiedsrichter in einem Besuch — je ein Formular. Mit dem roten Knopf zwischen ihnen wechseln.'
-                  : 'Both referees on one visit — one form each. Switch between them with the red button.'}
+                  ? 'Beide Schiedsrichter in einem Besuch — je ein Formular, Wechsel mit dem roten Knopf.'
+                  : 'Both referees on one visit — one form each, switch with the red button.'}
+                {' '}
+                {/* Why this is not just 1SR and 2SR done one after the other:
+                    it files them together, and it refuses to file either half.
+                    Nobody could tell that from the word "Beide". */}
+                <span className="text-stone-400">
+                  {formData.lang === 'DE'
+                    ? 'Ein Senden für beide — und es geht keines raus, bevor beide vollständig sind.'
+                    : 'One send files both — and neither goes out until both are complete.'}
+                </span>
               </p>
             )}
           </>
@@ -4760,27 +4782,6 @@ export default function App() {
                   <Languages size={14} />
                   <span>{formData.lang}</span>
                 </button>
-                {/* Rendered whether or not this device holds a draft — loading a
-                    file onto a FRESH device is the entire point of it. The input
-                    is hidden behind a label because the native control renders in
-                    the browser's language, not the app's. */}
-                <label className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors cursor-pointer">
-                  <Upload size={14} />
-                  <span>{t.draftImport}</span>
-                  <input
-                    type="file"
-                    accept=".json,application/json"
-                    className="sr-only"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      // Cleared before the read, so picking the SAME file twice
-                      // still fires change — otherwise a failed import cannot be
-                      // retried without choosing something else first.
-                      e.target.value = '';
-                      if (f) void handleImportDraftFile(f);
-                    }}
-                  />
-                </label>
                 {/* Shown to the people who actually use the console, not to
                     all fourteen coaches. It briefly appeared for everyone —
                     admin rights used to come from an RC's own login, so when
@@ -4909,14 +4910,31 @@ export default function App() {
                   </button>
                 )}
               </div>
-              <button
-                onClick={() => setShowEmptyFormModal(true)}
-                disabled={downloadingEmptyForm}
-                className="w-full sm:w-auto sm:ml-auto h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors disabled:opacity-50"
-              >
-                <Download size={14} />
-                {downloadingEmptyForm ? t.loading : t.downloadEmptyForm}
-              </button>
+              {/* The wide slot goes to the thing a coach reaches for mid-season.
+                  The empty form is a once-a-year download and now sits with the
+                  other documents; loading a draft is how an observation started
+                  on a dead phone gets finished, so it is the one that earns the
+                  room. Rendered whether or not this device holds a draft —
+                  loading a file onto a FRESH device is the entire point.
+                  The input hides behind the label because the native control
+                  renders in the BROWSER's language, not the app's. */}
+              <label className="w-full sm:w-auto sm:ml-auto h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors cursor-pointer">
+                <Upload size={14} />
+                <span>{t.draftImport}</span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  className="sr-only"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    // Cleared before the read, so picking the SAME file twice
+                    // still fires change — otherwise a failed import cannot be
+                    // retried without choosing something else first.
+                    e.target.value = '';
+                    if (f) void handleImportDraftFile(f);
+                  }}
+                />
+              </label>
             </div>
             {/* Toggle tabs */}
             <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -4940,24 +4958,26 @@ export default function App() {
               <button
                 onClick={() => { setListTab('coachees'); setListSearch(''); setListPage(0); }}
                 className={cn(
-                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
+                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center gap-1.5",
                   listTab === 'coachees'
                     ? "bg-slate-900 text-white"
                     : "bg-stone-100 text-stone-600 hover:bg-stone-200"
                 )}
               >
+                <Users size={16} />
                 {t.coacheePool}
               </button>
               <button
                 onClick={() => { setListTab('games'); setListSearch(''); setListPage(0); }}
                 className={cn(
-                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center",
+                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center gap-1.5",
                   oddTabOut,
                   listTab === 'games'
                     ? "bg-slate-900 text-white"
                     : "bg-stone-100 text-stone-600 hover:bg-stone-200"
                 )}
               >
+                <CalendarDays size={16} />
                 {t.gamePool}
               </button>
             </div>
@@ -4988,12 +5008,13 @@ export default function App() {
                 if (parts.length !== 2) {
                   return <p className="text-sm font-medium text-stone-800 break-words">{teams}</p>;
                 }
+                // No "vs": the two names sit one above the other and the order
+                // says which is home. The word only cost a line's worth of width
+                // on the phone the list is read on.
                 return (
                   <>
                     <p className="text-sm font-medium text-stone-800 break-words">{parts[0]}</p>
-                    <p className="text-sm font-medium text-stone-800 break-words">
-                      <span className="font-normal text-stone-400">vs </span>{parts[1]}
-                    </p>
+                    <p className="text-sm font-medium text-stone-800 break-words">{parts[1]}</p>
                   </>
                 );
               };
@@ -5011,9 +5032,20 @@ export default function App() {
                     </div>
                     <div className="min-w-0 flex-1">
                       {teamLines(g.teams)}
-                      {/* Wraps rather than truncates: the coachee's name is the
-                          reason the row is worth reading. */}
-                      <p className="text-xs text-stone-500 break-words">{g.league} · {[g.refereeName, ...(g.extraReferees ?? [])].filter(Boolean).join(', ')}</p>
+                      <p className="text-xs text-stone-500 break-words">{g.league}</p>
+                      {/* One line per referee, each with the slot they stand in.
+                          Wraps rather than truncates: the coachee's name is the
+                          reason the row is worth reading at all, and these names
+                          run long — "Kevin León Peña de los Santos" is wider than
+                          a phone on its own. */}
+                      {(g.refs?.length ? g.refs : [{ name: g.refereeName, role: g.refereeRole || '' }])
+                        .filter((r) => r.name)
+                        .map((r) => (
+                          <p key={`${r.name}-${r.role}`} className="text-xs text-stone-500 break-words">
+                            {r.role && <span className="font-semibold text-stone-600">{r.role === '2. SR' ? t.role2Short : t.role1Short} </span>}
+                            {r.name}
+                          </p>
+                        ))}
                       <MatchResult result={g.result} className="mt-0.5" />
                     </div>
                     <Eye size={15} className="text-stone-400 shrink-0" />
@@ -5168,8 +5200,10 @@ export default function App() {
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   {teamLines(f.teams)}
+                                  <p className="text-xs text-stone-500 break-words">{f.league}</p>
                                   <p className="text-xs text-stone-500 break-words">
-                                    {f.league} · {f.coacheeName}{f.role ? ` (${f.role})` : ''}
+                                    {f.role && <span className="font-semibold text-stone-600">{f.role === '2. SR' ? t.role2Short : t.role1Short} </span>}
+                                    {f.coacheeName}
                                   </p>
                                   <MatchResult result={f.result} className="mt-0.5" />
                                 </div>
@@ -6171,6 +6205,7 @@ export default function App() {
             <div className="flex flex-col gap-1.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
               <a href={`${import.meta.env.BASE_URL}#/guide/${formData.lang === 'DE' ? 'de' : 'en'}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Video size={14} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</a>
+              <button type="button" onClick={() => setShowEmptyFormModal(true)} disabled={downloadingEmptyForm} className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit disabled:opacity-50"><Download size={14} /> {downloadingEmptyForm ? t.loading : t.downloadEmptyForm}</button>
               <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Info size={14} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>
@@ -7109,6 +7144,7 @@ export default function App() {
             <div className="flex flex-col gap-2.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
               <a href={`${import.meta.env.BASE_URL}#/guide/${formData.lang === 'DE' ? 'de' : 'en'}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Video size={15} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</a>
+              <button type="button" onClick={() => { setShowInfoModal(false); setShowEmptyFormModal(true); }} disabled={downloadingEmptyForm} className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline text-left disabled:opacity-50"><Download size={15} /> {downloadingEmptyForm ? t.loading : t.downloadEmptyForm}</button>
               <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Info size={15} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>

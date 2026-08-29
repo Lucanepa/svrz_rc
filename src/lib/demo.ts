@@ -502,7 +502,10 @@ function buildSummary(): rcCoachSummary[] {
   const teams = (g: DemoGame) => `${g.homeTeam} vs ${g.awayTeam}`;
   return s.coachees.map((c) => {
     const cg = s.games.filter((g) => g.coacheeId === c.id);
-    const toGame = (g: DemoGame): rcCoachSummaryGame => ({ gameId: g.id, gameDate: g.date, league: g.league, teams: teams(g), refereeName: c.full_name });
+    // The slot the coachee stands in travels too — Home names the referee AND
+    // what they are refereeing as, and a demo that omitted it would be the one
+    // place the row looked different from production.
+    const toGame = (g: DemoGame): rcCoachSummaryGame => ({ gameId: g.id, gameDate: g.date, league: g.league, teams: teams(g), refereeName: c.full_name, refereeRole: g.role });
     return {
       coacheeName: c.full_name,
       coacheeId: c.id,

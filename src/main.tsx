@@ -6,6 +6,7 @@ import AuthGate from './components/AuthGate.tsx';
 import AdminConsole from './components/AdminConsole.tsx';
 import SignaturePage from './components/SignaturePage.tsx';
 import SurveyPage from './components/SurveyPage.tsx';
+import GuidePage from './components/GuidePage.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { UiHost } from './components/ui';
 import { enableDemo, isDemoMode } from './lib/demo';
@@ -86,13 +87,14 @@ if ('serviceWorker' in navigator) {
 }
 
 // Hash routes: #/admin[/tab] -> admin console; #/sign/<slug> -> public
-// signature page; #/survey/<token> -> public post-visit survey; anything else
-// -> the app, which routes its own tabs.
-const routeKind = (): 'admin' | 'sign' | 'survey' | 'app' => {
+// signature page; #/survey/<token> -> public post-visit survey; #/guide[/de|en]
+// -> the public video guide; anything else -> the app, which routes its own tabs.
+const routeKind = (): 'admin' | 'sign' | 'survey' | 'guide' | 'app' => {
   const h = window.location.hash;
   if (/^#\/?admin(\/|$)/i.test(h)) return 'admin';
   if (/^#\/sign\//i.test(h)) return 'sign';
   if (/^#\/survey\//i.test(h)) return 'survey';
+  if (/^#\/?guide(\/|$)/i.test(h)) return 'guide';
   return 'app';
 };
 let _route = routeKind();
@@ -114,6 +116,11 @@ createRoot(document.getElementById('root')!).render(
       <AdminConsole />
     ) : kind === 'sign' ? (
       <SignaturePage />
+    ) : kind === 'guide' ? (
+      // Public: this URL is what gets pasted into the coaches' group chat, and
+      // asking someone to sign in before an explainer about signing in is a
+      // circle. It reads and writes nothing.
+      <GuidePage />
     ) : kind === 'survey' ? (
       // Public and unauthenticated: the coachee who receives the feedback mail
       // is a referee, not an app user — the token in the link is the whole key.

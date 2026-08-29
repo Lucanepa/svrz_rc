@@ -443,7 +443,7 @@ const DEFAULT_ROUTE: AppRoute = { subView: 'coachees', listTab: 'home', rc: null
 // Hashes owned by another root (main.tsx swaps the whole tree and reloads for
 // these). The app must neither read nor rewrite them, or it would fight that
 // router mid-navigation.
-const isForeignHash = (hash: string) => /^#\/?(admin|sign|survey)(\/|$)/i.test(hash);
+const isForeignHash = (hash: string) => /^#\/?(admin|sign|survey|guide)(\/|$)/i.test(hash);
 
 function routeToHash(r: AppRoute): string {
   if (r.subView === 'feedbackForm') return '#/form';
@@ -601,17 +601,6 @@ function shortenLocation(loc: string): string {
   return `${hall}, ${city}`;
 }
 
-/**
- * Where the narrated guide lives — an R2 bucket, not this build.
- *
- * The videos are ~15 MB each and get re-recorded whenever the UI moves. Shipping
- * them in `public/` would put every past cut in git for ever and re-upload them
- * on every deploy; here a new recording overwrites the same key, so the link a
- * coach was sent last season still plays the current guide. Cache-Control is 5
- * minutes, so an update is visible almost at once.
- */
-const VIDEO_GUIDE_BASE = 'https://svrz-rc-media.openvolley.app';
-// The label deliberately carries no running time. Every re-recording changes it
 // — the current cuts are 5:43 and 6:38, and they were different before that — so
 // a number here is a fact that goes quietly wrong the next time the pipeline
 // runs, exactly like the tab name the narration used to quote. The player shows
@@ -1393,7 +1382,6 @@ export default function App() {
   const outboxOwnerId = rcAuth.rcId || (isPrivileged ? 'admin' : 'anon');
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showInfoModal, setShowInfoModal] = useState(false);
-  const [showVideoModal, setShowVideoModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [icalInfo, setIcalInfo] = useState<IcalSubscription | null>(null);
   const [icalError, setIcalError] = useState('');
@@ -3204,7 +3192,6 @@ export default function App() {
       if (showConfirmModal !== null) { setShowConfirmModal(null); return; }
       if (sigModalOpen) { setSigModalOpen(false); return; }
       if (demoMailOpen) { setDemoMailOpen(false); return; }
-      if (showVideoModal) { setShowVideoModal(false); return; }
       if (showInfoModal) { setShowInfoModal(false); return; }
       if (showCalendarModal) { setShowCalendarModal(false); return; }
       if (showEmptyFormModal) { setShowEmptyFormModal(false); return; }
@@ -3212,7 +3199,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showConfirmModal, sigModalOpen, demoMailOpen, showVideoModal, showInfoModal, showCalendarModal, showEmptyFormModal, detailCoachee]);
+  }, [showConfirmModal, sigModalOpen, demoMailOpen, showInfoModal, showCalendarModal, showEmptyFormModal, detailCoachee]);
 
   const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
   /**
@@ -6183,7 +6170,7 @@ export default function App() {
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stone-400 mb-2">{formData.lang === 'DE' ? 'Nützliche Infos & Dokumente' : 'Useful info & documents'}</h3>
             <div className="flex flex-col gap-1.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
-              <button type="button" onClick={() => setShowVideoModal(true)} className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Video size={14} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</button>
+              <a href={`${import.meta.env.BASE_URL}#/guide/${formData.lang === 'DE' ? 'de' : 'en'}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Video size={14} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</a>
               <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Info size={14} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>
@@ -7112,62 +7099,6 @@ export default function App() {
         </div>
       )}
 
-      {showVideoModal && (() => {
-        const lang = formData.lang === 'DE' ? 'de' : 'en';
-        return (
-        <div onClick={() => setShowVideoModal(false)} className="fixed inset-0 bg-stone-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-50 no-print">
-          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-stone-200">
-              <h3 className="text-base font-bold text-stone-900">{formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</h3>
-              <button onClick={() => setShowVideoModal(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none px-1">&times;</button>
-            </div>
-            {/* `key` on the lang: swapping the src on a live <video> leaves the
-                old buffer and the old text track in place, so the player would
-                keep the previous language's picture under the new subtitles.
-                Re-mounting is the honest way to change films.
-                `crossOrigin` is REQUIRED for the subtitles: the media sits on
-                another host, and a cross-origin <track> is dropped in silence
-                without it — the video plays and the captions simply never
-                appear, which is the hardest kind of bug to notice. */}
-            <video
-              key={lang}
-              controls
-              autoPlay
-              playsInline
-              preload="metadata"
-              crossOrigin="anonymous"
-              className="w-full max-h-[70vh] bg-black"
-            >
-              <source src={`${VIDEO_GUIDE_BASE}/guide-${lang}.mp4`} type="video/mp4" />
-              <track
-                default
-                kind="subtitles"
-                srcLang={lang}
-                label={formData.lang === 'DE' ? 'Deutsch' : 'English'}
-                src={`${VIDEO_GUIDE_BASE}/guide-${lang}.vtt`}
-              />
-            </video>
-            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs text-stone-500">
-              <span>{formData.lang === 'DE'
-                ? 'Untertitel über das ⚙-Menü des Players.'
-                : 'Subtitles via the player’s ⚙ menu.'}</span>
-              {/* The direct link stays reachable: it is what a coach forwards to
-                  a colleague, and the fallback when an in-page player will not
-                  play (an old WebView, a locked-down browser). */}
-              <a
-                href={`${VIDEO_GUIDE_BASE}/guide-${lang}.mp4`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 font-medium text-red-700 hover:underline"
-              >
-                <Copy size={13} /> {formData.lang === 'DE' ? 'Direkter Link' : 'Direct link'}
-              </a>
-            </div>
-          </div>
-        </div>
-        );
-      })()}
-
       {showInfoModal && (
         <div onClick={() => setShowInfoModal(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
           <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5">
@@ -7177,7 +7108,7 @@ export default function App() {
             </div>
             <div className="flex flex-col gap-2.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
-              <button type="button" onClick={() => { setShowInfoModal(false); setShowVideoModal(true); }} className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline text-left"><Video size={15} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</button>
+              <a href={`${import.meta.env.BASE_URL}#/guide/${formData.lang === 'DE' ? 'de' : 'en'}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Video size={15} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</a>
               <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Info size={15} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>

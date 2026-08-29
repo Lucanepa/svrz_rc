@@ -505,7 +505,18 @@ function buildSummary(): rcCoachSummary[] {
     // The slot the coachee stands in travels too — Home names the referee AND
     // what they are refereeing as, and a demo that omitted it would be the one
     // place the row looked different from production.
-    const toGame = (g: DemoGame): rcCoachSummaryGame => ({ gameId: g.id, gameDate: g.date, league: g.league, teams: teams(g), refereeName: c.full_name, refereeRole: g.role });
+    const toGame = (g: DemoGame): rcCoachSummaryGame => ({
+      gameId: g.id, gameDate: g.date, league: g.league, teams: teams(g),
+      refereeName: c.full_name, refereeRole: g.role,
+      // The demo's games carry both referees, so the crew is real here too —
+      // otherwise the demo would be the one place a shared game looked like a
+      // game with a single referee.
+      crew: [
+        { name: g.firstReferee || '', role: '1. SR' },
+        { name: g.secondReferee || '', role: '2. SR' },
+      ].filter((r) => r.name)
+       .map((r) => ({ ...r, coachee: r.name.trim().toLowerCase() === c.full_name.trim().toLowerCase() })),
+    });
     return {
       coacheeName: c.full_name,
       coacheeId: c.id,

@@ -5577,8 +5577,8 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       coacheeName: string;
       coacheeId: string;
       doneFeedbacks: { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result: string }[];
-      outstandingGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; refereeRole?: string; noCoachee?: boolean; result: string }[];
-      plannedGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; refereeRole?: string; noCoachee?: boolean; result: string }[];
+      outstandingGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string }[];
+      plannedGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string }[];
     }>();
 
     const getOrCreate = (name: string, id: string) => {
@@ -5623,17 +5623,22 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
 
       // Match referees to coachees
       let matched = false;
-      // Which slot a referee stands in IS the interesting half of the row on
-      // Home — a coach reads "who, and as what". It is free here (this loop is
-      // first-then-second by construction) and cannot be recovered later: the
-      // client only ever sees a name.
-      for (const [slot, ref] of [game.first_referee, game.second_referee].entries()) {
-        const refName = asText(ref);
-        if (!refName) continue;
-        if (!coacheeNames.forSeason(seasonOfGame(game.match_date)).has(normalizeName(refName))) continue;
+      const season = coacheeNames.forSeason(seasonOfGame(game.match_date));
+      // BOTH referees, each marked for whether they are one of this coach's.
+      // Sending only the coachees made a one-name row ambiguous: the other slot
+      // could be empty, or held by somebody the coach simply does not follow,
+      // and those are different situations at the hall. Which slot a referee
+      // stands in is free here — this list is first-then-second by construction
+      // — and cannot be recovered later, since the client only sees names.
+      const crew = [game.first_referee, game.second_referee]
+        .map((ref, slot) => ({ name: asText(ref), role: slot === 0 ? '1. SR' : '2. SR' }))
+        .filter((r) => r.name)
+        .map((r) => ({ ...r, coachee: season.has(normalizeName(r.name)) }));
+      for (const { name: refName, role, coachee } of crew) {
+        if (!coachee) continue;
         matched = true;
         const entry = getOrCreate(refName, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: refName, refereeRole: slot === 0 ? '1. SR' : '2. SR', result };
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: refName, refereeRole: role, crew, result };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {
@@ -5649,7 +5654,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
         const refNames = [game.first_referee, game.second_referee].map(asText).filter(Boolean);
         const label = refNames.join(' / ') || '?';
         const entry = getOrCreate(label, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: label, noCoachee: true, result };
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: label, crew, noCoachee: true, result };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {

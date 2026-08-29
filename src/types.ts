@@ -319,6 +319,10 @@ export interface rcCoachSummaryGame {
   /** Which slot this referee stands in on the game — '1. SR' or '2. SR'.
    *  Absent on a row that names no coachee, where the label is both referees. */
   refereeRole?: string;
+  /** Everyone refereeing this game, each marked for whether they are one of
+   *  THIS coach's coachees. A row listing only coachees could not say whether
+   *  the other slot was empty or held by somebody the coach does not follow. */
+  crew?: Array<{ name: string; role: string; coachee: boolean }>;
   /** The match result string, in either of the two shapes parseResult reads.
    *  Empty for a game not played yet — which is most of `plannedGames`. */
   result?: string;

@@ -5011,9 +5011,14 @@ export default function App() {
                 // No "vs": the two names sit one above the other and the order
                 // says which is home. The word only cost a line's worth of width
                 // on the phone the list is read on.
+                // A hairline instead of the old "vs". Either team can wrap onto
+                // two lines — "KSC Wiedikon DU23-1" does on a phone — and with
+                // nothing between them the four lines read as one block of text
+                // with no way to see where home ends and away begins.
                 return (
                   <>
                     <p className="text-sm font-medium text-stone-800 break-words">{parts[0]}</p>
+                    <div className="my-1 border-t border-stone-200" />
                     <p className="text-sm font-medium text-stone-800 break-words">{parts[1]}</p>
                   </>
                 );
@@ -5033,19 +5038,38 @@ export default function App() {
                     <div className="min-w-0 flex-1">
                       {teamLines(g.teams)}
                       <p className="text-xs text-stone-500 break-words">{g.league}</p>
-                      {/* One line per referee, each with the slot they stand in.
-                          Wraps rather than truncates: the coachee's name is the
-                          reason the row is worth reading at all, and these names
-                          run long — "Kevin León Peña de los Santos" is wider than
-                          a phone on its own. */}
-                      {(g.refs?.length ? g.refs : [{ name: g.refereeName, role: g.refereeRole || '' }])
-                        .filter((r) => r.name)
-                        .map((r) => (
-                          <p key={`${r.name}-${r.role}`} className="text-xs text-stone-500 break-words">
-                            {r.role && <span className="font-semibold text-stone-600">{r.role === '2. SR' ? t.role2Short : t.role1Short} </span>}
+                      {/* Both referees, one line each, with the slot they stand
+                          in — and the coachee marked when the pair is mixed. A
+                          row that listed only coachees could not say whether the
+                          other slot was empty or held by somebody this coach
+                          does not follow, and those are different situations at
+                          the hall. When BOTH are coachees nothing is marked:
+                          highlighting everything highlights nothing.
+                          Wraps rather than truncates: the name is the reason the
+                          row is worth reading, and they run long — "Kevin León
+                          Peña de los Santos" is wider than a phone by itself. */}
+                      {(() => {
+                        const crew = g.crew?.length
+                          ? g.crew
+                          : (g.refs?.length ? g.refs : [{ name: g.refereeName, role: g.refereeRole || '' }])
+                              .filter((r) => r.name)
+                              .map((r) => ({ ...r, coachee: !g.noCoachee }));
+                        const mixed = crew.some((r) => r.coachee) && crew.some((r) => !r.coachee);
+                        return crew.filter((r) => r.name).map((r) => (
+                          <p
+                            key={`${r.name}-${r.role}`}
+                            className={cn('text-xs break-words', mixed && r.coachee ? 'text-stone-700 font-medium' : 'text-stone-500')}
+                          >
+                            {r.role && <span className={cn('font-semibold', mixed && r.coachee ? 'text-stone-800' : 'text-stone-600')}>{r.role === '2. SR' ? t.role2Short : t.role1Short} </span>}
                             {r.name}
+                            {mixed && r.coachee && (
+                              <span className="ml-1.5 align-middle rounded bg-amber-100 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-800 border border-amber-200">
+                                {formData.lang === 'DE' ? 'Coachee' : 'Coachee'}
+                              </span>
+                            )}
                           </p>
-                        ))}
+                        ));
+                      })()}
                       <MatchResult result={g.result} className="mt-0.5" />
                     </div>
                     <Eye size={15} className="text-stone-400 shrink-0" />

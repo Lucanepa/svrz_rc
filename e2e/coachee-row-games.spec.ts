@@ -106,6 +106,30 @@ test('games from another season are not the coachee\'s games this season', async
   await expect(page.getByText(/Past Games|Vergangene Spiele/)).toHaveCount(0);
 });
 
+// The endpoint answers newest-first — right for the past list underneath, and
+// backwards for this one: the game furthest away sat at the top and the next
+// one to referee at the bottom.
+test('the upcoming list starts with the game that comes next', async ({ page }) => {
+  const later = { ...FREE, id: 'g-later', matchNo: '2400003', date: '2027-02-09T19:30:00Z' };
+  const middle = { ...FREE, id: 'g-mid', matchNo: '2400002', date: '2026-12-04T19:30:00Z' };
+  await page.route('**/api/coachees/*/games', (r) => r.fulfill({
+    // Served the way the API serves them: furthest away first.
+    json: [later, middle, FREE].map((g) => ({ ...g, assignedRoles: ['1. SR'] })),
+  }));
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Coachees$/ }).click();
+  await openChevron(page).click();
+  await page.getByRole('button', { name: /^(Games|Spiele)$/ }).last().click();
+
+  await expect(page.getByText(/Upcoming Games \(3\)|Bevorstehende Spiele \(3\)/)).toBeVisible();
+  const numbers = page.locator('div.font-semibold.text-stone-900.text-sm');
+  await expect(numbers).toHaveText([
+    new RegExp(FREE.matchNo),    // 20 Nov 2026 — the next one to referee
+    new RegExp(middle.matchNo),  // 4 Dec 2026
+    new RegExp(later.matchNo),   // 9 Feb 2027
+  ]);
+});
+
 test('a game somebody else holds says so instead of offering itself', async ({ page }) => {
   await page.route('**/api/eligible-games*', (r) => r.fulfill({
     json: [{ ...FREE, assignedRc: 'Jasmin Zimmermann' }],

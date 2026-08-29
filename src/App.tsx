@@ -6279,7 +6279,13 @@ export default function App() {
               };
               const visibleGames = seasonGames.filter((g) => inCoacheeFocus(viewCoachee, g.league || '', srRoles(g)));
               const hiddenByTarget = seasonGames.length - visibleGames.length;
-              const upcomingGames = visibleGames.filter((game) => new Date(game.date) >= now);
+              // The endpoint sorts newest-first, which is what the past list
+              // wants and the exact opposite of what this one does: it put the
+              // game furthest away at the top and the next one to referee at
+              // the bottom. Soonest first here, most recent first below.
+              const upcomingGames = visibleGames
+                .filter((game) => new Date(game.date) >= now)
+                .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
               const allPastGames = visibleGames.filter((game) => new Date(game.date) < now);
               const feedbackByGameId = new Set(coacheeFeedbacks.map((f) => f.game).filter(Boolean));
               const pastGames = showAllPastGames ? allPastGames : allPastGames.filter((game) => feedbackByGameId.has(game.id));

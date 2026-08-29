@@ -611,6 +611,11 @@ function shortenLocation(loc: string): string {
  * minutes, so an update is visible almost at once.
  */
 const VIDEO_GUIDE_BASE = 'https://svrz-rc-media.openvolley.app';
+// The label deliberately carries no running time. Every re-recording changes it
+// — the current cuts are 5:43 and 6:38, and they were different before that — so
+// a number here is a fact that goes quietly wrong the next time the pipeline
+// runs, exactly like the tab name the narration used to quote. The player shows
+// the length the moment the link opens.
 
 function pdfFilename(formData: FeedbackFormData): string {
   const match = formData.meta.spielNr || 'feedback';
@@ -6136,7 +6141,7 @@ export default function App() {
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stone-400 mb-2">{formData.lang === 'DE' ? 'Nützliche Infos & Dokumente' : 'Useful info & documents'}</h3>
             <div className="flex flex-col gap-1.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
-              <a href={`${VIDEO_GUIDE_BASE}/guide-${formData.lang === 'DE' ? 'de' : 'en'}.mp4`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Video size={14} /> {formData.lang === 'DE' ? 'Video-Anleitung (5 Min.)' : 'Video guide (7 min)'}</a>
+              <a href={`${VIDEO_GUIDE_BASE}/guide-${formData.lang === 'DE' ? 'de' : 'en'}.mp4`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Video size={14} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</a>
               <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Info size={14} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>
@@ -7066,7 +7071,7 @@ export default function App() {
             </div>
             <div className="flex flex-col gap-2.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
-              <a href={`${VIDEO_GUIDE_BASE}/guide-${formData.lang === 'DE' ? 'de' : 'en'}.mp4`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Video size={15} /> {formData.lang === 'DE' ? 'Video-Anleitung (5 Min.)' : 'Video guide (7 min)'}</a>
+              <a href={`${VIDEO_GUIDE_BASE}/guide-${formData.lang === 'DE' ? 'de' : 'en'}.mp4`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Video size={15} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</a>
               <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Info size={15} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp, COACHEE } from './support/app';
+import { stubSignedInApp, COACHEE, COACHEE_LISTED } from './support/app';
 
 // These tests only run in the mobile-chrome project (Pixel 5 viewport). They
 // sign in first: the app is behind a login, so without one they were asserting
@@ -27,7 +27,7 @@ test.describe('Mobile layout', () => {
     // Stage/Group columns the layout no longer has.
     await page.getByRole('button', { name: /^Coachees$/ }).click();
 
-    await expect(page.getByText(COACHEE.full_name).first()).toBeVisible();
+    await expect(page.getByText(COACHEE_LISTED).first()).toBeVisible();
     const overflow = await page.evaluate(() => ({
       body: document.documentElement.scrollWidth,
       viewport: window.innerWidth,

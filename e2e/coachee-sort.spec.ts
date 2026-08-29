@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
 
-// The list shows "Vorname Nachname" — that is how a name reads off a game sheet
-// — but it used to be SORTED on that same string, filing everyone under their
-// first name. Nobody looks a referee up that way. See lib/coacheeName.ts.
+// The list is looked up by surname, so it is both ordered and now SHOWN that
+// way — "Nachname, Vorname". It used to be sorted on the displayed "Vorname
+// Nachname", filing everyone under their first name, which is not how anyone
+// looks a referee up. See lib/coacheeName.ts.
 
 const status = { needsObservation: true, count: 0 };
 
@@ -32,11 +33,11 @@ test('the coachee list is ordered by surname, not by first name', async ({ page 
 
   await expect(names(page).first()).toBeVisible();
   await expect(names(page)).toHaveText([
-    'Eva Äbi',      // Äbi
-    'Dora Ammann',  // Ammann — surname taken from the full name alone
-    'Carla Xavier',
-    'Bea Yerly',
-    'Anna Zwahlen',
+    'Äbi, Eva',
+    'Ammann, Dora',  // surname taken from the full name alone
+    'Xavier, Carla',
+    'Yerly, Bea',
+    'Zwahlen, Anna',
   ]);
 });
 
@@ -50,10 +51,10 @@ test('the header toggle still reverses it', async ({ page }) => {
   await expect(names(page).first()).toBeVisible();
   await page.getByText(/^Name/).first().click();
   await expect(names(page)).toHaveText([
-    'Anna Zwahlen',
-    'Bea Yerly',
-    'Carla Xavier',
-    'Dora Ammann',
-    'Eva Äbi',
+    'Zwahlen, Anna',
+    'Yerly, Bea',
+    'Xavier, Carla',
+    'Ammann, Dora',
+    'Äbi, Eva',
   ]);
 });

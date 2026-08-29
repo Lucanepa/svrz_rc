@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp, COACHEE, GAME, RC } from './support/app';
+import { stubSignedInApp, COACHEE_LISTED, GAME, RC } from './support/app';
 
 // Finding a game to watch used to mean leaving the coachee behind: the row said
 // "1SR: 12" and nothing else, and the games were two modals and a second list
@@ -37,7 +37,7 @@ test.beforeEach(async ({ page }) => {
 test('the chevron lists the coachee\'s next games under their row', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: /^Coachees$/ }).click();
-  await expect(page.getByText(COACHEE.full_name).first()).toBeVisible();
+  await expect(page.getByText(COACHEE_LISTED).first()).toBeVisible();
   // Folded away until asked for — the list is 52 rows long.
   await expect(page.getByText(`${FREE.homeTeam} vs ${FREE.awayTeam}`)).toHaveCount(0);
 

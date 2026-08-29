@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp, RC, COACHEE, GAME } from './support/app';
+import { stubSignedInApp, RC, COACHEE, COACHEE_LISTED, GAME } from './support/app';
 
 /**
  * The score, wherever a game is listed.
@@ -34,7 +34,7 @@ const SCORED = { ...GAME, game_result: '3:0 (25:15 / 25:21 / 25:14)' };
 
 /** Coachees tab -> a coachee -> their own games list. */
 async function openCoacheeGames(page: Page): Promise<void> {
-  await page.getByText(COACHEE.full_name).first().click();
+  await page.getByText(COACHEE_LISTED).first().click();
   // The row opens a detail panel; its primary button is what loads the games.
   await page.getByRole('button', { name: /Games \/ Feedback|Spiele \/ Feedbacks/ }).click();
 }

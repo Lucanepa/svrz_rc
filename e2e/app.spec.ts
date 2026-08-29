@@ -43,7 +43,7 @@ test.describe('Tab switching', () => {
     await expect(page.getByRole('button', { name: /^(Filters|Filter)$/ })).toBeVisible();
 
     await page.getByRole('button', { name: /^Coachees$/ }).click();
-    await expect(page.getByText('Ref One').first()).toBeVisible();
+    await expect(page.getByText('One, Ref').first()).toBeVisible();
   });
 });
 

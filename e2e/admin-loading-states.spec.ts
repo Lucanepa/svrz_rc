@@ -77,12 +77,12 @@ test('the coachee list waits for the season it is filtered by', async ({ page })
   // The local guess for "current season" is August's, not the stored answer, so
   // showing rows now means showing last season's people under this season's
   // heading — which is what happened.
-  await expect(page.getByText('Last Season')).toHaveCount(0);
-  await expect(page.getByText('This Season')).toHaveCount(0);
+  await expect(page.getByText('Season, Last')).toHaveCount(0);
+  await expect(page.getByText('Season, This')).toHaveCount(0);
 
   settings.open();
-  await expect(page.getByText('This Season')).toBeVisible({ timeout: 15000 });
-  await expect(page.getByText('Last Season')).toHaveCount(0);
+  await expect(page.getByText('Season, This')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText('Season, Last')).toHaveCount(0);
 });
 
 test('the console asks once, not on every render', async ({ page }) => {

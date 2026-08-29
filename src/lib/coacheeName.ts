@@ -27,3 +27,25 @@ export function bySurname(
 ): number {
   return surnameFirst(a).localeCompare(surnameFirst(b), 'de');
 }
+
+/** How a coachee's name is LISTED: "Nachname, Vorname".
+ *
+ *  The two coachee lists — the Coachees tab and the admin console's table —
+ *  are looked up by surname, so they now read that way too rather than being
+ *  ordered on one thing and printed on another. Everywhere a name is ADDRESSED
+ *  rather than looked up (the observation form, the PDF, the mail, a game's
+ *  referee line) keeps "Vorname Nachname": nobody is greeted by their surname.
+ *
+ *  Falls back the same way [[surnameFirst]] does — a row with only `full_name`
+ *  gives up its last word as the surname; a single-word name is left alone.
+ */
+export function surnameFirstLabel(c: { first_name?: string; last_name?: string; full_name?: string }): string {
+  const last = (c.last_name || '').trim();
+  const first = (c.first_name || '').trim();
+  if (last && first) return `${last}, ${first}`;
+  if (last) return last;
+
+  const parts = (c.full_name || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return parts.join(' ');
+  return `${parts[parts.length - 1]}, ${parts.slice(0, -1).join(' ')}`;
+}

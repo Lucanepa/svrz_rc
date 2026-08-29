@@ -13,6 +13,10 @@ import { DEFAULT_SURVEY_CONFIG } from '../../src/lib/survey';
 
 export const RC = { id: 'rc1', name: 'Anna Muster' };
 
+/** How COACHEE reads in the two coachee lists, which show "Nachname, Vorname".
+ *  Everywhere a name is addressed rather than looked up it stays `full_name`. */
+export const COACHEE_LISTED = 'One, Ref';
+
 export const COACHEE = {
   id: 'c1',
   full_name: 'Ref One',

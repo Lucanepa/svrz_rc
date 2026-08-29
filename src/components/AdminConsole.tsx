@@ -32,7 +32,7 @@ import {
   type SurveyConfig, type SurveyQuestion, type SurveyScaleId,
 } from '../lib/survey';
 import { subscribeLive } from '../lib/liveEvents';
-import { bySurname } from '../lib/coacheeName';
+import { bySurname, surnameFirstLabel } from '../lib/coacheeName';
 import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
 import LevelText from './LevelText';
@@ -1439,7 +1439,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
             <div key={c.id} className="py-2">
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-stone-800 truncate">{c.full_name}</p>
+                  <p className="text-sm font-medium text-stone-800 truncate">{surnameFirstLabel(c)}</p>
                   <p className="text-xs text-stone-400 truncate"><LevelText level={c.referee_level} stage={c.stage} />{c.groups ? ` · ${c.groups}` : ''}</p>
                   {/* Without an address the feedback submit fails at the very
                       end, after the whole form is filled in — flag it early. */}

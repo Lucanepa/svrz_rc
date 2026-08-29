@@ -28,7 +28,7 @@ test('the groups actually stored are shown in English, not left in German', asyn
   await page.route('**/api/coachees*', (r) => r.fulfill({ json: COACHEES }));
   await page.goto('/');
   await page.getByRole('button', { name: /^Coachees$/ }).click();
-  await expect(page.getByText('Aaa One')).toBeVisible();
+  await expect(page.getByText('One, Aaa')).toBeVisible();
 
   // The noun, not the participle: "Beförderung" is the cohort up for promotion,
   // not people it has already happened to.

@@ -51,7 +51,7 @@ import { subscribeLive } from './lib/liveEvents';
 import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml, sanitizeRich } from './lib/richText';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
-import { bySurname } from './lib/coacheeName';
+import { bySurname, surnameFirstLabel } from './lib/coacheeName';
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
@@ -4110,7 +4110,7 @@ export default function App() {
       if (!isInSeason(c, seasonStartYear)) return false;
       // Groups are matched in both languages: the badge in the games list may
       // read "Promotion?" while the record still says "Beförderung?".
-      if (q && !(c.full_name || '').toLowerCase().includes(q) && !levelDisplay(c.referee_level, c.stage).text.toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q) && !groupLabel(c.groups, 'EN').toLowerCase().includes(q)) return false;
+      if (q && !(c.full_name || '').toLowerCase().includes(q) && !surnameFirstLabel(c).toLowerCase().includes(q) && !levelDisplay(c.referee_level, c.stage).text.toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q) && !groupLabel(c.groups, 'EN').toLowerCase().includes(q)) return false;
       if (listFilterLevels.length > 0) {
         const coacheeLevel = levelDisplay(c.referee_level, c.stage).text;
         if (!listFilterLevels.includes(coacheeLevel)) return false;
@@ -5597,7 +5597,7 @@ export default function App() {
                                 on phones; cap their width beside it on desktop. */}
                             <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-2">
                               <div className="flex-1 min-w-0">
-                                <div className="font-semibold text-sm text-stone-900">{coachee.full_name}</div>
+                                <div className="font-semibold text-sm text-stone-900">{surnameFirstLabel(coachee)}</div>
                                 <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-stone-500">
                                   <span><LevelText level={coachee.referee_level} stage={coachee.stage} /></span>
                                   {groupStr && <span>{groupStr}</span>}

@@ -496,7 +496,10 @@ export function loadCalendarGames(): Promise<CalendarGameStatus[]> {
 
 function buildSummary(): rcCoachSummary[] {
   const s = store();
-  const teams = (g: DemoGame) => `${g.homeTeam} – ${g.awayTeam}`;
+  // " vs " is the separator the API builds this string with, and the Home
+  // rows split on it to put the two teams on their own lines. An en dash here
+  // made the demo the only place that never split.
+  const teams = (g: DemoGame) => `${g.homeTeam} vs ${g.awayTeam}`;
   return s.coachees.map((c) => {
     const cg = s.games.filter((g) => g.coacheeId === c.id);
     const toGame = (g: DemoGame): rcCoachSummaryGame => ({ gameId: g.id, gameDate: g.date, league: g.league, teams: teams(g), refereeName: c.full_name });
@@ -505,7 +508,7 @@ function buildSummary(): rcCoachSummary[] {
       coacheeId: c.id,
       doneFeedbacks: (s.feedbacks[c.id] ?? []).map((r) => ({
         gameDate: r.expand?.game?.match_date ?? '', league: r.expand?.game?.league ?? '',
-        teams: `${r.expand?.game?.home_team ?? ''} – ${r.expand?.game?.away_team ?? ''}`,
+        teams: `${r.expand?.game?.home_team ?? ''} vs ${r.expand?.game?.away_team ?? ''}`,
         role: r.role_assessed ?? '1. SR', submittedAt: r.submitted_at ?? '',
       })),
       outstandingGames: cg.filter((g) => g.kind === 'outstanding').map(toGame),

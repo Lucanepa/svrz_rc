@@ -1393,6 +1393,7 @@ export default function App() {
   const outboxOwnerId = rcAuth.rcId || (isPrivileged ? 'admin' : 'anon');
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showInfoModal, setShowInfoModal] = useState(false);
+  const [showVideoModal, setShowVideoModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [icalInfo, setIcalInfo] = useState<IcalSubscription | null>(null);
   const [icalError, setIcalError] = useState('');
@@ -3203,6 +3204,7 @@ export default function App() {
       if (showConfirmModal !== null) { setShowConfirmModal(null); return; }
       if (sigModalOpen) { setSigModalOpen(false); return; }
       if (demoMailOpen) { setDemoMailOpen(false); return; }
+      if (showVideoModal) { setShowVideoModal(false); return; }
       if (showInfoModal) { setShowInfoModal(false); return; }
       if (showCalendarModal) { setShowCalendarModal(false); return; }
       if (showEmptyFormModal) { setShowEmptyFormModal(false); return; }
@@ -3210,7 +3212,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showConfirmModal, sigModalOpen, demoMailOpen, showInfoModal, showCalendarModal, showEmptyFormModal, detailCoachee]);
+  }, [showConfirmModal, sigModalOpen, demoMailOpen, showVideoModal, showInfoModal, showCalendarModal, showEmptyFormModal, detailCoachee]);
 
   const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
   /**
@@ -4489,9 +4491,10 @@ export default function App() {
           <span className="hidden sm:inline">{t.draftExport}</span>
         </button>
         {gameHas2SR && (
-          <div className="flex items-center gap-2">
+          <>
+            <div className="flex flex-wrap items-center gap-2">
             <div
-              className="flex rounded-lg border border-stone-300 bg-white shadow-sm overflow-hidden"
+              className="flex shrink-0 rounded-lg border border-stone-300 bg-white shadow-sm overflow-hidden"
               role="group"
               aria-label={formData.lang === 'DE' ? 'Beobachtung f\u00FCr' : 'Observation for'}
             >
@@ -4538,7 +4541,21 @@ export default function App() {
                 </div>
               </>
             )}
-          </div>
+            </div>
+            {/* "Both" is one word for a mode that changes what the send button
+                does. The title said so on hover, which a phone does not have,
+                so it said so to nobody who needed it. Full width and OUTSIDE
+                the row above: as a flex item beside the toggle it took width
+                the group could not spare, and the group — which clips — lost
+                "2SR" and "Both" off its right edge. */}
+            {dualMode && (
+              <p className="w-full text-xs text-stone-500">
+                {formData.lang === 'DE'
+                  ? 'Beide Schiedsrichter in einem Besuch — je ein Formular. Mit dem roten Knopf zwischen ihnen wechseln.'
+                  : 'Both referees on one visit — one form each. Switch between them with the red button.'}
+              </p>
+            )}
+          </>
         )}
         <button
           onClick={toggleLang}
@@ -4821,7 +4838,10 @@ export default function App() {
                 {/* Display only — the season is set once in the admin console
                     (Einstellungen → Standard-Saison) and everyone follows it. */}
                 <span
-                  className="h-9 ml-auto sm:ml-0 inline-flex items-center rounded-lg border border-stone-200 bg-stone-50 text-stone-600 text-xs font-medium px-2.5"
+                  // No ml-auto: it pushed the season and everything after it to
+                  // the right edge, so the row that wrapped underneath sat in a
+                  // different place from the one above it.
+                  className="h-9 inline-flex items-center rounded-lg border border-stone-200 bg-stone-50 text-stone-600 text-xs font-medium px-2.5"
                   title={formData.lang === 'DE' ? 'Saison' : 'Season'}
                 >
                   {`${seasonStartYear}/${String((seasonStartYear + 1) % 100).padStart(2, '0')}`}
@@ -4970,6 +4990,26 @@ export default function App() {
               };
               // `canRemind` only for games still to come: reminding somebody
               // about a match they have already refereed is noise.
+              /** Home and away on their own lines. "VBC Rämi D1 vs VBC
+               *  Einsiedeln D2" is wider than a phone, and one truncated line
+               *  hid whichever team came second on every row of the list. Split
+               *  on the separator the API builds the string with; a string that
+               *  does not split cleanly stays one line rather than being
+               *  guessed at. */
+              const teamLines = (teams: string) => {
+                const parts = teams.split(' vs ');
+                if (parts.length !== 2) {
+                  return <p className="text-sm font-medium text-stone-800 break-words">{teams}</p>;
+                }
+                return (
+                  <>
+                    <p className="text-sm font-medium text-stone-800 break-words">{parts[0]}</p>
+                    <p className="text-sm font-medium text-stone-800 break-words">
+                      <span className="font-normal text-stone-400">vs </span>{parts[1]}
+                    </p>
+                  </>
+                );
+              };
               const gameRow = (g: HomeGame, key: string, canRemind = false) => (
                 <div
                   key={key}
@@ -4983,8 +5023,10 @@ export default function App() {
                       <span className="text-[11px] font-semibold text-red-600 leading-tight">{fmtDate(g.gameDate)}</span>
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-stone-800 truncate">{g.teams}</p>
-                      <p className="text-xs text-stone-500 truncate">{g.league} · {[g.refereeName, ...(g.extraReferees ?? [])].filter(Boolean).join(', ')}</p>
+                      {teamLines(g.teams)}
+                      {/* Wraps rather than truncates: the coachee's name is the
+                          reason the row is worth reading. */}
+                      <p className="text-xs text-stone-500 break-words">{g.league} · {[g.refereeName, ...(g.extraReferees ?? [])].filter(Boolean).join(', ')}</p>
                       <MatchResult result={g.result} className="mt-0.5" />
                     </div>
                     <Eye size={15} className="text-stone-400 shrink-0" />
@@ -5138,8 +5180,8 @@ export default function App() {
                                   <span className="text-[11px] font-semibold text-emerald-600 leading-tight">{fmtDate(f.gameDate)}</span>
                                 </div>
                                 <div className="min-w-0 flex-1">
-                                  <p className="text-sm font-medium text-stone-800 truncate">{f.teams}</p>
-                                  <p className="text-xs text-stone-500 truncate">
+                                  {teamLines(f.teams)}
+                                  <p className="text-xs text-stone-500 break-words">
                                     {f.league} · {f.coacheeName}{f.role ? ` (${f.role})` : ''}
                                   </p>
                                   <MatchResult result={f.result} className="mt-0.5" />
@@ -6141,7 +6183,7 @@ export default function App() {
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stone-400 mb-2">{formData.lang === 'DE' ? 'Nützliche Infos & Dokumente' : 'Useful info & documents'}</h3>
             <div className="flex flex-col gap-1.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
-              <a href={`${VIDEO_GUIDE_BASE}/guide-${formData.lang === 'DE' ? 'de' : 'en'}.mp4`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Video size={14} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</a>
+              <button type="button" onClick={() => setShowVideoModal(true)} className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Video size={14} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</button>
               <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Info size={14} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>
@@ -6799,8 +6841,16 @@ export default function App() {
           ))}
         </div>
 
-        <div className="mt-6 pt-4 border-t border-stone-100 text-[9px] text-right text-stone-400 italic">
-          {t.version}: {t.versionDate} | {VERSION_STAMP} | SVRZ Referee Coaching Tool
+        {/* Left on a phone, right where there is room for it. Each segment
+            breaks as a unit, so a narrow screen splits the line at a separator
+            instead of stranding the last word of the tool's name alone against
+            the right edge. */}
+        <div className="mt-6 pt-4 border-t border-stone-100 text-[9px] text-left sm:text-right print:text-right text-stone-400 italic">
+          <span className="whitespace-nowrap">{t.version}: {t.versionDate}</span>
+          {' | '}
+          <span className="whitespace-nowrap">{VERSION_STAMP}</span>
+          {' | '}
+          <span className="whitespace-nowrap">SVRZ Referee Coaching Tool</span>
         </div>
       </div>
 
@@ -7062,6 +7112,62 @@ export default function App() {
         </div>
       )}
 
+      {showVideoModal && (() => {
+        const lang = formData.lang === 'DE' ? 'de' : 'en';
+        return (
+        <div onClick={() => setShowVideoModal(false)} className="fixed inset-0 bg-stone-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 z-50 no-print">
+          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-stone-200">
+              <h3 className="text-base font-bold text-stone-900">{formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</h3>
+              <button onClick={() => setShowVideoModal(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none px-1">&times;</button>
+            </div>
+            {/* `key` on the lang: swapping the src on a live <video> leaves the
+                old buffer and the old text track in place, so the player would
+                keep the previous language's picture under the new subtitles.
+                Re-mounting is the honest way to change films.
+                `crossOrigin` is REQUIRED for the subtitles: the media sits on
+                another host, and a cross-origin <track> is dropped in silence
+                without it — the video plays and the captions simply never
+                appear, which is the hardest kind of bug to notice. */}
+            <video
+              key={lang}
+              controls
+              autoPlay
+              playsInline
+              preload="metadata"
+              crossOrigin="anonymous"
+              className="w-full max-h-[70vh] bg-black"
+            >
+              <source src={`${VIDEO_GUIDE_BASE}/guide-${lang}.mp4`} type="video/mp4" />
+              <track
+                default
+                kind="subtitles"
+                srcLang={lang}
+                label={formData.lang === 'DE' ? 'Deutsch' : 'English'}
+                src={`${VIDEO_GUIDE_BASE}/guide-${lang}.vtt`}
+              />
+            </video>
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs text-stone-500">
+              <span>{formData.lang === 'DE'
+                ? 'Untertitel über das ⚙-Menü des Players.'
+                : 'Subtitles via the player’s ⚙ menu.'}</span>
+              {/* The direct link stays reachable: it is what a coach forwards to
+                  a colleague, and the fallback when an in-page player will not
+                  play (an old WebView, a locked-down browser). */}
+              <a
+                href={`${VIDEO_GUIDE_BASE}/guide-${lang}.mp4`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 font-medium text-red-700 hover:underline"
+              >
+                <Copy size={13} /> {formData.lang === 'DE' ? 'Direkter Link' : 'Direct link'}
+              </a>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
       {showInfoModal && (
         <div onClick={() => setShowInfoModal(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
           <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5">
@@ -7071,7 +7177,7 @@ export default function App() {
             </div>
             <div className="flex flex-col gap-2.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
-              <a href={`${VIDEO_GUIDE_BASE}/guide-${formData.lang === 'DE' ? 'de' : 'en'}.mp4`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Video size={15} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</a>
+              <button type="button" onClick={() => { setShowInfoModal(false); setShowVideoModal(true); }} className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline text-left"><Video size={15} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</button>
               <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Info size={15} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>

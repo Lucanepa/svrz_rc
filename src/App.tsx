@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId } from 'react';
-import { Maximize2, Download, FileJson, Loader2, RefreshCw, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail } from 'lucide-react';
+import { Maximize2, Download, FileJson, Video, Loader2, RefreshCw, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
@@ -601,6 +601,17 @@ function shortenLocation(loc: string): string {
   return `${hall}, ${city}`;
 }
 
+/**
+ * Where the narrated guide lives — an R2 bucket, not this build.
+ *
+ * The videos are ~15 MB each and get re-recorded whenever the UI moves. Shipping
+ * them in `public/` would put every past cut in git for ever and re-upload them
+ * on every deploy; here a new recording overwrites the same key, so the link a
+ * coach was sent last season still plays the current guide. Cache-Control is 5
+ * minutes, so an update is visible almost at once.
+ */
+const VIDEO_GUIDE_BASE = 'https://svrz-rc-media.openvolley.app';
+
 function pdfFilename(formData: FeedbackFormData): string {
   const match = formData.meta.spielNr || 'feedback';
   const role = formData.role.replace('.', '').replace(/\s+/g, '');
@@ -1164,6 +1175,10 @@ export default function App() {
   const [homeLoading, setHomeLoading] = useState(false);
   const [listPage, setListPage] = useState(0);
   const LIST_PAGE_SIZE = 50;
+  // How many of a coachee's games the row itself lists before deferring to the
+  // full per-coachee list. A referee can be down for twenty-five fixtures; the
+  // row is a place to take the next one, not to read the whole season.
+  const INLINE_GAME_LIMIT = 5;
   const [listSearch, setListSearch] = useState('');
   const [listFilterLevels, setListFilterLevels] = useState<string[]>([]);
   const [listFilterNeedsObs, setListFilterNeedsObs] = useState(true);
@@ -1271,6 +1286,8 @@ export default function App() {
   };
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
+  // The coachee row whose games are unfolded underneath it.
+  const [expandedCoacheeId, setExpandedCoacheeId] = useState<string | null>(null);
   const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });
   const [gameFilterNeedsObs, setGameFilterNeedsObs] = useState(true);
   const [gameFilterShowInactive, setGameFilterShowInactive] = useState(false);
@@ -2524,13 +2541,27 @@ export default function App() {
     }
   };
 
-  const handleSelectCoachee = (coachee: Coachee) => {
-    setDetailCoachee(coachee);
-    setDetailNotes(coachee.notes || '');
+  // Everything downstream of "this is the coachee we are looking at" — the
+  // header of their games list, the name the form is filled with. Split out of
+  // the row tap because the row's own buttons reach those views without ever
+  // opening the sheet, and a games list under the previously selected name is
+  // an observation started on the wrong person.
+  const selectCoachee = (coachee: Coachee) => {
     setSelectedCoacheeId(coachee.id);
     setSelectedCoacheeName(coachee.full_name || '');
     setSelectedCoacheeLevel(coachee.referee_level || '');
     applyCoacheeToMeta(coachee);
+  };
+
+  const handleSelectCoachee = (coachee: Coachee) => {
+    setDetailCoachee(coachee);
+    setDetailNotes(coachee.notes || '');
+    selectCoachee(coachee);
+  };
+
+  const openCoacheeGames = (coachee: Coachee) => {
+    selectCoachee(coachee);
+    void loadCoacheeGames(coachee);
   };
 
   const handleSaveNotes = async () => {
@@ -4035,19 +4066,44 @@ export default function App() {
     )).sort(),
     [eligibleGames, coacheeNames],
   );
-  const { games1SRCount, games2SRCount } = useMemo(() => {
+  // The games behind the "1SR: n · 2SR: n" line on a coachee row, kept as the
+  // games themselves rather than a tally so the row can also LIST them once its
+  // chevron is open. Keyed by the referee's normalized name — the key every
+  // other coachee lookup uses, so a name written with accents on the game and
+  // without them on the coachee row still counts once. Season-scoped like the
+  // games tab: a fixture outside the season on screen belongs to neither.
+  const upcomingGamesByReferee = useMemo(() => {
     const now = new Date();
-    const upcomingGames = eligibleGames.filter((g) => new Date(g.date) >= now);
-    const sr1 = new Map<string, number>();
-    const sr2 = new Map<string, number>();
-    for (const g of upcomingGames) {
-      const r1 = (g.firstReferee || '').toLowerCase().trim();
-      const r2 = (g.secondReferee || '').toLowerCase().trim();
-      if (r1) sr1.set(r1, (sr1.get(r1) || 0) + 1);
-      if (r2) sr2.set(r2, (sr2.get(r2) || 0) + 1);
+    const map = new Map<string, Array<{ game: EligibleGame; role: '1. SR' | '2. SR' }>>();
+    const add = (name: string, game: EligibleGame, role: '1. SR' | '2. SR') => {
+      const key = normName(name || '');
+      if (!key) return;
+      const list = map.get(key);
+      if (list) list.push({ game, role });
+      else map.set(key, [{ game, role }]);
+    };
+    const upcoming = eligibleGames
+      .filter((g) => inSeasonOrManual(g) && new Date(g.date) >= now)
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    for (const g of upcoming) {
+      add(g.firstReferee || '', g, '1. SR');
+      add(g.secondReferee || '', g, '2. SR');
     }
-    return { games1SRCount: sr1, games2SRCount: sr2 };
-  }, [eligibleGames]);
+    return map;
+  }, [eligibleGames, inSeasonOrManual]);
+
+  /** Is this game inside the coachee's focus (the Niveau they are watched at)?
+   *  Shared by the per-coachee games list and the row's inline list, so the same
+   *  game cannot be worth watching on one and hidden on the other. A game with
+   *  no referee role on it (a line judge) has nothing to compare and stays. */
+  const inCoacheeFocus = useCallback((coachee: Coachee | undefined, league: string, roles: TargetRole[]) => {
+    if (showAllLevels) return true;
+    if (!coachee || roles.length === 0) return true;
+    const key = levelKey(coachee.referee_level, coachee.stage);
+    const target = coacheeTargets[coachee.id];
+    if (!isTargetActive(target, key, niveauTable)) return true;
+    return roles.some((role) => keepGame({ league, role, target, levelKey: key, table: niveauTable }));
+  }, [showAllLevels, coacheeTargets, niveauTable]);
   const filteredCoachees = useMemo(() => {
     const q = listSearch.toLowerCase();
     const filtered = coachees.filter((c) => {
@@ -5424,8 +5480,17 @@ export default function App() {
                         const plannedObs = plannedObsByCoachee.get(normName(coachee.full_name || ''));
                         const balls = coacheeBalls(coachee, plannedObs);
                         const groupStr = groupLabel(coachee.groups, formData.lang);
-                        const sr1 = games1SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
-                        const sr2 = games2SRCount.get((coachee.full_name || '').toLowerCase().trim()) || 0;
+                        const ownGames = upcomingGamesByReferee.get(normName(coachee.full_name || '')) ?? [];
+                        const sr1 = ownGames.filter((e) => e.role === '1. SR').length;
+                        const sr2 = ownGames.filter((e) => e.role === '2. SR').length;
+                        // The row offers the games worth watching, by the same
+                        // focus rule the per-coachee list uses; the rest are
+                        // counted into the "+ n more" that opens that list.
+                        const focusGames = ownGames.filter(({ game, role }) =>
+                          inCoacheeFocus(coachee, game.league || '', [role === '1. SR' ? '1SR' : '2SR']));
+                        const inlineGames = focusGames.slice(0, INLINE_GAME_LIMIT);
+                        const moreGames = ownGames.length - inlineGames.length;
+                        const isExpanded = expandedCoacheeId === coachee.id;
                         return (
                           <div
                             key={coachee.id}
@@ -5478,8 +5543,121 @@ export default function App() {
                                 )) : (
                                   <span className="text-xs text-stone-300">–</span>
                                 )}
+                                {/* Unfolds this coachee's games under the row.
+                                    ml-auto pins it to the right edge on phones,
+                                    where the pills sit under the name; beside
+                                    them the row is content-wide and it does
+                                    nothing. Tapping it must not also open the
+                                    sheet the rest of the row opens. */}
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setExpandedCoacheeId(isExpanded ? null : coachee.id); }}
+                                  aria-expanded={isExpanded}
+                                  aria-label={formData.lang === 'DE' ? 'Spiele anzeigen' : 'Show games'}
+                                  title={formData.lang === 'DE' ? 'Spiele anzeigen' : 'Show games'}
+                                  className="ml-auto sm:ml-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-stone-400 hover:bg-stone-200 hover:text-stone-600 transition-colors"
+                                >
+                                  <ChevronDown size={16} className={cn('transition-transform', isExpanded && 'rotate-180')} />
+                                </button>
                               </div>
                             </div>
+                            {/* The chevron's panel. It sits inside the row, so
+                                the negative margins undo the row's padding and
+                                every click in here is stopped from reaching the
+                                row underneath — opening a game must not also
+                                open the detail sheet. */}
+                            {isExpanded && (
+                              <div
+                                onClick={(e) => e.stopPropagation()}
+                                className="-mx-3 -mb-2.5 mt-2.5 cursor-default border-t border-stone-200 bg-stone-50 px-3 py-2.5"
+                              >
+                                {inlineGames.length === 0 ? (
+                                  <p className="text-xs text-stone-500">
+                                    {ownGames.length === 0
+                                      ? (formData.lang === 'DE' ? 'Keine bevorstehenden Spiele.' : 'No upcoming games.')
+                                      : (formData.lang === 'DE'
+                                        ? `Keines der ${ownGames.length} bevorstehenden Spiele liegt im Fokus.`
+                                        : `None of the ${ownGames.length} upcoming games is in focus.`)}
+                                  </p>
+                                ) : (
+                                  <div className="divide-y divide-stone-200 rounded border border-stone-200 bg-white">
+                                    {inlineGames.map(({ game, role }) => {
+                                      const de = formData.lang === 'DE';
+                                      const holder = game.assignedRc || '';
+                                      const mine = !!holder && normName(holder) === normName(rcAuth.rcName || '');
+                                      return (
+                                        <div key={game.id} className="flex items-start justify-between gap-2 px-2.5 py-2">
+                                          <div className="min-w-0">
+                                            <div className="text-xs text-stone-500">
+                                              {shortDate(game.date)} · <LeagueLabel text={game.league} /> · {role}
+                                            </div>
+                                            <div className="truncate text-xs font-medium text-stone-800">{game.homeTeam} vs {game.awayTeam}</div>
+                                          </div>
+                                          <div className="flex shrink-0 items-center gap-1">
+                                            {!holder ? (
+                                              <button
+                                                onClick={() => { if (rcAuth.rcName) requestRcAssignment(game, rcAuth.rcName); }}
+                                                className="h-7 rounded-md bg-slate-900 px-2 text-[11px] font-medium text-white hover:bg-slate-800 transition-colors"
+                                              >
+                                                {de ? 'Spiel übernehmen' : 'Take game'}
+                                              </button>
+                                            ) : mine ? (
+                                              <>
+                                                <button
+                                                  onClick={() => handleSelectGame(game, coachee.full_name)}
+                                                  className="inline-flex h-7 items-center gap-1 rounded-md bg-slate-900 px-2 text-[11px] font-medium text-white hover:bg-slate-800 transition-colors"
+                                                >
+                                                  <Eye size={12} />{de ? 'Beobachten' : 'Observe'}
+                                                </button>
+                                                <button
+                                                  onClick={() => void giveBackGame(game.id, `${game.homeTeam} vs ${game.awayTeam}`, de)}
+                                                  title={de ? 'Abgeben' : 'Give back'}
+                                                  aria-label={de ? 'Abgeben' : 'Give back'}
+                                                  className="flex h-7 w-7 items-center justify-center rounded-md border border-stone-300 bg-white text-stone-500 hover:bg-stone-50 transition-colors"
+                                                >
+                                                  <X size={12} />
+                                                </button>
+                                              </>
+                                            ) : (
+                                              <span
+                                                className="rounded-full bg-green-100 px-2 py-0.5 text-[11px] text-green-700"
+                                                title={de ? 'Bereits von einem RC übernommen' : 'Already taken by an RC'}
+                                              >
+                                                RC: {holder}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {/* Both lists the detail sheet leads to, one tap
+                                    from the row that raised the question. */}
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
+                                  <button
+                                    onClick={() => openCoacheeGames(coachee)}
+                                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-100 transition-colors"
+                                  >
+                                    <CalendarDays size={13} className="text-stone-400" />{t.openGames}
+                                  </button>
+                                  <button
+                                    onClick={() => { selectCoachee(coachee); void openFeedbackPicker(coachee); }}
+                                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-100 transition-colors"
+                                  >
+                                    <ClipboardCheck size={13} className="text-stone-400" />{t.openFeedback}
+                                  </button>
+                                  {moreGames > 0 && (
+                                    <button
+                                      onClick={() => openCoacheeGames(coachee)}
+                                      className="text-[11px] text-stone-500 underline decoration-stone-300 hover:text-stone-700"
+                                    >
+                                      {formData.lang === 'DE' ? `+ ${moreGames} weitere Spiele` : `+ ${moreGames} more games`}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -5958,6 +6136,7 @@ export default function App() {
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stone-400 mb-2">{formData.lang === 'DE' ? 'Nützliche Infos & Dokumente' : 'Useful info & documents'}</h3>
             <div className="flex flex-col gap-1.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
+              <a href={`${VIDEO_GUIDE_BASE}/guide-${formData.lang === 'DE' ? 'de' : 'en'}.mp4`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Video size={14} /> {formData.lang === 'DE' ? 'Video-Anleitung (5 Min.)' : 'Video guide (7 min)'}</a>
               <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Info size={14} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>
@@ -5993,17 +6172,20 @@ export default function App() {
               const viewCoachee = coachees.find((c) => c.id === selectedCoacheeId);
               const lvlKey = levelKey(viewCoachee?.referee_level, viewCoachee?.stage);
               const target = viewCoachee ? coacheeTargets[viewCoachee.id] : undefined;
-              const matchesTarget = (g: CoacheeGame): boolean => {
-                if (showAllLevels) return true;
+              // The endpoint answers with every game this person was ever put
+              // on. Unscoped, last season's fixtures came back as "past games"
+              // and — being outside the focus — were counted into "n games
+              // outside the focus hidden", which read 14 for a referee with 12
+              // games this season.
+              const seasonGames = coacheeGames.filter((g) => inSeasonOrManual(g));
+              const srRoles = (g: CoacheeGame): TargetRole[] => {
                 const roles: TargetRole[] = [];
                 if (g.assignedRoles.includes('1. SR')) roles.push('1SR');
                 if (g.assignedRoles.includes('2. SR')) roles.push('2SR');
-                if (roles.length === 0) return true; // not an SR role (e.g. line judge) → keep
-                if (!isTargetActive(target, lvlKey, niveauTable)) return true;
-                return roles.some((role) => keepGame({ league: g.league || '', role, target, levelKey: lvlKey, table: niveauTable }));
+                return roles;
               };
-              const visibleGames = coacheeGames.filter(matchesTarget);
-              const hiddenByTarget = coacheeGames.length - visibleGames.length;
+              const visibleGames = seasonGames.filter((g) => inCoacheeFocus(viewCoachee, g.league || '', srRoles(g)));
+              const hiddenByTarget = seasonGames.length - visibleGames.length;
               const upcomingGames = visibleGames.filter((game) => new Date(game.date) >= now);
               const allPastGames = visibleGames.filter((game) => new Date(game.date) < now);
               const feedbackByGameId = new Set(coacheeFeedbacks.map((f) => f.game).filter(Boolean));
@@ -6040,46 +6222,89 @@ export default function App() {
                       {upcomingGames.map((game) => {
                         const d = new Date(game.date);
                         const formatted = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                        // Taking a game acts on the open list's copy of it: this
+                        // list also carries games where the coachee is only a
+                        // line judge, and those can never be observed. Reading
+                        // the holder from there too keeps the buttons right the
+                        // moment the game changes hands, without a reload.
+                        const eg = eligibleGames.find((e) => e.id === game.id);
+                        const holder = eg ? eg.assignedRc || '' : game.assignedRc || '';
+                        const mine = !!holder && normName(holder) === normName(rcAuth.rcName || '');
+                        const de = formData.lang === 'DE';
                         return (
-                          <button
-                            key={game.id}
-                            onClick={() => handleSelectGame(game)}
-                            className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="font-semibold text-stone-900 text-sm">
-                                {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
+                          <div key={game.id}>
+                            <button
+                              onClick={() => handleSelectGame(game)}
+                              className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="font-semibold text-stone-900 text-sm">
+                                  {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
+                                </div>
+                                {holder && (
+                                  <span className="shrink-0 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700" title={de ? 'Bereits von einem RC übernommen' : 'Already taken by an RC'}>
+                                    RC: {holder}
+                                  </span>
+                                )}
                               </div>
-                              {game.assignedRc && (
-                                <span className="shrink-0 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700" title={formData.lang === 'DE' ? 'Bereits von einem RC übernommen' : 'Already taken by an RC'}>
-                                  RC: {game.assignedRc}
-                                </span>
-                              )}
+                              <div className="text-xs text-stone-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                                <span>{formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}</span>
+                                {game.isRcGame && (
+                                  <span
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-sky-100 text-sky-800 border border-sky-300"
+                                    title={formData.lang === 'DE'
+                                      ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
+                                      : 'A referee coach is whistling next to a coachee here.'}
+                                  >{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
+                                )}
+                                {game.isManual && (
+                                  <span
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-violet-100 text-violet-800 border border-violet-300"
+                                    title={formData.lang === 'DE'
+                                      ? 'Von Hand angelegt — kein Spiel aus VolleyManager.'
+                                      : 'Created by hand — not a VolleyManager fixture.'}
+                                  >{formData.lang === 'DE' ? 'Testspiel' : 'Test game'}</span>
+                                )}
+                              </div>
+                              {/* Normally nothing here — an upcoming game has no
+                                  score. It shows up for a fixture that has just
+                                  been played but not yet moved out of this list. */}
+                              <MatchResult result={game.game_result} className="mt-1" />
+                            </button>
+                          {/* A sibling of the row, not a child: a button inside
+                              a button is invalid, and this list was read-only
+                              until now — the game had to be found again in the
+                              open games list before it could be taken. */}
+                          {eg && (
+                            <div className="flex flex-wrap items-center gap-2 px-4 pb-3">
+                              {!holder ? (
+                                <button
+                                  onClick={() => { if (rcAuth.rcName) requestRcAssignment(eg, rcAuth.rcName); }}
+                                  className="h-8 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
+                                >
+                                  {de ? 'Spiel übernehmen' : 'Take game'}
+                                </button>
+                              ) : mine ? (
+                                <>
+                                  <button
+                                    onClick={() => handleSelectGame(eg, selectedCoacheeName)}
+                                    className="inline-flex h-8 items-center gap-1.5 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
+                                  >
+                                    <Eye size={13} />
+                                    {de ? 'Beobachtung starten' : 'Start observation'}
+                                  </button>
+                                  <button
+                                    onClick={() => void giveBackGame(eg.id, `${game.homeTeam} vs ${game.awayTeam}`, de)}
+                                    className="inline-flex h-8 items-center gap-1.5 px-3 text-xs font-medium rounded-md border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 transition-colors"
+                                  >
+                                    <X size={13} />
+                                    {de ? 'Abgeben' : 'Give back'}
+                                  </button>
+                                </>
+                              ) : null}
                             </div>
-                            <div className="text-xs text-stone-500 mt-1 flex items-center gap-1.5 flex-wrap">
-                              <span>{formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}</span>
-                              {game.isRcGame && (
-                                <span
-                                  className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-sky-100 text-sky-800 border border-sky-300"
-                                  title={formData.lang === 'DE'
-                                    ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
-                                    : 'A referee coach is whistling next to a coachee here.'}
-                                >{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
-                              )}
-                              {game.isManual && (
-                                <span
-                                  className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-violet-100 text-violet-800 border border-violet-300"
-                                  title={formData.lang === 'DE'
-                                    ? 'Von Hand angelegt — kein Spiel aus VolleyManager.'
-                                    : 'Created by hand — not a VolleyManager fixture.'}
-                                >{formData.lang === 'DE' ? 'Testspiel' : 'Test game'}</span>
-                              )}
-                            </div>
-                            {/* Normally nothing here — an upcoming game has no
-                                score. It shows up for a fixture that has just
-                                been played but not yet moved out of this list. */}
-                            <MatchResult result={game.game_result} className="mt-1" />
-                          </button>
+                          )}
+                          </div>
                         );
                       })}
                     </div>
@@ -6841,6 +7066,7 @@ export default function App() {
             </div>
             <div className="flex flex-col gap-2.5">
               <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
+              <a href={`${VIDEO_GUIDE_BASE}/guide-${formData.lang === 'DE' ? 'de' : 'en'}.mp4`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Video size={15} /> {formData.lang === 'DE' ? 'Video-Anleitung (5 Min.)' : 'Video guide (7 min)'}</a>
               <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
               <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Info size={15} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
             </div>

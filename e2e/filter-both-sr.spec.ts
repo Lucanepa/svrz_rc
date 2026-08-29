@@ -65,6 +65,29 @@ test('ticking it alongside 1SR widens rather than cancels', async ({ page }) => 
   await expect(page.getByText('Only 2SR')).toHaveCount(0);
 });
 
+// The coachee filter reads a name one way and matches it another: the option
+// shows "One, Ref" the way both coachee lists do, while the value it filters on
+// is still "Ref One", the name the game itself carries. Nothing else asserted
+// that the split label actually filters, so a decorative label would have gone
+// out unnoticed.
+test('picking a coachee by their listed name still filters the games', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.route('**/api/coachees*', (r) => r.fulfill({ json: COACHEES }));
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: GAMES }));
+  await page.goto('/');
+  await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
+  await page.getByRole('button', { name: /^(Filters|Filter)$/ }).click();
+  await page.getByRole('button', { name: /All coachees|Alle Coachees/ }).click();
+
+  await pickOption(page, 'One, Ref');
+
+  // Every game Ref One is on, and none of the ones he is not.
+  await expect(page.getByText('Both Are Coachees')).toBeVisible();
+  await expect(page.getByText('Only 1SR')).toBeVisible();
+  await expect(page.getByText('Single Referee')).toBeVisible();
+  await expect(page.getByText('Only 2SR')).toHaveCount(0);
+});
+
 test('a long coachee name is not cut off in the dropdown', async ({ page }) => {
   await stubSignedInApp(page);
   await page.route('**/api/coachees*', (r) => r.fulfill({ json: [coachee('c9', 'Dario Stefano Quattrini')] }));
@@ -76,8 +99,9 @@ test('a long coachee name is not cut off in the dropdown', async ({ page }) => {
   await page.getByRole('button', { name: /^(Filters|Filter)$/ }).click();
   await page.getByRole('button', { name: /All coachees|Alle Coachees/ }).click();
 
-  // The option renders its whole name — no ellipsis, nothing clipped away.
-  const opt = page.getByText('Dario Stefano Quattrini', { exact: true }).last();
+  // The option renders its whole name — no ellipsis, nothing clipped away —
+  // and reads surname-first, the way both coachee lists do.
+  const opt = page.getByText('Quattrini, Dario Stefano', { exact: true }).last();
   await expect(opt).toBeVisible();
   const clipped = await opt.evaluate((el) => el.scrollWidth > el.clientWidth + 1);
   expect(clipped).toBe(false);

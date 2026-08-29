@@ -1068,12 +1068,15 @@ function FilterToggle({ on, onToggle, label, title, dotClass }: {
   );
 }
 
-function MultiSelectDropdown({ options, selected, onChange, placeholder, lang }: {
+function MultiSelectDropdown({ options, selected, onChange, placeholder, lang, labelOf }: {
   options: string[];
   selected: string[];
   onChange: (values: string[]) => void;
   placeholder: string;
   lang: 'DE' | 'EN';
+  /** How an option READS, where that differs from the value it filters on —
+   *  a coachee is listed by surname but matched on the name the game carries. */
+  labelOf?: (value: string) => string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -1127,7 +1130,7 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder, lang }:
                 onChange={() => toggle(opt)}
                 className="h-3.5 w-3.5 mt-0.5 shrink-0 rounded border-stone-300 accent-red-600"
               />
-              <span className="min-w-0 break-words">{opt}</span>
+              <span className="min-w-0 break-words">{labelOf ? labelOf(opt) : opt}</span>
             </label>
           ))}
         </div>
@@ -4059,13 +4062,6 @@ export default function App() {
     () => Array.from(new Set<string>(eligibleGames.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort(),
     [eligibleGames],
   );
-  const gameCoacheeOptions = useMemo(
-    () => Array.from(new Set<string>(
-      eligibleGames.flatMap((g) => [g.firstReferee, g.secondReferee].filter(Boolean) as string[])
-        .filter((name) => coacheeNames.has(normName(name)))
-    )).sort(),
-    [eligibleGames, coacheeNames],
-  );
   // The games behind the "1SR: n · 2SR: n" line on a coachee row, kept as the
   // games themselves rather than a tally so the row can also LIST them once its
   // chevron is open. Keyed by the referee's normalized name — the key every
@@ -4159,6 +4155,25 @@ export default function App() {
     }
     return map;
   }, [coachees, seasonStartYear]);
+
+  // The coachee filter on the games tab. Its VALUES stay the raw name the game
+  // carries — that is what the filter matches on — while its order and its
+  // labels follow the coachee lists: surname first. Sorted on the string alone
+  // it filed everyone under their first name, the one thing the lists had
+  // already been fixed not to do. Resolved through coacheeByName so a compound
+  // surname comes from the record's own column rather than from guessing at
+  // the last word: "Matthias von Ah" is von Ah, not Ah.
+  const gameCoacheeOptions = useMemo(() => {
+    const resolve = (name: string) => coacheeByName.get(normName(name)) ?? { full_name: name };
+    return Array.from(new Set<string>(
+      eligibleGames.flatMap((g) => [g.firstReferee, g.secondReferee].filter(Boolean) as string[])
+        .filter((name) => coacheeNames.has(normName(name)))
+    )).sort((a, b) => bySurname(resolve(a), resolve(b)));
+  }, [eligibleGames, coacheeNames, coacheeByName]);
+  const coacheeOptionLabel = useCallback(
+    (name: string) => surnameFirstLabel(coacheeByName.get(normName(name)) ?? { full_name: name }),
+    [coacheeByName],
+  );
 
   // Which of the filter toggles have anything to act on. Computed over every
   // loaded game rather than the filtered list: deriving it from what is on
@@ -5490,6 +5505,7 @@ export default function App() {
                       <MultiSelectDropdown
                         lang={formData.lang}
                         options={gameCoacheeOptions}
+                        labelOf={coacheeOptionLabel}
                         selected={gameFilterCoachees}
                         onChange={setGameFilterCoachees}
                         placeholder={formData.lang === 'DE' ? 'Alle Coachees' : 'All coachees'}
@@ -7797,7 +7813,11 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
               ) : (
                 <select name="rc" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
                   <option value="">—</option>
-                  {rcPeople.map(p => <option key={p.id} value={p.fullName}>{p.fullName}</option>)}
+                  {[...rcPeople]
+                    .sort((a, b) => bySurname({ full_name: a.fullName }, { full_name: b.fullName }))
+                    .map(p => (
+                      <option key={p.id} value={p.fullName}>{surnameFirstLabel({ full_name: p.fullName })}</option>
+                    ))}
                 </select>
               )}
             </label>

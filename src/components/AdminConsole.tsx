@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList } from 'lucide-react';
+import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
@@ -8,7 +8,7 @@ import {
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
   getCredentials, setCredential, requestCredentialCode, type CredentialSlotInfo,
   getAdminShortcutRcs, setAdminShortcutRcs,
-  loadRcOverview, listRefereeCoachPeople, assignRcToGame,
+  loadRcOverview, listRefereeCoachPeople, assignRcToGame, setGameStarred,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
   listReferees, importReferees, type RefereeRoster, type RosterReferee, type RefereeImportRow,
@@ -198,10 +198,13 @@ const STR = {
       N2: 'regionaler SR für nationale Spiele 1. Liga',
       N1: 'Nationalkader',
     } as Record<string, string>,
-    gamesHint: 'Ein Spiel einem Referee Coach zuteilen. Die RC übernehmen ihre Spiele sonst selbst — das hier ist der Weg, es für jemanden zu tun.',
+    gamesHint: 'Ein Spiel einem Referee Coach zuteilen oder für eine Beobachtung vormerken. Die RC übernehmen ihre Spiele sonst selbst — das hier ist der Weg, es für jemanden zu tun.',
     gamesSearch: 'Spiel, Team, Liga oder Halle suchen …',
     gamesNone: 'Keine Spiele gefunden.',
     gamesUnassigned: 'Nur ohne RC',
+    gamesFlag: 'Vormerken', gamesFlagged: 'Vorgemerkt', gamesFlaggedVm: 'Vorgemerkt (VM)',
+    gamesFlagHint: 'Für eine Beobachtung vormerken — die RC sehen das Spiel dann unter „Vorgemerkt".',
+    gamesFlagVmHint: 'Aus VolleyManager übernommen (RD/RSV-Markierung) — hier nicht änderbar.',
     ovHint: 'Saisonstand aller Referee Coaches. Die RC selbst sehen in der App nur ihre eigene Zeile.',
     ovName: 'Referee Coach', ovDone: 'Erledigt', ovPlanned: 'Geplant', ovOutstanding: 'Ausstehend',
     ovNone: 'Noch keine Daten für diese Saison.',
@@ -366,10 +369,13 @@ const STR = {
       N2: 'regional referee for national 1. Liga games',
       N1: 'national squad',
     } as Record<string, string>,
-    gamesHint: 'Assign a game to a referee coach. Coaches normally take their own games — this is how you do it for someone.',
+    gamesHint: 'Assign a game to a referee coach, or flag it for observation. Coaches normally take their own games — this is how you do it for someone.',
     gamesSearch: 'Search game, team, league or venue …',
     gamesNone: 'No games found.',
     gamesUnassigned: 'Unassigned only',
+    gamesFlag: 'Flag', gamesFlagged: 'Flagged', gamesFlaggedVm: 'Flagged (VM)',
+    gamesFlagHint: 'Flag for observation — coaches then find the game under "Flagged".',
+    gamesFlagVmHint: 'Taken from VolleyManager (RD/RSV marking) — not editable here.',
     ovHint: 'Season progress for every referee coach. Coaches themselves only ever see their own row in the app.',
     ovName: 'Referee coach', ovDone: 'Done', ovPlanned: 'Planned', ovOutstanding: 'Outstanding',
     ovNone: 'No data for this season yet.',
@@ -3036,6 +3042,22 @@ function GamesAdmin({ t, lang }: { t: T; lang: Lang }) {
     finally { setBusy(''); }
   };
 
+  // "We want this one observed." Optimistic and NOT followed by a reload: the
+  // whole list is a sync away, and a star is the one edit whose result the
+  // server cannot surprise us with — the button is dead for VM-flagged games,
+  // which are the only ones whose effective state differs from what was asked.
+  const toggleStar = async (game: EligibleGame) => {
+    if (game.vmFlagged) return;
+    const next = !game.starred;
+    setError('');
+    setGames((cur) => cur.map((x) => (x.id === game.id ? { ...x, starred: next } : x)));
+    try { await setGameStarred(game.id, next); }
+    catch (e) {
+      setGames((cur) => cur.map((x) => (x.id === game.id ? { ...x, starred: !next } : x)));
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const needle = q.trim().toLowerCase();
   const shown = games.filter((g) => {
     if (unassignedOnly && g.assignedRc) return false;
@@ -3079,7 +3101,7 @@ function GamesAdmin({ t, lang }: { t: T; lang: Lang }) {
                 {new Date(g.date).toLocaleDateString(lang === 'DE' ? 'de-CH' : 'en-GB')} · {g.location}
                 {g.firstReferee ? ` · 1SR ${g.firstReferee}` : ''}
               </p>
-              <div className="mt-2 flex items-center gap-2">
+              <div className="mt-2 flex flex-wrap items-center gap-2">
                 <label className="text-xs font-medium text-stone-500">RC:</label>
                 <select
                   className={cn(input, 'flex-1 min-w-[12rem] max-w-sm cursor-pointer')}
@@ -3091,6 +3113,21 @@ function GamesAdmin({ t, lang }: { t: T; lang: Lang }) {
                   {people.map((p) => <option key={p.id} value={p.fullName}>{p.fullName}</option>)}
                 </select>
                 {busy === g.id && <Loader2 size={14} className="animate-spin text-stone-400" />}
+                <button
+                  // Flags coming from VolleyManager are read-only here — the
+                  // marking lives in VM and comes back on the next sync.
+                  disabled={g.vmFlagged}
+                  onClick={() => void toggleStar(g)}
+                  className={cn(
+                    'h-9 px-3 text-sm font-medium rounded-lg border transition-colors inline-flex items-center gap-1.5 shrink-0',
+                    g.starred ? 'border-amber-300 bg-amber-50 text-amber-700' : 'border-stone-300 bg-white text-stone-600',
+                    g.vmFlagged ? 'cursor-default opacity-90' : cn('cursor-pointer', g.starred ? 'hover:bg-amber-100' : 'hover:bg-stone-50'),
+                  )}
+                  title={g.vmFlagged ? t.gamesFlagVmHint : t.gamesFlagHint}
+                >
+                  <Star size={14} className={cn(g.starred && 'fill-amber-500 text-amber-500')} />
+                  {g.vmFlagged ? t.gamesFlaggedVm : g.starred ? t.gamesFlagged : t.gamesFlag}
+                </button>
               </div>
             </div>
           ))}

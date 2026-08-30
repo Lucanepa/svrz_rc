@@ -19,7 +19,6 @@ import {
   updateCoachee,
   listRefereeCoachPeople,
   assignRcToGame,
-  setGameStarred,
   RefereeCoachPerson,
   loadRcOverview,
   loadrcCoachSummary,

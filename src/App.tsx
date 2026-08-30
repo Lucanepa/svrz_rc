@@ -173,7 +173,7 @@ const UI_STRINGS = {
     pbMissing: "VITE_POCKETBASE_URL fehlt. Bitte in .env setzen.",
     role1Short: "1SR",
     role2Short: "2SR",
-    rolesLabel: "Rollen",
+    rolesLabel: "Rolle",
     rcShort: "RC",
     coacheeDetails: "Coachee Details",
     notes: "Notizen",
@@ -339,7 +339,7 @@ const UI_STRINGS = {
     pbMissing: "VITE_POCKETBASE_URL is missing. Please set it in .env.",
     role1Short: "1SR",
     role2Short: "2SR",
-    rolesLabel: "Roles",
+    rolesLabel: "Role",
     rcShort: "RC",
     coacheeDetails: "Coachee Details",
     notes: "Notes",
@@ -4364,6 +4364,186 @@ export default function App() {
   const coacheesPage = clampPage(filteredCoachees.length);
   const gamesPage = clampPage(filteredGames.length);
 
+  /** One game, drawn the same way wherever a game is listed.
+   *
+   *  The Games tab grew this row — day and time, league and match number, the
+   *  two teams on their own lines with the set points beside them, the hall as
+   *  a map link, the crew — while the coachee's own list still showed a single
+   *  truncated "12345 - A vs B" line with no address and no time of day. Same
+   *  game, same reader, two answers. It is one row now; a list adds only what
+   *  is particular to it, through `status` (whatever closes the first line) and
+   *  `roles` (the slot this coachee stands in, which the game itself cannot say).
+   */
+  const gameCard = (game: EligibleGame, opts?: { status?: React.ReactNode; roles?: string[] }) => {
+    const d = new Date(game.date);
+    const dateValid = !isNaN(d.getTime());
+    const dayOfWeek = dateValid ? d.toLocaleDateString(formData.lang === 'DE' ? 'de-CH' : 'en-GB', { weekday: 'short' }) : '';
+    const yearStr = window.innerWidth < 640 ? String(d.getFullYear()).slice(-2) : String(d.getFullYear());
+    const datePart = dateValid ? `${dayOfWeek} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${yearStr}` : (game.date || '-');
+    const timePart = dateValid ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
+    const r1 = game.firstReferee || '';
+    const r2 = game.secondReferee || '';
+    const r1IsCoachee = coacheeNames.has(normName(r1));
+    const r2IsCoachee = r2 ? coacheeNames.has(normName(r2)) : false;
+    return (
+      <>
+      {/* Row 1: date/time + status indicators */}
+      <div className="flex items-center gap-1.5 text-sm text-stone-400">
+        <CalendarDays size={14} className="w-3.5 text-stone-400 shrink-0" />
+        <span className="font-medium text-stone-700">{datePart}</span>
+        {timePart && <><Clock size={14} className="w-3.5 text-stone-400 shrink-0 ml-1" /><span className="font-medium text-stone-700">{timePart}</span></>}
+        <div className="flex-1" />
+        {game.assignedRc ? (
+          <span className="w-2.5 h-2.5 rounded-full bg-green-500" title={game.assignedRc} />
+        ) : (
+          <span className="w-2.5 h-2.5 rounded-full bg-stone-300" title="No RC" />
+        )}
+        {opts?.status}
+      </div>
+      {/* Row 2: league, match#, chips */}
+      <div className="flex items-center gap-1.5 text-sm text-stone-400 mt-0.5">
+        <Tag size={14} className="w-3.5 text-stone-400 shrink-0" />
+        <span><LeagueLabel text={game.league} /></span>
+        {game.matchNo && <span>#{game.matchNo}</span>}
+        {game.isRdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>}
+        {game.isLdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>}
+        {game.isRcGame && (
+          <span
+            className="px-2 py-1 rounded text-xs font-bold leading-none bg-sky-100 text-sky-800 border border-sky-300"
+            title={formData.lang === 'DE'
+              ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
+              : 'A referee coach is whistling next to a coachee here.'}
+          >{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
+        )}
+        {game.isManual && (
+          <span
+            className="px-2 py-1 rounded text-xs font-bold leading-none bg-violet-100 text-violet-800 border border-violet-300"
+            title={formData.lang === 'DE'
+              ? 'Von Hand angelegt — kein Spiel aus VolleyManager.'
+              : 'Created by hand — not a VolleyManager fixture.'}
+          >{formData.lang === 'DE' ? 'Testspiel' : 'Test game'}</span>
+        )}
+        {game.starred && (
+          <span
+            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300"
+            title={game.vmFlagged
+              ? (formData.lang === 'DE'
+                ? 'In VolleyManager für eine Beobachtung markiert (RD/RSV)'
+                : 'Marked for observation in VolleyManager (RD/RSV)')
+              : (formData.lang === 'DE' ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation')}
+          >
+            <Star size={11} className="fill-amber-500 text-amber-500" />
+            {formData.lang === 'DE' ? 'Gewünscht' : 'Priority'}
+          </span>
+        )}
+        {hasEditingDraft(game.id) && (
+          <span
+            className={cn('px-2 py-1 rounded text-xs font-bold leading-none border',
+              draftIsOverdue(game.id)
+                ? 'bg-red-100 text-red-800 border-red-300'
+                : 'bg-stone-200 text-stone-700 border-stone-300')}
+            title={draftIsOverdue(game.id) ? t.draftUnsentHeading : t.draftHeading}
+          >{draftIsOverdue(game.id) ? t.draftUnsentBadge : t.draftBadge}</span>
+        )}
+      </div>
+      {/* Teams + result */}
+      {(() => {
+        // Two formats reach this list — "3:1 | 25:20, ..." from the
+        // form and "3:1 (25:20 / ...)" from the VolleyManager sync.
+        // Splitting on '|' by hand rendered every synced game's away
+        // score as "1 (25"; parseResult reads both.
+        const parsed = game.game_result ? parseResult(game.game_result) : null;
+        const hasResult = !!parsed && (parsed.home !== '' || parsed.away !== '');
+        const sets = (parsed?.sets ?? []).filter(isSetComplete);
+        // Each team's own points, on that team's own row — so
+        // reading across a row gives you their whole match, the
+        // way the set count already did. As one "25:15 | 25:21"
+        // line under both teams, the sets sat away from the
+        // score they belong to and had to be decoded before
+        // they said anything about either side.
+        // tabular-nums keeps the two rows' digits in step, and
+        // the count's fixed width keeps the counts aligned even
+        // when one row's points are a digit shorter (a 25:9 set).
+        const setPoints = (side: 'h' | 'a') => (
+          sets.length > 0 && (
+            <span className="text-[11px] text-stone-400 tabular-nums whitespace-nowrap shrink-0">
+              {sets.map((s) => s[side]).join(' | ')}
+            </span>
+          )
+        );
+        return (
+          <>
+            <div className="mt-1 flex items-center gap-2">
+              <Home size={14} className="w-3.5 text-stone-400 shrink-0" />
+              <span className="text-base text-stone-800 truncate flex-1">{game.homeTeam}</span>
+              {setPoints('h')}
+              {hasResult && <span className="w-4 text-right text-sm font-bold text-stone-600 tabular-nums shrink-0">{parsed.home}</span>}
+            </div>
+            <div className="flex items-center gap-2">
+              <Navigation size={14} className="w-3.5 text-stone-400 shrink-0" />
+              <span className="text-base text-stone-800 truncate flex-1">{game.awayTeam}</span>
+              {setPoints('a')}
+              {hasResult && <span className="w-4 text-right text-sm font-bold text-stone-600 tabular-nums shrink-0">{parsed.away}</span>}
+            </div>
+          </>
+        );
+      })()}
+      {/* Location */}
+      {game.location && (
+        <div className="mt-0.5 flex items-center gap-1.5">
+          <MapPin size={14} className="w-3.5 text-red-400 shrink-0" />
+          <a
+            href={game.maps_url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(game.location)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="text-sm text-red-500 hover:text-red-700 underline decoration-red-300 hover:decoration-red-500 transition-colors"
+          >
+            {game.location.split(',')[0].trim()}
+          </a>
+        </div>
+      )}
+      {/* Referees */}
+      <div className="mt-1.5 text-sm">
+        <div className="flex items-center gap-1.5">
+          <Users size={14} className="w-3.5 text-stone-400 shrink-0" />
+          <span className="font-medium text-stone-400">1SR</span>
+          {r1 ? (
+            r1IsCoachee ? <CoacheeName name={r1} level={coacheeLevelOf(r1)} group={coacheeGroupOf(r1)} /> : <span className="font-semibold text-stone-700">{r1}</span>
+          ) : (
+            <span className="text-stone-300">–</span>
+          )}
+        </div>
+        {r2 && (
+          <div className="flex items-center gap-1.5">
+            <span className="w-3.5 shrink-0" />
+            <span className="font-medium text-stone-400">2SR</span>
+            {r2IsCoachee ? <CoacheeName name={r2} level={coacheeLevelOf(r2)} group={coacheeGroupOf(r2)} /> : <span className="font-semibold text-stone-700">{r2}</span>}
+          </div>
+        )}
+      </div>
+      {/* Which slot the coachee stands in, for a list that is about them
+          rather than about the game. Line-judge duty shows here and nowhere
+          else: the two referee lines above cannot name it. */}
+      {opts?.roles && (
+        <div className="mt-0.5 flex items-center gap-1.5 text-sm text-stone-500">
+          <ClipboardCheck size={14} className="w-3.5 text-stone-400 shrink-0" />
+          <span className="font-medium text-stone-400">{t.rolesLabel}</span>
+          <span className="font-semibold text-stone-700">{opts.roles.join(', ') || '–'}</span>
+        </div>
+      )}
+      {/* RC */}
+      {game.assignedRc && (
+        <div className="mt-0.5 flex items-center gap-1.5 text-sm text-stone-500">
+          <Eye size={14} className="w-3.5 text-stone-400 shrink-0" />
+          <span className="font-medium text-stone-400">RC</span>
+          <span className="font-bold text-stone-700">{game.assignedRc}</span>
+        </div>
+      )}
+      </>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
       {isDemoMode() && (
@@ -5004,6 +5184,13 @@ export default function App() {
                 const dt = new Date(d);
                 return Number.isNaN(dt.getTime()) ? d : dt.toLocaleDateString(de ? 'de-CH' : 'en-GB', { weekday: 'short', day: '2-digit', month: '2-digit' });
               };
+              /** The throw-in time, under the date. A row that says only "Tue
+               *  15/09" still leaves you looking the game up somewhere else
+               *  before you can plan the evening around it. */
+              const fmtTime = (d: string) => {
+                const dt = new Date(d);
+                return Number.isNaN(dt.getTime()) ? '' : `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+              };
               const startFromSummary = (g: rcCoachSummaryGame) => {
                 const eg = eligibleGames.find((e) => e.id === g.gameId);
                 if (eg) handleSelectGame(eg, g.refereeName);
@@ -5029,12 +5216,16 @@ export default function App() {
                 // two lines — "KSC Wiedikon DU23-1" does on a phone — and with
                 // nothing between them the four lines read as one block of text
                 // with no way to see where home ends and away begins.
+                // w-fit, so the rule is drawn to the longer of the two names
+                // and not across the whole column: full width it read as a
+                // divider between rows of the list rather than between the two
+                // halves of one game.
                 return (
-                  <>
-                    <p className="text-sm font-medium text-stone-800 break-words">{parts[0]}</p>
+                  <div className="w-fit max-w-full">
+                    <p className="text-sm font-medium text-stone-800 break-words"><span className="font-semibold text-stone-400">H:</span> {parts[0]}</p>
                     <div className="my-1 border-t border-stone-200" />
-                    <p className="text-sm font-medium text-stone-800 break-words">{parts[1]}</p>
-                  </>
+                    <p className="text-sm font-medium text-stone-800 break-words"><span className="font-semibold text-stone-400">A:</span> {parts[1]}</p>
+                  </div>
                 );
               };
               const gameRow = (g: HomeGame, key: string, canRemind = false) => (
@@ -5042,16 +5233,47 @@ export default function App() {
                   key={key}
                   className="flex items-stretch rounded-lg border border-stone-200 bg-white overflow-hidden focus-within:border-red-300 hover:border-red-300 transition-colors"
                 >
-                  <button
+                  {/* A div, not a button: the hall below is a link, and an
+                      anchor inside a button is invalid markup — the same reason
+                      the "take game" strip is a sibling of its row elsewhere.
+                      role/tabIndex/Enter keep it reachable from the keyboard,
+                      and a key pressed ON THE LINK is left to the link. */}
+                  <div
+                    role="button"
+                    tabIndex={0}
                     onClick={() => startFromSummary(g)}
-                    className="min-w-0 flex-1 text-left px-3 py-2.5 hover:bg-red-50/40 transition-colors flex items-center gap-3"
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startFromSummary(g); }
+                    }}
+                    className="min-w-0 flex-1 cursor-pointer text-left px-3 py-2.5 hover:bg-red-50/40 transition-colors flex items-center gap-3"
                   >
-                    <div className="flex flex-col items-center justify-center w-12 shrink-0">
+                    <div className="flex flex-col items-center justify-center w-12 shrink-0 text-center">
                       <span className="text-[11px] font-semibold text-red-600 leading-tight">{fmtDate(g.gameDate)}</span>
+                      {fmtTime(g.gameDate) && <span className="mt-0.5 text-[11px] leading-tight text-stone-400 tabular-nums">{fmtTime(g.gameDate)}</span>}
                     </div>
                     <div className="min-w-0 flex-1">
                       {teamLines(g.teams)}
-                      <p className="text-xs text-stone-500 break-words">{g.league}</p>
+                      <p className="text-xs text-stone-500 break-words">
+                        {g.league}{g.matchNo ? ` · #${g.matchNo}` : ''}
+                      </p>
+                      {/* Where to drive, as the address it is, linked to the
+                          map the sync stored — or to a search for it when
+                          VolleyManager carried no link. */}
+                      {g.location && (
+                        <p className="mt-0.5 flex items-start gap-1.5 text-xs">
+                          <MapPin size={12} className="mt-0.5 shrink-0 text-red-400" />
+                          <a
+                            href={g.mapsUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(g.location)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="break-words text-red-500 underline decoration-red-300 transition-colors hover:text-red-700 hover:decoration-red-500"
+                          >
+                            {g.location}
+                          </a>
+                        </p>
+                      )}
                       {/* Both referees, one line each, with the slot they stand
                           in — and the coachee marked when the pair is mixed. A
                           row that listed only coachees could not say whether the
@@ -5087,7 +5309,7 @@ export default function App() {
                       <MatchResult result={g.result} className="mt-0.5" />
                     </div>
                     <Eye size={15} className="text-stone-400 shrink-0" />
-                  </button>
+                  </div>
                   {canRemind && (
                     <button
                       onClick={() => void remindFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
@@ -5872,17 +6094,7 @@ export default function App() {
                         </div>
                         <div className="divide-y-4 divide-stone-200">
                         {filteredGames.slice(gamesPage * LIST_PAGE_SIZE, (gamesPage + 1) * LIST_PAGE_SIZE).map((game) => {
-                          const d = new Date(game.date);
-                          const dateValid = !isNaN(d.getTime());
-                          const dayOfWeek = dateValid ? d.toLocaleDateString(formData.lang === 'DE' ? 'de-CH' : 'en-GB', { weekday: 'short' }) : '';
-                          const yearStr = window.innerWidth < 640 ? String(d.getFullYear()).slice(-2) : String(d.getFullYear());
-                          const datePart = dateValid ? `${dayOfWeek} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${yearStr}` : (game.date || '-');
-                          const timePart = dateValid ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
                           const isExpanded = expandedGameId === game.id;
-                          const r1 = game.firstReferee || '';
-                          const r2 = game.secondReferee || '';
-                          const r1IsCoachee = coacheeNames.has(normName(r1));
-                          const r2IsCoachee = r2 ? coacheeNames.has(normName(r2)) : false;
                           return (
                             <div key={game.id}>
                               <div
@@ -5892,149 +6104,9 @@ export default function App() {
                                   isExpanded ? "bg-red-50" : "hover:bg-stone-50"
                                 )}
                               >
-                                {/* Row 1: date/time + status indicators */}
-                                <div className="flex items-center gap-1.5 text-sm text-stone-400">
-                                  <CalendarDays size={14} className="w-3.5 text-stone-400 shrink-0" />
-                                  <span className="font-medium text-stone-700">{datePart}</span>
-                                  {timePart && <><Clock size={14} className="w-3.5 text-stone-400 shrink-0 ml-1" /><span className="font-medium text-stone-700">{timePart}</span></>}
-                                  <div className="flex-1" />
-                                  {game.assignedRc ? (
-                                    <span className="w-2.5 h-2.5 rounded-full bg-green-500" title={game.assignedRc} />
-                                  ) : (
-                                    <span className="w-2.5 h-2.5 rounded-full bg-stone-300" title="No RC" />
-                                  )}
-                                  <ChevronDown size={14} className={cn("text-stone-400 transition-transform", isExpanded && "rotate-180")} />
-                                </div>
-                                {/* Row 2: league, match#, chips */}
-                                <div className="flex items-center gap-1.5 text-sm text-stone-400 mt-0.5">
-                                  <Tag size={14} className="w-3.5 text-stone-400 shrink-0" />
-                                  <span><LeagueLabel text={game.league} /></span>
-                                  {game.matchNo && <span>#{game.matchNo}</span>}
-                                  {game.isRdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>}
-                                  {game.isLdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>}
-                                  {game.isRcGame && (
-                                    <span
-                                      className="px-2 py-1 rounded text-xs font-bold leading-none bg-sky-100 text-sky-800 border border-sky-300"
-                                      title={formData.lang === 'DE'
-                                        ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
-                                        : 'A referee coach is whistling next to a coachee here.'}
-                                    >{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
-                                  )}
-                                  {game.isManual && (
-                                    <span
-                                      className="px-2 py-1 rounded text-xs font-bold leading-none bg-violet-100 text-violet-800 border border-violet-300"
-                                      title={formData.lang === 'DE'
-                                        ? 'Von Hand angelegt — kein Spiel aus VolleyManager.'
-                                        : 'Created by hand — not a VolleyManager fixture.'}
-                                    >{formData.lang === 'DE' ? 'Testspiel' : 'Test game'}</span>
-                                  )}
-                                  {game.starred && (
-                                    <span
-                                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300"
-                                      title={game.vmFlagged
-                                        ? (formData.lang === 'DE'
-                                          ? 'In VolleyManager für eine Beobachtung markiert (RD/RSV)'
-                                          : 'Marked for observation in VolleyManager (RD/RSV)')
-                                        : (formData.lang === 'DE' ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation')}
-                                    >
-                                      <Star size={11} className="fill-amber-500 text-amber-500" />
-                                      {formData.lang === 'DE' ? 'Gewünscht' : 'Priority'}
-                                    </span>
-                                  )}
-                                  {hasEditingDraft(game.id) && (
-                                    <span
-                                      className={cn('px-2 py-1 rounded text-xs font-bold leading-none border',
-                                        draftIsOverdue(game.id)
-                                          ? 'bg-red-100 text-red-800 border-red-300'
-                                          : 'bg-stone-200 text-stone-700 border-stone-300')}
-                                      title={draftIsOverdue(game.id) ? t.draftUnsentHeading : t.draftHeading}
-                                    >{draftIsOverdue(game.id) ? t.draftUnsentBadge : t.draftBadge}</span>
-                                  )}
-                                </div>
-                                {/* Teams + result */}
-                                {(() => {
-                                  // Two formats reach this list — "3:1 | 25:20, ..." from the
-                                  // form and "3:1 (25:20 / ...)" from the VolleyManager sync.
-                                  // Splitting on '|' by hand rendered every synced game's away
-                                  // score as "1 (25"; parseResult reads both.
-                                  const parsed = game.game_result ? parseResult(game.game_result) : null;
-                                  const hasResult = !!parsed && (parsed.home !== '' || parsed.away !== '');
-                                  const sets = (parsed?.sets ?? []).filter(isSetComplete);
-                                  // Each team's own points, on that team's own row — so
-                                  // reading across a row gives you their whole match, the
-                                  // way the set count already did. As one "25:15 | 25:21"
-                                  // line under both teams, the sets sat away from the
-                                  // score they belong to and had to be decoded before
-                                  // they said anything about either side.
-                                  // tabular-nums keeps the two rows' digits in step, and
-                                  // the count's fixed width keeps the counts aligned even
-                                  // when one row's points are a digit shorter (a 25:9 set).
-                                  const setPoints = (side: 'h' | 'a') => (
-                                    sets.length > 0 && (
-                                      <span className="text-[11px] text-stone-400 tabular-nums whitespace-nowrap shrink-0">
-                                        {sets.map((s) => s[side]).join(' | ')}
-                                      </span>
-                                    )
-                                  );
-                                  return (
-                                    <>
-                                      <div className="mt-1 flex items-center gap-2">
-                                        <Home size={14} className="w-3.5 text-stone-400 shrink-0" />
-                                        <span className="text-base text-stone-800 truncate flex-1">{game.homeTeam}</span>
-                                        {setPoints('h')}
-                                        {hasResult && <span className="w-4 text-right text-sm font-bold text-stone-600 tabular-nums shrink-0">{parsed.home}</span>}
-                                      </div>
-                                      <div className="flex items-center gap-2">
-                                        <Navigation size={14} className="w-3.5 text-stone-400 shrink-0" />
-                                        <span className="text-base text-stone-800 truncate flex-1">{game.awayTeam}</span>
-                                        {setPoints('a')}
-                                        {hasResult && <span className="w-4 text-right text-sm font-bold text-stone-600 tabular-nums shrink-0">{parsed.away}</span>}
-                                      </div>
-                                    </>
-                                  );
-                                })()}
-                                {/* Location */}
-                                {game.location && (
-                                  <div className="mt-0.5 flex items-center gap-1.5">
-                                    <MapPin size={14} className="w-3.5 text-red-400 shrink-0" />
-                                    <a
-                                      href={game.maps_url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(game.location)}`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-sm text-red-500 hover:text-red-700 underline decoration-red-300 hover:decoration-red-500 transition-colors"
-                                    >
-                                      {game.location.split(',')[0].trim()}
-                                    </a>
-                                  </div>
-                                )}
-                                {/* Referees */}
-                                <div className="mt-1.5 text-sm">
-                                  <div className="flex items-center gap-1.5">
-                                    <Users size={14} className="w-3.5 text-stone-400 shrink-0" />
-                                    <span className="font-medium text-stone-400">1SR</span>
-                                    {r1 ? (
-                                      r1IsCoachee ? <CoacheeName name={r1} level={coacheeLevelOf(r1)} group={coacheeGroupOf(r1)} /> : <span className="font-semibold text-stone-700">{r1}</span>
-                                    ) : (
-                                      <span className="text-stone-300">–</span>
-                                    )}
-                                  </div>
-                                  {r2 && (
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="w-3.5 shrink-0" />
-                                      <span className="font-medium text-stone-400">2SR</span>
-                                      {r2IsCoachee ? <CoacheeName name={r2} level={coacheeLevelOf(r2)} group={coacheeGroupOf(r2)} /> : <span className="font-semibold text-stone-700">{r2}</span>}
-                                    </div>
-                                  )}
-                                </div>
-                                {/* RC */}
-                                {game.assignedRc && (
-                                  <div className="mt-0.5 flex items-center gap-1.5 text-sm text-stone-500">
-                                    <Eye size={14} className="w-3.5 text-stone-400 shrink-0" />
-                                    <span className="font-medium text-stone-400">RC</span>
-                                    <span className="font-bold text-stone-700">{game.assignedRc}</span>
-                                  </div>
-                                )}
+                                {gameCard(game, {
+                                  status: <ChevronDown size={14} className={cn("text-stone-400 transition-transform", isExpanded && "rotate-180")} />,
+                                })}
                               </div>
                               {/* Expanded row */}
                               {isExpanded && (
@@ -6334,8 +6406,6 @@ export default function App() {
                   ) : (
                     <div className="divide-y divide-stone-100">
                       {upcomingGames.map((game) => {
-                        const d = new Date(game.date);
-                        const formatted = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
                         // Taking a game acts on the open list's copy of it: this
                         // list also carries games where the coachee is only a
                         // line judge, and those can never be observed. Reading
@@ -6347,44 +6417,24 @@ export default function App() {
                         const de = formData.lang === 'DE';
                         return (
                           <div key={game.id}>
-                            <button
+                            {/* role=button rather than a button: the row now
+                                carries the hall as a link, and an anchor inside
+                                a button is invalid markup. */}
+                            <div
+                              role="button"
+                              tabIndex={0}
                               onClick={() => handleSelectGame(game)}
+                              onKeyDown={(e) => {
+                                if (e.target !== e.currentTarget) return;
+                                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSelectGame(game); }
+                              }}
                               className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
                             >
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="font-semibold text-stone-900 text-sm">
-                                  {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
-                                </div>
-                                {holder && (
-                                  <span className="shrink-0 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700" title={de ? 'Bereits von einem RC übernommen' : 'Already taken by an RC'}>
-                                    RC: {holder}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="text-xs text-stone-500 mt-1 flex items-center gap-1.5 flex-wrap">
-                                <span>{formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}</span>
-                                {game.isRcGame && (
-                                  <span
-                                    className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-sky-100 text-sky-800 border border-sky-300"
-                                    title={formData.lang === 'DE'
-                                      ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
-                                      : 'A referee coach is whistling next to a coachee here.'}
-                                  >{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
-                                )}
-                                {game.isManual && (
-                                  <span
-                                    className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-violet-100 text-violet-800 border border-violet-300"
-                                    title={formData.lang === 'DE'
-                                      ? 'Von Hand angelegt — kein Spiel aus VolleyManager.'
-                                      : 'Created by hand — not a VolleyManager fixture.'}
-                                  >{formData.lang === 'DE' ? 'Testspiel' : 'Test game'}</span>
-                                )}
-                              </div>
-                              {/* Normally nothing here — an upcoming game has no
-                                  score. It shows up for a fixture that has just
-                                  been played but not yet moved out of this list. */}
-                              <MatchResult result={game.game_result} className="mt-1" />
-                            </button>
+                              {/* The holder is read off the open games list, not
+                                  off this row's own copy, so the dot turns green
+                                  the moment the game changes hands. */}
+                              {gameCard({ ...game, assignedRc: holder }, { roles: game.assignedRoles })}
+                            </div>
                           {/* A sibling of the row, not a child: a button inside
                               a button is invalid, and this list was read-only
                               until now — the game had to be found again in the
@@ -6446,28 +6496,28 @@ export default function App() {
                       ) : (
                         <div className="divide-y divide-stone-100">
                           {pastGames.map((game) => {
-                            const d = new Date(game.date);
-                            const formatted = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
                             const hasFeedback = feedbackByGameId.has(game.id);
                             return (
-                              <button
+                              <div
                                 key={game.id}
+                                role="button"
+                                tabIndex={0}
                                 onClick={() => handleSelectGame(game)}
+                                onKeyDown={(e) => {
+                                  if (e.target !== e.currentTarget) return;
+                                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSelectGame(game); }
+                                }}
                                 className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
                               >
-                                <div className="flex items-center justify-between">
-                                  <div className="font-semibold text-stone-900 text-sm">
-                                    {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
-                                  </div>
-                                  <span className={cn("text-xs px-2 py-0.5 rounded-full", hasFeedback ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-500")}>
-                                    {hasFeedback ? (formData.lang === 'DE' ? 'Feedback' : 'Feedback') : (formData.lang === 'DE' ? 'Kein Feedback' : 'No feedback')}
-                                  </span>
-                                </div>
-                                <div className="text-xs text-stone-500 mt-1">
-                                  {formatted} | {game.league} | {t.rolesLabel}: {game.assignedRoles.join(', ') || '-'}
-                                </div>
-                                <MatchResult result={game.game_result} className="mt-1" />
-                              </button>
+                                {gameCard(game, {
+                                  roles: game.assignedRoles,
+                                  status: (
+                                    <span className={cn("ml-1 text-xs px-2 py-0.5 rounded-full", hasFeedback ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-500")}>
+                                      {hasFeedback ? (formData.lang === 'DE' ? 'Feedback' : 'Feedback') : (formData.lang === 'DE' ? 'Kein Feedback' : 'No feedback')}
+                                    </span>
+                                  ),
+                                })}
+                              </div>
                             );
                           })}
                         </div>

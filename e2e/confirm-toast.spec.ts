@@ -75,7 +75,7 @@ test('the modal names what it is about to do, and Cancel does none of it', async
 
   // Cancel means the server was never told anything and the row is still there.
   expect(assigned).toHaveLength(0);
-  await expect(page.getByRole('button', { name: /Heim 1\s+Gast 1/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /H:\s*Heim 1\s+A:\s*Gast 1/ })).toBeVisible();
   await expect(successToast(page)).toHaveCount(0);
 });
 
@@ -116,5 +116,5 @@ test('Escape closes the modal and counts as a cancel', async ({ page }) => {
   // And Escape did not also peel a layer off the screen behind it: Home is
   // still Home, with the row still offering to give the game back.
   await expect(page.getByRole('button', { name: 'Give game back' }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: /Heim 1\s+Gast 1/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /H:\s*Heim 1\s+A:\s*Gast 1/ })).toBeVisible();
 });

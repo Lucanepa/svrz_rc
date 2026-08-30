@@ -314,6 +314,12 @@ export interface rcCoachSummaryGame {
   gameId: string;
   gameDate: string;
   league: string;
+  /** VolleyManager's number for the fixture — the one written on the sheet. */
+  matchNo?: string;
+  /** The hall, and the map link the sync stored for it. Optional because an
+   *  older server answers this endpoint without them. */
+  location?: string;
+  mapsUrl?: string;
   teams: string;
   refereeName: string;
   /** Which slot this referee stands in on the game — '1. SR' or '2. SR'.

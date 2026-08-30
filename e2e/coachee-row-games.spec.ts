@@ -122,7 +122,10 @@ test('the upcoming list starts with the game that comes next', async ({ page }) 
   await page.getByRole('button', { name: /^(Games|Spiele)$/ }).last().click();
 
   await expect(page.getByText(/Upcoming Games \(3\)|Bevorstehende Spiele \(3\)/)).toBeVisible();
-  const numbers = page.locator('div.font-semibold.text-stone-900.text-sm');
+  // Each row is the games-list row: role=button, with the match number beside
+  // the league. The "take game" buttons under them carry no number and so are
+  // not matched.
+  const numbers = page.getByRole('button', { name: /#\d{7}/ });
   await expect(numbers).toHaveText([
     new RegExp(FREE.matchNo),    // 20 Nov 2026 — the next one to referee
     new RegExp(middle.matchNo),  // 4 Dec 2026

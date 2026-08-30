@@ -67,8 +67,13 @@ test('a coachee\'s own games list shows them too', async ({ page }) => {
   // The heading confirms we are on the per-coachee list and not still on the
   // games list, which would make the assertion below pass for the wrong reason.
   await expect(page.getByText(/Upcoming Games|Bevorstehende Spiele/)).toBeVisible();
-  await expect(page.getByText(SETS)).toBeVisible();
-  await expect(page.getByText(OVERALL).first()).toBeVisible();
+  // Split across the two team rows, exactly as the games list does it — this
+  // list draws the same row now.
+  await expect(page.getByText(HOME_POINTS)).toBeVisible();
+  await expect(page.getByText(AWAY_POINTS)).toBeVisible();
+  // Each team's set count sits on that team's own row, so there is no combined
+  // "3:0" to look for here either — same as the games list above.
+  await expect(page.getByText(SETS)).toHaveCount(0);
 });
 
 test('the Home dashboard shows them on an outstanding observation', async ({ page }) => {

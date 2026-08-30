@@ -5545,13 +5545,14 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
     const isSubject = (recId: unknown, recName: unknown) =>
       subject ? rcRefMatches(recId, recName, subject) : normalizeName(recName) === rcKey;
 
-    // Fetch all games assigned to this RC. game_result rides along so the Home
-    // dashboard and the detail tabs can show the score without a second call —
-    // it is one more column on a list this endpoint already reads whole.
+    // Fetch all games assigned to this RC. game_result, the hall and its map
+    // link ride along so the Home dashboard and the detail tabs can show the
+    // score and say where to drive without a second call — they are three more
+    // columns on a list this endpoint already reads whole.
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date',
-        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,game_result',
+        fields: 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,game_result',
       }),
     );
     const rcGames = allGames.filter((g) =>
@@ -5577,8 +5578,8 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       coacheeName: string;
       coacheeId: string;
       doneFeedbacks: { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result: string }[];
-      outstandingGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string }[];
-      plannedGames: { gameId: string; gameDate: string; league: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string }[];
+      outstandingGames: { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string }[];
+      plannedGames: { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string }[];
     }>();
 
     const getOrCreate = (name: string, id: string) => {
@@ -5620,6 +5621,9 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       const teams = `${asText(game.home_team)} vs ${asText(game.away_team)}`;
       const league = asText(game.league);
       const result = asText(game.game_result);
+      const matchNo = asText(game.match_no);
+      const location = asText(game.location);
+      const mapsUrl = asText(game.maps_url);
 
       // Match referees to coachees
       let matched = false;
@@ -5638,7 +5642,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
         if (!coachee) continue;
         matched = true;
         const entry = getOrCreate(refName, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: refName, refereeRole: role, crew, result };
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: refName, refereeRole: role, crew, result };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {
@@ -5654,7 +5658,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
         const refNames = [game.first_referee, game.second_referee].map(asText).filter(Boolean);
         const label = refNames.join(' / ') || '?';
         const entry = getOrCreate(label, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, teams, refereeName: label, crew, noCoachee: true, result };
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: label, crew, noCoachee: true, result };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {

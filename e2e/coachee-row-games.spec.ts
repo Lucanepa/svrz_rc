@@ -27,7 +27,7 @@ const LAST_SEASON = {
 };
 
 const openChevron = (page: import('@playwright/test').Page) =>
-  page.getByRole('button', { name: /Show games|Spiele anzeigen/ }).first();
+  page.getByRole('button', { name: /Show details|Details anzeigen/ }).first();
 
 test.beforeEach(async ({ page }) => {
   await stubSignedInApp(page);

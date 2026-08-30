@@ -143,7 +143,6 @@ const UI_STRINGS = {
     plannedObservation: "Beobachtung geplant",
     uploadedObservation: "Beobachtung hochgeladen",
     furtherObservation: "Weitere Beobachtung nötig",
-    chooseAction: "Aktion wählen",
     openGames: "Spiele",
     openFeedback: "Feedbacks",
     coacheeGames: "Spiele für Coachee",
@@ -175,7 +174,6 @@ const UI_STRINGS = {
     role2Short: "2SR",
     rolesLabel: "Rolle",
     rcShort: "RC",
-    coacheeDetails: "Coachee Details",
     notes: "Notizen",
     notesPlaceholder: "Notizen zum Coachee...",
     saveNotes: "Notizen speichern",
@@ -309,7 +307,6 @@ const UI_STRINGS = {
     plannedObservation: "Observation Planned",
     uploadedObservation: "Observation Uploaded",
     furtherObservation: "Further Observation Needed",
-    chooseAction: "Choose Action",
     openGames: "Games",
     openFeedback: "Feedback",
     coacheeGames: "Coachee Games",
@@ -341,7 +338,6 @@ const UI_STRINGS = {
     role2Short: "2SR",
     rolesLabel: "Role",
     rcShort: "RC",
-    coacheeDetails: "Coachee Details",
     notes: "Notes",
     notesPlaceholder: "Notes about the coachee...",
     saveNotes: "Save Notes",
@@ -1337,8 +1333,13 @@ export default function App() {
   // True until the one parallel first-run batch below settles. While it is up,
   // lists render skeletons instead of their "nothing found" empty states.
   const [booting, setBooting] = useState(true);
-  const [actionTargetCoachee, setActionTargetCoachee] = useState<Coachee | null>(null);
-  const [detailCoachee, setDetailCoachee] = useState<Coachee | null>(null);
+  // Whose details are open is not a second piece of state: it is whichever row
+  // is expanded. Read out of `coachees` rather than stashed, so a saved note is
+  // on screen the moment the list has it.
+  const detailCoachee = useMemo(
+    () => coachees.find((c) => c.id === expandedCoacheeId) ?? null,
+    [coachees, expandedCoacheeId],
+  );
   const [detailNotes, setDetailNotes] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
   const [feedbackPickerCoachee, setFeedbackPickerCoachee] = useState<Coachee | null>(null);
@@ -2495,7 +2496,6 @@ export default function App() {
       setFeedbackLocked(true);
     }
     setFeedbackPickerCoachee(null);
-    setActionTargetCoachee(null);
     setFeedbackSubView('feedbackForm');
   };
 
@@ -2555,8 +2555,15 @@ export default function App() {
     applyCoacheeToMeta(coachee);
   };
 
+  /** Open (or close) a coachee's row. Everything the detail sheet used to hold
+   *  is in the panel underneath it now, so the row toggles rather than covering
+   *  the list with a dialog you had to dismiss to compare two people. */
   const handleSelectCoachee = (coachee: Coachee) => {
-    setDetailCoachee(coachee);
+    const opening = expandedCoacheeId !== coachee.id;
+    setExpandedCoacheeId(opening ? coachee.id : null);
+    if (!opening) return;
+    // The draft starts from what is stored; an unsaved edit is dropped when the
+    // row closes, which is what closing it means.
     setDetailNotes(coachee.notes || '');
     selectCoachee(coachee);
   };
@@ -2574,22 +2581,12 @@ export default function App() {
       setCoachees((prev) =>
         prev.map((c) => (c.id === detailCoachee.id ? { ...c, notes: detailNotes } : c))
       );
-      setDetailCoachee((prev) => (prev ? { ...prev, notes: detailNotes } : prev));
       setBackendNotice(t.notesSaved);
     } catch {
       setBackendNotice(t.notesSaveError);
     } finally {
       setSavingNotes(false);
     }
-  };
-
-  const handleCoacheeAction = (coachee: Coachee) => {
-    setDetailCoachee(null);
-    if (observationCount(coachee) === 0) {
-      void loadCoacheeGames(coachee);
-      return;
-    }
-    setActionTargetCoachee(coachee);
   };
 
   // "Di 15.09." / "Tue 15/09" — the date shorthand the dashboard rows use.
@@ -3203,11 +3200,11 @@ export default function App() {
       if (showInfoModal) { setShowInfoModal(false); return; }
       if (showCalendarModal) { setShowCalendarModal(false); return; }
       if (showEmptyFormModal) { setShowEmptyFormModal(false); return; }
-      if (detailCoachee !== null) { setDetailCoachee(null); return; }
+      if (expandedCoacheeId !== null) { setExpandedCoacheeId(null); return; }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showConfirmModal, sigModalOpen, demoMailOpen, showInfoModal, showCalendarModal, showEmptyFormModal, detailCoachee]);
+  }, [showConfirmModal, sigModalOpen, demoMailOpen, showInfoModal, showCalendarModal, showEmptyFormModal, expandedCoacheeId]);
 
   const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
   /**
@@ -5880,10 +5877,10 @@ export default function App() {
                                     sheet the rest of the row opens. */}
                                 <button
                                   type="button"
-                                  onClick={(e) => { e.stopPropagation(); setExpandedCoacheeId(isExpanded ? null : coachee.id); }}
+                                  onClick={(e) => { e.stopPropagation(); handleSelectCoachee(coachee); }}
                                   aria-expanded={isExpanded}
-                                  aria-label={formData.lang === 'DE' ? 'Spiele anzeigen' : 'Show games'}
-                                  title={formData.lang === 'DE' ? 'Spiele anzeigen' : 'Show games'}
+                                  aria-label={formData.lang === 'DE' ? 'Details anzeigen' : 'Show details'}
+                                  title={formData.lang === 'DE' ? 'Details anzeigen' : 'Show details'}
                                   className="ml-auto sm:ml-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-stone-400 hover:bg-stone-200 hover:text-stone-600 transition-colors"
                                 >
                                   <ChevronDown size={16} className={cn('transition-transform', isExpanded && 'rotate-180')} />
@@ -5900,6 +5897,35 @@ export default function App() {
                                 onClick={(e) => e.stopPropagation()}
                                 className="-mx-3 -mb-2.5 mt-2.5 cursor-default border-t border-stone-200 bg-stone-50 px-3 py-2.5"
                               >
+                                {/* What the row above does not already say. Name,
+                                    level and group are on it an inch higher; the
+                                    sheet repeated them because it covered them. */}
+                                {(coachee.stage === 'inactive' || coachee.phone || coachee.email) && (
+                                  <dl className="mb-2.5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+                                    {coachee.stage === 'inactive' && (
+                                      <>
+                                        <dt className="text-stone-500">Status</dt>
+                                        <dd className="m-0 text-right font-medium text-red-600">{t.inactive}</dd>
+                                      </>
+                                    )}
+                                    {coachee.phone && (
+                                      <>
+                                        <dt className="text-stone-500">{t.phone}</dt>
+                                        <dd className="m-0 text-right">
+                                          <a href={`tel:${coachee.phone}`} className="font-medium text-red-600 hover:underline">{coachee.phone}</a>
+                                        </dd>
+                                      </>
+                                    )}
+                                    {coachee.email && (
+                                      <>
+                                        <dt className="text-stone-500">{t.emailLabel}</dt>
+                                        <dd className="m-0 break-words text-right">
+                                          <a href={`mailto:${coachee.email}`} className="font-medium text-red-600 hover:underline">{coachee.email}</a>
+                                        </dd>
+                                      </>
+                                    )}
+                                  </dl>
+                                )}
                                 {inlineGames.length === 0 ? (
                                   <p className="text-xs text-stone-500">
                                     {ownGames.length === 0
@@ -5976,6 +6002,12 @@ export default function App() {
                                   >
                                     <ClipboardCheck size={13} className="text-stone-400" />{t.openFeedback}
                                   </button>
+                                  <button
+                                    onClick={() => setManualUploadCoachee(coachee)}
+                                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2.5 text-[11px] font-medium text-stone-700 hover:bg-stone-100 transition-colors"
+                                  >
+                                    <Upload size={13} className="text-stone-400" />{t.manualUpload}
+                                  </button>
                                   {moreGames > 0 && (
                                     <button
                                       onClick={() => openCoacheeGames(coachee)}
@@ -5984,6 +6016,27 @@ export default function App() {
                                       {formData.lang === 'DE' ? `+ ${moreGames} weitere Spiele` : `+ ${moreGames} more games`}
                                     </button>
                                   )}
+                                </div>
+                                {/* Last, because it is the one thing here you
+                                    write rather than read. The draft belongs to
+                                    the open row and goes when it closes. */}
+                                <div className="mt-2.5 border-t border-stone-200 pt-2.5">
+                                  <label htmlFor={`notes-${coachee.id}`} className="mb-1 block text-[11px] font-semibold text-stone-600">{t.notes}</label>
+                                  <textarea
+                                    id={`notes-${coachee.id}`}
+                                    value={detailNotes}
+                                    onChange={(e) => setDetailNotes(e.target.value)}
+                                    placeholder={t.notesPlaceholder}
+                                    rows={3}
+                                    className="w-full resize-y rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-red-500"
+                                  />
+                                  <button
+                                    onClick={() => void handleSaveNotes()}
+                                    disabled={savingNotes || detailNotes === (coachee.notes || '')}
+                                    className="mt-1.5 h-7 rounded-md bg-red-600 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-40"
+                                  >
+                                    {savingNotes ? t.loading : t.saveNotes}
+                                  </button>
                                 </div>
                               </div>
                             )}
@@ -7484,127 +7537,6 @@ export default function App() {
                 {t.copy}
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {detailCoachee && (
-        <div onClick={() => setDetailCoachee(null)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-40 no-print">
-          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 max-h-[85vh] overflow-auto">
-            <div className="flex items-start justify-between mb-4">
-              <h3 className="text-base font-bold text-stone-900">{t.coacheeDetails}</h3>
-              <button onClick={() => setDetailCoachee(null)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
-            </div>
-
-            <div className="space-y-2 text-sm mb-4">
-              <div className="flex justify-between">
-                <span className="text-stone-500">{formData.lang === 'DE' ? 'Name' : 'Name'}</span>
-                <span className="font-medium text-stone-900">{detailCoachee.full_name}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-stone-500">{t.level}</span>
-                <span className="font-medium text-stone-900"><LevelText level={detailCoachee.referee_level} stage={detailCoachee.stage} /></span>
-              </div>
-              {detailCoachee.stage === 'inactive' && (
-                <div className="flex justify-between">
-                  <span className="text-stone-500">Status</span>
-                  <span className="font-medium text-red-600">{t.inactive}</span>
-                </div>
-              )}
-              {detailCoachee.groups && (
-                <div className="flex justify-between">
-                  <span className="text-stone-500">{t.group}</span>
-                  <span className="font-medium text-stone-900">{groupLabel(detailCoachee.groups, formData.lang)}</span>
-                </div>
-              )}
-              {detailCoachee.phone && (
-                <div className="flex justify-between">
-                  <span className="text-stone-500">{t.phone}</span>
-                  <a href={`tel:${detailCoachee.phone}`} className="font-medium text-red-600 hover:underline">{detailCoachee.phone}</a>
-                </div>
-              )}
-              {detailCoachee.email && (
-                <div className="flex justify-between">
-                  <span className="text-stone-500">{t.emailLabel}</span>
-                  <a href={`mailto:${detailCoachee.email}`} className="font-medium text-red-600 hover:underline">{detailCoachee.email}</a>
-                </div>
-              )}
-            </div>
-
-            <div className="mb-4">
-              <label className="block text-sm font-semibold text-stone-700 mb-1">{t.notes}</label>
-              <textarea
-                value={detailNotes}
-                onChange={(e) => setDetailNotes(e.target.value)}
-                placeholder={t.notesPlaceholder}
-                rows={4}
-                className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500 resize-y"
-              />
-              <button
-                onClick={() => void handleSaveNotes()}
-                disabled={savingNotes}
-                className="mt-2 h-9 px-4 rounded bg-red-600 text-white hover:bg-red-700 text-sm disabled:opacity-50"
-              >
-                {savingNotes ? t.loading : t.saveNotes}
-              </button>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleCoacheeAction(detailCoachee)}
-                  className="flex-1 h-10 rounded bg-red-600 text-white hover:bg-red-700 text-sm"
-                >
-                  {t.openGames} / {t.openFeedback}
-                </button>
-                <button
-                  onClick={() => setDetailCoachee(null)}
-                  className="flex-1 h-10 rounded border border-stone-300 hover:bg-stone-50 text-sm"
-                >
-                  {t.closeMenu}
-                </button>
-              </div>
-              <button
-                onClick={() => { setManualUploadCoachee(detailCoachee); setDetailCoachee(null); }}
-                className="h-10 w-full rounded border border-stone-300 hover:bg-stone-50 text-sm flex items-center justify-center gap-2 text-stone-600"
-              >
-                <Upload size={14} />
-                {t.manualUpload}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {actionTargetCoachee && (
-        <div className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-40 no-print">
-          <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-4">
-            <h3 className="text-sm font-semibold text-stone-900 mb-3">
-              {t.chooseAction}: {actionTargetCoachee.full_name}
-            </h3>
-            <div className="flex gap-2">
-              <button
-                onClick={() => {
-                  void loadCoacheeGames(actionTargetCoachee);
-                  setActionTargetCoachee(null);
-                }}
-                className="flex-1 h-10 rounded border border-stone-300 hover:bg-stone-50 text-sm"
-              >
-                {t.openGames}
-              </button>
-              <button
-                onClick={() => void openFeedbackPicker(actionTargetCoachee)}
-                className="flex-1 h-10 rounded bg-red-600 text-white hover:bg-red-700 text-sm"
-              >
-                {loadingCoacheeFeedbacks ? t.loading : t.openFeedback}
-              </button>
-            </div>
-            <button
-              onClick={() => setActionTargetCoachee(null)}
-              className="mt-3 w-full h-9 rounded border border-stone-300 hover:bg-stone-50 text-xs"
-            >
-              {t.closeMenu}
-            </button>
           </div>
         </div>
       )}

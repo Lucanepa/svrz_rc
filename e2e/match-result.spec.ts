@@ -35,8 +35,9 @@ const SCORED = { ...GAME, game_result: '3:0 (25:15 / 25:21 / 25:14)' };
 /** Coachees tab -> a coachee -> their own games list. */
 async function openCoacheeGames(page: Page): Promise<void> {
   await page.getByText(COACHEE_LISTED).first().click();
-  // The row opens a detail panel; its primary button is what loads the games.
-  await page.getByRole('button', { name: /Games \/ Feedback|Spiele \/ Feedbacks/ }).click();
+  // The row expands into its own panel; the Games button in it loads the list.
+  // `.last()` because the tab bar above carries the same word.
+  await page.getByRole('button', { name: /^(Games|Spiele)$/ }).last().click();
 }
 
 test.beforeEach(async ({ page }) => {

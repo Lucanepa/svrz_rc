@@ -7596,6 +7596,24 @@ export default function App() {
       )}
       <p className="mx-auto max-w-5xl mt-6 pb-2 text-center text-[10px] text-stone-400 no-print">
         v{APP_VERSION} · Build {BUILD_INFO}
+        {/* The loading spinner's ball and whistle are Game Icons artwork, which
+            is CC BY 3.0 — the licence requires the credit to be visible, so it
+            rides with the build stamp rather than hiding behind a menu. It goes
+            when those icons go, and not before. See components/AppSpinner.tsx. */}
+        <span className="mx-1.5">·</span>
+        {formData.lang === 'DE' ? 'Symbole' : 'Icons'}{' '}
+        <a
+          href="https://game-icons.net/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline decoration-stone-300 hover:text-stone-600"
+        >Game Icons</a>{' '}
+        <a
+          href="https://creativecommons.org/licenses/by/3.0/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline decoration-stone-300 hover:text-stone-600"
+        >CC BY 3.0</a>
       </p>
     </div>
   );

@@ -1,4 +1,3 @@
-import { Volleyball } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 
 /**
@@ -46,33 +45,37 @@ const REF_ORBIT = tiltedEllipsePath(-45);
 const SAT = 33;
 
 /**
- * A referee's whistle, drawn on lucide's own grid — 24×24, 2px stroke, round
- * caps and joins, artwork inset from the edges — because lucide has no whistle
- * of its own (checked against the installed 0.577 and upstream `main`) and the
- * ball beside it is the genuine lucide icon. Anything drawn to a different
- * convention would read as the odd one out.
+ * The two satellites.
+ *
+ * Both come from Game Icons (game-icons.net) rather than from lucide, which has
+ * no whistle at all — nor does Phosphor, Tabler, Radix, or any of the forty sets
+ * react-icons carries; Game Icons' is the only one that exists in anything
+ * installed here. Its whistle is the three-quarter view a whistle is actually
+ * recognised by, and it still reads at 22px.
+ *
+ * They are FILLED artwork on a 512 grid, which is why the ball is drawn from the
+ * same set instead of staying lucide's: a solid whistle beside a hairline ball
+ * looked like two icons from two different apps. Matching them costs the spinner
+ * more weight than the rest of the UI carries — that is the deliberate trade.
+ *
+ * The paths are copied in rather than pulled through react-icons: two strings
+ * against a dependency that ships forty icon sets to deliver two of them.
+ *
+ * Game Icons is CC BY 3.0, so the app owes a visible credit — it is in the
+ * footer, beside the build stamp. Do not remove it while these icons are here.
  */
+function Ball({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 512 512" width={SAT} height={SAT} fill="currentColor" className={className} aria-hidden="true">
+      <path d="M465.506 158.69c-7.138-15.368-15.758-29.567-25.59-42.534-79.844-32.376-162.79-47.333-241.834-28.292-.137 19.33 3.188 40.914 11.305 64.778 70.284-9.598 160.966-24.52 268.618 39.385-3.26-11.245-7.413-22.386-12.5-33.337zm18.203 58.117c-107.69-70.687-194.512-57.03-267.76-46.902 9.848 23.498 24.222 49.02 44.244 76.587 70.258-7.422 118.49-1.61 153.922 12.618 30.108 12.09 50.54 30.325 66.713 50.185 7.1-29.894 8.275-61.334 2.88-92.488zm-69.896-129.6C359.93 36.814 284.106 14.612 210.56 29.46c-5.302 11.677-9.29 24.886-11.21 39.638 71.034-15.765 144.075-5.9 214.464 18.108zm60.815 243.53c-6.477-8.88-13.35-17.292-21.234-25.016-21.66 58.178-65.025 121.3-123.31 169.086 7.814-2.658 15.567-5.747 23.224-9.303 59.5-27.636 101.667-77.3 121.32-134.765zm-35.86-37.554c-8.967-6.636-19.227-12.496-31.36-17.37-11.717-4.704-25.292-8.457-41.19-10.96-32.206 124.328-98.617 181.332-160.352 216.69 25.82 5.753 52.735 7.112 79.583 3.643 74.39-48.188 130.225-125.46 153.32-192.003zm-90.565-30.525c-23.448-2.084-51.307-1.765-84.702 1.68-9.487 42.888-40.296 85.676-75.02 117.702-18.286 16.867-37.704 30.693-56.217 39.685-9.17 4.454-18.15 7.824-26.79 9.61 22.383 19.208 48.125 33.814 75.663 43.25 63.77-33.438 133.133-83.017 167.065-211.927zM189.09 34.885c-10.246 3.118-20.402 6.967-30.397 11.61-16.593 7.706-31.83 17.133-45.616 27.957-5.89 87.158 20.142 182.194 93.732 261.375 19.46-24.644 34.454-52.15 39.635-77.65-68.615-94.02-75.7-169.977-57.355-223.292zM94.333 90.902c-16.992 16.624-31.13 35.613-42.11 56.184l.81.353c-3.846 8.868-4.613 27.78-1.037 50.583 3.576 22.803 10.945 49.684 20.782 76.314 18.458 49.964 46.624 99.226 71.283 119.88 10.69-7.05 21.652-15.663 32.22-25.41 6.485-5.98 12.812-12.396 18.854-19.124-73.19-77.916-102.486-171.463-100.8-258.78zm-61.037 103.59c-14.097 50.973-10.85 107.033 13.2 158.815 10.717 23.072 24.754 43.528 41.265 61.087 8.89 1.098 21.96-1.727 36.642-8.86 1.09-.528 2.19-1.082 3.297-1.655-28.57-26.227-53.71-74.316-71.807-123.305C45.707 253 38.038 225.2 34.213 200.812c-.335-2.138-.635-4.238-.917-6.32z" />
+    </svg>
+  );
+}
+
 function Whistle({ className }: { className?: string }) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      width={SAT}
-      height={SAT}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      {/* Bulb and mouthpiece, and nothing else. A lanyard ring on top turned it
-          into a key, and an air hole in the body into an eye — at 33px the
-          silhouette is the whole of the recognition. The mouthpiece meets the
-          bulb on a tangent rather than pointing at its centre, which is what
-          keeps it from reading as a magnifying glass. */}
-      <circle cx="14.5" cy="13.5" r="6.5" />
-      <path d="M8.6 10.8 3.4 8.9a2 2 0 0 0-1.4 3.7l5.3 1.9" />
+    <svg viewBox="0 0 512 512" width={SAT} height={SAT} fill="currentColor" className={className} aria-hidden="true">
+      <path d="M93.75 81.443c-5.38 0-12.368 2.49-22.358 8.967 3.966 4.682 8.167 9.687 16.47 19.256 5.782 6.663 11.618 13.29 16.026 18.088.038.042.055.055.092.096l30.894-17.932-14.652-14.148c-11.292-9.404-18.644-13.866-25.418-14.293-.345-.022-.696-.034-1.055-.034zm120.08 15.082c-.885-.01-1.767-.006-2.643.01-10.46.193-20.2 2.23-26.742 5.424l-67.262 39.038c2.45.544 4.885 1.196 7.287 2.02 17.275 5.923 33.093 18.223 49.568 34.7l216.44 213.5 80.978-44.433L258.54 111.38c-8.656-7.84-22.49-12.908-36.693-14.394-2.677-.28-5.363-.43-8.018-.46zM58.192 102.74c-17.543 20.723-20.57 37.186-15.326 57.004.692 2.618 3.057 6.357 6.373 10.47 2.195-3.144 4.55-6.304 7.086-9.478 3.99-4.995 8.385-9.183 13.085-12.558l-.106-.2 2.768-1.61c1.354-.862 2.73-1.66 4.13-2.393l11.868-6.89c-4.175-4.618-8.94-10.017-13.803-15.622-5.956-6.864-11.732-13.62-16.074-18.723zm184.093 13.438l58.415 61.67c-46.086-5.037-56.79 13.2-69.027 34.2l-57.334-59.304 67.946-36.566zM103.702 157.23c-.714-.016-1.43-.016-2.15.002-6.976.18-14.207 2.058-22.252 5.885-3.035 2.29-5.99 5.196-8.91 8.852-25.77 32.264-30.45 59.135-25.484 83.477 4.965 24.343 20.536 46.656 37.916 66.455 13.314 15.168 28.86 23.992 48.472 27.93 19.614 3.94 43.438 2.708 71.98-3.475 33.246-7.2 66.01 8.42 95.81 27.665 26.118 16.868 50.676 37.09 70.98 49.95l8.79-18.935-217.52-214.57-.022-.022c-15.524-15.524-29.565-25.905-42.682-30.402-5.02-1.722-9.925-2.695-14.928-2.813zm367.08 210.456l-73.45 40.304-10.48 22.567 70.833-38.41 13.096-24.46z" />
     </svg>
   );
 }
@@ -109,20 +112,21 @@ export default function AppSpinner({
             </g>
           </svg>
 
+          {/* First, so the satellites are painted OVER it. An ellipse comes
+              closer to the centre than the corners of the wordmark's box do,
+              so both of them cross it twice a lap — and behind the mark each
+              one was cut in half on the way past. A ball that vanishes at the
+              waist reads as a rendering fault, not as depth, which costs more
+              than the wordmark loses by having something pass in front of it. */}
+          <SvrzLogo className="absolute left-1/2 top-1/2 h-6 -translate-x-1/2 -translate-y-1/2" />
+
           {/* Offset by half a lap so the two are never on top of each other. */}
           <span className="svrz-orbit" style={{ offsetPath: `path("${BALL_ORBIT}")` }}>
-            <Volleyball size={SAT} strokeWidth={1.75} className="text-stone-500 drop-shadow-sm" />
+            <Ball className="text-stone-500 drop-shadow-sm" />
           </span>
           <span className="svrz-orbit" style={{ offsetPath: `path("${REF_ORBIT}")`, animationDelay: '-1.3s' }}>
             <Whistle className="text-[#e2001a] drop-shadow-sm" />
           </span>
-
-          {/* Last, so it is painted OVER the satellites. An ellipse comes closer
-              to the centre than the corners of the wordmark's box do, so
-              whatever is passing would otherwise clip "REGION ZÜRICH" twice a
-              lap. Ducking behind the mark also reads more like an orbit than
-              sliding across the front of it does. */}
-          <SvrzLogo className="absolute left-1/2 top-1/2 h-6 -translate-x-1/2 -translate-y-1/2" />
         </div>
       </div>
       {label && <p className="text-xs font-medium text-stone-500">{label}</p>}

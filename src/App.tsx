@@ -430,10 +430,15 @@ type FeedbackSubView = 'coachees' | 'coacheeGames' | 'calendar' | 'feedbackForm'
 type AppRoute = {
   subView: FeedbackSubView;
   listTab: 'home' | 'coachees' | 'games';
-  rc: string | null;
+  /** Whom the route is about, when it is about somebody. This is what makes a
+   *  coachee's own list and a filed observation addressable: with the id in the
+   *  URL the app can fetch what it needs instead of relying on a selection that
+   *  only exists if you arrived from the screen before. */
+  coacheeId: string | null;
+  feedbackId: string | null;
 };
 
-const DEFAULT_ROUTE: AppRoute = { subView: 'coachees', listTab: 'home', rc: null };
+const DEFAULT_ROUTE: AppRoute = { subView: 'coachees', listTab: 'home', coacheeId: null, feedbackId: null };
 
 // Hashes owned by another root (main.tsx swaps the whole tree and reloads for
 // these). The app must neither read nor rewrite them, or it would fight that
@@ -441,25 +446,44 @@ const DEFAULT_ROUTE: AppRoute = { subView: 'coachees', listTab: 'home', rc: null
 const isForeignHash = (hash: string) => /^#\/?(admin|sign|survey|guide)(\/|$)/i.test(hash);
 
 function routeToHash(r: AppRoute): string {
-  if (r.subView === 'feedbackForm') return '#/form';
-  if (r.subView === 'coacheeGames') return '#/coachee-games';
+  // A FILED observation has an address; one still being written does not — it
+  // lives in a draft on this device and nobody else could open the link.
+  if (r.subView === 'feedbackForm') {
+    return r.coacheeId && r.feedbackId ? `#/feedbacks/${r.coacheeId}/${r.feedbackId}` : '#/form';
+  }
+  if (r.subView === 'coacheeGames') return r.coacheeId ? `#/games/${r.coacheeId}` : '#/coachees';
   if (r.subView === 'calendar') return '#/calendar';
   return `#/${r.listTab}`;
 }
 
-// `restorable` is false on a cold load: views that only make sense with a
-// selection carried from the previous screen (the feedback form, a coachee's
-// game list) resolve to their parent list instead of an empty shell.
+// `restorable` is false on a cold load: a view that only makes sense with a
+// selection carried from the previous screen resolves to its parent list rather
+// than to an empty shell. A route carrying an id is exempt — the id IS the
+// selection, and openDeepLink fetches the rest.
 function parseHash(hash: string, restorable: boolean): AppRoute {
   const path = hash.replace(/^#\/?/, '').replace(/\/+$/, '');
-  const [head, ...rest] = path.split('/');
-  const tail = rest.length ? decodeURIComponent(rest.join('/')) : '';
+  const [head, ...rest] = path.split('/').map((part) => decodeURIComponent(part));
   switch (head) {
     case 'calendar': return { ...DEFAULT_ROUTE, subView: 'calendar' };
     case 'form': return restorable ? { ...DEFAULT_ROUTE, subView: 'feedbackForm' } : { ...DEFAULT_ROUTE, listTab: 'games' };
+    // One noun per surface, narrowed by an id. `#/games` is every fixture;
+    // `#/games/<coachee>` is that coachee's own list, which used to be
+    // `#/coachee-games` and could only be reached by clicking your way to it.
+    case 'games': return rest[0]
+      ? { ...DEFAULT_ROUTE, subView: 'coacheeGames', coacheeId: rest[0] }
+      : { ...DEFAULT_ROUTE, listTab: 'games' };
+    // `#/feedbacks/<coachee>/<observation>` opens that observation. Without the
+    // second id it opens the coachee's list of them, which is a modal over the
+    // coachees tab and so is an entry point rather than a state we write back.
+    case 'feedbacks': return rest[0]
+      ? rest[1]
+        ? { ...DEFAULT_ROUTE, subView: 'feedbackForm', coacheeId: rest[0], feedbackId: rest[1] }
+        : { ...DEFAULT_ROUTE, listTab: 'coachees', coacheeId: rest[0] }
+      : { ...DEFAULT_ROUTE, listTab: 'coachees' };
+    // Written before the id was in the URL, and never emitted now. Kept so a
+    // bookmark from then still lands on the coachee list instead of nowhere.
     case 'coachee-games': return restorable ? { ...DEFAULT_ROUTE, subView: 'coacheeGames' } : { ...DEFAULT_ROUTE, listTab: 'coachees' };
     case 'coachees': return { ...DEFAULT_ROUTE, listTab: 'coachees' };
-    case 'games': return { ...DEFAULT_ROUTE, listTab: 'games' };
     default: return DEFAULT_ROUTE;
   }
 }
@@ -1324,6 +1348,12 @@ export default function App() {
   const [selectedCoacheeName, setSelectedCoacheeName] = useState('');
   const [selectedCoacheeLevel, setSelectedCoacheeLevel] = useState('');
   const [selectedCoacheeId, setSelectedCoacheeId] = useState('');
+  // The filed feedback record currently on screen, if any. Set when an already
+  // submitted observation is reopened (or right after sending one). It is what
+  // the private note to the RC president hangs off — the note belongs to a
+  // feedback that exists, not to a form still being filled in — and, with the
+  // coachee id beside it, what gives that observation its own URL.
+  const [openFeedbackId, setOpenFeedbackId] = useState<string | null>(null);
   const [loadingGames, setLoadingGames] = useState(false);
   const [loadingCalendar, setLoadingCalendar] = useState(false);
   const [coachees, setCoachees] = useState<Coachee[]>([]);
@@ -1576,7 +1606,12 @@ export default function App() {
   // ── URL ↔ view sync ────────────────────────────────────────────────
   // State → URL. pushState (not location.hash) so this never fires the
   // hashchange listener in main.tsx, and each view becomes a Back step.
-  const currentHash = routeToHash({ subView: feedbackSubView, listTab, rc: null });
+  const currentHash = routeToHash({
+    subView: feedbackSubView,
+    listTab,
+    coacheeId: selectedCoacheeId || null,
+    feedbackId: openFeedbackId,
+  });
   const didSyncHashRef = useRef(false);
   useEffect(() => {
     if (isForeignHash(window.location.hash)) return; // main.tsx is switching roots
@@ -1595,6 +1630,9 @@ export default function App() {
     const onPop = () => {
       if (isForeignHash(window.location.hash)) return;
       const r = parseHash(window.location.hash, true);
+      // Back onto a different coachee's list or observation has to fetch it —
+      // the state on screen belongs to whoever we are stepping away from.
+      if (r.coacheeId) void openDeepLinkRef.current(r);
       setFeedbackSubView(r.subView);
       const tab = landingTab(r.listTab);
       // Rewriting the tab must REPLACE the entry, not push one: otherwise Back
@@ -1606,6 +1644,21 @@ export default function App() {
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
+
+  // A landing hash that names a coachee — `#/games/<id>`, `#/feedbacks/<id>/…`.
+  // Nothing is on screen yet and the roster has not arrived, so the open waits
+  // for it, once. If the bootstrap finishes with an empty roster the link is
+  // answered anyway, with "not found", rather than waiting for a list that is
+  // never coming.
+  const deepLinkOpenedRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkOpenedRef.current || !initialRoute.coacheeId) return;
+    if (coachees.length === 0 && booting) return;
+    deepLinkOpenedRef.current = true;
+    void openDeepLink(initialRoute);
+    // openDeepLink is rebuilt every render; the ref above is what guards it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coachees, booting]);
 
   // First-run bootstrap. Every screen's data is requested in ONE parallel batch
   // on mount — not chained, and not deferred until its tab is opened — so no
@@ -1645,12 +1698,6 @@ export default function App() {
     ]).then(() => setBooting(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // The filed feedback record currently on screen, if any. Set when an already
-  // submitted observation is reopened (or right after sending one), and it is
-  // what the private note to the RC president hangs off — the note belongs to a
-  // feedback that exists, not to a form still being filled in.
-  const [openFeedbackId, setOpenFeedbackId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedGame) {
@@ -2548,6 +2595,63 @@ export default function App() {
   // the row tap because the row's own buttons reach those views without ever
   // opening the sheet, and a games list under the previously selected name is
   // an observation started on the wrong person.
+  /** Open a route that names a coachee — `#/games/<coachee>` and
+   *  `#/feedbacks/<coachee>[/<observation>]`.
+   *
+   *  Everything these need is fetched here rather than assumed, which is the
+   *  whole point of putting the id in the URL: the link works pasted into a
+   *  fresh tab, sent to another coach, or opened from a mail, with nothing
+   *  carried over from the screen you would otherwise have come from. */
+  const openDeepLink = async (r: AppRoute) => {
+    if (!r.coacheeId) return;
+    const coachee = coachees.find((c) => c.id === r.coacheeId);
+    if (!coachee) {
+      // Deleted, or on a season this coach is not looking at. Say so; landing
+      // silently on the coachee list looks like the link simply did nothing.
+      setBackendNotice(formData.lang === 'DE'
+        ? 'Coachee nicht gefunden — vielleicht eine andere Saison.'
+        : 'Coachee not found — possibly a different season.');
+      setFeedbackSubView('coachees');
+      setListTab('coachees');
+      return;
+    }
+    selectCoachee(coachee);
+    if (r.subView === 'coacheeGames') {
+      await loadCoacheeGames(coachee);
+      return;
+    }
+    if (!r.feedbackId) {
+      await openFeedbackPicker(coachee);
+      return;
+    }
+    const gen = beginLoad('coacheeFeedbacks');
+    setLoadingCoacheeFeedbacks(true);
+    try {
+      const records = await listCoacheeFeedbacks(coachee.id);
+      if (!isCurrentLoad('coacheeFeedbacks', gen)) return;
+      const record = records.find((x) => x.id === r.feedbackId);
+      if (!record) {
+        setBackendNotice(formData.lang === 'DE' ? 'Beobachtung nicht gefunden.' : 'Observation not found.');
+        setCoacheeFeedbacks(records);
+        setFeedbackPickerCoachee(coachee);
+        return;
+      }
+      setCoacheeFeedbacks(records);
+      openFeedbackRecord(record);
+    } catch (error) {
+      if (!isCurrentLoad('coacheeFeedbacks', gen)) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      setBackendNotice(localizeRuntimeError(reason, formData.lang));
+    } finally {
+      if (isCurrentLoad('coacheeFeedbacks', gen)) setLoadingCoacheeFeedbacks(false);
+    }
+  };
+
+  // Back/Forward reaches openDeepLink through a ref: its listener is registered
+  // once and must not close over a stale coachee list.
+  const openDeepLinkRef = useRef(openDeepLink);
+  openDeepLinkRef.current = openDeepLink;
+
   const selectCoachee = (coachee: Coachee) => {
     setSelectedCoacheeId(coachee.id);
     setSelectedCoacheeName(coachee.full_name || '');

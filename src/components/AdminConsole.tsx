@@ -32,10 +32,12 @@ import {
   type SurveyConfig, type SurveyQuestion, type SurveyScaleId,
 } from '../lib/survey';
 import { subscribeLive } from '../lib/liveEvents';
-import { bySurname, surnameFirstLabel } from '../lib/coacheeName';
+import { groupLabel } from '../lib/coacheeGroup';
+import { bySurname, surnameFirstLabel, foldName, coacheeIndex } from '../lib/coacheeName';
 import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
 import LevelText from './LevelText';
+import { CoacheeChip, GroupChip } from './CoacheeChips';
 import { Skeleton, SkeletonRows } from './Skeleton';
 import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
 
@@ -863,7 +865,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} lang={lang} mandates={rcMandates} defaultGoal={defaultGoal} settingsLoading={settingsLoading} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
-        <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} /></div>
+        <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} season={defaultSeason} active={tab === 'games'} /></div>
         <div hidden={tab !== 'overview'}><OverviewAdmin t={t} /></div>
         <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} lang={lang} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
         </>}
@@ -2430,9 +2432,6 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
 // as a 422 at the end of a filled-in feedback form.
 type PickPerson = { id: string; name: string; email?: string; warn?: string; svNumber?: string };
 
-const foldName = (v: string) =>
-  v.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, ' ');
-
 /** A name field backed by the list of people the app knows. Typing filters it
  *  accent-blind ("Muller" finds "Müller") and every row carries the e-mail
  *  beside the name — aiming a test game at an inbox you can open is the whole
@@ -3011,9 +3010,10 @@ function OverviewAdmin({ t }: { t: T }) {
 // FOR THEMSELVES — the server refuses anything else (see /api/games/:id/assign-rc)
 // unless the request carries an admin session. This is that exception, moved
 // out of the coach app and into the console where it is obviously an admin act.
-function GamesAdmin({ t, lang }: { t: T; lang: Lang }) {
+function GamesAdmin({ t, lang, season, active }: { t: T; lang: Lang; season: number; active: boolean }) {
   const [games, setGames] = useState<EligibleGame[]>([]);
   const [people, setPeople] = useState<{ id: string; fullName: string }[]>([]);
+  const [coachees, setCoachees] = useState<Coachee[]>([]);
   const [q, setQ] = useState('');
   const [unassignedOnly, setUnassignedOnly] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -3030,6 +3030,22 @@ function GamesAdmin({ t, lang }: { t: T; lang: Lang }) {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void reload(); }, [reload]);
+
+  // Read once, and only once this tab is actually on screen — the same deal
+  // ManualGameAdmin makes, for the same reason: /api/coachees is the console's
+  // most expensive read and the coachee tab already issues it on mount, so
+  // asking again on every console open would double it for a tab nobody may
+  // visit. NOT inside `reload` either: assigning an RC re-reads the games, and
+  // the roster does not change while a coach is being picked. A list that fails
+  // to load costs the amber marks and nothing else — the games still assign.
+  const [coacheesAsked, setCoacheesAsked] = useState(false);
+  useEffect(() => {
+    if (!active || coacheesAsked) return;
+    setCoacheesAsked(true);
+    void listCoachees().then(setCoachees).catch(() => setCoachees([]));
+  }, [active, coacheesAsked]);
+  const byName = useMemo(() => coacheeIndex(coachees, season), [coachees, season]);
+  const coacheeFor = (name?: string) => (name ? byName.get(foldName(name)) : undefined);
 
   const assign = async (game: EligibleGame, rcName: string) => {
     setError(''); setBusy(game.id);
@@ -3099,8 +3115,28 @@ function GamesAdmin({ t, lang }: { t: T; lang: Lang }) {
               </div>
               <p className="mt-0.5 text-xs text-stone-500">
                 {new Date(g.date).toLocaleDateString(lang === 'DE' ? 'de-CH' : 'en-GB')} · {g.location}
-                {g.firstReferee ? ` · 1SR ${g.firstReferee}` : ''}
               </p>
+              {/* Both referees, each on its own line, and each saying whether
+                  this is somebody's coachee and which group they are in. The row
+                  used to append "· 1SR Name" to the address and stop there: the
+                  2SR was invisible, and the console — the screen an admin hands
+                  a game out from — could not say which cohort the game was
+                  worth handing out FOR. Which is the whole question the coach
+                  app's own lists answer with the same amber chips. */}
+              {([['1SR', g.firstReferee], ['2SR', g.secondReferee]] as const)
+                .filter(([, name]) => name)
+                .map(([slot, name]) => {
+                  const c = coacheeFor(name);
+                  const group = c ? groupLabel(c.groups, lang) : '';
+                  return (
+                    <p key={slot} className="mt-0.5 text-xs text-stone-500">
+                      <span className="font-semibold text-stone-600">{slot} </span>
+                      {name}
+                      {c && <CoacheeChip />}
+                      <GroupChip group={group} />
+                    </p>
+                  );
+                })}
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <label className="text-xs font-medium text-stone-500">RC:</label>
                 <select

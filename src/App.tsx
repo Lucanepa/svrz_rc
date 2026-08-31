@@ -50,10 +50,11 @@ import { subscribeLive } from './lib/liveEvents';
 import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml, sanitizeRich } from './lib/richText';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
-import { bySurname, surnameFirstLabel } from './lib/coacheeName';
+import { bySurname, surnameFirstLabel, foldName as normName, coacheeIndex } from './lib/coacheeName';
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
+import { CoacheeChip, GroupChip } from './components/CoacheeChips';
 import { Skeleton, SkeletonRows } from './components/Skeleton';
 import AppSpinner from './components/AppSpinner';
 import { useRcAuth } from './components/AuthGate';
@@ -495,10 +496,6 @@ function getRefereeForRole(game: EligibleGame, role: FeedbackFormData['role']) {
 /** Function filter: both referees on the game are coachees — one trip, two
  *  observations, which is the game a coach wants to find first. */
 const BOTH_SR = '1SR + 2SR';
-
-function normName(value: string): string {
-  return value.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, ' ');
-}
 
 /** Coachees are per-season rows. Everything the games list derives — is this
  *  referee a coachee, at what Niveau, in which group — has to read the row for
@@ -4234,27 +4231,10 @@ export default function App() {
     return filtered;
   }, [coachees, listSearch, listFilterLevels, listFilterShowInactive, listFilterNeedsObs, listSortBy, listSortAsc, seasonStartYear]);
   // Lookup coachee by normalized name for game filtering
-  const coacheeByName = useMemo(() => {
-    const map = new Map<string, Coachee>();
-    // Coachees are per-season records; the same person can have one per season.
-    // Rows from OTHER seasons are not in this map at all — they are not coachees
-    // now, and a name that only resolves through them must not badge a game.
-    // Among what is left (this season's rows plus seasonless ones), the selected
-    // season's record is inserted last so it wins the name key.
-    const ordered = coachees.filter((c) => isInSeason(c, seasonStartYear)).sort((a, b) =>
-      Number(a.season === seasonStartYear) - Number(b.season === seasonStartYear));
-    for (const c of ordered) {
-      const fn = normName(c.full_name || '');
-      if (fn) map.set(fn, c);
-      const first = (c.first_name || '').trim();
-      const last = (c.last_name || '').trim();
-      if (first && last) {
-        map.set(normName(`${first} ${last}`), c);
-        map.set(normName(`${last} ${first}`), c);
-      }
-    }
-    return map;
-  }, [coachees, seasonStartYear]);
+  const coacheeByName = useMemo(
+    () => coacheeIndex(coachees, seasonStartYear),
+    [coachees, seasonStartYear],
+  );
 
   // The coachee filter on the games tab. Its VALUES stay the raw name the game
   // carries — that is what the filter matches on — while its order and its
@@ -4270,9 +4250,15 @@ export default function App() {
         .filter((name) => coacheeNames.has(normName(name)))
     )).sort((a, b) => bySurname(resolve(a), resolve(b)));
   }, [eligibleGames, coacheeNames, coacheeByName]);
+  // Listed by surname, with the group after it: picking whom to go and watch
+  // starts with the cohort at least as often as with the person.
   const coacheeOptionLabel = useCallback(
-    (name: string) => surnameFirstLabel(coacheeByName.get(normName(name)) ?? { full_name: name }),
-    [coacheeByName],
+    (name: string) => {
+      const c = coacheeByName.get(normName(name));
+      const group = c ? groupLabel(c.groups, formData.lang) : '';
+      return `${surnameFirstLabel(c ?? { full_name: name })}${group ? ` · ${group}` : ''}`;
+    },
+    [coacheeByName, formData.lang],
   );
 
   // Which of the filter toggles have anything to act on. Computed over every
@@ -4901,6 +4887,7 @@ export default function App() {
                       Coachee
                     </span>
                   )}
+                  <GroupChip group={coacheeGroupOf(name)} />
                 </div>
               );
             })}
@@ -5403,12 +5390,6 @@ export default function App() {
                           // "Coachee" mark it is information rather than a
                           // highlight, and in an all-coachee pair each name carries
                           // its own group.
-                          // Its own chip beside the "Coachee" mark rather than more
-                          // words inside it: the column is a phone wide, and a
-                          // single chip reading "Coachee · Neu-Schiedsrichter 26/27"
-                          // broke across two lines mid-badge, drawing what looked
-                          // like two half-chips. whitespace-nowrap keeps each one
-                          // whole and lets the pair wrap between them.
                           const group = r.coachee ? coacheeGroupOf(r.name) : undefined;
                           return (
                           <p
@@ -5417,16 +5398,8 @@ export default function App() {
                           >
                             {r.role && <span className={cn('font-semibold', mixed && r.coachee ? 'text-stone-800' : 'text-stone-600')}>{r.role === '2. SR' ? t.role2Short : t.role1Short} </span>}
                             {r.name}
-                            {mixed && r.coachee && (
-                              <span className="ml-1.5 inline-block align-middle whitespace-nowrap rounded bg-amber-100 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-800 border border-amber-200">
-                                Coachee
-                              </span>
-                            )}
-                            {group && (
-                              <span className="ml-1.5 inline-block align-middle whitespace-nowrap rounded bg-amber-50 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-800 border border-amber-200">
-                                {group}
-                              </span>
-                            )}
+                            {mixed && r.coachee && <CoacheeChip />}
+                            <GroupChip group={group} />
                           </p>
                           );
                         });
@@ -5589,6 +5562,7 @@ export default function App() {
                                   <p className="text-xs text-stone-500 break-words">
                                     {f.role && <span className="font-semibold text-stone-600">{f.role === '2. SR' ? t.role2Short : t.role1Short} </span>}
                                     {f.coacheeName}
+                                    <GroupChip group={coacheeGroupOf(f.coacheeName)} />
                                   </p>
                                   <MatchResult result={f.result} className="mt-0.5" />
                                 </div>
@@ -6513,7 +6487,11 @@ export default function App() {
               {(() => {
                 const vc = coachees.find((c) => c.id === selectedCoacheeId);
                 if (!vc && !selectedCoacheeLevel) return null;
-                return <span className="ml-2 text-xs font-normal text-stone-500">(Level: {vc ? <LevelText level={vc.referee_level} stage={vc.stage} /> : selectedCoacheeLevel})</span>;
+                // The group beside the Niveau, the way the games list and Home
+                // carry it: this heading is the one thing on screen that says
+                // whose games these are.
+                const vcGroup = vc ? groupLabel(vc.groups, formData.lang) : '';
+                return <span className="ml-2 text-xs font-normal text-stone-500">(Level: {vc ? <LevelText level={vc.referee_level} stage={vc.stage} /> : selectedCoacheeLevel}{vcGroup ? ` · ${vcGroup}` : ''})</span>;
               })()}
             </h2>
             <button

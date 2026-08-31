@@ -5392,7 +5392,25 @@ export default function App() {
                               .filter((r) => r.name)
                               .map((r) => ({ ...r, coachee: !g.noCoachee }));
                         const mixed = crew.some((r) => r.coachee) && crew.some((r) => !r.coachee);
-                        return crew.filter((r) => r.name).map((r) => (
+                        return crew.filter((r) => r.name).map((r) => {
+                          // The group — "Varia", "Beförderung?", "Neu-Schiedsrichter
+                          // 26/27" — is what says why the evening is worth driving
+                          // to. It rides in the games list's amber badge, but this
+                          // list, the coach's OWN, named the referee and stopped
+                          // there, so the one screen an RC plans from was the one
+                          // that could not say which cohort they are going to watch.
+                          // Shown for every coachee, mixed pair or not: unlike the
+                          // "Coachee" mark it is information rather than a
+                          // highlight, and in an all-coachee pair each name carries
+                          // its own group.
+                          // Its own chip beside the "Coachee" mark rather than more
+                          // words inside it: the column is a phone wide, and a
+                          // single chip reading "Coachee · Neu-Schiedsrichter 26/27"
+                          // broke across two lines mid-badge, drawing what looked
+                          // like two half-chips. whitespace-nowrap keeps each one
+                          // whole and lets the pair wrap between them.
+                          const group = r.coachee ? coacheeGroupOf(r.name) : undefined;
+                          return (
                           <p
                             key={`${r.name}-${r.role}`}
                             className={cn('text-xs break-words', mixed && r.coachee ? 'text-stone-700 font-medium' : 'text-stone-500')}
@@ -5400,12 +5418,18 @@ export default function App() {
                             {r.role && <span className={cn('font-semibold', mixed && r.coachee ? 'text-stone-800' : 'text-stone-600')}>{r.role === '2. SR' ? t.role2Short : t.role1Short} </span>}
                             {r.name}
                             {mixed && r.coachee && (
-                              <span className="ml-1.5 align-middle rounded bg-amber-100 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-800 border border-amber-200">
-                                {formData.lang === 'DE' ? 'Coachee' : 'Coachee'}
+                              <span className="ml-1.5 inline-block align-middle whitespace-nowrap rounded bg-amber-100 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-800 border border-amber-200">
+                                Coachee
+                              </span>
+                            )}
+                            {group && (
+                              <span className="ml-1.5 inline-block align-middle whitespace-nowrap rounded bg-amber-50 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-800 border border-amber-200">
+                                {group}
                               </span>
                             )}
                           </p>
-                        ));
+                          );
+                        });
                       })()}
                       <MatchResult result={g.result} className="mt-0.5" />
                     </div>

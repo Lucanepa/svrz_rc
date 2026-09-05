@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Video, ExternalLink, Subtitles } from 'lucide-react';
+import { Video, ExternalLink, Subtitles, Check } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { getStoredLang, type Lang } from '../lib/prefs';
 
@@ -25,6 +25,25 @@ const STR = {
     kicker: 'Referee Coaching',
     title: 'Video-Anleitung',
     lead: 'Wie du als Referee Coach eine Beobachtung erfasst, unterschreiben lässt und absendest — vom Öffnen des Spiels bis zur E-Mail an den Schiedsrichter.',
+    compareTitle: 'Was sich ändert',
+    beforeLabel: 'Bisher',
+    beforeSub: 'von Hand, in vier Werkzeugen',
+    nowLabel: 'Jetzt',
+    nowSub: 'einmal ausfüllen, fertig',
+    beforeSteps: [
+      'Spiele im VolleyManager zusammensuchen',
+      'Beobachtung während des Spiels auf Papier notieren',
+      'Zu Hause alles nochmals ins Google-Formular tippen',
+      'Die Excel-Tabelle von Hand nachführen',
+      'Die E-Mail an den Schiedsrichter selber schreiben',
+    ],
+    nowSteps: [
+      'Spiel antippen — deine Spiele stehen schon in der App',
+      'Formular ausfüllen; Liga, Halle, Teams und Resultat sind bereits drin',
+      'Der Schiedsrichter unterschreibt in der Halle auf deinem Handy',
+      'Senden — E-Mail mit PDF, Kopie ans RC Präsidium, Statistik nachgeführt',
+    ],
+    compareFoot: 'Nichts wird zweimal erfasst: was du in der Halle einträgst, ist genau das, was der Schiedsrichter bekommt.',
     chapters: 'Inhalt',
     subtitles: 'Untertitel lassen sich im ⚙-Menü des Players ein- und ausschalten.',
     openDirect: 'Video direkt öffnen',
@@ -44,6 +63,25 @@ const STR = {
     kicker: 'Referee Coaching',
     title: 'Video guide',
     lead: 'How you record an observation as a referee coach, get it signed and send it — from opening the game to the email the referee receives.',
+    compareTitle: 'What changes',
+    beforeLabel: 'Until now',
+    beforeSub: 'by hand, across four tools',
+    nowLabel: 'From now on',
+    nowSub: 'fill it in once, done',
+    beforeSteps: [
+      'Hunt for the games in VolleyManager',
+      'Write the observation on paper during the match',
+      'Type it all again into the Google Form at home',
+      'Keep the Excel sheet up to date by hand',
+      'Write the email to the referee yourself',
+    ],
+    nowSteps: [
+      'Tap the game — your games are already in the app',
+      'Fill in the form; league, venue, teams and result are already there',
+      'The referee signs on your phone, in the gym',
+      'Send — email with the PDF, copy to the RC Präsidium, statistics updated',
+    ],
+    compareFoot: 'Nothing is recorded twice: what you enter in the gym is exactly what the referee receives.',
     chapters: 'Contents',
     subtitles: 'Subtitles can be switched on and off in the player’s ⚙ menu.',
     openDirect: 'Open the video directly',
@@ -106,6 +144,47 @@ export default function GuidePage() {
         </header>
 
         <p className="text-sm sm:text-base leading-relaxed text-stone-600 mb-6">{t.lead}</p>
+
+        {/* Before / after, above the video and not below it.
+            The people this page has to convince are the ones who will not press
+            play: the pitch is not "watch six minutes", it is "you already do
+            five things, now you do four, and none of them twice". Reading it
+            takes fifteen seconds and it is the whole argument.
+            Both columns are the REAL processes — the left one is what the
+            coaches did through 2025/26 (VolleyManager, paper, the Google form,
+            the Excel sheet, the mail), not a strawman. Anyone who did it will
+            recognise their own season there, which is the only reason the right
+            column is believed. */}
+        <section className="mb-8 rounded-2xl bg-white shadow-card border border-stone-200/70 overflow-hidden">
+          <h2 className="px-5 pt-4 pb-3 text-sm font-semibold text-stone-800">{t.compareTitle}</h2>
+          <div className="grid sm:grid-cols-2 border-t border-stone-200/70 divide-y sm:divide-y-0 sm:divide-x divide-stone-200/70">
+            <div className="p-5 bg-stone-50/70">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400">{t.beforeLabel}</p>
+              <p className="mt-1 text-xs text-stone-400">{t.beforeSub}</p>
+              <ol className="mt-3 space-y-2">
+                {t.beforeSteps.map((s, i) => (
+                  <li key={s} className="flex gap-2.5 text-sm leading-snug text-stone-500">
+                    <span className="w-4 shrink-0 tabular-nums text-xs pt-0.5 text-stone-400">{i + 1}.</span>
+                    <span>{s}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+            <div className="p-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-red-700">{t.nowLabel}</p>
+              <p className="mt-1 text-xs text-stone-500">{t.nowSub}</p>
+              <ol className="mt-3 space-y-2">
+                {t.nowSteps.map((s) => (
+                  <li key={s} className="flex gap-2.5 text-sm leading-snug text-stone-700">
+                    <Check size={14} className="shrink-0 mt-0.5 text-red-700" />
+                    <span>{s}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </div>
+          <p className="px-5 py-3 border-t border-stone-200/70 bg-stone-50/70 text-xs leading-relaxed text-stone-500">{t.compareFoot}</p>
+        </section>
 
         {/* `key` on the language: changing the src of a live <video> keeps the
             old buffer and the old text track, so the previous language's picture

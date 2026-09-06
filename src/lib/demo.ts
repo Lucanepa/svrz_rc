@@ -32,6 +32,8 @@ import type {
   FeedbackSubmitResponse,
   CalendarGameStatus,
   RefereeCoachPerson,
+  MyRcGame,
+  RcGameNote,
 } from './pocketbase';
 
 const DEMO_KEY = 'svrz_rc_demo';
@@ -480,6 +482,59 @@ export function listCoacheeGames(coacheeId: string): Promise<CoacheeGame[]> {
 
 export function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackRecord[]> {
   return ok((store().feedbacks[coacheeId] ?? []).map((r) => ({ ...r })));
+}
+
+// ── 4.4.10 SR-Spiel ───────────────────────────────────────────────────
+// Invented here rather than added to the fixture store: every game in there is
+// one the demo coach was assigned to WATCH, and a game he refereed himself
+// would have to be reasoned about by the home counters, the games list and the
+// calendar, none of which it belongs in. This is the one screen it exists for.
+const DEMO_RC_GAME: Omit<MyRcGame, 'note'> = {
+  gameId: 'demo-g-rc', matchNo: '2140677', league: '3L ♂', gameDate: seasonDate(10, 22),
+  location: 'Sporthalle Buchlern, Zürich', mapsUrl: '',
+  teams: 'VBC Kanti Baden vs Volley Smash 05', result: '3:1 (25:20 / 22:25 / 25:18 / 25:21)',
+  rcRole: '2. SR', coacheeName: 'Luca Ferrari', coacheeId: 'demo-c-luca', coacheeRole: '1. SR',
+};
+
+// One colleague's Rückmeldung is already on file, because "every coach reads
+// every note" is the whole point of the screen and an empty list shows none of it.
+let demoRcNotes: RcGameNote[] = [{
+  id: 'demo-note-1', gameId: 'demo-g-rc-earlier',
+  rcId: 'demo-rc-2', rcName: 'Andrea Bianchi', rcRole: '1. SR',
+  coacheeId: 'demo-c-luca', coacheeName: 'Luca Ferrari', coacheeRole: '2. SR',
+  note: 'Ruhig und aufmerksam am zweiten Pfiff, gute Zusammenarbeit. Beim Aufstellungswechsel darf er sich mehr Zeit nehmen — zweimal zu früh freigegeben.',
+  submittedAt: seasonDate(9, 14), matchNo: '2140590', league: '3L ♂',
+  gameDate: seasonDate(9, 14), teams: 'TSV Jona vs VBC Einsiedeln',
+}];
+
+export function loadMyRcGames(): Promise<MyRcGame[]> {
+  const mine = demoRcNotes.find((n) => n.gameId === DEMO_RC_GAME.gameId && n.rcId === RC.id) ?? null;
+  return ok([{ ...DEMO_RC_GAME, note: mine }]);
+}
+
+export function loadRcGameNotes(filter?: { coacheeId?: string; coacheeName?: string }): Promise<RcGameNote[]> {
+  const norm = (v?: string) => (v ?? '').trim().toLowerCase();
+  const notes = demoRcNotes.filter((n) => {
+    if (filter?.coacheeId) return n.coacheeId === filter.coacheeId;
+    if (filter?.coacheeName) return norm(n.coacheeName) === norm(filter.coacheeName);
+    return true;
+  });
+  return ok(notes.map((n) => ({ ...n })));
+}
+
+export function submitRcGameNote(payload: { gameId: string; note: string }): Promise<RcGameNote> {
+  const filed: RcGameNote = {
+    id: `demo-note-${demoRcNotes.length + 1}`, gameId: payload.gameId,
+    rcId: RC.id, rcName: RC.name, rcRole: DEMO_RC_GAME.rcRole,
+    coacheeId: DEMO_RC_GAME.coacheeId, coacheeName: DEMO_RC_GAME.coacheeName,
+    coacheeRole: DEMO_RC_GAME.coacheeRole,
+    note: payload.note, submittedAt: new Date().toISOString(),
+    matchNo: DEMO_RC_GAME.matchNo, league: DEMO_RC_GAME.league,
+    gameDate: DEMO_RC_GAME.gameDate, teams: DEMO_RC_GAME.teams,
+  };
+  // Same rule as the server: one note per coach per game, a resend rewrites it.
+  demoRcNotes = [filed, ...demoRcNotes.filter((n) => !(n.gameId === payload.gameId && n.rcId === RC.id))];
+  return ok({ ...filed });
 }
 
 export function loadCalendarGames(): Promise<CalendarGameStatus[]> {

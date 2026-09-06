@@ -119,6 +119,26 @@ await ensure('referee_coach_feedbacks', [
   // online, which never enter the outbox.
   T('submission_key')
 ]);
+// 4.4.10 SR-Spiel. A referee coach standing ON the whistle next to a coachee
+// cannot observe them — there is nobody in the stand. The regulation therefore
+// asks for NO Feedbackformular on that referee, and for a short Rückmeldung
+// from the coach instead. That was a separate Google form until now, and the
+// coach retyped the match, the league, the teams and who whistled which slot
+// into it every time; here the note is the only thing left to write, and every
+// other column below is context the app already holds.
+//
+// Its own collection, deliberately not a feedback with empty grades: the season
+// counters, the coachee's feedback history and the president's list all read
+// referee_coach_feedbacks, and a Rückmeldung is not an observation in any of
+// them.
+await ensure('rc_game_notes', [
+  REL('game',games.id),T('game_id'),T('rc_name'),T('rc_id'),T('rc_role'),
+  T('coachee_name'),T('coachee_id'),T('coachee_role'),
+  T('note'),T('submitted_at'),NUM('season'),
+  // Same job as referee_coach_feedbacks.submission_key: a retry that the server
+  // already committed must be recognised, not filed twice.
+  T('submission_key')
+]);
 await ensure('observations', [
   REL('coachee',coachees.id),REL('referee_coach',rcs.id),REL('game',games.id),
   T('coachee_function'),J('grades'),T('game_level'),T('promotion'),T('motivation'),

@@ -904,6 +904,10 @@ const collectionCandidates = {
   // collection and not a shape of `coachees`: a referee is a person the region
   // licenses, a coachee is a person a coach is assigned to for one season.
   referees: unique([process.env.PB_REFEREES_COLLECTION || 'referees', 'referees', 'svrz_referees']),
+  // 4.4.10 SR-Spiel: the coach's short Rückmeldung on a game they whistled
+  // themselves. Its own collection — see the note in setup-schema.mjs for why
+  // it is not a feedback with the grades left empty.
+  rcGameNotes: unique([process.env.PB_RC_GAME_NOTES_COLLECTION || 'rc_game_notes', 'rc_game_notes', 'svrz_rc_game_notes']),
   refereeCoaches: unique([
     process.env.PB_REFEREE_COACH_FEEDBACK_COLLECTION || process.env.PB_REFEREE_COACHES_COLLECTION || 'referee_coach_feedbacks',
     'referee_coach_feedbacks',
@@ -5669,6 +5673,245 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
 
     const result = Array.from(coacheeMap.values()).sort((a, b) => a.coacheeName.localeCompare(b.coacheeName));
     res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+// ── 4.4.10 SR-Spiel — the coach's own Rückmeldung ─────────────────────
+// A referee coach standing on the whistle NEXT TO a coachee cannot observe
+// them; there is nobody in the stand. So no Feedbackformular is filled for that
+// referee, and the coach is asked for a short Rückmeldung instead.
+//
+// This is a different question from the RC-Spiel CHIP in the games list
+// (makeRcGameTest), which is true when ANY active coach whistles beside a
+// coachee. The chip tells a browsing coach "nothing here for you to take"; the
+// query below answers "YOU are the one who was asked", and only that coach's
+// own games can produce a note.
+
+type RcGameNoteRecord = {
+  id: string;
+  gameId: string;
+  rcId: string;
+  rcName: string;
+  rcRole: string;
+  coacheeId: string;
+  coacheeName: string;
+  coacheeRole: string;
+  note: string;
+  submittedAt: string;
+  matchNo: string;
+  league: string;
+  gameDate: string;
+  teams: string;
+};
+
+const GAME_NOTE_FIELDS = 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,game_result';
+
+function mapRcGameNote(record: AnyRecord): RcGameNoteRecord {
+  const game = (record.expand as Record<string, AnyRecord> | undefined)?.game;
+  return {
+    id: String(record.id),
+    // The relation is the truth; game_id is the same value flattened, kept for
+    // rows whose game was deleted out from under them.
+    gameId: asText(record.game) || asText(record.game_id),
+    rcId: asText(record.rc_id),
+    rcName: asText(record.rc_name),
+    rcRole: asText(record.rc_role),
+    coacheeId: asText(record.coachee_id),
+    coacheeName: asText(record.coachee_name),
+    coacheeRole: asText(record.coachee_role),
+    note: asText(record.note),
+    submittedAt: asText(record.submitted_at),
+    // Off the expanded game where there is one: the note's own copy is what the
+    // fixture said the day it was written, the game record is what the nightly
+    // sync keeps corrected.
+    matchNo: asText(game?.match_no),
+    league: asText(game?.league),
+    gameDate: asText(game?.match_date),
+    teams: game ? `${asText(game.home_team)} vs ${asText(game.away_team)}` : '',
+  };
+}
+
+async function listRcGameNotes(): Promise<RcGameNoteRecord[]> {
+  await ensureAdminAuth();
+  const records = await withCollection(collectionCandidates.rcGameNotes, (collection) =>
+    collection.getFullList<AnyRecord>({ sort: '-submitted_at', expand: 'game' }),
+  );
+  return records.map(mapRcGameNote);
+}
+
+type MyRcGame = {
+  gameId: string;
+  matchNo: string;
+  league: string;
+  gameDate: string;
+  location: string;
+  mapsUrl: string;
+  teams: string;
+  result: string;
+  rcRole: string;
+  coacheeName: string;
+  coacheeId: string;
+  coacheeRole: string;
+};
+
+// Every game this season where the SUBJECT coach held one whistle and a coachee
+// held the other. Name matching, like makeRcGameTest: a game record carries the
+// referees' names (and, since 2026-08-27, their SV numbers) while a coach is a
+// row in referee_coaches with no SV number of their own to match on.
+async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<MyRcGame[]> {
+  await ensureAdminAuth();
+  const inSeason = seasonFilterExceptManual(seasonRaw, await getManualGameIds());
+  const coachees = await listCoacheesWithFallbackSort();
+  const coacheeNames = await getCoacheeNameIndex(coachees);
+  // Name -> row, so a note can carry the coachee's id and not only a spelling.
+  // Same variants getCoacheeNameIndex folds, so anything it matches resolves here.
+  const coacheeByName = new Map<string, { id: string; name: string }>();
+  for (const coachee of coachees) {
+    const first = asText(coachee.first_name ?? coachee.vorname);
+    const last = asText(coachee.last_name ?? coachee.nachname);
+    const printed = asText(coachee.full_name ?? coachee.name) || `${first} ${last}`.trim();
+    for (const variant of [coachee.full_name, coachee.name, `${first} ${last}`.trim(), `${last} ${first}`.trim()]) {
+      const key = normalizeName(variant);
+      if (key && !coacheeByName.has(key)) coacheeByName.set(key, { id: String(coachee.id), name: printed });
+    }
+  }
+
+  const me = normalizeName(subject.name);
+  if (!me) return [];
+  const games = await withCollection(collectionCandidates.games, (collection) =>
+    collection.getFullList<AnyRecord>({ sort: '-match_date', fields: GAME_NOTE_FIELDS }),
+  );
+
+  const out: MyRcGame[] = [];
+  for (const game of games) {
+    if (!inSeason(game)) continue;
+    const season = coacheeNames.forSeason(seasonOfGame(game.match_date));
+    const slots = [
+      { mine: game.first_referee, other: game.second_referee, myRole: '1. SR', otherRole: '2. SR' },
+      { mine: game.second_referee, other: game.first_referee, myRole: '2. SR', otherRole: '1. SR' },
+    ];
+    for (const slot of slots) {
+      if (normalizeName(slot.mine) !== me) continue;
+      const otherKey = normalizeName(slot.other);
+      if (!otherKey || !season.has(otherKey)) continue;
+      const coachee = coacheeByName.get(otherKey);
+      out.push({
+        gameId: String(game.id),
+        matchNo: asText(game.match_no),
+        league: asText(game.league),
+        gameDate: asText(game.match_date),
+        location: asText(game.location),
+        mapsUrl: asText(game.maps_url),
+        teams: `${asText(game.home_team)} vs ${asText(game.away_team)}`,
+        result: asText(game.game_result),
+        rcRole: slot.myRole,
+        coacheeName: coachee?.name || asText(slot.other),
+        coacheeId: coachee?.id || '',
+        coacheeRole: slot.otherRole,
+      });
+      // One person cannot hold both whistles — stop before the mirrored slot
+      // files the same game a second time.
+      break;
+    }
+  }
+  return out;
+}
+
+// The coach's own SR-Spiele, each carrying the Rückmeldung they already filed
+// (or null, which is what puts it on the "still to do" list on Home).
+app.get('/api/rc-games', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const subject = rcAuthByReq.get(req);
+    // Admin sessions carry no identity, by the convention over requireRcSession
+    // — and an admin is not the person the rule asks to write anything.
+    if (!subject) { res.json([]); return; }
+    const [games, notes] = await Promise.all([
+      listMyRcGames(subject, req.query.season),
+      listRcGameNotes(),
+    ]);
+    const mine = new Map<string, RcGameNoteRecord>();
+    for (const note of notes) {
+      if (note.gameId && rcRefMatches(note.rcId, note.rcName, subject)) mine.set(note.gameId, note);
+    }
+    res.json(games.map((game) => ({ ...game, note: mine.get(game.gameId) ?? null })));
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+// Every coach reads every Rückmeldung: what one of them saw from the whistle is
+// exactly what the next one wants before their own visit. `coacheeId` narrows it
+// to one referee for the coachee page; `coacheeName` is the fallback for rows
+// written before that referee had a coachee row of their own.
+app.get('/api/rc-game-notes', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const notes = await listRcGameNotes();
+    const byId = asText(req.query.coacheeId);
+    const byName = normalizeName(req.query.coacheeName);
+    const filtered = byId || byName
+      ? notes.filter((n) => (byId && n.coacheeId === byId) || (byName && normalizeName(n.coacheeName) === byName))
+      : notes;
+    res.json(filtered);
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const subject = rcAuthByReq.get(req);
+    if (!subject) { res.status(403).json({ error: 'Nur Referee Coaches können eine Rückmeldung erfassen.' }); return; }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const gameId = asText(body.gameId);
+    const note = asText(body.note).trim();
+    const submissionKey = asText(body.submissionKey);
+    if (!gameId) { res.status(400).json({ error: 'gameId fehlt.' }); return; }
+    if (!note) { res.status(400).json({ error: 'Die Rückmeldung darf nicht leer sein.' }); return; }
+
+    // The game, the role and the coachee are re-derived here and never read from
+    // the body: the client knows all three, but a client is not where the answer
+    // to "were you actually on this whistle" may come from.
+    const mine = await listMyRcGames(subject, body.season ?? req.query.season);
+    const game = mine.find((g) => g.gameId === gameId);
+    if (!game) {
+      res.status(403).json({ error: 'Dieses Spiel ist kein SR-Spiel von dir.' });
+      return;
+    }
+
+    // One Rückmeldung per coach per game, always. A coach who sends twice —
+    // a retry the server already committed, or a genuine second thought a week
+    // later — rewrites their own note rather than filing a second one, which is
+    // also what makes the "still to do" list on Home settle after a flaky send.
+    const existing = await listRcGameNotes();
+    const previous = existing.find((n) => n.gameId === gameId && rcRefMatches(n.rcId, n.rcName, subject));
+    const context = { matchNo: game.matchNo, league: game.league, gameDate: game.gameDate, teams: game.teams };
+    if (previous) {
+      const updated = await withCollection(collectionCandidates.rcGameNotes, (collection) =>
+        collection.update<AnyRecord>(previous.id, { note, submitted_at: new Date().toISOString(), submission_key: submissionKey }),
+      );
+      res.json({ ...mapRcGameNote(updated), ...context });
+      return;
+    }
+
+    const created = await withCollection(collectionCandidates.rcGameNotes, (collection) =>
+      collection.create<AnyRecord>({
+        game: gameId,
+        game_id: gameId,
+        rc_id: subject.rcId,
+        rc_name: subject.name,
+        rc_role: game.rcRole,
+        coachee_id: game.coacheeId,
+        coachee_name: game.coacheeName,
+        coachee_role: game.coacheeRole,
+        note,
+        submitted_at: new Date().toISOString(),
+        season: seasonOfGame(game.gameDate),
+        submission_key: submissionKey,
+      }),
+    );
+    res.json({ ...mapRcGameNote(created), ...context });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

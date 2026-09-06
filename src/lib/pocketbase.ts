@@ -531,6 +531,77 @@ export async function loadrcCoachSummary(rcName: string, season?: number): Promi
   return response.json() as Promise<rcCoachSummary[]>;
 }
 
+// ── 4.4.10 SR-Spiel ───────────────────────────────────────────────────
+// A coach who whistled next to a coachee files a short Rückmeldung instead of a
+// full observation. See the block over /api/rc-games in server/index.ts.
+
+export type RcGameNote = {
+  id: string;
+  gameId: string;
+  rcId: string;
+  rcName: string;
+  rcRole: string;
+  coacheeId: string;
+  coacheeName: string;
+  coacheeRole: string;
+  note: string;
+  submittedAt: string;
+  matchNo: string;
+  league: string;
+  gameDate: string;
+  teams: string;
+};
+
+export type MyRcGame = {
+  gameId: string;
+  matchNo: string;
+  league: string;
+  gameDate: string;
+  location: string;
+  mapsUrl: string;
+  teams: string;
+  result: string;
+  rcRole: string;
+  coacheeName: string;
+  coacheeId: string;
+  coacheeRole: string;
+  note: RcGameNote | null;
+};
+
+export async function loadMyRcGames(season?: number): Promise<MyRcGame[]> {
+  if (isDemoMode()) return demo.loadMyRcGames();
+  const qs = season != null ? `?season=${season}` : '';
+  const response = await fetch(apiUrl(`/api/rc-games${qs}`), { credentials: 'include' });
+  if (!response.ok) throw await apiError(response, 'SR-Spiele konnten nicht geladen werden.');
+  return response.json() as Promise<MyRcGame[]>;
+}
+
+/** Every coach's Rückmeldungen, or one referee's when a coachee is named. */
+export async function loadRcGameNotes(filter?: { coacheeId?: string; coacheeName?: string }): Promise<RcGameNote[]> {
+  if (isDemoMode()) return demo.loadRcGameNotes(filter);
+  const params = new URLSearchParams();
+  if (filter?.coacheeId) params.set('coacheeId', filter.coacheeId);
+  if (filter?.coacheeName) params.set('coacheeName', filter.coacheeName);
+  const qs = params.toString() ? `?${params}` : '';
+  const response = await fetch(apiUrl(`/api/rc-game-notes${qs}`), { credentials: 'include' });
+  if (!response.ok) throw await apiError(response, 'Rückmeldungen konnten nicht geladen werden.');
+  return response.json() as Promise<RcGameNote[]>;
+}
+
+export async function submitRcGameNote(payload: { gameId: string; note: string; season?: number }): Promise<RcGameNote> {
+  if (isDemoMode()) return demo.submitRcGameNote(payload);
+  const response = await fetch(apiUrl('/api/rc-game-notes'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    // The key rides along so a resend the server already committed rewrites its
+    // own row instead of filing a second Rückmeldung.
+    body: JSON.stringify({ ...payload, submissionKey: crypto.randomUUID() }),
+  });
+  if (!response.ok) throw await apiError(response, 'Die Rückmeldung konnte nicht gesendet werden.');
+  return response.json() as Promise<RcGameNote>;
+}
+
 export type GamesSyncResult = { imported: number; renamed?: number; totalFetched: number; from: string; to: string };
 
 export async function syncGames(payload?: { date?: string; from?: string; to?: string }): Promise<GamesSyncResult> {

@@ -33,6 +33,11 @@ import {
   parkDrafts,
   listParkedDrafts,
   unparkDrafts,
+  loadMyRcGames,
+  loadRcGameNotes,
+  submitRcGameNote,
+  type MyRcGame,
+  type RcGameNote,
   type IcalSubscription,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
@@ -1371,6 +1376,11 @@ export default function App() {
   const [savingNotes, setSavingNotes] = useState(false);
   const [feedbackPickerCoachee, setFeedbackPickerCoachee] = useState<Coachee | null>(null);
   const [coacheeFeedbacks, setCoacheeFeedbacks] = useState<FeedbackRecord[]>([]);
+  // Every coach's SR-Spiel Rückmeldungen about the coachee currently open. Not
+  // the signed-in coach's own: what somebody else saw from the second whistle
+  // is exactly what the next visitor wants to know beforehand, which is the
+  // reason these are shared at all.
+  const [coacheeRcNotes, setCoacheeRcNotes] = useState<RcGameNote[]>([]);
   const [loadingCoacheeFeedbacks, setLoadingCoacheeFeedbacks] = useState(false);
   const [showAllPastGames, setShowAllPastGames] = useState(false);
   const [savingFeedback, setSavingFeedback] = useState(false);
@@ -1922,6 +1932,41 @@ export default function App() {
   // `seasonOverride` exists for the mount batch: it runs before the settings
   // answer has reached state, so the season it must load for is only available
   // as a value, not from `seasonStartYear`.
+  // 4.4.10 SR-Spiel: the coach's own games — the ones they whistled next to a
+  // coachee — and the short Rückmeldung the rule asks for instead of a full
+  // observation. Loaded with the dashboard because that is the only screen that
+  // asks for one; a coach with no such game this season never sees any of it.
+  const [myRcGames, setMyRcGames] = useState<MyRcGame[]>([]);
+  const [rcNoteGame, setRcNoteGame] = useState<MyRcGame | null>(null);
+  const [rcNoteText, setRcNoteText] = useState('');
+  const [rcNoteSaving, setRcNoteSaving] = useState(false);
+  const [rcNoteError, setRcNoteError] = useState('');
+
+  const openRcNote = (game: MyRcGame) => {
+    setRcNoteGame(game);
+    setRcNoteText(game.note?.note ?? '');
+    setRcNoteError('');
+  };
+
+  const saveRcNote = async () => {
+    if (!rcNoteGame) return;
+    const text = rcNoteText.trim();
+    if (!text) return;
+    setRcNoteSaving(true);
+    setRcNoteError('');
+    try {
+      const filed = await submitRcGameNote({ gameId: rcNoteGame.gameId, note: text, season: seasonStartYear });
+      // Patch in place rather than re-fetching: the list is one request behind
+      // a dashboard reload anyway, and the row has to stop asking immediately.
+      setMyRcGames((rows) => rows.map((r) => (r.gameId === filed.gameId ? { ...r, note: filed } : r)));
+      setRcNoteGame(null);
+    } catch (error) {
+      setRcNoteError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRcNoteSaving(false);
+    }
+  };
+
   const loadHome = async (overviewInFlight?: Promise<RcOverviewEntry[]>, seasonOverride?: number) => {
     const myName = rcAuth.rcName;
     if (!myName) { setHomeData(null); return; }
@@ -1933,11 +1978,15 @@ export default function App() {
     setHomeLoading(true);
     try {
       const norm = (s: string) => s.trim().toLowerCase();
-      const [overview, summary] = await Promise.all([
+      const [overview, summary, rcGames] = await Promise.all([
         overviewInFlight ?? loadRcOverview(season),
         loadrcCoachSummary(myName, season),
+        // Never allowed to take the dashboard down with it: a coach whose
+        // SR-Spiele cannot be read still needs their counters and their games.
+        loadMyRcGames(season).catch(() => [] as MyRcGame[]),
       ]);
       if (!isCurrentLoad('home', gen)) return;
+      setMyRcGames(rcGames);
       const myRow = overview.find((r) => norm(r.fullName) === norm(myName));
       const byDate = (a: rcCoachSummaryGame, b: rcCoachSummaryGame) => a.gameDate.localeCompare(b.gameDate);
       // The summary is per coachee, so a game with two coachees on the whistle
@@ -2438,13 +2487,18 @@ export default function App() {
     setShowAllPastGames(false);
     setBackendNotice('');
     try {
-      const [games, feedbacks] = await Promise.all([
+      const [games, feedbacks, rcNotes] = await Promise.all([
         listCoacheeGames(coachee.id),
         listCoacheeFeedbacks(coachee.id),
+        // Never blocks the page: a coachee's games and feedbacks are the point
+        // of this view, and the notes are an extra shelf on it.
+        loadRcGameNotes({ coacheeId: coachee.id, coacheeName: coachee.full_name })
+          .catch(() => [] as RcGameNote[]),
       ]);
       if (!isCurrentLoad('coacheeGames', gen)) return;
       setCoacheeGames(games);
       setCoacheeFeedbacks(feedbacks);
+      setCoacheeRcNotes(rcNotes);
       setFeedbackSubView('coacheeGames');
     } catch (error) {
       if (!isCurrentLoad('coacheeGames', gen)) return;
@@ -5515,6 +5569,73 @@ export default function App() {
                         </div>
                       )}
 
+                      {/* 4.4.10 SR-Spiel. A coach on the whistle beside a
+                          coachee has nobody in the stand, so the regulation
+                          asks for no Feedbackformular on that referee at all —
+                          just a short Rückmeldung. This block is the "wird der
+                          RC gebeten" part: without it nothing in the app ever
+                          asks, and the coach has to remember a rule.
+                          Deliberately NOT folded into the amber "ausstehend"
+                          box above, and deliberately not counted anywhere: a
+                          Rückmeldung is not an observation and must not move
+                          the season target. */}
+                      {myRcGames.length > 0 && (
+                        <div className="rounded-xl border border-sky-300 bg-sky-50 p-3">
+                          <p className="text-sm font-semibold text-sky-900 flex items-center gap-1.5">
+                            <MessageSquare size={15} />
+                            {de ? 'Eigene SR-Spiele' : 'Games you refereed yourself'}
+                          </p>
+                          <p className="text-xs text-sky-800 mt-0.5 mb-2">
+                            {de
+                              ? 'Du hast neben einem Coachee gepfiffen. Dafür wird kein Feedbackformular ausgefüllt — es genügt eine kurze Rückmeldung.'
+                              : 'You whistled next to a coachee. No feedback form is filled in for those games — a short note is enough.'}
+                          </p>
+                          <div className="space-y-1.5">
+                            {[...myRcGames]
+                              // Still to write first, then the filed ones,
+                              // newest game first within each.
+                              .sort((a, b) => (Number(Boolean(a.note)) - Number(Boolean(b.note)))
+                                || b.gameDate.localeCompare(a.gameDate))
+                              .map((g) => (
+                                <button
+                                  key={`rcgame-${g.gameId}`}
+                                  onClick={() => openRcNote(g)}
+                                  className={cn(
+                                    'w-full text-left px-3 py-2.5 rounded-lg border bg-white transition-colors flex items-center gap-3',
+                                    g.note ? 'border-stone-200 hover:border-stone-300' : 'border-sky-300 hover:bg-sky-50/60',
+                                  )}
+                                  title={g.note
+                                    ? (de ? 'Rückmeldung öffnen' : 'Open the note')
+                                    : (de ? 'Rückmeldung erfassen' : 'Write the note')}
+                                >
+                                  <div className="flex flex-col items-center justify-center w-12 shrink-0">
+                                    <span className="text-[11px] font-semibold text-sky-700 leading-tight">{fmtDate(g.gameDate)}</span>
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    {teamLines(g.teams)}
+                                    <div className="text-xs text-stone-500 mt-0.5">
+                                      <LeagueLabel text={g.league} />
+                                      {' · '}
+                                      {de ? 'du' : 'you'} {g.rcRole}
+                                      {' · '}
+                                      <span className="text-stone-700">{g.coacheeName}</span> {g.coacheeRole}
+                                    </div>
+                                    {g.note && (
+                                      <p className="text-xs text-stone-500 mt-1 line-clamp-2">{g.note.note}</p>
+                                    )}
+                                  </div>
+                                  <span className={cn(
+                                    'shrink-0 px-2 py-1 rounded text-[11px] font-bold leading-none',
+                                    g.note ? 'bg-green-100 text-green-800' : 'bg-sky-600 text-white',
+                                  )}>
+                                    {g.note ? (de ? 'Erfasst' : 'Filed') : (de ? 'Rückmeldung' : 'Note')}
+                                  </span>
+                                </button>
+                              ))}
+                          </div>
+                        </div>
+                      )}
+
                       {/* Next appointments */}
                       <div>
                         <h3 className="text-sm font-semibold text-stone-700 mb-2 flex items-center gap-1.5">
@@ -6501,6 +6622,39 @@ export default function App() {
               {t.lists}
             </button>
           </div>
+          {/* 4.4.10 SR-Spiel, read side. These games have no feedback and
+              never will, so without this block the only trace of them on the
+              person's page would be a past game nobody ever filed anything for
+              — which reads as a coach who forgot, not as the rule working. */}
+          {coacheeRcNotes.length > 0 && (
+            <div className="mb-3 rounded-lg border border-sky-200 bg-sky-50/60 p-3">
+              <h4 className="text-sm font-semibold text-sky-900 flex items-center gap-1.5">
+                <MessageSquare size={14} />
+                {formData.lang === 'DE' ? 'Rückmeldungen aus SR-Spielen' : 'Notes from games they refereed with a coach'}
+                <span className="text-xs font-normal text-sky-700/70">({coacheeRcNotes.length})</span>
+              </h4>
+              <p className="text-xs text-sky-800/80 mt-0.5 mb-2">
+                {formData.lang === 'DE'
+                  ? 'Von Coaches, die neben dieser Person gepfiffen haben. Dafür wird kein Feedbackformular ausgefüllt.'
+                  : 'From coaches who whistled next to this person. No feedback form is filled in for those games.'}
+              </p>
+              <div className="space-y-2">
+                {coacheeRcNotes.map((n) => (
+                  <div key={n.id} className="rounded border border-sky-200 bg-white px-3 py-2">
+                    <div className="text-xs text-stone-500">
+                      {shortDate(n.gameDate)}
+                      {n.league && <> · <LeagueLabel text={n.league} /></>}
+                      {n.teams && <> · {n.teams}</>}
+                    </div>
+                    <div className="text-xs text-stone-600 mt-0.5">
+                      {n.rcName} ({n.rcRole}) · {formData.lang === 'DE' ? 'Coachee' : 'coachee'} {n.coacheeRole}
+                    </div>
+                    <p className="text-sm text-stone-800 mt-1 whitespace-pre-wrap">{n.note}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="border border-stone-200 rounded">
             {loadingCoacheeGames ? (
               <ListLoading label={t.loading} first={booting} rows={5} />
@@ -7513,6 +7667,78 @@ export default function App() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* The Rückmeldung itself: one free-text field, and every other line of
+          it already filled in. That is the whole difference from the Google
+          form this replaces, where the coach retyped the match number, the
+          league, the teams and who whistled which slot before writing a word.
+          The header is read-only on purpose — it is the game record, not an
+          entry field, and the server re-derives all of it anyway. */}
+      {rcNoteGame && (
+        <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
+          <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="p-5 border-b border-stone-200">
+              <h3 className="text-lg font-bold text-stone-900">{formData.lang === 'DE' ? 'Rückmeldung SR-Spiel' : 'SR-Spiel note'}</h3>
+              <p className="text-xs text-stone-500 mt-1">
+                {formData.lang === 'DE'
+                  ? 'Für dieses Spiel wird kein Feedbackformular ausgefüllt. Alle Referee Coaches können die Rückmeldung lesen, der Schiedsrichter nicht.'
+                  : 'No feedback form is filled in for this game. Every referee coach can read the note; the referee cannot.'}
+              </p>
+            </div>
+            <dl className="px-5 py-4 grid grid-cols-3 gap-x-3 gap-y-2 text-sm border-b border-stone-200 bg-stone-50/60">
+              {([
+                [formData.lang === 'DE' ? 'Datum' : 'Date', shortDate(rcNoteGame.gameDate)],
+                [formData.lang === 'DE' ? 'Spiel' : 'Match', `${rcNoteGame.league}${rcNoteGame.matchNo ? ` · #${rcNoteGame.matchNo}` : ''}`],
+                [formData.lang === 'DE' ? 'Teams' : 'Teams', rcNoteGame.teams],
+                [formData.lang === 'DE' ? 'Halle' : 'Venue', rcNoteGame.location || '—'],
+                [formData.lang === 'DE' ? 'Du' : 'You', `${rcAuth.rcName ?? ''} (${rcNoteGame.rcRole})`],
+                [formData.lang === 'DE' ? 'Coachee' : 'Coachee', `${rcNoteGame.coacheeName} (${rcNoteGame.coacheeRole})`],
+                [formData.lang === 'DE' ? 'Resultat' : 'Result', rcNoteGame.result || '—'],
+              ] as const).map(([label, value]) => (
+                <React.Fragment key={label}>
+                  <dt className="col-span-1 text-stone-500">{label}</dt>
+                  <dd className="col-span-2 text-stone-800 break-words">{value}</dd>
+                </React.Fragment>
+              ))}
+            </dl>
+            <div className="p-5">
+              <label htmlFor="rc-note" className="block text-sm font-medium text-stone-700 mb-1.5">
+                {formData.lang === 'DE' ? 'Deine Rückmeldung' : 'Your note'}
+              </label>
+              <textarea
+                id="rc-note"
+                value={rcNoteText}
+                onChange={(e) => setRcNoteText(e.target.value)}
+                rows={7}
+                autoFocus
+                placeholder={formData.lang === 'DE'
+                  ? 'Was ist dir am Schiedsrichter aufgefallen? Was lief gut, woran soll er oder sie arbeiten?'
+                  : 'What did you notice about the referee? What went well, what should they work on?'}
+                className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/40 focus:border-sky-400"
+              />
+              {rcNoteError && <p className="text-sm text-red-700 mt-2">{rcNoteError}</p>}
+              <div className="flex items-center justify-end gap-2 mt-4">
+                <button
+                  type="button"
+                  onClick={() => setRcNoteGame(null)}
+                  className="h-10 px-4 rounded-lg border border-stone-200 text-sm font-medium text-stone-600 hover:bg-stone-50 transition-colors"
+                >
+                  {formData.lang === 'DE' ? 'Abbrechen' : 'Cancel'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveRcNote()}
+                  disabled={rcNoteSaving || rcNoteText.trim() === ''}
+                  className="h-10 px-4 rounded-lg bg-sky-700 text-white text-sm font-semibold hover:bg-sky-800 transition-colors disabled:opacity-50 inline-flex items-center gap-2"
+                >
+                  {rcNoteSaving && <Loader2 size={15} className="animate-spin" />}
+                  {formData.lang === 'DE' ? 'Senden' : 'Send'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

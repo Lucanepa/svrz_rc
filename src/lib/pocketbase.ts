@@ -533,7 +533,9 @@ export async function loadrcCoachSummary(rcName: string, season?: number): Promi
 
 // ── 4.4.10 SR-Spiel ───────────────────────────────────────────────────
 // A coach who whistled next to a coachee files a short Rückmeldung instead of a
-// full observation. See the block over /api/rc-games in server/index.ts.
+// full observation. It is addressed to the RC-Präsidium alone — the author and
+// the chair read it, no other coach does, and it never counts toward a season
+// target. See the block over /api/rc-games in server/index.ts.
 
 export type RcGameNote = {
   id: string;
@@ -576,14 +578,13 @@ export async function loadMyRcGames(season?: number): Promise<MyRcGame[]> {
   return response.json() as Promise<MyRcGame[]>;
 }
 
-/** Every coach's Rückmeldungen, or one referee's when a coachee is named. */
-export async function loadRcGameNotes(filter?: { coacheeId?: string; coacheeName?: string }): Promise<RcGameNote[]> {
-  if (isDemoMode()) return demo.loadRcGameNotes(filter);
-  const params = new URLSearchParams();
-  if (filter?.coacheeId) params.set('coacheeId', filter.coacheeId);
-  if (filter?.coacheeName) params.set('coacheeName', filter.coacheeName);
-  const qs = params.toString() ? `?${params}` : '';
-  const response = await fetch(apiUrl(`/api/rc-game-notes${qs}`), { credentials: 'include' });
+/**
+ * Every filed Rückmeldung, newest first. The RC-Präsidium's console is the only
+ * caller the server answers — a coach's own note comes back on loadMyRcGames.
+ */
+export async function loadRcGameNotes(): Promise<RcGameNote[]> {
+  if (isDemoMode()) return demo.loadRcGameNotes();
+  const response = await fetch(apiUrl('/api/rc-game-notes'), { credentials: 'include' });
   if (!response.ok) throw await apiError(response, 'Rückmeldungen konnten nicht geladen werden.');
   return response.json() as Promise<RcGameNote[]>;
 }

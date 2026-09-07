@@ -496,8 +496,9 @@ const DEMO_RC_GAME: Omit<MyRcGame, 'note'> = {
   rcRole: '2. SR', coacheeName: 'Luca Ferrari', coacheeId: 'demo-c-luca', coacheeRole: '1. SR',
 };
 
-// One colleague's Rückmeldung is already on file, because "every coach reads
-// every note" is the whole point of the screen and an empty list shows none of it.
+// One colleague's Rückmeldung is already on file so the chair's list in the demo
+// console has something in it. The demo coach never sees this row: it is not
+// theirs, and only the RC-Präsidium reads other people's.
 let demoRcNotes: RcGameNote[] = [{
   id: 'demo-note-1', gameId: 'demo-g-rc-earlier',
   rcId: 'demo-rc-2', rcName: 'Andrea Bianchi', rcRole: '1. SR',
@@ -512,14 +513,8 @@ export function loadMyRcGames(): Promise<MyRcGame[]> {
   return ok([{ ...DEMO_RC_GAME, note: mine }]);
 }
 
-export function loadRcGameNotes(filter?: { coacheeId?: string; coacheeName?: string }): Promise<RcGameNote[]> {
-  const norm = (v?: string) => (v ?? '').trim().toLowerCase();
-  const notes = demoRcNotes.filter((n) => {
-    if (filter?.coacheeId) return n.coacheeId === filter.coacheeId;
-    if (filter?.coacheeName) return norm(n.coacheeName) === norm(filter.coacheeName);
-    return true;
-  });
-  return ok(notes.map((n) => ({ ...n })));
+export function loadRcGameNotes(): Promise<RcGameNote[]> {
+  return ok(demoRcNotes.map((n) => ({ ...n })));
 }
 
 export function submitRcGameNote(payload: { gameId: string; note: string }): Promise<RcGameNote> {

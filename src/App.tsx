@@ -34,10 +34,8 @@ import {
   listParkedDrafts,
   unparkDrafts,
   loadMyRcGames,
-  loadRcGameNotes,
   submitRcGameNote,
   type MyRcGame,
-  type RcGameNote,
   type IcalSubscription,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
@@ -1376,11 +1374,6 @@ export default function App() {
   const [savingNotes, setSavingNotes] = useState(false);
   const [feedbackPickerCoachee, setFeedbackPickerCoachee] = useState<Coachee | null>(null);
   const [coacheeFeedbacks, setCoacheeFeedbacks] = useState<FeedbackRecord[]>([]);
-  // Every coach's SR-Spiel Rückmeldungen about the coachee currently open. Not
-  // the signed-in coach's own: what somebody else saw from the second whistle
-  // is exactly what the next visitor wants to know beforehand, which is the
-  // reason these are shared at all.
-  const [coacheeRcNotes, setCoacheeRcNotes] = useState<RcGameNote[]>([]);
   const [loadingCoacheeFeedbacks, setLoadingCoacheeFeedbacks] = useState(false);
   const [showAllPastGames, setShowAllPastGames] = useState(false);
   const [savingFeedback, setSavingFeedback] = useState(false);
@@ -2487,18 +2480,13 @@ export default function App() {
     setShowAllPastGames(false);
     setBackendNotice('');
     try {
-      const [games, feedbacks, rcNotes] = await Promise.all([
+      const [games, feedbacks] = await Promise.all([
         listCoacheeGames(coachee.id),
         listCoacheeFeedbacks(coachee.id),
-        // Never blocks the page: a coachee's games and feedbacks are the point
-        // of this view, and the notes are an extra shelf on it.
-        loadRcGameNotes({ coacheeId: coachee.id, coacheeName: coachee.full_name })
-          .catch(() => [] as RcGameNote[]),
       ]);
       if (!isCurrentLoad('coacheeGames', gen)) return;
       setCoacheeGames(games);
       setCoacheeFeedbacks(feedbacks);
-      setCoacheeRcNotes(rcNotes);
       setFeedbackSubView('coacheeGames');
     } catch (error) {
       if (!isCurrentLoad('coacheeGames', gen)) return;
@@ -5587,8 +5575,8 @@ export default function App() {
                           </p>
                           <p className="text-xs text-sky-800 mt-0.5 mb-2">
                             {de
-                              ? 'Du hast neben einem Coachee gepfiffen. Dafür wird kein Feedbackformular ausgefüllt — es genügt eine kurze Rückmeldung.'
-                              : 'You whistled next to a coachee. No feedback form is filled in for those games — a short note is enough.'}
+                              ? 'Du hast neben einem Coachee gepfiffen. Dafür wird kein Feedbackformular ausgefüllt — es genügt eine kurze Rückmeldung ans RC-Präsidium.'
+                              : 'You whistled next to a coachee. No feedback form is filled in for those games — a short note to the RC chair is enough.'}
                           </p>
                           <div className="space-y-1.5">
                             {[...myRcGames]
@@ -5600,6 +5588,13 @@ export default function App() {
                                 <button
                                   key={`rcgame-${g.gameId}`}
                                   onClick={() => openRcNote(g)}
+                                  // The row prints the first lines of a note
+                                  // promised to the chair alone, and the click
+                                  // logger copies a button's text into the
+                                  // Protokoll every admin reads. On the button,
+                                  // not on the <p>: the logger looks upwards
+                                  // from the clicked element to the button.
+                                  data-log-redact
                                   className={cn(
                                     'w-full text-left px-3 py-2.5 rounded-lg border bg-white transition-colors flex items-center gap-3',
                                     g.note ? 'border-stone-200 hover:border-stone-300' : 'border-sky-300 hover:bg-sky-50/60',
@@ -6622,39 +6617,6 @@ export default function App() {
               {t.lists}
             </button>
           </div>
-          {/* 4.4.10 SR-Spiel, read side. These games have no feedback and
-              never will, so without this block the only trace of them on the
-              person's page would be a past game nobody ever filed anything for
-              — which reads as a coach who forgot, not as the rule working. */}
-          {coacheeRcNotes.length > 0 && (
-            <div className="mb-3 rounded-lg border border-sky-200 bg-sky-50/60 p-3">
-              <h4 className="text-sm font-semibold text-sky-900 flex items-center gap-1.5">
-                <MessageSquare size={14} />
-                {formData.lang === 'DE' ? 'Rückmeldungen aus SR-Spielen' : 'Notes from games they refereed with a coach'}
-                <span className="text-xs font-normal text-sky-700/70">({coacheeRcNotes.length})</span>
-              </h4>
-              <p className="text-xs text-sky-800/80 mt-0.5 mb-2">
-                {formData.lang === 'DE'
-                  ? 'Von Coaches, die neben dieser Person gepfiffen haben. Dafür wird kein Feedbackformular ausgefüllt.'
-                  : 'From coaches who whistled next to this person. No feedback form is filled in for those games.'}
-              </p>
-              <div className="space-y-2">
-                {coacheeRcNotes.map((n) => (
-                  <div key={n.id} className="rounded border border-sky-200 bg-white px-3 py-2">
-                    <div className="text-xs text-stone-500">
-                      {shortDate(n.gameDate)}
-                      {n.league && <> · <LeagueLabel text={n.league} /></>}
-                      {n.teams && <> · {n.teams}</>}
-                    </div>
-                    <div className="text-xs text-stone-600 mt-0.5">
-                      {n.rcName} ({n.rcRole}) · {formData.lang === 'DE' ? 'Coachee' : 'coachee'} {n.coacheeRole}
-                    </div>
-                    <p className="text-sm text-stone-800 mt-1 whitespace-pre-wrap">{n.note}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
           <div className="border border-stone-200 rounded">
             {loadingCoacheeGames ? (
               <ListLoading label={t.loading} first={booting} rows={5} />
@@ -7684,8 +7646,8 @@ export default function App() {
               <h3 className="text-lg font-bold text-stone-900">{formData.lang === 'DE' ? 'Rückmeldung SR-Spiel' : 'SR-Spiel note'}</h3>
               <p className="text-xs text-stone-500 mt-1">
                 {formData.lang === 'DE'
-                  ? 'Für dieses Spiel wird kein Feedbackformular ausgefüllt. Alle Referee Coaches können die Rückmeldung lesen, der Schiedsrichter nicht.'
-                  : 'No feedback form is filled in for this game. Every referee coach can read the note; the referee cannot.'}
+                  ? 'Für dieses Spiel wird kein Feedbackformular ausgefüllt. Die Rückmeldung geht nur an das RC-Präsidium — weder der Schiedsrichter noch die anderen Referee Coaches lesen sie.'
+                  : 'No feedback form is filled in for this game. The note goes to the RC chair alone — neither the referee nor the other referee coaches read it.'}
               </p>
             </div>
             <dl className="px-5 py-4 grid grid-cols-3 gap-x-3 gap-y-2 text-sm border-b border-stone-200 bg-stone-50/60">

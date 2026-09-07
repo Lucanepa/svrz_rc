@@ -14,8 +14,10 @@ import {
   listReferees, importReferees, type RefereeRoster, type RosterReferee, type RefereeImportRow,
   getSurveyConfig, putSurveyConfig,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
+  loadRcGameNotes,
   syncGames, type GamesSyncStatus,
   type PresidentNote,
+  type RcGameNote,
   type Coachee, type RefereeCoachPerson, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplateKind, type EmailTemplates, type ReminderPreview, type ManualGame,
   type LogEntry, type LogSession, type SurveyResponse,
 } from '../lib/pocketbase';
@@ -79,6 +81,9 @@ const STR = {
     notesHint: 'Vertrauliche Notizen der Referee Coaches zu bereits abgeschickten Feedbacks — nur hier sichtbar. Der Schiedsrichter erfährt nichts davon.',
     notesEmpty: 'Noch keine Notizen.',
     notesBy: (author: string, rc: string) => `${author} (zu ${rc}s Beobachtung)`,
+    srNotes: 'Rückmeldungen aus SR-Spielen (4.4.10)',
+    srNotesHint: 'Hat ein Referee Coach neben einem Coachee gepfiffen, wird kein Feedbackformular ausgefüllt — stattdessen diese kurze Rückmeldung. Sie geht nur ans RC-Präsidium und zählt nicht ans Saisonziel.',
+    srNotesEmpty: 'Noch keine Rückmeldungen.',
     logsHint: 'Alles, was passiert: jede Anfrage, jeder Klick in der App, jeder Fehler. Neueste zuletzt.',
     logsSearch: 'Suchen (E-Mail, Pfad, Text…)', logsLevel: 'Stufe', logsSource: 'Quelle', logsAll: 'Alle',
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'Keine Einträge.',
@@ -255,6 +260,9 @@ const STR = {
     notesHint: 'Confidential notes referee coaches wrote on feedback they have already sent — visible only here. The referee is never told about them.',
     notesEmpty: 'No notes yet.',
     notesBy: (author: string, rc: string) => `${author} (on ${rc}'s observation)`,
+    srNotes: 'Notes from games a coach refereed (4.4.10)',
+    srNotesHint: 'When a referee coach whistled next to a coachee no feedback form is filled in — this short note takes its place. It reaches the RC chair only and never counts toward a season target.',
+    srNotesEmpty: 'No notes yet.',
     logsHint: 'Everything that happens: every request, every click in the app, every error. Newest last.',
     logsSearch: 'Search (email, path, text…)', logsLevel: 'Level', logsSource: 'Source', logsAll: 'All',
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'No entries.',
@@ -2249,10 +2257,19 @@ function SurveyAdmin({ t, lang }: { t: T; lang: Lang }) {
 // record to be edited. Only the note's author can change it, back in the app.
 function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
   const [rows, setRows] = useState<PresidentNote[] | null>(null);
+  // The 4.4.10 Rückmeldungen. Same tab, because they are the same promise from
+  // the chair's side — a coach writing to her about a referee nobody observed —
+  // and a separate list, because they are not notes ON an observation: these
+  // games have no feedback at all, which is the point of the rule.
+  const [srRows, setSrRows] = useState<RcGameNote[] | null>(null);
   const [err, setErr] = useState('');
+  const [srErr, setSrErr] = useState('');
 
   useEffect(() => {
     listPresidentNotes().then(setRows).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+    // Its own error line: an empty SR list must not read as "the notes above
+    // failed to load", and neither list should take the other down.
+    loadRcGameNotes().then(setSrRows).catch((e) => setSrErr(e instanceof Error ? e.message : String(e)));
   }, []);
 
   const fmtDate = (value: string) => {
@@ -2283,6 +2300,29 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
           </div>
           {/* Confidential to the chair; the server already keeps it out of its
               own request log, and the click logger must do the same. */}
+          <p data-log-redact className="text-sm text-stone-800 whitespace-pre-wrap">{r.note}</p>
+        </div>
+      ))}
+
+      <div className="pt-2">
+        <h3 className="text-sm font-semibold text-stone-800">{t.srNotes}</h3>
+        <p className="text-xs text-stone-500 leading-snug mt-1">{t.srNotesHint}</p>
+      </div>
+      {srErr && <p className="text-sm text-red-600">{srErr}</p>}
+      {!srRows && !srErr && <SkeletonRows />}
+      {srRows?.length === 0 && <p className="text-sm text-stone-400 py-8 text-center">{t.srNotesEmpty}</p>}
+      {srRows?.map((r) => (
+        <div key={r.id} className="bg-white rounded-2xl shadow-card border border-stone-200/70 p-5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pb-3 mb-3 border-b border-stone-100">
+            {/* Who was observed, and in which slot — a 4.4.10 note is always
+                about the OTHER whistle, so the roles are half the context. */}
+            <span className="text-sm font-semibold text-stone-800">{r.coacheeName || '—'}</span>
+            {r.coacheeRole && <span className="text-xs text-stone-400">{r.coacheeRole}</span>}
+            {r.gameDate && <span className="text-xs text-stone-400">{fmtDate(r.gameDate)}</span>}
+            {r.league && <span className="text-xs text-stone-400">{r.league}</span>}
+            {r.teams && <span className="text-xs text-stone-500 truncate">{r.teams}</span>}
+            <span className="ml-auto text-xs text-stone-500">{r.rcName}{r.rcRole ? ` (${r.rcRole})` : ''}</span>
+          </div>
           <p data-log-redact className="text-sm text-stone-800 whitespace-pre-wrap">{r.note}</p>
         </div>
       ))}

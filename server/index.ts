@@ -235,6 +235,10 @@ const parkJson = express.json({ limit: PARK_MAX_BYTES });
 const CONFIDENTIAL_BODY_PATHS = [
   /^\/api\/feedback\/[^/]+\/president-note$/i,
   /^\/api\/survey\/[^/]+$/i,
+  // A 4.4.10 Rückmeldung carries the same promise as the note above it: it
+  // reaches the chair and no one else. The admin Protokoll is read by people
+  // that promise excludes, so the body is reduced to shape here too.
+  /^\/api\/rc-game-notes$/i,
   // A parked draft is a coach's unfinished assessment of a named referee, and
   // parkOwner refuses an admin console session on purpose. This log is READ
   // through that same console session, so the body must not reach it by the
@@ -5841,19 +5845,19 @@ app.get('/api/rc-games', requireRcSession, async (req: Request, res: ExpressResp
   }
 });
 
-// Every coach reads every Rückmeldung: what one of them saw from the whistle is
-// exactly what the next one wants before their own visit. `coacheeId` narrows it
-// to one referee for the coachee page; `coacheeName` is the fallback for rows
-// written before that referee had a coachee row of their own.
-app.get('/api/rc-game-notes', requireRcSession, async (req: Request, res: ExpressResponse) => {
+// The Rückmeldung goes to the RC-Präsidium and to nobody else. Same gate as the
+// private note on a feedback and as the survey answers — requireSurveyReader,
+// the chair's own password, which admin rights deliberately do not stand in for.
+//
+// It was briefly readable by every coach, on the coachee's page. That is not
+// what the Google form this replaces did: the RC who whistled wrote to the
+// chair, not onto a shelf a dozen colleagues browse, and a coach writes more
+// plainly about a colleague when they know who is reading. A coach still reads
+// their OWN note back — /api/rc-games hands it to them so they can edit it —
+// and never anybody else's.
+app.get('/api/rc-game-notes', requireSurveyReader, async (_req: Request, res: ExpressResponse) => {
   try {
-    const notes = await listRcGameNotes();
-    const byId = asText(req.query.coacheeId);
-    const byName = normalizeName(req.query.coacheeName);
-    const filtered = byId || byName
-      ? notes.filter((n) => (byId && n.coacheeId === byId) || (byName && normalizeName(n.coacheeName) === byName))
-      : notes;
-    res.json(filtered);
+    res.json(await listRcGameNotes());
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

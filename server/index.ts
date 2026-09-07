@@ -5823,6 +5823,92 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
   return out;
 }
 
+// Where a filed Rückmeldung is mailed. Her own roster record carries the
+// address — the same is_rc_president flag that labels her there — so there is
+// nothing to configure and nothing to update when the office changes hands.
+//
+// Deliberately NOT SURVEY_NOTIFY_EMAIL: that inbox belongs to the RC
+// commission, and this note was promised to one person. Deliberately not an env
+// var either — a second place to state who the chair is, is a second place for
+// it to be wrong the season after next.
+async function rcPresidentEmails(): Promise<string[]> {
+  const people = await getActiveRcPeople();
+  return people.filter((p) => p.isRcPresident && p.email).map((p) => p.email);
+}
+
+// Mails one Rückmeldung to the chair. Never throws and never blocks the reply:
+// the note is already stored, the Notizen tab is the canonical copy, and losing
+// the coach's words to an SMTP hiccup would be far worse than a missing mail.
+//
+// German throughout, like the survey notification: it goes to the chair, not
+// back to whoever wrote it.
+async function sendRcGameNoteNotification(opts: {
+  note: string;
+  game: MyRcGame;
+  rcName: string;
+  updated: boolean;
+}): Promise<void> {
+  try {
+    const to = await rcPresidentEmails();
+    if (to.length === 0) {
+      // Loud, because from the coach's side this looked like it was sent. The
+      // flag lives in PocketBase and nowhere in the console, so an unflagged
+      // roster is silent by construction unless a line like this exists.
+      log.warn('rc_note.no_recipient', 'Rückmeldung stored but no active RC is flagged is_rc_president — nobody was mailed', {
+        gameId: opts.game.gameId,
+      });
+      return;
+    }
+    const testMode = await isEmailTestMode();
+    const testRecipient = process.env.FEEDBACK_TEST_RECIPIENT || '';
+    if (testMode && !testRecipient) {
+      log.warn('rc_note.notify_skipped', 'test mode on but no FEEDBACK_TEST_RECIPIENT — not mailing');
+      return;
+    }
+    const g = opts.game;
+    const rows: Array<[string, string]> = [
+      ['Schiedsrichter:in', `${g.coacheeName}${g.coacheeRole ? ` (${g.coacheeRole})` : ''}`],
+      ['Referee Coach', `${opts.rcName}${g.rcRole ? ` (${g.rcRole})` : ''}`],
+      ['Datum', fmtDateDe(g.gameDate)],
+      ['Liga', g.league],
+      ['Spiel Nr.', g.matchNo],
+      ['Teams', g.teams],
+      ['Halle', g.location],
+      ['Resultat', g.result],
+    ];
+    const subject = `${opts.updated ? 'Aktualisierte Rückmeldung' : 'Rückmeldung'} SR-Spiel: ${g.coacheeName}`
+      + (g.gameDate ? ` (${fmtDateDe(g.gameDate)})` : '');
+    const intro = opts.updated
+      ? `${opts.rcName} hat die Rückmeldung zu diesem SR-Spiel überarbeitet. Sie ersetzt die frühere Fassung.`
+      : `${opts.rcName} hat neben ${g.coacheeName} gepfiffen und dazu eine Rückmeldung erfasst.`;
+    const html = emailShell(
+      `<h1 style="margin:0 0 6px;${mailText(20, MAIL_INK, `font-weight:700;line-height:1.3;${MAIL_DISPLAY}`)}">Rückmeldung SR-Spiel</h1>`
+      + textBlockHtml(intro)
+      + detailRowsHtml(rows)
+      + qaBlocksHtml([['Rückmeldung', opts.note]])
+      + `<p style="margin:18px 0 0;${mailText(12, MAIL_MUTED)}">Gemäss 4.4.10 wird für dieses Spiel kein Feedbackformular ausgefüllt; die Rückmeldung zählt entsprechend nicht ans Saisonziel. Sie ist ausserhalb dieser Mail nur im RC-Präsidiums-Bereich der App sichtbar — weder der Schiedsrichter noch die anderen Referee Coaches lesen sie.</p>`,
+    );
+    const text = `${subject}\n\n${intro}\n\n`
+      + rows.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join('\n')
+      + `\n\nRückmeldung:\n${opts.note}\n`;
+    await sendMailResilient({
+      from: MAIL_FROM,
+      to: testMode ? testRecipient : to.join(','),
+      subject: testMode ? `[TEST] ${subject}` : subject,
+      html,
+      text,
+      attachments: emailAttachments(),
+    });
+  } catch (error) {
+    // The raw error, for the same reason the survey notification keeps it: a
+    // sanitised "Internal server error" here says nothing about SMTP.
+    log.warn('rc_note.notify_failed', 'Rückmeldung stored but could not be mailed', {
+      error: error instanceof Error ? error.message : String(error),
+      code: String((error as { code?: string })?.code || ''),
+    });
+  }
+}
+
 // The coach's own SR-Spiele, each carrying the Rückmeldung they already filed
 // (or null, which is what puts it on the "still to do" list on Home).
 app.get('/api/rc-games', requireRcSession, async (req: Request, res: ExpressResponse) => {
@@ -5863,6 +5949,14 @@ app.get('/api/rc-game-notes', requireSurveyReader, async (_req: Request, res: Ex
   }
 });
 
+// Kicked off AFTER the response, never before it: the coach's dialog must not
+// sit through an SMTP handshake for a note that is already stored, and
+// sendRcGameNoteNotification swallows its own failures, so nothing here can
+// reject unhandled.
+function notifyChair(opts: Parameters<typeof sendRcGameNoteNotification>[0]): void {
+  void sendRcGameNoteNotification(opts);
+}
+
 app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     const subject = rcAuthByReq.get(req);
@@ -5896,6 +5990,11 @@ app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: Expre
         collection.update<AnyRecord>(previous.id, { note, submitted_at: new Date().toISOString(), submission_key: submissionKey }),
       );
       res.json({ ...mapRcGameNote(updated), ...context });
+      // A rewrite is mailed too, marked as one. The chair may already have read
+      // the earlier version, and a correction she never sees is worse than a
+      // second mail. Only when the words actually changed, so the resend that
+      // settles a dropped connection does not arrive as a second Rückmeldung.
+      if (note !== previous.note) notifyChair({ note, game, rcName: subject.name, updated: true });
       return;
     }
 
@@ -5916,6 +6015,7 @@ app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: Expre
       }),
     );
     res.json({ ...mapRcGameNote(created), ...context });
+    notifyChair({ note, game, rcName: subject.name, updated: false });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

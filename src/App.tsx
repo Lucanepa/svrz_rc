@@ -39,6 +39,7 @@ import {
   type IcalSubscription,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
+import InfoHint from './components/InfoHint';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import {
   draftKey, putDrafts, listDrafts, getGameDrafts, setDraftStatus, deleteDraft, pruneDrafts,
@@ -5490,6 +5491,7 @@ export default function App() {
                         the goal tile, where "(5 ½)" would read as five and a half. */}
                     <p className="text-sm text-stone-500">
                       {de ? 'Deine Coaching-Übersicht' : 'Your coaching overview'}
+                      {' '}<InfoHint id="goal" lang={formData.lang} />
                       {/* Only worth saying when it differs from the default —
                           and 'half mandate' no longer exists as a category. */}
                       {myMandate !== undefined && myGoal !== defaultGoal
@@ -5592,6 +5594,7 @@ export default function App() {
                           <p className="text-sm font-semibold text-sky-900 flex items-center gap-1.5">
                             <MessageSquare size={15} />
                             {de ? 'Eigene SR-Spiele' : 'Games you refereed yourself'}
+                            <InfoHint id="srGame" lang={formData.lang} />
                           </p>
                           <p className="text-xs text-sky-800 mt-0.5 mb-2">
                             {de
@@ -6627,7 +6630,13 @@ export default function App() {
                 // carry it: this heading is the one thing on screen that says
                 // whose games these are.
                 const vcGroup = vc ? groupLabel(vc.groups, formData.lang) : '';
-                return <span className="ml-2 text-xs font-normal text-stone-500">(Level: {vc ? <LevelText level={vc.referee_level} stage={vc.stage} /> : selectedCoacheeLevel}{vcGroup ? ` · ${vcGroup}` : ''})</span>;
+                return (
+                  <span className="ml-2 text-xs font-normal text-stone-500">
+                    (Level: {vc ? <LevelText level={vc.referee_level} stage={vc.stage} /> : selectedCoacheeLevel}
+                    <InfoHint id="niveau" lang={formData.lang} />
+                    {vcGroup ? <> · {vcGroup}<InfoHint id="group" lang={formData.lang} /></> : null})
+                  </span>
+                );
               })()}
             </h2>
             <button
@@ -6993,7 +7002,7 @@ export default function App() {
         <div className="mb-6 p-2 bg-stone-50 border border-stone-200 rounded flex items-start gap-2 text-[10px] text-stone-600 italic">
           <Info size={14} className="text-red-500 shrink-0 mt-px" />
           <div className="min-w-0">
-            <div>{LEGEND[formData.lang]}</div>
+            <div>{LEGEND[formData.lang]} <InfoHint id="scale" lang={formData.lang} /></div>
             {/* Clicking a cell again has always cycled A → A+ → A- → empty, but
                 nothing said so and coaches never found it. Deliberately NOT
                 folded into LEGEND: feedbackPdf draws that same string and its
@@ -7130,7 +7139,7 @@ export default function App() {
         {/* Results Header Row */}
         <div className="mt-8 border border-stone-900 bg-stone-50 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 print:grid-cols-5 divide-y sm:divide-y-0 sm:divide-x divide-stone-900">
           <div className="p-3">
-            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.matchLevel}</h4>
+            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.matchLevel}</h4><InfoHint id="matchLevel" lang={formData.lang} className="ml-1 mb-1" />
             <div className="flex flex-wrap gap-1">
               {([['leicht', t.easy], ['normal', t.normal], ['schwierig', t.difficult]] as [string, string][]).map(([v, lbl]) => (
                 <button key={v} type="button" onClick={() => updateResult('spielniveau', v)}
@@ -7141,7 +7150,7 @@ export default function App() {
             </div>
           </div>
           <div className="p-3">
-            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.motivation}</h4>
+            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.motivation}</h4><InfoHint id="motivation" lang={formData.lang} className="ml-1 mb-1" />
             <div className="flex gap-1">
               {['up', 'check', 'down'].map(v => (
                 <button 
@@ -7158,7 +7167,7 @@ export default function App() {
             </div>
           </div>
           <div className="p-3">
-            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.rating}</h4>
+            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.rating}</h4><InfoHint id="rating" lang={formData.lang} className="ml-1 mb-1" />
             <div className="flex gap-1">
               {['up', 'check', 'down'].map(v => (
                 <button 
@@ -7175,7 +7184,7 @@ export default function App() {
             </div>
           </div>
           <div className="p-3">
-            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.secondVisit}</h4>
+            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.secondVisit}</h4><InfoHint id="secondVisit" lang={formData.lang} className="ml-1 mb-1" />
             <div className="flex gap-1">
               {['Y', 'N'].map(v => (
                 <button 
@@ -7192,7 +7201,7 @@ export default function App() {
             </div>
           </div>
           <div className="p-3">
-            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1">{t.refGoal}</h4>
+            <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.refGoal}</h4><InfoHint id="refGoal" lang={formData.lang} className="ml-1 mb-1" />
             <input
               type="text"
               className="w-full bg-white border border-stone-200 rounded text-xs p-1.5 outline-none focus:ring-2 focus:ring-red-500"

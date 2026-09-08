@@ -69,6 +69,18 @@ const GROUP_EN = new Map<string, string>([
  *  name. Both spellings: the import writes the long one, older rows the short. */
 const NEW_SR_DE = /^neu-(?:sr|schiedsrichter)\s+(.+)$/i;
 
+/** Is this coachee in their FIRST season? Infoschreiben 4.4.2 calls that cohort
+ *  "Neu-SR <Saison>", and 4.1 gives it the only deadline in the document: the
+ *  visit belongs in one of their first three games. Matched by shape, like the
+ *  label above — the year moves every season and must not be hard-coded here.
+ *
+ *  4.4.3's second-year cohort carries the same prefix with an older year, so a
+ *  caller that needs to tell the two apart compares the season in the name; for
+ *  the deadline both are "Neu-SR" and only the current one is still inside it. */
+export function isNewSrGroup(groups?: string): boolean {
+  return splitCoacheeGroups(groups).some((g) => NEW_SR_DE.test(g));
+}
+
 /** Split a groups field into its individual groups. A bare 2- or 4-digit part
  *  is the tail of a season ("Neu-SR 2025/26"), not a group of its own. */
 export function splitCoacheeGroups(value?: string): string[] {

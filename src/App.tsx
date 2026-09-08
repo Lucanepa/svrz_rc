@@ -53,7 +53,7 @@ import { getStoredLang, setStoredLang } from './lib/prefs';
 import { subscribeLive } from './lib/liveEvents';
 import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml, sanitizeRich } from './lib/richText';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
-import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
+import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName as normName, coacheeIndex } from './lib/coacheeName';
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
@@ -6701,8 +6701,52 @@ export default function App() {
               const allPastGames = visibleGames.filter((game) => new Date(game.date) < now);
               const feedbackByGameId = new Set(coacheeFeedbacks.map((f) => f.game).filter(Boolean));
               const pastGames = showAllPastGames ? allPastGames : allPastGames.filter((game) => feedbackByGameId.has(game.id));
+              // Infoschreiben 4.1: "Neu-SR sind in einem der ersten drei Spielen
+              // zu besuchen." The only deadline in the whole document, and the
+              // app had no idea it existed — a coach had to count the referee's
+              // fixtures by hand to find out whether they were still in time.
+              //
+              // Counted over the season's games unfiltered, not `visibleGames`:
+              // the referee's third game is their third game whether or not it
+              // falls inside the coach's focus, and counting only the focused
+              // ones would report a window that is still open after it shut.
+              const newSrWindow = (() => {
+                if (!isNewSrGroup(viewCoachee?.groups)) return null;
+                const firstThree = [...seasonGames]
+                  .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                  .slice(0, 3);
+                if (firstThree.length === 0) return null;
+                const played = firstThree.filter((g) => new Date(g.date) < now).length;
+                // Any observation on any of the three closes it — which one it
+                // was does not matter to the rule.
+                const visited = firstThree.some((g) => feedbackByGameId.has(g.id));
+                return { firstThree, played, visited, done: visited || played >= firstThree.length };
+              })();
               return (
                 <div>
+                  {newSrWindow && (
+                    <div className={cn(
+                      'flex items-start gap-2 px-4 py-2 border-b text-xs',
+                      newSrWindow.visited ? 'bg-green-50 border-green-200 text-green-800'
+                        : newSrWindow.done ? 'bg-amber-50 border-amber-200 text-amber-900'
+                        : 'bg-sky-50 border-sky-200 text-sky-900',
+                    )}>
+                      <Clock size={13} className="mt-0.5 shrink-0" />
+                      <span>
+                        {newSrWindow.visited
+                          ? (formData.lang === 'DE'
+                            ? 'Neu-SR: Der Besuch in einem der ersten drei Spiele ist erfolgt.'
+                            : 'New referee: the visit within the first three games has happened.')
+                          : newSrWindow.done
+                            ? (formData.lang === 'DE'
+                              ? 'Neu-SR: Die ersten drei Spiele sind gespielt, ohne Besuch. Ein Besuch ist weiterhin sinnvoll.'
+                              : 'New referee: the first three games have been played without a visit. A visit is still worthwhile.')
+                            : (formData.lang === 'DE'
+                              ? `Neu-SR: Besuch in einem der ersten drei Spiele (4.1) — ${newSrWindow.played} von ${newSrWindow.firstThree.length} gespielt.`
+                              : `New referee: visit within the first three games (4.1) — ${newSrWindow.played} of ${newSrWindow.firstThree.length} played.`)}
+                      </span>
+                    </div>
+                  )}
                   {(hiddenByTarget > 0 || (showAllLevels && isTargetActive(target, lvlKey, niveauTable))) && (
                     <div className="flex items-center justify-between gap-2 px-4 py-2 bg-emerald-50 border-b border-emerald-200 text-xs text-emerald-800">
                       <span>

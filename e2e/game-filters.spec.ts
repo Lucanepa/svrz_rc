@@ -25,13 +25,13 @@ test('an RC game stays out of the open list until its filter asks for it', async
   await expect(page.getByText('Volley Obfelden')).toBeVisible();
   await expect(page.getByText('VBC Voléro Zürich')).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'RC Game' }).click();
+  await page.getByRole('button', { name: 'RC Game', exact: true }).click();
   await expect(page.getByText('VBC Voléro Zürich')).toBeVisible();
   await expect(page.getByText('Volley Obfelden')).toHaveCount(0);
 });
 
 test('a filter that is on says so on the button, not just in its switch', async ({ page }) => {
-  const rc = page.getByRole('button', { name: 'RC Game' });
+  const rc = page.getByRole('button', { name: 'RC Game', exact: true });
   await expect(rc).toHaveAttribute('aria-pressed', 'false');
   await expect(rc).toHaveClass(/border-stone-300/);
 
@@ -46,14 +46,14 @@ test('a toggle with nothing to filter is not offered', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'LD Game' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Show inactive' })).toHaveCount(0);
   // The RC-game toggle is offered, because a game in the list is one.
-  await expect(page.getByRole('button', { name: 'RC Game' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'RC Game', exact: true })).toBeVisible();
 });
 
 test('the toggle that is on stays reachable even with nothing left to match', async ({ page }) => {
   // Switched on, then the games change under it: it must remain, or there is no
   // way to switch it off again.
-  await page.getByRole('button', { name: 'RC Game' }).click();
+  await page.getByRole('button', { name: 'RC Game', exact: true }).click();
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [games[0]] }));
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(page.getByRole('button', { name: 'RC Game' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'RC Game', exact: true })).toBeVisible();
 });

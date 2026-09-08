@@ -39,10 +39,14 @@ test('the chevron lists the coachee\'s next games under their row', async ({ pag
   await page.getByRole('button', { name: /^Coachees$/ }).click();
   await expect(page.getByText(COACHEE_LISTED).first()).toBeVisible();
   // Folded away until asked for — the list is 52 rows long.
-  await expect(page.getByText(`${FREE.homeTeam} vs ${FREE.awayTeam}`)).toHaveCount(0);
+  // Home and away sit on their own lines now, with the order saying which is
+  // which, so the pair is matched a name at a time rather than as one string.
+  await expect(page.getByText(FREE.homeTeam, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(FREE.awayTeam, { exact: true })).toHaveCount(0);
 
   await openChevron(page).click();
-  await expect(page.getByText(`${FREE.homeTeam} vs ${FREE.awayTeam}`)).toBeVisible();
+  await expect(page.getByText(FREE.homeTeam, { exact: true })).toBeVisible();
+  await expect(page.getByText(FREE.awayTeam, { exact: true })).toBeVisible();
 });
 
 test('a game can be taken from the row, without opening anything else', async ({ page }) => {

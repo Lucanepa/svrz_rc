@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId } from 'react';
-import { Maximize2, Download, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail, AlertTriangle } from 'lucide-react';
+import { Maximize2, Download, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail, AlertTriangle } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, PAID_CAP, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
@@ -59,6 +59,7 @@ import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, t
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
 import { CoacheeChip, GroupChip } from './components/CoacheeChips';
+import { GameList, GameRow, LeagueLabel, MetaChip, SectionHead, TeamPair, type RowTone } from './components/GameRow';
 import { Skeleton, SkeletonRows } from './components/Skeleton';
 import AppSpinner from './components/AppSpinner';
 import { useRcAuth } from './components/AuthGate';
@@ -561,22 +562,6 @@ function downloadIcal(game: EligibleGame) {
   a.download = `${game.matchNo || 'game'}.ics`;
   a.click();
   URL.revokeObjectURL(url);
-}
-
-function LeagueLabel({ text }: { text: string }) {
-  const parts = text.split(/(♂|♀)/);
-  if (parts.length === 1) return <>{text}</>;
-  return (
-    <>
-      {parts.map((part, i) =>
-        part === '♂' || part === '♀' ? (
-          <span key={i} className={cn("leading-none font-bold", part === '♂' ? 'text-red-500' : 'text-pink-500')}>{part}</span>
-        ) : (
-          <span key={i}>{part}</span>
-        ),
-      )}
-    </>
-  );
 }
 
 /** 1 → "1st", 2 → "2nd", 13 → "13th". German just counts: "2." */
@@ -4511,173 +4496,134 @@ export default function App() {
    *  is particular to it, through `status` (whatever closes the first line) and
    *  `roles` (the slot this coachee stands in, which the game itself cannot say).
    */
-  const gameCard = (game: EligibleGame, opts?: { status?: React.ReactNode; roles?: string[] }) => {
-    const d = new Date(game.date);
-    const dateValid = !isNaN(d.getTime());
-    const dayOfWeek = dateValid ? d.toLocaleDateString(formData.lang === 'DE' ? 'de-CH' : 'en-GB', { weekday: 'short' }) : '';
-    const yearStr = window.innerWidth < 640 ? String(d.getFullYear()).slice(-2) : String(d.getFullYear());
-    const datePart = dateValid ? `${dayOfWeek} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${yearStr}` : (game.date || '-');
-    const timePart = dateValid ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
+  const gameCard = (game: EligibleGame, opts?: {
+    status?: React.ReactNode;
+    roles?: string[];
+    tone?: RowTone;
+    onOpen?: () => void;
+    action?: React.ReactNode;
+    className?: string;
+    key?: string;
+  }) => {
     const r1 = game.firstReferee || '';
     const r2 = game.secondReferee || '';
-    const r1IsCoachee = coacheeNames.has(normName(r1));
-    const r2IsCoachee = r2 ? coacheeNames.has(normName(r2)) : false;
+    // Two formats reach this list — "3:1 | 25:20, ..." from the form and
+    // "3:1 (25:20 / ...)" from the VolleyManager sync. Splitting on '|' by hand
+    // rendered every synced game's away score as "1 (25"; parseResult reads both.
+    const parsed = game.game_result ? parseResult(game.game_result) : null;
+    const hasResult = !!parsed && (parsed.home !== '' || parsed.away !== '');
+    const sets = (parsed?.sets ?? []).filter(isSetComplete);
+    // Each team's own points, on that team's own row — so reading across a row
+    // gives you their whole match, the way the set count already did. As one
+    // "25:15 | 25:21" line under both teams, the sets sat away from the score
+    // they belong to and had to be decoded before they said anything about
+    // either side. tabular-nums keeps the two rows' digits in step.
+    const side = (which: 'h' | 'a') => (
+      <span className="flex shrink-0 items-baseline gap-1.5">
+        {sets.length > 0 && (
+          <span className="text-[11px] tabular-nums whitespace-nowrap text-stone-400">
+            {sets.map((set) => set[which]).join(' | ')}
+          </span>
+        )}
+        {hasResult && (
+          <span className="w-3 text-right text-sm font-bold tabular-nums text-stone-600">
+            {which === 'h' ? parsed.home : parsed.away}
+          </span>
+        )}
+      </span>
+    );
+    /** One referee. The coachee mark carries the Niveau and the group, because
+     *  this is the list an RC decides whom to watch from and both answers
+     *  ("which level is this one?", "are they up for promotion?") used to mean
+     *  a trip to the Coachees tab and back. */
+    const refChip = (name: string, role: string) => {
+      const isCoachee = coacheeNames.has(normName(name));
+      const level = isCoachee ? coacheeLevelOf(name) : undefined;
+      const group = isCoachee ? coacheeGroupOf(name) : undefined;
+      return (
+        <MetaChip key={role} wrap tone={isCoachee ? 'amber' : 'stone'}>
+          <span><span className="font-bold opacity-70">{role}&nbsp;</span>{name}</span>
+          {isCoachee && (
+            <span className="rounded bg-amber-200/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide">
+              Coachee{level ? ` · ${level}` : ''}{group ? ` · ${group}` : ''}
+            </span>
+          )}
+        </MetaChip>
+      );
+    };
+    const badge = (key: string, tone: 'dark' | 'sky' | 'violet' | 'amber' | 'stone' | 'me', title: string, children: React.ReactNode) => (
+      <MetaChip key={key} tone={tone} title={title}>{children}</MetaChip>
+    );
     return (
-      <>
-      {/* Row 1: date/time + status indicators */}
-      <div className="flex items-center gap-1.5 text-sm text-stone-400">
-        <CalendarDays size={14} className="w-3.5 text-stone-400 shrink-0" />
-        <span className="font-medium text-stone-700">{datePart}</span>
-        {timePart && <><Clock size={14} className="w-3.5 text-stone-400 shrink-0 ml-1" /><span className="font-medium text-stone-700">{timePart}</span></>}
-        <div className="flex-1" />
-        {game.assignedRc ? (
-          <span className="w-2.5 h-2.5 rounded-full bg-green-500" title={game.assignedRc} />
-        ) : (
-          <span className="w-2.5 h-2.5 rounded-full bg-stone-300" title="No RC" />
-        )}
-        {opts?.status}
-      </div>
-      {/* Row 2: league, match#, chips */}
-      <div className="flex items-center gap-1.5 text-sm text-stone-400 mt-0.5">
-        <Tag size={14} className="w-3.5 text-stone-400 shrink-0" />
-        <span><LeagueLabel text={game.league} /></span>
-        {game.matchNo && <span>#{game.matchNo}</span>}
-        {game.isRdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>}
-        {game.isLdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>}
-        {game.isRcGame && (
+      <GameRow
+        key={opts?.key}
+        lang={formData.lang}
+        tone={opts?.tone ?? 'red'}
+        date={game.date}
+        league={game.league}
+        home={game.homeTeam}
+        away={game.awayTeam}
+        homeAside={side('h')}
+        awayAside={side('a')}
+        location={game.location ? shortenLocation(game.location) : undefined}
+        mapsUrl={game.maps_url}
+        onOpen={opts?.onOpen}
+        action={opts?.action}
+        className={opts?.className}
+        status={<>
+          {/* Whether anybody is on it, at a glance. */}
           <span
-            className="px-2 py-1 rounded text-xs font-bold leading-none bg-sky-100 text-sky-800 border border-sky-300"
-            title={formData.lang === 'DE'
+            className={cn('h-2.5 w-2.5 rounded-full', game.assignedRc ? 'bg-green-500' : 'bg-stone-300')}
+            title={game.assignedRc || 'No RC'}
+          />
+          {opts?.status}
+        </>}
+        chips={<>
+          {game.matchNo && <MetaChip tone="ghost">#{game.matchNo}</MetaChip>}
+          {game.isRdGame && badge('rd', 'dark', '', formData.lang === 'DE' ? 'RD Spiel' : 'RD Game')}
+          {game.isLdGame && badge('ld', 'dark', '', formData.lang === 'DE' ? 'LD Spiel' : 'LD Game')}
+          {game.isRcGame && badge('rc', 'sky',
+            formData.lang === 'DE'
               ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
-              : 'A referee coach is whistling next to a coachee here.'}
-          >{formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
-        )}
-        {game.isManual && (
-          <span
-            className="px-2 py-1 rounded text-xs font-bold leading-none bg-violet-100 text-violet-800 border border-violet-300"
-            title={formData.lang === 'DE'
+              : 'A referee coach is whistling next to a coachee here.',
+            formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game')}
+          {game.isManual && badge('manual', 'violet',
+            formData.lang === 'DE'
               ? 'Von Hand angelegt — kein Spiel aus VolleyManager.'
-              : 'Created by hand — not a VolleyManager fixture.'}
-          >{formData.lang === 'DE' ? 'Testspiel' : 'Test game'}</span>
-        )}
-        {game.starred && (
-          <span
-            className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-bold leading-none bg-amber-100 text-amber-700 border border-amber-300"
-            title={game.vmFlagged
+              : 'Created by hand — not a VolleyManager fixture.',
+            formData.lang === 'DE' ? 'Testspiel' : 'Test game')}
+          {game.starred && badge('star', 'amber',
+            game.vmFlagged
               ? (formData.lang === 'DE'
                 ? 'In VolleyManager für eine Beobachtung markiert (RD/RSV)'
                 : 'Marked for observation in VolleyManager (RD/RSV)')
-              : (formData.lang === 'DE' ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation')}
-          >
-            <Star size={11} className="fill-amber-500 text-amber-500" />
-            {formData.lang === 'DE' ? 'Gewünscht' : 'Priority'}
-          </span>
+              : (formData.lang === 'DE' ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation'),
+            <><Star size={10} className="fill-amber-500 text-amber-500" />{formData.lang === 'DE' ? 'Gewünscht' : 'Priority'}</>)}
+          {hasEditingDraft(game.id) && badge('draft', draftIsOverdue(game.id) ? 'me' : 'stone',
+            draftIsOverdue(game.id) ? t.draftUnsentHeading : t.draftHeading,
+            draftIsOverdue(game.id) ? t.draftUnsentBadge : t.draftBadge)}
+          {r1 ? refChip(r1, t.role1Short) : <MetaChip tone="ghost">{t.role1Short} –</MetaChip>}
+          {r2 && refChip(r2, t.role2Short)}
+        </>}
+      >
+        {/* Which slot the coachee stands in, for a list that is about them
+            rather than about the game. Line-judge duty shows here and nowhere
+            else: the two referee chips above cannot name it. */}
+        {opts?.roles && (
+          <p className="mt-1 flex items-center gap-1.5 text-xs text-stone-500">
+            <ClipboardCheck size={12} className="shrink-0 text-stone-400" />
+            <span className="font-medium text-stone-400">{t.rolesLabel}</span>
+            <span className="font-semibold text-stone-700">{opts.roles.join(', ') || '–'}</span>
+          </p>
         )}
-        {hasEditingDraft(game.id) && (
-          <span
-            className={cn('px-2 py-1 rounded text-xs font-bold leading-none border',
-              draftIsOverdue(game.id)
-                ? 'bg-red-100 text-red-800 border-red-300'
-                : 'bg-stone-200 text-stone-700 border-stone-300')}
-            title={draftIsOverdue(game.id) ? t.draftUnsentHeading : t.draftHeading}
-          >{draftIsOverdue(game.id) ? t.draftUnsentBadge : t.draftBadge}</span>
+        {game.assignedRc && (
+          <p className="mt-0.5 flex items-center gap-1.5 text-xs text-stone-500">
+            <Eye size={12} className="shrink-0 text-stone-400" />
+            <span className="font-medium text-stone-400">RC</span>
+            <span className="font-bold text-stone-700">{game.assignedRc}</span>
+          </p>
         )}
-      </div>
-      {/* Teams + result */}
-      {(() => {
-        // Two formats reach this list — "3:1 | 25:20, ..." from the
-        // form and "3:1 (25:20 / ...)" from the VolleyManager sync.
-        // Splitting on '|' by hand rendered every synced game's away
-        // score as "1 (25"; parseResult reads both.
-        const parsed = game.game_result ? parseResult(game.game_result) : null;
-        const hasResult = !!parsed && (parsed.home !== '' || parsed.away !== '');
-        const sets = (parsed?.sets ?? []).filter(isSetComplete);
-        // Each team's own points, on that team's own row — so
-        // reading across a row gives you their whole match, the
-        // way the set count already did. As one "25:15 | 25:21"
-        // line under both teams, the sets sat away from the
-        // score they belong to and had to be decoded before
-        // they said anything about either side.
-        // tabular-nums keeps the two rows' digits in step, and
-        // the count's fixed width keeps the counts aligned even
-        // when one row's points are a digit shorter (a 25:9 set).
-        const setPoints = (side: 'h' | 'a') => (
-          sets.length > 0 && (
-            <span className="text-[11px] text-stone-400 tabular-nums whitespace-nowrap shrink-0">
-              {sets.map((s) => s[side]).join(' | ')}
-            </span>
-          )
-        );
-        return (
-          <>
-            <div className="mt-1 flex items-center gap-2">
-              <Home size={14} className="w-3.5 text-stone-400 shrink-0" />
-              <span className="text-base text-stone-800 truncate flex-1">{game.homeTeam}</span>
-              {setPoints('h')}
-              {hasResult && <span className="w-4 text-right text-sm font-bold text-stone-600 tabular-nums shrink-0">{parsed.home}</span>}
-            </div>
-            <div className="flex items-center gap-2">
-              <Navigation size={14} className="w-3.5 text-stone-400 shrink-0" />
-              <span className="text-base text-stone-800 truncate flex-1">{game.awayTeam}</span>
-              {setPoints('a')}
-              {hasResult && <span className="w-4 text-right text-sm font-bold text-stone-600 tabular-nums shrink-0">{parsed.away}</span>}
-            </div>
-          </>
-        );
-      })()}
-      {/* Location */}
-      {game.location && (
-        <div className="mt-0.5 flex items-center gap-1.5">
-          <MapPin size={14} className="w-3.5 text-red-400 shrink-0" />
-          <a
-            href={game.maps_url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(game.location)}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="text-sm text-red-500 hover:text-red-700 underline decoration-red-300 hover:decoration-red-500 transition-colors"
-          >
-            {game.location.split(',')[0].trim()}
-          </a>
-        </div>
-      )}
-      {/* Referees */}
-      <div className="mt-1.5 text-sm">
-        <div className="flex items-center gap-1.5">
-          <Users size={14} className="w-3.5 text-stone-400 shrink-0" />
-          <span className="font-medium text-stone-400">1SR</span>
-          {r1 ? (
-            r1IsCoachee ? <CoacheeName name={r1} level={coacheeLevelOf(r1)} group={coacheeGroupOf(r1)} /> : <span className="font-semibold text-stone-700">{r1}</span>
-          ) : (
-            <span className="text-stone-300">–</span>
-          )}
-        </div>
-        {r2 && (
-          <div className="flex items-center gap-1.5">
-            <span className="w-3.5 shrink-0" />
-            <span className="font-medium text-stone-400">2SR</span>
-            {r2IsCoachee ? <CoacheeName name={r2} level={coacheeLevelOf(r2)} group={coacheeGroupOf(r2)} /> : <span className="font-semibold text-stone-700">{r2}</span>}
-          </div>
-        )}
-      </div>
-      {/* Which slot the coachee stands in, for a list that is about them
-          rather than about the game. Line-judge duty shows here and nowhere
-          else: the two referee lines above cannot name it. */}
-      {opts?.roles && (
-        <div className="mt-0.5 flex items-center gap-1.5 text-sm text-stone-500">
-          <ClipboardCheck size={14} className="w-3.5 text-stone-400 shrink-0" />
-          <span className="font-medium text-stone-400">{t.rolesLabel}</span>
-          <span className="font-semibold text-stone-700">{opts.roles.join(', ') || '–'}</span>
-        </div>
-      )}
-      {/* RC */}
-      {game.assignedRc && (
-        <div className="mt-0.5 flex items-center gap-1.5 text-sm text-stone-500">
-          <Eye size={14} className="w-3.5 text-stone-400 shrink-0" />
-          <span className="font-medium text-stone-400">RC</span>
-          <span className="font-bold text-stone-700">{game.assignedRc}</span>
-        </div>
-      )}
-      </>
+      </GameRow>
     );
   };
 
@@ -5318,189 +5264,115 @@ export default function App() {
             {listTab === 'home' && (() => {
               const de = formData.lang === 'DE';
               const firstName = (rcAuth.rcName || '').split(' ')[0];
+              /** The date as a sentence, for a confirm dialog or a toast —
+               *  the lists themselves get it from [[DateRail]]. */
               const fmtDate = (d: string) => {
                 const dt = new Date(d);
                 return Number.isNaN(dt.getTime()) ? d : dt.toLocaleDateString(de ? 'de-CH' : 'en-GB', { weekday: 'short', day: '2-digit', month: '2-digit' });
-              };
-              /** The throw-in time, under the date. A row that says only "Tue
-               *  15/09" still leaves you looking the game up somewhere else
-               *  before you can plan the evening around it. */
-              const fmtTime = (d: string) => {
-                const dt = new Date(d);
-                return Number.isNaN(dt.getTime()) ? '' : `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
               };
               const startFromSummary = (g: rcCoachSummaryGame) => {
                 const eg = eligibleGames.find((e) => e.id === g.gameId);
                 if (eg) handleSelectGame(eg, g.refereeName);
                 else { setListTab('games'); setListSearch(g.teams); }
               };
-              // `canRemind` only for games still to come: reminding somebody
-              // about a match they have already refereed is noise.
-              /** Home and away on their own lines. "VBC Rämi D1 vs VBC
-               *  Einsiedeln D2" is wider than a phone, and one truncated line
-               *  hid whichever team came second on every row of the list. Split
-               *  on the separator the API builds the string with; a string that
-               *  does not split cleanly stays one line rather than being
-               *  guessed at. */
-              const teamLines = (teams: string) => {
-                const parts = teams.split(' vs ');
-                if (parts.length !== 2) {
-                  return <p className="text-sm font-medium text-stone-800 break-words">{teams}</p>;
-                }
-                // No "vs": the two names sit one above the other and the order
-                // says which is home. The word only cost a line's worth of width
-                // on the phone the list is read on.
-                // A hairline instead of the old "vs". Either team can wrap onto
-                // two lines — "KSC Wiedikon DU23-1" does on a phone — and with
-                // nothing between them the four lines read as one block of text
-                // with no way to see where home ends and away begins.
-                // w-fit, so the rule is drawn to the longer of the two names
-                // and not across the whole column: full width it read as a
-                // divider between rows of the list rather than between the two
-                // halves of one game.
-                return (
-                  <div className="w-fit max-w-full">
-                    <p className="text-sm font-medium text-stone-800 break-words"><span className="font-semibold text-stone-400">H:</span> {parts[0]}</p>
-                    <div className="my-1 border-t border-stone-200" />
-                    <p className="text-sm font-medium text-stone-800 break-words"><span className="font-semibold text-stone-400">A:</span> {parts[1]}</p>
-                  </div>
-                );
+              /** Everyone refereeing the game, each marked for whether they are
+               *  one of THIS coach's coachees, as one chip apiece.
+               *
+               *  A row listing only coachees could not say whether the other
+               *  slot was empty or held by somebody the coach does not follow,
+               *  and those are different situations at the hall. When BOTH are
+               *  coachees nothing is highlighted: highlighting everything
+               *  highlights nothing. The group — "Varia", "Beförderung?" — is
+               *  what says why the evening is worth driving to, so it rides
+               *  along on every coachee's chip. */
+              const crewChips = (g: HomeGame) => {
+                const crew = g.crew?.length
+                  ? g.crew
+                  : (g.refs?.length ? g.refs : [{ name: g.refereeName, role: g.refereeRole || '' }])
+                      .filter((r) => r.name)
+                      .map((r) => ({ ...r, coachee: !g.noCoachee }));
+                const mixed = crew.some((r) => r.coachee) && crew.some((r) => !r.coachee);
+                return crew.filter((r) => r.name).map((r) => (
+                  <MetaChip key={`${r.name}-${r.role}`} wrap tone={mixed && r.coachee ? 'amber' : 'stone'}>
+                    {/* Slot and name in ONE inline box, with a real space
+                        between them. As two flex items they run together into
+                        "2SRSven Fremd" in the accessibility tree — the gap is
+                        drawn, not spoken. */}
+                    <span>
+                      {r.role && <span className="font-bold opacity-70">{r.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
+                      {r.name}
+                    </span>
+                    {mixed && r.coachee && <CoacheeChip />}
+                    <GroupChip group={r.coachee ? coacheeGroupOf(r.name) : undefined} />
+                  </MetaChip>
+                ));
               };
-              const gameRow = (g: HomeGame, key: string, canRemind = false) => (
-                <div
+              /** One row of the coach's own lists. `canRemind` only for games
+               *  still to come: reminding somebody about a match they have
+               *  already refereed is noise. */
+              const gameRow = (g: HomeGame, key: string, canRemind = false, tone: RowTone = 'red') => (
+                <GameRow
                   key={key}
-                  className="flex items-stretch rounded-lg border border-stone-200 bg-white overflow-hidden focus-within:border-red-300 hover:border-red-300 transition-colors"
-                >
-                  {/* A div, not a button: the hall below is a link, and an
-                      anchor inside a button is invalid markup — the same reason
-                      the "take game" strip is a sibling of its row elsewhere.
-                      role/tabIndex/Enter keep it reachable from the keyboard,
-                      and a key pressed ON THE LINK is left to the link. */}
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => startFromSummary(g)}
-                    onKeyDown={(e) => {
-                      if (e.target !== e.currentTarget) return;
-                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startFromSummary(g); }
-                    }}
-                    className="min-w-0 flex-1 cursor-pointer text-left px-3 py-2.5 hover:bg-red-50/40 transition-colors flex items-center gap-3"
-                  >
-                    <div className="flex flex-col items-center justify-center w-12 shrink-0 text-center">
-                      <span className="text-[11px] font-semibold text-red-600 leading-tight">{fmtDate(g.gameDate)}</span>
-                      {fmtTime(g.gameDate) && <span className="mt-0.5 text-[11px] leading-tight text-stone-400 tabular-nums">{fmtTime(g.gameDate)}</span>}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      {teamLines(g.teams)}
-                      <p className="text-xs text-stone-500 break-words">
-                        {g.league}{g.matchNo ? ` · #${g.matchNo}` : ''}
-                      </p>
-                      {/* Where to drive, as the address it is, linked to the
-                          map the sync stored — or to a search for it when
-                          VolleyManager carried no link. */}
-                      {g.location && (
-                        <p className="mt-0.5 flex items-start gap-1.5 text-xs">
-                          <MapPin size={12} className="mt-0.5 shrink-0 text-red-400" />
-                          <a
-                            href={g.mapsUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(g.location)}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="break-words text-red-500 underline decoration-red-300 transition-colors hover:text-red-700 hover:decoration-red-500"
-                          >
-                            {g.location}
-                          </a>
-                        </p>
-                      )}
-                      {/* Both referees, one line each, with the slot they stand
-                          in — and the coachee marked when the pair is mixed. A
-                          row that listed only coachees could not say whether the
-                          other slot was empty or held by somebody this coach
-                          does not follow, and those are different situations at
-                          the hall. When BOTH are coachees nothing is marked:
-                          highlighting everything highlights nothing.
-                          Wraps rather than truncates: the name is the reason the
-                          row is worth reading, and they run long — "Kevin León
-                          Peña de los Santos" is wider than a phone by itself. */}
-                      {(() => {
-                        const crew = g.crew?.length
-                          ? g.crew
-                          : (g.refs?.length ? g.refs : [{ name: g.refereeName, role: g.refereeRole || '' }])
-                              .filter((r) => r.name)
-                              .map((r) => ({ ...r, coachee: !g.noCoachee }));
-                        const mixed = crew.some((r) => r.coachee) && crew.some((r) => !r.coachee);
-                        return crew.filter((r) => r.name).map((r) => {
-                          // The group — "Varia", "Beförderung?", "Neu-Schiedsrichter
-                          // 26/27" — is what says why the evening is worth driving
-                          // to. It rides in the games list's amber badge, but this
-                          // list, the coach's OWN, named the referee and stopped
-                          // there, so the one screen an RC plans from was the one
-                          // that could not say which cohort they are going to watch.
-                          // Shown for every coachee, mixed pair or not: unlike the
-                          // "Coachee" mark it is information rather than a
-                          // highlight, and in an all-coachee pair each name carries
-                          // its own group.
-                          const group = r.coachee ? coacheeGroupOf(r.name) : undefined;
-                          return (
-                          <p
-                            key={`${r.name}-${r.role}`}
-                            className={cn('text-xs break-words', mixed && r.coachee ? 'text-stone-700 font-medium' : 'text-stone-500')}
-                          >
-                            {r.role && <span className={cn('font-semibold', mixed && r.coachee ? 'text-stone-800' : 'text-stone-600')}>{r.role === '2. SR' ? t.role2Short : t.role1Short} </span>}
-                            {r.name}
-                            {mixed && r.coachee && <CoacheeChip />}
-                            <GroupChip group={group} />
-                          </p>
-                          );
-                        });
-                      })()}
-                      {/* Infoschreiben 4.1: "mit der Börse sind Spiele schnell
-                          getauscht", so the RC is asked to check before setting
-                          off whether the game still has their referee on it.
-                          The tool knew the answer all along — noCoachee has been
-                          on this row since the summary was written — and said
-                          nothing, which is why the regulation has to ask a human
-                          to do the checking. It says it now.
-
-                          Not a red alarm: a swap is nobody's mistake, and the
-                          coach may still want the evening. It names the state
-                          and points at the one action that follows. */}
-                      {g.noCoachee && (
-                        <p className="mt-1 flex items-start gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-800">
-                          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-                          <span>
-                            {de
-                              ? 'Kein Coachee mehr auf diesem Spiel — vermutlich getauscht. Für dieses Spiel lässt sich kein Feedback erfassen; du kannst es abgeben.'
-                              : 'No coachee on this game any more — probably swapped. No feedback can be filed for it; you can give it back.'}
-                          </span>
-                        </p>
-                      )}
-                      <MatchResult result={g.result} className="mt-0.5" />
-                    </div>
-                    <Eye size={15} className="text-stone-400 shrink-0" />
-                  </div>
-                  {canRemind && (
+                  lang={formData.lang}
+                  tone={tone}
+                  date={g.gameDate}
+                  league={g.league}
+                  teams={g.teams}
+                  location={g.location}
+                  mapsUrl={g.mapsUrl}
+                  onOpen={() => startFromSummary(g)}
+                  status={<Eye size={15} className="text-stone-400" />}
+                  chips={<>
+                    {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
+                    {crewChips(g)}
+                  </>}
+                  tools={<>
+                    {canRemind && (
+                      <button
+                        onClick={() => void remindFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
+                        aria-label={de ? 'Erinnerung senden' : 'Send reminder'}
+                        title={de
+                          ? 'Erinnerungs-Mail jetzt senden — sonst automatisch am Vortag um 10:00'
+                          : 'Send the reminder mail now — otherwise automatically at 10:00 the day before'}
+                        className="flex w-9 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-600"
+                      >
+                        <Mail size={15} />
+                      </button>
+                    )}
                     <button
-                      onClick={() => void remindFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
-                      aria-label={de ? 'Erinnerung senden' : 'Send reminder'}
-                      title={de
-                        ? 'Erinnerungs-Mail jetzt senden — sonst automatisch am Vortag um 10:00'
-                        : 'Send the reminder mail now — otherwise automatically at 10:00 the day before'}
-                      className="shrink-0 px-3 border-l border-stone-200 text-stone-400 hover:bg-stone-50 hover:text-red-600 transition-colors"
+                      onClick={() => void giveBackFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
+                      aria-label={de ? 'Spiel abgeben' : 'Give game back'}
+                      title={de ? 'Spiel abgeben — es wird wieder für alle frei' : 'Give the game back — it becomes free for everyone'}
+                      className="flex w-9 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-600"
                     >
-                      <Mail size={15} />
+                      <RotateCcw size={15} />
                     </button>
+                  </>}
+                >
+                  {/* Infoschreiben 4.1: "mit der Börse sind Spiele schnell
+                      getauscht", so the RC is asked to check before setting off
+                      whether the game still has their referee on it. The tool
+                      knew the answer all along — noCoachee has been on this row
+                      since the summary was written — and said nothing, which is
+                      why the regulation has to ask a human to do the checking.
+
+                      Not a red alarm: a swap is nobody's mistake, and the coach
+                      may still want the evening. It names the state and points
+                      at the one action that follows. */}
+                  {g.noCoachee && (
+                    <p className="mt-1.5 flex items-start gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-800">
+                      <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                      <span>
+                        {de
+                          ? 'Kein Coachee mehr auf diesem Spiel — vermutlich getauscht. Für dieses Spiel lässt sich kein Feedback erfassen; du kannst es abgeben.'
+                          : 'No coachee on this game any more — probably swapped. No feedback can be filed for it; you can give it back.'}
+                      </span>
+                    </p>
                   )}
-                  <button
-                    onClick={() => void giveBackFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
-                    aria-label={de ? 'Spiel abgeben' : 'Give game back'}
-                    title={de ? 'Spiel abgeben — es wird wieder für alle frei' : 'Give the game back — it becomes free for everyone'}
-                    className="shrink-0 px-3 border-l border-stone-200 text-stone-400 hover:bg-stone-50 hover:text-red-600 transition-colors"
-                  >
-                    <RotateCcw size={15} />
-                  </button>
-                </div>
+                  <MatchResult result={g.result} className="mt-1" />
+                </GameRow>
               );
+
               if (!rcAuth.rcName) {
                 return <p className="text-sm text-stone-500 py-6 text-center">{de ? 'Willkommen.' : 'Welcome.'}</p>;
               }
@@ -5529,77 +5401,91 @@ export default function App() {
                         <AppSpinner size={132} label={t.loading} />
                       </div>
                     ) : (
-                      // Same shape as the loaded dashboard — counters, then a list.
+                      // Same shape as the loaded dashboard — one summary strip,
+                      // a heading, then rows.
                       <div className="space-y-4" role="status" aria-busy="true">
-                        <div className="grid grid-cols-3 gap-2">
-                          <Skeleton className="h-[76px] rounded-xl" />
-                          <Skeleton className="h-[76px] rounded-xl" />
-                          <Skeleton className="h-[76px] rounded-xl" />
-                        </div>
+                        <Skeleton className="h-[74px] rounded-lg" />
                         <Skeleton className="h-4 w-40" />
-                        <div className="space-y-1.5">
-                          <Skeleton className="h-[58px] rounded-lg" />
-                          <Skeleton className="h-[58px] rounded-lg" />
-                          <Skeleton className="h-[58px] rounded-lg" />
-                          <Skeleton className="h-[58px] rounded-lg" />
+                        <div className="space-y-2">
+                          <Skeleton className="h-[70px] rounded-md" />
+                          <Skeleton className="h-[70px] rounded-md" />
+                          <Skeleton className="h-[70px] rounded-md" />
+                          <Skeleton className="h-[70px] rounded-md" />
                         </div>
                       </div>
                     )
                   ) : homeData ? (
                     <>
-                      {/* Counters */}
-                      <div className="grid grid-cols-3 gap-2">
-                        <div className="rounded-xl border border-green-200 bg-green-50 px-3 py-3 text-center">
-                          <div className="text-2xl font-bold text-green-700">{homeData.done}</div>
-                          <div className="text-[11px] font-medium text-green-700/80 uppercase tracking-wide">{de ? 'Erledigt' : 'Done'}</div>
+                      {/* One line where three tiles were.
+                          At Pensum 0 the tiles said the same nothing three
+                          times, and "bis Ziel ✓" showed a tick for a target
+                          that had never been set — the very reason the tick was
+                          meaningless. All three figures are still here, with
+                          the bar carrying the comparison the tiles were only
+                          implying, and the unset target says so and offers the
+                          one thing that fixes it. */}
+                      <div className="rounded-lg border border-stone-200 bg-white px-3 py-2.5">
+                        <div className="flex items-baseline justify-between gap-3">
+                          <p className="text-sm font-semibold text-stone-800">
+                            <span className="text-base font-bold text-red-600 tabular-nums">{homeData.done}</span>
+                            {de ? ` von ${myGoal} erledigt` : ` of ${myGoal} done`}
+                          </p>
+                          <p className="text-xs tabular-nums text-stone-500">
+                            {de ? `${homeData.planned} geplant` : `${homeData.planned} planned`}
+                            {homeData.outstanding > 0 && (
+                              <span className="text-amber-700">
+                                {de ? ` · ${homeData.outstanding} offen` : ` · ${homeData.outstanding} outstanding`}
+                              </span>
+                            )}
+                          </p>
                         </div>
-                        <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-3 text-center">
-                          <div className="text-2xl font-bold text-sky-700">{homeData.planned}</div>
-                          <div className="text-[11px] font-medium text-sky-700/80 uppercase tracking-wide">{de ? 'Geplant' : 'Planned'}</div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-stone-200">
+                          <div
+                            className={cn('h-full rounded-full transition-all', toGoal === 0 ? 'bg-green-600' : 'bg-red-600')}
+                            style={{ width: `${myGoal > 0 ? Math.min(100, Math.round((homeData.done / myGoal) * 100)) : (homeData.done > 0 ? 100 : 3)}%` }}
+                          />
                         </div>
-                        <div
-                          className={cn("rounded-xl border px-3 py-3 text-center", toGoal === 0 ? "border-green-200 bg-green-50" : "border-amber-200 bg-amber-50")}
-                          // The Pensum is a plain number now, so there is no
-                          // "half mandate" to name — and 0 is a real answer,
-                          // which does not stop anyone taking games.
-                          title={(myGoal === 0
-                            ? (de ? 'Kein festes Pensum — du kannst trotzdem Spiele übernehmen.' : 'No fixed target — you can still take on games.')
-                            : (de ? `${myGoal} Beobachtungen pro Saison.` : `${myGoal} observations per season.`))
-                            + (paidCap > 0
-                              ? (de ? ` Vergütet werden maximal ${paidCap} Spiele.` : ` At most ${paidCap} games are reimbursed.`)
-                              : '')}
-                        >
-                          <div className={cn("text-2xl font-bold", toGoal === 0 ? "text-green-700" : "text-amber-700")}>{toGoal === 0 ? '✓' : toGoal}</div>
-                          <div className={cn("text-[11px] font-medium uppercase tracking-wide", toGoal === 0 ? "text-green-700/80" : "text-amber-700/80")}>{de ? `bis Ziel (${myGoal})` : `to goal (${myGoal})`}</div>
+                        <div className="mt-1.5 flex items-baseline justify-between gap-3 text-xs">
+                          {myGoal === 0 ? (
+                            <span className="text-stone-500">{de ? 'Kein festes Pensum gesetzt' : 'No fixed target set'}</span>
+                          ) : toGoal === 0 ? (
+                            <span className="font-medium text-green-700">{de ? 'Saisonziel erreicht' : 'Season target reached'}</span>
+                          ) : (
+                            <span className="text-stone-500">
+                              {de ? `Noch ${toGoal} bis zum Ziel` : `${toGoal} to go`}
+                            </span>
+                          )}
+                          {/* Infoschreiben 6.2. Said only when it starts to
+                              matter: a ceiling printed under every coach's
+                              counters all season reads as a limit on taking
+                              games, which it is not — the RC may coach more,
+                              the SVRZ just stops paying. */}
+                          {paidCap > 0 && homeData.done >= paidCap && (
+                            <span className="text-right text-stone-500">
+                              {de
+                                ? `Vergütet werden max. ${paidCap} Spiele — weitere sind willkommen.`
+                                : `At most ${paidCap} games are reimbursed — further ones are welcome.`}
+                            </span>
+                          )}
                         </div>
                       </div>
 
-                      {/* Infoschreiben 6.2. Said only when it starts to matter:
-                          a ceiling printed under every coach's counters all
-                          season reads as a limit on taking games, which it is
-                          not — the RC may coach more, the SVRZ just stops
-                          paying. Deliberately not a warning colour either. */}
-                      {paidCap > 0 && homeData.done >= paidCap && (
-                        <p className="text-xs text-stone-500 -mt-1">
-                          {de
-                            ? `Vergütet werden maximal ${paidCap} Spiele pro Saison — du hast ${homeData.done}. Weitere Besuche sind willkommen, werden aber nicht abgerechnet.`
-                            : `At most ${paidCap} games a season are reimbursed — you have ${homeData.done}. Further visits are welcome but are not claimed.`}
-                        </p>
-                      )}
-
-                      {/* Missing observations warning */}
+                      {/* Outstanding observations. A heading on a rule rather
+                          than a filled amber card: the rows below it carry the
+                          amber on their own rail, which is what tells them from
+                          the settled ones without framing the whole block. */}
                       {homeData.missingGames.length > 0 && (
-                        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3">
-                          <p className="text-sm font-semibold text-amber-800 flex items-center gap-1.5">
-                            <Clock size={15} />
-                            {de
-                              ? `${homeData.missingGames.length} Beobachtung${homeData.missingGames.length > 1 ? 'en' : ''} ausstehend`
-                              : `${homeData.missingGames.length} observation${homeData.missingGames.length > 1 ? 's' : ''} outstanding`}
-                          </p>
-                          <p className="text-xs text-amber-700 mt-0.5 mb-2">{de ? 'Vergangene Spiele ohne Feedback:' : 'Past games without feedback:'}</p>
-                          <div className="space-y-1.5">
-                            {homeData.missingGames.map((g, i) => gameRow(g, `miss-${g.gameId}-${i}`))}
-                          </div>
+                        <div>
+                          <SectionHead
+                            tone="amber"
+                            icon={<Clock size={14} />}
+                            title={de ? 'Ausstehende Beobachtungen' : 'Outstanding observations'}
+                            count={homeData.missingGames.length}
+                          />
+                          <p className="mt-1.5 text-xs text-stone-500">{de ? 'Vergangene Spiele ohne Feedback.' : 'Past games without feedback.'}</p>
+                          <GameList className="mt-1">
+                            {homeData.missingGames.map((g, i) => gameRow(g, `miss-${g.gameId}-${i}`, false, 'amber'))}
+                          </GameList>
                         </div>
                       )}
 
@@ -5609,130 +5495,150 @@ export default function App() {
                           just a short Rückmeldung. This block is the "wird der
                           RC gebeten" part: without it nothing in the app ever
                           asks, and the coach has to remember a rule.
-                          Deliberately NOT folded into the amber "ausstehend"
-                          box above, and deliberately not counted anywhere: a
+                          Deliberately NOT folded into the "ausstehend" list
+                          above, and deliberately not counted anywhere: a
                           Rückmeldung is not an observation and must not move
-                          the season target. */}
-                      {myRcGames.length > 0 && (
-                        <div className="rounded-xl border border-sky-300 bg-sky-50 p-3">
-                          <p className="text-sm font-semibold text-sky-900 flex items-center gap-1.5">
-                            <MessageSquare size={15} />
-                            {de ? 'Eigene SR-Spiele' : 'Games you refereed yourself'}
-                            <InfoHint id="srGame" lang={formData.lang} />
-                          </p>
-                          <p className="text-xs text-sky-800 mt-0.5 mb-2">
-                            {de
-                              ? 'Du hast neben einem Coachee gepfiffen. Dafür wird kein Feedbackformular ausgefüllt — es genügt eine kurze Rückmeldung ans RC-Präsidium.'
-                              : 'You whistled next to a coachee. No feedback form is filled in for those games — a short note to the RC chair is enough.'}
-                          </p>
-                          <div className="space-y-1.5">
-                            {[...myRcGames]
-                              // Still to write first, then the filed ones,
-                              // newest game first within each.
-                              .sort((a, b) => (Number(Boolean(a.note)) - Number(Boolean(b.note)))
-                                || b.gameDate.localeCompare(a.gameDate))
-                              .map((g) => (
-                                <button
-                                  key={`rcgame-${g.gameId}`}
-                                  onClick={() => openRcNote(g)}
-                                  // The row prints the first lines of a note
-                                  // promised to the chair alone, and the click
-                                  // logger copies a button's text into the
-                                  // Protokoll every admin reads. On the button,
-                                  // not on the <p>: the logger looks upwards
-                                  // from the clicked element to the button.
-                                  data-log-redact
-                                  className={cn(
-                                    'w-full text-left px-3 py-2.5 rounded-lg border bg-white transition-colors flex items-center gap-3',
-                                    g.note ? 'border-stone-200 hover:border-stone-300' : 'border-sky-300 hover:bg-sky-50/60',
-                                  )}
-                                  title={g.note
-                                    ? (de ? 'Rückmeldung öffnen' : 'Open the note')
-                                    : (de ? 'Rückmeldung erfassen' : 'Write the note')}
-                                >
-                                  <div className="flex flex-col items-center justify-center w-12 shrink-0">
-                                    <span className="text-[11px] font-semibold text-sky-700 leading-tight">{fmtDate(g.gameDate)}</span>
-                                  </div>
-                                  <div className="min-w-0 flex-1">
-                                    {teamLines(g.teams)}
-                                    <div className="text-xs text-stone-500 mt-0.5">
-                                      <LeagueLabel text={g.league} />
-                                      {' · '}
-                                      {de ? 'du' : 'you'} {g.rcRole}
-                                      {' · '}
-                                      <span className="text-stone-700">{g.coacheeName}</span> {g.coacheeRole}
-                                    </div>
-                                    {g.note && (
-                                      <p className="text-xs text-stone-500 mt-1 line-clamp-2">{g.note.note}</p>
+                          the season target.
+
+                          The paragraph that used to sit here said what the (i)
+                          beside the heading already says, word for word, on
+                          every visit to the home screen. It is a rule you read
+                          once and then know. */}
+                      {myRcGames.length > 0 && (() => {
+                        const open = myRcGames.filter((g) => !g.note).length;
+                        return (
+                          <div>
+                            <SectionHead
+                              tone="sky"
+                              icon={<MessageSquare size={14} />}
+                              title={de ? 'Eigene SR-Spiele' : 'Games you refereed yourself'}
+                              hint={<InfoHint id="srGame" lang={formData.lang} />}
+                              count={open > 0
+                                ? (de ? `${open} offen` : `${open} open`)
+                                : (de ? 'alle erfasst' : 'all filed')}
+                            />
+                            <GameList className="mt-1">
+                              {[...myRcGames]
+                                // Still to write first, then the filed ones,
+                                // newest game first within each.
+                                .sort((a, b) => (Number(Boolean(a.note)) - Number(Boolean(b.note)))
+                                  || b.gameDate.localeCompare(a.gameDate))
+                                .map((g) => (
+                                  <GameRow
+                                    key={`rcgame-${g.gameId}`}
+                                    lang={formData.lang}
+                                    tone={g.note ? 'stone' : 'sky'}
+                                    date={g.gameDate}
+                                    league={g.league}
+                                    teams={g.teams}
+                                    location={g.location}
+                                    mapsUrl={g.mapsUrl}
+                                    onOpen={() => openRcNote(g)}
+                                    // The row prints the first lines of a note
+                                    // promised to the chair alone, and the click
+                                    // logger copies a control's text into the
+                                    // Protokoll every admin reads.
+                                    logRedact
+                                    title={g.note
+                                      ? (de ? 'Rückmeldung öffnen' : 'Open the note')
+                                      : (de ? 'Rückmeldung erfassen' : 'Write the note')}
+                                    chips={<>
+                                      {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
+                                      <MetaChip tone="me">{de ? 'du' : 'you'} · {g.rcRole}</MetaChip>
+                                      <MetaChip wrap tone="amber">
+                                        <span>{g.coacheeName}</span>
+                                        <span className="opacity-70">· {g.coacheeRole}</span>
+                                        <GroupChip group={coacheeGroupOf(g.coacheeName)} />
+                                      </MetaChip>
+                                    </>}
+                                    // The button stays a button. It is the one
+                                    // thing this list exists to get done, and a
+                                    // bare dot at the end of a row asks the
+                                    // reader to know that the row is tappable
+                                    // and what tapping it would do.
+                                    action={(
+                                      <button
+                                        onClick={() => openRcNote(g)}
+                                        data-log-redact
+                                        className={cn(
+                                          'h-8 w-full rounded-md px-3 text-xs font-semibold transition-colors sm:w-auto',
+                                          g.note
+                                            ? 'border border-stone-300 bg-white text-stone-600 hover:bg-stone-50'
+                                            : 'bg-sky-600 text-white hover:bg-sky-700',
+                                        )}
+                                      >
+                                        {g.note ? (de ? 'Erfasst' : 'Filed') : (de ? 'Rückmeldung' : 'Note')}
+                                      </button>
                                     )}
-                                  </div>
-                                  <span className={cn(
-                                    'shrink-0 px-2 py-1 rounded text-[11px] font-bold leading-none',
-                                    g.note ? 'bg-green-100 text-green-800' : 'bg-sky-600 text-white',
-                                  )}>
-                                    {g.note ? (de ? 'Erfasst' : 'Filed') : (de ? 'Rückmeldung' : 'Note')}
-                                  </span>
-                                </button>
-                              ))}
+                                  >
+                                    {g.note && (
+                                      <p className="mt-1 line-clamp-2 text-xs text-stone-500">{g.note.note}</p>
+                                    )}
+                                    <MatchResult result={g.result} className="mt-1" />
+                                  </GameRow>
+                                ))}
+                            </GameList>
                           </div>
-                        </div>
-                      )}
+                        );
+                      })()}
 
                       {/* Next appointments */}
                       <div>
-                        <h3 className="text-sm font-semibold text-stone-700 mb-2 flex items-center gap-1.5">
-                          <CalendarDays size={15} className="text-stone-400" />
-                          {de ? 'Nächste Termine' : 'Next appointments'}
-                        </h3>
+                        <SectionHead
+                          tone="red"
+                          icon={<CalendarDays size={14} />}
+                          title={de ? 'Nächste Termine' : 'Next appointments'}
+                          count={homeData.nextGames.length || undefined}
+                        />
                         {/* Every one of them: this list is the answer to the
                             counter beside it, and a cut-off row is a game the
                             coach has no other way to reach from here. */}
                         {homeData.nextGames.length === 0 ? (
-                          <p className="text-sm text-stone-400 py-3">{de ? 'Keine geplanten Spiele.' : 'No planned games.'}</p>
+                          <p className="py-3 text-sm text-stone-400">{de ? 'Keine geplanten Spiele.' : 'No planned games.'}</p>
                         ) : (
-                          <div className="space-y-1.5">
+                          <GameList className="mt-1">
                             {homeData.nextGames.map((g, i) => gameRow(g, `next-${g.gameId}-${i}`, true))}
-                          </div>
+                          </GameList>
                         )}
                       </div>
 
                       {/* Observations already filed — tap one to reopen its feedback. */}
                       <div>
-                        <h3 className="text-sm font-semibold text-stone-700 mb-2 flex items-center gap-1.5">
-                          <ClipboardCheck size={15} className="text-stone-400" />
-                          {de ? 'Erledigte Beobachtungen' : 'Completed observations'}
-                          {homeData.doneList.length > 0 && (
-                            <span className="text-xs font-normal text-stone-400">({homeData.doneList.length})</span>
-                          )}
-                        </h3>
+                        <SectionHead
+                          tone="emerald"
+                          icon={<ClipboardCheck size={14} />}
+                          title={de ? 'Erledigte Beobachtungen' : 'Completed observations'}
+                          count={homeData.doneList.length || undefined}
+                        />
                         {homeData.doneList.length === 0 ? (
-                          <p className="text-sm text-stone-400 py-3">{de ? 'Noch keine Beobachtung erfasst.' : 'No observations filed yet.'}</p>
+                          <p className="py-3 text-sm text-stone-400">{de ? 'Noch keine Beobachtung erfasst.' : 'No observations filed yet.'}</p>
                         ) : (
-                          <div className="space-y-1.5">
+                          <GameList className="mt-1">
                             {homeData.doneList.map((f, i) => (
-                              <button
+                              <GameRow
                                 key={`done-${f.coacheeId}-${f.gameDate}-${i}`}
-                                onClick={() => void openDoneObservation(f)}
-                                className="w-full text-left px-3 py-2.5 rounded-lg border border-stone-200 bg-white hover:border-emerald-300 hover:bg-emerald-50/40 transition-colors flex items-center gap-3"
+                                lang={formData.lang}
+                                tone="emerald"
+                                date={f.gameDate}
+                                league={f.league}
+                                teams={f.teams}
+                                onOpen={() => void openDoneObservation(f)}
                                 title={de ? 'Feedback öffnen' : 'Open feedback'}
-                              >
-                                <div className="flex flex-col items-center justify-center w-12 shrink-0">
-                                  <span className="text-[11px] font-semibold text-emerald-600 leading-tight">{fmtDate(f.gameDate)}</span>
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  {teamLines(f.teams)}
-                                  <p className="text-xs text-stone-500 break-words">{f.league}</p>
-                                  <p className="text-xs text-stone-500 break-words">
-                                    {f.role && <span className="font-semibold text-stone-600">{f.role === '2. SR' ? t.role2Short : t.role1Short} </span>}
-                                    {f.coacheeName}
+                                status={<Eye size={15} className="text-stone-400" />}
+                                chips={(
+                                  <MetaChip wrap tone="amber">
+                                    <span>
+                                      {f.role && <span className="font-bold opacity-70">{f.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
+                                      {f.coacheeName}
+                                    </span>
                                     <GroupChip group={coacheeGroupOf(f.coacheeName)} />
-                                  </p>
-                                  <MatchResult result={f.result} className="mt-0.5" />
-                                </div>
-                                <Eye size={15} className="text-stone-400 shrink-0" />
-                              </button>
+                                  </MetaChip>
+                                )}
+                              >
+                                <MatchResult result={f.result} className="mt-1" />
+                              </GameRow>
                             ))}
-                          </div>
+                          </GameList>
                         )}
                       </div>
                     </>
@@ -6200,57 +6106,58 @@ export default function App() {
                                         : `None of the ${ownGames.length} upcoming games is in focus.`)}
                                   </p>
                                 ) : (
-                                  <div className="divide-y divide-stone-200 rounded border border-stone-200 bg-white">
+                                  <GameList className="rounded border border-stone-200 bg-white px-1.5">
                                     {inlineGames.map(({ game, role }) => {
                                       const de = formData.lang === 'DE';
                                       const holder = game.assignedRc || '';
                                       const mine = !!holder && normName(holder) === normName(rcAuth.rcName || '');
                                       return (
-                                        <div key={game.id} className="flex items-start justify-between gap-2 px-2.5 py-2">
-                                          <div className="min-w-0">
-                                            <div className="text-xs text-stone-500">
-                                              {shortDate(game.date)} · <LeagueLabel text={game.league} /> · {role}
-                                            </div>
-                                            <div className="truncate text-xs font-medium text-stone-800">{game.homeTeam} vs {game.awayTeam}</div>
-                                          </div>
-                                          <div className="flex shrink-0 items-center gap-1">
-                                            {!holder ? (
+                                        <GameRow
+                                          key={game.id}
+                                          lang={formData.lang}
+                                          tone="red"
+                                          date={game.date}
+                                          league={game.league}
+                                          home={game.homeTeam}
+                                          away={game.awayTeam}
+                                          onOpen={() => handleSelectGame(game, coachee.full_name)}
+                                          chips={<MetaChip tone="stone">{role}</MetaChip>}
+                                          action={!holder ? (
+                                            <button
+                                              onClick={() => { if (rcAuth.rcName) requestRcAssignment(game, rcAuth.rcName); }}
+                                              className="h-8 w-full rounded-md bg-slate-900 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-slate-800 sm:w-auto"
+                                            >
+                                              {de ? 'Spiel übernehmen' : 'Take game'}
+                                            </button>
+                                          ) : mine ? (
+                                            <div className="flex items-center gap-1">
                                               <button
-                                                onClick={() => { if (rcAuth.rcName) requestRcAssignment(game, rcAuth.rcName); }}
-                                                className="h-7 rounded-md bg-slate-900 px-2 text-[11px] font-medium text-white hover:bg-slate-800 transition-colors"
+                                                onClick={() => handleSelectGame(game, coachee.full_name)}
+                                                className="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-md bg-slate-900 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-slate-800 sm:flex-none"
                                               >
-                                                {de ? 'Spiel übernehmen' : 'Take game'}
+                                                <Eye size={12} />{de ? 'Beobachten' : 'Observe'}
                                               </button>
-                                            ) : mine ? (
-                                              <>
-                                                <button
-                                                  onClick={() => handleSelectGame(game, coachee.full_name)}
-                                                  className="inline-flex h-7 items-center gap-1 rounded-md bg-slate-900 px-2 text-[11px] font-medium text-white hover:bg-slate-800 transition-colors"
-                                                >
-                                                  <Eye size={12} />{de ? 'Beobachten' : 'Observe'}
-                                                </button>
-                                                <button
-                                                  onClick={() => void giveBackGame(game.id, `${game.homeTeam} vs ${game.awayTeam}`, de)}
-                                                  title={de ? 'Abgeben' : 'Give back'}
-                                                  aria-label={de ? 'Abgeben' : 'Give back'}
-                                                  className="flex h-7 w-7 items-center justify-center rounded-md border border-stone-300 bg-white text-stone-500 hover:bg-stone-50 transition-colors"
-                                                >
-                                                  <X size={12} />
-                                                </button>
-                                              </>
-                                            ) : (
-                                              <span
-                                                className="rounded-full bg-green-100 px-2 py-0.5 text-[11px] text-green-700"
-                                                title={de ? 'Bereits von einem RC übernommen' : 'Already taken by an RC'}
+                                              <button
+                                                onClick={() => void giveBackGame(game.id, `${game.homeTeam} vs ${game.awayTeam}`, de)}
+                                                title={de ? 'Abgeben' : 'Give back'}
+                                                aria-label={de ? 'Abgeben' : 'Give back'}
+                                                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-stone-300 bg-white text-stone-500 transition-colors hover:bg-stone-50"
                                               >
-                                                RC: {holder}
-                                              </span>
-                                            )}
-                                          </div>
-                                        </div>
+                                                <X size={12} />
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            <span
+                                              className="inline-block rounded-full bg-green-100 px-2 py-0.5 text-[11px] text-green-700"
+                                              title={de ? 'Bereits von einem RC übernommen' : 'Already taken by an RC'}
+                                            >
+                                              RC: {holder}
+                                            </span>
+                                          )}
+                                        />
                                       );
                                     })}
-                                  </div>
+                                  </GameList>
                                 )}
                                 {/* Both lists the detail sheet leads to, one tap
                                     from the row that raised the question. */}
@@ -6410,22 +6317,16 @@ export default function App() {
                           <span>{formData.lang === 'DE' ? 'Spiel' : 'Game'}</span>
                           <span>{formData.lang === 'DE' ? 'Status' : 'Status'}</span>
                         </div>
-                        <div className="divide-y-4 divide-stone-200">
+                        <div className="divide-y divide-stone-200 px-1.5">
                         {filteredGames.slice(gamesPage * LIST_PAGE_SIZE, (gamesPage + 1) * LIST_PAGE_SIZE).map((game) => {
                           const isExpanded = expandedGameId === game.id;
                           return (
                             <div key={game.id}>
-                              <div
-                                onClick={() => setExpandedGameId(isExpanded ? null : game.id)}
-                                className={cn(
-                                  "px-3 py-3.5 cursor-pointer transition-colors",
-                                  isExpanded ? "bg-red-50" : "hover:bg-stone-50"
-                                )}
-                              >
-                                {gameCard(game, {
-                                  status: <ChevronDown size={14} className={cn("text-stone-400 transition-transform", isExpanded && "rotate-180")} />,
-                                })}
-                              </div>
+                              {gameCard(game, {
+                                onOpen: () => setExpandedGameId(isExpanded ? null : game.id),
+                                className: cn('px-1.5', isExpanded && 'bg-red-50'),
+                                status: <ChevronDown size={14} className={cn("text-stone-400 transition-transform", isExpanded && "rotate-180")} />,
+                              })}
                               {/* Expanded row */}
                               {isExpanded && (
                                 <div className="px-3 pb-3 pt-1 bg-red-50 border-t border-red-100 space-y-2">
@@ -6776,7 +6677,7 @@ export default function App() {
                   {upcomingGames.length === 0 ? (
                     <p className="text-sm text-stone-500 p-4">{formData.lang === 'DE' ? 'Keine bevorstehenden Spiele.' : 'No upcoming games.'}</p>
                   ) : (
-                    <div className="divide-y divide-stone-100">
+                    <GameList className="px-1.5">
                       {upcomingGames.map((game) => {
                         // Taking a game acts on the open list's copy of it: this
                         // list also carries games where the coachee is only a
@@ -6788,62 +6689,57 @@ export default function App() {
                         const mine = !!holder && normName(holder) === normName(rcAuth.rcName || '');
                         const de = formData.lang === 'DE';
                         return (
-                          <div key={game.id}>
-                            {/* role=button rather than a button: the row now
-                                carries the hall as a link, and an anchor inside
-                                a button is invalid markup. */}
-                            <div
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => handleSelectGame(game)}
-                              onKeyDown={(e) => {
-                                if (e.target !== e.currentTarget) return;
-                                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSelectGame(game); }
-                              }}
-                              className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
-                            >
-                              {/* The holder is read off the open games list, not
-                                  off this row's own copy, so the dot turns green
-                                  the moment the game changes hands. */}
-                              {gameCard({ ...game, assignedRc: holder }, { roles: game.assignedRoles })}
-                            </div>
-                          {/* A sibling of the row, not a child: a button inside
-                              a button is invalid, and this list was read-only
-                              until now — the game had to be found again in the
-                              open games list before it could be taken. */}
-                          {eg && (
-                            <div className="flex flex-wrap items-center gap-2 px-4 pb-3">
-                              {!holder ? (
-                                <button
-                                  onClick={() => { if (rcAuth.rcName) requestRcAssignment(eg, rcAuth.rcName); }}
-                                  className="h-8 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
-                                >
-                                  {de ? 'Spiel übernehmen' : 'Take game'}
-                                </button>
-                              ) : mine ? (
-                                <>
-                                  <button
-                                    onClick={() => handleSelectGame(eg, selectedCoacheeName)}
-                                    className="inline-flex h-8 items-center gap-1.5 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
-                                  >
-                                    <Eye size={13} />
-                                    {de ? 'Beobachtung starten' : 'Start observation'}
-                                  </button>
-                                  <button
-                                    onClick={() => void giveBackGame(eg.id, `${game.homeTeam} vs ${game.awayTeam}`, de)}
-                                    className="inline-flex h-8 items-center gap-1.5 px-3 text-xs font-medium rounded-md border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 transition-colors"
-                                  >
-                                    <X size={13} />
-                                    {de ? 'Abgeben' : 'Give back'}
-                                  </button>
-                                </>
-                              ) : null}
-                            </div>
-                          )}
-                          </div>
+                          <React.Fragment key={game.id}>
+                            {/* The holder is read off the open games list, not
+                                off this row's own copy, so the dot turns green
+                                the moment the game changes hands.
+
+                                The buttons ride in `action`, which draws them
+                                beside the row on a laptop and under it on a
+                                phone — and always as a SIBLING of the clickable
+                                region, never inside it: a button within a
+                                button is invalid markup. This list was
+                                read-only until they were added; the game had to
+                                be found again in the open games list before it
+                                could be taken. */}
+                            {gameCard({ ...game, assignedRc: holder }, {
+                              roles: game.assignedRoles,
+                              onOpen: () => handleSelectGame(game),
+                              className: 'px-2.5',
+                              action: eg ? (
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {!holder ? (
+                                    <button
+                                      onClick={() => { if (rcAuth.rcName) requestRcAssignment(eg, rcAuth.rcName); }}
+                                      className="h-8 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
+                                    >
+                                      {de ? 'Spiel übernehmen' : 'Take game'}
+                                    </button>
+                                  ) : mine ? (
+                                    <>
+                                      <button
+                                        onClick={() => handleSelectGame(eg, selectedCoacheeName)}
+                                        className="inline-flex h-8 items-center gap-1.5 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
+                                      >
+                                        <Eye size={13} />
+                                        {de ? 'Beobachtung starten' : 'Start observation'}
+                                      </button>
+                                      <button
+                                        onClick={() => void giveBackGame(eg.id, `${game.homeTeam} vs ${game.awayTeam}`, de)}
+                                        className="inline-flex h-8 items-center gap-1.5 px-3 text-xs font-medium rounded-md border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 transition-colors"
+                                      >
+                                        <X size={13} />
+                                        {de ? 'Abgeben' : 'Give back'}
+                                      </button>
+                                    </>
+                                  ) : null}
+                                </div>
+                              ) : undefined,
+                            })}
+                          </React.Fragment>
                         );
                       })}
-                    </div>
+                    </GameList>
                   )}
                   {/* Past games — always available (behind a toggle), regardless of feedback */}
                   {allPastGames.length > 0 && (
@@ -6866,33 +6762,23 @@ export default function App() {
                             : `${allPastGames.length} past game(s) — tap "${coacheeFeedbacks.length > 0 ? 'Show all games' : 'Show'}" to view them.`}
                         </p>
                       ) : (
-                        <div className="divide-y divide-stone-100">
+                        <GameList className="px-1.5">
                           {pastGames.map((game) => {
                             const hasFeedback = feedbackByGameId.has(game.id);
-                            return (
-                              <div
-                                key={game.id}
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => handleSelectGame(game)}
-                                onKeyDown={(e) => {
-                                  if (e.target !== e.currentTarget) return;
-                                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSelectGame(game); }
-                                }}
-                                className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors cursor-pointer"
-                              >
-                                {gameCard(game, {
-                                  roles: game.assignedRoles,
-                                  status: (
-                                    <span className={cn("ml-1 text-xs px-2 py-0.5 rounded-full", hasFeedback ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-500")}>
-                                      {hasFeedback ? (formData.lang === 'DE' ? 'Feedback' : 'Feedback') : (formData.lang === 'DE' ? 'Kein Feedback' : 'No feedback')}
-                                    </span>
-                                  ),
-                                })}
-                              </div>
-                            );
+                            return gameCard(game, {
+                              key: game.id,
+                              roles: game.assignedRoles,
+                              tone: hasFeedback ? 'emerald' : 'stone',
+                              onOpen: () => handleSelectGame(game),
+                              className: 'px-2.5',
+                              status: (
+                                <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", hasFeedback ? "bg-emerald-100 text-emerald-700" : "bg-stone-100 text-stone-500")}>
+                                  {hasFeedback ? (formData.lang === 'DE' ? 'Feedback' : 'Feedback') : (formData.lang === 'DE' ? 'Kein Feedback' : 'No feedback')}
+                                </span>
+                              ),
+                            });
                           })}
-                        </div>
+                        </GameList>
                       )}
                     </>
                   )}

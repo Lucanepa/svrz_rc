@@ -35,16 +35,18 @@ test.beforeEach(async ({ page }) => {
 
 test('every planned game the counter promises is listed', async ({ page }) => {
   await page.goto('/#/home');
-  await expect(page.getByText('Planned', { exact: true })).toBeVisible();
+  // The dashboard's summary strip, which replaced the three counter tiles:
+  // the same figures, still labelled, on one line.
+  await expect(page.getByText(/10 planned|10 geplant/)).toBeVisible();
 
   // All of them, however many there are: the list is the answer to the counter
   // beside it, and a row that is cut off is a game with no way back.
-  // The row renders home and away on their own lines, each behind an H:/A:
-  // label instead of a "vs" between them, so that is what the row's accessible
+  // The row renders home and away on their own lines with nothing between them —
+  // the order is what says which is which — so that is what the row's accessible
   // name reads as. `teams` in the API payload still carries " vs " — that is the
   // separator the app splits on — which is why the confirm text and the toast
   // below still match the original string.
-  const rows = page.getByRole('button', { name: /H:\s*Heim \d+\s+A:\s*Gast \d+/ });
+  const rows = page.getByRole('button', { name: /Heim \d+\s+Gast \d+/ });
   await expect(rows).toHaveCount(10);
 });
 

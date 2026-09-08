@@ -40,6 +40,7 @@ import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
 import LevelText from './LevelText';
 import { CoacheeChip, GroupChip } from './CoacheeChips';
+import { GameList, GameRow, MetaChip } from './GameRow';
 import { Skeleton, SkeletonRows } from './Skeleton';
 import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
 
@@ -3269,45 +3270,56 @@ function GamesAdmin({ t, lang, season, active }: { t: T; lang: Lang; season: num
       ) : shown.length === 0 ? (
         <p className="mt-3 text-sm text-stone-400">{t.gamesNone}</p>
       ) : (
-        <div className="mt-3 space-y-2 max-h-[70vh] overflow-y-auto">
+        <GameList className="mt-3 max-h-[70vh] overflow-y-auto">
           {shown.slice(0, 300).map((g) => (
-            <div key={g.id} className="rounded-xl border border-stone-200 p-3">
-              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm">
-                <span className="font-medium text-stone-800">{g.homeTeam} – {g.awayTeam}</span>
-                <span className="text-xs text-stone-500">{g.league} · #{g.matchNo}</span>
+            <GameRow
+              key={g.id}
+              lang={lang}
+              tone={g.assignedRc ? 'emerald' : 'red'}
+              date={g.date}
+              league={g.league}
+              home={g.homeTeam}
+              away={g.awayTeam}
+              location={g.location}
+              status={g.assignedRc
+                ? <span className="h-2.5 w-2.5 rounded-full bg-green-500" title={g.assignedRc} />
+                : <span className="h-2.5 w-2.5 rounded-full bg-stone-300" title="No RC" />}
+              chips={<>
+                {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
                 {g.isRcGame && (
-                  <span
-                    className="px-1.5 py-0.5 rounded text-[10px] font-bold leading-none bg-sky-100 text-sky-800 border border-sky-300"
+                  <MetaChip
+                    tone="sky"
                     title={lang === 'DE'
                       ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
                       : 'A referee coach is whistling next to a coachee here.'}
-                  >{lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</span>
+                  >{lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</MetaChip>
                 )}
-              </div>
-              <p className="mt-0.5 text-xs text-stone-500">
-                {new Date(g.date).toLocaleDateString(lang === 'DE' ? 'de-CH' : 'en-GB')} · {g.location}
-              </p>
-              {/* Both referees, each on its own line, and each saying whether
-                  this is somebody's coachee and which group they are in. The row
-                  used to append "· 1SR Name" to the address and stop there: the
-                  2SR was invisible, and the console — the screen an admin hands
-                  a game out from — could not say which cohort the game was
-                  worth handing out FOR. Which is the whole question the coach
-                  app's own lists answer with the same amber chips. */}
-              {([['1SR', g.firstReferee], ['2SR', g.secondReferee]] as const)
-                .filter(([, name]) => name)
-                .map(([slot, name]) => {
-                  const c = coacheeFor(name);
-                  const group = c ? groupLabel(c.groups, lang) : '';
-                  return (
-                    <p key={slot} className="mt-0.5 text-xs text-stone-500">
-                      <span className="font-semibold text-stone-600">{slot} </span>
-                      {name}
-                      {c && <CoacheeChip />}
-                      <GroupChip group={group} />
-                    </p>
-                  );
-                })}
+                {/* Both referees, and each saying whether this is somebody's
+                    coachee and which group they are in. The row used to append
+                    "· 1SR Name" to the address and stop there: the 2SR was
+                    invisible, and the console — the screen an admin hands a game
+                    out from — could not say which cohort the game was worth
+                    handing out FOR. Which is the whole question the coach app's
+                    own lists answer with the same amber chips. */}
+                {([['1SR', g.firstReferee], ['2SR', g.secondReferee]] as const)
+                  .filter(([, name]) => name)
+                  .map(([slot, name]) => {
+                    const c = coacheeFor(name);
+                    const group = c ? groupLabel(c.groups, lang) : '';
+                    return (
+                      <MetaChip key={slot} wrap tone={c ? 'amber' : 'stone'}>
+                        <span><span className="font-bold opacity-70">{slot}&nbsp;</span>{name}</span>
+                        {c && <CoacheeChip />}
+                        <GroupChip group={group} />
+                      </MetaChip>
+                    );
+                  })}
+              </>}
+            >
+              {/* Controls under the game rather than beside it: the RC picker is
+                  a select, and a select squeezed into a row's right-hand gutter
+                  is unusable at every width. The row itself opens nothing here,
+                  so nothing interactive is nested inside anything clickable. */}
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <label className="text-xs font-medium text-stone-500">RC:</label>
                 <select
@@ -3336,14 +3348,14 @@ function GamesAdmin({ t, lang, season, active }: { t: T; lang: Lang; season: num
                   {g.vmFlagged ? t.gamesFlaggedVm : g.starred ? t.gamesFlagged : t.gamesFlag}
                 </button>
               </div>
-            </div>
+            </GameRow>
           ))}
           {shown.length > 300 && (
             // Said out loud rather than silently truncated: a list that stops at
             // 300 without mentioning it reads as "that is all of them".
-            <p className="text-xs text-stone-400">… {shown.length - 300} more — narrow the search.</p>
+            <p className="py-2 text-xs text-stone-400">… {shown.length - 300} more — narrow the search.</p>
           )}
-        </div>
+        </GameList>
       )}
     </Card>
   );

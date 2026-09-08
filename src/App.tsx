@@ -1405,6 +1405,9 @@ export default function App() {
   const [coacheeFeedbacks, setCoacheeFeedbacks] = useState<FeedbackRecord[]>([]);
   const [loadingCoacheeFeedbacks, setLoadingCoacheeFeedbacks] = useState(false);
   const [showAllPastGames, setShowAllPastGames] = useState(false);
+  /** The SR-Spiele whose Rückmeldung is written. Folded away by default:
+   *  the section exists to ask for the ones that are not. */
+  const [showFiledRcGames, setShowFiledRcGames] = useState(false);
   const [savingFeedback, setSavingFeedback] = useState(false);
   const [isOffline, setIsOffline] = useState(typeof navigator !== 'undefined' && !navigator.onLine);
   const [outboxPending, setOutboxPending] = useState(0);
@@ -5382,12 +5385,22 @@ export default function App() {
                   location={g.location}
                   mapsUrl={g.mapsUrl}
                   onOpen={() => startFromSummary(g)}
-                  status={<Eye size={15} className="text-stone-400" />}
                   chips={<>
                     {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
                     {crewChips(g)}
                   </>}
+                  // The eye rides with the other two rather than sitting in
+                  // the body's top-right corner, where it was a lone icon on a
+                  // line of its own above them.
                   tools={<>
+                    <button
+                      onClick={() => startFromSummary(g)}
+                      aria-label={de ? 'Spiel öffnen' : 'Open game'}
+                      title={de ? 'Spiel öffnen' : 'Open game'}
+                      className="flex w-9 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-600"
+                    >
+                      <Eye size={15} />
+                    </button>
                     {canRemind && (
                       <button
                         onClick={() => void remindFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
@@ -5566,79 +5579,107 @@ export default function App() {
                           every visit to the home screen. It is a rule you read
                           once and then know. */}
                       {myRcGames.length > 0 && (() => {
-                        const open = myRcGames.filter((g) => !g.note).length;
+                        // Open first — a Rückmeldung that has not been written
+                        // is the only thing this list is asking for. Once it is
+                        // written the game is done with, and it drops behind
+                        // "show past games" the way an observed game does,
+                        // rather than staying to be scrolled past all season.
+                        const openGames = myRcGames.filter((g) => !g.note)
+                          .sort((a, b) => b.gameDate.localeCompare(a.gameDate));
+                        const filed = myRcGames.filter((g) => g.note)
+                          .sort((a, b) => b.gameDate.localeCompare(a.gameDate));
+                        const srRow = (g: MyRcGame) => (
+                          <GameRow
+                            key={`rcgame-${g.gameId}`}
+                            lang={formData.lang}
+                            tone={g.note ? 'stone' : 'amber'}
+                            date={g.gameDate}
+                            league={g.league}
+                            teams={g.teams}
+                            location={g.location}
+                            mapsUrl={g.mapsUrl}
+                            onOpen={() => openRcNote(g)}
+                            // Gold, and lit: the one row on the home screen that
+                            // is asking the coach for something they have not
+                            // done yet. Nothing else on the page glows, which is
+                            // the whole reason this one can.
+                            className={g.note ? undefined : 'rounded-md bg-amber-50/70 shadow-[0_0_0_1px_rgb(252_211_77),0_0_12px_-2px_rgba(245,158,11,0.55)]'}
+                            // The row prints the first lines of a note promised
+                            // to the chair alone, and the click logger copies a
+                            // control's text into the Protokoll every admin reads.
+                            logRedact
+                            title={g.note
+                              ? (de ? 'Rückmeldung öffnen' : 'Open the note')
+                              : (de ? 'Rückmeldung erfassen' : 'Write the note')}
+                            chips={<>
+                              {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
+                              <MetaChip tone="me">{de ? 'du' : 'you'} · {g.rcRole}</MetaChip>
+                              <MetaChip wrap tone="amber">
+                                <span>{g.coacheeName}</span>
+                                <span className="opacity-70">· {g.coacheeRole}</span>
+                                <GroupChip group={coacheeGroupOf(g.coacheeName)} />
+                              </MetaChip>
+                            </>}
+                            // The button stays a button. It is the one thing
+                            // this list exists to get done, and a bare dot at
+                            // the end of a row asks the reader to know that the
+                            // row is tappable and what tapping it would do.
+                            action={(
+                              <button
+                                onClick={() => openRcNote(g)}
+                                data-log-redact
+                                className={cn(
+                                  'h-8 w-full rounded-md px-3 text-xs font-semibold transition-colors sm:w-auto',
+                                  g.note
+                                    ? 'border border-stone-300 bg-white text-stone-600 hover:bg-stone-50'
+                                    : 'bg-amber-500 text-white hover:bg-amber-600',
+                                )}
+                              >
+                                {g.note ? (de ? 'Erfasst' : 'Filed') : (de ? 'Rückmeldung' : 'Note')}
+                              </button>
+                            )}
+                          >
+                            {g.note && (
+                              <p className="mt-1 line-clamp-2 text-xs text-stone-500">{g.note.note}</p>
+                            )}
+                            <MatchResult result={g.result} className="mt-1" />
+                          </GameRow>
+                        );
                         return (
                           <div>
                             <SectionHead
-                              tone="sky"
+                              tone="amber"
                               icon={<MessageSquare size={14} />}
-                              title={de ? 'Eigene SR-Spiele' : 'Games you refereed yourself'}
+                              // Not "games you refereed yourself": the list is
+                              // mostly games still to come, and the past tense
+                              // said the opposite of the dates underneath it.
+                              title={de ? 'SR-Spiele' : 'RC games'}
                               hint={<InfoHint id="srGame" lang={formData.lang} />}
-                              count={open > 0
-                                ? (de ? `${open} offen` : `${open} open`)
+                              count={openGames.length > 0
+                                ? (de ? `${openGames.length} offen` : `${openGames.length} open`)
                                 : (de ? 'alle erfasst' : 'all filed')}
                             />
-                            <GameList className="mt-1">
-                              {[...myRcGames]
-                                // Still to write first, then the filed ones,
-                                // newest game first within each.
-                                .sort((a, b) => (Number(Boolean(a.note)) - Number(Boolean(b.note)))
-                                  || b.gameDate.localeCompare(a.gameDate))
-                                .map((g) => (
-                                  <GameRow
-                                    key={`rcgame-${g.gameId}`}
-                                    lang={formData.lang}
-                                    tone={g.note ? 'stone' : 'sky'}
-                                    date={g.gameDate}
-                                    league={g.league}
-                                    teams={g.teams}
-                                    location={g.location}
-                                    mapsUrl={g.mapsUrl}
-                                    onOpen={() => openRcNote(g)}
-                                    // The row prints the first lines of a note
-                                    // promised to the chair alone, and the click
-                                    // logger copies a control's text into the
-                                    // Protokoll every admin reads.
-                                    logRedact
-                                    title={g.note
-                                      ? (de ? 'Rückmeldung öffnen' : 'Open the note')
-                                      : (de ? 'Rückmeldung erfassen' : 'Write the note')}
-                                    chips={<>
-                                      {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
-                                      <MetaChip tone="me">{de ? 'du' : 'you'} · {g.rcRole}</MetaChip>
-                                      <MetaChip wrap tone="amber">
-                                        <span>{g.coacheeName}</span>
-                                        <span className="opacity-70">· {g.coacheeRole}</span>
-                                        <GroupChip group={coacheeGroupOf(g.coacheeName)} />
-                                      </MetaChip>
-                                    </>}
-                                    // The button stays a button. It is the one
-                                    // thing this list exists to get done, and a
-                                    // bare dot at the end of a row asks the
-                                    // reader to know that the row is tappable
-                                    // and what tapping it would do.
-                                    action={(
-                                      <button
-                                        onClick={() => openRcNote(g)}
-                                        data-log-redact
-                                        className={cn(
-                                          'h-8 w-full rounded-md px-3 text-xs font-semibold transition-colors sm:w-auto',
-                                          g.note
-                                            ? 'border border-stone-300 bg-white text-stone-600 hover:bg-stone-50'
-                                            : 'bg-sky-600 text-white hover:bg-sky-700',
-                                        )}
-                                      >
-                                        {g.note ? (de ? 'Erfasst' : 'Filed') : (de ? 'Rückmeldung' : 'Note')}
-                                      </button>
-                                    )}
-                                  >
-                                    {g.note && (
-                                      <p className="mt-1 line-clamp-2 text-xs text-stone-500">{g.note.note}</p>
-                                    )}
-                                    <MatchResult result={g.result} className="mt-1" />
-                                  </GameRow>
-                                ))}
-                            </GameList>
+                            {openGames.length === 0 ? (
+                              <p className="py-3 text-sm text-stone-400">
+                                {de ? 'Keine offene Rückmeldung.' : 'No note outstanding.'}
+                              </p>
+                            ) : (
+                              <GameList className="mt-1">{openGames.map(srRow)}</GameList>
+                            )}
+                            {filed.length > 0 && (
+                              <>
+                                <button
+                                  onClick={() => setShowFiledRcGames((v) => !v)}
+                                  className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-stone-500 transition-colors hover:text-stone-800"
+                                >
+                                  <ChevronDown size={13} className={cn('transition-transform', showFiledRcGames && 'rotate-180')} />
+                                  {showFiledRcGames
+                                    ? (de ? 'Erledigte ausblenden' : 'Hide past games')
+                                    : (de ? `Erledigte anzeigen (${filed.length})` : `Show past games (${filed.length})`)}
+                                </button>
+                                {showFiledRcGames && <GameList className="mt-1">{filed.map(srRow)}</GameList>}
+                              </>
+                            )}
                           </div>
                         );
                       })()}
@@ -5648,7 +5689,7 @@ export default function App() {
                         <SectionHead
                           tone="red"
                           icon={<CalendarDays size={14} />}
-                          title={de ? 'Nächste Termine' : 'Next appointments'}
+                          title={de ? 'Nächste Beobachtungen' : 'Next observations'}
                           count={homeData.nextGames.length || undefined}
                         />
                         {/* Every one of them: this list is the answer to the

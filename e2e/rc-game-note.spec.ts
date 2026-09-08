@@ -73,7 +73,16 @@ test('the coach is told the Rückmeldung goes to the chair alone, and it is sent
   expect(posted[0].gameId).toBe(SR_GAME.gameId);
   expect(posted[0].note).toBe('Sicher geleitet, klare Zeichen.');
   expect(posted[0].rolesSwapped).toBe(false);
-  // Filed, so the row stops asking for one.
+  // Filed, so the game stops asking. It leaves the open list entirely and
+  // waits behind "show past games" — the section exists to ask for the notes
+  // that have NOT been written, and a filed one staying in it is a row to
+  // scroll past for the rest of the season.
+  await expect(page.getByText(/Keine offene Rückmeldung|No note outstanding/)).toBeVisible();
+  const past = page.getByRole('button', { name: /Erledigte anzeigen \(1\)|Show past games \(1\)/ });
+  await expect(past).toBeVisible();
+
+  // And it is still reachable there, marked as filed.
+  await past.click();
   await expect(page.getByText(/Erfasst|Filed/)).toBeVisible();
 });
 

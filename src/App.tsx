@@ -563,14 +563,65 @@ function downloadIcal(game: EligibleGame) {
   URL.revokeObjectURL(url);
 }
 
-function LeagueLabel({ text }: { text: string }) {
+/** ♂ / ♀ drawn rather than typed.
+ *
+ *  Inter ships to the browser as fontsource's unicode-range subsets, none of
+ *  which covers U+2640/U+2642, so the character was always painted by whatever
+ *  the system offered instead — Apple Symbols on an iPhone. That font sets a
+ *  different baseline and a bigger em box than Inter, which is why the symbol
+ *  sat visibly below the line beside it and looked oversized; `leading-none`
+ *  cannot move a glyph its own font has already placed. An inline SVG has no
+ *  such metrics: it is a 1em box we align ourselves, so it lands on the same
+ *  optical line on every device and in every font stack. */
+function GenderMark({ sex, label }: { sex: '♂' | '♀'; label: string }) {
+  const male = sex === '♂';
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      role="img"
+      aria-label={label}
+      className={cn(
+        // -0.125em is the offset that puts a 1em icon box on the text's own
+        // optical centre — the same one every lucide icon in the app uses.
+        'inline-block h-[1em] w-[1em] shrink-0 align-[-0.125em]',
+        male ? 'text-red-500' : 'text-pink-500',
+      )}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <title>{label}</title>
+      {male ? (
+        <>
+          <circle cx="10" cy="14.5" r="5.5" />
+          <path d="M14.2 10.6 20 4.8" />
+          <path d="M14.6 4.4H20.4V10.2" />
+        </>
+      ) : (
+        <>
+          <circle cx="12" cy="8" r="6" />
+          <path d="M12 14v7.5" />
+          <path d="M8.3 18.4h7.4" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+/** A league as it is stored ("3L ♂ B"), with the gender symbol drawn. */
+function LeagueLabel({ text, lang }: { text: string; lang?: 'DE' | 'EN' }) {
   const parts = text.split(/(♂|♀)/);
   if (parts.length === 1) return <>{text}</>;
+  const de = lang !== 'EN';
   return (
     <>
       {parts.map((part, i) =>
         part === '♂' || part === '♀' ? (
-          <span key={i} className={cn("leading-none font-bold", part === '♂' ? 'text-red-500' : 'text-pink-500')}>{part}</span>
+          <span key={i}>
+            <GenderMark sex={part} label={part === '♂' ? (de ? 'Herren' : 'Men') : (de ? 'Damen' : 'Women')} />
+          </span>
         ) : (
           <span key={i}>{part}</span>
         ),
@@ -4540,7 +4591,7 @@ export default function App() {
       {/* Row 2: league, match#, chips */}
       <div className="flex items-center gap-1.5 text-sm text-stone-400 mt-0.5">
         <Tag size={14} className="w-3.5 text-stone-400 shrink-0" />
-        <span><LeagueLabel text={game.league} /></span>
+        <span><LeagueLabel text={game.league} lang={formData.lang} /></span>
         {game.matchNo && <span>#{game.matchNo}</span>}
         {game.isRdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}</span>}
         {game.isLdGame && <span className="px-2 py-1 rounded text-xs font-bold leading-none bg-stone-900 text-white">{formData.lang === 'DE' ? 'LD Spiel' : 'LD Game'}</span>}
@@ -5656,7 +5707,7 @@ export default function App() {
                                   <div className="min-w-0 flex-1">
                                     {teamLines(g.teams)}
                                     <div className="text-xs text-stone-500 mt-0.5">
-                                      <LeagueLabel text={g.league} />
+                                      <LeagueLabel text={g.league} lang={formData.lang} />
                                       {' · '}
                                       {de ? 'du' : 'you'} {g.rcRole}
                                       {' · '}
@@ -6209,7 +6260,7 @@ export default function App() {
                                         <div key={game.id} className="flex items-start justify-between gap-2 px-2.5 py-2">
                                           <div className="min-w-0">
                                             <div className="text-xs text-stone-500">
-                                              {shortDate(game.date)} · <LeagueLabel text={game.league} /> · {role}
+                                              {shortDate(game.date)} · <LeagueLabel text={game.league} lang={formData.lang} /> · {role}
                                             </div>
                                             <div className="truncate text-xs font-medium text-stone-800">{game.homeTeam} vs {game.awayTeam}</div>
                                           </div>

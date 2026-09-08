@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId } from 'react';
-import { Maximize2, Download, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail } from 'lucide-react';
+import { Maximize2, Download, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail, AlertTriangle } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, PAID_CAP, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
@@ -5451,6 +5451,27 @@ export default function App() {
                           );
                         });
                       })()}
+                      {/* Infoschreiben 4.1: "mit der Börse sind Spiele schnell
+                          getauscht", so the RC is asked to check before setting
+                          off whether the game still has their referee on it.
+                          The tool knew the answer all along — noCoachee has been
+                          on this row since the summary was written — and said
+                          nothing, which is why the regulation has to ask a human
+                          to do the checking. It says it now.
+
+                          Not a red alarm: a swap is nobody's mistake, and the
+                          coach may still want the evening. It names the state
+                          and points at the one action that follows. */}
+                      {g.noCoachee && (
+                        <p className="mt-1 flex items-start gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-800">
+                          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                          <span>
+                            {de
+                              ? 'Kein Coachee mehr auf diesem Spiel — vermutlich getauscht. Für dieses Spiel lässt sich kein Feedback erfassen; du kannst es abgeben.'
+                              : 'No coachee on this game any more — probably swapped. No feedback can be filed for it; you can give it back.'}
+                          </span>
+                        </p>
+                      )}
                       <MatchResult result={g.result} className="mt-0.5" />
                     </div>
                     <Eye size={15} className="text-stone-400 shrink-0" />

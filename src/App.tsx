@@ -5579,38 +5579,51 @@ export default function App() {
                           every visit to the home screen. It is a rule you read
                           once and then know. */}
                       {myRcGames.length > 0 && (() => {
-                        // Open first — a Rückmeldung that has not been written
-                        // is the only thing this list is asking for. Once it is
-                        // written the game is done with, and it drops behind
-                        // "show past games" the way an observed game does,
-                        // rather than staying to be scrolled past all season.
-                        const openGames = myRcGames.filter((g) => !g.note)
-                          .sort((a, b) => b.gameDate.localeCompare(a.gameDate));
-                        const filed = myRcGames.filter((g) => g.note)
-                          .sort((a, b) => b.gameDate.localeCompare(a.gameDate));
-                        const srRow = (g: MyRcGame) => (
+                        // Three states, and only one of them is a request.
+                        //   · played, no note   → owed. This is what glows.
+                        //   · still to come     → nothing to do yet; a game
+                        //     that has not been refereed cannot be written up,
+                        //     so lighting it up asks for something impossible.
+                        //   · written           → finished, folded away below.
+                        // The season is already applied: loadMyRcGames(season).
+                        const nowMs = Date.now();
+                        const played = (g: MyRcGame) => {
+                          const t = new Date(g.gameDate).getTime();
+                          return Number.isNaN(t) ? false : t < nowMs;
+                        };
+                        const newestFirst = (a: MyRcGame, b: MyRcGame) => b.gameDate.localeCompare(a.gameDate);
+                        const owed = myRcGames.filter((g) => !g.note && played(g)).sort(newestFirst);
+                        // Soonest first: these are appointments, and the next one matters most.
+                        const upcoming = myRcGames.filter((g) => !g.note && !played(g))
+                          .sort((a, b) => a.gameDate.localeCompare(b.gameDate));
+                        const filed = myRcGames.filter((g) => g.note).sort(newestFirst);
+                        const srRow = (g: MyRcGame) => {
+                          const owes = !g.note && played(g);
+                          return (
                           <GameRow
                             key={`rcgame-${g.gameId}`}
                             lang={formData.lang}
-                            tone={g.note ? 'stone' : 'amber'}
+                            tone={owes ? 'amber' : 'stone'}
                             date={g.gameDate}
                             league={g.league}
                             teams={g.teams}
                             location={g.location}
                             mapsUrl={g.mapsUrl}
                             onOpen={() => openRcNote(g)}
-                            // Gold, and lit: the one row on the home screen that
-                            // is asking the coach for something they have not
-                            // done yet. Nothing else on the page glows, which is
-                            // the whole reason this one can.
-                            className={g.note ? undefined : 'rounded-md bg-amber-50/70 shadow-[0_0_0_1px_rgb(252_211_77),0_0_12px_-2px_rgba(245,158,11,0.55)]'}
+                            // Gold, and lit: a game that has been refereed and
+                            // still owes its Rückmeldung. Nothing else on the
+                            // home screen glows, which is the whole reason this
+                            // can — and why a game still to come must not.
+                            className={owes ? 'rounded-md bg-amber-50/70 shadow-[0_0_0_1px_rgb(252_211_77),0_0_12px_-2px_rgba(245,158,11,0.55)]' : undefined}
                             // The row prints the first lines of a note promised
                             // to the chair alone, and the click logger copies a
                             // control's text into the Protokoll every admin reads.
                             logRedact
                             title={g.note
                               ? (de ? 'Rückmeldung öffnen' : 'Open the note')
-                              : (de ? 'Rückmeldung erfassen' : 'Write the note')}
+                              : owes
+                                ? (de ? 'Rückmeldung erfassen' : 'Write the note')
+                                : (de ? 'Noch nicht gespielt' : 'Not played yet')}
                             chips={<>
                               {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
                               <MetaChip tone="me">{de ? 'du' : 'you'} · {g.rcRole}</MetaChip>
@@ -5630,9 +5643,9 @@ export default function App() {
                                 data-log-redact
                                 className={cn(
                                   'h-8 w-full rounded-md px-3 text-xs font-semibold transition-colors sm:w-auto',
-                                  g.note
-                                    ? 'border border-stone-300 bg-white text-stone-600 hover:bg-stone-50'
-                                    : 'bg-amber-500 text-white hover:bg-amber-600',
+                                  owes
+                                    ? 'bg-amber-500 text-white hover:bg-amber-600'
+                                    : 'border border-stone-300 bg-white text-stone-600 hover:bg-stone-50',
                                 )}
                               >
                                 {g.note ? (de ? 'Erfasst' : 'Filed') : (de ? 'Rückmeldung' : 'Note')}
@@ -5644,7 +5657,8 @@ export default function App() {
                             )}
                             <MatchResult result={g.result} className="mt-1" />
                           </GameRow>
-                        );
+                          );
+                        };
                         return (
                           <div>
                             <SectionHead
@@ -5655,16 +5669,18 @@ export default function App() {
                               // said the opposite of the dates underneath it.
                               title={de ? 'SR-Spiele' : 'RC games'}
                               hint={<InfoHint id="srGame" lang={formData.lang} />}
-                              count={openGames.length > 0
-                                ? (de ? `${openGames.length} offen` : `${openGames.length} open`)
-                                : (de ? 'alle erfasst' : 'all filed')}
+                              // The count is what is OWED. Counting games not
+                              // yet played as "open" reports work nobody can do.
+                              count={owed.length > 0
+                                ? (de ? `${owed.length} offen` : `${owed.length} open`)
+                                : (de ? 'nichts offen' : 'nothing outstanding')}
                             />
-                            {openGames.length === 0 ? (
+                            {owed.length === 0 && upcoming.length === 0 ? (
                               <p className="py-3 text-sm text-stone-400">
                                 {de ? 'Keine offene Rückmeldung.' : 'No note outstanding.'}
                               </p>
                             ) : (
-                              <GameList className="mt-1">{openGames.map(srRow)}</GameList>
+                              <GameList className="mt-1">{[...owed, ...upcoming].map(srRow)}</GameList>
                             )}
                             {filed.length > 0 && (
                               <>

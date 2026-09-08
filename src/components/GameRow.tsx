@@ -393,7 +393,7 @@ export function GameRow({
       )}
       {tools && <div className="flex shrink-0 items-stretch">{tools}</div>}
       {action && (
-        <div className="flex basis-full items-center pb-2 pl-[4.25rem] pr-1.5 sm:basis-auto sm:pb-0 sm:pl-2 sm:pr-0">
+        <div className="flex basis-full items-center pb-2 pl-[4.25rem] pr-1.5 sm:basis-auto sm:pb-0 sm:pl-2 sm:pr-2">
           {action}
         </div>
       )}

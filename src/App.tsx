@@ -959,9 +959,37 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
 
   const setPreset = (f: string, t: string) => { onChangeFrom(f); onChangeTo(t); };
 
+  /** The range as a month, when it happens to be exactly one. Lets the month
+   *  box show what is selected instead of going blank whenever the same range
+   *  was set from the day fields. */
+  const monthValue = (() => {
+    if (!from || !to) return '';
+    const f = new Date(from + 'T00:00:00');
+    const t = new Date(to + 'T00:00:00');
+    if (Number.isNaN(f.getTime()) || Number.isNaN(t.getTime())) return '';
+    const first = new Date(f.getFullYear(), f.getMonth(), 1);
+    const last = new Date(f.getFullYear(), f.getMonth() + 1, 0);
+    return toDateString(f) === toDateString(first) && toDateString(t) === toDateString(last)
+      ? `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, '0')}`
+      : '';
+  })();
+  /** A whole month is the unit a coach plans in — "what is there in November?"
+   *  — and expressing it through the two day fields means getting the last day
+   *  of the month right by hand. This picks the range; the day fields still
+   *  work, and still narrow it afterwards. */
+  const setMonth = (value: string) => {
+    if (!value) { setPreset('', ''); return; }
+    const [year, month] = value.split('-').map(Number);
+    if (!year || !month) return;
+    setPreset(toDateString(new Date(year, month - 1, 1)), toDateString(new Date(year, month, 0)));
+  };
+
   let label: string;
   if (!hasFilter) {
     label = isDE ? 'Datum' : 'Date';
+  } else if (monthValue) {
+    // A whole month reads as its name, not as "01.11. – 30.11.".
+    label = new Date(from + 'T00:00:00').toLocaleDateString(isDE ? 'de-CH' : 'en-GB', { month: 'long', year: 'numeric' });
   } else if (from && to && from === to) {
     label = new Date(from + 'T00:00:00').toLocaleDateString(isDE ? 'de-CH' : 'en-GB', { day: '2-digit', month: '2-digit' });
   } else if (from && to) {
@@ -1021,7 +1049,17 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
             )}
           </div>
           <div className="space-y-2">
+            {/* Added beside the two day fields, not instead of them. */}
             <div>
+              <label className="block text-xs text-stone-500 mb-0.5">{isDE ? 'Monat' : 'Month'}</label>
+              <input
+                type="month"
+                value={monthValue}
+                onChange={(e) => setMonth(e.target.value)}
+                className="h-8 w-full px-2 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+              />
+            </div>
+            <div className="border-t border-stone-200 pt-2">
               <label className="block text-xs text-stone-500 mb-0.5">{isDE ? 'Von' : 'From'}</label>
               <input
                 type="date"
@@ -5708,10 +5746,27 @@ export default function App() {
                   })()}
                 </div>
                 {coacheeFiltersOpen && (
+                  // The games tab's filter bar, in the same vocabulary: the
+                  // toggles are FilterToggle pills that say what they do rather
+                  // than a switch and a word, and the dropdowns carry the same
+                  // labels above them. Two lists filtered by the same things
+                  // should not need learning twice.
                   <div className="flex flex-wrap items-end gap-2 mb-3 p-3 bg-stone-50 border border-stone-200 rounded-md">
+                    <FilterToggle
+                      on={listFilterNeedsObs}
+                      onToggle={() => { setListFilterNeedsObs(!listFilterNeedsObs); setListPage(0); }}
+                      dotClass="bg-red-600"
+                      label={formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}
+                    />
+                    <FilterToggle
+                      on={listFilterShowInactive}
+                      onToggle={() => { setListFilterShowInactive(!listFilterShowInactive); setListPage(0); }}
+                      dotClass="bg-red-600"
+                      label={formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
+                    />
                     <div className="flex-1 min-w-[130px] max-w-[220px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
-                        {formData.lang === 'DE' ? 'Level' : 'Level'}
+                        {formData.lang === 'DE' ? 'Niveau' : 'Level'}
                       </label>
                       <MultiSelectDropdown
                         lang={formData.lang}
@@ -5741,24 +5796,6 @@ export default function App() {
                         />
                       </div>
                     )}
-                    <button
-                      onClick={() => setListFilterNeedsObs(!listFilterNeedsObs)}
-                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
-                    >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterNeedsObs ? "bg-red-600" : "bg-stone-300")}>
-                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterNeedsObs ? "translate-x-4.5" : "translate-x-0.5")} />
-                      </span>
-                      <span>{formData.lang === 'DE' ? 'Beobachtung nötig' : 'Needs observation'}</span>
-                    </button>
-                    <button
-                      onClick={() => setListFilterShowInactive(!listFilterShowInactive)}
-                      className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
-                    >
-                      <span className={cn("relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors", listFilterShowInactive ? "bg-red-600" : "bg-stone-300")}>
-                        <span className={cn("inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform mt-0.5", listFilterShowInactive ? "translate-x-4.5" : "translate-x-0.5")} />
-                      </span>
-                      <span>{formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}</span>
-                    </button>
                     {(listFilterLevels.length > 0 || listFilterGroups.length > 0 || !listFilterNeedsObs || listFilterShowInactive) && (
                       <button
                         onClick={() => {

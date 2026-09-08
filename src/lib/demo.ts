@@ -517,13 +517,14 @@ export function loadRcGameNotes(): Promise<RcGameNote[]> {
   return ok(demoRcNotes.map((n) => ({ ...n })));
 }
 
-export function submitRcGameNote(payload: { gameId: string; note: string }): Promise<RcGameNote> {
+export function submitRcGameNote(payload: { gameId: string; note: string; rolesSwapped?: boolean }): Promise<RcGameNote> {
   const filed: RcGameNote = {
     id: `demo-note-${demoRcNotes.length + 1}`, gameId: payload.gameId,
     rcId: RC.id, rcName: RC.name, rcRole: DEMO_RC_GAME.rcRole,
     coacheeId: DEMO_RC_GAME.coacheeId, coacheeName: DEMO_RC_GAME.coacheeName,
     coacheeRole: DEMO_RC_GAME.coacheeRole,
     note: payload.note, submittedAt: new Date().toISOString(),
+    rolesSwapped: payload.rolesSwapped === true,
     matchNo: DEMO_RC_GAME.matchNo, league: DEMO_RC_GAME.league,
     gameDate: DEMO_RC_GAME.gameDate, teams: DEMO_RC_GAME.teams,
   };

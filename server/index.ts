@@ -5718,6 +5718,7 @@ type RcGameNoteRecord = {
   coacheeRole: string;
   note: string;
   submittedAt: string;
+  rolesSwapped: boolean;
   matchNo: string;
   league: string;
   gameDate: string;
@@ -5741,6 +5742,7 @@ function mapRcGameNote(record: AnyRecord): RcGameNoteRecord {
     coacheeRole: asText(record.coachee_role),
     note: asText(record.note),
     submittedAt: asText(record.submitted_at),
+    rolesSwapped: record.roles_swapped === true,
     // Off the expanded game where there is one: the note's own copy is what the
     // fixture said the day it was written, the game record is what the nightly
     // sync keeps corrected.
@@ -5861,6 +5863,7 @@ async function sendRcGameNoteNotification(opts: {
   game: MyRcGame;
   rcName: string;
   updated: boolean;
+  rolesSwapped: boolean;
 }): Promise<void> {
   try {
     const to = await rcPresidentEmails();
@@ -5880,9 +5883,13 @@ async function sendRcGameNoteNotification(opts: {
       return;
     }
     const g = opts.game;
+    // What they actually whistled, which is the other way round from the roster
+    // when 7.3's swap was agreed.
+    const rcRole = opts.rolesSwapped ? g.coacheeRole : g.rcRole;
+    const coacheeRole = opts.rolesSwapped ? g.rcRole : g.coacheeRole;
     const rows: Array<[string, string]> = [
-      ['Schiedsrichter:in', `${g.coacheeName}${g.coacheeRole ? ` (${g.coacheeRole})` : ''}`],
-      ['Referee Coach', `${opts.rcName}${g.rcRole ? ` (${g.rcRole})` : ''}`],
+      ['Schiedsrichter:in', `${g.coacheeName}${coacheeRole ? ` (${coacheeRole})` : ''}`],
+      ['Referee Coach', `${opts.rcName}${rcRole ? ` (${rcRole})` : ''}`],
       ['Datum', fmtDateDe(g.gameDate)],
       ['Liga', g.league],
       ['Spiel Nr.', g.matchNo],
@@ -5890,6 +5897,12 @@ async function sendRcGameNoteNotification(opts: {
       ['Halle', g.location],
       ['Resultat', g.result],
     ];
+    if (opts.rolesSwapped) {
+      // 7.3 asks the RC to report the swap so it can be corrected in the VM.
+      // That report is this line: it arrives with the note rather than as a
+      // WhatsApp message somebody has to remember to send.
+      rows.push(['1./2. SR getauscht', `ja — im VM steht noch ${g.rcRole} / ${g.coacheeRole}`]);
+    }
     const subject = `${opts.updated ? 'Aktualisierte Rückmeldung' : 'Rückmeldung'} SR-Spiel: ${g.coacheeName}`
       + (g.gameDate ? ` (${fmtDateDe(g.gameDate)})` : '');
     const intro = opts.updated
@@ -5978,6 +5991,7 @@ app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: Expre
     const body = (req.body ?? {}) as Record<string, unknown>;
     const gameId = asText(body.gameId);
     const note = asText(body.note).trim();
+    const rolesSwapped = body.rolesSwapped === true;
     const submissionKey = asText(body.submissionKey);
     if (!gameId) { res.status(400).json({ error: 'gameId fehlt.' }); return; }
     if (!note) { res.status(400).json({ error: 'Die Rückmeldung darf nicht leer sein.' }); return; }
@@ -5999,16 +6013,29 @@ app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: Expre
     const existing = await listRcGameNotes();
     const previous = existing.find((n) => n.gameId === gameId && rcRefMatches(n.rcId, n.rcName, subject));
     const context = { matchNo: game.matchNo, league: game.league, gameDate: game.gameDate, teams: game.teams };
+    // Infoschreiben 7.3: the pair may have agreed to swap 1. and 2. SR, in which
+    // case the roles the roster gives are the wrong way round. Swapping the two
+    // derived values is safe in a way that accepting roles from the body is not
+    // — it is a closed operation over the pair the server itself computed, so a
+    // client can reorder the two slots but cannot invent a role or a person.
+    const whistled = rolesSwapped
+      ? { rc: game.coacheeRole, coachee: game.rcRole }
+      : { rc: game.rcRole, coachee: game.coacheeRole };
     if (previous) {
       const updated = await withCollection(collectionCandidates.rcGameNotes, (collection) =>
-        collection.update<AnyRecord>(previous.id, { note, submitted_at: new Date().toISOString(), submission_key: submissionKey }),
+        collection.update<AnyRecord>(previous.id, {
+          note, submitted_at: new Date().toISOString(), submission_key: submissionKey,
+          rc_role: whistled.rc, coachee_role: whistled.coachee, roles_swapped: rolesSwapped,
+        }),
       );
       res.json({ ...mapRcGameNote(updated), ...context });
       // A rewrite is mailed too, marked as one. The chair may already have read
       // the earlier version, and a correction she never sees is worse than a
       // second mail. Only when the words actually changed, so the resend that
       // settles a dropped connection does not arrive as a second Rückmeldung.
-      if (note !== previous.note) notifyChair({ note, game, rcName: subject.name, updated: true });
+      if (note !== previous.note || rolesSwapped !== previous.rolesSwapped) {
+        notifyChair({ note, game, rcName: subject.name, updated: true, rolesSwapped });
+      }
       return;
     }
 
@@ -6018,10 +6045,11 @@ app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: Expre
         game_id: gameId,
         rc_id: subject.rcId,
         rc_name: subject.name,
-        rc_role: game.rcRole,
+        rc_role: whistled.rc,
         coachee_id: game.coacheeId,
         coachee_name: game.coacheeName,
-        coachee_role: game.coacheeRole,
+        coachee_role: whistled.coachee,
+        roles_swapped: rolesSwapped,
         note,
         submitted_at: new Date().toISOString(),
         season: seasonOfGame(game.gameDate),
@@ -6029,7 +6057,7 @@ app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: Expre
       }),
     );
     res.json({ ...mapRcGameNote(created), ...context });
-    notifyChair({ note, game, rcName: subject.name, updated: false });
+    notifyChair({ note, game, rcName: subject.name, updated: false, rolesSwapped });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

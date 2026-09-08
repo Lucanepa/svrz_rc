@@ -1937,12 +1937,15 @@ export default function App() {
   const [myRcGames, setMyRcGames] = useState<MyRcGame[]>([]);
   const [rcNoteGame, setRcNoteGame] = useState<MyRcGame | null>(null);
   const [rcNoteText, setRcNoteText] = useState('');
+  // Infoschreiben 7.3: the pair may have agreed to swap 1. and 2. SR.
+  const [rcNoteSwapped, setRcNoteSwapped] = useState(false);
   const [rcNoteSaving, setRcNoteSaving] = useState(false);
   const [rcNoteError, setRcNoteError] = useState('');
 
   const openRcNote = (game: MyRcGame) => {
     setRcNoteGame(game);
     setRcNoteText(game.note?.note ?? '');
+    setRcNoteSwapped(game.note?.rolesSwapped === true);
     setRcNoteError('');
   };
 
@@ -1953,7 +1956,7 @@ export default function App() {
     setRcNoteSaving(true);
     setRcNoteError('');
     try {
-      const filed = await submitRcGameNote({ gameId: rcNoteGame.gameId, note: text, season: seasonStartYear });
+      const filed = await submitRcGameNote({ gameId: rcNoteGame.gameId, note: text, season: seasonStartYear, rolesSwapped: rcNoteSwapped });
       // Patch in place rather than re-fetching: the list is one request behind
       // a dashboard reload anyway, and the row has to stop asking immediately.
       setMyRcGames((rows) => rows.map((r) => (r.gameId === filed.gameId ? { ...r, note: filed } : r)));
@@ -7750,8 +7753,8 @@ export default function App() {
                 [formData.lang === 'DE' ? 'Spiel' : 'Match', `${rcNoteGame.league}${rcNoteGame.matchNo ? ` · #${rcNoteGame.matchNo}` : ''}`],
                 [formData.lang === 'DE' ? 'Teams' : 'Teams', rcNoteGame.teams],
                 [formData.lang === 'DE' ? 'Halle' : 'Venue', rcNoteGame.location || '—'],
-                [formData.lang === 'DE' ? 'Du' : 'You', `${rcAuth.rcName ?? ''} (${rcNoteGame.rcRole})`],
-                [formData.lang === 'DE' ? 'Coachee' : 'Coachee', `${rcNoteGame.coacheeName} (${rcNoteGame.coacheeRole})`],
+                [formData.lang === 'DE' ? 'Du' : 'You', `${rcAuth.rcName ?? ''} (${rcNoteSwapped ? rcNoteGame.coacheeRole : rcNoteGame.rcRole})`],
+                [formData.lang === 'DE' ? 'Coachee' : 'Coachee', `${rcNoteGame.coacheeName} (${rcNoteSwapped ? rcNoteGame.rcRole : rcNoteGame.coacheeRole})`],
                 [formData.lang === 'DE' ? 'Resultat' : 'Result', rcNoteGame.result || '—'],
               ] as const).map(([label, value]) => (
                 <React.Fragment key={label}>
@@ -7761,6 +7764,29 @@ export default function App() {
               ))}
             </dl>
             <div className="p-5">
+              {/* Infoschreiben 7.3. The roles above come from the fixture, which
+                  is what VolleyManager still says — so this box does two jobs at
+                  once: it corrects them on this note, and it is the report 7.3
+                  asks the RC to send so the VM can be put right. The mail to the
+                  RC-Präsidium says so explicitly. */}
+              <label className="flex items-start gap-2 mb-3 text-sm text-stone-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={rcNoteSwapped}
+                  onChange={(e) => setRcNoteSwapped(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-stone-300 text-sky-700 focus:ring-sky-500/40"
+                />
+                <span>
+                  {formData.lang === 'DE'
+                    ? '1. und 2. SR wurden getauscht (Ziff. 7.3).'
+                    : '1st and 2nd referee were swapped (section 7.3).'}
+                  <span className="block text-xs text-stone-500">
+                    {formData.lang === 'DE'
+                      ? 'Die Rollen oben werden entsprechend korrigiert und der Tausch dem RC-Präsidium gemeldet, damit er im VM angepasst werden kann.'
+                      : 'The roles above are corrected accordingly and the swap is reported to the RC chair, so it can be fixed in VolleyManager.'}
+                  </span>
+                </span>
+              </label>
               <label htmlFor="rc-note" className="block text-sm font-medium text-stone-700 mb-1.5">
                 {formData.lang === 'DE' ? 'Deine Rückmeldung' : 'Your note'}
               </label>

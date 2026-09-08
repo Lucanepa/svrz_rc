@@ -84,6 +84,7 @@ const STR = {
     srNotes: 'Rückmeldungen aus SR-Spielen (4.4.10)',
     srNotesHint: 'Hat ein Referee Coach neben einem Coachee gepfiffen, wird kein Feedbackformular ausgefüllt — stattdessen diese kurze Rückmeldung. Sie geht nur ans RC-Präsidium und zählt nicht ans Saisonziel.',
     srNotesEmpty: 'Noch keine Rückmeldungen.',
+    srNotesSwapped: '1. und 2. SR wurden getauscht (Ziff. 7.3) — die Rollen oben sind die tatsächlich gepfiffenen. Im VolleyManager ist es noch andersherum erfasst.',
     logsHint: 'Alles, was passiert: jede Anfrage, jeder Klick in der App, jeder Fehler. Neueste zuletzt.',
     logsSearch: 'Suchen (E-Mail, Pfad, Text…)', logsLevel: 'Stufe', logsSource: 'Quelle', logsAll: 'Alle',
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'Keine Einträge.',
@@ -268,6 +269,7 @@ const STR = {
     srNotes: 'Notes from games a coach refereed (4.4.10)',
     srNotesHint: 'When a referee coach whistled next to a coachee no feedback form is filled in — this short note takes its place. It reaches the RC chair only and never counts toward a season target.',
     srNotesEmpty: 'No notes yet.',
+    srNotesSwapped: '1st and 2nd referee were swapped (section 7.3) — the roles above are the ones actually whistled. VolleyManager still has it the other way round.',
     logsHint: 'Everything that happens: every request, every click in the app, every error. Newest last.',
     logsSearch: 'Search (email, path, text…)', logsLevel: 'Level', logsSource: 'Source', logsAll: 'All',
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'No entries.',
@@ -2350,6 +2352,14 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
             {r.teams && <span className="text-xs text-stone-500 truncate">{r.teams}</span>}
             <span className="ml-auto text-xs text-stone-500">{r.rcName}{r.rcRole ? ` (${r.rcRole})` : ''}</span>
           </div>
+          {/* 7.3's report, arriving with the note instead of as a WhatsApp
+              message somebody has to remember to send. It is the one thing on
+              this card that asks her to go and do something. */}
+          {r.rolesSwapped && (
+            <p className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+              {t.srNotesSwapped}
+            </p>
+          )}
           <p data-log-redact className="text-sm text-stone-800 whitespace-pre-wrap">{r.note}</p>
         </div>
       ))}

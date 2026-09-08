@@ -548,6 +548,9 @@ export type RcGameNote = {
   coacheeRole: string;
   note: string;
   submittedAt: string;
+  /** Infoschreiben 7.3: the pair agreed to swap 1. and 2. SR, so the roles above
+   *  are what they whistled and VolleyManager still says the opposite. */
+  rolesSwapped?: boolean;
   matchNo: string;
   league: string;
   gameDate: string;
@@ -589,7 +592,7 @@ export async function loadRcGameNotes(): Promise<RcGameNote[]> {
   return response.json() as Promise<RcGameNote[]>;
 }
 
-export async function submitRcGameNote(payload: { gameId: string; note: string; season?: number }): Promise<RcGameNote> {
+export async function submitRcGameNote(payload: { gameId: string; note: string; season?: number; rolesSwapped?: boolean }): Promise<RcGameNote> {
   if (isDemoMode()) return demo.submitRcGameNote(payload);
   const response = await fetch(apiUrl('/api/rc-game-notes'), {
     method: 'POST',

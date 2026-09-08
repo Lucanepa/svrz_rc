@@ -135,6 +135,10 @@ await ensure('rc_game_notes', [
   REL('game',games.id),T('game_id'),T('rc_name'),T('rc_id'),T('rc_role'),
   T('coachee_name'),T('coachee_id'),T('coachee_role'),
   T('note'),T('submitted_at'),NUM('season'),
+  // Infoschreiben 7.3: an RC and an N3-3 may agree to swap 1. and 2. SR. The
+  // roles above are then the opposite of what VolleyManager still says, and the
+  // swap has to reach the RC-Präsidium so it can be corrected there.
+  B('roles_swapped'),
   // Same job as referee_coach_feedbacks.submission_key: a retry that the server
   // already committed must be recognised, not filed twice.
   T('submission_key')

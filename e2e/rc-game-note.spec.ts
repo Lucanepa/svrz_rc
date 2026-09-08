@@ -72,6 +72,7 @@ test('the coach is told the Rückmeldung goes to the chair alone, and it is sent
   await expect.poll(() => posted.length).toBe(1);
   expect(posted[0].gameId).toBe(SR_GAME.gameId);
   expect(posted[0].note).toBe('Sicher geleitet, klare Zeichen.');
+  expect(posted[0].rolesSwapped).toBe(false);
   // Filed, so the row stops asking for one.
   await expect(page.getByText(/Erfasst|Filed/)).toBeVisible();
 });
@@ -96,4 +97,34 @@ test("a colleague's Rückmeldung is never fetched for the coachee's page", async
   await expect(page.getByText(OTHER_NOTE.note)).toHaveCount(0);
   await expect(page.getByText(/Rückmeldungen aus SR-Spielen|Notes from games they refereed/)).toHaveCount(0);
   expect(asked).toEqual([]);
+});
+
+test('a 7.3 swap corrects the roles on the note and is reported with it', async ({ page }) => {
+  const posted: Record<string, unknown>[] = [];
+  await stubSignedInApp(page);
+  await page.route('**/api/rc-games*', (r) => r.fulfill({ json: [SR_GAME] }));
+  await page.route('**/api/rc-game-notes', async (r) => {
+    posted.push(JSON.parse(r.request().postData() || '{}'));
+    await r.fulfill({ json: { ...OTHER_NOTE, id: 'n-mine', gameId: SR_GAME.gameId, rcId: RC.id, rcName: RC.name } });
+  });
+
+  await page.goto('/');
+  await openSrGame(page).click();
+
+  // The fixture says the coach was 2. SR and the coachee 1. SR.
+  await expect(page.getByText(`${RC.name} (2. SR)`)).toBeVisible();
+  await expect(page.getByText(`${SR_GAME.coacheeName} (1. SR)`)).toBeVisible();
+
+  await page.getByRole('checkbox').check();
+
+  // Ticking the box swaps what the dialog shows, so the coach can see it is now
+  // describing the evening they actually had.
+  await expect(page.getByText(`${RC.name} (1. SR)`)).toBeVisible();
+  await expect(page.getByText(`${SR_GAME.coacheeName} (2. SR)`)).toBeVisible();
+
+  await page.getByLabel(/Deine Rückmeldung|Your note/).fill('Tausch abgesprochen, lief gut.');
+  await page.getByRole('button', { name: /^(Senden|Send)$/ }).click();
+
+  await expect.poll(() => posted.length).toBe(1);
+  expect(posted[0].rolesSwapped).toBe(true);
 });

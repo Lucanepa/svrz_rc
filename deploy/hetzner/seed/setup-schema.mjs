@@ -101,6 +101,12 @@ const rcs = await ensure('referee_coaches', [
   // sync had already written under the old name. Optional, and the name stays
   // the fallback: only about a third of games carry referee numbers at all.
   T('sv_number'),
+  // Other spellings this coach's fixtures are written under — a maiden name,
+  // or a full given name the coach does not go by. Comma-separated. The
+  // register name can then be changed without detaching them from the
+  // fixtures already synced under the old one, which is what sv_number cannot
+  // cover alone: only about a third of games carry a referee number.
+  T('name_aliases'),
   // Reads the post-visit surveys (rc_visit_feedback). Set it HERE, not in the
   // admin console: a flag an admin can tick is one they can tick for
   // themselves, and admin rights must not open that view.

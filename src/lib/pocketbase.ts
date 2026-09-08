@@ -655,6 +655,10 @@ export type RcPerson = { id: string; first_name?: string; last_name?: string;
   /** Swiss Volley's number. Optional — the name stays the fallback when a
    *  coach is not in the register. See the comment in makeRcGameTest. */
   sv_number?: string;
+  /** Comma-separated other spellings this coach's fixtures are written
+   *  under. Only a third of games carry a referee number, so for the rest
+   *  this is what survives a rename. */
+  name_aliases?: string;
   email?: string; phone?: string; active?: boolean };
 
 

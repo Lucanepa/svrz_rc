@@ -820,6 +820,12 @@ type ActiveRcPerson = {
    *  A game carries its referees' numbers as well as their names, and a
    *  number does not change when somebody marries. */
   svNumber: string;
+  /** Other spellings this coach's fixtures are written under — a maiden name,
+   *  or the full given name where the register prints one the coach does not
+   *  use. Only about a third of games carry a referee number, so for the rest
+   *  the alias is the only thing keeping a renamed coach attached to fixtures
+   *  the sync wrote before the change. */
+  aliases: string[];
   email: string;
   isRcPresident: boolean;
 };
@@ -845,6 +851,7 @@ async function getActiveRcPeople(): Promise<ActiveRcPerson[]> {
     fullName: `${asText(p.first_name)} ${asText(p.last_name)}`.trim(),
     firstName: asText(p.first_name),
     svNumber: asText(p.sv_number),
+    aliases: asText(p.name_aliases).split(/[,;\n]/).map((n) => n.trim()).filter(Boolean),
     email: asText(p.email),
     // Marks the chair's own record. It no longer grants anything — she reaches
     // her channel with her own password on the admin page — so it is a label
@@ -2635,7 +2642,7 @@ async function listCoacheesWithFallbackSort(): Promise<AnyRecord[]> {
 async function makeRcGameTest(): Promise<(game: AnyRecord) => boolean> {
   const coacheeNames = await getCoacheeNameIndex();
   const people = await getActiveRcPeople();
-  const rcNames = new Set(people.map((p) => normalizeName(p.fullName)));
+  const rcNames = new Set(people.flatMap((p) => [p.fullName, ...p.aliases].map(normalizeName)).filter(Boolean));
   // A number does not change when somebody marries. Roughly a third of games
   // carry their referees' SV numbers; the rest are matched on the name, which
   // is what this did exclusively and what a rename silently broke.
@@ -3878,7 +3885,7 @@ app.get('/api/admin/rc-people', requireAdminSession, async (_req: Request, res: 
       c.getFullList<AnyRecord>({ sort: 'last_name' }));
     res.json(people.map((p) => ({
       id: p.id, first_name: asText(p.first_name), last_name: asText(p.last_name),
-      sv_number: asText(p.sv_number),
+      sv_number: asText(p.sv_number), name_aliases: asText(p.name_aliases),
       email: asText(p.email), phone: asText(p.phone), active: p.active !== false,
     })));
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -3937,7 +3944,7 @@ app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: 
     }
     const created = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
       c.create({ first_name: asText(d.first_name), last_name: asText(d.last_name),
-        sv_number: asText(d.sv_number),
+        sv_number: asText(d.sv_number), name_aliases: asText(d.name_aliases),
         email, phone: asText(d.phone), active: d.active !== false }));
     rcPeopleCache = null;
     res.status(201).json(created);
@@ -3952,6 +3959,7 @@ app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, re
     if ('first_name' in raw) payload.first_name = asText(raw.first_name);
     if ('last_name' in raw) payload.last_name = asText(raw.last_name);
     if ('sv_number' in raw) payload.sv_number = asText(raw.sv_number);
+    if ('name_aliases' in raw) payload.name_aliases = asText(raw.name_aliases);
     if ('email' in raw) payload.email = asText(raw.email);
     if ('phone' in raw) payload.phone = asText(raw.phone);
     if ('active' in raw) payload.active = Boolean(raw.active);
@@ -5954,16 +5962,16 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
     }
   }
 
-  const me = normalizeName(subject.name);
-  // The coach's own SV number, when their record carries one. A game names its
-  // referees as text, so a coach who changes their surname stops matching every
-  // fixture the sync wrote before the change — and, where the league has not
-  // re-synced, every fixture after it too. The number is the stable half.
-  const mySvNumber = subject.rcId
-    ? asText((await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]))
-        .find((p) => p.id === subject.rcId)?.svNumber)
-    : '';
-  if (!me && !mySvNumber) return [];
+  // A game names its referees as text, so a coach who changes their surname
+  // stops matching every fixture the sync wrote before the change. Two things
+  // keep them attached: the SV number the fixture carries (about a third do),
+  // and the spellings their record lists as also theirs.
+  const self = subject.rcId
+    ? (await getActiveRcPeople().catch(() => [] as ActiveRcPerson[])).find((p) => p.id === subject.rcId)
+    : undefined;
+  const mySvNumber = asText(self?.svNumber);
+  const myNames = new Set([subject.name, ...(self?.aliases ?? [])].map(normalizeName).filter(Boolean));
+  if (myNames.size === 0 && !mySvNumber) return [];
   const games = await withCollection(collectionCandidates.games, (collection) =>
     collection.getFullList<AnyRecord>({ sort: '-match_date', fields: GAME_NOTE_FIELDS }),
   );
@@ -5978,7 +5986,7 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
     ];
     for (const slot of slots) {
       const mineIsMe = (mySvNumber && asText(slot.mineId) === mySvNumber)
-        || (!!me && normalizeName(slot.mine) === me);
+        || myNames.has(normalizeName(slot.mine));
       if (!mineIsMe) continue;
       const otherKey = normalizeName(slot.other);
       if (!otherKey || !season.has(otherKey)) continue;

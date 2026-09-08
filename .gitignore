@@ -13,6 +13,9 @@ infrastructure.private.md
 # leaving production silently missing a column. Tracked on purpose.
 deploy/hetzner/seed/*
 !deploy/hetzner/seed/setup-schema.mjs
+# Also code, not data: it derives its values from the database it writes to
+# and carries no names of its own.
+!deploy/hetzner/seed/backfill-rc-sv-numbers.mjs
 deploy/hetzner/svrz-api.env
 deploy/hetzner/pb_data/
 deploy/hetzner/.env

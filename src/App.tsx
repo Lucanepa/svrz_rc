@@ -996,9 +996,9 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
     const fmt = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString(isDE ? 'de-CH' : 'en-GB', { day: '2-digit', month: '2-digit' });
     label = `${fmt(from)} – ${fmt(to)}`;
   } else if (from) {
-    label = `${isDE ? 'ab' : 'from'} ${new Date(from + 'T00:00:00').toLocaleDateString(isDE ? 'de-CH' : 'en-GB', { day: '2-digit', month: '2-digit' })}`;
+    label = `${isDE ? 'Ab' : 'From'} ${new Date(from + 'T00:00:00').toLocaleDateString(isDE ? 'de-CH' : 'en-GB', { day: '2-digit', month: '2-digit' })}`;
   } else {
-    label = `${isDE ? 'bis' : 'to'} ${new Date(to + 'T00:00:00').toLocaleDateString(isDE ? 'de-CH' : 'en-GB', { day: '2-digit', month: '2-digit' })}`;
+    label = `${isDE ? 'Bis' : 'To'} ${new Date(to + 'T00:00:00').toLocaleDateString(isDE ? 'de-CH' : 'en-GB', { day: '2-digit', month: '2-digit' })}`;
   }
 
   return (
@@ -5626,7 +5626,7 @@ export default function App() {
                                 : (de ? 'Noch nicht gespielt' : 'Not played yet')}
                             chips={<>
                               {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
-                              <MetaChip tone="me">{de ? 'du' : 'you'} · {g.rcRole}</MetaChip>
+                              <MetaChip tone="me">{de ? 'Du' : 'You'} · {g.rcRole}</MetaChip>
                               <MetaChip wrap tone="amber">
                                 <span>{g.coacheeName}</span>
                                 <span className="opacity-70">· {g.coacheeRole}</span>
@@ -5673,7 +5673,7 @@ export default function App() {
                               // yet played as "open" reports work nobody can do.
                               count={owed.length > 0
                                 ? (de ? `${owed.length} offen` : `${owed.length} open`)
-                                : (de ? 'nichts offen' : 'nothing outstanding')}
+                                : (de ? 'Nichts offen' : 'Nothing outstanding')}
                             />
                             {owed.length === 0 && upcoming.length === 0 ? (
                               <p className="py-3 text-sm text-stone-400">

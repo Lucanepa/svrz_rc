@@ -87,7 +87,9 @@ test.describe('Manual game name pickers', () => {
 
     await page.locator('#mg-ref1').fill('ohnemail');
     await page.getByRole('button', { name: /Nina Ohnemail/ }).click();
-    await expect(fieldNote(page, 'mg-ref1')).toHaveText(/keine E-Mail|no email/);
+    // Case-insensitive: the label is sentence case now, and what this checks is
+    // that the missing address is MARKED, not how the marker is capitalised.
+    await expect(fieldNote(page, 'mg-ref1')).toHaveText(/keine E-Mail|no email/i);
   });
 
   test('a referee who is no coachee is offered, marked as unable to receive', async ({ page }) => {

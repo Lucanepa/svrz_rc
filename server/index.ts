@@ -1217,7 +1217,7 @@ Bei Fragen oder falls sich am Einsatz etwas ändert, melde dich bitte rechtzeiti
     outro: 'Sportliche Grüsse\n{{coach}}',
     introEn: `Dear {{vorname}},
 
-your next appointment will be accompanied as part of our referee coaching: {{coach}} will be there as your coach, to support you and to work on your development together with you.
+Your next appointment will be accompanied as part of our referee coaching: {{coach}} will be there as your coach, to support you and to work on your development together with you.
 
 Appointment details:
 

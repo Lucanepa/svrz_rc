@@ -27,9 +27,9 @@ const STR = {
     lead: 'Wie du als Referee Coach eine Beobachtung erfasst, unterschreiben lässt und absendest — vom Öffnen des Spiels bis zur E-Mail an den Schiedsrichter.',
     compareTitle: 'Was sich ändert',
     beforeLabel: 'Bisher',
-    beforeSub: 'von Hand, in vier Werkzeugen',
+    beforeSub: 'Von Hand, in vier Werkzeugen',
     nowLabel: 'Jetzt',
-    nowSub: 'einmal ausfüllen, fertig',
+    nowSub: 'Einmal ausfüllen, fertig',
     beforeSteps: [
       'Spiele im VolleyManager zusammensuchen',
       'Beobachtung während des Spiels auf Papier notieren',
@@ -65,9 +65,9 @@ const STR = {
     lead: 'How you record an observation as a referee coach, get it signed and send it — from opening the game to the email the referee receives.',
     compareTitle: 'What changes',
     beforeLabel: 'Until now',
-    beforeSub: 'by hand, across four tools',
+    beforeSub: 'By hand, across four tools',
     nowLabel: 'From now on',
-    nowSub: 'fill it in once, done',
+    nowSub: 'Fill it in once, done',
     beforeSteps: [
       'Hunt for the games in VolleyManager',
       'Write the observation on paper during the match',

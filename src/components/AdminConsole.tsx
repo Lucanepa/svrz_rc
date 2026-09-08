@@ -165,7 +165,7 @@ const STR = {
     mgPickUnknown: 'Nicht in der Liste — freier Text.',
     mgPickNoCoachee: 'kein Coachee',
     mgDirFail: (e: string) => `Schiedsrichterliste aus VolleyManager nicht erreichbar — die Auswahl zeigt nur Coachees. (${e})`,
-    noEmail: 'keine E-Mail',
+    noEmail: 'Keine E-Mail',
     syncTitle: 'Kontaktdaten aus VolleyManager',
     syncHint: 'Holt E-Mail und Telefon aus der VolleyManager-Schiedsrichterliste. Wer dort fehlt, wird auf den Spielen des Saison gesucht (sobald diese aufgeschaltet sind). Ohne E-Mail lässt sich kein Feedback abschicken.',
     syncBtn: 'Kontakte holen',
@@ -208,9 +208,9 @@ const STR = {
     nvLevel: 'Niveau · Stufe',
     nvLegend: 'NL = Nationalliga · Zahl = Liga · U23: 1.–3. Liga (im VolleyManager „Stärkeklasse")',
     nvFam: {
-      N4: 'regionaler SR ohne Ausbildung zum 2. SR',
-      N3: 'regionaler SR mit Ausbildung zum 2. SR',
-      N2: 'regionaler SR für nationale Spiele 1. Liga',
+      N4: 'Regionaler SR ohne Ausbildung zum 2. SR',
+      N3: 'Regionaler SR mit Ausbildung zum 2. SR',
+      N2: 'Regionaler SR für nationale Spiele 1. Liga',
       N1: 'Nationalkader',
     } as Record<string, string>,
     gamesHint: 'Ein Spiel einem Referee Coach zuteilen oder für eine Beobachtung vormerken. Die RC übernehmen ihre Spiele sonst selbst — das hier ist der Weg, es für jemanden zu tun.',
@@ -351,7 +351,7 @@ const STR = {
     mgPickUnknown: 'Not in the list — free text.',
     mgPickNoCoachee: 'not a coachee',
     mgDirFail: (e: string) => `The VolleyManager referee list could not be reached — the pickers show coachees only. (${e})`,
-    noEmail: 'no email',
+    noEmail: 'No email',
     syncTitle: 'Contact details from VolleyManager',
     syncHint: 'Pulls email and phone from the VolleyManager referee list. Anyone missing there is looked up on the season\'s games (once those are published). Feedback cannot be submitted without an email.',
     syncBtn: 'Fetch contacts',
@@ -394,10 +394,10 @@ const STR = {
     nvLevel: 'Niveau · Stufe',
     nvLegend: 'NL = national league · digit = Liga · U23: 1.–3. Liga (“Stärkeklasse” in VolleyManager)',
     nvFam: {
-      N4: 'regional referee, not trained as 2nd ref',
-      N3: 'regional referee, trained as 2nd ref',
-      N2: 'regional referee for national 1. Liga games',
-      N1: 'national squad',
+      N4: 'Regional referee, not trained as 2nd ref',
+      N3: 'Regional referee, trained as 2nd ref',
+      N2: 'Regional referee for national 1. Liga games',
+      N1: 'National squad',
     } as Record<string, string>,
     gamesHint: 'Assign a game to a referee coach, or flag it for observation. Coaches normally take their own games — this is how you do it for someone.',
     gamesSearch: 'Search game, team, league or venue …',
@@ -2528,7 +2528,7 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
           <option value="">{t.logsSessions}: {t.logsAll}</option>
           {sessions.map((s) => (
             <option key={s.sid} value={s.sid}>
-              {(s.user || 'anonym')} · {new Date(s.last).toLocaleTimeString()} · {s.count}{s.errors ? ` ⚠${s.errors}` : ''}
+              {(s.user || 'Anonym')} · {new Date(s.last).toLocaleTimeString()} · {s.count}{s.errors ? ` ⚠${s.errors}` : ''}
             </option>
           ))}
         </select>

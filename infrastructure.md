@@ -158,7 +158,9 @@ FEEDBACK_EMAIL_TEST="1"              # 1 => redirect all emails to test recipien
 FEEDBACK_TEST_RECIPIENT="you@..."
 
 # Where each submitted survey is mailed as it arrives. Unset => stored only.
-# (Who may READ them in the tool is NOT an env var — see is_rc_president below.)
+# (Who may READ them in the tool is the chair's console password below, not this
+#  address and not the is_rc_president flag — receiving each answer as it arrives
+#  and reading the collected set are different jobs.)
 # The real address belongs in the gitignored private file, not here.
 SURVEY_NOTIFY_EMAIL="__see_infrastructure.private.md__"
 ```
@@ -189,10 +191,15 @@ Common fields: `first_name`, `last_name`, `email`, `phone`, `active`, `is_rc_pre
 `is_admin` and `pin_hash` are no longer read by anything — the columns may still
 hold data from before the per-person login was removed.
 
-`is_rc_president` is the sole key to the post-visit survey responses
-(`GET /api/survey-responses` and the console's RC-feedback tab). An admin
-session does **not** open that view — admin rights open every other one, so this
-is the deliberate exception. Set the flag directly in PocketBase: it is
+`is_rc_president` no longer opens anything. It used to be the sole key to the
+post-visit survey responses; when the per-person login went, that gate moved to
+the chair's own console password (`PRESIDENT_UI_PASSWORD` — see Credentials),
+and the flag was left behind as a label on her row.
+
+Since 2026-09-07 it has one job again: it is the address the 4.4.10 SR-Spiel
+Rückmeldung is **mailed** to as it is filed. Flag nobody and the notes are still
+stored and still readable in her tab, but no mail goes out — the API logs
+`rc_note.no_recipient` when that happens. Set it directly in PocketBase: it is
 intentionally absent from the admin console's RC editor, because a flag an admin
 can tick is a flag an admin can tick for themselves.
 
@@ -383,7 +390,9 @@ reachable without a session.
 - `POST /api/vm/auth-check`: validate upstream auth/session.
 - `GET /api/survey/:token`: **public** — prefill data for the post-visit survey page. No login; the token is the capability, so no name or match number rides in the URL.
 - `POST /api/survey/:token`: **public** — submit the survey. Write-once (409 if already answered), own per-IP rate-limit bucket.
-- `GET /api/survey-responses`: read the responses. Gated on the `is_rc_president` flag, **not** on admin rights — an admin session gets 403. Not under `/api/admin/` for that reason, and not `/api/survey/responses`, which the `:token` route above would swallow.
+- `GET /api/survey-responses`: read the responses. Gated on `requireSurveyReader` — the chair's own console password, **not** admin rights (an admin session gets 403) and **not** the `is_rc_president` flag, which grants nothing. Not under `/api/admin/` for that reason, and not `/api/survey/responses`, which the `:token` route above would swallow.
+- `GET /api/rc-game-notes`: read every filed 4.4.10 Rückmeldung. Same `requireSurveyReader` gate as the survey answers and `/api/president-notes`. A coach reads their own note back through `/api/rc-games`, never this.
+- `POST /api/rc-game-notes`: file (or rewrite) one Rückmeldung. RC session; the game, the role and the coachee are re-derived server-side, so a coach who was not on that whistle gets 403. Body is redacted in the activity log.
 - `GET /api/coachees`: list coachees + observation status summary.
 - `POST /api/coachees`: create coachee.
 - `PUT /api/coachees/:id`: update coachee.

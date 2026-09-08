@@ -69,16 +69,34 @@ const GROUP_EN = new Map<string, string>([
  *  name. Both spellings: the import writes the long one, older rows the short. */
 const NEW_SR_DE = /^neu-(?:sr|schiedsrichter)\s+(.+)$/i;
 
-/** Is this coachee in their FIRST season? Infoschreiben 4.4.2 calls that cohort
- *  "Neu-SR <Saison>", and 4.1 gives it the only deadline in the document: the
- *  visit belongs in one of their first three games. Matched by shape, like the
- *  label above — the year moves every season and must not be hard-coded here.
+/** The two Neu-SR cohorts the Infoschreiben defines, named for the season they
+ *  started in: 4.4.2 "Neu-SR 26/27" (first season) and 4.4.3 "Neu-SR 25/26"
+ *  (second). Generated from the active season rather than listed, so neither
+ *  goes stale and neither has to be maintained by hand. */
+export function newSrGroupOptions(season: number): string[] {
+  const yy = (y: number) => String(y % 100).padStart(2, '0');
+  return [season, season - 1].map((y) => `Neu-Schiedsrichter ${yy(y)}/${yy(y + 1)}`);
+}
+
+/** Is this coachee in their FIRST season — 4.4.2's cohort, the one 4.1 gives the
+ *  only deadline in the document to: the visit belongs in one of their first
+ *  three games.
  *
- *  4.4.3's second-year cohort carries the same prefix with an older year, so a
- *  caller that needs to tell the two apart compares the season in the name; for
- *  the deadline both are "Neu-SR" and only the current one is still inside it. */
-export function isNewSrGroup(groups?: string): boolean {
-  return splitCoacheeGroups(groups).some((g) => NEW_SR_DE.test(g));
+ *  `season` is what separates them from 4.4.3's second-year cohort, which
+ *  carries the same prefix with an older year. Without it this returns true for
+ *  both, and the three-game window would go on firing for a referee a full
+ *  season after theirs closed — invisible today, because nobody currently
+ *  carries the 25/26 group, and wrong the moment this season's 19 roll over. */
+export function isNewSrGroup(groups?: string, season?: number): boolean {
+  return splitCoacheeGroups(groups).some((g) => {
+    const match = NEW_SR_DE.exec(g);
+    if (!match) return false;
+    if (season == null) return true;
+    // "26/27" and the legacy "2025/26" both start with the season they began
+    // in; two digits or four, only the last two carry the answer.
+    const started = /(\d{2,4})/.exec(match[1]);
+    return started ? Number(started[1]) % 100 === season % 100 : false;
+  });
 }
 
 /** Split a groups field into its individual groups. A bare 2- or 4-digit part

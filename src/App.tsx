@@ -53,7 +53,7 @@ import { getStoredLang, setStoredLang } from './lib/prefs';
 import { subscribeLive } from './lib/liveEvents';
 import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml, sanitizeRich } from './lib/richText';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
-import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
+import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, newSrGroupOptions, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName as normName, coacheeIndex } from './lib/coacheeName';
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
@@ -6714,7 +6714,7 @@ export default function App() {
               // falls inside the coach's focus, and counting only the focused
               // ones would report a window that is still open after it shut.
               const newSrWindow = (() => {
-                if (!isNewSrGroup(viewCoachee?.groups)) return null;
+                if (!isNewSrGroup(viewCoachee?.groups, seasonStartYear)) return null;
                 const firstThree = [...seasonGames]
                   .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
                   .slice(0, 3);
@@ -8101,11 +8101,18 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
   // Always offer the canonical list too, so a group is pickable even if nobody
   // has it yet.
   const allGroups = useMemo(() => {
-    const set = new Set<string>(COACHEE_GROUP_OPTIONS);
+    // Both Neu-SR cohorts, generated from the season: 4.4.3's second-year group
+    // is on nobody right now, so the union below would never offer it and the
+    // one cohort the Infoschreiben defines separately was unreachable.
+    // The season this coachee's row belongs to — the modal has no app-level
+    // season, and the row it is editing is the right answer anyway.
+    const now = new Date();
+    const fallbackSeason = now.getMonth() <= 7 ? now.getFullYear() - 1 : now.getFullYear();
+    const set = new Set<string>([...COACHEE_GROUP_OPTIONS, ...newSrGroupOptions(coachee.season ?? fallbackSeason)]);
     coachees.forEach(c => splitCoacheeGroups(c.groups).forEach(g => set.add(g)));
     return Array.from(set).sort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coachees]);
+  }, [coachees, coachee.season]);
 
   // Derive unique levels from all coachees (level - stage format, raw values)
   const allLevels = useMemo(() => {

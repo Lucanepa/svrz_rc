@@ -490,7 +490,11 @@ export function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackRecord[
 // would have to be reasoned about by the home counters, the games list and the
 // calendar, none of which it belongs in. This is the one screen it exists for.
 const DEMO_RC_GAME: Omit<MyRcGame, 'note'> = {
-  gameId: 'demo-g-rc', matchNo: '2140677', league: '3L ♂', gameDate: seasonDate(10, 22),
+  // Early September: this block asks for a Rückmeldung on a game already
+  // refereed, so the one game demonstrating it has to be in the past. Dated
+  // in November it sat there as an appointment, which is the one thing an
+  // SR-Spiel row cannot be — nothing can be written up before it is played.
+  gameId: 'demo-g-rc', matchNo: '2140677', league: '3L ♂', gameDate: seasonDate(8, 2),
   location: 'Sporthalle Buchlern, Zürich', mapsUrl: '',
   teams: 'VBC Kanti Baden vs Volley Smash 05', result: '3:1 (25:20 / 22:25 / 25:18 / 25:21)',
   rcRole: '2. SR', coacheeName: 'Luca Ferrari', coacheeId: 'demo-c-luca', coacheeRole: '1. SR',

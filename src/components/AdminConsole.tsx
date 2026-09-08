@@ -140,7 +140,7 @@ const STR = {
     reminderPreview: 'Vorschau: morgen', reminderPreviewHint: 'Zeigt exakt, was morgen versendet würde — es wird nichts gesendet.',
     reminderNone: 'Für morgen stehen keine Erinnerungen an.',
     importXlsx: 'xlsx importieren', importHint: (s: string) => `Import setzt die Saison ${s}. Bestehende (gleicher Name + Saison) werden aktualisiert.`,
-    firstName: 'Vorname', lastName: 'Nachname', level: 'Niveau', stage: 'Niveau', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
+    firstName: 'Vorname', lastName: 'Nachname', svNumber: 'SV-Nummer', level: 'Niveau', stage: 'Niveau', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
     noCoachees: (s: string) => `Keine Coachees für ${s} — importiere eine xlsx.`,
     delCoachee: (n: string) => `Coachee „${n}" löschen?`, delCoacheeOk: (n: string) => `Coachee „${n}" gelöscht.`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
@@ -326,7 +326,7 @@ const STR = {
     reminderPreview: 'Preview: tomorrow', reminderPreviewHint: 'Shows exactly what would be sent tomorrow — nothing is sent.',
     reminderNone: 'No reminders due for tomorrow.',
     importXlsx: 'Import xlsx', importHint: (s: string) => `Import targets season ${s}. Existing (same name + season) are updated.`,
-    firstName: 'First name', lastName: 'Last name', level: 'Level', stage: 'Niveau', group: 'Group', email: 'Email', phone: 'Phone',
+    firstName: 'First name', lastName: 'Last name', svNumber: 'SV number', level: 'Level', stage: 'Niveau', group: 'Group', email: 'Email', phone: 'Phone',
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
     noCoachees: (s: string) => `No coachees for ${s} — import an xlsx.`,
     delCoachee: (n: string) => `Delete coachee "${n}"?`, delCoacheeOk: (n: string) => `Coachee "${n}" deleted.`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
@@ -1544,7 +1544,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
 function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates }: { t: T; lang: Lang; mandates: RcMandateMap; defaultGoal: number; settingsLoading: boolean; onMandates: (next: RcMandateMap) => void }) {
   const [rcs, setRcs] = useState<RcPerson[]>([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ first_name: '', last_name: '', email: '', phone: '' });
+  const [form, setForm] = useState({ first_name: '', last_name: '', sv_number: '', email: '', phone: '' });
   const [editId, setEditId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<RcPerson>({ id: '' });
   // Every write here used to fail in silence: the row stayed, no message
@@ -1585,7 +1585,7 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
     try { await setAdminShortcutRcs(next); }
     catch (e) { setShortcutRcs(previous); setNotice(e instanceof Error ? e.message : String(e)); }
   };
-  const add = async () => { if (!form.first_name && !form.last_name) return; await guard(async () => { await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', email: '', phone: '' }); await reload(); }); };
+  const add = async () => { if (!form.first_name && !form.last_name) return; await guard(async () => { await createRcPerson({ ...form, active: true }); setForm({ first_name: '', last_name: '', sv_number: '', email: '', phone: '' }); await reload(); }); };
   const saveEdit = async (id: string) => { await guard(async () => { await updateRcPerson(id, editForm); setEditId(null); await reload(); }); };
   const remove = async (r: RcPerson) => {
     const name = `${r.first_name} ${r.last_name}`;
@@ -1659,9 +1659,13 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
     <>
       <Card>
         <h2 className="text-sm font-semibold text-stone-700 mb-2">{t.addRc}</h2>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
           <input className={input} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
           <input className={input} placeholder={t.lastName} value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
+          {/* The one field a rename does not invalidate. A game names its
+              referees as text, so a coach who changes surname stops matching
+              their own fixtures; the number keeps matching them. */}
+          <input className={input} placeholder={t.svNumber} value={form.sv_number} onChange={(e) => setForm({ ...form, sv_number: e.target.value })} />
           <input className={input} placeholder={t.email} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
           <input className={input} placeholder={t.phone} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
           <button onClick={add} disabled={!form.first_name && !form.last_name} className={`${btnPrimary} justify-center`}><Plus size={15} /> {t.add}</button>
@@ -1680,6 +1684,7 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
                 <input className={input} placeholder={t.firstName} value={editForm.first_name || ''} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
                 <input className={input} placeholder={t.lastName} value={editForm.last_name || ''} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
               </div>
+              <input className={input} placeholder={t.svNumber} value={editForm.sv_number || ''} onChange={(e) => setEditForm({ ...editForm, sv_number: e.target.value })} />
               <input className={input} placeholder={t.email} value={editForm.email || ''} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
               <input className={input} placeholder={t.phone} value={editForm.phone || ''} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
               <div className="flex items-center gap-1.5">
@@ -1726,6 +1731,7 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
                     <div className="flex gap-1.5">
                       <input className={`${input} w-full`} placeholder={t.firstName} value={editForm.first_name || ''} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
                       <input className={`${input} w-full`} placeholder={t.lastName} value={editForm.last_name || ''} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
+                      <input className={`${input} w-24 shrink-0`} placeholder={t.svNumber} value={editForm.sv_number || ''} onChange={(e) => setEditForm({ ...editForm, sv_number: e.target.value })} />
                     </div>
                   </td>
                   <td className="py-2 pr-3"><input className={`${input} w-full`} value={editForm.email || ''} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} /></td>
@@ -1744,6 +1750,7 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
                     <td className="py-2.5 pr-3">
                       <span className="font-medium text-stone-800 whitespace-nowrap">{surnameFirstLabel(r)}</span>
                       {r.active === false && <span className="ml-1.5 text-xs text-stone-400">· {t.inactive}</span>}
+                      {r.sv_number && <span className="ml-1.5 text-xs tabular-nums text-stone-400">· {r.sv_number}</span>}
                     </td>
                     <td className="py-2.5 pr-3 text-stone-500">{r.email}</td>
                     <td className="py-2.5 pr-3 text-stone-500 whitespace-nowrap">{r.phone}</td>

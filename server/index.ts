@@ -807,7 +807,22 @@ function upstreamError(error: unknown): string {
 // Cached list of active RC people; also consulted on every RC-authenticated
 // request so deactivating/deleting an RC revokes their session within the
 // cache TTL. Invalidated by the admin rc-people CRUD endpoints.
-type ActiveRcPerson = { id: string; fullName: string; email: string; isRcPresident: boolean };
+type ActiveRcPerson = {
+  id: string;
+  fullName: string;
+  /** The given name as its own field, which is what a greeting wants.
+   *  Splitting fullName on the first space truncates every two-word one —
+   *  "Thanh Ut Nguyen" was greeted as "Thanh", "Carlos Enrique Castro"
+   *  as "Carlos". PocketBase has held first_name and last_name apart all
+   *  along; only the join threw the boundary away. */
+  firstName: string;
+  /** Swiss Volley's number for this coach, when the register knows one.
+   *  A game carries its referees' numbers as well as their names, and a
+   *  number does not change when somebody marries. */
+  svNumber: string;
+  email: string;
+  isRcPresident: boolean;
+};
 
 // A session's tie to the PIN it was issued under (see resolveRcSession). Held
 // OUTSIDE ActiveRcPerson on purpose: that object is handed to clients whole by
@@ -828,6 +843,8 @@ async function getActiveRcPeople(): Promise<ActiveRcPerson[]> {
   const mapped = people.map((p) => ({
     id: p.id,
     fullName: `${asText(p.first_name)} ${asText(p.last_name)}`.trim(),
+    firstName: asText(p.first_name),
+    svNumber: asText(p.sv_number),
     email: asText(p.email),
     // Marks the chair's own record. It no longer grants anything — she reaches
     // her channel with her own password on the admin page — so it is a label
@@ -2617,19 +2634,26 @@ async function listCoacheesWithFallbackSort(): Promise<AnyRecord[]> {
 // roster of the day the sync ran.
 async function makeRcGameTest(): Promise<(game: AnyRecord) => boolean> {
   const coacheeNames = await getCoacheeNameIndex();
-  const rcNames = new Set((await getActiveRcPeople()).map((p) => normalizeName(p.fullName)));
+  const people = await getActiveRcPeople();
+  const rcNames = new Set(people.map((p) => normalizeName(p.fullName)));
+  // A number does not change when somebody marries. Roughly a third of games
+  // carry their referees' SV numbers; the rest are matched on the name, which
+  // is what this did exclusively and what a rename silently broke.
+  const rcNumbers = new Set(people.map((p) => p.svNumber).filter(Boolean));
   return (game: AnyRecord) => {
     const names = coacheeNames.forSeason(seasonOfGame(game.match_date));
     const isCoachee = (value: unknown) => {
       const text = normalizeName(value);
       return text ? names.has(text) : false;
     };
-    const isRc = (value: unknown) => {
+    const isRc = (value: unknown, svNumber: unknown) => {
+      const num = asText(svNumber);
+      if (num && rcNumbers.has(num)) return true;
       const text = normalizeName(value);
       return text ? rcNames.has(text) : false;
     };
-    return (isRc(game.first_referee) && isCoachee(game.second_referee))
-      || (isRc(game.second_referee) && isCoachee(game.first_referee));
+    return (isRc(game.first_referee, game.first_referee_id) && isCoachee(game.second_referee))
+      || (isRc(game.second_referee, game.second_referee_id) && isCoachee(game.first_referee));
   };
 }
 
@@ -2658,7 +2682,7 @@ async function getEligibleGames() {
       return await withCollection(collectionCandidates.games, (collection) =>
         collection.getFullList<AnyRecord>({
           sort: '-match_date',
-          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result,maps_url',
+          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result,maps_url',
         }),
       );
     } catch (error) {
@@ -3854,6 +3878,7 @@ app.get('/api/admin/rc-people', requireAdminSession, async (_req: Request, res: 
       c.getFullList<AnyRecord>({ sort: 'last_name' }));
     res.json(people.map((p) => ({
       id: p.id, first_name: asText(p.first_name), last_name: asText(p.last_name),
+      sv_number: asText(p.sv_number),
       email: asText(p.email), phone: asText(p.phone), active: p.active !== false,
     })));
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -3912,6 +3937,7 @@ app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: 
     }
     const created = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
       c.create({ first_name: asText(d.first_name), last_name: asText(d.last_name),
+        sv_number: asText(d.sv_number),
         email, phone: asText(d.phone), active: d.active !== false }));
     rcPeopleCache = null;
     res.status(201).json(created);
@@ -3925,6 +3951,7 @@ app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, re
     const payload: Record<string, unknown> = {};
     if ('first_name' in raw) payload.first_name = asText(raw.first_name);
     if ('last_name' in raw) payload.last_name = asText(raw.last_name);
+    if ('sv_number' in raw) payload.sv_number = asText(raw.sv_number);
     if ('email' in raw) payload.email = asText(raw.email);
     if ('phone' in raw) payload.phone = asText(raw.phone);
     if ('active' in raw) payload.active = Boolean(raw.active);
@@ -4485,7 +4512,7 @@ async function linkCoacheesToReferees(): Promise<{ linked: number; alreadyLinked
 
 // ── Auth endpoints (team session + console session) ──────────────────
 app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
-  let rc: { id: string; name: string } | null = null;
+  let rc: { id: string; name: string; firstName: string } | null = null;
   const session = verifyRcSession(req);
   // Every app session is the team credential now, so "shared" is simply
   // "signed in to the app". The field stays because the gate still needs to
@@ -4513,7 +4540,7 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
       // answering "logged in" instead of opening an app that then 401s.
       const resolved = await resolveRcSession(req);
       if (resolved) {
-        rc = { id: resolved.person.id, name: resolved.person.fullName };
+        rc = { id: resolved.person.id, name: resolved.person.fullName, firstName: resolved.person.firstName };
       }
     } catch (error) {
       // The session token is valid but PocketBase is unreachable. Fail with 503
@@ -4621,7 +4648,7 @@ app.post('/api/auth/rc/identify', async (req: Request, res: ExpressResponse) => 
     tagReqUser(req, person.fullName);
     log.info('auth.identify', 'shared session identified', { rcId: person.id, name: person.fullName }, ctx);
     setRcSessionCookie(res, createRcSessionToken({ rcId: person.id, name: person.fullName }));
-    res.json({ ok: true, rc: { id: person.id, name: person.fullName } });
+    res.json({ ok: true, rc: { id: person.id, name: person.fullName, firstName: person.firstName } });
   } catch (error) {
     log.error('auth.identify', 'backend failure while identifying', { rcId, error }, ctx);
     res.status(503).json({ error: 'Auth backend unavailable' });
@@ -5854,7 +5881,7 @@ type RcGameNoteRecord = {
   teams: string;
 };
 
-const GAME_NOTE_FIELDS = 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,game_result';
+const GAME_NOTE_FIELDS = 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,game_result';
 
 function mapRcGameNote(record: AnyRecord): RcGameNoteRecord {
   const game = (record.expand as Record<string, AnyRecord> | undefined)?.game;
@@ -5928,7 +5955,15 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
   }
 
   const me = normalizeName(subject.name);
-  if (!me) return [];
+  // The coach's own SV number, when their record carries one. A game names its
+  // referees as text, so a coach who changes their surname stops matching every
+  // fixture the sync wrote before the change — and, where the league has not
+  // re-synced, every fixture after it too. The number is the stable half.
+  const mySvNumber = subject.rcId
+    ? asText((await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]))
+        .find((p) => p.id === subject.rcId)?.svNumber)
+    : '';
+  if (!me && !mySvNumber) return [];
   const games = await withCollection(collectionCandidates.games, (collection) =>
     collection.getFullList<AnyRecord>({ sort: '-match_date', fields: GAME_NOTE_FIELDS }),
   );
@@ -5938,11 +5973,13 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
     if (!inSeason(game)) continue;
     const season = coacheeNames.forSeason(seasonOfGame(game.match_date));
     const slots = [
-      { mine: game.first_referee, other: game.second_referee, myRole: '1. SR', otherRole: '2. SR' },
-      { mine: game.second_referee, other: game.first_referee, myRole: '2. SR', otherRole: '1. SR' },
+      { mine: game.first_referee, mineId: game.first_referee_id, other: game.second_referee, myRole: '1. SR', otherRole: '2. SR' },
+      { mine: game.second_referee, mineId: game.second_referee_id, other: game.first_referee, myRole: '2. SR', otherRole: '1. SR' },
     ];
     for (const slot of slots) {
-      if (normalizeName(slot.mine) !== me) continue;
+      const mineIsMe = (mySvNumber && asText(slot.mineId) === mySvNumber)
+        || (!!me && normalizeName(slot.mine) === me);
+      if (!mineIsMe) continue;
       const otherKey = normalizeName(slot.other);
       if (!otherKey || !season.has(otherKey)) continue;
       const coachee = coacheeByName.get(otherKey);

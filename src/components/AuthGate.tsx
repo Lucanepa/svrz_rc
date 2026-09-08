@@ -107,6 +107,11 @@ function errorMessage(err: unknown, t: Strings, fallback = ''): string {
 export type RcAuth = {
   rcId: string | null;
   rcName: string | null;
+  /** The given name on its own, for greeting somebody by it. Splitting rcName
+   *  on the first space is not the same thing: it truncates every two-word
+   *  given name, and two of the active coaches have one. Null for a console
+   *  session, which has no coach behind it. */
+  rcFirstName: string | null;
   isAdminSession: boolean;
   /** Signed in to the app — the name was chosen off a list, not proven. */
   sharedSession: boolean;
@@ -119,7 +124,7 @@ export type RcAuth = {
 };
 
 const RcAuthContext = createContext<RcAuth>({
-  rcId: null, rcName: null, isAdminSession: false, sharedSession: false, adminShortcut: false,
+  rcId: null, rcName: null, rcFirstName: null, isAdminSession: false, sharedSession: false, adminShortcut: false,
   switchRc: () => {}, logout: () => {},
 });
 
@@ -154,6 +159,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [showPassword, setShowPassword] = useState(false);
   const [rcId, setRcId] = useState<string | null>(null);
   const [rcName, setRcName] = useState<string | null>(null);
+  const [rcFirstName, setRcFirstName] = useState<string | null>(null);
   const [isAdminSession, setIsAdminSession] = useState(false);
   const [adminShortcut, setAdminShortcut] = useState(false);
   const [sharedSession, setSharedSession] = useState(false);
@@ -197,6 +203,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setLogUser(me.rc?.name || me.admin?.email);
     setRcId(me.rc?.id ?? null);
     setRcName(me.rc?.name ?? null);
+    setRcFirstName(me.rc?.firstName ?? null);
     setIsAdminSession(Boolean(me.admin));
     setSharedSession(Boolean(me.shared));
     setAdminShortcut(Boolean(me.adminShortcut));
@@ -312,6 +319,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setAuthed(false);
       setRcId(null);
       setRcName(null);
+      setRcFirstName(null);
       setSharedSession(false);
       setIsAdminSession(false);
       setAdminShortcut(false);
@@ -334,7 +342,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   }
   if (authed) {
     return (
-      <RcAuthContext.Provider value={{ rcId, rcName, isAdminSession, sharedSession, adminShortcut, switchRc, logout }}>
+      <RcAuthContext.Provider value={{ rcId, rcName, rcFirstName, isAdminSession, sharedSession, adminShortcut, switchRc, logout }}>
         {children}
       </RcAuthContext.Provider>
     );

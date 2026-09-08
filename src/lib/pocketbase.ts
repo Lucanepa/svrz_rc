@@ -170,7 +170,7 @@ export function hasPocketBaseConfig(): boolean {
 
 // ── Auth ──────────────────────────────────────────────────────────────
 export type AuthMe = {
-  rc: { id: string; name: string } | null;
+  rc: { id: string; name: string; firstName?: string } | null;
   admin: { email: string } | null;
   /** Reads the chair's private channel — a console session, not an app one. */
   surveyReader?: boolean;
@@ -651,7 +651,11 @@ export async function adminUiLogin(username: string, password: string): Promise<
   return ((await r.json().catch(() => ({}))) as { role?: 'admin' | 'president' }).role || 'admin';
 }
 
-export type RcPerson = { id: string; first_name?: string; last_name?: string; email?: string; phone?: string; active?: boolean };
+export type RcPerson = { id: string; first_name?: string; last_name?: string;
+  /** Swiss Volley's number. Optional — the name stays the fallback when a
+   *  coach is not in the register. See the comment in makeRcGameTest. */
+  sv_number?: string;
+  email?: string; phone?: string; active?: boolean };
 
 
 export async function listRcPeopleFull(): Promise<RcPerson[]> {

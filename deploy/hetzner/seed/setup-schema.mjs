@@ -95,6 +95,12 @@ const coachees = await ensure('coachees', [
 ]);
 const rcs = await ensure('referee_coaches', [
   T('first_name'),T('last_name'),T('email'),T('phone'),B('active'),
+  // Swiss Volley's number for this coach. A game carries its referees' numbers
+  // beside their names, and a number survives a change of surname — which the
+  // name matching did not: renaming a coach detached them from every game the
+  // sync had already written under the old name. Optional, and the name stays
+  // the fallback: only about a third of games carry referee numbers at all.
+  T('sv_number'),
   // Reads the post-visit surveys (rc_visit_feedback). Set it HERE, not in the
   // admin console: a flag an admin can tick is one they can tick for
   // themselves, and admin rights must not open that view.

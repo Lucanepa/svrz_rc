@@ -429,7 +429,7 @@ const ok = <T>(v: T): Promise<T> => Promise.resolve(v);
 export function getAuthMe(): Promise<AuthMe> {
   // No adminShortcut: the guide videos are recorded through here, and a coach
   // watching one should see the toolbar a coach actually gets.
-  return ok({ rc: { id: RC.id, name: RC.name }, admin: null, adminShortcut: false });
+  return ok({ rc: { id: RC.id, name: RC.name, firstName: RC.name.split(' ')[0] }, admin: null, adminShortcut: false });
 }
 
 export function getAdminAuthStatus(): Promise<AdminAuthStatus> {

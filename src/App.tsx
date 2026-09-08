@@ -1186,6 +1186,7 @@ export default function App() {
   const INLINE_GAME_LIMIT = 5;
   const [listSearch, setListSearch] = useState('');
   const [listFilterLevels, setListFilterLevels] = useState<string[]>([]);
+  const [listFilterGroups, setListFilterGroups] = useState<string[]>([]);
   const [listFilterNeedsObs, setListFilterNeedsObs] = useState(true);
   const [listFilterShowInactive, setListFilterShowInactive] = useState(false);
   const [coacheeFiltersOpen, setCoacheeFiltersOpen] = useState(false);
@@ -4190,6 +4191,18 @@ export default function App() {
       .map((c) => levelDisplay(c.referee_level, c.stage).text))].sort(),
     [coachees, seasonStartYear],
   );
+  /** The groups this season's coachees are actually in — the cohort names the
+   *  Infoschreiben defines, as they are spelled in the register. Derived rather
+   *  than listed, so "Neu-Schiedsrichter 26/27" appears the season it exists
+   *  and no year is maintained anywhere.
+   *
+   *  A coachee can be in more than one, so each is offered separately. */
+  const coacheeGroups = useMemo(
+    () => [...new Set(coachees.filter((c) => isInSeason(c, seasonStartYear))
+      .flatMap((c) => splitCoacheeGroups(c.groups))
+      .filter(Boolean))].sort(),
+    [coachees, seasonStartYear],
+  );
   const gameLeagues = useMemo(
     () => Array.from(new Set<string>(eligibleGames.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort(),
     [eligibleGames],
@@ -4243,6 +4256,12 @@ export default function App() {
         const coacheeLevel = levelDisplay(c.referee_level, c.stage).text;
         if (!listFilterLevels.includes(coacheeLevel)) return false;
       }
+      // Any of the chosen groups, not all of them: picking two cohorts asks for
+      // both cohorts, which is what a coach planning a round of visits means.
+      if (listFilterGroups.length > 0) {
+        const groups = splitCoacheeGroups(c.groups);
+        if (!groups.some((g) => listFilterGroups.includes(g))) return false;
+      }
       const isActive = (c.stage || 'active') !== 'inactive';
       if (!listFilterShowInactive && !isActive) return false;
       if (listFilterNeedsObs && !c.observation_status?.needsObservation) return false;
@@ -4264,7 +4283,7 @@ export default function App() {
       return dir * (statusPriority(a) - statusPriority(b));
     });
     return filtered;
-  }, [coachees, listSearch, listFilterLevels, listFilterShowInactive, listFilterNeedsObs, listSortBy, listSortAsc, seasonStartYear]);
+  }, [coachees, listSearch, listFilterLevels, listFilterGroups, listFilterShowInactive, listFilterNeedsObs, listSortBy, listSortAsc, seasonStartYear]);
   // Lookup coachee by normalized name for game filtering
   const coacheeByName = useMemo(
     () => coacheeIndex(coachees, seasonStartYear),
@@ -5263,7 +5282,11 @@ export default function App() {
             {/* Home dashboard */}
             {listTab === 'home' && (() => {
               const de = formData.lang === 'DE';
-              const firstName = (rcAuth.rcName || '').split(' ')[0];
+              // The record's own first_name, not everything before the first
+              // space in the full one: "Thanh Ut Nguyen" was greeted as
+              // "Thanh" and "Carlos Enrique Castro" as "Carlos". The split is
+              // kept as a fallback for a session that predates the field.
+              const firstName = rcAuth.rcFirstName || (rcAuth.rcName || '').split(' ')[0];
               /** The date as a sentence, for a confirm dialog or a toast —
                *  the lists themselves get it from [[DateRail]]. */
               const fmtDate = (d: string) => {
@@ -5663,6 +5686,7 @@ export default function App() {
                   {(() => {
                     const activeFilterCount = [
                       listFilterLevels.length > 0,
+                      listFilterGroups.length > 0,
                       !listFilterNeedsObs,
                       listFilterShowInactive,
                     ].filter(Boolean).length;
@@ -5697,6 +5721,26 @@ export default function App() {
                         placeholder={formData.lang === 'DE' ? 'Alle Level' : 'All levels'}
                       />
                     </div>
+                    {/* The cohort — "Neu-Schiedsrichter 26/27", "Beförderung?"
+                        — as a filter rather than something to type into the
+                        search box. It is the question this list is read with
+                        ("who is up for promotion this season?"), and the search
+                        box answered it only by accident: "neu" also matches a
+                        surname, and nothing said the list had been narrowed. */}
+                    {coacheeGroups.length > 0 && (
+                      <div className="flex-1 min-w-[150px] max-w-[240px]">
+                        <label className="block text-xs font-medium text-stone-500 mb-0.5">
+                          {formData.lang === 'DE' ? 'Gruppe' : 'Group'}
+                        </label>
+                        <MultiSelectDropdown
+                          lang={formData.lang}
+                          options={coacheeGroups}
+                          selected={listFilterGroups}
+                          onChange={(values) => { setListFilterGroups(values); setListPage(0); }}
+                          placeholder={formData.lang === 'DE' ? 'Alle Gruppen' : 'All groups'}
+                        />
+                      </div>
+                    )}
                     <button
                       onClick={() => setListFilterNeedsObs(!listFilterNeedsObs)}
                       className="h-9 px-3 border border-stone-300 rounded-md bg-white text-sm text-stone-600 flex items-center gap-2 whitespace-nowrap hover:bg-stone-50 transition-colors cursor-pointer select-none"
@@ -5715,10 +5759,11 @@ export default function App() {
                       </span>
                       <span>{formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}</span>
                     </button>
-                    {(listFilterLevels.length > 0 || !listFilterNeedsObs || listFilterShowInactive) && (
+                    {(listFilterLevels.length > 0 || listFilterGroups.length > 0 || !listFilterNeedsObs || listFilterShowInactive) && (
                       <button
                         onClick={() => {
                           setListFilterLevels([]);
+                          setListFilterGroups([]);
                           setListFilterNeedsObs(true);
                           setListFilterShowInactive(false);
                           setListPage(0);

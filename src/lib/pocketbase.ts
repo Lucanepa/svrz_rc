@@ -897,6 +897,9 @@ export type Settings = {
   coachee_targets?: CoacheeTargetMap;
   rc_mandates?: RcMandateMap;
   default_goal?: number | null;
+  /** Infoschreiben 6.2: beyond this many games a season, an RC is not paid.
+   *  Null means nobody has set it, and the app then says nothing about pay. */
+  paid_cap?: number | null;
   // Only the rows an admin changed; everything else follows the official table
   // shipped in niveauTargets.ts.
   niveau_table?: NiveauMatrix;
@@ -907,7 +910,7 @@ export async function getSettings(): Promise<Settings> {
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
-export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number; niveau_table?: NiveauMatrix }): Promise<void> {
+export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number; paid_cap?: number; niveau_table?: NiveauMatrix }): Promise<void> {
   const r = await fetch(apiUrl('/api/admin/settings'), {
     method: 'PUT', credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

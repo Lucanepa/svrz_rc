@@ -3553,6 +3553,13 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
     try { rc_mandates = sanitizeMandates(mandatesRec ? JSON.parse(asText(mandatesRec.value)) : {}); } catch { rc_mandates = {}; }
     const defaultGoalRec = await getSettingRecord('default_goal');
     const default_goal = defaultGoalRec ? Number(asText(defaultGoalRec.value)) || null : null;
+    // Infoschreiben 6.2: "Es werden maximal 12 Spiele pro RC vergütet." A
+    // different number from default_goal and a different kind of number — the
+    // mandate is what a coach owes, this is where the SVRZ stops paying. Kept
+    // editable for the same reason the mandate is: the figure is the
+    // commission's to change, not a deploy.
+    const paidCapRec = await getSettingRecord('paid_cap');
+    const paid_cap = paidCapRec ? Number(asText(paidCapRec.value)) || null : null;
     // Edits to the official SR-Niveau table, by level key. Only the rows an
     // admin actually changed are stored; the rest come from the table shipped
     // in the client, so a corrected transcription reaches everyone untouched.
@@ -3570,7 +3577,7 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
         if (Number.isFinite(latest)) default_season = latest;
       } catch { /* keep null */ }
     }
-    res.json({ default_season, test_mode: await isEmailTestMode(), groups, coachee_targets, rc_mandates, default_goal, niveau_table });
+    res.json({ default_season, test_mode: await isEmailTestMode(), groups, coachee_targets, rc_mandates, default_goal, paid_cap, niveau_table });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -3595,6 +3602,13 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
     if ('default_goal' in body) {
       const n = Math.round(Number(body.default_goal));
       await setSetting('default_goal', Number.isFinite(n) && n > 0 ? String(n) : '');
+    }
+    if ('paid_cap' in body) {
+      const n = Math.round(Number(body.paid_cap));
+      // Blank clears it, and a cleared cap means "no ceiling" rather than zero —
+      // the app then says nothing about payment, which is the honest state when
+      // nobody has set the figure.
+      await setSetting('paid_cap', Number.isFinite(n) && n > 0 ? String(n) : '');
     }
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }

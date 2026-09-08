@@ -1,7 +1,7 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId } from 'react';
 import { Maximize2, Download, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Navigation, Clock, MapPin, Users, Eye, Tag, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
+import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, PAID_CAP, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
   CalendarGameStatus,
   Coachee,
@@ -1268,6 +1268,9 @@ export default function App() {
   // admin has marked as being on a half mandate.
   const [rcMandates, setRcMandates] = useState<RcMandateMap>({});
   const [defaultGoal, setDefaultGoal] = useState<number>(OBSERVATION_GOAL);
+  // Infoschreiben 6.2's ceiling. Distinct from the Pensum above it: that is what
+  // a coach owes, this is where the season stops paying.
+  const [paidCap, setPaidCap] = useState<number>(PAID_CAP);
   // When true, ignore Niveau targets and show every game (escape hatch).
   const [showAllLevels, setShowAllLevels] = useState(false);
   // Read admin settings: email test-mode banner + default season + coachee targets.
@@ -1285,6 +1288,7 @@ export default function App() {
       setNiveauTable(resolveNiveauTable(s.niveau_table ?? null));
       setRcMandates(s.rc_mandates ?? {});
       if (s.default_goal) setDefaultGoal(s.default_goal);
+      if (s.paid_cap) setPaidCap(s.paid_cap);
       if (!s.default_season) return seasonStartYear;
       // The season is no longer pickable in the app — it is set once in the
       // admin console and everyone follows it. A stored preference used to win
@@ -5532,14 +5536,30 @@ export default function App() {
                           // The Pensum is a plain number now, so there is no
                           // "half mandate" to name — and 0 is a real answer,
                           // which does not stop anyone taking games.
-                          title={myGoal === 0
+                          title={(myGoal === 0
                             ? (de ? 'Kein festes Pensum — du kannst trotzdem Spiele übernehmen.' : 'No fixed target — you can still take on games.')
-                            : (de ? `${myGoal} Beobachtungen pro Saison.` : `${myGoal} observations per season.`)}
+                            : (de ? `${myGoal} Beobachtungen pro Saison.` : `${myGoal} observations per season.`))
+                            + (paidCap > 0
+                              ? (de ? ` Vergütet werden maximal ${paidCap} Spiele.` : ` At most ${paidCap} games are reimbursed.`)
+                              : '')}
                         >
                           <div className={cn("text-2xl font-bold", toGoal === 0 ? "text-green-700" : "text-amber-700")}>{toGoal === 0 ? '✓' : toGoal}</div>
                           <div className={cn("text-[11px] font-medium uppercase tracking-wide", toGoal === 0 ? "text-green-700/80" : "text-amber-700/80")}>{de ? `bis Ziel (${myGoal})` : `to goal (${myGoal})`}</div>
                         </div>
                       </div>
+
+                      {/* Infoschreiben 6.2. Said only when it starts to matter:
+                          a ceiling printed under every coach's counters all
+                          season reads as a limit on taking games, which it is
+                          not — the RC may coach more, the SVRZ just stops
+                          paying. Deliberately not a warning colour either. */}
+                      {paidCap > 0 && homeData.done >= paidCap && (
+                        <p className="text-xs text-stone-500 -mt-1">
+                          {de
+                            ? `Vergütet werden maximal ${paidCap} Spiele pro Saison — du hast ${homeData.done}. Weitere Besuche sind willkommen, werden aber nicht abgerechnet.`
+                            : `At most ${paidCap} games a season are reimbursed — you have ${homeData.done}. Further visits are welcome but are not claimed.`}
+                        </p>
+                      )}
 
                       {/* Missing observations warning */}
                       {homeData.missingGames.length > 0 && (

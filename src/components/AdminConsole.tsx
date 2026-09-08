@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star } from 'lucide-react';
+import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
@@ -37,7 +37,7 @@ import { subscribeLive } from '../lib/liveEvents';
 import { groupLabel } from '../lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName, coacheeIndex } from '../lib/coacheeName';
 import { confirmDialog, toast } from './ui';
-import { OBSERVATION_GOAL, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
+import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
 import LevelText from './LevelText';
 import { CoacheeChip, GroupChip } from './CoacheeChips';
 import { Skeleton, SkeletonRows } from './Skeleton';
@@ -246,6 +246,11 @@ const STR = {
     mandateHint: (fallback: number) => `Wie viele Beobachtungen dieser RC pro Saison übernimmt. Leer = Standard (${fallback}). 0 ist erlaubt und schränkt nichts ein — das Pensum ist rein informativ.`,
     defaultGoal: 'Standard-Pensum',
     defaultGoalHint: () => 'Beobachtungen pro Saison für alle RC, die kein eigenes Pensum haben. Einzelne Pensen (auch 0) werden im Tab „Referee Coaches" gesetzt.',
+    paidCap: 'Vergütete Spiele (max.)',
+    paidCapHint: 'Infoschreiben 6.2: mehr Spiele darf ein RC coachen, vergütet werden sie nicht. Wird dem RC auf der Startseite angezeigt und in der Spesen-Datei mitgerechnet. Leer = keine Obergrenze.',
+    ovCsv: 'Spesen-CSV',
+    ovCsvHint: 'Erledigte Beobachtungen pro RC, plus die vergütete Anzahl nach der Obergrenze. Grundlage für die Spesenabrechnung nach Saisonende.',
+    ovPaid: 'Vergütet',
   },
   EN: {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminUser: 'Username', adminPw: 'Admin password',
@@ -419,6 +424,11 @@ const STR = {
     mandateHint: (fallback: number) => `How many observations this coach takes on per season. Empty = the default (${fallback}). 0 is allowed and restricts nothing — the target is informative only.`,
     defaultGoal: 'Default season target',
     defaultGoalHint: () => 'Observations per season for every coach without their own target. Individual targets (0 included) are set in the "Referee Coaches" tab.',
+    paidCap: 'Paid games (max.)',
+    paidCapHint: 'Infoschreiben 6.2: a coach may take on more, but they are not reimbursed. Shown to the coach on the dashboard and applied in the expenses file. Empty = no ceiling.',
+    ovCsv: 'Expenses CSV',
+    ovCsvHint: 'Completed observations per coach, plus the reimbursed count after the ceiling. The basis for the end-of-season expense claim.',
+    ovPaid: 'Paid',
   },
 } as const;
 type T = typeof STR['DE'];
@@ -601,6 +611,9 @@ export default function AdminConsole() {
   // id) who are on a half mandate and owe half of it.
   const [rcMandates, setRcMandates] = useState<RcMandateMap>({});
   const [defaultGoal, setDefaultGoal] = useState<number>(OBSERVATION_GOAL);
+  // Infoschreiben 6.2's ceiling: what the season reimburses, which is not the
+  // same number as what a mandate owes.
+  const [paidCap, setPaidCap] = useState<number>(PAID_CAP);
   // The SR-Niveau table in force — official values with the admin's edits on top.
   const [niveauTable, setNiveauTable] = useState<NiveauMatrix>(() => resolveNiveauTable(null));
   const [leagueOptions, setLeagueOptions] = useState<string[]>([]);
@@ -639,6 +652,7 @@ export default function AdminConsole() {
       .then((s) => {
         setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); setCoacheeTargets(s.coachee_targets || {});
         setRcMandates(s.rc_mandates || {}); if (s.default_goal) setDefaultGoal(s.default_goal);
+        if (s.paid_cap) setPaidCap(s.paid_cap);
         setNiveauTable(resolveNiveauTable(s.niveau_table || null));
         if (s.default_season) setDefaultSeason(s.default_season);
       })
@@ -666,6 +680,7 @@ export default function AdminConsole() {
           setRcMandates(s.rc_mandates || {});
           setNiveauTable(resolveNiveauTable(s.niveau_table || null));
           if (s.default_goal) setDefaultGoal(s.default_goal);
+          if (s.paid_cap) setPaidCap(s.paid_cap);
           if (s.default_season) setDefaultSeason(s.default_season);
           setTestMode(Boolean(s.test_mode));
         })
@@ -717,6 +732,18 @@ export default function AdminConsole() {
       await putSettings({ default_goal: next });
     } catch (e) {
       setDefaultGoal(previous);
+      setSettingsError(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  }, []);
+
+  const savePaidCap = useCallback(async (next: number) => {
+    let previous = 0;
+    setPaidCap((current) => { previous = current; return next; });
+    try {
+      await putSettings({ paid_cap: next });
+    } catch (e) {
+      setPaidCap(previous);
       setSettingsError(e instanceof Error ? e.message : String(e));
       throw e;
     }
@@ -874,7 +901,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} season={defaultSeason} active={tab === 'games'} /></div>
-        <div hidden={tab !== 'overview'}><OverviewAdmin t={t} /></div>
+        <div hidden={tab !== 'overview'}><OverviewAdmin t={t} paidCap={paidCap} /></div>
         <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} lang={lang} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
@@ -882,7 +909,7 @@ export default function AdminConsole() {
         {!isPresident && <>
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}>
-          <SettingsAdmin t={t} lang={lang} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} />
+          <SettingsAdmin t={t} lang={lang} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} paidCap={paidCap} onPaidCap={savePaidCap} />
           <ManualGameAdmin t={t} lang={lang} active={tab === 'settings'} />
           <CredentialsAdmin t={t} />
         </div>
@@ -2998,7 +3025,7 @@ function GameImportCard({ lang }: { lang: Lang }) {
 // behind an "is this an admin" check, which meant the app had two personalities
 // depending on who was looking. Admin reporting belongs with the other admin
 // reporting; the coach app now shows a coach their own row and nothing else.
-function OverviewAdmin({ t }: { t: T }) {
+function OverviewAdmin({ t, paidCap }: { t: T; paidCap: number }) {
   const [rows, setRows] = useState<RcOverviewEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -3008,9 +3035,37 @@ function OverviewAdmin({ t }: { t: T }) {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
   }, []);
+
+  // Infoschreiben 5.1: only what was filed in the tool gets reimbursed, so this
+  // table is the claim. Semicolons and a BOM because the file is opened in a
+  // German-locale Excel, where a comma-separated file lands in one column.
+  const downloadCsv = () => {
+    const head = [t.ovName, t.ovDone, t.ovPlanned, t.ovOutstanding, t.ovPaid];
+    const cell = (v: string | number) => {
+      const s = String(v);
+      return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const body = [...rows]
+      .sort((a, b) => a.fullName.localeCompare(b.fullName, 'de-CH'))
+      .map((r) => [r.fullName, r.done, r.planned, r.outstanding, Math.min(r.done, paidCap)].map(cell).join(';'));
+    const csv = '\ufeff' + [head.map(cell).join(';'), ...body].join('\r\n') + '\r\n';
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `spesen-rc-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <Card>
-      <h2 className="text-sm font-semibold text-stone-700">{t.overview}</h2>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <h2 className="text-sm font-semibold text-stone-700">{t.overview}</h2>
+        <button onClick={downloadCsv} disabled={loading || rows.length === 0} title={t.ovCsvHint}
+          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-40 transition-colors">
+          <Download size={14} /> {t.ovCsv}
+        </button>
+      </div>
       <p className="mt-1 text-xs text-stone-500">{t.ovHint}</p>
       {error && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
       {loading ? (
@@ -3025,7 +3080,8 @@ function OverviewAdmin({ t }: { t: T }) {
                 <th className="py-2 pr-3 font-semibold">{t.ovName}</th>
                 <th className="py-2 pr-3 font-semibold text-right">{t.ovDone}</th>
                 <th className="py-2 pr-3 font-semibold text-right">{t.ovPlanned}</th>
-                <th className="py-2 font-semibold text-right">{t.ovOutstanding}</th>
+                <th className="py-2 pr-3 font-semibold text-right">{t.ovOutstanding}</th>
+                <th className="py-2 font-semibold text-right" title={t.paidCapHint}>{t.ovPaid}</th>
               </tr>
             </thead>
             <tbody>
@@ -3035,7 +3091,13 @@ function OverviewAdmin({ t }: { t: T }) {
                   <td className="py-2 pr-3 text-right text-green-700 font-semibold">{r.done}</td>
                   <td className="py-2 pr-3 text-right text-blue-700 font-semibold">{r.planned}</td>
                   {/* Outstanding is the number worth acting on, so it is the one that shouts. */}
-                  <td className={cn('py-2 text-right font-semibold', r.outstanding > 0 ? 'text-amber-700' : 'text-stone-400')}>{r.outstanding}</td>
+                  <td className={cn('py-2 pr-3 text-right font-semibold', r.outstanding > 0 ? 'text-amber-700' : 'text-stone-400')}>{r.outstanding}</td>
+                  {/* What the season actually pays. Equal to Erledigt until a
+                      coach passes the ceiling, and then deliberately not. */}
+                  <td className="py-2 text-right tabular-nums text-stone-600">
+                    {Math.min(r.done, paidCap)}
+                    {r.done > paidCap && <span className="text-stone-400"> / {r.done}</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -3341,7 +3403,7 @@ function CredentialsAdmin({ t }: { t: T }) {
   );
 }
 
-function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups, defaultGoal, onDefaultGoal }: { t: T; lang: Lang; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void; defaultGoal: number; onDefaultGoal: (n: number) => Promise<void> }) {
+function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups, defaultGoal, onDefaultGoal, paidCap, onPaidCap }: { t: T; lang: Lang; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void; defaultGoal: number; onDefaultGoal: (n: number) => Promise<void>; paidCap: number; onPaidCap: (n: number) => Promise<void> }) {
   const [season, setSeason] = useState<number>(defaultSeason);
   const seasonTouched = useRef(false);
   useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
@@ -3355,6 +3417,16 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
     if (!Number.isFinite(n) || n <= 0) { setGoal(String(defaultGoal)); return; }
     await onDefaultGoal(n);
     setGoalSaved(true); setTimeout(() => setGoalSaved(false), 2500);
+  };
+  const [cap, setCap] = useState<string>(String(paidCap));
+  const capTouched = useRef(false);
+  useEffect(() => { if (!capTouched.current) setCap(String(paidCap)); }, [paidCap]);
+  const [capSaved, setCapSaved] = useState(false);
+  const saveCap = async () => {
+    const n = Math.round(Number(cap));
+    if (!Number.isFinite(n) || n <= 0) { setCap(String(paidCap)); return; }
+    await onPaidCap(n);
+    setCapSaved(true); setTimeout(() => setCapSaved(false), 2500);
   };
   const loading = settingsLoading;
   const [ng, setNg] = useState('');
@@ -3445,6 +3517,23 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
           />
           <button onClick={() => void saveGoal()} className={btnPrimary}><Check size={15} /> {t.save}</button>
           {goalSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
+        </div>
+      </Card>
+      <Card>
+        {/* Directly under the Pensum, because the two are read together and
+            confusing them is the whole risk: one is owed, the other is paid. */}
+        <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.paidCap}</h2>
+        <p className="text-xs text-stone-400 mb-3">{t.paidCapHint}</p>
+        <div className="flex items-center gap-2">
+          <input
+            type="number" min={1} inputMode="numeric" disabled={loading}
+            className="h-9 w-20 px-3 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
+            value={cap}
+            onChange={(e) => { capTouched.current = true; setCap(e.target.value); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') void saveCap(); }}
+          />
+          <button onClick={() => void saveCap()} className={btnPrimary}><Check size={15} /> {t.save}</button>
+          {capSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
         </div>
       </Card>
       <Card>

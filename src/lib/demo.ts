@@ -436,8 +436,8 @@ export function getAdminAuthStatus(): Promise<AdminAuthStatus> {
   return ok({ authenticated: false, email: '' });
 }
 
-export function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number | null }> {
-  return ok({ default_season: seasonStartYear(), test_mode: false, groups: ['RD', 'LD'], coachee_targets: {}, rc_mandates: {}, default_goal: null });
+export function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number | null; paid_cap?: number | null }> {
+  return ok({ default_season: seasonStartYear(), test_mode: false, groups: ['RD', 'LD'], coachee_targets: {}, rc_mandates: {}, default_goal: null, paid_cap: null });
 }
 
 // The president's notes need a server to be private to anyone, so the demo

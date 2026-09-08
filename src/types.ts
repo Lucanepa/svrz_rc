@@ -88,6 +88,13 @@ export const SR_ZIEL_OPTIONS = ['4L', '3L', '2L', '1L', 'NL', 'Verbleib'];
 // change the number; this is what applies until it does.
 export const OBSERVATION_GOAL = 10;
 
+// Where the SVRZ stops paying, per Infoschreiben 6.2: "Jeder RC hat für ein
+// Pflichtmandat ca. 10 Spiele zu coachen. Es werden maximal 12 Spiele pro RC
+// vergütet." Two different numbers doing two different jobs — the mandate is
+// what a coach owes, this is what the season will reimburse — so the app keeps
+// them apart rather than treating the goal as the ceiling.
+export const PAID_CAP = 12;
+
 // The season goal ("Pensum") for one RC: how many observations they owe.
 //
 // This was a Full/Half switch, which could not describe the coaches who owe

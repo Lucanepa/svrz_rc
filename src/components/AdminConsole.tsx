@@ -14,7 +14,7 @@ import {
   listReferees, importReferees, type RefereeRoster, type RosterReferee, type RefereeImportRow,
   getSurveyConfig, putSurveyConfig,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
-  loadRcGameNotes,
+  loadRcGameNotes, downloadFeedbackArchive,
   syncGames, type GamesSyncStatus,
   type PresidentNote,
   type RcGameNote,
@@ -84,6 +84,12 @@ const STR = {
     srNotes: 'Rückmeldungen aus SR-Spielen (4.4.10)',
     srNotesHint: 'Hat ein Referee Coach neben einem Coachee gepfiffen, wird kein Feedbackformular ausgefüllt — stattdessen diese kurze Rückmeldung. Sie geht nur ans RC-Präsidium und zählt nicht ans Saisonziel.',
     srNotesEmpty: 'Noch keine Rückmeldungen.',
+    archive: 'Archiv',
+    archiveHint: 'Alle abgeschickten Feedbackformulare einer Saison als ZIP — für die Ablage, die zwei Jahre aufbewahrt wird (Infoschreiben 4.4). Eine PDF-Datei pro Formular, benannt nach Datum, Schiedsrichter:in und Rolle.',
+    archiveDownload: 'Saison herunterladen',
+    archiveBusy: 'Wird zusammengestellt…',
+    archiveDone: (n: number) => `${n} Formular${n === 1 ? '' : 'e'} heruntergeladen.`,
+    archiveEmpty: 'Für diese Saison sind keine Formulare erfasst.',
     srNotesSwapped: '1. und 2. SR wurden getauscht (Ziff. 7.3) — die Rollen oben sind die tatsächlich gepfiffenen. Im VolleyManager ist es noch andersherum erfasst.',
     logsHint: 'Alles, was passiert: jede Anfrage, jeder Klick in der App, jeder Fehler. Neueste zuletzt.',
     logsSearch: 'Suchen (E-Mail, Pfad, Text…)', logsLevel: 'Stufe', logsSource: 'Quelle', logsAll: 'Alle',
@@ -269,6 +275,12 @@ const STR = {
     srNotes: 'Notes from games a coach refereed (4.4.10)',
     srNotesHint: 'When a referee coach whistled next to a coachee no feedback form is filled in — this short note takes its place. It reaches the RC chair only and never counts toward a season target.',
     srNotesEmpty: 'No notes yet.',
+    archive: 'Archive',
+    archiveHint: 'Every submitted feedback form of one season as a ZIP — for the records kept for two years (RC information sheet 4.4). One PDF per form, named by date, referee and role.',
+    archiveDownload: 'Download season',
+    archiveBusy: 'Collecting…',
+    archiveDone: (n: number) => `${n} form${n === 1 ? '' : 's'} downloaded.`,
+    archiveEmpty: 'No forms recorded for this season.',
     srNotesSwapped: '1st and 2nd referee were swapped (section 7.3) — the roles above are the ones actually whistled. VolleyManager still has it the other way round.',
     logsHint: 'Everything that happens: every request, every click in the app, every error. Newest last.',
     logsSearch: 'Search (email, path, text…)', logsLevel: 'Level', logsSource: 'Source', logsAll: 'All',
@@ -584,7 +596,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 
 // Console tabs live in the URL as #/admin/<tab>, so each one is linkable and
 // the Back button steps between them.
-const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'niveau', 'emails', 'form', 'survey', 'notes', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'niveau', 'emails', 'form', 'survey', 'notes', 'archive', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 const adminTabFromHash = (): AdminTab => {
   const m = /^#\/?admin\/([a-z]+)/i.exec(window.location.hash);
@@ -639,7 +651,7 @@ export default function AdminConsole() {
   // into the other half lands on that role's own first tab rather than on a
   // page whose every request would 401.
   useEffect(() => {
-    if (role === 'president' && tab !== 'survey' && tab !== 'notes') setTab('survey');
+    if (role === 'president' && tab !== 'survey' && tab !== 'notes' && tab !== 'archive') setTab('survey');
     if (role === 'admin' && (tab === 'survey' || tab === 'notes')) setTab('coachees');
     // 'form' edits the questionnaire and is admin-only, even though its
     // subject — the survey — belongs to the chair's half of the console.
@@ -836,6 +848,7 @@ export default function AdminConsole() {
   const tabs: { id: typeof tab; label: string; icon: React.ReactNode }[] = isPresident ? [
     { id: 'survey', label: t.survey, icon: <MessageSquare size={15} /> },
     { id: 'notes', label: t.notes, icon: <Lock size={15} /> },
+    { id: 'archive', label: t.archive, icon: <Download size={15} /> },
   ] : [
     { id: 'coachees', label: t.coachees, icon: <Users size={15} /> },
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
@@ -908,6 +921,7 @@ export default function AdminConsole() {
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
+        {isPresident && <div hidden={tab !== 'archive'}><ArchiveAdmin t={t} defaultSeason={defaultSeason} /></div>}
         {!isPresident && <>
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}>
@@ -2364,6 +2378,51 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
         </div>
       ))}
     </div>
+  );
+}
+
+function ArchiveAdmin({ t, defaultSeason }: { t: T; defaultSeason: number }) {
+  const [season, setSeason] = useState<number>(defaultSeason);
+  const seasonTouched = useRef(false);
+  useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(0);
+  const [err, setErr] = useState('');
+
+  // Past seasons too: the two-year duty is about the ones already finished, so
+  // offering only the current one would miss the point of the tab.
+  const options = [...new Set([season, defaultSeason, defaultSeason - 1, defaultSeason - 2])].sort((a, b) => b - a);
+
+  const run = async () => {
+    setBusy(true); setErr(''); setDone(0);
+    try {
+      setDone(await downloadFeedbackArchive(season));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setErr(/Keine Formulare/.test(msg) ? t.archiveEmpty : msg);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.archive}</h2>
+      <p className="text-xs text-stone-500 mb-3 leading-snug">{t.archiveHint}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={season}
+          disabled={busy}
+          onChange={(e) => { seasonTouched.current = true; setSeason(Number(e.target.value)); }}
+          className="h-9 rounded-lg border border-stone-300 bg-white text-sm px-3"
+        >
+          {options.map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}
+        </select>
+        <button onClick={() => void run()} disabled={busy} className={btnPrimary}>
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} {busy ? t.archiveBusy : t.archiveDownload}
+        </button>
+        {done > 0 && <span className="text-xs text-green-700 font-medium">{t.archiveDone(done)}</span>}
+      </div>
+      {err && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{err}</p>}
+    </Card>
   );
 }
 

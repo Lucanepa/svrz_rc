@@ -417,6 +417,21 @@ export async function savePresidentNote(feedbackId: string, note: string): Promi
   if (!r.ok) throw new Error(await r.text());
 }
 
+/** Infoschreiben 4.4: every filed form of one season, as a ZIP for the archive
+ *  the RC-Präsidium keeps for two years. Returns how many forms were in it. */
+export async function downloadFeedbackArchive(season: number): Promise<number> {
+  const r = await fetch(apiUrl(`/api/feedback-archive?season=${season}`), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `rc-feedbacks-${season}-${season + 1}.zip`;
+  a.click();
+  URL.revokeObjectURL(url);
+  return Number(r.headers.get('X-Archive-Count')) || 0;
+}
+
 export async function listPresidentNotes(): Promise<PresidentNote[]> {
   const r = await fetch(apiUrl('/api/president-notes'), { credentials: 'include' });
   if (!r.ok) throw new Error(await r.text());

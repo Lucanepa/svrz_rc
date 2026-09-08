@@ -7,6 +7,7 @@ import nodemailer from 'nodemailer';
 import helmet from 'helmet';
 import { createHash, createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scryptSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { crc32 } from 'node:zlib';
 import { log, query as queryLogs, sessions as logSessions, ringStats, pruneLogFiles, record as recordLog, type LogLevel, type LogSource } from './logstore.ts';
 // Shared with the survey page so the mailed copy can never drift from the form
 // the coachee actually filled in. Pure data — no browser dependencies.
@@ -5159,6 +5160,134 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
 
 // President-only, on the same gate as the survey responses: admin rights do not
 // open this one either.
+// ── The season archive (Infoschreiben 4.4) ───────────────────────────
+// "Nach Saisonende sind werden alle Formulare digital von Jasmin abgelegt; sie
+// muss sie während 2 Jahren aufbewahren." The forms have always been here and
+// in the nightly backup, but "abgelegt" means a folder she holds, and there was
+// no way to get them out except one PDF at a time.
+//
+// STORED entries, no compression, and therefore no dependency: a PDF is already
+// compressed, so deflating it again buys nothing, and the stored-entry ZIP is
+// small enough to write correctly by hand. crc32 comes from node:zlib.
+type ZipEntry = { name: string; data: Buffer };
+
+function zipStore(entries: ZipEntry[]): Buffer {
+  const chunks: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8');
+    const crc = crc32(entry.data);
+    const size = entry.data.length;
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);          // version needed
+    local.writeUInt16LE(0x0800, 6);      // UTF-8 names
+    local.writeUInt16LE(0, 8);           // method: stored
+    local.writeUInt16LE(0, 10);          // time
+    local.writeUInt16LE(0x21, 12);       // date (1 Jan 1996 — fixed, so the
+                                         // same archive is byte-identical twice)
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(size, 18);
+    local.writeUInt32LE(size, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28);
+    chunks.push(local, name, entry.data);
+
+    const dir = Buffer.alloc(46);
+    dir.writeUInt32LE(0x02014b50, 0);
+    dir.writeUInt16LE(20, 4);            // version made by
+    dir.writeUInt16LE(20, 6);            // version needed
+    dir.writeUInt16LE(0x0800, 8);
+    dir.writeUInt16LE(0, 10);
+    dir.writeUInt16LE(0, 12);
+    dir.writeUInt16LE(0x21, 14);
+    dir.writeUInt32LE(crc, 16);
+    dir.writeUInt32LE(size, 20);
+    dir.writeUInt32LE(size, 24);
+    dir.writeUInt16LE(name.length, 28);
+    dir.writeUInt32LE(offset, 42);
+    central.push(dir, name);
+
+    offset += local.length + name.length + size;
+  }
+  const dirBuf = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(dirBuf.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...chunks, dirBuf, end]);
+}
+
+/** Safe inside a ZIP and readable in a folder listing. */
+function archiveSlug(value: string): string {
+  return asText(value)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'unbenannt';
+}
+
+// The chair archives, per 4.4 — and an admin may too, so a lost console password
+// never strands two years of records nobody can export.
+async function requireArchiveReader(req: Request, res: ExpressResponse, next: () => void) {
+  if (verifyAdminSession(req).ok || isSurveyReader(req)) { next(); return; }
+  res.status(403).json({ error: 'Forbidden' });
+}
+
+app.get('/api/feedback-archive', requireArchiveReader, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const season = Math.round(Number(req.query.season));
+    if (!Number.isFinite(season)) { res.status(400).json({ error: 'season fehlt.' }); return; }
+
+    const records = await withCollection(collectionCandidates.refereeCoaches, (c) =>
+      c.getFullList<AnyRecord>({ sort: 'submitted_at', expand: 'game,coachee' }));
+
+    // A file token, because the collection is not public and the archive is
+    // fetched over HTTP from PocketBase like any other client would.
+    const token = await pb.files.getToken();
+    const entries: ZipEntry[] = [];
+    const skipped: string[] = [];
+    for (const rec of records) {
+      const expand = (rec.expand ?? {}) as Record<string, AnyRecord | undefined>;
+      const date = asText(expand.game?.match_date);
+      if (seasonOfDate(date) !== season) continue;
+      const file = asText(rec.pdf_file);
+      if (!file) { skipped.push(String(rec.id)); continue; }
+      try {
+        const url = pb.files.getURL(rec as never, file, { token });
+        const response = await fetch(url);
+        if (!response.ok) { skipped.push(String(rec.id)); continue; }
+        const who = archiveSlug(asText(expand.coachee?.full_name) || asText(expand.coachee?.name));
+        const role = asText(rec.role_assessed).replace(/[^0-9]/g, '') === '2' ? '2SR' : '1SR';
+        const matchNo = archiveSlug(asText(expand.game?.match_no));
+        entries.push({
+          name: `${date.slice(0, 10) || 'ohne-datum'}_${who}_${role}_${matchNo}.pdf`,
+          data: Buffer.from(await response.arrayBuffer()),
+        });
+      } catch { skipped.push(String(rec.id)); }
+    }
+
+    if (skipped.length) {
+      // Named in the log rather than silently dropped: an archive that is short
+      // a form is worse than one that says which.
+      log.warn('archive.skipped', 'feedbacks without a readable PDF were left out', { season, count: skipped.length, ids: skipped.slice(0, 20) });
+    }
+    if (entries.length === 0) { res.status(404).json({ error: 'Keine Formulare für diese Saison.' }); return; }
+
+    const zip = zipStore(entries);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="rc-feedbacks-${season}-${season + 1}.zip"`);
+    res.setHeader('Content-Length', String(zip.length));
+    res.setHeader('X-Archive-Count', String(entries.length));
+    res.send(zip);
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
 app.get('/api/president-notes', requireSurveyReader, async (_req: Request, res: ExpressResponse) => {
   try {
     res.json(await readAllPresidentNotes());

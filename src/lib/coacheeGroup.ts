@@ -1,10 +1,15 @@
 // The vocabulary the DATABASE actually speaks. Every live row was written by the
 // xlsx import (AdminConsole's GROUP_MAP), so its spellings are the real ones:
-// "Beförderung", "2. Schiedsrichter", "Neu-Schiedsrichter 26/27". This list used
-// to offer "Befördert", "2. SR" and "Neu-SR 2025/26" alongside them — same
-// concepts, different strings — and the picker unions it with the groups in use,
-// so a coach was shown BOTH spellings and either click was accepted. Picking the
-// unused one splits a cohort in two for good.
+// "Beförderung", "Referee Coaching", "2. Schiedsrichter", "Neu-Schiedsrichter
+// 26/27". This list used to offer "Befördert", "2. SR" and "Neu-SR 2025/26"
+// alongside them — same concepts, different strings — and the picker unions it
+// with the groups in use, so a coach was shown BOTH spellings and either click
+// was accepted. Picking the unused one splits a cohort in two for good.
+//
+// "RC Gewünscht" was the last one left doing that: the import writes "Referee
+// Coaching" for the XLSX's `RC`, so every real row said one thing while the
+// picker offered the other. It stays translated below, because rows a coach
+// created by clicking it still exist.
 //
 // The season-shaped group is deliberately absent: the union supplies the current
 // cohort ("Neu-Schiedsrichter 26/27") on its own, so no year is maintained here
@@ -14,7 +19,7 @@ export const COACHEE_GROUP_OPTIONS = [
   'Beförderung',
   'Rückstufung?',
   'Rückstufung',
-  'RC Gewünscht',
+  'Referee Coaching',
   '2. Schiedsrichter',
   'Varia',
   'Coaching',
@@ -35,16 +40,22 @@ export function normalizeCoacheeGroup(value?: string): string {
 // existed, so half of an English reader's badges were in German. The older
 // spellings stay listed: legacy rows still carry them and must not regress.
 const GROUP_EN = new Map<string, string>([
-  // "Beförderung" and "Rückstufung" are nouns — the cohort being watched with a
-  // view to moving them, not people it has already happened to. Reading them as
-  // participles said the opposite: a coachee up for promotion was labelled
-  // "Promoted" beside their unchanged Niveau. "Befördert" IS the participle, and
-  // legacy rows still carry it.
+  // Which of the pair means "already happened" is not a question about German
+  // nouns — it is settled by the XLSX the rows come from and by the Infoschreiben
+  // that defines its codes. GROUP_MAP turns `B` into "Beförderung" and `B?` into
+  // "Beförderung?", and Infoschreiben 4.4.4/4.4.5 read: B? = "SR ist für eine
+  // Beförderung zu besuchen", B = "SR wurde in der vergangenen Saison befördert".
+  // So the bare noun is the participle's cohort and takes "Promoted"; the
+  // question mark is the one still to be decided. This pair was the other way
+  // round, which told an English reader the opposite of the SVRZ's own table.
   ['beförderung?', 'Promotion?'],
-  ['beförderung', 'Promotion'],
+  ['beförderung', 'Promoted'],
   ['befördert', 'Promoted'],
   ['rückstufung?', 'Demotion?'],
-  ['rückstufung', 'Demotion'],
+  ['rückstufung', 'Demoted'],
+  // Both spellings of Infoschreiben 4.4.6 "RC gewünscht": what the import writes
+  // and what the picker used to offer beside it.
+  ['referee coaching', 'RC requested'],
   ['rc gewünscht', 'RC requested'],
   ['1. schiedsrichter', '1st referee'],
   ['2. schiedsrichter', '2nd referee'],

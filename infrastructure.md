@@ -500,13 +500,31 @@ Backend does:
 
 ## Scheduler
 
-Automatic sync runs inside `server/index.ts` using `node-cron`:
+Automatic sync runs inside `server/index.ts`:
 
 - cron default: `0 5 * * *`
 - timezone default: `Europe/Zurich`
 - retries (cron path): configurable via env vars
 
-Production note: the API container runs with `restart: unless-stopped` so the cron stays alive; if the container is stopped, scheduled sync will not run.
+**Not node-cron.** Measured against the installed 4.2.1: ask its matcher for the
+next run after the last one before a DST switch and it answers **1 January of
+the next year** — for the March switch and the October one alike (a control walk
+in June steps day by day, so it is the switch that breaks it). In production
+that means the reminder, the sync and the log prune stop on 25.10.2026 and come
+back on 01.01.2027, mid-season, with nothing in the log to say why; only a
+redeploy brings them back, which is probably why it was never noticed.
+
+The three daily jobs therefore run on `scheduleDaily()` — a self-rescheduling
+timer over `zonedParts` + `wallClockToInstant`, the pair the iCal feed already
+trusts. Each run computes the next wall-clock instant from scratch, so a switch
+can only make one interval an hour longer or shorter. Each arming is logged
+(`scheduler.armed`, with the next instant), so "is the reminder still scheduled"
+is answerable from the log. A pattern that is not `m h * * *` still goes to
+node-cron, with a warning naming this trap — keep the daily jobs on the plain
+pattern.
+
+Production note: the API container runs with `restart: unless-stopped` so the
+schedule stays alive; if the container is stopped, nothing runs.
 
 To run the import without waiting for the cron: admin console → Settings →
 "Game import (VolleyManager)" → **Import now**. Same window and same code path

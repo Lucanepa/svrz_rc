@@ -367,6 +367,11 @@ const ADMIN_UI_USERNAME = process.env.ADMIN_UI_USERNAME || 'admin';
 // unlike the old per-person login it is one secret, not an account system.
 const PRESIDENT_UI_USERNAME = process.env.PRESIDENT_UI_USERNAME || 'praesidium';
 const PRESIDENT_UI_PASSWORD = process.env.PRESIDENT_UI_PASSWORD || '';
+// Declared here rather than beside the other VM_SYNC_* values: it is the app's
+// one wall-clock zone — the schedules, the iCal feed, the mail templates and
+// the error alerts all read it, and the alerts are installed before that block.
+const VM_SYNC_TIMEZONE = process.env.VM_SYNC_TIMEZONE || 'Europe/Zurich';
+
 const TEST_MODE = process.env.TEST_MODE === '1' || process.env.TEST_MODE === 'true';
 if (TEST_MODE) console.warn('[startup] TEST_MODE enabled — outbound emails are suppressed.');
 
@@ -384,6 +389,7 @@ installErrorAlerts({
   to: ERROR_ALERT_EMAIL,
   consoleUrl: `${MAIL_APP_URL.replace(/\/$/, '')}/#/admin/logs`,
   suppressed: TEST_MODE,
+  timezone: VM_SYNC_TIMEZONE,
   debounceMs: Number(process.env.ERROR_ALERT_DEBOUNCE_MS || 120_000),
   cooldownMs: Number(process.env.ERROR_ALERT_COOLDOWN_MS || 3_600_000),
   maxPerHour: Number(process.env.ERROR_ALERT_MAX_PER_HOUR || 6),
@@ -1009,7 +1015,6 @@ pb.autoCancellation(false);
 const VM_BASE = process.env.VM_BASE || '';
 const VM_BATCH_SIZE = 200;
 const VM_SYNC_CRON = process.env.VM_SYNC_CRON || '0 5 * * *';
-const VM_SYNC_TIMEZONE = process.env.VM_SYNC_TIMEZONE || 'Europe/Zurich';
 const VM_SYNC_MAX_RETRIES = Number(process.env.VM_SYNC_MAX_RETRIES || 10);
 const VM_SYNC_RETRY_DELAY_MS = Number(process.env.VM_SYNC_RETRY_DELAY_MS || 15000);
 const RENDER_PROPERTIES = [

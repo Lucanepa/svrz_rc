@@ -26,6 +26,8 @@ type Options = {
   /** Where a reader should go to see the rest. */
   consoleUrl: string;
   suppressed?: boolean;
+  /** The zone the mail's timestamps are written in. */
+  timezone?: string;
   debounceMs?: number;
   cooldownMs?: number;
   maxPerHour?: number;
@@ -47,8 +49,11 @@ const MAX_PENDING_GROUPS = 60;
 // The mail is written in English. Every other mail this app sends goes to a
 // referee or a coach and is German; this one goes to whoever operates the
 // server, and its content — event names, stack data, reqIds — is English
-// anyway. Only the clock stays local.
-const ALERT_TIMEZONE = process.env.TZ || 'Europe/Zurich';
+// anyway. Only the clock stays local, and it is the caller's zone (the same
+// VM_SYNC_TIMEZONE the schedules and the iCal feed use) rather than the
+// process's own, so a mail and the log console can never name one moment two
+// different ways.
+const FALLBACK_TIMEZONE = 'Europe/Zurich';
 
 export function installErrorAlerts(opts: Options): void {
   const recipients = opts.to.split(',').map((a) => a.trim()).filter(Boolean);
@@ -100,8 +105,9 @@ export function installErrorAlerts(opts: Options): void {
 
   // Timestamps stay on the region's wall clock — an operator reading this at
   // the hall compares it against the log console, which shows the same clock.
+  const zone = opts.timezone || FALLBACK_TIMEZONE;
   function stamp(t: number | string | Date): string {
-    return new Date(t).toLocaleString('en-GB', { timeZone: ALERT_TIMEZONE, hour12: false });
+    return new Date(t).toLocaleString('en-GB', { timeZone: zone, hour12: false });
   }
 
   function compose(groups: Pending[], swallowed: number): { subject: string; text: string } {

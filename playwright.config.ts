@@ -27,8 +27,25 @@ export default defineConfig({
     },
     {
       name: 'mobile-chrome',
+      // Chromium on a phone viewport. This is also the closest thing the suite
+      // has to Samsung Internet, Edge and Opera — all Chromium underneath.
       use: { ...devices['Pixel 5'] },
     },
+    // WebKit — Safari's engine — behind a flag, because it needs system
+    // libraries this box does not have (`sudo npx playwright install-deps
+    // webkit`, then `E2E_WEBKIT=1 npm test`). Worth running before a release:
+    // it catches WebKit-only layout and JS differences that Chromium hides.
+    //
+    // It is NOT iOS Safari. The Linux build has its own service-worker and
+    // storage behaviour, and nothing here reproduces an iPhone's PWA lifecycle
+    // — the reload storm of 09.09.2026 would not have shown up in it. For that
+    // the honest instruments are a real device and the activity log, which
+    // records sw.registered / sw.controllerchange / sw.reload.suppressed per
+    // session.
+    ...(process.env.E2E_WEBKIT ? [{
+      name: 'mobile-safari',
+      use: { ...devices['iPhone 14'] },
+    }] : []),
   ],
   webServer: {
     command: `npx vite --port=${PORT} --strictPort`,

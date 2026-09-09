@@ -11,6 +11,9 @@ import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { UiHost } from './components/ui';
 import { enableDemo, isDemoMode } from './lib/demo';
 import { installLogging, clientLog } from './lib/logger';
+import {
+  decideSwReload, recentSwReloads, noteSwReload, retryDelayMs, SW_RELOAD_STATE_KEY,
+} from './lib/swReload';
 import './index.css';
 
 // Hidden demo entry: #/demo turns on throwaway client-side demo mode, then drops
@@ -83,35 +86,42 @@ registerSW({
 // is days apart, a loop is seconds — so the counter forgets itself after ten
 // quiet minutes and a real update still lands. Past the bound the app stays on
 // the build it has and says so in the log, which beats a screen nobody can read.
-const SW_RELOAD_STATE_KEY = 'svrz_sw_reloads';
-const SW_RELOAD_MIN_UPTIME_MS = 60 * 1000;
-const SW_RELOAD_MAX_IN_A_ROW = 2;
-const SW_RELOAD_FORGET_MS = 10 * 60 * 1000;
-
-/** Recent consecutive reloads, ignoring any that have gone quiet. */
+// The rule itself lives in lib/swReload.ts, where it can be tested without a
+// browser; this is the wiring around it.
 function swReloadsSoFar(): number {
-  try {
-    const { n, at } = JSON.parse(sessionStorage.getItem(SW_RELOAD_STATE_KEY) || '{}') as { n?: number; at?: number };
-    if (!n || !at || Date.now() - at > SW_RELOAD_FORGET_MS) return 0;
-    return n;
-  } catch { return 0; }
+  try { return recentSwReloads(sessionStorage.getItem(SW_RELOAD_STATE_KEY), Date.now()); }
+  catch { return 0; }
 }
-function noteSwReload(): void {
-  try { sessionStorage.setItem(SW_RELOAD_STATE_KEY, JSON.stringify({ n: swReloadsSoFar() + 1, at: Date.now() })); } catch { /* private mode */ }
+function rememberSwReload(): void {
+  try { sessionStorage.setItem(SW_RELOAD_STATE_KEY, noteSwReload(sessionStorage.getItem(SW_RELOAD_STATE_KEY), Date.now())); }
+  catch { /* private mode */ }
 }
 
 if ('serviceWorker' in navigator) {
   let refreshing = false;
   let pendingReload = false;
   let lastSuppressLog = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
   const reloadIfSafe = async () => {
     if (refreshing) return;
     const uptimeMs = performance.now();
     const reloads = swReloadsSoFar();
-    if (uptimeMs < SW_RELOAD_MIN_UPTIME_MS || reloads >= SW_RELOAD_MAX_IN_A_ROW) {
-      // Not latched: a page that refuses a reload in its first minute must
-      // still take the deploy that lands on it an hour later. Only the log is
-      // rationed, because a worker in a loop fires this every few seconds.
+    const decision = decideSwReload({ uptimeMs, reloadsSoFar: reloads });
+    if (decision === 'too-soon') {
+      // Deferred, not dropped. The old code returned here and nothing brought
+      // the event back: the worker had already taken control, so the page ran
+      // on against a precache that no longer holds its chunks — and the first
+      // lazy import (the PDF builder) would fetch a URL the new build does not
+      // have. Ask again as soon as the page is old enough.
+      if (!retryTimer) {
+        retryTimer = setTimeout(() => { retryTimer = null; void reloadIfSafe(); }, retryDelayMs(uptimeMs));
+      }
+      return;
+    }
+    if (decision === 'looping') {
+      // Keep the build we have; a page that reloads forever is worse than a
+      // page one deploy behind. Only the log is rationed, because a worker in
+      // a loop fires this every few seconds.
       if (Date.now() - lastSuppressLog > 60_000) {
         lastSuppressLog = Date.now();
         clientLog.warn('sw.reload.suppressed', 'service worker changed again — not reloading', {
@@ -131,7 +141,7 @@ if ('serviceWorker' in navigator) {
     // parking behaviour is exactly right and is kept unchanged.
     if (window.__svrzFormDirty) { pendingReload = true; return; }
     refreshing = true;
-    noteSwReload();
+    rememberSwReload();
     clientLog.info('sw.controllerchange', 'new service worker took control — reloading');
     window.location.reload();
   };

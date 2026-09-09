@@ -126,7 +126,11 @@ app.use(cors({
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     // A blocked origin surfaces in the browser as a bare "Failed to fetch" with
     // no status, so the server side is the only place it is diagnosable.
-    log.error('cors.blocked', 'Origin not allowed by CORS', { origin, allowed: ALLOWED_ORIGINS });
+    // WARN, not error: the policy refusing a stranger is this code working, and
+    // anything at error level now mails the operator. A scanner, a stale PWA or
+    // a dev page pointed at the wrong API would otherwise fill that inbox with
+    // the door being locked, and real failures would drown in it.
+    log.warn('cors.blocked', 'Origin not allowed by CORS', { origin, allowed: ALLOWED_ORIGINS });
     return cb(new Error('Origin not allowed by CORS'));
   },
   credentials: true,
@@ -9404,7 +9408,11 @@ app.use((err: unknown, req: Request, res: ExpressResponse, _next: (e?: unknown) 
   const message = err instanceof Error ? err.message : String(err);
   const corsBlocked = message.includes('CORS');
   const badJson = err instanceof SyntaxError && 'body' in (err as object);
-  log.error('req.fail', `${req.method} ${redactIcalToken(req.originalUrl)} threw`, {
+  // A rejected origin and a malformed body are both the caller's doing and are
+  // already recorded where they happen; only a genuine escape is an error (and
+  // so only a genuine escape is worth an alert mail).
+  const level: LogLevel = corsBlocked || badJson ? 'warn' : 'error';
+  log[level]('req.fail', `${req.method} ${redactIcalToken(req.originalUrl)} threw`, {
     error: err,
     origin: asText(req.headers.origin) || undefined,
     kind: corsBlocked ? 'cors' : badJson ? 'bad-json' : 'unhandled',

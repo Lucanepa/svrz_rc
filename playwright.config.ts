@@ -32,6 +32,14 @@ export default defineConfig({
   ],
   webServer: {
     command: `npx vite --port=${PORT} --strictPort`,
+    // An e2e run must not be able to reach production, and on lenovoserver it
+    // could: the dev proxy forwards /api to :8787, which there is the LIVE API
+    // container. Every run filed its clicks in the real activity log (as
+    // `cors.blocked`, since the origin is localhost) and asked the live backend
+    // who was signed in. The suite stubs what it needs, so the proxy points at a
+    // closed port: anything unstubbed now fails loudly instead of quietly
+    // talking to production.
+    env: { VITE_API_BASE_URL: '', DEV_API_TARGET: 'http://127.0.0.1:9' },
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 60000,

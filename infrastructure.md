@@ -68,6 +68,12 @@ docker compose -p svrz-rc logs -f pocketbase
 docker compose -p svrz-rc restart svrz-api
 ```
 
+**`localhost:8787` on lenovoserver is PRODUCTION.** The Vite dev proxy forwards
+`/api` there, so a dev page or an e2e run on this host talks to the live API and
+files into the live log. `playwright.config.ts` points the proxy at a closed port
+(`DEV_API_TARGET`) so an unstubbed call in a test fails loudly instead; set the
+same variable when running `npm run dev` here.
+
 Deploying the API means copying this repo over `/home/lucanepa/svrz_rc` on
 lenovoserver and rebuilding there — never `git pull` in that directory, which is
 not a checkout. Copy source only: `deploy/hetzner/pb_data`,
@@ -576,6 +582,34 @@ mount), `LOG_LEVEL` (default `debug`), `LOG_RING_MAX` (20000),
 Files are named by the **local** date (`TZ=Europe/Zurich` in the container), not
 by UTC — otherwise "today's log" started at 02:00 and every evening after 22:00
 was filed under tomorrow.
+
+### Errors come to you (`ERROR_ALERT_EMAIL`)
+
+Nobody opens a log without a reason to, and the failures that cost the most are
+the ones nobody reports — a cron that died at 05:00, a 500 on a submit somebody
+quietly gave up on. `server/erroralerts.ts` subscribes to the store and mails
+error-level entries (both sides — a React crash on a phone included) to
+`ERROR_ALERT_EMAIL`.
+
+It is built not to become noise, because an alert channel that cries wolf is
+worse than none:
+
+- one digest per burst (`ERROR_ALERT_DEBOUNCE_MS`, default 2 min), never one
+  mail per line;
+- an hour's cooldown per failure CLASS (`ERROR_ALERT_COOLDOWN_MS`) — the same
+  failure repeating 400 times mails once, and the count rides along;
+- at most `ERROR_ALERT_MAX_PER_HOUR` (6) mails an hour; the rest waits;
+- a class muted in Admin → Protokoll sends no mail — silencing the noise in the
+  console silences the alert about it, which is what a reader expects;
+- `TEST_MODE=1` suppresses the send and logs `alert.suppressed` with the subject
+  it would have used;
+- alerting never alerts about itself (`alert.*` is excluded), so a broken SMTP
+  cannot loop.
+
+**Only real failures should be error level.** A rejected CORS origin and a
+malformed body are the API working as designed and are logged at `warn` for
+exactly this reason. When adding a `log.error`, ask whether it should wake
+somebody up.
 
 ### Reading it from a terminal (`/api/admin/error-logs`)
 

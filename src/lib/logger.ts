@@ -319,11 +319,25 @@ function installLifecycleLogging(): void {
  * Installs every hook. Call once, as early as possible — anything that happens
  * before this is invisible.
  */
+/** A page served from localhost has no business filing entries in the live
+ *  Protokoll — under a real coach's name, in the 30-day files, and (since the
+ *  alerts) in somebody's inbox. Dev and e2e runs point at the remote API
+ *  through VITE_API_BASE_URL; the app still talks to it, the LOG does not. */
+function shipsToAnotherOrigin(base: string): boolean {
+  if (!base) return false;
+  try {
+    const local = /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname);
+    return local && new URL(base, location.href).origin !== location.origin;
+  } catch {
+    return false;
+  }
+}
+
 export function installLogging(options: { apiBase?: string; ship?: boolean } = {}): void {
   if (installed || typeof window === 'undefined') return;
   installed = true;
   apiBase = options.apiBase || '';
-  shipping = options.ship !== false;
+  shipping = options.ship !== false && !shipsToAnotherOrigin(apiBase);
   try {
     installErrorLogging();
     installFetchLogging();

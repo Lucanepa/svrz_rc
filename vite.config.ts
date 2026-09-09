@@ -112,7 +112,12 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       proxy: {
         '/api': {
-          target: 'http://localhost:8787',
+          // On a developer laptop :8787 is the local API. On lenovoserver it is
+          // the PRODUCTION container — so an unstubbed call from a dev or e2e
+          // page lands in the live database and the live log. The e2e config
+          // points this at a closed port for exactly that reason; override it
+          // the same way when running `npm run dev` on the server.
+          target: process.env.DEV_API_TARGET || 'http://localhost:8787',
           changeOrigin: true,
         },
       },

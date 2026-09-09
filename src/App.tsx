@@ -1137,6 +1137,35 @@ function FilterToggle({ on, onToggle, label, title, dotClass }: {
   );
 }
 
+/** The pill switches that sit right above a list, outside the collapsible
+ *  filter panel: one question each, asked on nearly every visit, and worth the
+ *  tap it costs to open the panel. `on` is what the pill LOOKS like, which is
+ *  not always what the state holds — "Nur im Fokus" lights up while its flag is
+ *  off, because the highlighted half is the narrowed list either way. */
+function QuickToggle({ on, onToggle, icon, label, title, tone }: {
+  on: boolean; onToggle: () => void; icon: React.ReactNode; label: string; title: string; tone: 'amber' | 'emerald';
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={on}
+      title={title}
+      className={cn(
+        'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium transition-colors',
+        on
+          ? (tone === 'amber'
+            ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
+            : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100')
+          : 'border-stone-200 text-stone-500 hover:bg-stone-100',
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
 function MultiSelectDropdown({ options, selected, onChange, placeholder, lang, labelOf }: {
   options: string[];
   selected: string[];
@@ -1253,6 +1282,9 @@ export default function App() {
   const [listFilterGroups, setListFilterGroups] = useState<string[]>([]);
   const [listFilterNeedsObs, setListFilterNeedsObs] = useState(true);
   const [listFilterShowInactive, setListFilterShowInactive] = useState(false);
+  // Coachees who have an upcoming game flagged for observation. The games tab's
+  // star, asked of the person rather than of the fixture.
+  const [coacheeFilterStarred, setCoacheeFilterStarred] = useState(false);
   const [coacheeFiltersOpen, setCoacheeFiltersOpen] = useState(false);
   const [listSortBy, setListSortBy] = useState<'name' | 'level' | 'status'>('name');
   const [listSortAsc, setListSortAsc] = useState(true);
@@ -4317,14 +4349,22 @@ export default function App() {
    *  Shared by the per-coachee games list and the row's inline list, so the same
    *  game cannot be worth watching on one and hidden on the other. A game with
    *  no referee role on it (a line judge) has nothing to compare and stays. */
-  const inCoacheeFocus = useCallback((coachee: Coachee | undefined, league: string, roles: TargetRole[]) => {
-    if (showAllLevels) return true;
+  const inNiveauFocus = useCallback((coachee: Coachee | undefined, league: string, roles: TargetRole[]) => {
     if (!coachee || roles.length === 0) return true;
     const key = levelKey(coachee.referee_level, coachee.stage);
     const target = coacheeTargets[coachee.id];
     if (!isTargetActive(target, key, niveauTable)) return true;
     return roles.some((role) => keepGame({ league, role, target, levelKey: key, table: niveauTable }));
-  }, [showAllLevels, coacheeTargets, niveauTable]);
+  }, [coacheeTargets, niveauTable]);
+  /** The rule as the lists apply it, escape hatch included. Split from the rule
+   *  itself above because the switch that opens the hatch has to ask whether it
+   *  has anything to open — asked through this one it would answer "nothing out
+   *  of focus" the moment it was used, and hide itself with the list still
+   *  widened. */
+  const inCoacheeFocus = useCallback(
+    (coachee: Coachee | undefined, league: string, roles: TargetRole[]) => showAllLevels || inNiveauFocus(coachee, league, roles),
+    [showAllLevels, inNiveauFocus],
+  );
   const filteredCoachees = useMemo(() => {
     // Folded, like every other name match in the app: typing "muller" must find
     // "Müller". The coachee dropdown beside this box already did.
@@ -4347,6 +4387,13 @@ export default function App() {
       const isActive = (c.stage || 'active') !== 'inactive';
       if (!listFilterShowInactive && !isActive) return false;
       if (listFilterNeedsObs && !c.observation_status?.needsObservation) return false;
+      // Somebody asked for one of their upcoming games to be watched. Matched
+      // against the games the row actually lists — the focus rule included — so
+      // the switch cannot leave a coachee on the list with nothing under them.
+      if (coacheeFilterStarred) {
+        const games = upcomingGamesByReferee.get(normName(c.full_name || '')) ?? [];
+        if (!games.some(({ game, role }) => game.starred && inCoacheeFocus(c, game.league || '', [role === '1. SR' ? '1SR' : '2SR']))) return false;
+      }
       return true;
     });
     const statusPriority = (c: Coachee) => {
@@ -4365,12 +4412,30 @@ export default function App() {
       return dir * (statusPriority(a) - statusPriority(b));
     });
     return filtered;
-  }, [coachees, listSearch, listFilterLevels, listFilterGroups, listFilterShowInactive, listFilterNeedsObs, listSortBy, listSortAsc, seasonStartYear]);
+  }, [coachees, listSearch, listFilterLevels, listFilterGroups, listFilterShowInactive, listFilterNeedsObs, coacheeFilterStarred, upcomingGamesByReferee, inCoacheeFocus, listSortBy, listSortAsc, seasonStartYear]);
   // Lookup coachee by normalized name for game filtering
   const coacheeByName = useMemo(
     () => coacheeIndex(coachees, seasonStartYear),
     [coachees, seasonStartYear],
   );
+
+  /** The same rule asked of one game in the Games tab, where the two referees
+   *  are weighed together: true when the focus filter would drop it. Lifted out
+   *  of `filteredGames` so the switch that turns the rule off can ask the same
+   *  question the list does. */
+  const outOfNiveauFocus = useCallback((g: { league?: string; firstReferee?: string; secondReferee?: string }) => {
+    const refRoles: Array<{ name: string; role: TargetRole }> = [];
+    if (g.firstReferee) refRoles.push({ name: g.firstReferee, role: '1SR' });
+    if (g.secondReferee) refRoles.push({ name: g.secondReferee, role: '2SR' });
+    const coacheeRefs = refRoles
+      .map((r) => ({ ...r, c: coacheeByName.get(normName(r.name)) }))
+      .filter((r): r is { name: string; role: TargetRole; c: Coachee } => Boolean(r.c));
+    if (coacheeRefs.length === 0) return false;
+    const anyTargeted = coacheeRefs.some((r) => isTargetActive(coacheeTargets[r.c.id], levelKey(r.c.referee_level, r.c.stage), niveauTable));
+    if (!anyTargeted) return false;
+    return !coacheeRefs.some((r) =>
+      keepGame({ league: g.league || '', role: r.role, target: coacheeTargets[r.c.id], levelKey: levelKey(r.c.referee_level, r.c.stage), table: niveauTable }));
+  }, [coacheeByName, coacheeTargets, niveauTable]);
 
   // The coachee filter on the games tab. Its VALUES stay the raw name the game
   // carries — that is what the filter matches on — while its order and its
@@ -4401,7 +4466,8 @@ export default function App() {
   // loaded game rather than the filtered list: deriving it from what is on
   // screen would make one active filter erase its neighbours' controls.
   const filterAvailability = useMemo(() => {
-    const found = { rd: false, ld: false, rcGame: false, assigned: false, inactive: false };
+    const found = { rd: false, ld: false, rcGame: false, assigned: false, inactive: false, starred: false, focus: false };
+    const today = todayKey();
     for (const g of eligibleGames) {
       if (g.isRdGame) found.rd = true;
       if (g.isLdGame) found.ld = true;
@@ -4413,9 +4479,35 @@ export default function App() {
           if (c && (c.stage || 'active') === 'inactive') { found.inactive = true; break; }
         }
       }
+      // The two switches above the list are about work still to come, so they
+      // are offered on that alone: a star on a game played in October, or a
+      // focus rule that has only ever pruned finished fixtures, is not a filter
+      // worth a button in March.
+      if (!inSeasonOrManual(g)) continue;
+      const key = dayKey(g.date);
+      if (key && key < today) continue;
+      if (g.starred) found.starred = true;
+      if (!found.focus && outOfNiveauFocus(g)) found.focus = true;
     }
     return found;
-  }, [eligibleGames, coacheeByName]);
+  }, [eligibleGames, coacheeByName, inSeasonOrManual, outOfNiveauFocus]);
+
+  // The same question for the Coachees tab, asked of each coachee's own
+  // upcoming games: is anything of theirs flagged, and does their Niveau hold
+  // anything back? The flagged half is measured through the focus rule in
+  // force, so the switch can never be offered when it would empty the list.
+  const coacheeQuickFilters = useMemo(() => {
+    const found = { starred: false, focus: false };
+    for (const c of coachees) {
+      for (const { game, role } of upcomingGamesByReferee.get(normName(c.full_name || '')) ?? []) {
+        const roles: TargetRole[] = [role === '1. SR' ? '1SR' : '2SR'];
+        if (!found.focus && !inNiveauFocus(c, game.league || '', roles)) found.focus = true;
+        if (!found.starred && game.starred && inCoacheeFocus(c, game.league || '', roles)) found.starred = true;
+        if (found.starred && found.focus) return found;
+      }
+    }
+    return found;
+  }, [coachees, upcomingGamesByReferee, inNiveauFocus, inCoacheeFocus]);
 
   // Niveau and group for the amber Coachee badge in the games list.
   const coacheeLevelOf = (name: string) => {
@@ -4560,20 +4652,7 @@ export default function App() {
       // Niveau-target pruning: keep the game only if it matches the target of at least
       // one of its coachee referees (at their level + role). Coachees with no active
       // target never prune. The "show all levels" toggle bypasses this entirely.
-      if (!showAllLevels) {
-        const refRoles: Array<{ name: string; role: TargetRole }> = [];
-        if (g.firstReferee) refRoles.push({ name: g.firstReferee, role: '1SR' });
-        if (g.secondReferee) refRoles.push({ name: g.secondReferee, role: '2SR' });
-        const coacheeRefs = refRoles
-          .map((r) => ({ ...r, c: coacheeByName.get(normName(r.name)) }))
-          .filter((r): r is { name: string; role: TargetRole; c: Coachee } => Boolean(r.c));
-        const anyTargeted = coacheeRefs.some((r) => isTargetActive(coacheeTargets[r.c.id], levelKey(r.c.referee_level, r.c.stage), niveauTable));
-        if (coacheeRefs.length > 0 && anyTargeted) {
-          const keep = coacheeRefs.some((r) =>
-            keepGame({ league: g.league || '', role: r.role, target: coacheeTargets[r.c.id], levelKey: levelKey(r.c.referee_level, r.c.stage), table: niveauTable }));
-          if (!keep) return false;
-        }
-      }
+      if (!showAllLevels && outOfNiveauFocus(g)) return false;
       return true;
     })
       // The API hands games back newest-first (`sort: '-match_date'`), which put
@@ -4582,7 +4661,7 @@ export default function App() {
       // timestamps rather than strings so a stray offset cannot reorder a day,
       // and anything undated sinks to the bottom instead of leading.
       .sort((a, b) => gameTime(a.date) - gameTime(b.date));
-  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, inSeasonOrManual, showAllLevels, coacheeTargets, niveauTable]);
+  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, inSeasonOrManual, showAllLevels, outOfNiveauFocus]);
 
   // Any filter can shrink a list below the page currently shown, and the pager
   // itself disappears under one page of rows — leaving a blank list with no
@@ -5912,6 +5991,45 @@ export default function App() {
                     )}
                   </div>
                 )}
+                {/* The Games tab's two pills, in the tab that asks the same
+                    questions of the same fixtures: who has a game somebody
+                    wants watched, and whether their list is held to their
+                    Niveau. Above the list, not inside every unfolded row — one
+                    control for the page reads as a filter; the same bar
+                    repeated under twenty names reads as noise, and on a phone
+                    it would push the games it filters off the screen. Each
+                    appears only when it has something to act on, so most
+                    visits see one pill or none. */}
+                {(coacheeQuickFilters.starred || coacheeFilterStarred || coacheeQuickFilters.focus || showAllLevels) && (
+                  <div className="mb-3 flex flex-wrap items-center justify-end gap-1.5">
+                    {(coacheeQuickFilters.starred || coacheeFilterStarred) && (
+                      <QuickToggle
+                        on={coacheeFilterStarred}
+                        onToggle={() => { setCoacheeFilterStarred((v) => !v); setListPage(0); }}
+                        tone="amber"
+                        icon={<Star size={14} className={cn(coacheeFilterStarred && 'fill-amber-500 text-amber-500')} />}
+                        label={formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged'}
+                        title={formData.lang === 'DE'
+                          ? 'Nur Coachees zeigen, die ein für eine Beobachtung vorgemerktes Spiel haben.'
+                          : 'Show only coachees with a game flagged for observation.'}
+                      />
+                    )}
+                    {(coacheeQuickFilters.focus || showAllLevels) && (
+                      <QuickToggle
+                        on={!showAllLevels}
+                        onToggle={() => { setShowAllLevels((v) => !v); setListPage(0); }}
+                        tone="emerald"
+                        icon={<Target size={14} />}
+                        label={showAllLevels
+                          ? (formData.lang === 'DE' ? 'Alle Spiele' : 'All games')
+                          : (formData.lang === 'DE' ? 'Nur im Fokus' : 'In focus only')}
+                        title={formData.lang === 'DE'
+                          ? 'Unter jedem Coachee nur Spiele aus seinem Niveau (Standard). Antippen, um alle Spiele zu zeigen.'
+                          : "Under each coachee, only games from their level (default). Tap to show all games."}
+                      />
+                    )}
+                  </div>
+                )}
               </>
             )}
 
@@ -6164,7 +6282,10 @@ export default function App() {
                         // counted into the "+ n more" that opens that list.
                         const focusGames = ownGames.filter(({ game, role }) =>
                           inCoacheeFocus(coachee, game.league || '', [role === '1. SR' ? '1SR' : '2SR']));
-                        const inlineGames = focusGames.slice(0, INLINE_GAME_LIMIT);
+                        // With the flagged switch on, the row shows the games
+                        // that put it on the list and nothing else.
+                        const shownGames = coacheeFilterStarred ? focusGames.filter(({ game }) => game.starred) : focusGames;
+                        const inlineGames = shownGames.slice(0, INLINE_GAME_LIMIT);
                         const moreGames = ownGames.length - inlineGames.length;
                         const isExpanded = expandedCoacheeId === coachee.id;
                         return (
@@ -6300,7 +6421,21 @@ export default function App() {
                                           home={game.homeTeam}
                                           away={game.awayTeam}
                                           onOpen={() => handleSelectGame(game, coachee.full_name)}
-                                          chips={<MetaChip tone="stone">{role}</MetaChip>}
+                                          chips={<>
+                                            <MetaChip tone="stone">{role}</MetaChip>
+                                            {/* Why this game is on a filtered
+                                                list — and worth seeing on an
+                                                unfiltered one too. */}
+                                            {game.starred && (
+                                              <MetaChip
+                                                tone="amber"
+                                                title={de ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation'}
+                                              >
+                                                <Star size={10} className="fill-amber-500 text-amber-500" />
+                                                {de ? 'Gewünscht' : 'Priority'}
+                                              </MetaChip>
+                                            )}
+                                          </>}
                                           action={!holder ? (
                                             <button
                                               onClick={() => { if (rcAuth.rcName) requestRcAssignment(game, rcAuth.rcName); }}
@@ -6434,40 +6569,40 @@ export default function App() {
                   >
                     <CalendarDays size={18} />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setGameFilterStarred((v) => !v)}
-                    className={cn(
-                      "ml-auto inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium transition-colors",
-                      gameFilterStarred
-                        ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
-                        : "border-stone-200 text-stone-500 hover:bg-stone-100",
+                  {/* A switch nothing in the list answers to can only ever
+                      empty it, so it is not offered: no upcoming game carries a
+                      star, or the Niveau rule prunes nothing, and the pill goes
+                      away. The one currently ON always stays — it has to be
+                      reachable to be switched off again. Same rule the filter
+                      panel's toggles already follow. */}
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+                    {(filterAvailability.starred || gameFilterStarred) && (
+                      <QuickToggle
+                        on={gameFilterStarred}
+                        onToggle={() => setGameFilterStarred((v) => !v)}
+                        tone="amber"
+                        icon={<Star size={14} className={cn(gameFilterStarred && 'fill-amber-500 text-amber-500')} />}
+                        label={formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged'}
+                        title={formData.lang === 'DE'
+                          ? 'Nur Spiele zeigen, die für eine Beobachtung vorgemerkt sind.'
+                          : 'Show only games flagged for observation.'}
+                      />
                     )}
-                    title={formData.lang === 'DE'
-                      ? 'Nur Spiele zeigen, die für eine Beobachtung vorgemerkt sind.'
-                      : 'Show only games flagged for observation.'}
-                  >
-                    <Star size={14} className={cn(gameFilterStarred && 'fill-amber-500 text-amber-500')} />
-                    {formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowAllLevels((v) => !v)}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium transition-colors",
-                      showAllLevels
-                        ? "border-stone-200 text-stone-500 hover:bg-stone-100"
-                        : "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    {(filterAvailability.focus || showAllLevels) && (
+                      <QuickToggle
+                        on={!showAllLevels}
+                        onToggle={() => setShowAllLevels((v) => !v)}
+                        tone="emerald"
+                        icon={<Target size={14} />}
+                        label={showAllLevels
+                          ? (formData.lang === 'DE' ? 'Alle Spiele' : 'All games')
+                          : (formData.lang === 'DE' ? 'Nur im Fokus' : 'In focus only')}
+                        title={formData.lang === 'DE'
+                          ? 'Nur Spiele im Fokus der Coachees, aus ihrem Niveau (Standard). Antippen, um alle Spiele zu zeigen.'
+                          : "Only games in the coachees' focus, from their level (default). Tap to show all games."}
+                      />
                     )}
-                    title={formData.lang === 'DE'
-                      ? 'Nur Spiele im Fokus der Coachees, aus ihrem Niveau (Standard). Antippen, um alle Spiele zu zeigen.'
-                      : "Only games in the coachees' focus, from their level (default). Tap to show all games."}
-                  >
-                    <Target size={14} />
-                    {showAllLevels
-                      ? (formData.lang === 'DE' ? 'Alle Spiele' : 'All games')
-                      : (formData.lang === 'DE' ? 'Nur im Fokus' : 'In focus only')}
-                  </button>
+                  </div>
                 </div>
 
                 {/* Games list view */}

@@ -44,6 +44,12 @@ type Pending = {
 const MAX_GROUPS_PER_MAIL = 12;
 const MAX_PENDING_GROUPS = 60;
 
+// The mail is written in English. Every other mail this app sends goes to a
+// referee or a coach and is German; this one goes to whoever operates the
+// server, and its content — event names, stack data, reqIds — is English
+// anyway. Only the clock stays local.
+const ALERT_TIMEZONE = process.env.TZ || 'Europe/Zurich';
+
 export function installErrorAlerts(opts: Options): void {
   const recipients = opts.to.split(',').map((a) => a.trim()).filter(Boolean);
   if (!recipients.length) return;
@@ -92,41 +98,47 @@ export function installErrorAlerts(opts: Options): void {
     return data;
   }
 
+  // Timestamps stay on the region's wall clock — an operator reading this at
+  // the hall compares it against the log console, which shows the same clock.
+  function stamp(t: number | string | Date): string {
+    return new Date(t).toLocaleString('en-GB', { timeZone: ALERT_TIMEZONE, hour12: false });
+  }
+
   function compose(groups: Pending[], swallowed: number): { subject: string; text: string } {
     const total = groups.reduce((sum, g) => sum + g.count, 0);
     const head = groups[0];
-    const headline = `${head.last.evt}: ${head.last.msg || '(ohne Meldung)'}`.slice(0, 90);
+    const headline = `${head.last.evt}: ${head.last.msg || '(no message)'}`.slice(0, 90);
     const subject = groups.length === 1 && total === 1
-      ? `[SVRZ RC] Fehler — ${headline}`
-      : `[SVRZ RC] ${total} Fehler in ${groups.length} ${groups.length === 1 ? 'Art' : 'Arten'} — ${headline}`;
+      ? `[SVRZ RC] Error — ${headline}`
+      : `[SVRZ RC] ${total} errors in ${groups.length} ${groups.length === 1 ? 'kind' : 'kinds'} — ${headline}`;
 
     const lines: string[] = [
-      `${total} Fehler${swallowed ? ` (+${swallowed} weitere unterdrückt, siehe Abklingzeit)` : ''} in den letzten Minuten.`,
+      `${total} error${total === 1 ? '' : 's'}${swallowed ? ` (+${swallowed} more suppressed, see cooldown)` : ''} in the last few minutes.`,
       '',
     ];
     for (const g of groups.slice(0, MAX_GROUPS_PER_MAIL)) {
       const e = g.last;
       lines.push(
         `── ${g.count}× ${e.src === 'client' ? 'App' : 'Server'} · ${e.evt}`,
-        `   ${e.msg || '(ohne Meldung)'}`,
-        `   zuerst ${new Date(g.first.t).toLocaleString('de-CH')} · zuletzt ${new Date(e.t).toLocaleString('de-CH')}`,
+        `   ${e.msg || '(no message)'}`,
+        `   first ${stamp(g.first.t)} · last ${stamp(e.t)}`,
       );
-      if (g.users.size) lines.push(`   Personen: ${[...g.users].slice(0, 8).join(', ')}`);
-      if (g.sessions.size) lines.push(`   Sitzungen: ${[...g.sessions].slice(0, 5).join(', ')}`);
+      if (g.users.size) lines.push(`   People: ${[...g.users].slice(0, 8).join(', ')}`);
+      if (g.sessions.size) lines.push(`   Sessions: ${[...g.sessions].slice(0, 5).join(', ')}`);
       if (e.reqId) lines.push(`   reqId: ${e.reqId}`);
       const data = describe(e);
       if (data) lines.push(data.split('\n').map((l) => `   ${l}`).join('\n'));
       lines.push('');
     }
     if (groups.length > MAX_GROUPS_PER_MAIL) {
-      lines.push(`… und ${groups.length - MAX_GROUPS_PER_MAIL} weitere Fehlerarten.`, '');
+      lines.push(`… and ${groups.length - MAX_GROUPS_PER_MAIL} more error kinds.`, '');
     }
     lines.push(
-      `Alles im Protokoll: ${opts.consoleUrl}`,
+      `Everything in the log: ${opts.consoleUrl}`,
       '',
-      'Diese Meldung kommt vom Server selbst. Wiederholt sich derselbe Fehler,',
-      'meldet er sich frühestens in einer Stunde wieder; im Admin lässt sich eine',
-      'ganze Fehlerart stummschalten.',
+      'This message comes from the server itself. If the same error repeats, it',
+      'reports again in an hour at the earliest; a whole error kind can be muted',
+      'in the admin console.',
     );
     return { subject, text: lines.join('\n') };
   }

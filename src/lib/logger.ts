@@ -276,11 +276,25 @@ function installFetchLogging(): void {
   };
 }
 
+/**
+ * The browser hands us "Script error." with an empty filename and no error
+ * object when the throw came from a script on another origin without CORS —
+ * in practice a browser extension or an injected third-party script, never
+ * our own bundle. There is nothing in it to act on and nothing we can do
+ * about it, so it stays in the log as a warning instead of waking the
+ * operator by mail. Same `js.error` prefix, so a mute rule still catches it.
+ */
+function isOpaqueCrossOriginError(e: ErrorEvent): boolean {
+  return !e.error && !e.filename && !e.lineno && /^script error\.?$/i.test((e.message || '').trim());
+}
+
 function installErrorLogging(): void {
   window.addEventListener('error', (e) => {
     // Resource load failures (img/script/css) surface here with no `error`.
     if (e.error || e.message) {
-      clientLog.error('js.error', e.message || 'window error', { error: e.error, file: e.filename, line: e.lineno, col: e.colno });
+      const level = isOpaqueCrossOriginError(e) ? 'warn' : 'error';
+      const evt = level === 'warn' ? 'js.error.opaque' : 'js.error';
+      clientLog[level](evt, e.message || 'window error', { error: e.error, file: e.filename, line: e.lineno, col: e.colno });
     } else {
       const el = e.target as HTMLElement | null;
       clientLog.warn('res.error', 'resource failed to load', { tag: el?.tagName?.toLowerCase(), src: (el as HTMLImageElement)?.src });

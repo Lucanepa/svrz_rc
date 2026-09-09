@@ -223,6 +223,12 @@ export function installErrorAlerts(opts: Options): void {
     schedule(debounceMs);
   });
 
+  // Prime the mute rules now rather than on the first error: the read is async,
+  // so an error arriving before it lands would be checked against an empty set —
+  // and the one class you muted precisely because it fires at startup is the
+  // one that would slip through.
+  void currentRules();
+
   opts.log('info', 'alert.installed', `error alerts to ${recipients.length} recipient(s)`, {
     debounceMs, cooldownMs, maxPerHour, suppressed: Boolean(opts.suppressed),
   });

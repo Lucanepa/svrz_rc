@@ -540,6 +540,16 @@ an HTTP request proves nothing about a cron.
 - **Browser** — the app (`src/lib/logger.ts`) records clicks, form submits, all
   fetches with their status, JS errors, React crashes, online/offline, and ships
   them to `POST /api/client-logs` (also on `pagehide`, via `sendBeacon`).
+- **Every `console.*` call, on both sides.** `captureConsole()` runs before
+  anything else in `server/index.ts`, and the browser patches its console at
+  install time. A library's stack trace or a leftover debug line is no longer a
+  thing only `docker compose logs` ever saw — and that stdout is thrown away by
+  the next redeploy. `console.log`/`info`/`debug` land at debug level, so they
+  are there when you replay a session and out of the way when you are not.
+- **The reason a request failed.** `req.out` carries the JSON body a 4xx/5xx
+  actually sent the caller. `safeError()` already logged the cause behind a 500;
+  a 400/403/409 is produced by a plain `res.status(...).json({ error })` in a
+  handler, and that reason used to live only in the response nobody kept.
 
 Three sinks: stdout (`docker compose logs -f svrz-api`), a 20k-entry in-memory
 ring (what the admin console reads), and daily JSONL files.
@@ -560,7 +570,50 @@ kept, since they carry no secret and are usually the diagnostic bit.
 
 Env: `LOG_DIR` (default `./logs`, `/app/logs` in the container via a bind
 mount), `LOG_LEVEL` (default `debug`), `LOG_RING_MAX` (20000),
-`LOG_RETENTION_DAYS` (30), `LOG_TO_FILE=0` to disable the file sink.
+`LOG_RETENTION_DAYS` (30), `LOG_TO_FILE=0` to disable the file sink,
+`LOG_READ_TOKEN` (see below).
+
+Files are named by the **local** date (`TZ=Europe/Zurich` in the container), not
+by UTC — otherwise "today's log" started at 02:00 and every evening after 22:00
+was filed under tomorrow.
+
+### Reading it from a terminal (`/api/admin/error-logs`)
+
+The Protokoll tab reads the in-memory ring: live, and empty again after every
+redeploy. The forensic half — the daily JSONL files, 30 days back — is served by
+`server/logquery.ts` behind a **bearer token** (`LOG_READ_TOKEN`, ≥24 random
+characters; an admin console session is also accepted). Set it in
+`deploy/hetzner/svrz-api.env`. Unset, the routes answer only a browser session.
+
+```bash
+API=https://svrz-rc-api.openvolley.app
+T="Authorization: Bearer $LOG_READ_TOKEN"
+
+curl -s -H "$T" "$API/api/admin/error-logs"                       # today, warn+
+curl -s -H "$T" "$API/api/admin/error-logs?group=1"               # one row per distinct failure, biggest first
+curl -s -H "$T" "$API/api/admin/error-logs?date=2026-09-08&level=error"
+curl -s -H "$T" "$API/api/admin/error-logs?level=debug&sid=<sid>" # replay one browser session, everything
+curl -s -H "$T" "$API/api/admin/error-logs/dates"                 # which days exist
+```
+
+Filters: `date`, `level` (default `warn`), `src` (`server`/`client`), `evt`
+(prefix), `sid`, `did`, `user`, `reqId`, `status`, `q` (substring over the whole
+entry), `limit`, `group`, `show_solved`, `show_muted`.
+
+Triage, so a log that records every click stays readable — both stored in
+`LOG_DIR/log-notes.json`, beside the logs they describe:
+
+- `POST /api/admin/error-logs/annotate` — mark ONE occurrence (`hash`, or
+  `hashes` for a batch) `solved` / `important` / `open`, with a note and the
+  commit that fixed it. Solved is hidden unless `show_solved=1`.
+- `/api/admin/error-logs/mute-rules` (GET/POST/PATCH/DELETE) — hide a whole
+  CLASS: an `evt` prefix and/or a case-insensitive `match` on the message. A
+  rule with neither is refused; `important` outranks any rule; nothing is
+  deleted from the files (`show_muted=1` brings it back).
+
+Each entry carries a `hash` (this occurrence — the handle for an annotation) and
+a `group` (the class: level + event + message with ids, numbers and timings
+blanked, so 400 copies of one failure collapse into a single row).
 
 ## Upstream Sync Troubleshooting
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download } from 'lucide-react';
+import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import {
@@ -14,12 +14,15 @@ import {
   listReferees, importReferees, type RefereeRoster, type RosterReferee, type RefereeImportRow,
   getSurveyConfig, putSurveyConfig,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
+  getErrorLogs, getErrorLogDates, annotateLogEntries,
+  getLogMuteRules, createLogMuteRule, setLogMuteRuleEnabled, deleteLogMuteRule,
   loadRcGameNotes, downloadFeedbackArchive,
   syncGames, type GamesSyncStatus,
   type PresidentNote,
   type RcGameNote,
   type Coachee, type RefereeCoachPerson, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplateKind, type EmailTemplates, type ReminderPreview, type ManualGame,
   type LogEntry, type LogSession, type SurveyResponse,
+  type StoredLogEntry, type LogGroup, type LogMuteRule, type LogDay,
 } from '../lib/pocketbase';
 import {
   levelKey, levelDisplay, hasNiveauRules, summarizeTarget, isTargetActive,
@@ -97,6 +100,24 @@ const STR = {
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'Keine Einträge.',
     logsCopy: 'Kopieren', logsCopied: 'Kopiert ✓', logsSessions: 'Sitzungen', logsClear: 'Filter zurücksetzen',
     logsErrorsOnly: 'Nur Probleme',
+    // Verlauf/Fehler-Ansicht (liest die Tagesdateien, nicht den Live-Puffer)
+    logsTabLive: 'Live', logsTabHistory: 'Verlauf & Fehler',
+    logsHistoryHint: 'Die gespeicherten Tagesprotokolle — 30 Tage rückwirkend, auch nach einem Neustart. Standard: nur Probleme.',
+    logsDate: 'Tag', logsToday: 'heute', logsGrouped: 'Gruppiert', logsSingle: 'Einzeln',
+    logsShowSolved: 'Erledigte zeigen', logsShowMuted: 'Stummgeschaltete zeigen',
+    logsSolve: 'Erledigt', logsSolveGroup: 'Alle erledigt', logsImportant: 'Wichtig', logsReopen: 'Wieder offen',
+    logsMute: 'Art stummschalten', logsMuted: 'stumm',
+    logsMuteTitle: (evt: string) => `„${evt}" dauerhaft stummschalten?`,
+    logsMuteBody: 'Solche Einträge verschwinden aus dieser Ansicht und lösen keine Fehler-E-Mail mehr aus. Gelöscht wird nichts — mit „Stummgeschaltete zeigen" sind sie wieder da.',
+    logsMuteConfirm: 'Stummschalten',
+    logsRules: 'Stummschaltungen', logsRulesNone: 'Keine Stummschaltungen.',
+    logsRuleOn: 'Aktiv', logsRuleOff: 'Pausiert',
+    logsSummary: (shown: number, scanned: number) => `${shown} von ${scanned} Einträgen`,
+    logsHiddenNote: (solved: number, muted: number) => `${solved} erledigt, ${muted} stumm ausgeblendet`,
+    logsOccurrences: (n: number) => `${n}×`,
+    logsFirstLast: (first: string, last: string) => `zuerst ${first} · zuletzt ${last}`,
+    logsAnnotated: (status: string) => status === 'solved' ? 'erledigt' : status === 'important' ? 'wichtig' : 'offen',
+    logsSaved: 'Gespeichert ✓', logsNoteAsk: 'Notiz (optional)',
     tplFeedback: 'Feedback-E-Mail (nach dem Spiel)',
     tplFeedbackHint: 'Wird nach dem Absenden eines Feedbacks an den Coachee gesendet (RC in Kopie, PDF im Anhang).',
     tplReminder: 'Erinnerung (Tag vor dem Spiel)',
@@ -288,6 +309,23 @@ const STR = {
     logsServer: 'Server', logsClient: 'Browser', logsLive: 'Live', logsEmpty: 'No entries.',
     logsCopy: 'Copy', logsCopied: 'Copied ✓', logsSessions: 'Sessions', logsClear: 'Reset filters',
     logsErrorsOnly: 'Problems only',
+    logsTabLive: 'Live', logsTabHistory: 'History & errors',
+    logsHistoryHint: 'The stored daily logs — 30 days back, and they survive a restart. Problems only by default.',
+    logsDate: 'Day', logsToday: 'today', logsGrouped: 'Grouped', logsSingle: 'Single',
+    logsShowSolved: 'Show resolved', logsShowMuted: 'Show muted',
+    logsSolve: 'Resolved', logsSolveGroup: 'Resolve all', logsImportant: 'Important', logsReopen: 'Reopen',
+    logsMute: 'Mute this kind', logsMuted: 'muted',
+    logsMuteTitle: (evt: string) => `Mute “${evt}” for good?`,
+    logsMuteBody: 'Entries like this disappear from this view and stop triggering error e-mails. Nothing is deleted — “Show muted” brings them back.',
+    logsMuteConfirm: 'Mute',
+    logsRules: 'Mute rules', logsRulesNone: 'No mute rules.',
+    logsRuleOn: 'Active', logsRuleOff: 'Paused',
+    logsSummary: (shown: number, scanned: number) => `${shown} of ${scanned} entries`,
+    logsHiddenNote: (solved: number, muted: number) => `${solved} resolved, ${muted} muted hidden`,
+    logsOccurrences: (n: number) => `${n}×`,
+    logsFirstLast: (first: string, last: string) => `first ${first} · last ${last}`,
+    logsAnnotated: (status: string) => status === 'solved' ? 'resolved' : status === 'important' ? 'important' : 'open',
+    logsSaved: 'Saved ✓', logsNoteAsk: 'Note (optional)',
     tplFeedback: 'Feedback email (after the match)',
     tplFeedbackHint: 'Sent to the coachee when a feedback is submitted (RC in CC, PDF attached).',
     tplReminder: 'Reminder (day before the match)',
@@ -924,7 +962,7 @@ export default function AdminConsole() {
         {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
         {isPresident && <div hidden={tab !== 'archive'}><ArchiveAdmin t={t} defaultSeason={defaultSeason} /></div>}
         {!isPresident && <>
-        <div hidden={tab !== 'logs'}><LogsAdmin t={t} active={tab === 'logs'} /></div>
+        <div hidden={tab !== 'logs'}><LogsAdmin t={t} lang={lang} active={tab === 'logs'} /></div>
         <div hidden={tab !== 'settings'}>
           <SettingsAdmin t={t} lang={lang} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} paidCap={paidCap} onPaidCap={savePaidCap} />
           <ManualGameAdmin t={t} lang={lang} active={tab === 'settings'} />
@@ -2437,7 +2475,76 @@ function ArchiveAdmin({ t, defaultSeason }: { t: T; defaultSeason: number }) {
   );
 }
 
-function LogsAdmin({ t, active }: { t: T; active: boolean }) {
+// One log line, shared by the live tail and the stored-history view — same
+// shape, same colours, so switching between "what is happening" and "what
+// happened on Tuesday" doesn't mean learning a second layout.
+function LogRow({ e, expanded, onToggle, badge, actions }: {
+  // This repo ships no @types/react, so `key` is not folded in for us — a
+  // component used in a list has to accept it like any other prop.
+  key?: string;
+  e: LogEntry | StoredLogEntry;
+  expanded: boolean;
+  onToggle: () => void;
+  badge?: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div className="px-2.5 py-1.5 hover:bg-stone-50">
+      {/* One line per entry on a desktop, two on a phone. Everything
+          around the message is shrink-0, so on a narrow screen the
+          message was the only thing left to squeeze: it ended up a
+          column two characters wide, one letter per line. `w-full`
+          drops it onto its own full-width line below the metadata
+          instead, and `sm:w-auto sm:flex-1` puts the terminal-style
+          single line back as soon as there is room for it. */}
+      <div className="flex flex-wrap items-start gap-x-2 gap-y-0.5 font-mono text-[11px] leading-relaxed cursor-pointer" onClick={onToggle}>
+        <span className="text-stone-400 shrink-0 tabular-nums">{new Date(e.t).toLocaleTimeString('de-CH', { hour12: false })}</span>
+        <span className={cn('shrink-0 px-1.5 rounded border text-[10px] font-semibold uppercase', LEVEL_STYLE[e.lvl] || LEVEL_STYLE.info)}>{e.lvl}</span>
+        <span className={cn('shrink-0 text-[10px] uppercase font-semibold', e.src === 'client' ? 'text-indigo-500' : 'text-stone-400')}>{e.src === 'client' ? 'app' : 'srv'}</span>
+        <span className="shrink-0 text-stone-500 break-all">{e.evt}</span>
+        {badge}
+        <span className="order-last sm:order-none w-full sm:w-auto sm:flex-1 min-w-0 text-stone-800 break-words">{e.msg}</span>
+        {e.user && <span className="ml-auto shrink-0 text-stone-400 truncate max-w-[45%]">{e.user}</span>}
+      </div>
+      {actions && <div className="flex flex-wrap gap-1.5 mt-1">{actions}</div>}
+      {expanded && (
+        <pre className="mt-1.5 p-2 rounded-lg bg-stone-900 text-stone-100 text-[10px] leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">
+          {JSON.stringify({ ...e }, null, 2)}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+const logActionBtn = 'inline-flex items-center gap-1 h-7 px-2 rounded-md border border-stone-200 text-[11px] font-medium text-stone-600 hover:bg-stone-100 transition-colors';
+
+// The Protokoll tab. Two views over the same store: the live ring (fast, and
+// empty again after every redeploy) and the stored daily files (30 days, and
+// the only place a report from yesterday can be answered).
+function LogsAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolean }) {
+  const [mode, setMode] = useState<'live' | 'history'>('live');
+  return (
+    <Card>
+      <div className="flex items-center gap-2 flex-wrap mb-3">
+        <h2 className="text-sm font-semibold text-stone-800 mr-auto">{t.logs}</h2>
+        <div className="inline-flex rounded-lg border border-stone-200 overflow-hidden">
+          {(['live', 'history'] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={cn('h-9 px-3 text-xs font-medium transition-colors', mode === m ? 'bg-stone-800 text-white' : 'bg-white text-stone-600 hover:bg-stone-100')}
+            >
+              {m === 'live' ? t.logsTabLive : t.logsTabHistory}
+            </button>
+          ))}
+        </div>
+      </div>
+      {mode === 'live' ? <LiveLogs t={t} active={active && mode === 'live'} /> : <LogHistory t={t} lang={lang} active={active && mode === 'history'} />}
+    </Card>
+  );
+}
+
+function LiveLogs({ t, active }: { t: T; active: boolean }) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [sessions, setSessions] = useState<LogSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2498,9 +2605,9 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
   const reset = () => { setQ(''); setLevel(''); setSrc(''); setSid(''); };
 
   return (
-    <Card>
+    <>
       <div className="flex items-center gap-2 flex-wrap mb-1">
-        <h2 className="text-sm font-semibold text-stone-800 mr-auto">{t.logs}</h2>
+        <p className="text-xs text-stone-500 mr-auto">{t.logsHint}</p>
         <button onClick={() => setLive((v) => !v)} className={cn('inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium border transition-colors', live ? 'bg-green-50 border-green-200 text-green-700' : 'bg-stone-100 border-stone-200 text-stone-500')}>
           {live ? <Pause size={13} /> : <Play size={13} />}{t.logsLive}
         </button>
@@ -2508,9 +2615,8 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
           <Copy size={13} />{copied ? t.logsCopied : t.logsCopy}
         </button>
       </div>
-      <p className="text-xs text-stone-500 mb-3">{t.logsHint}</p>
 
-      <div className="flex flex-wrap gap-2 mb-3">
+      <div className="flex flex-wrap gap-2 my-3">
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t.logsSearch} className={cn(input, 'flex-1 min-w-[180px]')} />
         <select value={level} onChange={(e) => setLevel(e.target.value)} className={cn(input, 'w-auto')}>
           {/* The API treats level as a MINIMUM, so each option widens/narrows. */}
@@ -2543,32 +2649,216 @@ function LogsAdmin({ t, active }: { t: T; active: boolean }) {
       ) : (
         <div ref={scroller} className="max-h-[62vh] overflow-y-auto rounded-xl border border-stone-200 divide-y divide-stone-100 bg-white">
           {entries.map((e) => (
-            <div key={e.seq} className="px-2.5 py-1.5 hover:bg-stone-50 cursor-pointer" onClick={() => setExpanded(expanded === e.seq ? null : e.seq)}>
-              {/* One line per entry on a desktop, two on a phone. Everything
-                  around the message is shrink-0, so on a narrow screen the
-                  message was the only thing left to squeeze: it ended up a
-                  column two characters wide, one letter per line. `w-full`
-                  drops it onto its own full-width line below the metadata
-                  instead, and `sm:w-auto sm:flex-1` puts the terminal-style
-                  single line back as soon as there is room for it. */}
-              <div className="flex flex-wrap items-start gap-x-2 gap-y-0.5 font-mono text-[11px] leading-relaxed">
-                <span className="text-stone-400 shrink-0 tabular-nums">{new Date(e.t).toLocaleTimeString('de-CH', { hour12: false })}</span>
-                <span className={cn('shrink-0 px-1.5 rounded border text-[10px] font-semibold uppercase', LEVEL_STYLE[e.lvl] || LEVEL_STYLE.info)}>{e.lvl}</span>
-                <span className={cn('shrink-0 text-[10px] uppercase font-semibold', e.src === 'client' ? 'text-indigo-500' : 'text-stone-400')}>{e.src === 'client' ? 'app' : 'srv'}</span>
-                <span className="shrink-0 text-stone-500 break-all">{e.evt}</span>
-                <span className="order-last sm:order-none w-full sm:w-auto sm:flex-1 min-w-0 text-stone-800 break-words">{e.msg}</span>
-                {e.user && <span className="ml-auto shrink-0 text-stone-400 truncate max-w-[45%]">{e.user}</span>}
+            <LogRow key={e.seq} e={e} expanded={expanded === e.seq} onToggle={() => setExpanded(expanded === e.seq ? null : e.seq)} />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+// The stored side: the daily files, the triage that keeps them readable, and the
+// same rules that decide which errors are worth an e-mail.
+function LogHistory({ t, lang, active }: { t: T; lang: Lang; active: boolean }) {
+  const [date, setDate] = useState('');
+  const [dates, setDates] = useState<LogDay[]>([]);
+  const [level, setLevel] = useState('warn');
+  const [src, setSrc] = useState('');
+  const [q, setQ] = useState('');
+  const [grouped, setGrouped] = useState(true);
+  const [showSolved, setShowSolved] = useState(false);
+  const [showMuted, setShowMuted] = useState(false);
+  const [result, setResult] = useState<Awaited<ReturnType<typeof getErrorLogs>> | null>(null);
+  const [rules, setRules] = useState<LogMuteRule[]>([]);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const fresh = useFreshest();
+  const load = useCallback(async () => {
+    const ticket = fresh.take();
+    try {
+      const res = await getErrorLogs({ date, level, src, q, group: grouped, show_solved: showSolved, show_muted: showMuted, limit: grouped ? 2000 : 400 });
+      if (!fresh.isCurrent(ticket)) return;
+      setResult(res);
+      setErr('');
+    } catch (e) {
+      if (!fresh.isCurrent(ticket)) return;
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (fresh.isCurrent(ticket)) setLoading(false);
+    }
+  }, [date, level, src, q, grouped, showSolved, showMuted, fresh]);
+
+  useEffect(() => { if (active) void load(); }, [active, load]);
+  useEffect(() => {
+    if (!active) return;
+    getErrorLogDates().then((r) => setDates(r.dates)).catch(() => {});
+    getLogMuteRules().then(setRules).catch(() => {});
+  }, [active]);
+
+  const act = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try { await fn(); await load(); toast.success(t.logsSaved); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+
+  const annotate = (hashes: string[], status: 'open' | 'important' | 'solved') =>
+    act(() => annotateLogEntries({ hashes, status, date: result?.date }));
+
+  // Muting is by EVENT plus the first words of the message: the event alone is
+  // usually too broad (every `req.out` is not the same problem), the whole
+  // message too narrow (it carries ids and timings that differ every time).
+  const mute = async (evt: string, msg?: string) => {
+    const match = (msg || '').slice(0, 60).trim();
+    if (!(await confirmDialog({ title: t.logsMuteTitle(msg ? `${evt}: ${match}` : evt), message: t.logsMuteBody, confirmLabel: t.logsMuteConfirm, tone: 'danger', lang }))) return;
+    await act(async () => {
+      await createLogMuteRule({ evt, match: match || undefined, note: `Admin ${new Date().toLocaleDateString('de-CH')}` });
+      setRules(await getLogMuteRules());
+    });
+  };
+
+  const groups = result?.groups || [];
+  const entries = result?.entries || [];
+  const hidden = result?.hidden;
+
+  return (
+    <>
+      <p className="text-xs text-stone-500 mb-3">{t.logsHistoryHint}</p>
+
+      <div className="flex flex-wrap gap-2 mb-3">
+        <select value={date} onChange={(e) => setDate(e.target.value)} className={cn(input, 'w-auto')}>
+          <option value="">{t.logsDate}: {t.logsToday}</option>
+          {dates.map((d) => <option key={d.date} value={d.date}>{d.date}</option>)}
+        </select>
+        <select value={level} onChange={(e) => setLevel(e.target.value)} className={cn(input, 'w-auto')}>
+          <option value="error">error</option>
+          <option value="warn">{t.logsErrorsOnly}</option>
+          <option value="info">info+</option>
+          <option value="debug">{t.logsAll}</option>
+        </select>
+        <select value={src} onChange={(e) => setSrc(e.target.value)} className={cn(input, 'w-auto')}>
+          <option value="">{t.logsSource}: {t.logsAll}</option>
+          <option value="server">{t.logsServer}</option>
+          <option value="client">{t.logsClient}</option>
+        </select>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t.logsSearch} className={cn(input, 'flex-1 min-w-[160px]')} />
+        <div className="inline-flex rounded-lg border border-stone-200 overflow-hidden">
+          {([true, false] as const).map((g) => (
+            <button key={String(g)} onClick={() => setGrouped(g)} className={cn('h-9 px-3 text-xs font-medium transition-colors inline-flex items-center gap-1.5', grouped === g ? 'bg-stone-800 text-white' : 'bg-white text-stone-600 hover:bg-stone-100')}>
+              {g ? <><Layers size={13} />{t.logsGrouped}</> : t.logsSingle}
+            </button>
+          ))}
+        </div>
+        <button onClick={() => void load()} disabled={busy} className="h-9 px-3 rounded-lg text-xs font-medium border border-stone-200 text-stone-600 hover:bg-stone-100 inline-flex items-center gap-1.5">
+          <RotateCcw size={13} />
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3 text-[11px] text-stone-500">
+        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" checked={showSolved} onChange={(e) => setShowSolved(e.target.checked)} className="accent-red-600" />{t.logsShowSolved}
+        </label>
+        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" checked={showMuted} onChange={(e) => setShowMuted(e.target.checked)} className="accent-red-600" />{t.logsShowMuted}
+        </label>
+        <button onClick={() => setRulesOpen((v) => !v)} className="inline-flex items-center gap-1 text-stone-500 hover:text-stone-800">
+          <BellOff size={12} />{t.logsRules} ({rules.filter((r) => r.enabled).length})
+        </button>
+        {result && (
+          <span className="ml-auto tabular-nums">
+            {t.logsSummary(grouped ? groups.reduce((n, g) => n + g.count, 0) : entries.length, result.scanned)}
+            {hidden && (hidden.solved || hidden.muted) ? ` · ${t.logsHiddenNote(hidden.solved, hidden.muted)}` : ''}
+          </span>
+        )}
+      </div>
+
+      {rulesOpen && (
+        <div className="mb-3 rounded-xl border border-stone-200 divide-y divide-stone-100 bg-stone-50/60">
+          {rules.length === 0 ? (
+            <p className="text-xs text-stone-400 px-3 py-3">{t.logsRulesNone}</p>
+          ) : rules.map((r) => (
+            <div key={r.id} className="flex items-center gap-2 px-3 py-2 text-xs">
+              <span className="font-mono text-stone-700 break-all">{r.evt || '*'}{r.match ? ` · "${r.match}"` : ''}</span>
+              <span className="ml-auto shrink-0 text-stone-400">{r.note}</span>
+              <button onClick={() => void act(async () => { await setLogMuteRuleEnabled(r.id, !r.enabled); setRules(await getLogMuteRules()); })} className={cn(logActionBtn, r.enabled ? 'text-green-700 border-green-200' : 'text-stone-400')}>
+                {r.enabled ? t.logsRuleOn : t.logsRuleOff}
+              </button>
+              <button onClick={() => void act(async () => { await deleteLogMuteRule(r.id); setRules(await getLogMuteRules()); })} className={cn(logActionBtn, 'text-red-600 border-red-200')}>
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {err && <p className="text-xs text-red-600 mb-2">{err}</p>}
+      {loading ? <SkeletonRows rows={8} /> : (grouped ? groups.length === 0 : entries.length === 0) ? (
+        <p className="text-sm text-stone-400 py-6 text-center">{t.logsEmpty}</p>
+      ) : grouped ? (
+        <div className="max-h-[62vh] overflow-y-auto rounded-xl border border-stone-200 divide-y divide-stone-100 bg-white">
+          {groups.map((g) => (
+            <div key={g.group} className="px-2.5 py-2 hover:bg-stone-50">
+              <div className="flex flex-wrap items-start gap-x-2 gap-y-0.5 font-mono text-[11px] leading-relaxed cursor-pointer" onClick={() => setExpanded(expanded === g.group ? null : g.group)}>
+                <span className={cn('shrink-0 px-1.5 rounded border text-[10px] font-semibold tabular-nums', g.count > 1 ? 'bg-stone-800 text-white border-stone-800' : 'bg-stone-50 text-stone-500 border-stone-200')}>{t.logsOccurrences(g.count)}</span>
+                <span className={cn('shrink-0 px-1.5 rounded border text-[10px] font-semibold uppercase', LEVEL_STYLE[g.lvl] || LEVEL_STYLE.info)}>{g.lvl}</span>
+                <span className={cn('shrink-0 text-[10px] uppercase font-semibold', g.src === 'client' ? 'text-indigo-500' : 'text-stone-400')}>{g.src === 'client' ? 'app' : 'srv'}</span>
+                <span className="shrink-0 text-stone-500 break-all">{g.evt}</span>
+                {g.sample._muted && <span className="shrink-0 text-[10px] px-1.5 rounded border border-stone-200 text-stone-400">{t.logsMuted}</span>}
+                <span className="order-last sm:order-none w-full sm:w-auto sm:flex-1 min-w-0 text-stone-800 break-words">{g.msg}</span>
               </div>
-              {expanded === e.seq && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-[10px] text-stone-400">
+                <span>{t.logsFirstLast(new Date(g.first).toLocaleTimeString('de-CH', { hour12: false }), new Date(g.last).toLocaleTimeString('de-CH', { hour12: false }))}</span>
+                {g.users.length > 0 && <span className="truncate max-w-[50%]">{g.users.join(', ')}</span>}
+              </div>
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                <button disabled={busy} onClick={() => void annotate(g.hashes, 'solved')} className={logActionBtn}><CheckCheck size={12} />{t.logsSolveGroup}</button>
+                <button disabled={busy} onClick={() => void annotate([g.sample.hash], 'important')} className={logActionBtn}><Star size={12} />{t.logsImportant}</button>
+                <button disabled={busy} onClick={() => void mute(g.evt, g.msg)} className={logActionBtn}><BellOff size={12} />{t.logsMute}</button>
+              </div>
+              {expanded === g.group && (
                 <pre className="mt-1.5 p-2 rounded-lg bg-stone-900 text-stone-100 text-[10px] leading-relaxed overflow-x-auto whitespace-pre-wrap break-all">
-                  {JSON.stringify({ ...e }, null, 2)}
+                  {JSON.stringify(g.sample, null, 2)}
                 </pre>
               )}
             </div>
           ))}
         </div>
+      ) : (
+        <div className="max-h-[62vh] overflow-y-auto rounded-xl border border-stone-200 divide-y divide-stone-100 bg-white">
+          {entries.map((e) => (
+            <LogRow
+              key={e.hash}
+              e={e}
+              expanded={expanded === e.hash}
+              onToggle={() => setExpanded(expanded === e.hash ? null : e.hash)}
+              badge={(e._annotation || e._muted) && (
+                <span className={cn('shrink-0 text-[10px] px-1.5 rounded border', e._annotation?.status === 'important' ? 'border-amber-200 text-amber-700 bg-amber-50' : 'border-stone-200 text-stone-400')}>
+                  {e._muted ? t.logsMuted : t.logsAnnotated(e._annotation?.status || 'open')}
+                </span>
+              )}
+              // Only the opened row carries buttons. With them on every line the
+              // list stopped reading as a log — three buttons per entry is
+              // fine for the dozen rows of the grouped view, not for 400.
+              actions={expanded === e.hash && (
+                <>
+                  {e._annotation?.status === 'solved' ? (
+                    <button disabled={busy} onClick={() => void annotate([e.hash], 'open')} className={logActionBtn}><RotateCcw size={12} />{t.logsReopen}</button>
+                  ) : (
+                    <button disabled={busy} onClick={() => void annotate([e.hash], 'solved')} className={logActionBtn}><Check size={12} />{t.logsSolve}</button>
+                  )}
+                  <button disabled={busy} onClick={() => void annotate([e.hash], 'important')} className={logActionBtn}><Star size={12} />{t.logsImportant}</button>
+                  <button disabled={busy} onClick={() => void mute(e.evt, e.msg)} className={logActionBtn}><BellOff size={12} />{t.logsMute}</button>
+                </>
+              )}
+            />
+          ))}
+        </div>
       )}
-    </Card>
+    </>
   );
 }
 

@@ -917,6 +917,88 @@ export async function getAdminLogSessions(): Promise<LogSession[]> {
   return (await r.json() as { sessions: LogSession[] }).sessions;
 }
 
+// ── The durable half of the log ───────────────────────────────────────
+// getAdminLogs() above reads the live ring, which a redeploy empties. These
+// read the daily files: 30 days back, the same entries, plus the triage state
+// (solved / important / muted) that keeps a log of every click readable.
+export type LogAnnotation = { status: 'open' | 'important' | 'solved'; note?: string; commit?: string; date?: string; updated: string };
+export type StoredLogEntry = LogEntry & { hash: string; group: string; _annotation?: LogAnnotation; _muted?: string };
+export type LogGroup = {
+  group: string; lvl: LogEntry['lvl']; src: LogEntry['src']; evt: string; msg?: string;
+  count: number; first: string; last: string; users: string[]; sessions: number;
+  sample: StoredLogEntry; hashes: string[];
+};
+export type LogMuteRule = { id: string; evt?: string; match?: string; level?: string; note?: string; enabled: boolean; created: string };
+export type LogDay = { date: string; bytes: number; modified: string };
+export type ErrorLogQuery = {
+  date?: string; level?: string; src?: string; evt?: string; sid?: string; user?: string; q?: string;
+  limit?: number; group?: boolean; show_solved?: boolean; show_muted?: boolean;
+};
+export type ErrorLogResult = {
+  date: string;
+  entries?: StoredLogEntry[];
+  groups?: LogGroup[];
+  scanned: number;
+  matched: number;
+  hidden: { solved: number; muted: number };
+  source: 'file' | 'ring';
+};
+
+export async function getErrorLogs(opts: ErrorLogQuery = {}): Promise<ErrorLogResult> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(opts)) {
+    if (v === undefined || v === '' || v === false) continue;
+    qs.set(k, v === true ? '1' : String(v));
+  }
+  const r = await fetch(apiUrl(`/api/admin/error-logs?${qs}`), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getErrorLogDates(): Promise<{ today: string; dates: LogDay[] }> {
+  const r = await fetch(apiUrl('/api/admin/error-logs/dates'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function annotateLogEntries(body: { hash?: string; hashes?: string[]; status: 'open' | 'important' | 'solved'; note?: string; date?: string }): Promise<void> {
+  const r = await fetch(apiUrl('/api/admin/error-logs/annotate'), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export async function getLogMuteRules(): Promise<LogMuteRule[]> {
+  const r = await fetch(apiUrl('/api/admin/error-logs/mute-rules'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json() as { rules: LogMuteRule[] }).rules;
+}
+
+export async function createLogMuteRule(body: { evt?: string; match?: string; level?: string; note?: string }): Promise<LogMuteRule> {
+  const r = await fetch(apiUrl('/api/admin/error-logs/mute-rules'), {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return (await r.json() as { rule: LogMuteRule }).rule;
+}
+
+export async function setLogMuteRuleEnabled(id: string, enabled: boolean): Promise<void> {
+  const r = await fetch(apiUrl(`/api/admin/error-logs/mute-rules/${encodeURIComponent(id)}`), {
+    method: 'PATCH', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export async function deleteLogMuteRule(id: string): Promise<void> {
+  const r = await fetch(apiUrl(`/api/admin/error-logs/mute-rules/${encodeURIComponent(id)}`), {
+    method: 'DELETE', credentials: 'include',
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
 export type ImportRow = { full_name?: string; first_name?: string; last_name?: string; email?: string; phone?: string; referee_level?: string; stage?: string; groups?: string; notes?: string };
 export async function importCoachees(coachees: ImportRow[], season: number): Promise<{ created: number; updated: number; total: number }> {
   const r = await fetch(apiUrl('/api/coachees/import'), {

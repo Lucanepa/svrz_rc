@@ -291,11 +291,15 @@ function installErrorLogging(): void {
     clientLog.error('js.unhandledrejection', 'unhandled promise rejection', { error: e.reason });
   });
 
-  // console.error/warn from anywhere (React included) land in the log too.
-  for (const level of ['error', 'warn'] as const) {
+  // Every console call from anywhere (React, a library, a leftover debug line)
+  // lands in the log too. error/warn keep their level; the chatty three come in
+  // as debug, so they are there when you replay a session and out of the way
+  // when you are only looking for what broke.
+  const CONSOLE_LEVEL: Record<string, ClientLevel> = { error: 'error', warn: 'warn', log: 'debug', info: 'debug', debug: 'debug' };
+  for (const level of ['error', 'warn', 'log', 'info', 'debug'] as const) {
     const original = console[level].bind(console);
     console[level] = (...args: unknown[]) => {
-      logEvent(level === 'error' ? 'error' : 'warn', `console.${level}`, args.map((a) => (typeof a === 'string' ? a : a instanceof Error ? a.message : '')).join(' ').slice(0, 500) || undefined, { args });
+      logEvent(CONSOLE_LEVEL[level], `console.${level}`, args.map((a) => (typeof a === 'string' ? a : a instanceof Error ? a.message : '')).join(' ').slice(0, 500) || undefined, { args });
       original(...args);
     };
   }

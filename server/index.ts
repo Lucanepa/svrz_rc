@@ -8,13 +8,26 @@ import helmet from 'helmet';
 import { createHash, createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scryptSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { crc32 } from 'node:zlib';
-import { log, query as queryLogs, sessions as logSessions, ringStats, pruneLogFiles, record as recordLog, type LogLevel, type LogSource } from './logstore.ts';
+import { log, query as queryLogs, sessions as logSessions, ringStats, pruneLogFiles, record as recordLog, captureConsole, localDate, type LogLevel, type LogSource } from './logstore.ts';
+import {
+  readDay, groupEntries, listDays, annotate, listAnnotations,
+  listMuteRules, addMuteRule, setMuteRuleEnabled, deleteMuteRule,
+  type AnnotationStatus,
+} from './logquery.ts';
+import { installErrorAlerts } from './erroralerts.ts';
+
 // Shared with the survey page so the mailed copy can never drift from the form
 // the coachee actually filled in. Pure data — no browser dependencies.
 import {
   DEFAULT_SURVEY_CONFIG, SURVEY_LIMITS, normalizeSurveyConfig, questionLabel, answerLabel,
   type SurveyConfig, type SurveyLang,
 } from '../src/lib/survey.ts';
+
+// Before anything else runs: every console.* call in this process — ours, a
+// dependency's, a stray debug line in a handler — becomes a log entry too.
+// Otherwise it exists only in the container's stdout, which the next redeploy
+// throws away, and the log that claims to hold everything quietly does not.
+captureConsole();
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -281,7 +294,21 @@ app.use((req: Request, res: ExpressResponse, next: () => void) => {
   // The logging endpoints must not log themselves: the ingest fires on every
   // batch, and the admin console polls the reader every few seconds — each
   // would generate the traffic it is there to report.
-  const noisy = req.path === '/api/client-logs' || req.path.startsWith('/api/admin/logs');
+  const noisy = req.path === '/api/client-logs'
+    || req.path.startsWith('/api/admin/logs')
+    || req.path.startsWith('/api/admin/error-logs');
+
+  // What a failing request actually told the caller. safeError() logs the cause
+  // behind a 500, but a 400/403/409/413 is produced by a plain
+  // `res.status(...).json({ error })` in a handler — and that reason used to
+  // live only in the response, which nobody keeps. Now `req.out` carries it, so
+  // "she got an error and closed the app" is answerable from the log alone.
+  let failureBody: unknown;
+  const sendJson = res.json.bind(res);
+  res.json = ((payload: unknown) => {
+    if (res.statusCode >= 400) failureBody = payload;
+    return sendJson(payload);
+  }) as typeof res.json;
   if (!noisy) {
     log.info('req.in', `${req.method} ${redactIcalToken(req.originalUrl)}`, {
       method: req.method,
@@ -303,6 +330,7 @@ app.use((req: Request, res: ExpressResponse, next: () => void) => {
       path: redactIcalToken(req.path),
       status: res.statusCode,
       ms,
+      error: res.statusCode >= 400 ? bodySummary(failureBody) : undefined,
     }, { reqId: ctx.reqId, ip: ctx.ip, sid, did, user: ctx.user });
   });
   next();
@@ -337,6 +365,27 @@ const PRESIDENT_UI_USERNAME = process.env.PRESIDENT_UI_USERNAME || 'praesidium';
 const PRESIDENT_UI_PASSWORD = process.env.PRESIDENT_UI_PASSWORD || '';
 const TEST_MODE = process.env.TEST_MODE === '1' || process.env.TEST_MODE === 'true';
 if (TEST_MODE) console.warn('[startup] TEST_MODE enabled — outbound emails are suppressed.');
+
+// ── Critical-error alerts ─────────────────────────────────────────────
+// The log records everything, but nobody opens a log without a reason to. The
+// failures that cost the most are the ones nobody reports: a cron that died at
+// 05:00, a 500 on a submit somebody quietly gave up on. Error-level entries —
+// from both sides, the browser's crashes included — are digested and mailed.
+// Noise control lives in erroralerts.ts: one digest per burst, an hour's
+// cooldown per failure class, an hourly ceiling, and the admin console's mute
+// rules silence alerts exactly as they silence the console.
+const ERROR_ALERT_EMAIL = (process.env.ERROR_ALERT_EMAIL || '').trim();
+if (!ERROR_ALERT_EMAIL) console.warn('[startup] ERROR_ALERT_EMAIL not set — nobody is told when the app breaks.');
+installErrorAlerts({
+  to: ERROR_ALERT_EMAIL,
+  consoleUrl: `${MAIL_APP_URL.replace(/\/$/, '')}/#/admin/logs`,
+  suppressed: TEST_MODE,
+  debounceMs: Number(process.env.ERROR_ALERT_DEBOUNCE_MS || 120_000),
+  cooldownMs: Number(process.env.ERROR_ALERT_COOLDOWN_MS || 3_600_000),
+  maxPerHour: Number(process.env.ERROR_ALERT_MAX_PER_HOUR || 6),
+  send: ({ to, subject, text }) => sendMailResilient({ from: MAIL_FROM, to, subject, text }),
+  log: (level, evt, msg, data) => log[level](evt, msg, data),
+});
 if (!ADMIN_UI_PASSWORD) console.warn('[startup] ADMIN_UI_PASSWORD not set — admin console login disabled.');
 
 // ── App login ────────────────────────────────────────────────────────
@@ -3438,6 +3487,194 @@ app.get('/api/admin/logs', requireAdminSession, (req: Request, res: ExpressRespo
 app.get('/api/admin/logs/sessions', requireAdminSession, (_req: Request, res: ExpressResponse) => {
   res.set('Cache-Control', 'no-store');
   res.json({ sessions: logSessions() });
+});
+
+// ── Forensic log API (files on disk, readable from a terminal) ────────
+// `/api/admin/logs` above serves the admin console: the in-memory ring, live,
+// and empty again after every redeploy. This serves the other half — the daily
+// JSONL files — and takes a BEARER TOKEN instead of a browser session, so the
+// question "what broke for her yesterday at 19:40" is one curl away instead of
+// an SSH session and a jq incantation. Same store, same redaction; the only new
+// thing is who can read it and how far back.
+const LOG_READ_TOKEN = (process.env.LOG_READ_TOKEN || '').trim();
+if (!LOG_READ_TOKEN) {
+  console.warn('[startup] LOG_READ_TOKEN not set — the log API answers only to an admin console session.');
+} else if (LOG_READ_TOKEN.length < 24) {
+  console.warn('[startup] LOG_READ_TOKEN is short — use at least 24 random characters.');
+}
+
+// A guessing budget per IP. The token is long and random, so this is hygiene
+// rather than the defence — but a 401 loop should cost the caller something,
+// and every denial is logged with the reason.
+const logReadRl: RateLimitStore = new Map();
+const LOG_READ_FAILS_PER_WINDOW = 30;
+const LOG_READ_WINDOW_MS = 15 * 60 * 1000;
+
+function bearerToken(req: Request): string {
+  const header = asText(req.headers.authorization);
+  // Deliberately header-only: a token in the query string would be written into
+  // this very log by the request middleware, and handed to anyone who reads it.
+  return /^bearer\s+/i.test(header) ? header.slice(header.indexOf(' ') + 1).trim() : '';
+}
+
+function logTokenMatches(candidate: string): boolean {
+  if (!LOG_READ_TOKEN || !candidate) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(LOG_READ_TOKEN);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function requireLogReader(req: Request, res: ExpressResponse, next: () => void) {
+  if (verifyAdminSession(req).ok) { next(); return; }
+  const token = bearerToken(req);
+  if (logTokenMatches(token)) { next(); return; }
+  const ip = clientIp(req);
+  const rl = checkRateLimit(logReadRl, ip, LOG_READ_FAILS_PER_WINDOW, LOG_READ_WINDOW_MS);
+  log.warn('auth.log-read', 'rejected', {
+    hasToken: Boolean(token),
+    tokenConfigured: Boolean(LOG_READ_TOKEN),
+    overBudget: !rl.allowed,
+  }, { ip, reqId: reqCtx(req).reqId });
+  if (!rl.allowed) { res.status(429).json({ error: 'Too many attempts' }); return; }
+  res.status(401).json({ error: 'Unauthorized' });
+}
+
+const LOG_LEVELS = new Set<LogLevel>(['debug', 'info', 'warn', 'error']);
+
+function truthy(value: string | undefined): boolean {
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+/**
+ * One day of the log, filtered. Defaults to today, warn-and-above — i.e. "what
+ * went wrong today". `level=debug` opens the full carpet: every click, every
+ * request, every console line.
+ */
+app.get('/api/admin/error-logs', requireLogReader, async (req: Request, res: ExpressResponse) => {
+  const q = req.query as Record<string, string | undefined>;
+  res.set('Cache-Control', 'no-store');
+  try {
+    const grouped = truthy(q.group);
+    const result = await readDay({
+      date: /^\d{4}-\d{2}-\d{2}$/.test(q.date || '') ? q.date : undefined,
+      level: LOG_LEVELS.has(q.level as LogLevel) ? (q.level as LogLevel) : 'warn',
+      src: q.src === 'client' || q.src === 'server' ? q.src : undefined,
+      evt: q.evt,
+      sid: q.sid,
+      did: q.did,
+      user: q.user,
+      reqId: q.reqId,
+      status: q.status ? Number(q.status) : undefined,
+      q: q.q,
+      // Grouping only means something over the whole day, not over the last 200
+      // lines of it.
+      limit: q.limit ? Number(q.limit) : grouped ? 2_000 : 200,
+      showSolved: truthy(q.show_solved),
+      showMuted: truthy(q.show_muted),
+    });
+    const { entries, ...rest } = result;
+    res.json(grouped ? { ...rest, groups: groupEntries(entries) } : { ...rest, entries });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+/** Which days are on disk (retention is 30 days), newest first. */
+app.get('/api/admin/error-logs/dates', requireLogReader, async (_req: Request, res: ExpressResponse) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json({ today: localDate(), dates: await listDays(), stats: ringStats() });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+/** Mark one occurrence (or a batch of them) solved / important / open again. */
+app.post('/api/admin/error-logs/annotate', requireLogReader, async (req: Request, res: ExpressResponse) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const hashes = Array.isArray(body.hashes)
+    ? body.hashes.map((h) => asText(h)).filter(Boolean).slice(0, 500)
+    : [asText(body.hash)].filter(Boolean);
+  const status = asText(body.status) as AnnotationStatus;
+  if (!hashes.length) { res.status(400).json({ error: 'hash or hashes required' }); return; }
+  if (!['open', 'important', 'solved'].includes(status)) { res.status(400).json({ error: 'status must be open, important or solved' }); return; }
+  try {
+    const result = await annotate({
+      hashes,
+      status,
+      note: asText(body.note).slice(0, 500) || undefined,
+      commit: asText(body.commit).slice(0, 80) || undefined,
+      date: asText(body.date) || undefined,
+    });
+    log.info('log.annotate', `${status}: ${hashes.length} entr${hashes.length === 1 ? 'y' : 'ies'}`, { status, count: hashes.length }, reqCtx(req));
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.get('/api/admin/error-logs/annotations', requireLogReader, async (req: Request, res: ExpressResponse) => {
+  const q = req.query as Record<string, string | undefined>;
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json({ annotations: await listAnnotations({ status: q.status as AnnotationStatus | undefined, date: q.date }) });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+// Mute rules hide a whole CLASS of expected noise (a wrong password, a phone
+// that drops off the network mid-form) so the default view is the unexpected
+// half. Nothing is deleted: show_muted=1 brings it all back.
+app.get('/api/admin/error-logs/mute-rules', requireLogReader, async (_req: Request, res: ExpressResponse) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json({ rules: await listMuteRules() });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.post('/api/admin/error-logs/mute-rules', requireLogReader, async (req: Request, res: ExpressResponse) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const evt = asText(body.evt).slice(0, 60);
+  const match = asText(body.match).slice(0, 200);
+  const level = LOG_LEVELS.has(asText(body.level) as LogLevel) ? (asText(body.level) as LogLevel) : undefined;
+  // A rule with no predicate would mute the entire log — the one mistake this
+  // endpoint must not let someone make by leaving a field empty.
+  if (!evt && !match) { res.status(400).json({ error: 'evt or match required' }); return; }
+  try {
+    const rule = await addMuteRule({ evt: evt || undefined, match: match || undefined, level, note: asText(body.note).slice(0, 200) || undefined });
+    log.info('log.mute-rule', 'created', { id: rule.id, evt: rule.evt, match: rule.match }, reqCtx(req));
+    res.json({ ok: true, rule });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.patch('/api/admin/error-logs/mute-rules/:id', requireLogReader, async (req: Request, res: ExpressResponse) => {
+  const enabled = Boolean((req.body as { enabled?: unknown })?.enabled);
+  const id = asText(req.params.id);
+  try {
+    const found = await setMuteRuleEnabled(id, enabled);
+    if (!found) { res.status(404).json({ error: 'No such rule' }); return; }
+    log.info('log.mute-rule', enabled ? 'enabled' : 'disabled', { id }, reqCtx(req));
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.delete('/api/admin/error-logs/mute-rules/:id', requireLogReader, async (req: Request, res: ExpressResponse) => {
+  const id = asText(req.params.id);
+  try {
+    const found = await deleteMuteRule(id);
+    if (!found) { res.status(404).json({ error: 'No such rule' }); return; }
+    log.info('log.mute-rule', 'deleted', { id }, reqCtx(req));
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
 });
 
 // ── App settings (default season, ...) ───────────────────────────────

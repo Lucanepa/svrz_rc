@@ -15,6 +15,20 @@ import { appendFile, mkdir, readdir, stat, unlink } from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
+// The real console, captured before anything patches it. `captureConsole()`
+// below routes every console.* call in the process INTO this store, so a stray
+// console.error in a library — or in a handler that never learned about log.* —
+// stops being a line only `docker compose logs` ever sees. That patch would
+// recurse straight back into record() if this module printed through the patched
+// console, so every print here goes through these bound originals.
+const nativeConsole = {
+  log: console.log.bind(console),
+  info: console.info.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+  debug: console.debug.bind(console),
+};
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type LogSource = 'server' | 'client';
 
@@ -49,6 +63,13 @@ const MIN_LEVEL = LEVEL_ORDER[(process.env.LOG_LEVEL as LogLevel) || 'debug'] ??
 
 const ring: LogEntry[] = [];
 let seq = 0;
+
+// Anything that wants to react to entries as they are written — today, the
+// error-alert mailer. Kept deliberately dumb: a listener that throws must never
+// take down the call site that was only trying to log something.
+type EntryListener = (entry: LogEntry) => void;
+const listeners: EntryListener[] = [];
+export function onEntry(listener: EntryListener): void { listeners.push(listener); }
 
 // ── Redaction ─────────────────────────────────────────────────────────
 // Key-name match is the primary defence (we control most call sites and pass
@@ -107,11 +128,25 @@ function fileSinkUsable(): boolean {
 
 if (LOG_TO_FILE && !existsSync(LOG_DIR)) {
   try { mkdirSync(LOG_DIR, { recursive: true }); }
-  catch (error) { fileSinkBroken = true; console.error('[logstore] cannot create LOG_DIR, file sink disabled:', error); }
+  catch (error) { fileSinkBroken = true; nativeConsole.error('[logstore] cannot create LOG_DIR, file sink disabled:', error); }
+}
+
+/**
+ * YYYY-MM-DD in the process timezone (TZ=Europe/Zurich in the container).
+ * toISOString() would name the file by UTC, so "today's log" started at 02:00
+ * local and the last two hours of every evening landed in tomorrow's file —
+ * which is not what anyone reading `svrz-<yesterday>.jsonl` means.
+ */
+export function localDate(when: Date = new Date()): string {
+  return new Date(when.getTime() - when.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+}
+
+export function logFileFor(date: string): string {
+  return path.join(LOG_DIR, `svrz-${date}.jsonl`);
 }
 
 function currentLogFile(): string {
-  return path.join(LOG_DIR, `svrz-${new Date().toISOString().slice(0, 10)}.jsonl`);
+  return logFileFor(localDate());
 }
 
 async function flushToFile(): Promise<void> {
@@ -127,7 +162,7 @@ async function flushToFile(): Promise<void> {
     // back and try again, rather than staying off until the next deploy.
     fileSinkBroken = true;
     fileSinkRetryAt = Date.now() + FILE_SINK_COOLDOWN_MS;
-    console.error('[logstore] file sink failed, retrying in 5 min:', error);
+    nativeConsole.error('[logstore] file sink failed, retrying in 5 min:', error);
   }
 }
 
@@ -148,7 +183,7 @@ export async function pruneLogFiles(): Promise<void> {
       if ((await stat(full)).mtimeMs < cutoff) await unlink(full);
     }
   } catch (error) {
-    console.error('[logstore] prune failed:', error);
+    nativeConsole.error('[logstore] prune failed:', error);
   }
 }
 
@@ -168,7 +203,11 @@ function stdoutLine(entry: LogEntry): string {
   return `${bits.join(' ')}${data}`;
 }
 
-export function record(input: Omit<LogEntry, 'seq' | 't'> & { t?: string }): LogEntry | null {
+export function record(
+  input: Omit<LogEntry, 'seq' | 't'> & { t?: string },
+  /** false when the caller has already printed the line (see captureConsole). */
+  echo = true,
+): LogEntry | null {
   if ((LEVEL_ORDER[input.lvl] ?? 20) < MIN_LEVEL) return null;
   const entry: LogEntry = {
     ...input,
@@ -181,10 +220,16 @@ export function record(input: Omit<LogEntry, 'seq' | 't'> & { t?: string }): Log
   ring.push(entry);
   if (ring.length > RING_MAX) ring.splice(0, ring.length - RING_MAX);
 
-  const line = stdoutLine(entry);
-  if (entry.lvl === 'error') console.error(line);
-  else if (entry.lvl === 'warn') console.warn(line);
-  else console.log(line);
+  for (const listener of listeners) {
+    try { listener(entry); } catch { /* a broken listener must not break logging */ }
+  }
+
+  if (echo) {
+    const line = stdoutLine(entry);
+    if (entry.lvl === 'error') nativeConsole.error(line);
+    else if (entry.lvl === 'warn') nativeConsole.warn(line);
+    else nativeConsole.log(line);
+  }
 
   if (LOG_TO_FILE && !fileSinkBroken) {
     fileQueue.push(`${JSON.stringify(entry)}\n`);
@@ -205,6 +250,65 @@ export const log = {
   warn: (evt: string, msg?: string, data?: Record<string, unknown>, ctx?: Ctx) => emit('warn', evt, msg, data, ctx),
   error: (evt: string, msg?: string, data?: Record<string, unknown>, ctx?: Ctx) => emit('error', evt, msg, data, ctx),
 };
+
+// ── Console capture ───────────────────────────────────────────────────
+// Carpet-bombing means the log is complete, not merely detailed: a
+// `console.error('[auth] …')` in a handler, a deprecation warning from a
+// dependency, a stack printed by a library — all of it used to exist only in
+// the container's stdout, which a redeploy throws away. After this, every
+// console call is ALSO an entry in the ring and in the daily JSONL, so the
+// admin console and the CLI reader see the same reality as `docker logs`.
+let consoleCaptured = false;
+
+function describeConsoleArgs(args: unknown[]): { msg: string; data?: Record<string, unknown> } {
+  const parts: string[] = [];
+  const extras: unknown[] = [];
+  for (const arg of args) {
+    if (typeof arg === 'string') parts.push(arg);
+    else if (arg instanceof Error) { parts.push(arg.message); extras.push(arg); }
+    else if (arg == null || typeof arg !== 'object') parts.push(String(arg));
+    else {
+      extras.push(arg);
+      try { parts.push(JSON.stringify(arg)); } catch { parts.push('[unserializable]'); }
+    }
+  }
+  return {
+    msg: parts.join(' ').slice(0, MAX_STRING),
+    data: extras.length ? { args: extras } : undefined,
+  };
+}
+
+/** Route console.* into the store. Idempotent; call once at startup. */
+export function captureConsole(): void {
+  if (consoleCaptured) return;
+  consoleCaptured = true;
+  const levelOf: Record<string, LogLevel> = { error: 'error', warn: 'warn', log: 'info', info: 'info', debug: 'debug' };
+  for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+    console[method] = (...args: unknown[]) => {
+      nativeConsole[method](...args);
+      try {
+        const { msg, data } = describeConsoleArgs(args);
+        // echo=false: the native call above already put it on stdout, and a
+        // second copy would double every line the server prints.
+        record({ lvl: levelOf[method], src: 'server', evt: `console.${method}`, msg: msg || undefined, data }, false);
+      } catch { /* logging must never break the thing being logged */ }
+    };
+  }
+}
+
+/** Force the pending file batch out now — the read path calls this so a query
+ *  for today sees the last second of activity, not just what the timer flushed. */
+export async function flushNow(): Promise<void> {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  await flushToFile();
+}
+
+/** The in-memory tail, for readers that need entries the file sink may not hold
+ *  (LOG_TO_FILE=0, or a sink in its cooldown). */
+export function ringEntries(): LogEntry[] { return ring; }
+
+export const logDir = (): string => LOG_DIR;
+export const fileSinkEnabled = (): boolean => LOG_TO_FILE && !fileSinkBroken;
 
 // ── Read path (admin console) ─────────────────────────────────────────
 export type LogQuery = {

@@ -202,6 +202,12 @@ export function installErrorAlerts(opts: Options): void {
 
     const cool = cooling.get(group);
     if (cool && Date.now() < cool.until) { cool.swallowed++; return; }
+    // One entry per failure class, and a long-lived process meets a lot of
+    // distinct classes. Drop the expired ones once the map gets big rather than
+    // holding every message shape the app has ever produced.
+    if (cooling.size > 500) {
+      for (const [key, value] of cooling) if (Date.now() >= value.until && !value.swallowed) cooling.delete(key);
+    }
     cooling.set(group, { until: Date.now() + cooldownMs, swallowed: 0 });
 
     if (pending.size < MAX_PENDING_GROUPS) {

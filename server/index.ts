@@ -6980,6 +6980,12 @@ function icsFold(line: string): string {
 }
 
 type CalendarFeedGame = {
+  /** 'rc' = a game this coach took to OBSERVE. 'sr' = one they referee
+   *  themselves next to a coachee. The two are different appointments and the
+   *  event says which; the SR ones are opt-in, because the coach's ordinary
+   *  referee feed already carries them and two calendars showing the same
+   *  evening twice is worse than not having it here at all. */
+  kind: 'rc' | 'sr';
   id: string;
   matchNo: string;
   league: string;
@@ -7003,7 +7009,7 @@ async function getGamesAssignedToRc(subject: RcAuthInfo): Promise<CalendarFeedGa
       return await withCollection(collectionCandidates.games, (collection) =>
         collection.getFullList<AnyRecord>({
           sort: 'match_date',
-          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id,game_result,updated',
+          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,game_result,updated',
         }),
       );
     } catch (error) {
@@ -7018,6 +7024,7 @@ async function getGamesAssignedToRc(subject: RcAuthInfo): Promise<CalendarFeedGa
   return allGames
     .filter((game) => rcRefMatches(game.assigned_rc_id, game.assigned_rc, subject))
     .map((game) => ({
+      kind: 'rc' as const,
       id: String(game.id),
       matchNo: asText(game.match_no),
       league: asText(game.league),
@@ -7065,6 +7072,9 @@ function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLa
       game.firstReferee ? `${de ? '1. SR' : '1st ref'}: ${game.firstReferee}` : '',
       game.secondReferee ? `${de ? '2. SR' : '2nd ref'}: ${game.secondReferee}` : '',
       game.result ? `${de ? 'Resultat' : 'Result'}: ${game.result}` : '',
+      game.kind === 'sr'
+        ? (de ? 'Eigenes SR-Spiel — Rückmeldung ans RC-Präsidium.' : 'Your own refereeing appointment — note to the RC chair.')
+        : '',
     ].filter(Boolean).join('\n');
     const modified = icalMoment(game.updated);
 
@@ -7082,11 +7092,14 @@ function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLa
       lines.push(`DTSTART:${icsStamp(moment.instant)}`);
       lines.push(`DTEND:${icsStamp(moment.instant + ICAL_EVENT_DURATION_MS)}`);
     }
-    lines.push(`SUMMARY:${icsEscape(`RC: ${teams || game.matchNo || (de ? 'Spiel' : 'Match')}`)}`);
+    // "RC:" is a game to watch, "SR:" one to referee. Same calendar, and the
+    // coach has to be able to tell at a glance which of the two an evening is.
+    const prefix = game.kind === 'sr' ? 'SR' : 'RC';
+    lines.push(`SUMMARY:${icsEscape(`${prefix}: ${teams || game.matchNo || (de ? 'Spiel' : 'Match')}`)}`);
     if (game.location) lines.push(`LOCATION:${icsEscape(game.location)}`);
     if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
     lines.push(`URL:${icsEscape(MAIL_APP_URL)}`);
-    lines.push('CATEGORIES:SVRZ Referee Coaching');
+    lines.push(`CATEGORIES:${game.kind === 'sr' ? 'SVRZ SR-Spiel' : 'SVRZ Referee Coaching'}`);
     lines.push('STATUS:CONFIRMED');
     lines.push('TRANSP:OPAQUE');
     lines.push('END:VEVENT');
@@ -7094,6 +7107,98 @@ function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLa
 
   lines.push('END:VCALENDAR');
   return `${lines.map(icsFold).join('\r\n')}\r\n`;
+}
+
+/** The coach's OWN SR-Spiele: they hold one whistle and a coachee holds the
+ *  other. Same pair test as makeRcGameTest and listMyRcGames — by SV number
+ *  where the fixture carries one, by name or a recorded alias otherwise — and
+ *  deliberately not season-scoped, because neither is the assigned half of this
+ *  feed: a calendar shows what is in the calendar. */
+async function getOwnSrGames(person: ActiveRcPerson): Promise<CalendarFeedGame[]> {
+  await ensureAdminAuth();
+  const coacheeNames = await getCoacheeNameIndex();
+  const myNames = new Set([person.fullName, ...person.aliases].map(normalizeName).filter(Boolean));
+  const mySvNumber = asText(person.svNumber);
+  if (myNames.size === 0 && !mySvNumber) return [];
+
+  const allGames = await withCollection(collectionCandidates.games, (collection) =>
+    collection.getFullList<AnyRecord>({
+      sort: 'match_date',
+      fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,game_result,updated',
+    }),
+  );
+
+  const out: CalendarFeedGame[] = [];
+  for (const game of allGames) {
+    const season = coacheeNames.forSeason(seasonOfGame(game.match_date));
+    const slots = [
+      { mine: game.first_referee, mineId: game.first_referee_id, other: game.second_referee },
+      { mine: game.second_referee, mineId: game.second_referee_id, other: game.first_referee },
+    ];
+    const hit = slots.some((slot) => {
+      const isMe = (mySvNumber && asText(slot.mineId) === mySvNumber) || myNames.has(normalizeName(slot.mine));
+      if (!isMe) return false;
+      const otherKey = normalizeName(slot.other);
+      return Boolean(otherKey) && season.has(otherKey);
+    });
+    if (!hit) continue;
+    out.push({
+      kind: 'sr',
+      id: String(game.id),
+      matchNo: asText(game.match_no),
+      league: asText(game.league),
+      date: asText(game.match_date),
+      location: asText(game.location),
+      homeTeam: asText(game.home_team),
+      awayTeam: asText(game.away_team),
+      firstReferee: asText(game.first_referee),
+      secondReferee: asText(game.second_referee),
+      result: asText(game.game_result),
+      updated: asText(game.updated),
+    });
+  }
+  return out;
+}
+
+// Whether a coach wants their own SR-Spiele in their feed. Stored per person
+// rather than encoded in the URL, so flipping it changes what an ALREADY
+// subscribed calendar shows on its next refresh — a URL-encoded flag would ask
+// everyone to unsubscribe and re-add to change their mind. Default off.
+const ICAL_PREFS_KEY = 'ical_prefs';
+let icalPrefsCache: { data: Record<string, { sr?: boolean }>; expiresAt: number } | null = null;
+
+async function readIcalPrefs(): Promise<Record<string, { sr?: boolean }>> {
+  if (icalPrefsCache && icalPrefsCache.expiresAt > Date.now()) return icalPrefsCache.data;
+  let data: Record<string, { sr?: boolean }> = {};
+  try {
+    const rec = await getSettingRecord(ICAL_PREFS_KEY);
+    const parsed = rec ? JSON.parse(asText(rec.value)) : {};
+    if (parsed && typeof parsed === 'object') data = parsed as Record<string, { sr?: boolean }>;
+  } catch (error) {
+    console.error('[ical] could not read feed preferences:', error);
+  }
+  icalPrefsCache = { data, expiresAt: Date.now() + 60 * 1000 };
+  return data;
+}
+
+async function setIcalSrPref(rcId: string, sr: boolean): Promise<void> {
+  await withSettingLock(ICAL_PREFS_KEY, async () => {
+    let current: Record<string, { sr?: boolean }> = {};
+    try {
+      const rec = await getSettingRecord(ICAL_PREFS_KEY);
+      const parsed = rec ? JSON.parse(asText(rec.value)) : {};
+      if (parsed && typeof parsed === 'object') current = parsed as Record<string, { sr?: boolean }>;
+    } catch { current = {}; }
+    await setSetting(ICAL_PREFS_KEY, JSON.stringify({ ...current, [rcId]: { ...current[rcId], sr } }));
+  });
+  icalPrefsCache = null;
+  // The cache is keyed by person AND preference, so a stale "off" list cannot
+  // outlive the switch being turned on.
+  icalGamesCache.clear();
+}
+
+async function wantsOwnSrGames(rcId: string): Promise<boolean> {
+  return (await readIcalPrefs())[rcId]?.sr === true;
 }
 
 // A subscription URL is public and polled by machines. Without this, every poll
@@ -7105,11 +7210,19 @@ function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLa
 // shows and the events the file contains can never disagree.
 const icalGamesCache = new Map<string, { games: CalendarFeedGame[]; expiresAt: number }>();
 
-async function getCachedGamesForRc(person: ActiveRcPerson): Promise<CalendarFeedGame[]> {
-  const cached = icalGamesCache.get(person.id);
+async function getCachedGamesForRc(person: ActiveRcPerson, withSr?: boolean): Promise<CalendarFeedGame[]> {
+  const sr = withSr ?? await wantsOwnSrGames(person.id);
+  const key = `${person.id}:${sr ? 'sr' : 'rc'}`;
+  const cached = icalGamesCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.games;
-  const games = await getGamesAssignedToRc({ rcId: person.id, name: person.fullName });
-  icalGamesCache.set(person.id, { games, expiresAt: Date.now() + ICAL_CACHE_TTL_MS });
+  const assigned = await getGamesAssignedToRc({ rcId: person.id, name: person.fullName });
+  // A coach can be assigned to observe a game they also referee. It is one
+  // evening and one event either way, so the assigned copy wins — it is the one
+  // carrying the observation.
+  const seen = new Set(assigned.map((g) => g.id));
+  const own = sr ? (await getOwnSrGames(person)).filter((g) => !seen.has(g.id)) : [];
+  const games = [...assigned, ...own].sort((a, b) => a.date.localeCompare(b.date));
+  icalGamesCache.set(key, { games, expiresAt: Date.now() + ICAL_CACHE_TTL_MS });
   return games;
 }
 
@@ -7146,10 +7259,26 @@ app.get('/api/ical/me', requireRcSession, async (req: Request, res: ExpressRespo
     // working subscription working.
     const rotate = asText(req.query.rotate) === '1';
     if (rotate) log.info('ical.rotate', 'feed link regenerated', { rcId: person.id, name: person.fullName }, reqCtx(req));
+    // Set on the same GET that reads, exactly as rotate=1 does. The switch is
+    // stored, not encoded in the URL, so a calendar already subscribed picks
+    // the change up on its next refresh instead of needing to be re-added.
+    const srParam = asText(req.query.sr);
+    if (srParam === '1' || srParam === '0') {
+      await setIcalSrPref(person.id, srParam === '1');
+      log.info('ical.pref', 'own SR games in feed', { rcId: person.id, sr: srParam === '1' }, reqCtx(req));
+    }
+    const srOn = await wantsOwnSrGames(person.id);
+    const games = await getCachedGamesForRc(person, srOn);
     const path = `/api/ical/${await issueIcalToken(person.id, rotate)}.ics?lang=${lang.toLowerCase()}`;
     res.json({
       name: person.fullName,
-      count: (await getCachedGamesForRc(person)).length,
+      count: games.length,
+      /** Whether the coach's own SR-Spiele are in the feed, and how many they
+       *  would add — so the dialog can say what the switch is worth. */
+      srGames: srOn,
+      srCount: srOn
+        ? games.filter((g) => g.kind === 'sr').length
+        : (await getOwnSrGames(person)).filter((g) => !games.some((a) => a.id === g.id)).length,
       url: `${base}${path}`,
       // webcal:// is what makes a phone or desktop offer "subscribe" instead of
       // downloading the file once and never looking at it again.

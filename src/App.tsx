@@ -1454,6 +1454,7 @@ export default function App() {
   const [icalInfo, setIcalInfo] = useState<IcalSubscription | null>(null);
   const [icalError, setIcalError] = useState('');
   const [icalCopied, setIcalCopied] = useState(false);
+  const [icalSrBusy, setIcalSrBusy] = useState(false);
   // Fetched when the dialog opens rather than on load — nobody pays for a
   // feature they never open. Re-runs on a language switch because the event
   // texts inside the feed follow the language the link was taken in.
@@ -1466,6 +1467,20 @@ export default function App() {
       .catch(err => { if (!cancelled) setIcalError(err instanceof Error ? err.message : String(err)); });
     return () => { cancelled = true; };
   }, [showCalendarModal, formData.lang]);
+  /** Turn the coach's own SR-Spiele on or off in the feed. Writes the setting
+   *  server-side and takes the fresh counts back, so an already-subscribed
+   *  calendar changes on its next refresh — nobody has to re-add the link. */
+  const toggleIcalSrGames = async (next: boolean) => {
+    setIcalSrBusy(true);
+    setIcalError('');
+    try {
+      setIcalInfo(await getIcalSubscription(formData.lang, false, next));
+    } catch (err) {
+      setIcalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIcalSrBusy(false);
+    }
+  };
   // Mints a new token and drops the old one. The confirm dialog is not
   // ceremony: the links already handed out are in other people's calendar apps,
   // and those simply stop updating with no error anyone will notice.
@@ -7675,6 +7690,54 @@ export default function App() {
 
             {icalInfo && (
               <div className="flex flex-col gap-3">
+                {/* Off by default, and red rather than quiet, because turning it
+                    on is the one choice here with a consequence: the coach's
+                    ordinary referee calendar already carries these games, so
+                    two subscriptions would show the same evening twice. Said
+                    plainly under the switch rather than left to be discovered. */}
+                <div className={cn(
+                  'rounded-xl border p-3 transition-colors',
+                  icalInfo.srGames ? 'border-red-300 bg-red-50/70' : 'border-stone-200 bg-stone-50',
+                )}>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={icalInfo.srGames}
+                    disabled={icalSrBusy}
+                    onClick={() => void toggleIcalSrGames(!icalInfo.srGames)}
+                    className="flex w-full items-center gap-3 text-left disabled:opacity-60"
+                  >
+                    <span className={cn(
+                      'relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors',
+                      icalInfo.srGames ? 'bg-red-600' : 'bg-stone-300',
+                    )}>
+                      <span className={cn(
+                        'mt-0.5 inline-block h-4 w-4 rounded-full bg-white shadow transition-transform',
+                        icalInfo.srGames ? 'translate-x-4.5' : 'translate-x-0.5',
+                      )} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className={cn(
+                        'block text-sm font-semibold',
+                        icalInfo.srGames ? 'text-red-800' : 'text-stone-700',
+                      )}>
+                        {formData.lang === 'DE' ? 'Eigene SR-Spiele mitnehmen' : 'Include my own SR games'}
+                        {icalInfo.srCount > 0 && (
+                          <span className="ml-1.5 font-normal tabular-nums opacity-70">
+                            {icalInfo.srGames ? `(${icalInfo.srCount})` : `(+${icalInfo.srCount})`}
+                          </span>
+                        )}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] leading-snug text-stone-500">
+                        {formData.lang === 'DE'
+                          ? 'Standardmässig aus: diese Spiele stehen bereits in deinem normalen Schiedsrichter-Kalender, und zweimal dasselbe im Kalender hilft niemandem.'
+                          : 'Off by default: these games are already in your ordinary referee calendar, and the same evening twice helps nobody.'}
+                      </span>
+                    </span>
+                    {icalSrBusy && <Loader2 size={14} className="shrink-0 animate-spin text-stone-400" />}
+                  </button>
+                </div>
+
                 <a
                   href={icalInfo.webcalUrl}
                   className="h-11 inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800 transition-colors"

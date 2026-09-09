@@ -453,6 +453,13 @@ export type IcalSubscription = {
   url: string;
   webcalUrl: string;
   downloadUrl: string;
+  /** Whether the coach's OWN SR-Spiele ride in the feed as well. Off by
+   *  default: their ordinary referee calendar already carries those games, and
+   *  a second copy of the same evening is worse than not having them here. */
+  srGames: boolean;
+  /** How many events the switch adds (when off) or contributes (when on) — so
+   *  the dialog can say what turning it on is actually worth. */
+  srCount: number;
 };
 
 // The feed lives on the API host, not on the app host, and its token is minted
@@ -462,9 +469,15 @@ export type IcalSubscription = {
 // `rotate` mints a new token, which stops every calendar already subscribed to
 // the old URL from resolving. That is the point: it is the only way to take a
 // leaked feed link back, short of deactivating the coach.
-export async function getIcalSubscription(lang: 'DE' | 'EN', rotate = false): Promise<IcalSubscription> {
+export async function getIcalSubscription(
+  lang: 'DE' | 'EN',
+  rotate = false,
+  /** undefined = read the stored setting; true/false = set it, then read back. */
+  srGames?: boolean,
+): Promise<IcalSubscription> {
   const response = await fetch(
-    apiUrl(`/api/ical/me?lang=${lang.toLowerCase()}${rotate ? '&rotate=1' : ''}`),
+    apiUrl(`/api/ical/me?lang=${lang.toLowerCase()}${rotate ? '&rotate=1' : ''}`
+      + (srGames === undefined ? '' : `&sr=${srGames ? '1' : '0'}`)),
     { credentials: 'include' },
   );
   if (!response.ok) {

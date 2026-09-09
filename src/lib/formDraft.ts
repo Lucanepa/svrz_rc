@@ -11,6 +11,7 @@
 // on the store holding finished, unsent submissions.
 
 import { APP_VERSION } from './buildInfo';
+import { dayKey, todayKey } from './appTime';
 import type { EligibleGame } from '../types';
 
 export type DraftStatus = 'editing' | 'queued' | 'filed';
@@ -744,17 +745,12 @@ export function decodeDraftFile(text: string, sizeBytes: number, knownRatingIds?
 export function draftFileName(g: DraftFile['game'], lang: 'DE' | 'EN'): string {
   const slug = (s: string) => (s || '').normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/[^A-Za-z0-9]+/g, '');
   const raw = (g && g.date) || '';
-  // An already-ISO date is taken verbatim. Parsing it first would move a
-  // midnight kickoff to the previous day for anyone reading the file west of
-  // UTC, and the day a game was played is the one thing this name must get
-  // right. Anything else is parsed and read in LOCAL time, which is the day the
-  // rest of the app shows for the same game.
-  let isoDate = /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : '';
-  if (!isoDate) {
-    const parsed = new Date(raw);
-    const day = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
-    isoDate = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
-  }
+  // The ZÜRICH day, which is the day the rest of the app shows for the same
+  // game and the day the coach was in the gym — not the device's day (a late
+  // kickoff read from further east is already tomorrow there) and not the
+  // stored UTC day. The day a game was played is the one thing this name must
+  // get right.
+  const isoDate = dayKey(raw) || todayKey();
   const teams = `${slug(g && g.homeTeam)}-${slug(g && g.awayTeam)}`;
   // A game block with no team names still has to produce something a human can
   // pick out of a list, so the match number stands in.

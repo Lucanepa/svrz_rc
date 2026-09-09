@@ -12,6 +12,7 @@
 // sessionStorage: a reload keeps you in the demo, closing the tab ends it.
 
 import { SECTIONS_1SR_DE } from '../types';
+import { dayLabel } from './appTime';
 import type {
   EligibleGame,
   FeedbackFormData,
@@ -333,11 +334,10 @@ function buildStore(): DemoStore {
   return { coachees, games, feedbacks, siblings, sentMail, feedbackSeq: 1 };
 }
 
-// Format a YYYY-MM-DD date as dd.MM.yyyy, exactly like the server does.
+// Format a date as dd.MM.yyyy, exactly like the server does — in Zürich time,
+// like every other clock in the app.
 function fmtDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
+  return dayLabel(iso, { year: true }) || iso;
 }
 
 // Rebuild the feedback mail the server WOULD send for this submission, so the

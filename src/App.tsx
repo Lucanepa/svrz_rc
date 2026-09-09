@@ -50,6 +50,7 @@ import {
 } from './lib/formDraft';
 import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
+import { dayLabel, dayTimeLabel, shortDayLabel, clockLabel, dayKey, todayKey, zonedParts } from './lib/appTime';
 import { subscribeLive } from './lib/liveEvents';
 import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml, sanitizeRich } from './lib/richText';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
@@ -524,14 +525,11 @@ function asInputDate(value: string): string {
 
 function formatDisplayDate(value: string): string {
   if (!value) return '';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  // dd.mm.yyyy is the Swiss convention, and it is what the filed PDF shows.
-  return `${dd}.${mm}.${d.getFullYear()} ${hh}:${min}`;
+  // dd.mm.yyyy is the Swiss convention, and it is what the filed PDF shows —
+  // in ZÜRICH time. This value is written into meta.datum, so a coach filing a
+  // report from another timezone used to put a kick-off an hour or two off the
+  // real one into the archived document and the mail.
+  return dayTimeLabel(value) || value;
 }
 
 function downloadIcal(game: EligibleGame) {
@@ -2783,12 +2781,7 @@ export default function App() {
   };
 
   // "Di 15.09." / "Tue 15/09" — the date shorthand the dashboard rows use.
-  const shortDate = (d: string) => {
-    const dt = new Date(d);
-    return Number.isNaN(dt.getTime())
-      ? d
-      : dt.toLocaleDateString(formData.lang === 'DE' ? 'de-CH' : 'en-GB', { weekday: 'short', day: '2-digit', month: '2-digit' });
-  };
+  const shortDate = (d: string) => shortDayLabel(d, formData.lang) || d;
 
   // Observations are counted, not just flagged: a coachee can be watched more
   // than once a season, so the second one says so. First one stays unnumbered —
@@ -5011,14 +5004,14 @@ export default function App() {
                           {g.queued ? t.draftQueued
                             : g.missing ? t.draftGameMissing
                             : g.allClosed ? t.draftRoleClosed
-                            : `${g.roles} · ${new Date(g.updatedAt).toLocaleDateString(formData.lang === 'DE' ? 'de-CH' : 'en-GB')}`}
+                            : `${g.roles} · ${dayLabel(g.updatedAt, { year: true })}`}
                         </p>
                         {/* The report the referee is still waiting for. */}
                         {g.overdue && !g.queued && (
                           <p className="truncate font-semibold text-red-700">
                             {formData.lang === 'DE'
-                              ? `Nicht gesendet — Spiel vom ${new Date(g.gameDate).toLocaleDateString('de-CH')}.`
-                              : `Not sent — match of ${new Date(g.gameDate).toLocaleDateString('en-GB')}.`}
+                              ? `Nicht gesendet — Spiel vom ${dayLabel(g.gameDate, { year: true })}.`
+                              : `Not sent — match of ${dayLabel(g.gameDate, { year: true })}.`}
                           </p>
                         )}
                         {/* An old draft is warned about, never deleted: a coach
@@ -5345,10 +5338,7 @@ export default function App() {
               const firstName = rcAuth.rcFirstName || (rcAuth.rcName || '').split(' ')[0];
               /** The date as a sentence, for a confirm dialog or a toast —
                *  the lists themselves get it from [[DateRail]]. */
-              const fmtDate = (d: string) => {
-                const dt = new Date(d);
-                return Number.isNaN(dt.getTime()) ? d : dt.toLocaleDateString(de ? 'de-CH' : 'en-GB', { weekday: 'short', day: '2-digit', month: '2-digit' });
-              };
+              const fmtDate = (d: string) => shortDayLabel(d, de ? 'DE' : 'EN') || d;
               const startFromSummary = (g: rcCoachSummaryGame) => {
                 const eg = eligibleGames.find((e) => e.id === g.gameId);
                 if (eg) handleSelectGame(eg, g.refereeName);
@@ -6568,16 +6558,17 @@ export default function App() {
                   const firstDay = new Date(year, month, 1);
                   const startWeekday = (firstDay.getDay() + 6) % 7; // Monday = 0
                   const daysInMonth = new Date(year, month + 1, 0).getDate();
-                  const today = new Date();
-                  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                  // "Today" and every cell are Zürich days: a 20:45 fixture is on
+                  // its Swiss date even for a reader whose own midnight has passed.
+                  const todayStr = todayKey();
 
                   // Build map of date string -> games
                   const gamesByDate = new Map<string, EligibleGame[]>();
                   for (const game of filteredGames) {
-                    const gd = new Date(game.date);
-                    if (isNaN(gd.getTime())) continue;
-                    if (gd.getFullYear() !== year || gd.getMonth() !== month) continue;
-                    const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(gd.getDate()).padStart(2, '0')}`;
+                    const gp = zonedParts(game.date);
+                    if (!gp.valid) continue;
+                    if (gp.year !== year || gp.month - 1 !== month) continue;
+                    const key = dayKey(game.date);
                     const arr = gamesByDate.get(key) || [];
                     arr.push(game);
                     gamesByDate.set(key, arr);
@@ -7042,7 +7033,7 @@ export default function App() {
             <p className="text-xs text-stone-500 flex items-center gap-1.5">
               {draftUnsaved
                 ? <><Loader2 size={12} className="animate-spin" />{t.draftSaving}</>
-                : <><ClipboardCheck size={12} className="text-green-600" />{t.draftSaved}{draftSavedAt ? ` · ${new Date(draftSavedAt).toLocaleTimeString(formData.lang === 'DE' ? 'de-CH' : 'en-GB', { hour: '2-digit', minute: '2-digit' })}` : ''}</>}
+                : <><ClipboardCheck size={12} className="text-green-600" />{t.draftSaved}{draftSavedAt ? ` · ${clockLabel(draftSavedAt)}` : ''}</>}
               {/* Said plainly rather than buried: the observation, signatures
                   included, is on the server as well as this device. */}
               {parkedOk && !parkFailed && (

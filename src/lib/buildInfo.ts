@@ -10,6 +10,7 @@
 export const APP_VERSION = __APP_VERSION__;
 
 export const BUILD_INFO = `${__BUILD_SHA__} · ${new Date(__BUILD_TIME__).toLocaleString('de-CH', {
+  timeZone: 'Europe/Zurich',
   day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
 })}`;
 
@@ -17,5 +18,6 @@ export const BUILD_INFO = `${__BUILD_SHA__} · ${new Date(__BUILD_TIME__).toLoca
  *  document that lives in a folder for a season does not need the minute it was
  *  generated — and the PDF is always German, so the month is too. */
 export const VERSION_STAMP = `v${APP_VERSION} · ${new Date(__BUILD_TIME__).toLocaleDateString('de-CH', {
+  timeZone: 'Europe/Zurich',
   month: 'long', year: 'numeric',
 })}`;

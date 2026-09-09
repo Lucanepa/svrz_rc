@@ -45,6 +45,7 @@ import LevelText from './LevelText';
 import { CoacheeChip, GroupChip } from './CoacheeChips';
 import { GameList, GameRow, MetaChip } from './GameRow';
 import { Skeleton, SkeletonRows } from './Skeleton';
+import { dayLabel, dayTimeLabel, clockLabel } from '../lib/appTime';
 import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
 
 type Lang = 'DE' | 'EN';
@@ -2365,10 +2366,7 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
   }, []);
 
   const fmtDate = (value: string) => {
-    const d = new Date(value);
-    return Number.isNaN(d.getTime())
-      ? value
-      : d.toLocaleDateString(lang === 'DE' ? 'de-CH' : 'en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    return dayLabel(value, { year: true }) || value;
   };
 
   return (
@@ -2498,7 +2496,7 @@ function LogRow({ e, expanded, onToggle, badge, actions }: {
           instead, and `sm:w-auto sm:flex-1` puts the terminal-style
           single line back as soon as there is room for it. */}
       <div className="flex flex-wrap items-start gap-x-2 gap-y-0.5 font-mono text-[11px] leading-relaxed cursor-pointer" onClick={onToggle}>
-        <span className="text-stone-400 shrink-0 tabular-nums">{new Date(e.t).toLocaleTimeString('de-CH', { hour12: false })}</span>
+        <span className="text-stone-400 shrink-0 tabular-nums">{clockLabel(e.t, { seconds: true })}</span>
         <span className={cn('shrink-0 px-1.5 rounded border text-[10px] font-semibold uppercase', LEVEL_STYLE[e.lvl] || LEVEL_STYLE.info)}>{e.lvl}</span>
         <span className={cn('shrink-0 text-[10px] uppercase font-semibold', e.src === 'client' ? 'text-indigo-500' : 'text-stone-400')}>{e.src === 'client' ? 'app' : 'srv'}</span>
         <span className="shrink-0 text-stone-500 break-all">{e.evt}</span>
@@ -2634,7 +2632,7 @@ function LiveLogs({ t, active }: { t: T; active: boolean }) {
           <option value="">{t.logsSessions}: {t.logsAll}</option>
           {sessions.map((s) => (
             <option key={s.sid} value={s.sid}>
-              {(s.user || 'Anonym')} · {new Date(s.last).toLocaleTimeString()} · {s.count}{s.errors ? ` ⚠${s.errors}` : ''}
+              {(s.user || 'Anonym')} · {clockLabel(s.last, { seconds: true })} · {s.count}{s.errors ? ` ⚠${s.errors}` : ''}
             </option>
           ))}
         </select>
@@ -2716,7 +2714,7 @@ function LogHistory({ t, lang, active }: { t: T; lang: Lang; active: boolean }) 
     const match = (msg || '').slice(0, 60).trim();
     if (!(await confirmDialog({ title: t.logsMuteTitle(msg ? `${evt}: ${match}` : evt), message: t.logsMuteBody, confirmLabel: t.logsMuteConfirm, tone: 'danger', lang }))) return;
     await act(async () => {
-      await createLogMuteRule({ evt, match: match || undefined, note: `Admin ${new Date().toLocaleDateString('de-CH')}` });
+      await createLogMuteRule({ evt, match: match || undefined, note: `Admin ${dayLabel(new Date(), { year: true })}` });
       setRules(await getLogMuteRules());
     });
   };
@@ -2811,7 +2809,7 @@ function LogHistory({ t, lang, active }: { t: T; lang: Lang; active: boolean }) 
                 <span className="order-last sm:order-none w-full sm:w-auto sm:flex-1 min-w-0 text-stone-800 break-words">{g.msg}</span>
               </div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-[10px] text-stone-400">
-                <span>{t.logsFirstLast(new Date(g.first).toLocaleTimeString('de-CH', { hour12: false }), new Date(g.last).toLocaleTimeString('de-CH', { hour12: false }))}</span>
+                <span>{t.logsFirstLast(clockLabel(g.first, { seconds: true }), clockLabel(g.last, { seconds: true }))}</span>
                 {g.users.length > 0 && <span className="truncate max-w-[50%]">{g.users.join(', ')}</span>}
               </div>
               <div className="flex flex-wrap gap-1.5 mt-1.5">
@@ -3250,7 +3248,7 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
                     {g.match_no}{g.home_team || g.away_team ? ` · ${g.home_team} vs ${g.away_team}` : ''}
                   </p>
                   <p className="text-xs text-stone-400 truncate">
-                    {g.match_date ? new Date(g.match_date).toLocaleDateString(lang === 'DE' ? 'de-CH' : 'en-GB') : ''}
+                    {g.match_date ? dayLabel(g.match_date, { year: true }) : ''}
                     {g.league ? ` · ${g.league}` : ''}{g.assigned_rc ? ` · ${g.assigned_rc}` : ''}
                   </p>
                 </div>
@@ -3326,10 +3324,8 @@ function GameImportCard({ lang }: { lang: Lang }) {
   // payload is not what we expect — `!== null` was true for both, and
   // then reading .ok threw and took the whole console down with it.
   const bad = loaded && ((sync?.status ? !sync.status.ok : false) || stale);
-  const when = (iso: string) => {
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? '–' : d.toLocaleString('de-CH', { dateStyle: 'short', timeStyle: 'short' });
-  };
+  // Zürich, like every other clock in the app and like the alert mails.
+  const when = (iso: string) => dayTimeLabel(iso) || '–';
 
   return (
     // mb-4 to match Card(): the gap between cards comes from each card's own
@@ -3740,7 +3736,7 @@ function CredentialsAdmin({ t }: { t: T }) {
               <p className="mt-1 text-[11px] text-stone-400">
                 {slot.source === 'env' ? t.credFromEnv
                   : slot.source === 'unset' ? t.credNeverSet
-                  : t.credChangedAt(new Date(slot.updatedAt ?? '').toLocaleDateString(), slot.updatedBy ?? '')}
+                  : t.credChangedAt(dayLabel(slot.updatedAt ?? '', { year: true }), slot.updatedBy ?? '')}
               </p>
               {!armed ? (
                 // Nothing is editable until a code has been asked for: a change

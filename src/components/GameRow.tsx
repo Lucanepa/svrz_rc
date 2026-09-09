@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { MapPin } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { zonedParts, weekdayLabel, dayLabel, timeLabel } from '../lib/appTime';
 
 /**
  * The pieces every list of games is drawn from.
@@ -111,24 +112,19 @@ export function LeagueLabel({ text }: { text: string }) {
 export function DateRail({
   iso, tone = 'stone', league, lang, className,
 }: { iso: string; tone?: RowTone; league?: string; lang: 'DE' | 'EN'; className?: string }) {
-  const d = new Date(iso);
-  const valid = !Number.isNaN(d.getTime());
-  const locale = lang === 'DE' ? 'de-CH' : 'en-GB';
-  const weekday = valid ? d.toLocaleDateString(locale, { weekday: 'short' }) : '';
+  // Zürich, always — the fixture starts when it starts in the gym, whatever the
+  // reader's device thinks the time is. See src/lib/appTime.ts.
+  const parts = zonedParts(iso);
+  const valid = parts.valid;
+  const weekday = weekdayLabel(iso, lang);
   // Swiss dot format, day first, and never the browser's idea of it: en-GB and
   // en-US disagree about which number comes first and one of them is wrong on
   // every row.
-  const date = valid
-    ? `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.`
-    : (iso || '–');
-  // Only when the fixture actually carries one. match_date arrives in three
-  // shapes and a bare "2026-11-09" has no clock in it at all — `new Date()`
-  // reads that as midnight UTC, which this side of Greenwich prints as a
-  // confident "01:00" for a game nobody has been given a time for yet.
-  const timed = /\d{1,2}:\d{2}/.test(iso);
-  const time = valid && timed
-    ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-    : '';
+  const date = valid ? dayLabel(iso) : (iso || '–');
+  // Only when the fixture actually carries one: a bare "2026-11-09" has no
+  // clock in it at all, and inventing one ("01:00", from a UTC midnight read in
+  // the local zone) is worse than showing none.
+  const time = timeLabel(iso);
   return (
     <div className={cn('w-14 shrink-0 text-right leading-tight sm:w-[4.5rem]', className)}>
       {weekday && (

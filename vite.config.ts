@@ -26,7 +26,14 @@ export default defineConfig(() => {
       react(), 
       tailwindcss(),
       VitePWA({
-        registerType: 'autoUpdate',
+        // 'prompt', not 'autoUpdate' — and nothing here prompts anybody. In
+        // autoUpdate the plugin installs its OWN reload on controllerchange,
+        // next to the guarded one in main.tsx: it does not wait for a dirty
+        // observation to be flushed, and it has no idea whether it has already
+        // reloaded this page ten times. workbox still skipWaiting/clientsClaim
+        // below, so a new build takes control exactly as promptly as before —
+        // the difference is that main.tsx decides when the page reloads for it.
+        registerType: 'prompt',
         workbox: {
           clientsClaim: true,
           skipWaiting: true,

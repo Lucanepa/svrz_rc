@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { stubSignedInApp, RC, GAME } from './support/app';
+import { dayTimeLabel, shiftDayKey, instantOf, timeLabel, dayKey } from '../src/lib/appTime';
 
 /**
  * A fixture starts when it starts in the gym in Zürich. The reader's device has
@@ -68,4 +69,58 @@ test('the calendar files it under the Swiss day too', async ({ page }) => {
   await expect(page.getByText(GAME.homeTeam).first()).toBeVisible();
   await expect(page.getByText('15.11.').first()).toBeVisible();
   await expect(page.getByText('16.11.')).toHaveCount(0);
+});
+
+test('"Heute" means the Swiss day, even when the reader is already on the next one', async ({ page }) => {
+  // 23:35 on Sunday 15.11 in the gym; 00:35 on Monday 16.11 on the device.
+  // The chip used to read the DEVICE's calendar day, so "Heute" jumped to
+  // Monday and the fixture being played right then could not be found under
+  // any chip — the range filter's two ends were anchored in different zones,
+  // so it fell out of "Gestern" too.
+  await page.clock.setFixedTime(new Date('2026-11-15T22:35:00Z'));
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [{ ...GAME, date: PLANNED_DATE }] }));
+  await page.goto('/#/games');
+  await page.getByRole('button', { name: /Filter/i }).first().click();
+  await page.getByRole('button', { name: /RC assigned/i }).first().click();
+  await expect(page.getByText(GAME.homeTeam).first()).toBeVisible();
+
+  await page.getByRole('button', { name: /^(Heute|Today)$/ }).click();
+  await expect(page.getByText(GAME.homeTeam).first()).toBeVisible();
+  await expect(page.getByText('15.11.').first()).toBeVisible();
+});
+
+/**
+ * The helper every clock in the app now goes through. These assertions are
+ * fixed strings on purpose: they hold whatever zone the process runs in, which
+ * is precisely the property that was missing.
+ */
+test.describe('appTime speaks Zürich', () => {
+  test('reads all three stored shapes', () => {
+    expect(dayTimeLabel('2026-09-21 18:45:00.000Z')).toBe('21.09.2026 20:45');   // CEST, +2
+    expect(dayTimeLabel('2026-11-15T19:30:00Z')).toBe('15.11.2026 20:30');       // CET, +1
+    expect(dayTimeLabel('2026-09-21T20:45')).toBe('21.09.2026 20:45');           // zone-less = Zürich
+    expect(dayTimeLabel('2026-11-09')).toBe('09.11.2026');                       // a date, no clock
+    expect(timeLabel('2026-11-09')).toBe('');                                    // ...and no invented 01:00
+    expect(dayTimeLabel(Date.UTC(2026, 10, 15, 19, 30))).toBe('15.11.2026 20:30'); // epoch ms
+    expect(dayTimeLabel('not a date')).toBe('');
+  });
+
+  test('a late kick-off keeps the Swiss day', () => {
+    expect(dayKey('2026-11-15T22:30:00Z')).toBe('2026-11-15');   // 23:30 in the gym
+    expect(dayKey('2026-11-15T23:30:00Z')).toBe('2026-11-16');   // 00:30, genuinely the next day
+  });
+
+  test('day arithmetic survives both clock changes', () => {
+    // ±24h would land on 25.10 again (a 25-hour day) and skip 29.03 (a 23-hour one).
+    expect(shiftDayKey('2026-10-25', -1)).toBe('2026-10-24');
+    expect(shiftDayKey('2026-10-25', 1)).toBe('2026-10-26');
+    expect(shiftDayKey('2026-03-29', -1)).toBe('2026-03-28');
+    expect(shiftDayKey('2026-03-29', 1)).toBe('2026-03-30');
+    expect(shiftDayKey('2026-12-31', 1)).toBe('2027-01-01');
+  });
+
+  test('a zone-less wall clock names the Swiss instant, not the reader\'s', () => {
+    expect(new Date(instantOf('2026-09-21T20:45')!).toISOString()).toBe('2026-09-21T18:45:00.000Z');
+    expect(new Date(instantOf('2026-11-15T20:30')!).toISOString()).toBe('2026-11-15T19:30:00.000Z');
+  });
 });

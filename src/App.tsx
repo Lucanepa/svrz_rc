@@ -50,7 +50,7 @@ import {
 } from './lib/formDraft';
 import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
-import { dayLabel, dayTimeLabel, shortDayLabel, clockLabel, dayKey, todayKey, zonedParts } from './lib/appTime';
+import { dayLabel, dayTimeLabel, shortDayLabel, clockLabel, dayKey, todayKey, shiftDayKey, zonedParts, instantOf } from './lib/appTime';
 import { subscribeLive } from './lib/liveEvents';
 import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml, sanitizeRich } from './lib/richText';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
@@ -533,22 +533,48 @@ function formatDisplayDate(value: string): string {
 }
 
 function downloadIcal(game: EligibleGame) {
-  const start = new Date(game.date);
-  if (Number.isNaN(start.getTime())) return;
-  const end = new Date(start.getTime() + 2 * 60 * 60 * 1000); // 2h match
+  // The same three shapes the subscription feed handles (see icalMoment on the
+  // server) — and the same answers, so a downloaded file and a subscribed feed
+  // can never disagree about one fixture.
+  const p = zonedParts(game.date);
+  if (!p.valid) return;
+  const two = (n: number) => String(n).padStart(2, '0');
   const fmt = (d: Date) =>
     d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+  const stamps: string[] = [];
+  if (p.timed) {
+    const startedAt = instantOf(game.date);
+    if (startedAt == null) return;
+    const start = new Date(startedAt);
+    stamps.push(`DTSTART:${fmt(start)}`, `DTEND:${fmt(new Date(start.getTime() + 2 * 60 * 60 * 1000))}`); // 2h match
+  } else {
+    // A fixture with no clock is an ALL-DAY event. Exported as a timestamp it
+    // became a 02:00–04:00 block in the small hours — and landed on the day
+    // before for anyone west of Greenwich.
+    const day = `${p.year}${two(p.month)}${two(p.day)}`;
+    const next = new Date(Date.UTC(p.year, p.month - 1, p.day + 1));
+    stamps.push(
+      `DTSTART;VALUE=DATE:${day}`,
+      `DTEND;VALUE=DATE:${next.getUTCFullYear()}${two(next.getUTCMonth() + 1)}${two(next.getUTCDate())}`,
+    );
+  }
   const title = `${game.matchNo} ${game.homeTeam} vs ${game.awayTeam}`;
+  // Same escaping the subscription feed applies (icsEscape on the server): a
+  // hall address is "Halle, Strasse 3, 8005 Zürich" — commas and semicolons are
+  // TEXT separators in iCalendar, and an unescaped one is a malformed value.
+  const esc = (value: string) => String(value ?? '')
+    .replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
     'PRODID:-//SVRZ RC//Referee Coaching//EN',
     'BEGIN:VEVENT',
-    `DTSTART:${fmt(start)}`,
-    `DTEND:${fmt(end)}`,
-    `SUMMARY:${title}`,
-    `LOCATION:${game.location || ''}`,
-    `DESCRIPTION:${game.league}${game.firstReferee ? `\\n1SR: ${game.firstReferee}` : ''}${game.secondReferee ? `\\n2SR: ${game.secondReferee}` : ''}`,
+    ...stamps,
+    // Required by RFC 5545; strict clients reject an event without it.
+    `DTSTAMP:${fmt(new Date())}`,
+    `SUMMARY:${esc(title)}`,
+    `LOCATION:${esc(game.location || '')}`,
+    `DESCRIPTION:${esc(game.league)}${game.firstReferee ? `\\n1SR: ${esc(game.firstReferee)}` : ''}${game.secondReferee ? `\\n2SR: ${esc(game.secondReferee)}` : ''}`,
     `UID:${game.id}@svrz-rc`,
     'END:VEVENT',
     'END:VCALENDAR',
@@ -950,9 +976,11 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
   }, []);
 
   const hasFilter = from || to;
-  const today = toDateString(new Date());
-  const yesterday = toDateString(new Date(Date.now() - 86400000));
-  const tomorrow = toDateString(new Date(Date.now() + 86400000));
+  // Zürich days, and whole calendar days: the device's "today" is a different
+  // date for a coach abroad, and ±24h skips the day the clocks change.
+  const today = todayKey();
+  const yesterday = shiftDayKey(today, -1);
+  const tomorrow = shiftDayKey(today, 1);
   const isDE = lang === 'DE';
 
   const setPreset = (f: string, t: string) => { onChangeFrom(f); onChangeTo(t); };
@@ -1277,9 +1305,12 @@ export default function App() {
   const inSeasonOrManual = useCallback((g: { date?: string; isManual?: boolean }) => {
     if (g.isManual) return true;
     if (!g.date) return true;
-    const d = new Date(g.date);
-    if (Number.isNaN(d.getTime())) return true;
-    return d >= new Date(seasonFrom) && d <= new Date(seasonTo + 'T23:59:59');
+    // Zürich day keys, for the same reason as the date filter: the old bounds
+    // mixed a UTC start with a device-local end, and the last matchday of the
+    // season disappeared for a coach travelling east.
+    const key = dayKey(g.date);
+    if (!key) return true;
+    return key >= seasonFrom && key <= seasonTo;
   }, [seasonFrom, seasonTo]);
   const [emailTestMode, setEmailTestMode] = useState(false);
   // Per-coachee level/role targets (drives "watch at their level" game filtering).
@@ -4295,12 +4326,14 @@ export default function App() {
     return roles.some((role) => keepGame({ league, role, target, levelKey: key, table: niveauTable }));
   }, [showAllLevels, coacheeTargets, niveauTable]);
   const filteredCoachees = useMemo(() => {
-    const q = listSearch.toLowerCase();
+    // Folded, like every other name match in the app: typing "muller" must find
+    // "Müller". The coachee dropdown beside this box already did.
+    const q = normName(listSearch);
     const filtered = coachees.filter((c) => {
       if (!isInSeason(c, seasonStartYear)) return false;
       // Groups are matched in both languages: the badge in the games list may
       // read "Promotion?" while the record still says "Beförderung?".
-      if (q && !(c.full_name || '').toLowerCase().includes(q) && !surnameFirstLabel(c).toLowerCase().includes(q) && !levelDisplay(c.referee_level, c.stage).text.toLowerCase().includes(q) && !(c.referee_level || '').toLowerCase().includes(q) && !(normalizeCoacheeGroup(c.groups) || '').toLowerCase().includes(q) && !groupLabel(c.groups, 'EN').toLowerCase().includes(q)) return false;
+      if (q && !normName(c.full_name || '').includes(q) && !normName(surnameFirstLabel(c)).includes(q) && !normName(levelDisplay(c.referee_level, c.stage).text).includes(q) && !normName(c.referee_level || '').includes(q) && !normName(normalizeCoacheeGroup(c.groups) || '').includes(q) && !normName(groupLabel(c.groups, 'EN')).includes(q)) return false;
       if (listFilterLevels.length > 0) {
         const coacheeLevel = levelDisplay(c.referee_level, c.stage).text;
         if (!listFilterLevels.includes(coacheeLevel)) return false;
@@ -4400,11 +4433,14 @@ export default function App() {
   // when and by whom instead of labelling the referee "no observation".
   const plannedObsByCoachee = useMemo(() => {
     const map = new Map<string, PlannedObs>();
-    const today = new Date().toISOString().slice(0, 10);
+    // The ZÜRICH day: an ISO slice is the UTC day, so between 00:00 and 02:00
+    // Swiss time last night's game still counted as upcoming and the row named
+    // the game that had already been played.
+    const today = todayKey();
     // Upcoming beats past; among upcoming the soonest wins, among past the most
     // recent — so the row always names the game a coach would ask about.
     const beatsPlanned = (a: string, b: string) => {
-      const [au, bu] = [a >= today, b >= today];
+      const [au, bu] = [dayKey(a) >= today, dayKey(b) >= today];
       if (au !== bu) return au;
       return au ? a < b : a > b;
     };
@@ -4433,7 +4469,7 @@ export default function App() {
       const t = new Date(d).getTime();
       return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
     };
-    const q = listSearch.toLowerCase();
+    const q = normName(listSearch);
     // Referees already covered this season: an RC took one of their games and the
     // observation is still pending (role not yet in feedbackClosedRoles), so none
     // of their games need to stay on the open list. Once the feedback is filed,
@@ -4441,12 +4477,12 @@ export default function App() {
     const coveredRefs = plannedObsByCoachee;
     return eligibleGames.filter((g) => {
       if (q && !(
-        (g.matchNo || '').toLowerCase().includes(q) ||
-        (g.homeTeam || '').toLowerCase().includes(q) ||
-        (g.awayTeam || '').toLowerCase().includes(q) ||
-        (g.league || '').toLowerCase().includes(q) ||
-        (g.firstReferee || '').toLowerCase().includes(q) ||
-        (g.secondReferee || '').toLowerCase().includes(q)
+        normName(g.matchNo || '').includes(q) ||
+        normName(g.homeTeam || '').includes(q) ||
+        normName(g.awayTeam || '').includes(q) ||
+        normName(g.league || '').includes(q) ||
+        normName(g.firstReferee || '').includes(q) ||
+        normName(g.secondReferee || '').includes(q)
       )) return false;
       if (gameFilterCoachees.length > 0) {
         const refs = [normName(g.firstReferee || ''), normName(g.secondReferee || '')];
@@ -4488,13 +4524,15 @@ export default function App() {
       // RC-Spiel filter asks for them — and never yanked out from under an open
       // row, same as a game somebody else just took.
       if (!gameFilterRcGame && g.isRcGame && g.id !== expandedGameId) return false;
-      if (gameFilterDateFrom) {
-        const from = new Date(gameFilterDateFrom);
-        if (new Date(g.date) < from) return false;
-      }
-      if (gameFilterDateTo) {
-        const to = new Date(gameFilterDateTo + 'T23:59:59');
-        if (new Date(g.date) > to) return false;
+      // Both bounds are YYYY-MM-DD, so compare the fixture's ZÜRICH day as a
+      // string. Parsing them made the two ends of one day disagree: a bare date
+      // reads as UTC midnight while `+ 'T23:59:59'` reads in the device's zone,
+      // so a late Swiss kick-off could fall out of both "Heute" and "Gestern".
+      if (gameFilterDateFrom || gameFilterDateTo) {
+        const key = dayKey(g.date);
+        if (!key) return false;
+        if (gameFilterDateFrom && key < gameFilterDateFrom) return false;
+        if (gameFilterDateTo && key > gameFilterDateTo) return false;
       }
       // Season bound (whole-app season scope)
       if (!inSeasonOrManual(g)) return false;
@@ -5914,15 +5952,12 @@ export default function App() {
                 </div>
                 {/* Quick date navigation */}
                 {(() => {
-                  const todayStr = toDateString(new Date());
-                  const yesterdayStr = toDateString(new Date(Date.now() - 86400000));
-                  const tomorrowStr = toDateString(new Date(Date.now() + 86400000));
+                  const todayStr = todayKey();
+                  const yesterdayStr = shiftDayKey(todayStr, -1);
+                  const tomorrowStr = shiftDayKey(todayStr, 1);
                   const isDE = formData.lang === 'DE';
                   const shiftDay = (delta: number) => {
-                    const base = gameFilterDateFrom || todayStr;
-                    const d = new Date(base + 'T00:00:00');
-                    d.setDate(d.getDate() + delta);
-                    const ds = toDateString(d);
+                    const ds = shiftDayKey(gameFilterDateFrom || todayStr, delta);
                     setGameFilterDateFrom(ds);
                     setGameFilterDateTo(ds);
                     setListPage(0);

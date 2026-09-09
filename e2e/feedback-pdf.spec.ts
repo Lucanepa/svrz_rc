@@ -173,7 +173,14 @@ test.describe('Feedback PDF builder', () => {
     });
 
     expect(formatted).toEqual([
-      '14.03.2026 19:30',
+      // An instant carrying a zone is converted, not copied digit for digit:
+      // 19:30Z on 14 March is a 20:30 kick-off in the gym (CET, +1). This line
+      // used to assert 19:30 — the UTC number — as correct, which would have
+      // printed the wrong time on the official document the day any caller
+      // handed over a raw stored date instead of a pre-formatted one.
+      '14.03.2026 20:30',
+      // The rest carry no zone: they are already the Swiss wall clock and are
+      // taken exactly as written.
       '14.03.2026 19:30',
       '14.03.2026 19:30',
       '14.03.2026 19:30',

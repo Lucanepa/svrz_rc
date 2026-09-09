@@ -13,6 +13,7 @@
 // comes from the shared SECTIONS_* constants, so only the visual arrangement
 // lives here.
 import { jsPDF } from 'jspdf';
+import { dayTimeLabel } from './appTime';
 import qrcode from 'qrcode-generator';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
 import { VERSION_STAMP } from './buildInfo';
@@ -1054,7 +1055,18 @@ function formatMetaDate(value: string): string {
     return stamp(+written[1], +written[2], +written[3], written[4] && pad(+written[4]), written[5]);
   }
 
-  // ISO, with or without a time component.
+  // An instant that carries a zone is converted to Zürich rather than having its
+  // digits copied: "2026-03-14T19:30:00.000Z" is a 20:30 kick-off, and this
+  // document is the official record of it. Today every caller already hands over
+  // a Swiss-formatted string (formatDisplayDate), so this is the guard for the
+  // next caller that does not.
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)) {
+    const zoned = dayTimeLabel(raw);
+    if (zoned) return zoned;
+  }
+
+  // ISO wall clock, with or without a time component — taken digit for digit,
+  // which is what a bare "2026-03-14" from a date input means.
   const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[\sT](\d{2}):(\d{2}))?/);
   if (iso) {
     return stamp(+iso[3], +iso[2], +iso[1], iso[4], iso[5]);

@@ -45,7 +45,7 @@ import LevelText from './LevelText';
 import { CoacheeChip, GroupChip } from './CoacheeChips';
 import { GameList, GameRow, MetaChip } from './GameRow';
 import { Skeleton, SkeletonRows } from './Skeleton';
-import { dayLabel, dayTimeLabel, clockLabel } from '../lib/appTime';
+import { dayLabel, dayTimeLabel, clockLabel, todayKey } from '../lib/appTime';
 import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
 
 type Lang = 'DE' | 'EN';
@@ -3065,7 +3065,9 @@ function refereeOptions(coachees: Coachee[], roster: RosterReferee[], notACoache
 // covers fixtures it doesn't carry and throwaway games used to exercise the
 // whole observation → PDF → e-mail flow against the real backend.
 function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolean }) {
-  const today = new Date().toISOString().slice(0, 10);
+  // The ZÜRICH day. An ISO slice is the UTC day, so between midnight and 02:00
+  // the form pre-filled yesterday and the fixture was created a day early.
+  const today = todayKey();
   // 20:00 is the ordinary evening kick-off; it is a field rather than a fixture
   // because a test of "the game is tomorrow" mail, or of a Saturday afternoon
   // fixture, needs its own time.
@@ -3412,7 +3414,9 @@ function OverviewAdmin({ t, paidCap }: { t: T; paidCap: number }) {
       return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const body = [...rows]
-      .sort((a, b) => a.fullName.localeCompare(b.fullName, 'de-CH'))
+      // The order the table on screen uses, so the export can be checked
+      // against it line by line (it sorted by given name — Anna Zünd first).
+      .sort((a, b) => bySurname({ full_name: a.fullName }, { full_name: b.fullName }))
       .map((r) => [r.fullName, r.done, r.planned, r.outstanding, Math.min(r.done, paidCap)].map(cell).join(';'));
     const csv = '\ufeff' + [head.map(cell).join(';'), ...body].join('\r\n') + '\r\n';
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -3542,12 +3546,14 @@ function GamesAdmin({ t, lang, season, active }: { t: T; lang: Lang; season: num
     }
   };
 
-  const needle = q.trim().toLowerCase();
+  // Folded on both sides, or a typed "Müller" would miss the folded haystack.
+  const needle = foldName(q);
   const shown = games.filter((g) => {
     if (unassignedOnly && g.assignedRc) return false;
     if (!needle) return true;
+    // Accent-blind, like every other name match: "muller" finds "Müller".
     return [g.matchNo, g.league, g.location, g.homeTeam, g.awayTeam, g.firstReferee, g.secondReferee, g.assignedRc]
-      .some((v) => (v || '').toLowerCase().includes(needle));
+      .some((v) => foldName(v || '').includes(needle));
   });
 
   return (

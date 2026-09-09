@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, createContext, useContext, type ReactNode } from 'react';
+import { foldName } from '../lib/coacheeName';
 import { Lock, Loader2, ArrowLeft, Eye, EyeOff, User, Languages, Search, Check, ChevronDown } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import {
@@ -348,8 +349,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  const query = rcSearch.trim().toLowerCase();
-  const visibleRoster = (roster ?? []).filter((p) => !query || p.fullName.toLowerCase().includes(query));
+  // Folded, like every other name match in the app: a coach called Bösch must be
+  // findable by typing "bosch" on a keyboard that makes umlauts hard work.
+  const query = foldName(rcSearch);
+  const visibleRoster = (roster ?? []).filter((p) => !query || foldName(p.fullName).includes(query));
   const chosenName = (roster ?? []).find((p) => p.id === chosenRcId)?.fullName ?? null;
   const passwordField = (id: string, autoComplete: string, placeholder: string, value: string, onChange: (v: string) => void) => (
     <div className="relative">

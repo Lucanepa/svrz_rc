@@ -1355,17 +1355,17 @@ function zonedParts(instant: number): { year: string; month: string; day: string
  *  prints a game converts to Europe/Zurich (fmtTimeDe, the app, the calendar
  *  feed), so a fixture entered as an evening game read as a late-night one.
  *
- *  The offset is measured rather than assumed: format the guessed instant in
- *  the region, see how far the clock there has moved from it, and shift by that
- *  much. That handles both CET and CEST without a table, and the DST switch
- *  itself is a Sunday morning — no kick-off lives in the hour that goes missing. */
+ *  Delegated to wallClockToInstant, which the iCal feed already uses to read
+ *  the same values back. Measuring the offset ONCE (guess in UTC, see how far
+ *  the regional clock moved, shift) lands an hour out whenever the guess and
+ *  the answer sit on opposite sides of a DST switch: 01:00 on 25.10 was stored
+ *  as 02:00 Zurich, 01:00 on 28.03 as 00:00. The hour field accepts 0–23, so
+ *  nothing stopped it — and the writer and the reader must agree on every day
+ *  of the year, not just the ones without a clock change. */
 function zonedInstantIso(date: string, hour: number, minute = 0): string {
   const [y, m, d] = date.split('-').map(Number);
   if (!y || !m || !d) return '';
-  const guess = Date.UTC(y, m - 1, d, hour, minute, 0);
-  const seen = zonedParts(guess);
-  const offset = Date.UTC(Number(seen.year), Number(seen.month) - 1, Number(seen.day), Number(seen.hour), Number(seen.minute)) - guess;
-  return new Date(guess - offset).toISOString();
+  return new Date(wallClockToInstant(y, m, d, hour, minute, 0)).toISOString();
 }
 
 function fmtDateDe(value: string): string {
@@ -9423,6 +9423,67 @@ app.use((err: unknown, req: Request, res: ExpressResponse, _next: (e?: unknown) 
   res.status(500).json({ error: 'Internal server error' });
 });
 
+// ── Daily jobs ────────────────────────────────────────────────────────
+// NOT node-cron. Measured against the installed 4.2.1: ask its matcher for the
+// next run after the last one before a DST switch and it answers 1 JANUARY OF
+// THE NEXT YEAR — for the March switch and the October one alike (a control
+// walk in June or November steps day by day, so it is the switch that breaks
+// it). In production that means the three daily jobs stop on 25.10.2026 and
+// come back on 01.01.2027: no reminder mails, no VolleyManager sync, no log
+// pruning, for ten weeks of the season, with nothing in the log to say why.
+// A redeploy re-arms them, which is probably why nobody has seen it yet.
+//
+// So: a self-rescheduling timer on this file's own DST-correct primitives
+// (zonedParts + wallClockToInstant, the pair the iCal feed already trusts).
+// Every run computes the next wall-clock instant from scratch, so a switch can
+// only make one interval an hour longer or shorter — never skip a day, never
+// skip ten weeks.
+const DAILY_CRON_RE = /^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/;
+
+function nextDailyInstant(hour: number, minute: number, from: number): number {
+  const today = zonedParts(from);
+  const at = (y: number, m: number, d: number) => wallClockToInstant(y, m, d, hour, minute, 0);
+  const todayAt = at(Number(today.year), Number(today.month), Number(today.day));
+  if (todayAt > from) return todayAt;
+  // Tomorrow by CALENDAR arithmetic. `from + 86_400_000` lands on the same date
+  // again when the day is 25 hours long — which is exactly the day this whole
+  // helper exists for.
+  const next = new Date(Date.UTC(Number(today.year), Number(today.month) - 1, Number(today.day) + 1));
+  return at(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate());
+}
+
+/** Run `job` every day at the wall-clock time named by a `m h * * *` pattern in
+ *  VM_SYNC_TIMEZONE. Anything else still goes to node-cron, with a warning. */
+function scheduleDaily(expr: string, label: string, job: () => void | Promise<void>): void {
+  const parsed = DAILY_CRON_RE.exec(String(expr || '').trim());
+  if (!parsed) {
+    log.warn('scheduler.pattern', `${label}: "${expr}" is not a daily pattern — left with node-cron, which skips DST switches`, { expr, label });
+    cron.schedule(expr, () => { void job(); }, { timezone: VM_SYNC_TIMEZONE });
+    return;
+  }
+  const minute = Number(parsed[1]);
+  const hour = Number(parsed[2]);
+  const arm = (afterRun = false) => {
+    // After a run, look from a minute later: a timer that fires a hair early
+    // would otherwise re-arm onto the same instant and run the job twice.
+    const next = nextDailyInstant(hour, minute, Date.now() + (afterRun ? 60_000 : 0));
+    const delay = Math.max(1_000, next - Date.now());
+    log.info('scheduler.armed', `${label} next at ${new Date(next).toISOString()}`, {
+      label, next: new Date(next).toISOString(), inMinutes: Math.round(delay / 60_000),
+    });
+    const timer = setTimeout(() => {
+      // Re-arm FIRST: a job that throws must not take its own schedule with it.
+      arm(true);
+      void (async () => {
+        try { await job(); }
+        catch (error) { log.error('scheduler.job', `${label} failed`, { error: String(error) }); }
+      })();
+    }, delay);
+    timer.unref?.();
+  };
+  arm();
+}
+
 app.listen(port, () => {
   log.info('startup', `API server listening on http://localhost:${port}`, {
     ringStats: ringStats(),
@@ -9435,32 +9496,16 @@ app.listen(port, () => {
 
   // Daily log-file retention sweep (03:30 local).
   void pruneLogFiles();
-  cron.schedule('30 3 * * *', () => { void pruneLogFiles(); }, { timezone: VM_SYNC_TIMEZONE });
+  scheduleDaily('30 3 * * *', 'log prune', () => { void pruneLogFiles(); });
 
-  cron.schedule(
-    REMINDER_CRON,
-    async () => {
-      try {
-        const r = await runMatchReminders();
-        if (r.suppressed) console.log('[reminder] disabled or test mode — nothing sent');
-        else console.log(`[reminder] ${r.sent} sent, ${r.skipped} skipped (of ${r.due} due)`);
-      } catch (error) {
-        log.error('reminder.run', 'daily reminder run failed', { error: String(error) });
-      }
-    },
-    { timezone: VM_SYNC_TIMEZONE },
-  );
+  scheduleDaily(REMINDER_CRON, 'match reminder', async () => {
+    const r = await runMatchReminders();
+    if (r.suppressed) console.log('[reminder] disabled or test mode — nothing sent');
+    else console.log(`[reminder] ${r.sent} sent, ${r.skipped} skipped (of ${r.due} due)`);
+  });
 
-  cron.schedule(
-    VM_SYNC_CRON,
-    async () => {
-      try {
-        const result = await runGamesSyncWithRetry();
-        console.log(`[scheduler] Synced ${result.imported}/${result.totalFetched} games (${result.from} -> ${result.to})`);
-      } catch (error) {
-        log.error('scheduler.sync', 'daily games sync failed', { error: String(error) });
-      }
-    },
-    { timezone: VM_SYNC_TIMEZONE },
-  );
+  scheduleDaily(VM_SYNC_CRON, 'games sync', async () => {
+    const result = await runGamesSyncWithRetry();
+    console.log(`[scheduler] Synced ${result.imported}/${result.totalFetched} games (${result.from} -> ${result.to})`);
+  });
 });

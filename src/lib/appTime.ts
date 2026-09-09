@@ -151,6 +151,26 @@ export function clockLabel(value: Moment, opts: { seconds?: boolean } = {}): str
   return `${base}:${pad(Number.isNaN(seconds) ? 0 : seconds)}`;
 }
 
+/**
+ * The absolute instant a stored value names, in epoch milliseconds.
+ *
+ * A zone-less wall clock is read as ZÜRICH, not as the device's zone — which is
+ * the whole point: `new Date("2026-09-21T20:45")` in Athens is 19:45 in the gym.
+ * Two passes over the offset, like the server's wallClockToInstant, so a value
+ * on a DST-switch day lands on the hour that was actually typed.
+ */
+export function instantOf(value: Moment): number | null {
+  const p = zonedParts(value);
+  if (!p.valid) return null;
+  const naive = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, 0);
+  const offsetAt = (instant: number) => {
+    const parts = partsFormatter.formatToParts(new Date(instant));
+    const at = (type: string) => Number(parts.find((x) => x.type === type)?.value ?? 0);
+    return Date.UTC(at('year'), at('month') - 1, at('day'), at('hour') % 24, at('minute')) - instant;
+  };
+  return naive - offsetAt(naive - offsetAt(naive));
+}
+
 /** `YYYY-MM-DD` of the Zürich day — the key a calendar cell is filed under. */
 export function dayKey(value: Moment): string {
   const p = zonedParts(value);
@@ -160,4 +180,18 @@ export function dayKey(value: Moment): string {
 /** Today, in Zürich — which is not the reader's today everywhere. */
 export function todayKey(): string {
   return dayKey(new Date());
+}
+
+/**
+ * A Zürich day key moved by whole CALENDAR days.
+ *
+ * Not `± 86_400_000`: on the Sunday the clocks go forward that arithmetic lands
+ * on the same wall-clock day it started from, so "yesterday" skipped 29 March
+ * entirely and no chip in the app could select it.
+ */
+export function shiftDayKey(key: string, delta: number): string {
+  const [y, m, d] = (key || '').split('-').map(Number);
+  if (!y || !m || !d) return '';
+  const moved = new Date(Date.UTC(y, m - 1, d + delta));
+  return `${moved.getUTCFullYear()}-${pad(moved.getUTCMonth() + 1)}-${pad(moved.getUTCDate())}`;
 }

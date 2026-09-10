@@ -217,8 +217,8 @@ export type ChipTone = keyof typeof CHIP_TONE;
  *  Livio Lustenberger 2. SR" — wrapped mid-name on a phone and put "SR" alone
  *  on the next line. */
 export function MetaChip({
-  tone = 'stone', title, wrap, className, children,
-}: { tone?: ChipTone; title?: string; wrap?: boolean; className?: string; children: ReactNode } & Keyed) {
+  tone = 'stone', title, wrap, stack, className, children,
+}: { tone?: ChipTone; title?: string; wrap?: boolean; stack?: boolean; className?: string; children: ReactNode } & Keyed) {
   return (
     <span
       title={title}
@@ -228,6 +228,11 @@ export function MetaChip({
         // Santos" is wider than a phone on its own, and a nowrap chip would
         // push the whole row sideways rather than take a second line.
         wrap && 'whitespace-normal text-left leading-tight',
+        // A chip whose children are lines, not words: the name on the first,
+        // its marks (Coachee, the group) on the next. Side by side, a group
+        // label pushed "Jérôme Philip Bagdasarianz" onto two lines while it
+        // sat whole on the right; under the name, both stay whole.
+        stack && 'flex-col items-start gap-1',
         CHIP_TONE[tone],
         className,
       )}
@@ -235,6 +240,13 @@ export function MetaChip({
       {children}
     </span>
   );
+}
+
+/** The marks under a name in a stacked chip — Coachee, the group — on one
+ *  line of their own. The marks carry a left margin for sitting after text
+ *  inline; at the start of a line that margin is an indent, so it goes. */
+export function MarkRow({ children }: { children: ReactNode }) {
+  return <span className="flex flex-wrap gap-1 [&>*]:ml-0">{children}</span>;
 }
 
 /** A chip that takes a whole line of the chips row to itself, at its own

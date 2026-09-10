@@ -60,7 +60,7 @@ import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, t
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
 import { CoacheeChip, GroupChip } from './components/CoacheeChips';
-import { ChipLine, GameList, GameRow, LeagueLabel, MetaChip, SectionHead, TeamPair, type RowTone } from './components/GameRow';
+import { ChipLine, GameList, GameRow, LeagueLabel, MarkRow, MetaChip, SectionHead, TeamPair, type RowTone } from './components/GameRow';
 import { Skeleton, SkeletonRows } from './components/Skeleton';
 import AppSpinner from './components/AppSpinner';
 import { useRcAuth } from './components/AuthGate';
@@ -4727,7 +4727,7 @@ export default function App() {
       const group = isCoachee ? coacheeGroupOf(name) : undefined;
       return (
         <ChipLine key={role}>
-          <MetaChip wrap tone={isCoachee ? 'amber' : 'stone'}>
+          <MetaChip wrap stack={isCoachee} tone={isCoachee ? 'amber' : 'stone'}>
             <span><span className="font-bold opacity-70">{role}&nbsp;</span>{name}</span>
             {isCoachee && (
               <span className="rounded bg-amber-200/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide">
@@ -5480,22 +5480,30 @@ export default function App() {
                       .filter((r) => r.name)
                       .map((r) => ({ ...r, coachee: !g.noCoachee }));
                 const mixed = crew.some((r) => r.coachee) && crew.some((r) => !r.coachee);
-                return crew.filter((r) => r.name).map((r) => (
-                  <ChipLine key={`${r.name}-${r.role}`}>
-                    <MetaChip wrap tone={mixed && r.coachee ? 'amber' : 'stone'}>
-                      {/* Slot and name in ONE inline box, with a real space
-                          between them. As two flex items they run together into
-                          "2SRSven Fremd" in the accessibility tree — the gap is
-                          drawn, not spoken. */}
-                      <span>
-                        {r.role && <span className="font-bold opacity-70">{r.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
-                        {r.name}
-                      </span>
-                      {mixed && r.coachee && <CoacheeChip />}
-                      <GroupChip group={r.coachee ? coacheeGroupOf(r.name) : undefined} />
-                    </MetaChip>
-                  </ChipLine>
-                ));
+                return crew.filter((r) => r.name).map((r) => {
+                  const group = r.coachee ? coacheeGroupOf(r.name) : undefined;
+                  const marked = (mixed && r.coachee) || !!group;
+                  return (
+                    <ChipLine key={`${r.name}-${r.role}`}>
+                      <MetaChip wrap stack={marked} tone={mixed && r.coachee ? 'amber' : 'stone'}>
+                        {/* Slot and name in ONE inline box, with a real space
+                            between them. As two flex items they run together into
+                            "2SRSven Fremd" in the accessibility tree — the gap is
+                            drawn, not spoken. */}
+                        <span>
+                          {r.role && <span className="font-bold opacity-70">{r.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
+                          {r.name}
+                        </span>
+                        {marked && (
+                          <MarkRow>
+                            {mixed && r.coachee && <CoacheeChip />}
+                            <GroupChip group={group} />
+                          </MarkRow>
+                        )}
+                      </MetaChip>
+                    </ChipLine>
+                  );
+                });
               };
               /** One row of the coach's own lists. `canRemind` only for games
                *  still to come: reminding somebody about a match they have
@@ -5761,10 +5769,11 @@ export default function App() {
                                 : (de ? 'Noch nicht gespielt' : 'Not played yet')}
                             chips={<>
                               <MetaChip tone="me">{de ? 'Du' : 'You'} · {g.rcRole}</MetaChip>
-                              <MetaChip wrap tone="amber">
-                                <span>{g.coacheeName}</span>
-                                <span className="opacity-70">· {g.coacheeRole}</span>
-                                <GroupChip group={coacheeGroupOf(g.coacheeName)} />
+                              <MetaChip wrap stack={!!coacheeGroupOf(g.coacheeName)} tone="amber">
+                                <span>{g.coacheeName} <span className="opacity-70">· {g.coacheeRole}</span></span>
+                                {coacheeGroupOf(g.coacheeName) && (
+                                  <MarkRow><GroupChip group={coacheeGroupOf(g.coacheeName)} /></MarkRow>
+                                )}
                               </MetaChip>
                             </>}
                             // The button stays a button. It is the one thing
@@ -5878,12 +5887,14 @@ export default function App() {
                                 title={de ? 'Feedback öffnen' : 'Open feedback'}
                                 status={<Eye size={15} className="text-stone-400" />}
                                 chips={(
-                                  <MetaChip wrap tone="amber">
+                                  <MetaChip wrap stack={!!coacheeGroupOf(f.coacheeName)} tone="amber">
                                     <span>
                                       {f.role && <span className="font-bold opacity-70">{f.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
                                       {f.coacheeName}
                                     </span>
-                                    <GroupChip group={coacheeGroupOf(f.coacheeName)} />
+                                    {coacheeGroupOf(f.coacheeName) && (
+                                      <MarkRow><GroupChip group={coacheeGroupOf(f.coacheeName)} /></MarkRow>
+                                    )}
                                   </MetaChip>
                                 )}
                               >

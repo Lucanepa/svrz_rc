@@ -122,7 +122,7 @@ PRESIDENT_UI_USERNAME="praesidium"
 PRESIDENT_UI_PASSWORD="<set to open the chair's tabs; unset keeps them shut>"
 
 VM_BASE=""  # game sync base URL
-VM_SYNC_CRON="0 5 * * *"
+VM_SYNC_CRON="0 3 * * *"
 VM_SYNC_TIMEZONE="Europe/Zurich"
 VM_SYNC_MAX_RETRIES="10"
 VM_SYNC_RETRY_DELAY_MS="15000"
@@ -530,7 +530,9 @@ Backend does:
 
 Automatic sync runs inside `server/index.ts`:
 
-- cron default: `0 5 * * *`
+- cron default: `0 3 * * *` — the hour is load-bearing, see "The shared
+  VolleyManager account": it keeps us clear of wiedisync, which shares the one VM
+  login from another host and cannot be locked against
 - timezone default: `Europe/Zurich`
 - retries (cron path): configurable via env vars
 
@@ -724,17 +726,28 @@ protection is disjoint windows and the table below.
 | **Mon 04:00** | `vm_sync` (`vm-sync-check.mjs`) | wiedisync | `VM_ROLE_CLUB` `4cdade68…`, + `SPIELPLANER` `ed24d37c…` for contacts |
 | **daily 04:30** | `svrz_sync` (`svrz-scheduling-sync.mjs`) | wiedisync | same |
 | **every 30 min** | `vm_sync` watchdog retry | wiedisync | same |
-| **daily 03:00 CEST / 04:00 CET** | games sync (`0 5 * * *` Europe/Zurich) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
-| on demand | game + nomination pushes | wiedisync | club |
+| **every 5 min** | Einsatzliste push, for a game ~60 min out | wiedisync | club — ⚠ takes NO claim |
+| **daily 01:00 CEST / 02:00 CET** | games sync (`0 3 * * *` Europe/Zurich) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
+| on demand | game push (booking confirmed) | wiedisync | club |
 | on demand | manual import, contact sync, auth check | svrz_rc | RefereeDelegate / club |
 
-⚠⚠ **KNOWN CLASH, live today.** This repo's games sync is pinned to **05:00
-Europe/Zurich**, which is 03:00 UTC in summer but **04:00 UTC in winter** —
-exactly wiedisync's Monday `vm_sync` slot. From the October DST change to the
-March one, both fire at 04:00 UTC every Monday. wiedisync's crons carry no
-timezone argument and its code comments state UTC. Fixing it means moving one of
-the two off that hour; moving *this* one earlier (e.g. `0 3 * * *` Zurich →
-01:00/02:00 UTC) clears the whole wiedisync block in both halves of the year.
+**Why 03:00 Zürich and not 05:00 (fixed 2026-09-10).** 05:00 Zürich is 03:00 UTC
+in summer but **04:00 UTC in winter** — exactly wiedisync's Monday `vm_sync`
+slot, so for half of every year the two fired at the same minute and whichever
+lost read under the other's role. 03:00 Zürich is 01:00/02:00 UTC, clear of their
+04:00 and 04:30 jobs in both halves of the year. It is also clear of their
+every-5-minutes Einsatzliste push, which only fires for a game kicking off in an
+hour — and nothing kicks off at four in the morning. wiedisync's crons carry no
+timezone argument and its code comments state UTC.
+
+⚠ **The residual risk, and why it is accepted.** wiedisync's Einsatzliste push
+(`*/5 * * * *` → `vm-push-nomination.mjs`) logs into this account and does **not**
+take their own `claimVmAccount`, so it can collide with anything — including
+their own `vm_sync`. Windows cannot fence an event-driven job. A cross-host lease
+was considered and rejected: everything KSCW is on hetzner, this is on
+lenovoserver, and coupling the two at runtime buys less than it costs. The
+mitigations instead are: pick dead hours (above), keep every role hold as short
+as possible, and never leave the account resting in a role we chose.
 
 **If you add or move a VM job:** read this table first, then update **both**
 `svrz_rc/infrastructure.md` and `wiedisync/INFRA.md` in the same change. A window

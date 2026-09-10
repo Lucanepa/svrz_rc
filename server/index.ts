@@ -8288,7 +8288,14 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       const builtForCopies = surveyUrl ? renderFeedbackMail('') : built;
       const subject = built.subject;
 
-      const isTestMode = process.env.FEEDBACK_EMAIL_TEST === '1';
+      // ONE notion of test mode. This used to read the env var here and the
+      // `test_mode` setting again forty lines down, so the two disagreed: the
+      // console toggle suppressed the mail without redirecting it, and with both
+      // set the redirect was computed and then thrown away. Feedback mail in
+      // test mode never actually arrived. `isEmailTestMode()` is the setting,
+      // falling back to the env — the same source the survey notification and
+      // the manual reminder use.
+      const isTestMode = await isEmailTestMode();
       const testRecipient = process.env.FEEDBACK_TEST_RECIPIENT || '';
 
       // Asking for test mode and forgetting the recipient used to deliver the
@@ -8326,11 +8333,14 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         mailSubject = subject;
       }
 
-      const emailTestMode = await isEmailTestMode();
-      if (emailTestMode || misconfiguredTestMode) {
-        if (emailTestMode) console.log(`[feedback-email] TEST_MODE — outbound email suppressed (would send to ${mailTo})`);
+      // Suppress ONLY when test mode has nowhere safe to send. With a recipient
+      // configured the mail goes out to it — redirected, [TEST]-subjected and
+      // stripped of CC/BCC by the branch above — because a test that delivers
+      // nothing cannot show you what the referee would receive.
+      if (misconfiguredTestMode) {
         emailSent = false;
       } else {
+        if (isTestMode) console.log(`[feedback-email] TEST MODE — sending to ${mailTo} instead of the referee`);
         const attachments = emailAttachments([{
           filename: attachmentName,
           content: pdfBuffer,

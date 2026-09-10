@@ -1326,6 +1326,8 @@ export default function App() {
     } catch { /* ignore */ }
     return curSeasonYear;
   });
+  /** "2026/27" — the season as it is spoken and written on every list. */
+  const seasonLabel = `${seasonStartYear}/${String((seasonStartYear + 1) % 100).padStart(2, '0')}`;
   const seasonFrom = `${seasonStartYear}-09-01`;
   const seasonTo = `${seasonStartYear + 1}-04-30`;
   /** Inside the season on screen — or a test game, which is exempt.
@@ -1510,7 +1512,6 @@ export default function App() {
   // ever sent back under this same identity, never a different coach's.
   const outboxOwnerId = rcAuth.rcId || (isPrivileged ? 'admin' : 'anon');
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
-  const [showInfoModal, setShowInfoModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   const [icalInfo, setIcalInfo] = useState<IcalSubscription | null>(null);
   const [icalError, setIcalError] = useState('');
@@ -3446,14 +3447,13 @@ export default function App() {
       if (showConfirmModal !== null) { setShowConfirmModal(null); return; }
       if (sigModalOpen) { setSigModalOpen(false); return; }
       if (demoMailOpen) { setDemoMailOpen(false); return; }
-      if (showInfoModal) { setShowInfoModal(false); return; }
       if (showCalendarModal) { setShowCalendarModal(false); return; }
       if (showEmptyFormModal) { setShowEmptyFormModal(false); return; }
       if (expandedCoacheeId !== null) { setExpandedCoacheeId(null); return; }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showConfirmModal, sigModalOpen, demoMailOpen, showInfoModal, showCalendarModal, showEmptyFormModal, expandedCoacheeId]);
+  }, [showConfirmModal, sigModalOpen, demoMailOpen, showCalendarModal, showEmptyFormModal, expandedCoacheeId]);
 
   const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
   /**
@@ -5280,25 +5280,12 @@ export default function App() {
                   <span className="hidden sm:inline">Admin</span>
                 </button>
                 )}
-                <button
-                  onClick={() => setShowInfoModal(true)}
-                  className="sm:hidden h-9 inline-flex items-center justify-center px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
-                  title={formData.lang === 'DE' ? 'Infos & Dokumente' : 'Info & documents'}
-                  aria-label="Info"
-                >
-                  <Info size={14} />
-                </button>
-                {/* Display only — the season is set once in the admin console
-                    (Einstellungen → Standard-Saison) and everyone follows it. */}
-                <span
-                  // No ml-auto: it pushed the season and everything after it to
-                  // the right edge, so the row that wrapped underneath sat in a
-                  // different place from the one above it.
-                  className="h-9 inline-flex items-center rounded-lg border border-stone-200 bg-stone-50 text-stone-600 text-xs font-medium px-2.5"
-                  title={formData.lang === 'DE' ? 'Saison' : 'Season'}
-                >
-                  {`${seasonStartYear}/${String((seasonStartYear + 1) % 100).padStart(2, '0')}`}
-                </span>
+                {/* No (i) button and no season pill here any more. The button
+                    opened a modal listing the same documents as the "Nützliche
+                    Infos & Dokumente" card further down the page, and the
+                    season — set once in the admin console, followed by
+                    everyone — reads as part of the greeting on Home rather
+                    than as a control that does nothing when tapped. */}
                 {/* The feed is per RC and served by the API, so it needs a real
                     session — the demo has neither. */}
                 {rcAuth.rcName && !isDemoMode() && (
@@ -5602,7 +5589,7 @@ export default function App() {
                     {/* The half mandate is named here rather than squeezed into
                         the goal tile, where "(5 ½)" would read as five and a half. */}
                     <p className="text-sm text-stone-500">
-                      {de ? 'Deine Coaching-Übersicht' : 'Your coaching overview'}
+                      {de ? `Deine Coaching-Übersicht ${seasonLabel}` : `Your ${seasonLabel} coaching overview`}
                       {' '}<InfoHint id="goal" lang={formData.lang} />
                       {/* Only worth saying when it differs from the default —
                           and 'half mandate' no longer exists as a category. */}
@@ -7824,25 +7811,6 @@ export default function App() {
                 )}
               </>
             )}
-          </div>
-        </div>
-      )}
-
-      {showInfoModal && (
-        <div onClick={() => setShowInfoModal(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5">
-            <div className="flex items-start justify-between mb-3">
-              <h3 className="text-base font-bold text-stone-900">{formData.lang === 'DE' ? 'Infos & Dokumente' : 'Info & documents'}</h3>
-              <button onClick={() => setShowInfoModal(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
-            </div>
-            <div className="flex flex-col gap-2.5">
-              <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
-              <a href={`${import.meta.env.BASE_URL}#/guide/${formData.lang === 'DE' ? 'de' : 'en'}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Video size={15} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</a>
-              <button type="button" onClick={() => { setShowInfoModal(false); setShowEmptyFormModal(true); }} disabled={downloadingEmptyForm} className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline text-left disabled:opacity-50"><Download size={15} /> {downloadingEmptyForm ? t.loading : t.downloadEmptyForm}</button>
-              <a href={`${import.meta.env.BASE_URL}docs/Infoschreiben-RC-Wesen-2026-27.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'Infoschreiben RC-Wesen 26/27 (PDF)' : 'RC information sheet 26/27 (PDF)'}</a>
-              <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Download size={15} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
-              <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:underline"><Info size={15} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
-            </div>
           </div>
         </div>
       )}

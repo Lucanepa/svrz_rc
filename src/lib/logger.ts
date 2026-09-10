@@ -272,17 +272,34 @@ export const INSTANT_FAIL_MS = 50;
  *  flight at that moment is cancelled — Chrome reports each one as
  *  "Failed to fetch" — and none of them is news. */
 let leaving = false;
+/** The stronger form: this page is going away because the APP said so, and
+ *  the reload is already running. Nothing clears it — there is nothing left
+ *  to come back to. */
+let reloading = false;
+/** The browser took the page away (`pagehide`, or backgrounding the app). */
+export function noteLeavingPage(): void { leaving = true; }
 /** Say so before calling location.reload(). Both places the app reloads
  *  itself (a new service worker taking over, and crossing between the admin
  *  console and the app) do; on 10.09.2026 a Home request cancelled by one of
  *  them was logged as an API failure. */
-export function noteLeavingPage(): void { leaving = true; }
+export function noteReloadingPage(): void { reloading = true; leaving = true; }
 /** …and back. Nothing used to clear this, so the first `pagehide` of a visit
  *  latched it for good: a page restored from the back/forward cache, or an app
  *  simply brought back to the front, went on filing every later failure as
  *  somebody leaving. The API could then have been down for the rest of that
- *  session with nothing louder than a warning to say so. */
-export function noteBackOnPage(): void { leaving = false; }
+ *  session with nothing louder than a warning to say so.
+ *
+ *  It does not, however, undo a reload the app itself started. Coming back to
+ *  a phone whose service worker updated while it was away runs both in the
+ *  same instant: the update reloads the page, the tab turns visible, and at
+ *  18:33 on 10.09.2026 that order cleared the flag just in time for the three
+ *  Home requests dying in the reload to be mailed out as an API outage. */
+export function noteBackOnPage(): void { if (!reloading) leaving = false; }
+/** Both flags outlive the module, and the test suite shares one process with
+ *  it — a spec that simulates a reload would otherwise downgrade every failure
+ *  the next spec measures. Nothing in the app calls this: a page that really
+ *  reloaded is gone. */
+export function resetPageLifecycle(): void { leaving = false; reloading = false; }
 
 export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving): { evt: string; lvl: ClientLevel } {
   const name = error instanceof Error ? error.name : '';

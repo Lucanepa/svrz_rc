@@ -393,7 +393,7 @@ installErrorAlerts({
   debounceMs: Number(process.env.ERROR_ALERT_DEBOUNCE_MS || 120_000),
   cooldownMs: Number(process.env.ERROR_ALERT_COOLDOWN_MS || 3_600_000),
   maxPerHour: Number(process.env.ERROR_ALERT_MAX_PER_HOUR || 6),
-  send: ({ to, subject, text }) => sendMailResilient({ from: MAIL_FROM, to, subject, text }),
+  send: ({ to, subject, text, html }) => sendMailResilient({ from: MAIL_FROM, to, subject, text, html }),
   log: (level, evt, msg, data) => log[level](evt, msg, data),
 });
 if (!ADMIN_UI_PASSWORD) console.warn('[startup] ADMIN_UI_PASSWORD not set — admin console login disabled.');

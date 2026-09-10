@@ -2502,7 +2502,7 @@ function LogRow({ e, expanded, onToggle, badge, actions }: {
         <span className="shrink-0 text-stone-500 break-all">{e.evt}</span>
         {badge}
         <span className="order-last sm:order-none w-full sm:w-auto sm:flex-1 min-w-0 text-stone-800 break-words">{e.msg}</span>
-        {e.user && <span className="ml-auto shrink-0 text-stone-400 truncate max-w-[45%]">{e.user}</span>}
+        {personLabel(e.user) && <span className="ml-auto shrink-0 text-stone-400 truncate max-w-[45%]">{personLabel(e.user)}</span>}
       </div>
       {actions && <div className="flex flex-wrap gap-1.5 mt-1">{actions}</div>}
       {expanded && (
@@ -2512,6 +2512,17 @@ function LogRow({ e, expanded, onToggle, badge, actions }: {
       )}
     </div>
   );
+}
+
+// `/api/client-logs` takes no session — a beacon fires after logout — so the
+// name in a batch is whatever the caller claimed, and the store marks one it
+// cannot tie to a session as `unverified:<name>`. That belongs to the ingest,
+// not to the person: reading it beside a name suggested the coach had an auth
+// problem, when in truth the browser had simply shipped that batch without its
+// cookie. The row shows the person; the raw value is still in the entry the
+// row expands to, and still what a search for "unverified" matches.
+function personLabel(user: string | undefined): string | undefined {
+  return user?.replace(/^unverified:/, '') || undefined;
 }
 
 const logActionBtn = 'inline-flex items-center gap-1 h-7 px-2 rounded-md border border-stone-200 text-[11px] font-medium text-stone-600 hover:bg-stone-100 transition-colors';
@@ -2810,7 +2821,7 @@ function LogHistory({ t, lang, active }: { t: T; lang: Lang; active: boolean }) 
               </div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-[10px] text-stone-400">
                 <span>{t.logsFirstLast(clockLabel(g.first, { seconds: true }), clockLabel(g.last, { seconds: true }))}</span>
-                {g.users.length > 0 && <span className="truncate max-w-[50%]">{g.users.join(', ')}</span>}
+                {g.users.length > 0 && <span className="truncate max-w-[50%]">{[...new Set(g.users.map((u) => personLabel(u) ?? u))].join(', ')}</span>}
               </div>
               <div className="flex flex-wrap gap-1.5 mt-1.5">
                 <button disabled={busy} onClick={() => void annotate(g.hashes, 'solved')} className={logActionBtn}><CheckCheck size={12} />{t.logsSolveGroup}</button>

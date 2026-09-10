@@ -1,5 +1,8 @@
 import { test, expect } from '@playwright/test';
-import { classifyFetchFailure, INSTANT_FAIL_MS, isResizeObserverLoopNotice } from '../src/lib/logger';
+import {
+  classifyFetchFailure, INSTANT_FAIL_MS, isResizeObserverLoopNotice,
+  noteLeavingPage, noteBackOnPage, noteReloadingPage, resetPageLifecycle,
+} from '../src/lib/logger';
 
 /**
  * A fetch that rejects before it could have reached the network is the
@@ -41,5 +44,30 @@ test.describe('the ResizeObserver loop notice', () => {
   test('a real error that merely mentions the observer is not', () => {
     expect(isResizeObserverLoopNotice("TypeError: Cannot read properties of undefined (reading 'ResizeObserver')")).toBe(false);
     expect(isResizeObserverLoopNotice(undefined)).toBe(false);
+  });
+});
+
+/**
+ * Which of the two ways a page goes away survives coming back. Backgrounding
+ * does not — the tab is there again, and a failure after that is real news.
+ * A reload the app started does: there is nothing to come back to.
+ */
+test.describe('a reload the app started itself', () => {
+  test.afterEach(() => resetPageLifecycle());
+
+  test('is not undone by the tab turning visible in the same instant', () => {
+    // 18:33 on 10.09.2026. A phone picked up after half an hour ran both at
+    // once: the waiting service worker took over and reloaded the page, and the
+    // tab turned visible. Coming back cleared the flag just in time for the
+    // three Home requests dying in that reload to be mailed as an API outage.
+    noteReloadingPage();
+    noteBackOnPage();
+    expect(classifyFetchFailure(260, new TypeError('Load failed'))).toEqual({ evt: 'net.fail.unload', lvl: 'warn' });
+  });
+
+  test('whereas merely being backgrounded is undone, and failures are loud again', () => {
+    noteLeavingPage();
+    noteBackOnPage();
+    expect(classifyFetchFailure(260, new TypeError('Load failed'))).toEqual({ evt: 'net.fail', lvl: 'error' });
   });
 });

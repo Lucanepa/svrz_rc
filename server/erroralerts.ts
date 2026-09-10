@@ -17,7 +17,7 @@
 import { onEntry, type LogEntry } from './logstore.ts';
 import { entryGroup, readNotes, type MuteRule } from './logquery.ts';
 
-export type AlertMailer = (message: { to: string; subject: string; text: string }) => Promise<unknown>;
+export type AlertMailer = (message: { to: string; subject: string; text: string; html: string }) => Promise<unknown>;
 
 type Options = {
   send: AlertMailer;
@@ -110,35 +110,110 @@ export function installErrorAlerts(opts: Options): void {
     return new Date(t).toLocaleString('en-GB', { timeZone: zone, hour12: false });
   }
 
-  function compose(groups: Pending[], swallowed: number): { subject: string; text: string } {
+  /** A burst that started and ended in the same second is one moment, not a
+   *  range: printing "10/09/2026, 18:33:13 → 10/09/2026, 18:33:13" made the
+   *  reader parse two timestamps to learn there was only one. */
+  function when(first: number | string | Date, last: number | string | Date): string {
+    const [firstDay, firstTime] = stamp(first).split(', ');
+    const [lastDay, lastTime] = stamp(last).split(', ');
+    if (firstDay === lastDay && firstTime === lastTime) return `${firstDay} ${firstTime}`;
+    if (firstDay === lastDay) return `${firstDay} ${firstTime} → ${lastTime}`;
+    return `${firstDay} ${firstTime} → ${lastDay} ${lastTime}`;
+  }
+
+  // The log files a name the ingest endpoint could not tie to a session as
+  // `unverified:<name>` — /api/client-logs takes no session on purpose (a
+  // beacon fires after logout), so an anonymous POST must not be able to file
+  // lines under a real coach's name. That marker is a property of the ingest,
+  // not of the person, and reading it in an alert only ever raised the wrong
+  // question: for months half of every coach's lines carried it simply because
+  // the browser shipped the batch without its cookie. The entry keeps it — the
+  // Protokoll can still be searched for it — the mail shows the person.
+  const UNVERIFIED = 'unverified:';
+  function people(users: Set<string>): string[] {
+    const names = new Set<string>();
+    for (const u of users) {
+      const name = u.startsWith(UNVERIFIED) ? u.slice(UNVERIFIED.length) : u;
+      if (name) names.add(name);
+    }
+    return [...names];
+  }
+
+  function esc(value: string): string {
+    return value.replace(/[&<>"]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;'));
+  }
+
+  // Inline styles and tables only, and every colour stated outright: a mail
+  // has no stylesheet, no fonts of its own, and a client that decides to
+  // invert an unstated background is how an alert arrives unreadable.
+  const C = {
+    page: '#f5f5f4', card: '#ffffff', line: '#e7e5e4', ink: '#1c1917',
+    mute: '#78716c', app: '#4f46e5', red: '#dc2626', code: '#292524',
+  };
+  const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+  const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
+
+  function chip(text: string, color: string, background: string): string {
+    return `<span style="display:inline-block;padding:2px 7px;border-radius:6px;font:600 11px/1.6 ${MONO};color:${color};background:${background};white-space:nowrap">${esc(text)}</span>`;
+  }
+
+  function card(g: Pending): string {
+    const e = g.last;
+    const source = e.src === 'client' ? 'App' : 'Server';
+    const meta: string[] = [esc(when(g.first.t, e.t))];
+    const names = people(g.users);
+    if (names.length) meta.push(esc(names.slice(0, 8).join(', ')));
+    if (g.sessions.size) meta.push(`Session ${esc([...g.sessions].slice(0, 5).join(', '))}`);
+    if (e.reqId) meta.push(`reqId ${esc(e.reqId)}`);
+    const data = describe(e);
+    return [
+      `<tr><td style="padding:0 0 12px">`,
+      `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.card};border:1px solid ${C.line};border-left:3px solid ${C.red};border-radius:10px">`,
+      `<tr><td style="padding:14px 16px">`,
+      `<div style="margin:0 0 8px">`,
+      `${g.count > 1 ? `${chip(`${g.count}×`, '#ffffff', C.ink)}&nbsp;` : ''}`,
+      `${chip(source, e.src === 'client' ? C.app : C.mute, C.page)}&nbsp;`,
+      `<span style="font:600 12px/1.6 ${MONO};color:${C.mute}">${esc(e.evt)}</span>`,
+      `</div>`,
+      `<div style="font:500 15px/1.45 ${FONT};color:${C.ink};word-break:break-word">${esc(e.msg || '(no message)')}</div>`,
+      `<div style="margin-top:8px;font:400 12px/1.7 ${FONT};color:${C.mute};word-break:break-word">${meta.join(' &nbsp;·&nbsp; ')}</div>`,
+      data ? `<pre style="margin:12px 0 0;padding:10px 12px;background:${C.code};color:#e7e5e4;border-radius:8px;font:400 11px/1.6 ${MONO};white-space:pre-wrap;word-break:break-word">${esc(data)}</pre>` : '',
+      `</td></tr></table></td></tr>`,
+    ].join('');
+  }
+
+  function compose(groups: Pending[], swallowed: number): { subject: string; text: string; html: string } {
     const total = groups.reduce((sum, g) => sum + g.count, 0);
     const head = groups[0];
     const headline = `${head.last.evt}: ${head.last.msg || '(no message)'}`.slice(0, 90);
     const subject = groups.length === 1 && total === 1
       ? `[SVRZ RC] Error — ${headline}`
       : `[SVRZ RC] ${total} errors in ${groups.length} ${groups.length === 1 ? 'kind' : 'kinds'} — ${headline}`;
+    const shown = groups.slice(0, MAX_GROUPS_PER_MAIL);
+    const hidden = groups.length - shown.length;
+    const summary = `${total} error${total === 1 ? '' : 's'} in ${groups.length} ${groups.length === 1 ? 'kind' : 'kinds'}`
+      + `${swallowed ? `, ${swallowed} more suppressed by the cooldown` : ''}`;
 
-    const lines: string[] = [
-      `${total} error${total === 1 ? '' : 's'}${swallowed ? ` (+${swallowed} more suppressed, see cooldown)` : ''} in the last few minutes.`,
-      '',
-    ];
-    for (const g of groups.slice(0, MAX_GROUPS_PER_MAIL)) {
+    // The plain-text half is not a fallback nobody reads: it is what a phone
+    // notification previews, and what the terminal shows when the mail is
+    // piped through anything at all. Same content, same order.
+    const lines: string[] = [`${summary}, in the last few minutes.`, ''];
+    for (const g of shown) {
       const e = g.last;
       lines.push(
         `── ${g.count}× ${e.src === 'client' ? 'App' : 'Server'} · ${e.evt}`,
         `   ${e.msg || '(no message)'}`,
-        `   first ${stamp(g.first.t)} · last ${stamp(e.t)}`,
+        `   ${when(g.first.t, e.t)}`,
       );
-      if (g.users.size) lines.push(`   People: ${[...g.users].slice(0, 8).join(', ')}`);
+      const names = people(g.users);
+      if (names.length) lines.push(`   People: ${names.slice(0, 8).join(', ')}`);
       if (g.sessions.size) lines.push(`   Sessions: ${[...g.sessions].slice(0, 5).join(', ')}`);
       if (e.reqId) lines.push(`   reqId: ${e.reqId}`);
       const data = describe(e);
       if (data) lines.push(data.split('\n').map((l) => `   ${l}`).join('\n'));
       lines.push('');
     }
-    if (groups.length > MAX_GROUPS_PER_MAIL) {
-      lines.push(`… and ${groups.length - MAX_GROUPS_PER_MAIL} more error kinds.`, '');
-    }
+    if (hidden) lines.push(`… and ${hidden} more error kind${hidden === 1 ? '' : 's'}.`, '');
     lines.push(
       `Everything in the log: ${opts.consoleUrl}`,
       '',
@@ -146,7 +221,26 @@ export function installErrorAlerts(opts: Options): void {
       'reports again in an hour at the earliest; a whole error kind can be muted',
       'in the admin console.',
     );
-    return { subject, text: lines.join('\n') };
+
+    const html = [
+      `<div style="margin:0;padding:20px 12px;background:${C.page};color-scheme:light">`,
+      `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;margin:0 auto">`,
+      `<tr><td style="padding:0 0 14px">`,
+      `<div style="font:600 11px/1.6 ${FONT};letter-spacing:.08em;text-transform:uppercase;color:${C.mute}">SVRZ Referee Coaching</div>`,
+      `<div style="font:600 20px/1.35 ${FONT};color:${C.ink};margin-top:2px">${esc(summary)}</div>`,
+      `<div style="font:400 13px/1.6 ${FONT};color:${C.mute}">in the last few minutes</div>`,
+      `</td></tr>`,
+      shown.map(card).join(''),
+      hidden ? `<tr><td style="padding:0 0 12px;font:400 13px/1.6 ${FONT};color:${C.mute}">… and ${hidden} more error kind${hidden === 1 ? '' : 's'} in the console.</td></tr>` : '',
+      `<tr><td style="padding:4px 0 0">`,
+      `<a href="${esc(opts.consoleUrl)}" style="display:inline-block;padding:10px 16px;border-radius:8px;background:${C.ink};color:#ffffff;font:600 13px/1 ${FONT};text-decoration:none">Open the log</a>`,
+      `</td></tr>`,
+      `<tr><td style="padding:14px 0 0;font:400 12px/1.7 ${FONT};color:${C.mute}">`,
+      `This message comes from the server itself. If the same error repeats it reports again in an hour at the earliest, and a whole error kind can be muted in the admin console.`,
+      `</td></tr></table></div>`,
+    ].join('');
+
+    return { subject, text: lines.join('\n'), html };
   }
 
   async function flush(): Promise<void> {
@@ -167,7 +261,7 @@ export function installErrorAlerts(opts: Options): void {
     const swallowed = [...cooling.values()].reduce((sum, c) => sum + c.swallowed, 0);
     for (const c of cooling.values()) c.swallowed = 0;
 
-    const { subject, text } = compose(groups, swallowed);
+    const { subject, text, html } = compose(groups, swallowed);
     // TEST_MODE suppresses every outbound mail in this app; an alert is no
     // exception, but it still says what it would have sent, so a test run shows
     // the alerting works without mailing anyone.
@@ -177,7 +271,7 @@ export function installErrorAlerts(opts: Options): void {
     }
     sending = true;
     try {
-      await opts.send({ to: recipients.join(', '), subject, text });
+      await opts.send({ to: recipients.join(', '), subject, text, html });
       sentTimestamps.push(Date.now());
       opts.log('info', 'alert.sent', `error alert mailed (${groups.length} group(s))`, { groups: groups.length, recipients: recipients.length });
     } catch (error) {

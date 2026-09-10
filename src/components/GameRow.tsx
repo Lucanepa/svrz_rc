@@ -302,8 +302,12 @@ export type GameRowProps = Keyed & {
    *  where there is no room beside anything. Always a sibling of the clickable
    *  region, never a child: a button inside a button is invalid markup. */
   action?: ReactNode;
-  /** Icon-sized controls pinned to the right edge — reminder, give back. Same
-   *  sibling rule as `action`. */
+  /** The row's own toolbar — open, reminder, give back — as labelled buttons on
+   *  a line of their own under the game, at every width. As an icon column
+   *  pinned to the right edge they took a fifth of a phone's width, so team
+   *  names wrapped and a long coachee chip ran under the first icon; and
+   *  three bare icons in a column still had to be guessed at. Same sibling
+   *  rule as `action`. */
   tools?: ReactNode;
   /** Makes the row itself open something. Without it the row is inert text. */
   onOpen?: () => void;
@@ -387,7 +391,14 @@ export function GameRow({
       ) : (
         <div className="flex min-w-0 flex-1 basis-0 items-stretch gap-2.5 px-1.5 py-2.5 sm:gap-3 sm:px-2">{body}</div>
       )}
-      {tools && <div className="flex shrink-0 items-stretch">{tools}</div>}
+      {tools && (
+        // Full width on a phone, where three labelled buttons need every
+        // pixel between the gutters; indented to the body's left edge from
+        // `sm`, where they sit under the teams as the row's own toolbar.
+        <div className="flex basis-full items-center gap-1.5 px-1.5 pb-2.5 sm:gap-2 sm:pl-[6.625rem] sm:pr-2">
+          {tools}
+        </div>
+      )}
       {action && (
         <div className="flex basis-full items-center pb-2 pl-[4.25rem] pr-1.5 sm:basis-auto sm:pb-0 sm:pl-2 sm:pr-2">
           {action}

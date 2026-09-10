@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId } from 'react';
-import { Maximize2, Download, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, Lock, Mail, AlertTriangle } from 'lucide-react';
+import { Maximize2, Download, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, PAID_CAP, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
@@ -5496,6 +5496,10 @@ export default function App() {
               /** One row of the coach's own lists. `canRemind` only for games
                *  still to come: reminding somebody about a match they have
                *  already refereed is noise. */
+              /** One of the row's three buttons: an equal third of the line on
+               *  a phone, a compact fixed-width button from `sm`, where three
+               *  thirds of a laptop row would be three slabs. */
+              const HOME_TOOL_BTN = 'inline-flex h-8 flex-1 basis-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-1.5 text-[11px] font-medium transition-colors sm:flex-none sm:basis-auto sm:px-3 sm:text-xs';
               const gameRow = (g: HomeGame, key: string, canRemind = false, tone: RowTone = 'red') => (
                 <GameRow
                   key={key}
@@ -5511,17 +5515,21 @@ export default function App() {
                     {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
                     {crewChips(g)}
                   </>}
-                  // The eye rides with the other two rather than sitting in
-                  // the body's top-right corner, where it was a lone icon on a
-                  // line of its own above them.
+                  // Three labelled buttons on their own line under the game
+                  // — see GameRow's `tools`. The pen, not an eye: the button
+                  // starts writing an observation, it does not look at one.
+                  // The labels are the short German/English words that fit
+                  // three abreast on a phone; the accessible names stay the
+                  // full ones the tests and screen readers know.
                   tools={<>
                     <button
                       onClick={() => startFromSummary(g)}
                       aria-label={de ? 'Spiel öffnen' : 'Open game'}
                       title={de ? 'Spiel öffnen' : 'Open game'}
-                      className="flex w-9 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-600"
+                      className={cn(HOME_TOOL_BTN, 'bg-slate-900 text-white hover:bg-slate-800')}
                     >
-                      <Eye size={15} />
+                      <PenLine size={13} className="shrink-0" />
+                      {de ? 'Beobachten' : 'Observe'}
                     </button>
                     {canRemind && (
                       <button
@@ -5530,18 +5538,20 @@ export default function App() {
                         title={de
                           ? 'Erinnerungs-Mail jetzt senden — sonst automatisch am Vortag um 10:00'
                           : 'Send the reminder mail now — otherwise automatically at 10:00 the day before'}
-                        className="flex w-9 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-600"
+                        className={cn(HOME_TOOL_BTN, 'border border-stone-300 bg-white text-stone-600 hover:bg-stone-50')}
                       >
-                        <Mail size={15} />
+                        <Mail size={13} className="shrink-0" />
+                        {de ? 'Erinnerung' : 'Reminder'}
                       </button>
                     )}
                     <button
                       onClick={() => void giveBackFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
                       aria-label={de ? 'Spiel abgeben' : 'Give game back'}
                       title={de ? 'Spiel abgeben — es wird wieder für alle frei' : 'Give the game back — it becomes free for everyone'}
-                      className="flex w-9 items-center justify-center rounded-md text-stone-400 transition-colors hover:bg-stone-100 hover:text-red-600"
+                      className={cn(HOME_TOOL_BTN, 'border border-stone-300 bg-white text-stone-600 hover:bg-stone-50')}
                     >
-                      <RotateCcw size={15} />
+                      <RotateCcw size={13} className="shrink-0" />
+                      {de ? 'Abgeben' : 'Give back'}
                     </button>
                   </>}
                 >
@@ -6449,7 +6459,7 @@ export default function App() {
                                                 onClick={() => handleSelectGame(game, coachee.full_name)}
                                                 className="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-md bg-slate-900 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-slate-800 sm:flex-none"
                                               >
-                                                <Eye size={12} />{de ? 'Beobachten' : 'Observe'}
+                                                <PenLine size={12} />{de ? 'Beobachten' : 'Observe'}
                                               </button>
                                               <button
                                                 onClick={() => void giveBackGame(game.id, `${game.homeTeam} vs ${game.awayTeam}`, de)}
@@ -6687,7 +6697,7 @@ export default function App() {
                                       disabled={!canObserve}
                                       className={cn("h-9 px-3 text-sm font-medium rounded-md transition-colors", canObserve ? "bg-slate-900 text-white hover:bg-slate-800 cursor-pointer" : "bg-stone-200 text-stone-400 cursor-not-allowed")}
                                     >
-                                      <Eye size={14} className="inline mr-1.5 -mt-0.5" />
+                                      <PenLine size={14} className="inline mr-1.5 -mt-0.5" />
                                       {formData.lang === 'DE' ? 'Beobachtung starten' : 'Start observation'}
                                     </button>
                                       );
@@ -7039,7 +7049,7 @@ export default function App() {
                                         onClick={() => handleSelectGame(eg, selectedCoacheeName)}
                                         className="inline-flex h-8 items-center gap-1.5 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
                                       >
-                                        <Eye size={13} />
+                                        <PenLine size={13} />
                                         {de ? 'Beobachtung starten' : 'Start observation'}
                                       </button>
                                       <button

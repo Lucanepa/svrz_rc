@@ -23,6 +23,12 @@ import {
   type SurveyConfig, type SurveyLang,
 } from '../src/lib/survey.ts';
 
+// One VolleyManager account, and the active role lives on the ACCOUNT rather
+// than on a session — so two jobs that need different roles cannot be in flight
+// together without one of them reading under the other's role. That failure is
+// not a 403: it is a clean 200 with the wrong rows.
+import { withVmLock, vmFetch } from './vmlock.ts';
+
 // Before anything else runs: every console.* call in this process — ours, a
 // dependency's, a stray debug line in a handler — becomes a log entry too.
 // Otherwise it exists only in the container's stdout, which the next redeploy
@@ -1732,7 +1738,7 @@ async function followRedirects(
   let currentInit = init;
 
   for (let i = 0; i < maxRedirects; i += 1) {
-    const response = await fetch(currentUrl, {
+    const response = await vmFetch(currentUrl, {
       ...currentInit,
       headers: {
         'User-Agent': userAgent,
@@ -1812,7 +1818,7 @@ async function vmSwitchRole(jar: CookieJar, csrfToken: string, attributeValueId:
     const body = new URLSearchParams();
     body.set('attributeValueAsArray[0]', attributeValueId);
     body.set('__csrfToken', csrfToken);
-    const res = await fetch(`${VM_BASE}/api/sportmanager.security/api%5cparty/switchRoleAndAttribute`, {
+    const res = await vmFetch(`${VM_BASE}/api/sportmanager.security/api%5cparty/switchRoleAndAttribute`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -1989,7 +1995,14 @@ const VM_CONTACT_COLUMNS = [
 ];
 const VM_CONTACT_PAGE_SIZE = 400;
 
+// Wrapped here rather than at its two call sites, because both of them are
+// independent top-level operations and neither runs inside another VM job —
+// the lock is NOT reentrant, so it must be taken at exactly one level.
 async function fetchVmRefereeContacts(username: string, password: string): Promise<VmRefereeContact[]> {
+  return withVmLock('contacts-sync', () => fetchVmRefereeContactsUnlocked(username, password));
+}
+
+async function fetchVmRefereeContactsUnlocked(username: string, password: string): Promise<VmRefereeContact[]> {
   const jar = new CookieJar();
   jar.set('language', 'de');
   const { body: loginHtml } = await followRedirects(`${VM_BASE}/login`, jar, {}, 10);
@@ -2049,7 +2062,7 @@ async function fetchVmRefereeContacts(username: string, password: string): Promi
   // where it was and ask VolleyManager for the very same page forever.
   let offset = 0;
   while (offset < total) {
-    const response = await fetch(url, { method: 'POST', headers, body: body(offset) });
+    const response = await vmFetch(url, { method: 'POST', headers, body: body(offset) });
     if (!response.ok) {
       throw new Error(`VolleyManager referee list failed: ${response.status} ${(await response.text()).slice(0, 120)}`);
     }
@@ -2111,7 +2124,7 @@ async function fetchAllVmGames(
   }
 
   console.log(`[vm] Fetching games from ${from} to ${to} — first batch...`);
-  const firstResponse = await fetch(url, {
+  const firstResponse = await vmFetch(url, {
     method: 'POST',
     headers,
     body: buildVmSearchBody(csrfToken, 0, VM_BATCH_SIZE, from, to),
@@ -2129,7 +2142,7 @@ async function fetchAllVmGames(
 
   while (items.length < total) {
     console.log(`[vm] Fetching batch at offset ${items.length}/${total}...`);
-    const response = await fetch(url, {
+    const response = await vmFetch(url, {
       method: 'POST',
       headers,
       body: buildVmSearchBody(csrfToken, items.length, VM_BATCH_SIZE, from, to),
@@ -3042,7 +3055,17 @@ async function recordGamesSyncStatus(status: GamesSyncStatus): Promise<void> {
   }
 }
 
+// The account lock is taken ONCE, around the whole retry loop, not per attempt.
+// Releasing between attempts would let the contact sync or the börse poller
+// switch the account's role into the gap, and the next attempt would then fail
+// for a different reason than the one being retried. Eleven attempts at a
+// 45-second request deadline plus 15-second waits stay inside the takeover
+// window, so a wedged run still cannot hold the account for good.
 async function runGamesSyncWithRetry(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
+  return withVmLock('games-sync', () => runGamesSyncRetryLoop(windowInput));
+}
+
+async function runGamesSyncRetryLoop(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
   let lastError: unknown = null;
   const totalAttempts = VM_SYNC_MAX_RETRIES + 1;
 
@@ -3082,6 +3105,10 @@ async function runGamesSyncWithRetry(windowInput: { date?: unknown; from?: unkno
 }
 
 async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
+  return withVmLock('games-sync-debug', () => runGamesSyncDebugUnlocked(windowInput));
+}
+
+async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
   const vmUsername = asText(process.env.VM_USERNAME);
   const vmPassword = asText(process.env.VM_PASSWORD);
   if (!vmUsername || !vmPassword) {
@@ -3197,7 +3224,14 @@ async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; 
   };
 }
 
+// Also locked: it logs in and, through vmLogin, re-asserts the games role on the
+// shared account — so an admin pressing "Check" mid-sync would move the role
+// under a job that is already paging.
 async function runVmAuthCheck(debug = false) {
+  return withVmLock('vm-auth-check', () => runVmAuthCheckUnlocked(debug));
+}
+
+async function runVmAuthCheckUnlocked(debug = false) {
   const vmUsername = asText(process.env.VM_USERNAME);
   const vmPassword = asText(process.env.VM_PASSWORD);
   if (!vmUsername || !vmPassword) {
@@ -6610,7 +6644,9 @@ app.get('/api/admin/games/sync-status', requireAdminSession, async (_req: Reques
 // same trace or the card keeps showing last night's run as the latest word.
 app.post('/api/games/sync', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
-    const result = await runGamesSync(req.body ?? {});
+    // Clicking "Import now" twice, or clicking it at 05:00, must not put two
+    // sessions on the one VM account at the same time.
+    const result = await withVmLock('games-sync-manual', () => runGamesSync(req.body ?? {}));
     await recordGamesSyncStatus({
       at: new Date().toISOString(),
       ok: true,

@@ -8939,7 +8939,15 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
       return;
     }
 
-    if (await isEmailTestMode()) {
+    // Test mode REDIRECTS, it does not suppress — the same contract every other
+    // mail here follows (survey notification, RC-game note). It used to answer
+    // `suppressed: true` and send nothing, which made the one button that exists
+    // for trying a reminder out the one thing test mode stopped you trying.
+    // Without a recipient configured there is nowhere safe to send, so that case
+    // still suppresses rather than falling through to the coachee.
+    const testMode = await isEmailTestMode();
+    const testRecipient = asText(process.env.FEEDBACK_TEST_RECIPIENT);
+    if (testMode && !testRecipient) {
       res.json({ sent: 0, suppressed: true, recipients: plans.map((p) => p.to) });
       return;
     }
@@ -8948,10 +8956,11 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
     for (const plan of plans) {
       await sendMailResilient({
         from: MAIL_FROM,
-        to: plan.to,
-        cc: plan.cc.length ? plan.cc : undefined,
+        to: testMode ? testRecipient : plan.to,
+        // No cc in test mode: the copy list carries real addresses too.
+        cc: !testMode && plan.cc.length ? plan.cc : undefined,
         replyTo: plan.replyTo || undefined,
-        subject: plan.subject,
+        subject: testMode ? `[TEST → ${plan.to}] ${plan.subject}` : plan.subject,
         html: plan.html,
         text: plan.text,
         attachments: emailAttachments(),
@@ -8959,12 +8968,16 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
       delivered.push(plan);
     }
     // Stamped with the game's own day, which is the key the 10:00 run computes
-    // for it — see runMatchReminders.
-    await markRemindersSent(delivered, () => zonedDateOf(asText(game.match_date)));
+    // for it — see runMatchReminders. Skipped in test mode: marking a game
+    // reminded because a test copy went to the tester would make the real run
+    // skip the coachee, which is the one outcome a test must not cause.
+    if (!testMode) {
+      await markRemindersSent(delivered, () => zonedDateOf(asText(game.match_date)));
+    }
     log.info('reminder.manual', 'reminder sent by hand', {
       game: asText(game.match_no) || gameId, by: rcAuth?.name || 'admin', recipients: delivered.length,
     });
-    res.json({ sent: delivered.length, suppressed: false, recipients: delivered.map((p) => p.to) });
+    res.json({ sent: delivered.length, suppressed: false, testMode, recipients: delivered.map((p) => (testMode ? testRecipient : p.to)) });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

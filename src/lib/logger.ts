@@ -309,11 +309,24 @@ function isOpaqueCrossOriginError(e: ErrorEvent): boolean {
   return !e.error && !e.filename && !e.lineno && /^script error\.?$/i.test((e.message || '').trim());
 }
 
+/**
+ * "ResizeObserver loop completed with undelivered notifications." is the
+ * browser noting that an observer callback changed layout within the frame it
+ * was measuring, so it skipped one round of notifications and delivered them
+ * on the next. Nothing fails and nothing is lost; the browser itself never
+ * throws it, it only announces it on the window. It arrived as a js.error
+ * from #/admin/emails on 10.09.2026 and paged the operator for a layout tick.
+ * Exported so the rule can be tested without a browser.
+ */
+export function isResizeObserverLoopNotice(message: string | undefined): boolean {
+  return /^ResizeObserver loop (completed with undelivered notifications|limit exceeded)\.?$/i.test((message || '').trim());
+}
+
 function installErrorLogging(): void {
   window.addEventListener('error', (e) => {
     // Resource load failures (img/script/css) surface here with no `error`.
     if (e.error || e.message) {
-      const level = isOpaqueCrossOriginError(e) ? 'warn' : 'error';
+      const level = isOpaqueCrossOriginError(e) || isResizeObserverLoopNotice(e.message) ? 'warn' : 'error';
       const evt = level === 'warn' ? 'js.error.opaque' : 'js.error';
       clientLog[level](evt, e.message || 'window error', { error: e.error, file: e.filename, line: e.lineno, col: e.colno });
     } else {

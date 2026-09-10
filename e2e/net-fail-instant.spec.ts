@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { classifyFetchFailure, INSTANT_FAIL_MS } from '../src/lib/logger';
+import { classifyFetchFailure, INSTANT_FAIL_MS, isResizeObserverLoopNotice } from '../src/lib/logger';
 
 /**
  * A fetch that rejects before it could have reached the network is the
@@ -22,5 +22,17 @@ test.describe('classifying a fetch that got no response', () => {
   test("the app's own cancellation is never downgraded on speed alone", () => {
     const abort = new DOMException('The user aborted a request.', 'AbortError');
     expect(classifyFetchFailure(3, abort)).toEqual({ evt: 'net.fail', lvl: 'error' });
+  });
+});
+
+test.describe('the ResizeObserver loop notice', () => {
+  test('is recognised in both wordings browsers use', () => {
+    expect(isResizeObserverLoopNotice('ResizeObserver loop completed with undelivered notifications.')).toBe(true);
+    expect(isResizeObserverLoopNotice('ResizeObserver loop limit exceeded')).toBe(true);
+  });
+
+  test('a real error that merely mentions the observer is not', () => {
+    expect(isResizeObserverLoopNotice("TypeError: Cannot read properties of undefined (reading 'ResizeObserver')")).toBe(false);
+    expect(isResizeObserverLoopNotice(undefined)).toBe(false);
   });
 });

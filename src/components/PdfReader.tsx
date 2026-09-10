@@ -43,6 +43,8 @@ const STR = {
     scanning: (a: number, b: number) => `Seite ${a} von ${b} durchsucht…`,
     page: 'Seite',
     of: 'von',
+    /** In front of a page number in the list of hits, where space is short. */
+    pageShort: 'S.',
     loading: 'Dokument wird geladen…',
     failed: 'Das Dokument liess sich nicht laden.',
     original: 'Original öffnen',
@@ -59,6 +61,7 @@ const STR = {
     scanning: (a: number, b: number) => `searched page ${a} of ${b}…`,
     page: 'Page',
     of: 'of',
+    pageShort: 'p.',
     loading: 'Loading the document…',
     failed: 'The document could not be loaded.',
     original: 'Open the original',
@@ -369,7 +372,7 @@ export default function PdfReader({ url, title, originalHref, lang, onClose }: P
                   onClick={() => goToHit(i)}
                   className={`w-full text-left px-3 py-1.5 text-xs hover:bg-stone-800 ${i === hitIndex ? 'bg-stone-800 text-stone-100' : 'text-stone-400'}`}
                 >
-                  <span className="text-stone-500 tabular-nums mr-2">S. {hit.page}</span>
+                  <span className="text-stone-500 tabular-nums mr-2">{t.pageShort} {hit.page}</span>
                   {hit.snippet}
                 </button>
               </li>

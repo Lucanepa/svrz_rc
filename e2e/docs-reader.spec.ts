@@ -51,7 +51,7 @@ test('searching the document finds the word and jumps to it', async ({ page }) =
   // and accents on both sides, the way every other lookup in this app does.
   await reader.getByPlaceholder(/Im Dokument suchen|Search this document/).fill('halle');
   await expect(reader.getByText(/^\d+\/\d+$/)).toBeVisible({ timeout: 20_000 });
-  await expect(reader.getByRole('button', { name: /S\. \d+/ }).first()).toBeVisible();
+  await expect(reader.getByRole('button', { name: /(S\.|p\.) \d+/ }).first()).toBeVisible();
 });
 
 test('Escape gives the page back', async ({ page }) => {

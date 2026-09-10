@@ -96,7 +96,9 @@ test.describe('the VolleyManager account lock', () => {
 
   test('the poller runs when the account is free', async () => {
     const poll = await tryVmLock('boerse-poll', async () => 37);
-    expect(poll).toEqual({ ran: true, value: 37 });
+    // `blockedBy` is '' rather than absent: the result is a FLAT type, because
+    // this tsconfig has no `strict` and a boolean tag would not narrow.
+    expect(poll).toEqual({ ran: true, value: 37, blockedBy: '' });
     expect(vmLockHeldBy()).toBeNull();
   });
 
@@ -120,7 +122,7 @@ test.describe('the VolleyManager account lock', () => {
     const hung = withVmLock('boerse-poll', async () => { await stuck.waited; return 'late'; });
 
     const rescued = await tryVmLock('games-sync', async () => 'got in');
-    expect(rescued).toEqual({ ran: true, value: 'got in' });
+    expect(rescued).toEqual({ ran: true, value: 'got in', blockedBy: '' });
 
     // the abandoned job still settles, and its release does not steal the lock
     // from whoever holds it by then

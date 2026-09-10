@@ -76,6 +76,11 @@ export function withVmLock<T>(label: string, fn: () => Promise<T>): Promise<T> {
   });
 }
 
+// FLAT, not a discriminated union: this tsconfig has no `strict`, so a boolean
+// literal tag does not narrow and `result.blockedBy` would be unreachable to the
+// checker inside `if (!result.ran)`.
+export type TryVmLockResult<T> = { ran: boolean; value: T | undefined; blockedBy: string };
+
 /**
  * Run `fn` only if the account is free right now; otherwise skip this turn.
  * Returns `{ ran: false, blockedBy }` rather than throwing, so a poller can
@@ -86,12 +91,12 @@ export function withVmLock<T>(label: string, fn: () => Promise<T>): Promise<T> {
 export function tryVmLock<T>(
   label: string,
   fn: () => Promise<T>,
-): Promise<{ ran: true; value: T } | { ran: false; blockedBy: string }> {
+): Promise<TryVmLockResult<T>> {
   takeoverIfStale();
-  if (holder) return Promise.resolve({ ran: false as const, blockedBy: holder.label });
+  if (holder) return Promise.resolve({ ran: false, value: undefined, blockedBy: holder.label });
   const mine: Holder = { label, since: Date.now() };
   holder = mine;
-  return (async () => ({ ran: true as const, value: await fn() }))().finally(() => release(mine));
+  return (async () => ({ ran: true, value: await fn(), blockedBy: '' }))().finally(() => release(mine));
 }
 
 /**

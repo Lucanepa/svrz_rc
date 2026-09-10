@@ -27,8 +27,9 @@ import {
 // than on a session — so two jobs that need different roles cannot be in flight
 // together without one of them reading under the other's role. That failure is
 // not a 403: it is a clean 200 with the wrong rows.
-import { withVmLock, vmFetch } from './vmlock.ts';
+import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
+import { fetchBoerseOffers, planReconcile } from './boerse.ts';
 
 // Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
 import {
@@ -1006,6 +1007,8 @@ const collectionCandidates = {
   // collection and not a shape of `coachees`: a referee is a person the region
   // licenses, a coachee is a person a coach is assigned to for one season.
   referees: unique([process.env.PB_REFEREES_COLLECTION || 'referees', 'referees', 'svrz_referees']),
+  // One row per SR-Börse OFFER — a sibling of `games`, never columns on it.
+  boerseOffers: unique([process.env.PB_BOERSE_COLLECTION || 'boerse_offers', 'boerse_offers']),
   // 4.4.10 SR-Spiel: the coach's short Rückmeldung on a game they whistled
   // themselves. Its own collection — see the note in setup-schema.mjs for why
   // it is not a feedback with the grades left empty.
@@ -2971,6 +2974,214 @@ async function recordGamesSyncStatus(status: GamesSyncStatus): Promise<void> {
     await setSetting(GAMES_SYNC_STATUS_KEY, JSON.stringify(status));
   } catch (error) {
     console.error('[scheduler] could not record the games-sync status:', error);
+  }
+}
+
+
+// ── SR-Börse poll ─────────────────────────────────────────────────────
+// The VM-facing half is server/boerse.ts. This is the half that writes.
+const BOERSE_SYNC_STATUS_KEY = 'boerse_sync_status';
+const BOERSE_ENABLED = process.env.VM_BOERSE_ENABLED !== '0';
+const BOERSE_POLL_MINUTES = Number(process.env.VM_BOERSE_POLL_MINUTES || 60);
+
+type BoerseSyncStatus = {
+  // TWO timestamps, and the distinction is the whole point. `lastAttemptAt`
+  // moves on every run including a failing one; `lastSuccessAt` moves only when
+  // a run actually read the börse. The games-sync note has one field for both,
+  // so a permanently failing poller keeps refreshing it and any freshness check
+  // built on it can never fire — in exactly the failure it exists to catch.
+  lastAttemptAt: string;
+  lastSuccessAt: string;
+  ok: boolean;
+  offers?: number;
+  open?: number;
+  created?: number;
+  updated?: number;
+  withdrawn?: number;
+  matchedGames?: number;
+  unmatchedOffers?: number;
+  refereesCorrected?: number;
+  joinVia?: Record<string, number>;
+  blocked?: string;
+  skipped?: string;
+  error?: string;
+  consecutiveFailures?: number;
+};
+
+async function readBoerseStatus(): Promise<BoerseSyncStatus | null> {
+  try {
+    const rec = await getSettingRecord(BOERSE_SYNC_STATUS_KEY);
+    return rec ? JSON.parse(asText(rec.value)) as BoerseSyncStatus : null;
+  } catch { return null; }
+}
+
+async function recordBoerseStatus(status: BoerseSyncStatus): Promise<void> {
+  try { await setSetting(BOERSE_SYNC_STATUS_KEY, JSON.stringify(status)); }
+  catch (error) { console.error('[boerse] could not record the status note:', error); }
+}
+
+/** How many consecutive empty reads we have seen — planReconcile refuses to
+ *  clear the board on the strength of one. */
+let boerseEmptyStreak = 0;
+
+/**
+ * Bring `boerse_offers` in line with VolleyManager, and correct the crew on any
+ * game the börse happens to tell us about.
+ *
+ * That second job is not scope creep, it fixes a real hole: `runGamesSync` only
+ * persists rows that carry a coachee, and for a game already stored whose
+ * coachee has since been swapped off it refreshes `league` and NOTHING else
+ * (server/index.ts, "a row with no coachee on it is not this sync's to
+ * rewrite"). So a departed coachee's name sits on that game for good. The
+ * börse's convocation array is VM's CURRENT truth for both head slots whatever
+ * the offer's status says, so a poll that has it in hand can put the names right.
+ */
+async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
+  const startedAt = new Date().toISOString();
+  const prev = await readBoerseStatus();
+  const base = (s: Partial<BoerseSyncStatus>): BoerseSyncStatus => ({
+    lastAttemptAt: startedAt,
+    lastSuccessAt: prev?.lastSuccessAt ?? '',
+    ok: false,
+    ...s,
+  });
+
+  if (!BOERSE_ENABLED) return base({ skipped: 'disabled (VM_BOERSE_ENABLED=0)' });
+  const username = asText(process.env.VM_USERNAME);
+  const password = asText(process.env.VM_PASSWORD);
+  if (!username || !password || !VM_BASE) return base({ skipped: 'VM credentials not configured' });
+
+  // SKIP, never queue. The poller runs many times a day against an account the
+  // games sync needs for minutes at a time; piling up behind it is how a lock
+  // turns into a deadlock in front of the nightly import.
+  const attempt = await tryVmLock('boerse-poll', async () => {
+    const fetched = await fetchBoerseOffers({
+      base: VM_BASE, username, password,
+      log: (m) => console.log(m),
+    });
+    if (!fetched.ok) throw new Error(fetched.error);
+    return fetched;
+  });
+
+  if (!attempt.ran) {
+    const status = base({ skipped: `VolleyManager busy with ${attempt.blockedBy}` });
+    log.info('boerse.skip', `börse poll skipped — ${attempt.blockedBy} holds the account`, { reason });
+    await recordBoerseStatus(status);
+    return status;
+  }
+
+  const result = attempt.value;
+  boerseEmptyStreak = result.offers.length === 0 ? boerseEmptyStreak + 1 : 0;
+
+  const stored = await withCollection(collectionCandidates.boerseOffers, (c) =>
+    c.getFullList<AnyRecord>({ fields: 'id,vm_offer_id,status,withdrawn_at' }));
+
+  const plan = planReconcile({
+    fetched: result.offers,
+    stored: stored.map((r) => ({
+      id: String(r.id), vm_offer_id: asText(r.vm_offer_id),
+      status: asText(r.status), withdrawn_at: asText(r.withdrawn_at),
+    })),
+    emptyStreak: boerseEmptyStreak,
+  });
+
+  const now = new Date().toISOString();
+  let created = 0; let updated = 0; let withdrawn = 0;
+  for (const row of plan.creates) {
+    await withCollection(collectionCandidates.boerseOffers, (c) =>
+      c.create({ ...row, raw: row.raw, first_seen: now, last_seen: now, withdrawn_at: '' }));
+    created += 1;
+  }
+  for (const { id, row } of plan.updates) {
+    await withCollection(collectionCandidates.boerseOffers, (c) =>
+      c.update(id, { ...row, raw: row.raw, last_seen: now, withdrawn_at: '' }));
+    updated += 1;
+  }
+  for (const id of plan.withdraws) {
+    await withCollection(collectionCandidates.boerseOffers, (c) => c.update(id, { withdrawn_at: now }));
+    withdrawn += 1;
+  }
+
+  // Crew correction + the match_no join counter, in one pass over the games the
+  // börse named. `unmatchedOffers` is the day-one alarm for the one thing no
+  // amount of code reading can settle: whether VM's game.number is formatted
+  // the same way as our match_no.
+  const byMatch = new Map<string, typeof result.offers>();
+  for (const o of result.offers) {
+    if (!o.match_no) continue;
+    const list = byMatch.get(o.match_no) ?? [];
+    list.push(o);
+    byMatch.set(o.match_no, list);
+  }
+  let matchedGames = 0; let refereesCorrected = 0;
+  for (const [matchNo, offers] of byMatch) {
+    let game: AnyRecord | null = null;
+    try {
+      game = await withCollection(collectionCandidates.games, (c) =>
+        c.getFirstListItem<AnyRecord>(`match_no = "${escapeFilterValue(matchNo)}"`));
+    } catch { game = null; }
+    if (!game) continue;
+    matchedGames += 1;
+
+    const patch: Record<string, string> = {};
+    for (const o of offers) {
+      if (!o.slot_person_name) continue;
+      const nameField = o.slot === '1' ? 'first_referee' : 'second_referee';
+      const idField = o.slot === '1' ? 'first_referee_id' : 'second_referee_id';
+      if (asText(game[nameField]) !== o.slot_person_name) patch[nameField] = o.slot_person_name;
+      if (o.slot_person_sv && asText(game[idField]) !== o.slot_person_sv) patch[idField] = o.slot_person_sv;
+    }
+    if (Object.keys(patch).length > 0) {
+      await withCollection(collectionCandidates.games, (c) => c.update(String(game!.id), patch));
+      refereesCorrected += 1;
+      log.info('boerse.crew', `crew corrected on ${matchNo} from the börse`, { matchNo, patch });
+    }
+  }
+
+  const joinVia: Record<string, number> = {};
+  for (const o of result.offers) joinVia[o.join_via] = (joinVia[o.join_via] ?? 0) + 1;
+
+  const status: BoerseSyncStatus = {
+    lastAttemptAt: startedAt,
+    lastSuccessAt: now,
+    ok: true,
+    offers: result.offers.length,
+    open: result.offers.filter((o) => o.status === 'open').length,
+    created, updated, withdrawn,
+    matchedGames,
+    unmatchedOffers: byMatch.size - matchedGames,
+    refereesCorrected,
+    joinVia,
+    blocked: plan.blocked || undefined,
+    consecutiveFailures: 0,
+  };
+  await recordBoerseStatus(status);
+  if (plan.blocked) log.warn('boerse.blocked', `börse reconcile held back: ${plan.blocked}`, { reason });
+  log.info('boerse.sync', `börse: ${result.offers.length} offers (${status.open} open), ${created}+/${updated}~/${withdrawn}−, ${matchedGames} games matched`, { reason });
+  publishLive({ type: 'boerse.synced', open: status.open, matched: matchedGames });
+  return status;
+}
+
+/** runBoerseSync, but a thrown fetch is recorded rather than escaping. */
+async function runBoerseSyncSafely(reason: string): Promise<BoerseSyncStatus> {
+  const prev = await readBoerseStatus();
+  try {
+    return await runBoerseSync(reason);
+  } catch (error) {
+    const failures = (prev?.consecutiveFailures ?? 0) + 1;
+    const status: BoerseSyncStatus = {
+      lastAttemptAt: new Date().toISOString(),
+      lastSuccessAt: prev?.lastSuccessAt ?? '',
+      ok: false,
+      error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+      consecutiveFailures: failures,
+    };
+    await recordBoerseStatus(status);
+    // Only a sustained failure is worth an alert mail — erroralerts mails on
+    // every error-level entry, and VolleyManager has bad minutes.
+    if (failures >= 3) log.error('boerse.sync', `börse poll failed ${failures}× in a row`, { error: status.error });
+    else log.warn('boerse.sync', `börse poll failed (${failures})`, { error: status.error });
+    return status;
   }
 }
 
@@ -8914,6 +9125,29 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
   }
 });
 
+// ── SR-Börse admin API ────────────────────────────────────────────────
+app.get('/api/admin/boerse/status', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    const status = await readBoerseStatus();
+    const live = await withCollection(collectionCandidates.boerseOffers, (c) =>
+      c.getList(1, 1, { filter: 'withdrawn_at = ""' })).catch(() => ({ totalItems: 0 }));
+    res.json({
+      status,
+      liveOffers: live.totalItems,
+      enabled: BOERSE_ENABLED,
+      pollMinutes: BOERSE_POLL_MINUTES,
+      accountHeldBy: vmLockHeldBy(),
+    });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.post('/api/admin/boerse/sync', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    const status = await runBoerseSyncSafely('manual');
+    res.status(status.ok ? 200 : 502).json(status);
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
 // ── Email templates + reminder admin API ──────────────────────────────
 app.get('/api/admin/email-templates', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
@@ -9531,6 +9765,33 @@ function nextDailyInstant(hour: number, minute: number, from: number): number {
 
 /** Run `job` every day at the wall-clock time named by a `m h * * *` pattern in
  *  VM_SYNC_TIMEZONE. Anything else still goes to node-cron, with a warning. */
+/**
+ * Run a job every `intervalMs`, forever.
+ *
+ * Deliberately an interval and not a cron. `scheduleDaily` only parses
+ * `m h * * *`; anything sub-daily falls through to node-cron 4.2.1, which
+ * answers "1 January of next year" for the next run across a DST switch — so an
+ * hourly börse cron would silently stop on 25.10.2026 and come back in January.
+ * An interval never asks what wall-clock instant is next, so it has no DST bug
+ * to inherit. Same discipline as scheduleDaily otherwise: re-arm BEFORE the run,
+ * so a job that throws cannot take its own schedule with it.
+ */
+function scheduleEvery(intervalMs: number, label: string, job: () => void | Promise<void>): void {
+  const every = Math.max(60_000, Math.floor(intervalMs));
+  log.info('scheduler.armed', `${label} every ${Math.round(every / 60_000)} min`, { label, everyMs: every });
+  const tick = () => {
+    const timer = setTimeout(() => {
+      tick();
+      void (async () => {
+        try { await job(); }
+        catch (error) { log.error('scheduler.job', `${label} failed`, { error: String(error) }); }
+      })();
+    }, every);
+    timer.unref?.();
+  };
+  tick();
+}
+
 function scheduleDaily(expr: string, label: string, job: () => void | Promise<void>): void {
   const parsed = DAILY_CRON_RE.exec(String(expr || '').trim());
   if (!parsed) {
@@ -9585,4 +9846,29 @@ app.listen(port, () => {
     const result = await runGamesSyncWithRetry();
     console.log(`[scheduler] Synced ${result.imported}/${result.totalFetched} games (${result.from} -> ${result.to})`);
   });
+
+  // The SR-Börse, hourly and round the clock.
+  //
+  // Round the clock rather than "waking hours plus a pull 8 h and 4 h before
+  // kick-off": hourly satisfies both of those by construction, for every game,
+  // without anybody maintaining a table of kick-off times. The cost is a handful
+  // of extra polls a night, each of which skips instantly if the account is busy.
+  //
+  // 04:00–05:00 UTC is left alone: that hour belongs to wiedisync, which shares
+  // this one VolleyManager account from another host and cannot be locked
+  // against (infrastructure.md → "The shared VolleyManager account").
+  if (BOERSE_ENABLED) {
+    scheduleEvery(BOERSE_POLL_MINUTES * 60_000, 'börse poll', async () => {
+      const hourUtc = new Date().getUTCHours();
+      if (hourUtc === 4) {
+        log.info('boerse.skip', 'börse poll skipped — 04:00 UTC belongs to wiedisync');
+        return;
+      }
+      await runBoerseSyncSafely('cron');
+    });
+    // One run shortly after boot, so a redeploy does not leave an hour-long hole
+    // — but late enough that it is not competing with startup.
+    const first = setTimeout(() => { void runBoerseSyncSafely('startup'); }, 90_000);
+    first.unref?.();
+  }
 });

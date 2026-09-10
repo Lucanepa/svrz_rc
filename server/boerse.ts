@@ -160,9 +160,21 @@ export function toOfferRow(item: Record<string, any>): BoerseOfferRow | null {
   };
 }
 
-export type FetchResult =
-  | { ok: true; offers: BoerseOfferRow[]; total: number; ignored: number }
-  | { ok: false; error: string; httpStatus?: number };
+// FLAT, not a discriminated union. This tsconfig has no `strict`, so TypeScript
+// does not narrow on a boolean literal tag — `if (r.ok)` leaves `r.error`
+// unreachable to the checker. A flat shape with empty defaults is the idiom this
+// repo settled on for exactly that reason.
+export type FetchResult = {
+  ok: boolean;
+  offers: BoerseOfferRow[];
+  total: number;
+  ignored: number;
+  error: string;
+  httpStatus?: number;
+};
+
+const failed = (error: string, httpStatus?: number): FetchResult =>
+  ({ ok: false, offers: [], total: 0, ignored: 0, error, httpStatus });
 
 /** The dashboard's active role, so a poll can put it back the way it found it. */
 async function readActiveRole(base: string, jar: CookieJar): Promise<{ csrf: string; attr: string }> {
@@ -260,15 +272,15 @@ export async function fetchBoerseOffers(opts: {
     // because it looks exactly like "nothing is in the börse".
     const after = await readActiveRole(base, jar);
     if (after.attr !== VM_ROLE_FOR_BOERSE) {
-      return { ok: false, error: `VM_ROLE_NOT_CLAIMED: wanted ${VM_ROLE_FOR_BOERSE}, session is on ${after.attr || '(none)'}` };
+      return failed(`VM_ROLE_NOT_CLAIMED: wanted ${VM_ROLE_FOR_BOERSE}, session is on ${after.attr || '(none)'}`);
     }
 
     const page = await followRedirects(base, `${base}${PAGE_PATH}`, jar, { headers: { Referer: `${base}/` } });
     if (page.response.status !== 200) {
-      return { ok: false, error: `börse page ${page.response.status}`, httpStatus: page.response.status };
+      return failed(`börse page ${page.response.status}`, page.response.status);
     }
     const csrf = page.body.match(/data-csrf-token="([^"]+)"/)?.[1] ?? '';
-    if (!csrf) return { ok: false, error: 'no CSRF token on the börse page' };
+    if (!csrf) return failed('no CSRF token on the börse page');
 
     const offers: BoerseOfferRow[] = [];
     let ignored = 0;
@@ -307,10 +319,10 @@ export async function fetchBoerseOffers(opts: {
       jar.update(res);
       const text = await res.text();
       if (res.status !== 200) {
-        return { ok: false, error: `search ${res.status} at offset ${offset}`, httpStatus: res.status };
+        return failed(`search ${res.status} at offset ${offset}`, res.status);
       }
       let parsed: { items?: any[]; totalItemsCount?: number };
-      try { parsed = JSON.parse(text); } catch { return { ok: false, error: 'search returned non-JSON' }; }
+      try { parsed = JSON.parse(text); } catch { return failed('search returned non-JSON'); }
 
       const items = parsed.items ?? [];
       total = parsed.totalItemsCount ?? 0;
@@ -332,12 +344,12 @@ export async function fetchBoerseOffers(opts: {
     // everything current, and must not be allowed to withdraw anything: that is
     // how a mass false all-clear happens.
     if (!reachedCutoff && offset < total) {
-      return { ok: false, error: `incomplete: stopped at ${offset} of ${total} without reaching the cutoff` };
+      return failed(`incomplete: stopped at ${offset} of ${total} without reaching the cutoff`);
     }
 
-    return { ok: true, offers, total, ignored };
+    return { ok: true, offers, total, ignored, error: '' };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    return failed(error instanceof Error ? error.message : String(error));
   } finally {
     // Put the account back, always — including after a throw.
     try {

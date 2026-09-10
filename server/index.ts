@@ -3332,6 +3332,100 @@ app.get('/api/health', async (_req: Request, res: ExpressResponse) => {
   }
 });
 
+/**
+ * The rulebooks, fetched through us so the app can actually read them.
+ *
+ * volleyball.ch and fivb.com serve their PDFs without an Access-Control-Allow-
+ * Origin header, so a browser on svrz-rc.openvolley.app may link to them but
+ * may not read the bytes — and the in-app reader needs the bytes. Copying the
+ * files into the frontend build would fix that and go stale the day the SSK
+ * publishes a correction, so we stay a proxy: the upstream URL remains the
+ * source of truth, and it is revalidated with its own ETag.
+ *
+ * The ids are a closed list on purpose. A proxy that forwards whatever URL it
+ * is handed is an SSRF hole; this one can only ever fetch these four files.
+ */
+const PROXIED_DOCS: Record<string, string> = {
+  'rules-de': 'https://www.volleyball.ch/_Resources/Persistent/7/1/1/7/71171e2ba8b1b649012440750a2fc2338d4a2b7d/Offizielle_Volleyball_Regeln_2025-2028_d%20-%20final%20inkl%20Deckblatt.pdf',
+  'rules-en': 'https://www.fivb.com/wp-content/uploads/2025/01/FIVB-Volleyball_Rules2025_2028-EN-v05.pdf',
+  'rule-changes': 'https://www.volleyball.ch/_Resources/Persistent/c/b/3/f/cb3f0be3e71e90986627eb3a02716135646b33e3/26.08.24_%C3%84nderungen-Regeln-2027-d.pdf',
+  'niveau': 'https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf',
+};
+
+type CachedDoc = { body: Buffer; etag: string; checkedAt: number };
+const docCache = new Map<string, CachedDoc>();
+/** Long enough that a gym full of coaches costs volleyball.ch one request. */
+const DOC_REVALIDATE_MS = 6 * 60 * 60 * 1000;
+
+async function loadProxiedDoc(id: string): Promise<CachedDoc> {
+  const url = PROXIED_DOCS[id];
+  const cached = docCache.get(id);
+  if (cached && Date.now() - cached.checkedAt < DOC_REVALIDATE_MS) return cached;
+
+  try {
+    const upstream = await fetch(url, {
+      headers: cached ? { 'If-None-Match': cached.etag } : {},
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (upstream.status === 304 && cached) {
+      cached.checkedAt = Date.now();
+      return cached;
+    }
+    if (!upstream.ok) throw new Error(`upstream ${upstream.status}`);
+    const body = Buffer.from(await upstream.arrayBuffer());
+    // Not a PDF means the upstream replaced the file with a redirect or an
+    // error page; serving that as application/pdf would break the reader with
+    // no clue why.
+    if (body.subarray(0, 5).toString('latin1') !== '%PDF-') throw new Error('upstream did not return a PDF');
+    const fresh: CachedDoc = {
+      body,
+      etag: upstream.headers.get('etag') || `W/"${id}-${body.byteLength}"`,
+      checkedAt: Date.now(),
+    };
+    docCache.set(id, fresh);
+    return fresh;
+  } catch (error) {
+    // A copy we already have beats an error page: the coach in the gym gets
+    // yesterday's rulebook rather than nothing.
+    if (cached) {
+      log.warn('docs.upstream_failed', 'Serving the cached copy of a proxied document', {
+        id, error: error instanceof Error ? error.message : String(error),
+      });
+      cached.checkedAt = Date.now();
+      return cached;
+    }
+    throw error;
+  }
+}
+
+app.get('/api/docs/:id', async (req: Request, res: ExpressResponse) => {
+  const id = String(req.params.id || '');
+  if (!Object.prototype.hasOwnProperty.call(PROXIED_DOCS, id)) {
+    res.status(404).json({ error: 'Unknown document' });
+    return;
+  }
+  try {
+    const doc = await loadProxiedDoc(id);
+    // The browser caches these itself, and the app keeps its own copy in Cache
+    // Storage; a week is short enough that a rule change lands within a season
+    // and long enough that nobody re-downloads 7 MB in the gym.
+    res.set('Cache-Control', 'public, max-age=604800');
+    res.set('ETag', doc.etag);
+    if (req.headers['if-none-match'] === doc.etag) {
+      res.status(304).end();
+      return;
+    }
+    res.set('Content-Type', 'application/pdf');
+    res.set('Content-Length', String(doc.body.byteLength));
+    res.send(doc.body);
+  } catch (error) {
+    log.warn('docs.unavailable', 'A proxied document could not be fetched', {
+      id, error: error instanceof Error ? error.message : String(error),
+    });
+    res.status(502).json({ error: 'Document unavailable' });
+  }
+});
+
 app.get('/api/admin/auth/status', (req: Request, res: ExpressResponse) => {
   // The console asks this on load to decide between the login form and the
   // tabs, and `role` decides WHICH tabs: the chair sees only her own two.

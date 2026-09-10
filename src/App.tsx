@@ -1,6 +1,11 @@
-import React, { useCallback, useState, useEffect, useRef, useMemo, useId } from 'react';
-import { Maximize2, Download, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle } from 'lucide-react';
+import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy } from 'react';
+import { Maximize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
+// About a megabyte of renderer, fetched the first time a coach opens a
+// document and never for anyone who does not.
+const PdfReader = lazy(() => import('./components/PdfReader'));
+import { USEFUL_DOCS, USEFUL_DOC_GROUPS, type UsefulDoc } from './lib/usefulDocs';
+import { docLinkUrl, docSourceUrl, prefetchSmallDocs, storeAllDocs, storedState } from './lib/docCache';
 import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, PAID_CAP, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
   CalendarGameStatus,
@@ -1513,6 +1518,31 @@ export default function App() {
   const outboxOwnerId = rcAuth.rcId || (isPrivileged ? 'admin' : 'anon');
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
+  /** The document open in the reader, or null. */
+  const [readerDoc, setReaderDoc] = useState<UsefulDoc | null>(null);
+  const [docsOffline, setDocsOffline] = useState({ stored: 0, total: 0, missingBytes: 0 });
+  const [storingDocs, setStoringDocs] = useState(0);
+
+  // The small SVRZ letters are kept once the app is idle, so the coach who
+  // opens one in a gym with no signal still gets it. The two rulebooks — 12.5 MB
+  // between them — are not something to spend somebody's data plan on without
+  // being asked, so those wait for the button below the card.
+  useEffect(() => {
+    if (isDemoMode()) return;
+    prefetchSmallDocs();
+    void storedState().then(setDocsOffline);
+  }, []);
+
+  const saveDocsOffline = useCallback(async () => {
+    setStoringDocs(0.0001);
+    // The reader's own code counts as part of "offline": documents in the
+    // cache and no renderer to open them with would be a cruel joke in a gym
+    // with no signal.
+    void import('./components/PdfReader');
+    await storeAllDocs((done, total) => setStoringDocs(done / total));
+    setStoringDocs(0);
+    setDocsOffline(await storedState());
+  }, []);
   const [icalInfo, setIcalInfo] = useState<IcalSubscription | null>(null);
   const [icalError, setIcalError] = useState('');
   const [icalCopied, setIcalCopied] = useState(false);
@@ -6855,18 +6885,97 @@ export default function App() {
             )}
           </div>
 
-          <div className="bg-white p-4 rounded-2xl shadow-card border border-stone-200/70 mt-4 no-print">
-            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stone-400 mb-2">{formData.lang === 'DE' ? 'Nützliche Infos & Dokumente' : 'Useful info & documents'}</h3>
-            <div className="flex flex-col gap-1.5">
-              {/* The regulation the whole app quotes — every (i) hint cites a
-                  section of it — so it leads the list. */}
-              <a href={`${import.meta.env.BASE_URL}docs/Infoschreiben-RC-Wesen-2026-27.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'Infoschreiben RC-Wesen 26/27 (PDF)' : 'RC information sheet 26/27 (PDF)'}</a>
-              <a href="https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'SR-Niveau und Stufe (PDF)' : 'SR levels & stages (PDF)'}</a>
-              <a href={`${import.meta.env.BASE_URL}#/guide/${formData.lang === 'DE' ? 'de' : 'en'}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Video size={14} /> {formData.lang === 'DE' ? 'Video-Anleitung' : 'Video guide'}</a>
-              <button type="button" onClick={() => setShowEmptyFormModal(true)} disabled={downloadingEmptyForm} className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit disabled:opacity-50"><Download size={14} /> {downloadingEmptyForm ? t.loading : t.downloadEmptyForm}</button>
-              <a href={`${import.meta.env.BASE_URL}docs/Leitfaden-SR-Technik.pdf`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Download size={14} /> {formData.lang === 'DE' ? 'Leitfaden SR-Technik (PDF)' : 'Refereeing technique guide (PDF)'}</a>
-              <a href="https://www.svrz.ch/ausbildung/schiedsrichter-in/informationen" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-red-700 hover:text-red-800 hover:underline w-fit"><Info size={14} /> {formData.lang === 'DE' ? 'SR-Informationen (svrz.ch)' : 'Referee info (svrz.ch)'}</a>
+          {/* Everything a coach might have to look up, on the page they land on.
+              The entries live in lib/usefulDocs.ts; here they are only laid out.
+              Cards rather than the old column of links: past a dozen entries the
+              title alone stopped saying which one answers the question someone
+              actually has in the gym, so each carries a line about what is
+              inside. On a laptop that is three columns of cards; on a phone
+              the same entries are one compact row each, notes and all left to
+              the wider screen. */}
+          <div className="bg-white p-4 sm:p-5 rounded-2xl shadow-card border border-stone-200/70 mt-4 no-print">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <h3 className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">{formData.lang === 'DE' ? 'Nützliche Infos & Dokumente' : 'Useful info & documents'}</h3>
+              {/* Offline is the point of the reader in a gym with no signal, so
+                  the card says whether it is ready — and asks before spending
+                  12 MB of somebody's data plan on the two rulebooks. */}
+              {docsOffline.total > 0 && (
+                storingDocs > 0 ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-stone-500 whitespace-nowrap"><Loader2 size={12} className="animate-spin" /> {Math.round(storingDocs * 100)}%</span>
+                ) : docsOffline.stored === docsOffline.total ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-stone-400 whitespace-nowrap"><CloudOff size={12} /> {formData.lang === 'DE' ? 'Offline verfügbar' : 'Available offline'}</span>
+                ) : (
+                  <button type="button" onClick={() => void saveDocsOffline()} className="inline-flex items-center gap-1.5 text-[11px] text-red-700 hover:text-red-800 hover:underline whitespace-nowrap">
+                    <Download size={12} />
+                    {formData.lang === 'DE' ? 'Alle offline speichern' : 'Save all offline'}
+                    {docsOffline.missingBytes > 0 && ` (${Math.round(docsOffline.missingBytes / 1e6)} MB)`}
+                  </button>
+                )
+              )}
             </div>
+            {(Object.keys(USEFUL_DOC_GROUPS) as (keyof typeof USEFUL_DOC_GROUPS)[]).map((group) => (
+              <div key={group} className="mt-3 first:mt-0">
+                <h4 className="text-[11px] font-semibold text-stone-500 mb-1.5">{USEFUL_DOC_GROUPS[group][formData.lang]}</h4>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {USEFUL_DOCS.filter((doc) => doc.group === group).map((doc) => {
+                    const text = doc[formData.lang];
+                    const busy = doc.kind === 'form' && downloadingEmptyForm;
+                    const Icon = doc.kind === 'video' ? Video : doc.kind === 'web' ? ExternalLink : Download;
+                    const cls = 'group flex items-center sm:items-start gap-2.5 sm:gap-3 text-left p-2.5 sm:p-3 rounded-xl border border-stone-200 hover:border-red-300 hover:bg-red-50/40 transition-colors';
+                    const body = (
+                      <>
+                        <span className="shrink-0 grid place-items-center h-7 w-7 sm:h-8 sm:w-8 rounded-lg bg-red-50 text-red-700 group-hover:bg-red-100 transition-colors">
+                          {busy ? <Loader2 size={15} className="animate-spin" /> : <Icon size={15} />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[13px] sm:text-sm font-medium text-stone-800 group-hover:text-red-800">{busy ? t.loading : text.title}</span>
+                          {/* On a phone an entry is one tappable line: twelve
+                              cards with a note each turned the bottom of Home
+                              into a wall of text. The note earns its place from
+                              sm up, where the grid has room for it beside the
+                              next card rather than below it. */}
+                          <span className="hidden sm:block text-xs text-stone-500 mt-0.5">{text.note}</span>
+                          <span className="hidden sm:block text-[10px] font-semibold uppercase tracking-wide text-stone-400 mt-1">{doc.badge}</span>
+                        </span>
+                        {/* The badge follows the title to the end of the row
+                            instead — it is what says that the rulebook is a
+                            7 MB download, which matters most on gym wifi. */}
+                        <span className="sm:hidden shrink-0 text-[10px] font-semibold uppercase tracking-wide text-stone-400">{doc.badge}</span>
+                      </>
+                    );
+                    // Anything we can fetch ourselves is read in the app —
+                    // searchable, and kept for the next time. A document with
+                    // no readable source (the demo has no API to proxy the
+                    // rulebooks) falls back to the link it always was.
+                    if (doc.kind === 'pdf' && docSourceUrl(doc)) {
+                      return (
+                        <button key={doc.id} type="button" onClick={() => setReaderDoc(doc)} className={cls}>
+                          {body}
+                        </button>
+                      );
+                    }
+                    // The blank form is built in the browser from the sections
+                    // the coach picks, so it is the one entry here that is a
+                    // button rather than a URL.
+                    if (doc.kind === 'form') {
+                      return (
+                        <button key={doc.id} type="button" onClick={() => setShowEmptyFormModal(true)} disabled={downloadingEmptyForm} className={`${cls} disabled:opacity-60`}>
+                          {body}
+                        </button>
+                      );
+                    }
+                    const href = /^https?:/i.test(doc.href)
+                      ? doc.href
+                      : `${import.meta.env.BASE_URL}${doc.href.replace('{lang}', formData.lang === 'DE' ? 'de' : 'en')}`;
+                    return (
+                      <a key={doc.id} href={href} target="_blank" rel="noopener noreferrer" className={cls}>
+                        {body}
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -7813,6 +7922,22 @@ export default function App() {
             )}
           </div>
         </div>
+      )}
+
+      {readerDoc && (
+        <Suspense fallback={(
+          <div className="fixed inset-0 z-[60] grid place-items-center bg-stone-900/90 text-stone-100 no-print">
+            <Loader2 size={22} className="animate-spin" />
+          </div>
+        )}>
+          <PdfReader
+            url={docSourceUrl(readerDoc)}
+            title={readerDoc[formData.lang].title}
+            originalHref={docLinkUrl(readerDoc)}
+            lang={formData.lang}
+            onClose={() => setReaderDoc(null)}
+          />
+        </Suspense>
       )}
 
       {showCalendarModal && (

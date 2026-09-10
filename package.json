@@ -30,6 +30,7 @@
     "motion": "^12.36.0",
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.2",
+    "pdfjs-dist": "^6.3.289",
     "pocketbase": "^0.26.8",
     "qrcode-generator": "^2.0.4",
     "qrcode.react": "^4.2.0",

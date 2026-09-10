@@ -697,6 +697,50 @@ blanked, so 400 copies of one failure collapse into a single row).
 
 ## Upstream Sync Troubleshooting
 
+### ⚠ The shared VolleyManager account — read before touching ANY VM job
+
+There is **one** VolleyManager login (`luca_canepa`), and every entry point lives
+inside it. Two codebases use it:
+
+| project | what runs | where |
+|---|---|---|
+| **svrz_rc** (this repo) | games sync, contact sync, auth check | API container, lenovoserver |
+| **wiedisync** | `vm_sync`, `svrz_sync`, game/nomination pushes | Directus, hetzner |
+| kscw-website | **nothing** — it only *links* to volleyball.ch, holds no credentials. Keep it that way. |
+
+VM keeps the active role **per account, not per session**, and it persists across
+logins. Every job switches into the role it needs before it starts, so two jobs
+overlapping means the loser reads under the winner's role — and for the
+club-scoped resources that is not a 403 but a **200 with the wrong rows**.
+
+**Neither project can lock the other.** wiedisync's `claimVmAccount` is a
+`globalThis` flag inside its Directus process; this repo's `withVmLock`
+(`server/vmlock.ts`) is in the API process on a different host. Each stops its
+*own* jobs colliding and is blind to the other's. The only cross-project
+protection is disjoint windows and the table below.
+
+| UTC | job | project | role it claims |
+|---|---|---|---|
+| **Mon 04:00** | `vm_sync` (`vm-sync-check.mjs`) | wiedisync | `VM_ROLE_CLUB` `4cdade68…`, + `SPIELPLANER` `ed24d37c…` for contacts |
+| **daily 04:30** | `svrz_sync` (`svrz-scheduling-sync.mjs`) | wiedisync | same |
+| **every 30 min** | `vm_sync` watchdog retry | wiedisync | same |
+| **daily 03:00 CEST / 04:00 CET** | games sync (`0 5 * * *` Europe/Zurich) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
+| on demand | game + nomination pushes | wiedisync | club |
+| on demand | manual import, contact sync, auth check | svrz_rc | RefereeDelegate / club |
+
+⚠⚠ **KNOWN CLASH, live today.** This repo's games sync is pinned to **05:00
+Europe/Zurich**, which is 03:00 UTC in summer but **04:00 UTC in winter** —
+exactly wiedisync's Monday `vm_sync` slot. From the October DST change to the
+March one, both fire at 04:00 UTC every Monday. wiedisync's crons carry no
+timezone argument and its code comments state UTC. Fixing it means moving one of
+the two off that hour; moving *this* one earlier (e.g. `0 3 * * *` Zurich →
+01:00/02:00 UTC) clears the whole wiedisync block in both halves of the year.
+
+**If you add or move a VM job:** read this table first, then update **both**
+`svrz_rc/infrastructure.md` and `wiedisync/INFRA.md` in the same change. A window
+written down in only one repo is not a window — the other project cannot see your
+scheduler, and the failure it causes there is silent.
+
 ### VolleyManager roles: each sync claims the one it needs
 
 One VM account, and **no single role can do both jobs**. Measured 2026-08-12

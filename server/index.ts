@@ -1020,16 +1020,24 @@ const pb = new PocketBase(process.env.POCKETBASE_URL || 'http://127.0.0.1:8090')
 pb.autoCancellation(false);
 const VM_BASE = process.env.VM_BASE || '';
 const VM_BATCH_SIZE = 200;
-// 03:00 Zürich, NOT 05:00 — the hour is chosen to stay clear of the wiedisync
-// project, which shares this one VolleyManager account from a different host and
-// therefore cannot be locked against (see infrastructure.md → "The shared
-// VolleyManager account"). 05:00 Zürich is 03:00 UTC in summer but 04:00 UTC in
-// winter, which walked straight into their Monday 04:00 UTC `vm_sync` for half
-// of every year. 03:00 Zürich is 01:00/02:00 UTC, clear of their 04:00 and 04:30
-// jobs in both halves — and clear of their every-5-minutes Einsatzliste push
-// too, which only fires for a game kicking off in an hour, and nothing kicks off
-// at four in the morning.
-const VM_SYNC_CRON = process.env.VM_SYNC_CRON || '0 3 * * *';
+// 01:00 Zürich. The hour is load-bearing and has to clear two different things.
+//
+// wiedisync shares this one VolleyManager account from another host and cannot
+// be locked against (infrastructure.md → "The shared VolleyManager account").
+// 05:00 Zürich — where this used to sit — is 03:00 UTC in summer but 04:00 UTC
+// in winter, which walked straight into their Monday 04:00 UTC `vm_sync` for
+// half of every year.
+//
+// And this host backs itself up between 02:45 and 03:39: svrz-rc-backup writes a
+// coherent PocketBase zip at 02:45 precisely so borg picks THAT up rather than
+// the live files a few minutes later. A sync running in there is a writer inside
+// a window someone deliberately made quiet.
+//
+// 01:00 Zürich is 23:00/00:00 UTC: clear of wiedisync's 04:00 and 04:30, clear
+// of the backup chain, clear of dpkg-db-backup at 00:00 and of our own log prune
+// at 03:30 — and still an hour when nothing kicks off, so wiedisync's
+// every-5-minutes Einsatzliste push has nothing to fire for either.
+const VM_SYNC_CRON = process.env.VM_SYNC_CRON || '0 1 * * *';
 const VM_SYNC_MAX_RETRIES = Number(process.env.VM_SYNC_MAX_RETRIES || 10);
 const VM_SYNC_RETRY_DELAY_MS = Number(process.env.VM_SYNC_RETRY_DELAY_MS || 15000);
 const RENDER_PROPERTIES = [
@@ -6642,7 +6650,7 @@ app.get('/api/admin/games/sync-status', requireAdminSession, async (_req: Reques
         c.getFullList<AnyRecord>({ sort: '-updated', fields: 'id,updated' }));
       newestGame = asText(latest?.updated);
     } catch { /* leave it blank rather than fail the whole readout */ }
-    res.json({ status, newestGame, cron: process.env.VM_SYNC_CRON || '0 3 * * *' });
+    res.json({ status, newestGame, cron: process.env.VM_SYNC_CRON || '0 1 * * *' });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

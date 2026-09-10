@@ -122,7 +122,7 @@ PRESIDENT_UI_USERNAME="praesidium"
 PRESIDENT_UI_PASSWORD="<set to open the chair's tabs; unset keeps them shut>"
 
 VM_BASE=""  # game sync base URL
-VM_SYNC_CRON="0 3 * * *"
+VM_SYNC_CRON="0 1 * * *"
 VM_SYNC_TIMEZONE="Europe/Zurich"
 VM_SYNC_MAX_RETRIES="10"
 VM_SYNC_RETRY_DELAY_MS="15000"
@@ -530,7 +530,7 @@ Backend does:
 
 Automatic sync runs inside `server/index.ts`:
 
-- cron default: `0 3 * * *` — the hour is load-bearing, see "The shared
+- cron default: `0 1 * * *` — the hour is load-bearing, see "The shared
   VolleyManager account": it keeps us clear of wiedisync, which shares the one VM
   login from another host and cannot be locked against
 - timezone default: `Europe/Zurich`
@@ -727,17 +727,22 @@ protection is disjoint windows and the table below.
 | **daily 04:30** | `svrz_sync` (`svrz-scheduling-sync.mjs`) | wiedisync | same |
 | **every 30 min** | `vm_sync` watchdog retry | wiedisync | same |
 | **every 5 min** | Einsatzliste push, for a game ~60 min out | wiedisync | club — ⚠ takes NO claim |
-| **daily 01:00 CEST / 02:00 CET** | games sync (`0 3 * * *` Europe/Zurich) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
+| **daily 23:00 / 00:00 UTC** | games sync (`0 1 * * *` Europe/Zurich) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
 | on demand | game push (booking confirmed) | wiedisync | club |
 | on demand | manual import, contact sync, auth check | svrz_rc | RefereeDelegate / club |
 
-**Why 03:00 Zürich and not 05:00 (fixed 2026-09-10).** 05:00 Zürich is 03:00 UTC
-in summer but **04:00 UTC in winter** — exactly wiedisync's Monday `vm_sync`
-slot, so for half of every year the two fired at the same minute and whichever
-lost read under the other's role. 03:00 Zürich is 01:00/02:00 UTC, clear of their
-04:00 and 04:30 jobs in both halves of the year. It is also clear of their
-every-5-minutes Einsatzliste push, which only fires for a game kicking off in an
-hour — and nothing kicks off at four in the morning. wiedisync's crons carry no
+**Why 01:00 Zürich (fixed 2026-09-10).** The hour has to clear two unrelated
+things. wiedisync: 05:00 Zürich — where this used to sit — is 03:00 UTC in summer
+but **04:00 UTC in winter**, exactly their Monday `vm_sync`, so for half of every
+year the two fired at the same minute and whichever lost read under the other's
+role. And **this host's own backup chain**: `svrz-rc-backup.timer` writes a
+coherent PocketBase zip at **02:45** specifically so `borg-backup.timer` (~03:00)
+archives that rather than the live files — so 03:00, briefly considered, would
+have put a live writer inside a window someone deliberately made quiet. 01:00
+Zürich is 23:00/00:00 UTC: clear of wiedisync's 04:00 and 04:30, clear of the
+backup chain, clear of `dpkg-db-backup` at 00:00 and of our own log prune at
+03:30 — and still an hour with no game kicking off, so their every-5-minutes
+Einsatzliste push has nothing to fire for either. wiedisync's crons carry no
 timezone argument and its code comments state UTC.
 
 ⚠ **The residual risk, and why it is accepted.** wiedisync's Einsatzliste push

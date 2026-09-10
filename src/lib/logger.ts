@@ -151,6 +151,13 @@ export async function flush(beacon = false): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
+      // The API is a different origin, where fetch sends no cookie unless asked.
+      // Without this the endpoint sees no session behind the name in the batch
+      // and files every line as `unverified:<name>` — while the beacon path
+      // above, which does carry credentials, filed the same coach's lines under
+      // their real name. That split made the marker read as an auth problem
+      // instead of what it was: half the batches simply arrived cookie-less.
+      credentials: 'include',
       keepalive: batch.length < 30,
     });
   } catch {

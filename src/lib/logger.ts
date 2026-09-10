@@ -259,9 +259,23 @@ function withTraceHeaders(url: string, init?: RequestInit): RequestInit | undefi
  *  a warning rather than an error, so the alert mail does not go out. An
  *  AbortError is the app's own cancellation and is not what this is about. */
 export const INSTANT_FAIL_MS = 50;
-export function classifyFetchFailure(ms: number, error: unknown): { evt: string; lvl: ClientLevel } {
+
+/** True once this page has started to go away: the app called
+ *  location.reload() itself, or the browser said `pagehide`. Every request in
+ *  flight at that moment is cancelled — Chrome reports each one as
+ *  "Failed to fetch" — and none of them is news. */
+let leaving = false;
+/** Say so before calling location.reload(). Both places the app reloads
+ *  itself (a new service worker taking over, and crossing between the admin
+ *  console and the app) do; on 10.09.2026 a Home request cancelled by one of
+ *  them was logged as an API failure. */
+export function noteLeavingPage(): void { leaving = true; }
+
+export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving): { evt: string; lvl: ClientLevel } {
   const name = error instanceof Error ? error.name : '';
-  if (name !== 'AbortError' && ms < INSTANT_FAIL_MS) return { evt: 'net.fail.instant', lvl: 'warn' };
+  if (name === 'AbortError') return { evt: 'net.fail', lvl: 'error' };
+  if (isLeaving) return { evt: 'net.fail.unload', lvl: 'warn' };
+  if (ms < INSTANT_FAIL_MS) return { evt: 'net.fail.instant', lvl: 'warn' };
   return { evt: 'net.fail', lvl: 'error' };
 }
 
@@ -358,7 +372,7 @@ function installLifecycleLogging(): void {
   window.addEventListener('offline', () => clientLog.warn('net.offline', 'went offline'));
   window.addEventListener('hashchange', () => clientLog.info('nav.hashchange', scrubTokens(location.hash || '#')));
   document.addEventListener('visibilitychange', () => clientLog.debug('app.visibility', document.visibilityState));
-  window.addEventListener('pagehide', () => { void flush(true); });
+  window.addEventListener('pagehide', () => { leaving = true; void flush(true); });
   // Flushing on hide (not unload) is what actually works on iOS Safari.
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void flush(true); });
 }

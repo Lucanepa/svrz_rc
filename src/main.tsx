@@ -10,7 +10,7 @@ import GuidePage from './components/GuidePage.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { UiHost } from './components/ui';
 import { enableDemo, isDemoMode } from './lib/demo';
-import { installLogging, clientLog } from './lib/logger';
+import { installLogging, clientLog, noteLeavingPage } from './lib/logger';
 import {
   decideSwReload, recentSwReloads, noteSwReload, retryDelayMs, SW_RELOAD_STATE_KEY,
 } from './lib/swReload';
@@ -143,6 +143,7 @@ if ('serviceWorker' in navigator) {
     refreshing = true;
     rememberSwReload();
     clientLog.info('sw.controllerchange', 'new service worker took control — reloading');
+    noteLeavingPage();
     window.location.reload();
   };
   navigator.serviceWorker.addEventListener('controllerchange', () => {
@@ -168,7 +169,7 @@ const routeKind = (): 'admin' | 'sign' | 'survey' | 'guide' | 'app' => {
   return 'app';
 };
 let _route = routeKind();
-window.addEventListener('hashchange', () => { const k = routeKind(); if (k !== _route) { _route = k; window.location.reload(); } });
+window.addEventListener('hashchange', () => { const k = routeKind(); if (k !== _route) { _route = k; noteLeavingPage(); window.location.reload(); } });
 
 const kind = routeKind();
 clientLog.info('app.route', `mounting "${kind}"`, { hash: window.location.hash || undefined, demo: isDemoMode() });

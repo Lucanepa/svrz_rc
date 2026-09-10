@@ -23,6 +23,13 @@ test.describe('classifying a fetch that got no response', () => {
     const abort = new DOMException('The user aborted a request.', 'AbortError');
     expect(classifyFetchFailure(3, abort)).toEqual({ evt: 'net.fail', lvl: 'error' });
   });
+
+  test('a request cut off by the page reloading itself is a warning, however slow', () => {
+    const r = classifyFetchFailure(141, new TypeError('Failed to fetch'), true);
+    expect(r).toEqual({ evt: 'net.fail.unload', lvl: 'warn' });
+    expect(classifyFetchFailure(30_000, new TypeError('Failed to fetch'), true).lvl).toBe('warn');
+    expect(classifyFetchFailure(141, new TypeError('Failed to fetch'), false).lvl).toBe('error');
+  });
 });
 
 test.describe('the ResizeObserver loop notice', () => {

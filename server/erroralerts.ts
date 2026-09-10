@@ -16,6 +16,12 @@
 
 import { onEntry, type LogEntry } from './logstore.ts';
 import { entryGroup, readNotes, type MuteRule } from './logquery.ts';
+// The same palette and typeface the coaching mails use — an alert is still an
+// SVRZ mail, and before this it arrived in indigo and a system font stack.
+import {
+  MAIL_BRAND, MAIL_INK_STRONG, MAIL_MUTED_STRONG, MAIL_LINE, MAIL_SURFACE,
+  MAIL_CODE_BG, MAIL_FONT, MAIL_MONO,
+} from './mailstyle.ts';
 
 export type AlertMailer = (message: { to: string; subject: string; text: string; html: string }) => Promise<unknown>;
 
@@ -146,12 +152,16 @@ export function installErrorAlerts(opts: Options): void {
   // Inline styles and tables only, and every colour stated outright: a mail
   // has no stylesheet, no fonts of its own, and a client that decides to
   // invert an unstated background is how an alert arrives unreadable.
+  // Was a palette of its own, with an indigo accent and no Inter — so an alert
+  // looked like a mail from a different product. It now draws from the same
+  // tokens as every other mail; only the layout stays denser, which is right
+  // for something read at a glance on a phone at 07:00.
   const C = {
-    page: '#f5f5f4', card: '#ffffff', line: '#e7e5e4', ink: '#1c1917',
-    mute: '#78716c', app: '#4f46e5', red: '#dc2626', code: '#292524',
+    page: MAIL_SURFACE, card: '#ffffff', line: MAIL_LINE, ink: MAIL_INK_STRONG,
+    mute: MAIL_MUTED_STRONG, red: MAIL_BRAND, code: MAIL_CODE_BG,
   };
-  const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
-  const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
+  const FONT = MAIL_FONT;
+  const MONO = MAIL_MONO;
 
   function chip(text: string, color: string, background: string): string {
     return `<span style="display:inline-block;padding:2px 7px;border-radius:6px;font:600 11px/1.6 ${MONO};color:${color};background:${background};white-space:nowrap">${esc(text)}</span>`;
@@ -172,7 +182,7 @@ export function installErrorAlerts(opts: Options): void {
       `<tr><td style="padding:14px 16px">`,
       `<div style="margin:0 0 8px">`,
       `${g.count > 1 ? `${chip(`${g.count}×`, '#ffffff', C.ink)}&nbsp;` : ''}`,
-      `${chip(source, e.src === 'client' ? C.app : C.mute, C.page)}&nbsp;`,
+      `${chip(source, e.src === 'client' ? C.ink : C.mute, C.page)}&nbsp;`,
       `<span style="font:600 12px/1.6 ${MONO};color:${C.mute}">${esc(e.evt)}</span>`,
       `</div>`,
       `<div style="font:500 15px/1.45 ${FONT};color:${C.ink};word-break:break-word">${esc(e.msg || '(no message)')}</div>`,

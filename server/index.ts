@@ -29,6 +29,13 @@ import {
 // not a 403: it is a clean 200 with the wrong rows.
 import { withVmLock, vmFetch } from './vmlock.ts';
 
+// Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
+import {
+  MAIL_BRAND, MAIL_BRAND_DARK, MAIL_INK, MAIL_INK_SOFT, MAIL_MUTED, MAIL_LINE,
+  MAIL_SURFACE, MAIL_PANEL, MAIL_FONT, MAIL_FONT_LINK, MAIL_DISPLAY,
+  MAIL_COLOR_SCHEME_META, mailText,
+} from './mailstyle.ts';
+
 // Before anything else runs: every console.* call in this process — ours, a
 // dependency's, a stray debug line in a handler — becomes a log entry too.
 // Otherwise it exists only in the container's stdout, which the next redeploy
@@ -1175,31 +1182,8 @@ function emailAttachments(extra: Array<Record<string, unknown>> = []): Array<Rec
 // The palette and typeface of the app, restated here because an email cannot
 // import src/index.css. Keep the two in step: these are the same values as the
 // @theme block there (brand red + Tailwind's stone scale).
-const MAIL_BRAND = '#e2001a';        // --color-brand
-const MAIL_BRAND_DARK = '#be0014';   // --color-red-700
-const MAIL_INK = '#292524';          // stone-800 — the app's body text
-const MAIL_INK_SOFT = '#57534e';     // stone-600
-const MAIL_MUTED = '#a8a29e';        // stone-400
-const MAIL_LINE = '#e7e5e4';         // stone-200
-const MAIL_SURFACE = '#f5f5f4';      // stone-100 — the page behind the card
-const MAIL_PANEL = '#fafaf9';        // stone-50 — inset panels
-
-// Inter is the app's typeface; 'Inter Display' is its display optical size,
-// which readers who have Inter installed locally get by name and everyone on a
-// client that keeps the stylesheet gets through the opsz axis below.
-//
-// Webmail strips <link> and <style> (Gmail, Outlook.com), so the webfont is a
-// bonus, never the plan: every fallback in this stack is a real face that is
-// actually installed somewhere, and the layout is sized to survive all of them.
-const MAIL_FONT = "'Inter Display','Inter Variable',Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
-const MAIL_FONT_LINK = '<link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&display=swap" rel="stylesheet">';
-// The display cut: tighter spacing, for headings only. Ignored where the
-// variable font never loaded, which is exactly the right failure.
-const MAIL_DISPLAY = "font-variation-settings:'opsz' 32;letter-spacing:-0.3px;";
-
-/** Body copy, headings and the two panel styles — one place, so they agree. */
-const mailText = (size: number, color: string, extra = '') =>
-  `font-family:${MAIL_FONT};font-size:${size}px;color:${color};line-height:1.6;${extra}`;
+// The app's look for e-mail lives in one place, shared with the error alert —
+// see server/mailstyle.ts for why.
 
 // Branded SVRZ email shell: white header with the logo, a brand-red accent
 // rule, then the white card + footer. Inline styles + table-free layout so it
@@ -1213,10 +1197,7 @@ function emailShell(bodyHtml: string): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- The app is light-only (see color-scheme in src/index.css). Saying so here
-     stops iOS Mail's dark mode from inverting a card built out of warm greys. -->
-<meta name="color-scheme" content="light only">
-<meta name="supported-color-schemes" content="light">
+${MAIL_COLOR_SCHEME_META}
 ${MAIL_FONT_LINK}
 <style>
   body, div, p, h1, h2, td, span, a { font-family:${MAIL_FONT}; }

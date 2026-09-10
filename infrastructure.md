@@ -399,6 +399,7 @@ reachable without a session.
 - `GET /api/survey-responses`: read the responses. Gated on `requireSurveyReader` — the chair's own console password, **not** admin rights (an admin session gets 403) and **not** the `is_rc_president` flag, which grants nothing. Not under `/api/admin/` for that reason, and not `/api/survey/responses`, which the `:token` route above would swallow.
 - `GET /api/rc-game-notes`: read every filed 4.4.10 Rückmeldung. Same `requireSurveyReader` gate as the survey answers and `/api/president-notes`. A coach reads their own note back through `/api/rc-games`, never this.
 - `POST /api/rc-game-notes`: file (or rewrite) one Rückmeldung. RC session; the game, the role and the coachee are re-derived server-side, so a coach who was not on that whistle gets 403. Body is redacted in the activity log.
+- `GET /api/docs/:id`: **public** — the rulebooks, proxied. volleyball.ch and fivb.com serve their PDFs with no `Access-Control-Allow-Origin`, so the browser may link to them but not read them, and the in-app reader needs the bytes. Four allowlisted ids (`rules-de`, `rules-en`, `rule-changes`, `niveau`) — not a URL parameter, which would be an SSRF hole. Each is held in memory and revalidated against its upstream ETag every 6 h; if upstream is down the last good copy is served rather than an error.
 - `GET /api/coachees`: list coachees + observation status summary.
 - `POST /api/coachees`: create coachee.
 - `PUT /api/coachees/:id`: update coachee.

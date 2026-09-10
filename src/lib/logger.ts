@@ -277,6 +277,12 @@ let leaving = false;
  *  console and the app) do; on 10.09.2026 a Home request cancelled by one of
  *  them was logged as an API failure. */
 export function noteLeavingPage(): void { leaving = true; }
+/** …and back. Nothing used to clear this, so the first `pagehide` of a visit
+ *  latched it for good: a page restored from the back/forward cache, or an app
+ *  simply brought back to the front, went on filing every later failure as
+ *  somebody leaving. The API could then have been down for the rest of that
+ *  session with nothing louder than a warning to say so. */
+export function noteBackOnPage(): void { leaving = false; }
 
 export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving): { evt: string; lvl: ClientLevel } {
   const name = error instanceof Error ? error.name : '';
@@ -310,8 +316,12 @@ function installFetchLogging(): void {
       // TLS, or CORS. This is the *only* thing that should ever be reported to
       // the user as "Verbindungsfehler".
       const { evt, lvl } = classifyFetchFailure(ms, error);
-      clientLog[lvl](evt, `${method} ${url} failed after ${ms}ms (no response)`, {
-        method, url, ms, error, online: navigator.onLine,
+      // Scrubbed like every other line that carries a URL. This one was raw, so
+      // a survey that failed to load filed its capability token — which answers
+      // the questionnaire AS the referee, and re-links an anonymous answer to
+      // the person who gave it — into a Protokoll every admin reads.
+      clientLog[lvl](evt, `${method} ${scrubTokens(url)} failed after ${ms}ms (no response)`, {
+        method, url: scrubTokens(url), ms, error, online: navigator.onLine,
       });
       throw error;
     }
@@ -379,9 +389,19 @@ function installLifecycleLogging(): void {
   window.addEventListener('offline', () => clientLog.warn('net.offline', 'went offline'));
   window.addEventListener('hashchange', () => clientLog.info('nav.hashchange', scrubTokens(location.hash || '#')));
   document.addEventListener('visibilitychange', () => clientLog.debug('app.visibility', document.visibilityState));
-  window.addEventListener('pagehide', () => { leaving = true; void flush(true); });
+  window.addEventListener('pagehide', () => { noteLeavingPage(); void flush(true); });
+  window.addEventListener('pageshow', () => { noteBackOnPage(); });
   // Flushing on hide (not unload) is what actually works on iOS Safari.
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') void flush(true); });
+  //
+  // Switching to another app counts as going away too: the request dies with
+  // the tab's network, and nobody can act on it. That is what cut off a coach's
+  // Home overview at 13:47 on 10.09.2026 — 141 ms in, too slow for the instant
+  // rule to catch and mailed as an API failure. Coming back to the front is the
+  // other half of it, and the half that keeps a real outage loud.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { noteLeavingPage(); void flush(true); }
+    else noteBackOnPage();
+  });
 }
 
 /**

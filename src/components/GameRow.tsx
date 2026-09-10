@@ -110,8 +110,8 @@ export function LeagueLabel({ text }: { text: string }) {
  *  left "Di 02.02." to be looked up somewhere else before anything could be
  *  planned around it. */
 export function DateRail({
-  iso, tone = 'stone', league, lang, className,
-}: { iso: string; tone?: RowTone; league?: string; lang: 'DE' | 'EN'; className?: string }) {
+  iso, tone = 'stone', league, matchNo, lang, className,
+}: { iso: string; tone?: RowTone; league?: string; matchNo?: string; lang: 'DE' | 'EN'; className?: string }) {
   // Zürich, always — the fixture starts when it starts in the gym, whatever the
   // reader's device thinks the time is. See src/lib/appTime.ts.
   const parts = zonedParts(iso);
@@ -136,6 +136,14 @@ export function DateRail({
         <div className="mt-0.5 text-[10.5px] font-medium leading-snug text-stone-500 sm:text-[11px]">
           <LeagueLabel text={league} />
         </div>
+      )}
+      {/* The match number lives here, not as the first chip beside the
+          referees: there it was a short chip that a short referee chip
+          wrapped next to, so the two referees of one game sat on different
+          lines at different indents. In the rail it is with the other facts
+          that identify the fixture, and the crew stacks cleanly. */}
+      {matchNo && (
+        <div className="mt-0.5 text-[10px] tabular-nums leading-snug text-stone-400">#{matchNo}</div>
       )}
     </div>
   );
@@ -229,6 +237,13 @@ export function MetaChip({
   );
 }
 
+/** A chip that takes a whole line of the chips row to itself, at its own
+ *  width. The referees of one game read as a column — 1. SR over 2. SR, at one
+ *  indent — and never side by side when both names happen to be short. */
+export function ChipLine({ children }: { children: ReactNode } & Keyed) {
+  return <span className="flex basis-full">{children}</span>;
+}
+
 /** A list's heading: a name on a rule, with its count on the right.
  *
  *  Sections used to be rounded, filled, bordered cards, and a row inside one was
@@ -278,6 +293,8 @@ export type GameRowProps = Keyed & {
   date: string;
   /** "3L ♂ A", drawn under the time. */
   league?: string;
+  /** VolleyManager's match number, drawn in the rail under the league. */
+  matchNo?: string;
   /** Either the API's "Home vs Away" string, or the two names separately. */
   teams?: string;
   home?: string;
@@ -327,13 +344,13 @@ export type GameRowProps = Keyed & {
  * everything else is settled here, once.
  */
 export function GameRow({
-  lang, tone = 'stone', date, league, teams, home, away, homeAside, awayAside,
+  lang, tone = 'stone', date, league, matchNo, teams, home, away, homeAside, awayAside,
   chips, location, mapsUrl, children, status, action, tools, onOpen, title,
   logRedact, className,
 }: GameRowProps) {
   const body = (
     <>
-      <DateRail iso={date} tone={tone} league={league} lang={lang} />
+      <DateRail iso={date} tone={tone} league={league} matchNo={matchNo} lang={lang} />
       <RowRail tone={tone} />
       <div className="min-w-0 flex-1">
         <div className="flex items-start gap-2">

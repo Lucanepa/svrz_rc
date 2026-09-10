@@ -60,7 +60,7 @@ import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, t
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
 import { CoacheeChip, GroupChip } from './components/CoacheeChips';
-import { GameList, GameRow, LeagueLabel, MetaChip, SectionHead, TeamPair, type RowTone } from './components/GameRow';
+import { ChipLine, GameList, GameRow, LeagueLabel, MetaChip, SectionHead, TeamPair, type RowTone } from './components/GameRow';
 import { Skeleton, SkeletonRows } from './components/Skeleton';
 import AppSpinner from './components/AppSpinner';
 import { useRcAuth } from './components/AuthGate';
@@ -4726,14 +4726,16 @@ export default function App() {
       const level = isCoachee ? coacheeLevelOf(name) : undefined;
       const group = isCoachee ? coacheeGroupOf(name) : undefined;
       return (
-        <MetaChip key={role} wrap tone={isCoachee ? 'amber' : 'stone'}>
-          <span><span className="font-bold opacity-70">{role}&nbsp;</span>{name}</span>
-          {isCoachee && (
-            <span className="rounded bg-amber-200/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide">
-              Coachee{level ? ` · ${level}` : ''}{group ? ` · ${group}` : ''}
-            </span>
-          )}
-        </MetaChip>
+        <ChipLine key={role}>
+          <MetaChip wrap tone={isCoachee ? 'amber' : 'stone'}>
+            <span><span className="font-bold opacity-70">{role}&nbsp;</span>{name}</span>
+            {isCoachee && (
+              <span className="rounded bg-amber-200/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide">
+                Coachee{level ? ` · ${level}` : ''}{group ? ` · ${group}` : ''}
+              </span>
+            )}
+          </MetaChip>
+        </ChipLine>
       );
     };
     const badge = (key: string, tone: 'dark' | 'sky' | 'violet' | 'amber' | 'stone' | 'me', title: string, children: React.ReactNode) => (
@@ -4746,6 +4748,7 @@ export default function App() {
         tone={opts?.tone ?? 'red'}
         date={game.date}
         league={game.league}
+        matchNo={game.matchNo || undefined}
         home={game.homeTeam}
         away={game.awayTeam}
         homeAside={side('h')}
@@ -4764,7 +4767,6 @@ export default function App() {
           {opts?.status}
         </>}
         chips={<>
-          {game.matchNo && <MetaChip tone="ghost">#{game.matchNo}</MetaChip>}
           {game.isRdGame && badge('rd', 'dark', '', formData.lang === 'DE' ? 'RD Spiel' : 'RD Game')}
           {game.isLdGame && badge('ld', 'dark', '', formData.lang === 'DE' ? 'LD Spiel' : 'LD Game')}
           {game.isRcGame && badge('rc', 'sky',
@@ -5479,18 +5481,20 @@ export default function App() {
                       .map((r) => ({ ...r, coachee: !g.noCoachee }));
                 const mixed = crew.some((r) => r.coachee) && crew.some((r) => !r.coachee);
                 return crew.filter((r) => r.name).map((r) => (
-                  <MetaChip key={`${r.name}-${r.role}`} wrap tone={mixed && r.coachee ? 'amber' : 'stone'}>
-                    {/* Slot and name in ONE inline box, with a real space
-                        between them. As two flex items they run together into
-                        "2SRSven Fremd" in the accessibility tree — the gap is
-                        drawn, not spoken. */}
-                    <span>
-                      {r.role && <span className="font-bold opacity-70">{r.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
-                      {r.name}
-                    </span>
-                    {mixed && r.coachee && <CoacheeChip />}
-                    <GroupChip group={r.coachee ? coacheeGroupOf(r.name) : undefined} />
-                  </MetaChip>
+                  <ChipLine key={`${r.name}-${r.role}`}>
+                    <MetaChip wrap tone={mixed && r.coachee ? 'amber' : 'stone'}>
+                      {/* Slot and name in ONE inline box, with a real space
+                          between them. As two flex items they run together into
+                          "2SRSven Fremd" in the accessibility tree — the gap is
+                          drawn, not spoken. */}
+                      <span>
+                        {r.role && <span className="font-bold opacity-70">{r.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
+                        {r.name}
+                      </span>
+                      {mixed && r.coachee && <CoacheeChip />}
+                      <GroupChip group={r.coachee ? coacheeGroupOf(r.name) : undefined} />
+                    </MetaChip>
+                  </ChipLine>
                 ));
               };
               /** One row of the coach's own lists. `canRemind` only for games
@@ -5507,14 +5511,12 @@ export default function App() {
                   tone={tone}
                   date={g.gameDate}
                   league={g.league}
+                  matchNo={g.matchNo || undefined}
                   teams={g.teams}
                   location={g.location}
                   mapsUrl={g.mapsUrl}
                   onOpen={() => startFromSummary(g)}
-                  chips={<>
-                    {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
-                    {crewChips(g)}
-                  </>}
+                  chips={crewChips(g)}
                   // Three labelled buttons on their own line under the game
                   // — see GameRow's `tools`. The pen, not an eye: the button
                   // starts writing an observation, it does not look at one.
@@ -5738,6 +5740,7 @@ export default function App() {
                             tone={owes ? 'amber' : 'stone'}
                             date={g.gameDate}
                             league={g.league}
+                            matchNo={g.matchNo || undefined}
                             teams={g.teams}
                             location={g.location}
                             mapsUrl={g.mapsUrl}
@@ -5757,7 +5760,6 @@ export default function App() {
                                 ? (de ? 'Rückmeldung erfassen' : 'Write the note')
                                 : (de ? 'Noch nicht gespielt' : 'Not played yet')}
                             chips={<>
-                              {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
                               <MetaChip tone="me">{de ? 'Du' : 'You'} · {g.rcRole}</MetaChip>
                               <MetaChip wrap tone="amber">
                                 <span>{g.coacheeName}</span>

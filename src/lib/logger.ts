@@ -245,6 +245,26 @@ function withTraceHeaders(url: string, init?: RequestInit): RequestInit | undefi
   }
 }
 
+/** A fetch the browser gave up on before it could have reached the network.
+ *
+ *  Six requests on one phone all "failed" in 6–9 ms at the same instant on
+ *  10.09.2026 — every call the app makes at boot — and never again. DNS, TLS
+ *  and a timeout each take longer than that; a rejection that fast is the
+ *  browser's own network stack refusing locally: the handset switching
+ *  networks as the app opens (Chrome's ERR_NETWORK_CHANGED), or the page
+ *  being torn down and reloaded mid-boot. Nothing on the server side happened,
+ *  so nothing on the server side should be woken up for it.
+ *
+ *  Same `net.fail` prefix, so a mute rule and the log search still catch it;
+ *  a warning rather than an error, so the alert mail does not go out. An
+ *  AbortError is the app's own cancellation and is not what this is about. */
+export const INSTANT_FAIL_MS = 50;
+export function classifyFetchFailure(ms: number, error: unknown): { evt: string; lvl: ClientLevel } {
+  const name = error instanceof Error ? error.name : '';
+  if (name !== 'AbortError' && ms < INSTANT_FAIL_MS) return { evt: 'net.fail.instant', lvl: 'warn' };
+  return { evt: 'net.fail', lvl: 'error' };
+}
+
 function installFetchLogging(): void {
   window.fetch = async function loggedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const method = (init?.method || (input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
@@ -268,7 +288,8 @@ function installFetchLogging(): void {
       // A rejected fetch means the request never got a status: offline, DNS,
       // TLS, or CORS. This is the *only* thing that should ever be reported to
       // the user as "Verbindungsfehler".
-      clientLog.error('net.fail', `${method} ${url} failed after ${ms}ms (no response)`, {
+      const { evt, lvl } = classifyFetchFailure(ms, error);
+      clientLog[lvl](evt, `${method} ${url} failed after ${ms}ms (no response)`, {
         method, url, ms, error, online: navigator.onLine,
       });
       throw error;

@@ -183,6 +183,33 @@ Stores synced matches from Swiss Volley public data.
 
 Common fields: `match_no`, `league`, `match_date`, `location`, `home_team`, `away_team`, `first_referee`, `second_referee`, `first_line_judge`, `second_line_judge`, `assigned_rc`, `feedback_closed_roles`, `source_payload`.
 
+### `boerse_offers`
+
+One row per **offer** in VolleyManager's SR-Börse — not one per game. A game can
+appear twice (once per head slot), and a slot offered, withdrawn and offered
+again is two rows, keyed by `vm_offer_id`.
+
+Common fields: `vm_offer_id`, `match_no`, `game_starts_at`, `referee_position`,
+`slot`, `status`, `slot_person_name`, `slot_person_sv`, `slot_person_vm_id`,
+`submitted_by_*`, `applied_by_*`, `join_via`, `first_seen`, `last_seen`,
+`withdrawn_at`, `raw`.
+
+Deliberately a sibling of `games`, not columns on it: `mapIncomingGame` returns
+the full update payload, so a börse column on `games` would be blanked by the
+next 05:00 import unless that function were taught about it too.
+
+⚠ **`status` is spelled `not_applied`** with an underscore, where every other VM
+enum in this app uses a hyphen.
+
+⚠ **Only head-one and head-two are stored.** Line judges are out of scope, and
+the two VM endpoints disagree about the word anyway — the börse search says
+`Linesman`, the games search says `LineJudge`, and asking the börse for a
+`LineJudge` property is a hard 500.
+
+See "VolleyManager roles" under Upstream Sync Troubleshooting: the börse needs a
+different role from the games sync, and three roles answer it `200` with the
+wrong row count.
+
 ### `coachees`
 
 Master list of referees/coachees.
@@ -681,6 +708,33 @@ against the production account:
 | `SportManager.Indoorvolleyball:PlayingScheduleResponsible` | 403 | **200** |
 | `SportManager.Indoorvolleyball:ClubAdministrator` / `TeamResponsible` | 403 | **200** |
 | every other role the account holds | 403 | 403 |
+
+**Three jobs now, not two.** Re-measured 2026-09-10 by switching the live account
+through all 9 of its roles and restoring it, this time including the SR-Börse
+(`refadmin/refereegameexchange`). `200:n` = allowed, n rows:
+
+| attribute value id | role | börse | games | contacts |
+|---|---|---|---|---|
+| `b87653c7-…` | `RefAdmin:Referee` (SVRZ) | **200:3629** | 403 | 403 |
+| `e693b8cf-…` | `RefAdmin:RefereeDelegate` | **403** | **200** | 403 |
+| `cfd8a602-…` | `RefAdmin:Referee` (other assoc.) | 200:**0** | 403 | 403 |
+| `4cdade68-…` | `ClubAdministrator` | 200:**5** | 403 | 200 |
+| `ed24d37c-…` | `PlayingScheduleResponsible` | 200:**5** | 403 | 200 |
+| `02e6fa7a-…` | `TeamResponsible` | 403 | 403 | 200 |
+| `a02498b2-…` | `IndoorPlayer` | 403 | 403 | 403 |
+| `5453d0c6-…` | `CoachAdmin:IndoorCoach` | 403 | 403 | 403 |
+| `925ce0aa-…` | `Beachvolleyball:Player` | 403 | 403 | 403 |
+
+⚠⚠ **The börse and the games sync can never share a role** — RefereeDelegate,
+which `VM_ROLE_FOR_GAMES` claims, is 403 on the börse.
+
+⚠⚠ **Three roles answer the börse `200` with the WRONG row count**, which is far
+more dangerous than a 403: `cfd8a602` is a *second* `RefAdmin:Referee` attribute
+for a different association and returns **zero rows**; the club roles return
+five. A role drift therefore reads as "nothing is in the börse". The role
+*identifier* cannot detect this — `b87653c7` and `cfd8a602` are both
+`Indoorvolleyball.RefAdmin:Referee`. Assert the **attribute value id** and a
+row-count floor, never the role name.
 
 The active role is **per account and persists** — a fresh login keeps whatever
 was last chosen, in the VM UI or by us. So whichever role a human last picked

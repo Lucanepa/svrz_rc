@@ -63,6 +63,62 @@ const games = await ensure('games', [
   // everything imported before 2026-08-27 — readers fall back to the name.
   T('first_referee_id'),T('second_referee_id')
 ]);
+// The SR-Börse: VolleyManager's exchange, where a referee who cannot whistle a
+// game they are convoked for offers THAT SLOT for someone else to take. One row
+// here is one OFFER, not one game — a game can appear twice, once per head slot,
+// and the same slot can be offered again after a withdrawal.
+//
+// A sibling of `games` rather than columns on it, and that is not a style
+// choice: `mapIncomingGame` returns the full update payload, so any börse column
+// living on `games` would be silently blanked by the next 05:00 import unless
+// that function were taught about it too. Nothing here is coupled to that.
+//
+// Whose slot is it? Match `referee_position` against the entry of the same
+// position in `refereeGame.refereeConvocations` — for an OPEN offer that person
+// is the one who would be replaced, whoever filed it (the association files on
+// referees' behalf constantly, so `submitted_by_*` is not the answer). For a
+// TAKEN offer the same convocation already names whoever took it, which is why
+// `status` has to be read before that join is trusted.
+//
+// Line judges are deliberately absent. Only head-one and head-two are stored;
+// SVRZ has never had a line-judge offer, and the two endpoints disagree about
+// the word anyway (`Linesman` here, `LineJudge` on the games search).
+await ensure('boerse_offers', [
+  // The exchange row's own identity in VolleyManager — the upsert key. A slot
+  // offered, withdrawn and offered again is two different offers and must get
+  // two rows, or the second one inherits the first one's `first_seen` and the
+  // banner dates an hours-old offer to last Monday.
+  T('vm_offer_id'),
+  // The join to games.match_no. Both sides are String(game.number): a plain
+  // 6-digit integer, no leading zeros, so the formats agree.
+  T('match_no'),T('game_starts_at'),
+  // The raw VolleyManager value, unmapped, so a vocabulary change is visible as
+  // an unresolved slot rather than as silence. `slot` is the normalisation:
+  // '1' or '2', matching games.first_referee / second_referee.
+  T('referee_position'),T('slot'),
+  // open | applied | not_applied — note the underscore; VM spells this one with
+  // an underscore where every other enum here uses a hyphen.
+  T('status'),
+  // The person whose slot is on offer. The SV-Nr. is the identity that matches
+  // games.first_referee_id; it is only readable through the refereeConvocations
+  // ARRAY — the activeRefereeConvocation*HeadReferee accessors return a fixed
+  // projection that omits it however you ask for it.
+  T('slot_person_name'),T('slot_person_sv'),T('slot_person_vm_id'),
+  T('submitted_by_name'),T('submitted_by_sv'),T('submitting_type'),T('submitted_at'),
+  T('applied_by_name'),T('applied_by_sv'),T('applied_at'),
+  // How confident we are that slot_person is the referee our own games row
+  // names in that slot: position | position+sv | position+name | conflict |
+  // unresolved. Diagnostic, for the admin console — never a colour on a phone.
+  T('join_via'),
+  // last_seen is how a withdrawal is detected: an offer absent from a fetch we
+  // can PROVE was complete. withdrawn_at is only ever set from such a fetch.
+  T('first_seen'),T('last_seen'),T('withdrawn_at'),
+  // A trimmed evidence blob — the offer's own scalars plus the one matching
+  // convocation, so a wrong join can be diagnosed without re-running a sync.
+  // Trimmed on purpose: games.source_payload is dead because storing whole VM
+  // rows was the wrong idea the first time.
+  J('raw')
+]);
 // The referee roster, keyed by the Swiss Volley number — the only identifier in
 // this system that does not change when somebody marries, adds an accent or is
 // filed surname-first. Imported from the SVRZ "Schiedsrichter verwalten" XLSX,

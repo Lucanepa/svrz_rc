@@ -28,6 +28,7 @@ import {
 // together without one of them reading under the other's role. That failure is
 // not a 403: it is a clean 200 with the wrong rows.
 import { withVmLock, vmFetch } from './vmlock.ts';
+import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
 
 // Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
 import {
@@ -1583,49 +1584,18 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-class CookieJar {
-  private cookies: Record<string, string> = {};
+// CookieJar and followRedirects live in server/vmhttp.ts — the börse poller
+// needs the same two and must not import this file, which starts a server.
 
-  update(response: Response) {
-    const typedHeaders = response.headers as Headers & { getSetCookie?: () => string[] };
-    for (const cookieHeader of typedHeaders.getSetCookie?.() ?? []) {
-      const match = cookieHeader.match(/^([^=]+)=([^;]*)/);
-      if (match) {
-        this.cookies[match[1]] = match[2];
-      }
-    }
-
-    const fallback = response.headers.get('set-cookie');
-    if (fallback) {
-      for (const part of fallback.split(/,(?=\s*\w+=)/)) {
-        const match = part.trim().match(/^([^=]+)=([^;]*)/);
-        if (match) {
-          this.cookies[match[1]] = match[2];
-        }
-      }
-    }
-  }
-
-  set(name: string, value: string) {
-    this.cookies[name] = value;
-  }
-
-  header(): string {
-    return Object.entries(this.cookies)
-      .map(([key, value]) => `${key}=${value}`)
-      .join('; ');
-  }
+/** followRedirects with this app's VolleyManager base already applied. */
+function followRedirects(
+  url: string, jar: CookieJar, init: RequestInit = {},
+  maxRedirects = 10, trace?: VmTraceEntry[], step = 'request',
+): Promise<{ response: Response; body: string }> {
+  return followRedirectsBase(VM_BASE, url, jar, init, maxRedirects, trace, step);
 }
 
-type VmTraceEntry = {
-  step: string;
-  requestUrl: string;
-  status: number;
-  redirected: boolean;
-  location: string;
-  pageTitle: string;
-  bodySnippet: string;
-};
+// VmTraceEntry now comes from server/vmhttp.ts, beside followRedirects.
 
 async function ensureAdminAuth() {
   if (pb.authStore.isValid) {
@@ -1723,55 +1693,6 @@ async function upsertGame(gameData: ReturnType<typeof mapIncomingGame>) {
   });
 }
 
-async function followRedirects(
-  url: string,
-  jar: CookieJar,
-  init: RequestInit = {},
-  maxRedirects = 10,
-  trace?: VmTraceEntry[],
-  step = 'request',
-): Promise<{ response: Response; body: string }> {
-  const userAgent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36';
-  let currentUrl = url;
-  let currentInit = init;
-
-  for (let i = 0; i < maxRedirects; i += 1) {
-    const response = await vmFetch(currentUrl, {
-      ...currentInit,
-      headers: {
-        'User-Agent': userAgent,
-        Cookie: jar.header(),
-        ...(currentInit.headers ?? {}),
-      },
-      redirect: 'manual',
-    });
-    jar.update(response);
-    const body = await response.text();
-    const location = response.headers.get('location') || '';
-    trace?.push({
-      step,
-      requestUrl: currentUrl,
-      status: response.status,
-      redirected: response.status >= 300 && response.status < 400,
-      location,
-      pageTitle: extractPageTitle(body),
-      bodySnippet: snippetFromHtml(body),
-    });
-
-    if (response.status >= 300 && response.status < 400) {
-      if (!location) {
-        break;
-      }
-      currentUrl = location.startsWith('http') ? location : `${VM_BASE}${location}`;
-      currentInit = {};
-      continue;
-    }
-
-    return { response, body };
-  }
-
-  throw new Error(`Too many redirects while requesting ${url}`);
-}
 
 // Cache VM session to avoid re-login on every sync retry (valid for 30 min)
 type VmSession = { jar: CookieJar; csrfToken: string; windowUniqueId: string };

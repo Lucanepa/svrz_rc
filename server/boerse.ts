@@ -263,6 +263,11 @@ export async function fetchBoerseOffers(opts: {
     const before = await readActiveRole(base, jar);
     restoreTo = before.attr;
     if (before.attr !== VM_ROLE_FOR_BOERSE) {
+      // Worth saying out loud: the account is shared, and "somebody else moved
+      // it" is the single likeliest cause of a future wrong answer here. On
+      // 2026-09-11 it was found on wiedisync's ClubAdministrator, which answers
+      // this endpoint 200 with five rows — invisible without this line.
+      say(`[boerse] account was on ${before.attr || '(none)'} — claiming ${VM_ROLE_FOR_BOERSE}, will restore`);
       await switchRole(base, jar, before.csrf, VM_ROLE_FOR_BOERSE);
     }
 

@@ -1030,6 +1030,10 @@ export type Settings = {
   // Only the rows an admin changed; everything else follows the official table
   // shipped in niveauTargets.ts.
   niveau_table?: NiveauMatrix;
+  /** When each upstream last SUCCEEDED — not when it was last attempted. A sync
+   *  that has been failing for a week still writes an attempt timestamp every
+   *  night, so a freshness line reading that can never fire. */
+  freshness?: { games: string; boerse: string };
 };
 export async function getSettings(): Promise<Settings> {
   if (isDemoMode()) return demo.getSettings();

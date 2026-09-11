@@ -44,7 +44,7 @@ import {
   type IcalSubscription,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
-import { BoerseChip, BoerseNote, BoerseFreshness, boerseRowClass, inBoerse } from './components/BoerseNote';
+import { BoerseChip, BoerseNote, SyncFreshness, boerseRowClass, inBoerse } from './components/BoerseNote';
 import InfoHint from './components/InfoHint';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import {
@@ -1329,6 +1329,9 @@ export default function App() {
   // is a question the list should be able to answer directly, and the rows it
   // matches are otherwise scattered through a season of fixtures.
   const [gameFilterBoerse, setGameFilterBoerse] = useState<string[]>([]);
+  /** When each upstream last SUCCEEDED, for the line under a list head. Absence
+   *  of a warning is a claim, and this is what qualifies it. */
+  const [freshness, setFreshness] = useState<{ games: string; boerse: string } | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [gameFilterFunction, setGameFilterFunction] = useState<string[]>([]);
   const [gameFilterDateFrom, setGameFilterDateFrom] = useState('');
@@ -1391,6 +1394,7 @@ export default function App() {
   const loadSettings = async (): Promise<number> => {
     try {
       const s = await getSettings();
+      setFreshness(s.freshness ?? null);
       setEmailTestMode(Boolean(s.test_mode));
       setCoacheeTargets(s.coachee_targets ?? {});
       setNiveauTable(resolveNiveauTable(s.niveau_table ?? null));
@@ -5527,11 +5531,6 @@ export default function App() {
                *  highlights nothing. The group — "Varia", "Beförderung?" — is
                *  what says why the evening is worth driving to, so it rides
                *  along on every coachee's chip. */
-              /** The börse stamp for this screen. Per-response, so any row that
-               *  has one has the same one; a list with no rows has none, and
-               *  BoerseFreshness says "unknown" rather than implying health. */
-              const homeBoerseAsOf = [...homeData?.nextGames ?? [], ...homeData?.missingGames ?? []]
-                .map((g) => g.boerse?.asOf).find(Boolean);
               const crewChips = (g: HomeGame) => {
                 const crew = g.crew?.length
                   ? g.crew
@@ -5971,7 +5970,7 @@ export default function App() {
                           // one of them zero — so a drifted role reads as "no
                           // games at risk". Without a visible timestamp that lie
                           // is indistinguishable from good news.
-                          hint={<BoerseFreshness asOf={homeBoerseAsOf} lang={formData.lang} />}
+                          hint={<SyncFreshness games={freshness?.games} boerse={freshness?.boerse} lang={formData.lang} />}
                         />
                         {/* Every one of them: this list is the answer to the
                             counter beside it, and a cut-off row is a game the
@@ -6771,6 +6770,13 @@ export default function App() {
                       </p>
                     ) : null;
                   })()}
+                  {/* The same two clocks as Home. This list is where the börse
+                      marks actually land — an unassigned game is where most
+                      offers sit — so it is the list that most needs to say how
+                      old its answer is. */}
+                  <p className="mb-2">
+                    <SyncFreshness games={freshness?.games} boerse={freshness?.boerse} lang={formData.lang} />
+                  </p>
                   <div className="border border-stone-200 rounded">
                     {eligibleGames.length === 0 && (booting || loadingGames) ? (
                       <ListLoading label={t.loading} first={booting} rows={8} />

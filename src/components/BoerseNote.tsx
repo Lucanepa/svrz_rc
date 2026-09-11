@@ -85,28 +85,50 @@ export function BoerseNote({ boerse, lang }: { boerse?: BoerseOnGame; lang: 'DE'
 }
 
 /**
- * "Börse checked N min ago", for a list head.
+ * How old each upstream's data is, for a list head.
  *
- * Reads `asOf`, which the server fills from lastSuccessAt and never from the
- * last attempt: a poller that has been failing for a week still writes an
- * attempt timestamp every hour, so a freshness line built on that can never fire
- * in the failure it exists to catch. An absent or old stamp says so plainly,
- * because "no warnings" and "no data" must not look the same.
+ * BOTH clocks, because they fail independently and the row on screen depends on
+ * each: the nightly games sync decides who is on a game at all, the hourly börse
+ * poll decides whether they are trying to leave it. A fresh börse over a
+ * week-old crew is a confident answer about the wrong referees.
+ *
+ * Each reads LAST SUCCESS, never the last attempt — a sync that has been failing
+ * for a week still stamps an attempt every night, so a line built on that can
+ * never fire in the failure it exists to catch.
+ *
+ * An absent or old stamp says so plainly, because "no warnings" and "no data"
+ * must not look the same. That is not hypothetical here: three VolleyManager
+ * roles answer the börse 200 with the wrong row count, one of them zero.
  */
-export function BoerseFreshness({ asOf, lang }: { asOf?: string; lang: 'DE' | 'EN' }) {
-  const de = lang === 'DE';
-  const at = asOf ? new Date(asOf).getTime() : NaN;
-  if (!Number.isFinite(at)) {
-    return <span className="text-[10.5px] text-stone-400">{de ? 'Börse-Stand unbekannt' : 'Börse status unknown'}</span>;
-  }
+function age(iso: string | undefined, lang: 'DE' | 'EN'): { text: string; mins: number } | null {
+  const at = iso ? new Date(iso).getTime() : NaN;
+  if (!Number.isFinite(at)) return null;
   const mins = Math.max(0, Math.round((Date.now() - at) / 60000));
-  const stale = mins > 180;
-  const when = mins < 60 ? `${mins} Min.` : `${Math.round(mins / 60)} h`;
-  const whenEn = mins < 60 ? `${mins} min` : `${Math.round(mins / 60)} h`;
-  return (
-    <span className={cn('inline-flex items-center gap-1 text-[10.5px]', stale ? 'font-semibold text-amber-700' : 'text-stone-400')}>
+  if (mins < 60) return { text: lang === 'DE' ? `${mins} Min.` : `${mins} min`, mins };
+  const hours = Math.round(mins / 60);
+  if (hours < 36) return { text: `${hours} h`, mins };
+  return { text: lang === 'DE' ? `${Math.round(hours / 24)} Tagen` : `${Math.round(hours / 24)} d`, mins };
+}
+
+export function SyncFreshness({ games, boerse, lang }: { games?: string; boerse?: string; lang: 'DE' | 'EN' }) {
+  const de = lang === 'DE';
+  const g = age(games, lang);
+  const b = age(boerse, lang);
+  // Each has its own patience. The games sync runs nightly, so a day is normal
+  // and two is not; the börse runs hourly, so three hours already means several
+  // missed runs.
+  const gStale = !g || g.mins > 36 * 60;
+  const bStale = !b || b.mins > 180;
+  const part = (label: string, a: { text: string } | null, stale: boolean) => (
+    <span className={cn('inline-flex items-center gap-1', stale ? 'font-semibold text-amber-700' : 'text-stone-400')}>
       <span aria-hidden className={cn('h-1.5 w-1.5 rounded-full', stale ? 'bg-amber-500' : 'bg-green-600')} />
-      {de ? `Börse vor ${when} geprüft` : `Börse checked ${whenEn} ago`}
+      {a ? `${label} ${de ? 'vor' : ''} ${a.text}${de ? '' : ' ago'}`.replace(/\s+/g, ' ').trim() : `${label} —`}
+    </span>
+  );
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10.5px]">
+      {part(de ? 'Spiele' : 'Games', g, gStale)}
+      {part(de ? 'Börse' : 'Börse', b, bStale)}
     </span>
   );
 }

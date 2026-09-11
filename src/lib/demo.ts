@@ -443,8 +443,12 @@ export function getAdminAuthStatus(): Promise<AdminAuthStatus> {
   return ok({ authenticated: false, email: '' });
 }
 
-export function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number | null; paid_cap?: number | null }> {
-  return ok({ default_season: seasonStartYear(), test_mode: false, groups: ['RD', 'LD'], coachee_targets: {}, rc_mandates: {}, default_goal: null, paid_cap: null });
+export function getSettings(): Promise<{ default_season: number | null; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number | null; paid_cap?: number | null; freshness?: { games: string; boerse: string } }> {
+  // Fresh by construction: the demo has no upstream, and a "checked 3 days ago"
+  // line in a walkthrough would look like a fault in the demo rather than the
+  // deliberate absence of a server.
+  const justNow = new Date(Date.now() - 9 * 60_000).toISOString();
+  return ok({ default_season: seasonStartYear(), test_mode: false, groups: ['RD', 'LD'], coachee_targets: {}, rc_mandates: {}, default_goal: null, paid_cap: null, freshness: { games: justNow, boerse: justNow } });
 }
 
 // The president's notes need a server to be private to anyone, so the demo

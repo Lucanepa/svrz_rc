@@ -3070,7 +3070,14 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
 const GAMES_SYNC_STATUS_KEY = 'games_sync_status';
 
 export type GamesSyncStatus = {
+  /** When the last run was ATTEMPTED — written on success and failure alike. */
   at: string;
+  /** When the last run last SUCCEEDED. The distinction is the whole point: `at`
+   *  moves every night whatever happens, so a freshness check reading it can
+   *  never fire in the failure it exists to catch — a sync that has been broken
+   *  for a week still looks like it ran an hour ago. Carried forward by
+   *  recordGamesSyncStatus, so every caller gets it without knowing. */
+  lastSuccessAt?: string;
   ok: boolean;
   imported?: number;
   totalFetched?: number;
@@ -3082,7 +3089,17 @@ async function recordGamesSyncStatus(status: GamesSyncStatus): Promise<void> {
   // successful sync into a failed request, nor mask the real error of a failed
   // one behind a bookkeeping error.
   try {
-    await setSetting(GAMES_SYNC_STATUS_KEY, JSON.stringify(status));
+    // Preserve the last good timestamp across a failure, here rather than at
+    // each call site — there are four, and one forgetting would put the bug back.
+    let lastSuccessAt = status.ok ? status.at : '';
+    if (!status.ok) {
+      try {
+        const prev = await getSettingRecord(GAMES_SYNC_STATUS_KEY);
+        const parsed = prev ? JSON.parse(asText(prev.value)) as GamesSyncStatus : null;
+        lastSuccessAt = asText(parsed?.lastSuccessAt) || (parsed?.ok ? asText(parsed.at) : '');
+      } catch { lastSuccessAt = ''; }
+    }
+    await setSetting(GAMES_SYNC_STATUS_KEY, JSON.stringify({ ...status, lastSuccessAt }));
   } catch (error) {
     console.error('[scheduler] could not record the games-sync status:', error);
   }
@@ -4335,7 +4352,25 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
         if (Number.isFinite(latest)) default_season = latest;
       } catch { /* keep null */ }
     }
-    res.json({ default_season, test_mode: await isEmailTestMode(), groups, coachee_targets, rc_mandates, default_goal, paid_cap, niveau_table });
+    // Both upstream clocks, for the freshness line a coach reads. LAST SUCCESS
+    // on each, never the last attempt — see GamesSyncStatus. Here rather than on
+    // every game row: it is one fact about the whole screen, and this endpoint
+    // is already fetched once on load.
+    const gamesStatus = await (async () => {
+      try {
+        const rec = await getSettingRecord(GAMES_SYNC_STATUS_KEY);
+        return rec ? JSON.parse(asText(rec.value)) as GamesSyncStatus : null;
+      } catch { return null; }
+    })();
+    const boerseStatus = await readBoerseStatus();
+    res.json({
+      default_season, test_mode: await isEmailTestMode(), groups, coachee_targets,
+      rc_mandates, default_goal, paid_cap, niveau_table,
+      freshness: {
+        games: asText(gamesStatus?.lastSuccessAt) || (gamesStatus?.ok ? asText(gamesStatus.at) : ''),
+        boerse: asText(boerseStatus?.lastSuccessAt),
+      },
+    });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: ExpressResponse) => {

@@ -5181,6 +5181,19 @@ app.post('/api/admin/referees/import', requireAdminSession, async (req: Request,
  *  game form records precisely so that a name never has to be matched. Only a
  *  game without one falls back to the name, where ambiguity answers nothing,
  *  for the reason it always does here. */
+// Whose report — or reminder — may go to the referee register instead of a
+// coachee row. A TEST game, because the referee on one is usually nobody's
+// coachee and the game exists to walk the flow through. And a game
+// VolleyManager marked for observation (RD-Spiel / RSV-Markierung), because it
+// is on the list on that mark alone (gamesSync.ts): the RD asked for THIS
+// referee to be watched, coachee or not, and a coach who has sat through the
+// game and filled in the form must not be told at the end to go and create a
+// coachee first. Either way the report is filed against no coachee — nothing
+// counted, nothing written onto anybody's record — and mailed as usual.
+function registerMayStandIn(game: AnyRecord, manualIds: Set<string>): boolean {
+  return manualIds.has(String(game.id)) || isVmMarkedRow(game);
+}
+
 async function refereeRegisterContact(
   name: string,
   svNumber = '',
@@ -8469,25 +8482,29 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       // Answered as a 500 this looked like a server fault and the offline
       // outbox retried it forever instead of surfacing the fix.
       if (!isRecordNotFound(lookupError)) throw lookupError;
-      const isTestGame = (await getManualGameIds()).has(String(game.id));
-      const fromRegister = isTestGame
+      const manualIds = await getManualGameIds();
+      const isTestGame = manualIds.has(String(game.id));
+      const viaRegister = registerMayStandIn(game, manualIds);
+      const fromRegister = viaRegister
         ? await refereeRegisterContact(
           refereeName,
           asText(game[role === '1. SR' ? 'first_referee_id' : 'second_referee_id']),
         )
         : { email: '', name: '', ambiguous: false };
       if (!fromRegister.email) {
+        // Named by what the game IS, so the coach knows which list to fix.
+        const what = isTestGame ? 'Testspiel' : 'Im VolleyManager markiertes Spiel';
         res.status(422).json({
-          error: isTestGame
+          error: viaRegister
             ? (fromRegister.ambiguous
-              ? `Testspiel: „${refereeName}" steht mehrfach im Schiedsrichter-Register — bitte einen eindeutigen Namen eintragen.`
-              : `Testspiel: „${refereeName}" ist weder Coachee noch im Schiedsrichter-Register — es gibt keine Adresse, an die das Feedback gehen könnte.`)
+              ? `${what}: „${refereeName}" steht mehrfach im Schiedsrichter-Register — bitte einen eindeutigen Namen eintragen.`
+              : `${what}: „${refereeName}" ist weder Coachee noch im Schiedsrichter-Register — es gibt keine Adresse, an die das Feedback gehen könnte.`)
             : `"${refereeName}" ist nicht als Coachee erfasst. Bitte im Admin-Bereich anlegen.`,
         });
         return;
       }
       coacheeEmail = fromRegister.email;
-      log.info('feedback.submit', 'test game filed against the referee register', {
+      log.info('feedback.submit', `${isTestGame ? 'test game' : 'VM-marked game'} filed against the referee register`, {
         game: asText(game.match_no) || game.id, referee: refereeName,
       });
     }
@@ -9180,6 +9197,9 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
     // to be here too: one typed in August belongs to a season that ended in
     // April, so a strict lookup refuses the very coachee standing on it.
     const isTest = manualIds.has(String(game.id));
+    // The register may answer for a marked game too — the season exemption
+    // above may not; a marked game is a real fixture in a real season.
+    const viaRegister = registerMayStandIn(game, manualIds);
     // Nobody referees both ends of one match. A game naming the same person
     // twice is a typo — or a test fixture filled in quickly — and sending them
     // the identical mail twice is how "why did I get two e-mails?" starts.
@@ -9198,11 +9218,12 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
       });
       let email = coachee ? singleAddress(coachee.email) : '';
       let recipientName = coachee ? asText(coachee.full_name) || refereeName : refereeName;
-      // The same fallback the feedback submit uses, for the same reason: a test
-      // game's whole purpose is to walk the flow through, and the referee on
-      // one is usually nobody's coachee. Without this the one game created to
-      // test the reminder is the one game that can never produce one.
-      const fromRegister = !email && isTest
+      // The same fallback the feedback submit uses, for the same games and
+      // reasons (registerMayStandIn): a test game's whole purpose is to walk
+      // the flow through, and a VM-marked game is on the list without needing
+      // a coachee. Without this the one game created to test the reminder is
+      // the one game that can never produce one.
+      const fromRegister = !email && viaRegister
         ? await refereeRegisterContact(refereeName, refereeId)
         : { email: '', name: '', ambiguous: false };
       if (fromRegister.email) {
@@ -9217,10 +9238,10 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
           lvl: 'warn', src: 'server', evt: 'reminder.skip',
           msg: `No reminder for ${refereeName} (${roleLabel}) on ${asText(game.match_no) || game.id}`,
           data: {
-            reason: isTest
+            reason: viaRegister
               ? (fromRegister.ambiguous
-                ? 'test game: the name matches several referees in the register'
-                : 'test game: neither a coachee nor a single register entry')
+                ? `${isTest ? 'test' : 'VM-marked'} game: the name matches several referees in the register`
+                : `${isTest ? 'test' : 'VM-marked'} game: neither a coachee nor a single register entry`)
               : coachee ? 'no e-mail on file' : `not a coachee in ${gameSeason}`,
             referee: refereeName, season: gameSeason, rc: rcName,
           },
@@ -9351,11 +9372,14 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
     if (plans.length === 0) {
       // The same reasons the daily job logs — named, because "no recipients" on
       // its own sends a coach looking in the wrong place.
-      const isTest = (await getManualGameIds()).has(String(game.id));
+      const manualIds = await getManualGameIds();
+      const isTest = manualIds.has(String(game.id));
       res.status(422).json({
         error: isTest
           ? 'Keine Empfänger: die SR dieses Testspiels sind weder Coachees noch eindeutig im Schiedsrichter-Register. Bitte im Admin-Bereich einen Namen aus der Liste wählen.'
-          : 'Keine Empfänger: die SR dieses Spiels sind keine Coachees dieser Saison (oder haben keine E-Mail).',
+          : registerMayStandIn(game, manualIds)
+            ? 'Keine Empfänger: die SR dieses im VolleyManager markierten Spiels sind weder Coachees noch eindeutig im Schiedsrichter-Register (oder haben dort keine E-Mail).'
+            : 'Keine Empfänger: die SR dieses Spiels sind keine Coachees dieser Saison (oder haben keine E-Mail).',
       });
       return;
     }

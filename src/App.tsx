@@ -5799,7 +5799,12 @@ export default function App() {
                             // still owes its Rückmeldung. Nothing else on the
                             // home screen glows, which is the whole reason this
                             // can — and why a game still to come must not.
-                            className={owes ? 'rounded-md bg-amber-50/70 shadow-[0_0_0_1px_rgb(252_211_77),0_0_12px_-2px_rgba(245,158,11,0.55)]' : undefined}
+                            // The owed-note glow wins when both apply: that is
+                            // about something already overdue, the börse about
+                            // something that might yet happen.
+                            className={owes
+                              ? 'rounded-md bg-amber-50/70 shadow-[0_0_0_1px_rgb(252_211_77),0_0_12px_-2px_rgba(245,158,11,0.55)]'
+                              : (boerseRowClass(g.boerse) || undefined)}
                             // The row prints the first lines of a note promised
                             // to the chair alone, and the click logger copies a
                             // control's text into the Protokoll every admin reads.
@@ -5809,15 +5814,42 @@ export default function App() {
                               : owes
                                 ? (de ? 'Rückmeldung erfassen' : 'Write the note')
                                 : (de ? 'Noch nicht gespielt' : 'Not played yet')}
-                            chips={<>
-                              <MetaChip tone="me">{de ? 'Du' : 'You'} · {g.rcRole}</MetaChip>
-                              <MetaChip wrap stack={!!coacheeGroupOf(g.coacheeName)} tone="amber">
-                                <span>{g.coacheeName} <span className="opacity-70">· {g.coacheeRole}</span></span>
-                                {coacheeGroupOf(g.coacheeName) && (
-                                  <MarkRow><GroupChip group={coacheeGroupOf(g.coacheeName)} /></MarkRow>
-                                )}
-                              </MetaChip>
-                            </>}
+                            chips={(() => {
+                              // R4 lives on THIS list and nowhere else: a game
+                              // the coach whistles is generally not one they are
+                              // assigned to observe, so these rows never pass
+                              // through the Home lists above. The server has
+                              // sent a verdict for them all along; until now
+                              // nothing rendered it.
+                              const mineOffered = inBoerse(g.boerse, g.rcRole);
+                              const coacheeOffered = inBoerse(g.boerse, g.coacheeRole);
+                              const group = coacheeGroupOf(g.coacheeName);
+                              return (<>
+                                <MetaChip
+                                  wrap
+                                  stack={mineOffered}
+                                  tone={mineOffered ? 'boerse' : 'rc'}
+                                  title={mineOffered ? (de ? 'Dein Einsatz steht in der SR-Börse' : 'Your slot is in the SR-Börse') : undefined}
+                                >
+                                  <span>{mineOffered && <span aria-hidden>⚠&nbsp;</span>}{de ? 'Du' : 'You'} · {g.rcRole}</span>
+                                  {mineOffered && <MarkRow><BoerseChip lang={formData.lang} /></MarkRow>}
+                                </MetaChip>
+                                <MetaChip
+                                  wrap
+                                  stack={!!group || coacheeOffered}
+                                  tone={coacheeOffered ? 'boerse' : 'amber'}
+                                  title={coacheeOffered ? (de ? 'Dieser Einsatz steht in der SR-Börse' : 'This slot is in the SR-Börse') : undefined}
+                                >
+                                  <span>{coacheeOffered && <span aria-hidden>⚠&nbsp;</span>}{g.coacheeName} <span className="opacity-70">· {g.coacheeRole}</span></span>
+                                  {(!!group || coacheeOffered) && (
+                                    <MarkRow>
+                                      {coacheeOffered && <BoerseChip lang={formData.lang} />}
+                                      <GroupChip group={group} />
+                                    </MarkRow>
+                                  )}
+                                </MetaChip>
+                              </>);
+                            })()}
                             // The button stays a button. It is the one thing
                             // this list exists to get done, and a bare dot at
                             // the end of a row asks the reader to know that the

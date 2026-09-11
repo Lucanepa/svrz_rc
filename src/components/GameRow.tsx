@@ -206,6 +206,10 @@ const CHIP_TONE = {
   // which is also red but means "this is you" — the two appear on the same row
   // and must not read as the same fact.
   boerse: 'bg-red-50 border-red-300 font-semibold text-red-800',
+  // The coach's own whistle on an RC game. Blue, because red on that chip read
+  // as a warning next to a börse mark that genuinely is one. `me` stays red and
+  // stays where it is: it also marks an overdue draft, which IS urgent.
+  rc: 'bg-indigo-50 border-indigo-200 text-indigo-800',
   sky: 'bg-sky-50 border-sky-200 text-sky-800',
   amber: 'bg-amber-50 border-amber-300 text-amber-800',
   emerald: 'bg-emerald-50 border-emerald-200 text-emerald-700',
@@ -373,7 +377,11 @@ export function GameRow({
           <TeamPair teams={teams} home={home} away={away} homeAside={homeAside} awayAside={awayAside} className="flex-1" />
           {status && <span className="mt-0.5 flex shrink-0 items-center gap-1.5">{status}</span>}
         </div>
-        {chips && <div className="mt-1.5 flex flex-wrap items-center gap-1.5">{chips}</div>}
+        {/* `items-stretch`, not `items-center`: a chip carrying a mark row (a
+            group, a börse warning) is taller than a bare one, and centring them
+            left the pair looking misaligned. Stretched, every chip on a line is
+            the height of the tallest. */}
+        {chips && <div className="mt-1.5 flex flex-wrap items-stretch gap-1.5">{chips}</div>}
         {location && (
           <p className="mt-1 flex items-start gap-1.5 text-xs">
             <MapPin size={12} className="mt-0.5 shrink-0 text-red-400" />

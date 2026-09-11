@@ -599,6 +599,12 @@ export type MyRcGame = {
   coacheeId: string;
   coacheeRole: string;
   note: RcGameNote | null;
+  /** SR-Börse risk for this viewer. R4 is only visible on this list — a game the
+   *  coach whistles is generally not one they are assigned to observe, so these
+   *  rows never reach the Home observation lists. */
+  boerse?: {
+    level: string; reason: string; markedSlots: string[]; asOf: string;
+  };
 };
 
 export async function loadMyRcGames(season?: number): Promise<MyRcGame[]> {

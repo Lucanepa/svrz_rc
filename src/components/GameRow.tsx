@@ -185,16 +185,35 @@ export function TeamPair({
     }
     [h, a] = parts;
   }
+  // A grid rather than two rows, so the numbers can move without being drawn
+  // twice.
+  //
+  // From `sm` up they sit on their own team's line, which is where they read as
+  // that team's match: two columns, name then numbers. A phone has no room for
+  // both at once — a club name wraps to three lines and the score is squeezed
+  // into whatever is left of a ~120px column — so below `sm` it collapses to one
+  // column and the two sets of numbers land under BOTH names, in the same order,
+  // home above away.
+  //
+  // `order` is what reflows them, and the alternative was rendering each aside
+  // twice behind `hidden sm:flex` / `sm:hidden`. That duplicate is invisible on
+  // screen but not in the DOM: every `getByText` for a score matched two nodes,
+  // which is a trap laid for whoever writes the next test. Grid auto-placement
+  // follows order-modified document order, so one copy of each is enough.
   return (
-    <div className={cn('min-w-0', className)}>
-      <div className="flex items-baseline gap-2">
-        <p className="min-w-0 flex-1 text-sm font-semibold leading-snug break-words text-stone-900 sm:text-[15px]">{h}</p>
-        {homeAside}
-      </div>
-      <div className="flex items-baseline gap-2">
-        <p className="min-w-0 flex-1 text-sm leading-snug break-words text-stone-600 sm:text-[15px]">{a}</p>
-        {awayAside}
-      </div>
+    <div
+      className={cn(
+        'grid min-w-0 grid-cols-1 items-baseline gap-x-2',
+        'sm:grid-cols-[minmax(0,1fr)_auto]',
+        className,
+      )}
+    >
+      <p className="order-1 min-w-0 text-sm font-semibold leading-snug break-words text-stone-900 sm:text-[15px]">{h}</p>
+      <p className="order-2 min-w-0 text-sm leading-snug break-words text-stone-600 sm:order-3 sm:text-[15px]">{a}</p>
+      {/* The margin is the gap under the names on a phone; from `sm` the aside
+          is back on its team's own line and must not push that line down. */}
+      <div className="order-3 mt-1.5 sm:order-2 sm:mt-0">{homeAside}</div>
+      <div className="order-4">{awayAside}</div>
     </div>
   );
 }

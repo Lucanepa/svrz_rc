@@ -4782,25 +4782,44 @@ export default function App() {
     const parsed = game.game_result ? parseResult(game.game_result) : null;
     const hasResult = !!parsed && (parsed.home !== '' || parsed.away !== '');
     const sets = (parsed?.sets ?? []).filter(isSetComplete);
+    // Every set score is drawn in a cell of the SAME width, so the separators
+    // line up between the home row and the away row. tabular-nums alone is not
+    // enough: it makes each DIGIT the same width, but "8" is still one digit
+    // where "25" is two, so a single-digit set shifted the rest of that line and
+    // the two rows' pipes no longer met. The width is the widest score in THIS
+    // match, measured across both teams — so it holds for a three-digit deuce as
+    // readily as for the usual two, and never reserves room a match never uses.
+    const setCh = Math.max(2, ...sets.flatMap((set) => [String(set.h).length, String(set.a).length]));
     // Each team's own points, on that team's own row — so reading across a row
     // gives you their whole match, the way the set count already did. As one
     // "25:15 | 25:21" line under both teams, the sets sat away from the score
     // they belong to and had to be decoded before they said anything about
-    // either side. tabular-nums keeps the two rows' digits in step.
-    const side = (which: 'h' | 'a') => (
-      <span className="flex shrink-0 items-baseline gap-1.5">
-        {sets.length > 0 && (
-          <span className="text-[11px] tabular-nums whitespace-nowrap text-stone-400">
-            {sets.map((set) => set[which]).join(' | ')}
-          </span>
-        )}
-        {hasResult && (
-          <span className="w-3 text-right text-sm font-bold tabular-nums text-stone-600">
-            {which === 'h' ? parsed.home : parsed.away}
-          </span>
-        )}
-      </span>
-    );
+    // either side.
+    const side = (which: 'h' | 'a') => {
+      // Nothing to draw for a game not yet played. Returning null rather than an
+      // empty span keeps TeamPair from opening its phone-only result row for a
+      // fixture that has no result.
+      if (!hasResult && sets.length === 0) return null;
+      return (
+        <span className="flex shrink-0 items-baseline gap-1.5">
+          {sets.length > 0 && (
+            <span className="flex items-baseline gap-1 text-[11px] tabular-nums text-stone-400">
+              {sets.map((set, i) => (
+                <React.Fragment key={i}>
+                  {i > 0 && <span aria-hidden className="text-stone-300">|</span>}
+                  <span className="text-right" style={{ width: `${setCh}ch` }}>{set[which]}</span>
+                </React.Fragment>
+              ))}
+            </span>
+          )}
+          {hasResult && (
+            <span className="w-3 text-right text-sm font-bold tabular-nums text-stone-600">
+              {which === 'h' ? parsed.home : parsed.away}
+            </span>
+          )}
+        </span>
+      );
+    };
     /** One referee. The coachee mark carries the Niveau and the group, because
      *  this is the list an RC decides whom to watch from and both answers
      *  ("which level is this one?", "are they up for promotion?") used to mean

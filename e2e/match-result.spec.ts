@@ -24,8 +24,16 @@ const SETS = '25:15 | 25:21 | 25:14';
 
 // The games list splits each set across the two team rows instead, so a row
 // reads as one team's whole match. Same three sets as SETS above.
-const HOME_POINTS = '25 | 25 | 25';
-const AWAY_POINTS = '15 | 21 | 14';
+//
+// Regexes, not strings: each score sits in its own fixed-width cell now (so the
+// separators line up between the two rows whatever the digit counts do — see
+// set-score-alignment.spec.ts), and the separators are elements of their own.
+// JSX drops the whitespace between adjacent elements, so the row's textContent
+// is "25|25|25" with no spaces in it at all, and the spaces a reader sees are
+// flex gaps. `\s*` spans both shapes, so this keeps matching if the cells ever
+// go back to being one text node.
+const HOME_POINTS = /25\s*\|\s*25\s*\|\s*25/;
+const AWAY_POINTS = /15\s*\|\s*21\s*\|\s*14/;
 
 // The shape the VolleyManager sync writes — all 925 scored games in production
 // use it. Kept local to this file rather than on the shared fixture, because a

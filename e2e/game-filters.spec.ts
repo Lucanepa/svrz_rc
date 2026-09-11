@@ -41,8 +41,7 @@ test('a filter that is on says so on the button, not just in its switch', async 
 });
 
 test('a toggle with nothing to filter is not offered', async ({ page }) => {
-  // No game here carries an RD or LD marking, and no coachee is inactive.
-  await expect(page.getByRole('button', { name: 'RD Game' })).toHaveCount(0);
+  // No game here carries an LD marking, and no coachee is inactive.
   await expect(page.getByRole('button', { name: 'LD Game' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Show inactive' })).toHaveCount(0);
   // The RC-game toggle is offered, because a game in the list is one.

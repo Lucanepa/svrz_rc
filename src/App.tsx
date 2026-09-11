@@ -8379,13 +8379,18 @@ export default function App() {
             : '';
           if (!o.plannedBy) return filed;
           const when = shortDate(o.plannedOn || '');
+          // "an einem ANDEREN Spiel" is the load-bearing part. The date named
+          // here belongs to a different fixture, and printed beside a row dated
+          // 22.09 a bare "booked for 20.10." reads as a contradiction — it was
+          // misread as "somebody already took THIS game" the first time it was
+          // seen in the wild.
           const booked = o.count > 0
             ? (de
-              ? ` Zudem ist am ${when} eine Beobachtung durch ${o.plannedBy} geplant.`
-              : ` Another observation is booked for ${when} by ${o.plannedBy}.`)
+              ? ` Zudem ist an einem anderen Spiel (${when}) eine Beobachtung durch ${o.plannedBy} geplant.`
+              : ` Another observation is booked on a different game (${when}) by ${o.plannedBy}.`)
             : (de
-              ? `hat bereits eine geplante Beobachtung am ${when} durch ${o.plannedBy}.`
-              : `already has an observation booked for ${when} by ${o.plannedBy}.`);
+              ? `hat schon eine Beobachtung an einem anderen Spiel (${when}) durch ${o.plannedBy}.`
+              : `already has an observation booked on a different game (${when}) by ${o.plannedBy}.`);
           return `${filed}${booked}`;
         };
         return (

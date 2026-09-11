@@ -148,3 +148,45 @@ test.describe('the Games tab', () => {
     await expect(page.getByText('In Börse')).toHaveCount(0);
   });
 });
+
+/**
+ * A game another coach already holds.
+ *
+ * The three lists that offer "Take game" each said something different when
+ * somebody else had it: one printed the holder's name as a label, one a green
+ * pill, and one rendered NOTHING — so the row just looked like it had no action.
+ * All three now show the same greyed button that explains itself on click.
+ *
+ * `aria-disabled`, not `disabled`: a truly disabled button fires no click and
+ * can therefore never say why it is disabled.
+ */
+test('a game someone else holds shows a greyed button that names the holder', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({
+    json: [{
+      id: 'eg9', matchNo: '408178', league: 'DU23 3. Liga',
+      date: '2026-12-22T18:15:00Z', location: 'Zwingert, Buchs ZH',
+      homeTeam: 'VBC Furttal', awayTeam: 'KSC Wiedikon DU23-1',
+      firstReferee: 'Coachee Eins', secondReferee: '',
+      assignedRc: 'Jennifer Schöni', feedbackClosedRoles: [], starred: false, vmFlagged: false,
+    }],
+  }));
+  await page.goto('/');
+  await page.getByRole('button', { name: /^(Spiele|Games)$/ }).first().click();
+  // Taken games are hidden by default, so the RC-assigned toggle has to be on —
+  // and it lives inside the filter panel, which opens first.
+  await page.getByRole('button', { name: /Filter/i }).first().click();
+  await page.getByRole('button', { name: /RC zugewiesen|RC assigned/ }).first().click();
+
+  // The row's actions live behind its expander, like every other row action here.
+  await page.getByText('VBC Furttal').first().click();
+
+  const take = page.getByRole('button', { name: /Spiel übernehmen|Take game/ }).first();
+  await expect(take).toBeVisible();
+  await expect(take).toHaveAttribute('aria-disabled', 'true');
+  // `force`, because Playwright honours aria-disabled in its actionability
+  // check — which is the right call, and exactly why a real user CAN still
+  // click this: the attribute is advisory, the handler is real.
+  await take.click({ force: true });
+  await expect(page.getByText(/Jennifer Schöni (hat dieses Spiel bereits übernommen|already took this game)/)).toBeVisible();
+});

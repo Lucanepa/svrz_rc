@@ -2345,6 +2345,34 @@ export default function App() {
     return out;
   };
 
+  /**
+   * "Take game", greyed out, for a game another coach already holds.
+   *
+   * Greyed and STILL CLICKABLE — `aria-disabled`, not `disabled`, because a
+   * truly disabled button fires no click and can therefore never explain
+   * itself. The lists used to solve this by swapping the button for the
+   * holder's name, which reads as a label rather than as the reason the action
+   * is gone.
+   */
+  const takenByButton = (holder: string, className: string) => (
+    <button
+      type="button"
+      aria-disabled="true"
+      title={formData.lang === 'DE'
+        ? `${holder} hat dieses Spiel bereits übernommen`
+        : `${holder} already took this game`}
+      onClick={(e) => {
+        e.stopPropagation();
+        toast.info(formData.lang === 'DE'
+          ? `${holder} hat dieses Spiel bereits übernommen.`
+          : `${holder} already took this game.`);
+      }}
+      className={cn(className, 'cursor-not-allowed border border-stone-200 bg-stone-100 text-stone-400 hover:bg-stone-100')}
+    >
+      {formData.lang === 'DE' ? 'Spiel übernehmen' : 'Take game'}
+    </button>
+  );
+
   const requestRcAssignment = (game: EligibleGame, rcName: string) => {
     // Clearing an assignment needs no warning — nobody is being observed twice.
     const observed = rcName ? observedCoacheesOnGame(game) : [];
@@ -6611,12 +6639,7 @@ export default function App() {
                                               </button>
                                             </div>
                                           ) : (
-                                            <span
-                                              className="inline-block rounded-full bg-green-100 px-2 py-0.5 text-[11px] text-green-700"
-                                              title={de ? 'Bereits von einem RC übernommen' : 'Already taken by an RC'}
-                                            >
-                                              RC: {holder}
-                                            </span>
+                                            takenByButton(holder, 'h-8 w-full rounded-md px-2.5 text-[11px] font-medium transition-colors sm:w-auto')
                                           )}
                                         />
                                       );
@@ -6817,7 +6840,7 @@ export default function App() {
                                         {formData.lang === 'DE' ? 'Abgeben' : 'Give back'}
                                       </button>
                                     ) : game.assignedRc ? (
-                                      <span className="text-sm font-medium text-stone-700">{game.assignedRc}</span>
+                                      takenByButton(game.assignedRc, 'h-9 px-3 text-sm font-medium rounded-md transition-colors')
                                     ) : (
                                       <button
                                         onClick={(e) => {
@@ -7286,7 +7309,12 @@ export default function App() {
                                         {de ? 'Abgeben' : 'Give back'}
                                       </button>
                                     </>
-                                  ) : null}
+                                  ) : (
+                                    // Was `null`: a game another coach holds got
+                                    // no control and no explanation at all, so the
+                                    // row simply looked like it had nothing to do.
+                                    takenByButton(holder, 'h-8 px-3 text-xs font-medium rounded-md transition-colors')
+                                  )}
                                 </div>
                               ) : undefined,
                             })}

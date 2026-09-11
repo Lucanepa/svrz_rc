@@ -202,6 +202,10 @@ export function TeamPair({
 const CHIP_TONE = {
   stone: 'bg-stone-50 border-stone-200 text-stone-600',
   me: 'bg-red-50 border-red-200 text-red-700',
+  // A referee whose slot is in the SR-Börse. Its own tone rather than `me`,
+  // which is also red but means "this is you" — the two appear on the same row
+  // and must not read as the same fact.
+  boerse: 'bg-red-50 border-red-300 font-semibold text-red-800',
   sky: 'bg-sky-50 border-sky-200 text-sky-800',
   amber: 'bg-amber-50 border-amber-300 text-amber-800',
   emerald: 'bg-emerald-50 border-emerald-200 text-emerald-700',

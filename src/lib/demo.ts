@@ -258,6 +258,9 @@ function buildStore(): DemoStore {
       matchNo: '2140502', league: '4L ♀', date: seasonDate(11, 6), location: 'Schulhaus Chriesiweg, Bülach',
       homeTeam: 'DTV Bülach', awayTeam: 'VBC Züri Unterland', firstReferee: 'Sofia Meier', secondReferee: 'Nadia Roth',
       assignedRc: RC.name,
+      // The coachee has put this slot in the SR-Börse and is the only coachee
+      // on the game — the observation dies if anyone takes it.
+      boerse: { level: 'red', reason: 'only-coachee-offered', markedSlots: ['1'], asOf: '' },
     },
     {
       id: 'demo-g3', coacheeId: 'demo-c-luca', role: '1. SR', kind: 'planned',
@@ -270,6 +273,10 @@ function buildStore(): DemoStore {
       matchNo: '2140702', league: '2L ♀', date: seasonDate(1, 15), location: 'Sporthalle Buchholz, Uster',
       homeTeam: 'Volley Smash 05', awayTeam: 'VBC Kanti Baden', firstReferee: 'Anna Bühler', secondReferee: 'Lea Frei',
       assignedRc: RC.name,
+      // The OTHER referee is in the börse: her name is marked, the row is not.
+      // Worth having in the demo, because "marked but harmless" is the state
+      // most easily mistaken for a bug.
+      boerse: { level: 'none', reason: 'not-my-concern', markedSlots: ['2'], asOf: '' },
     },
     {
       // Not yet taken by any RC → shows in the open Games list so the
@@ -571,6 +578,13 @@ function buildSummary(): rcCoachSummary[] {
         { name: g.secondReferee || '', role: '2. SR' },
       ].filter((r) => r.name)
        .map((r) => ({ ...r, coachee: r.name.trim().toLowerCase() === c.full_name.trim().toLowerCase() })),
+      // Built field by field, so anything new has to be added BY HAND here or
+      // the demo is the one place the feature silently does not exist —
+      // exactly how `noCoachee` went missing once. Two of the demo's games
+      // carry a börse warning so the state can be seen without a real offer.
+      boerse: g.boerse
+        ? { level: g.boerse.level, reason: g.boerse.reason, markedSlots: g.boerse.markedSlots, asOf: new Date(Date.now() - 14 * 60_000).toISOString() }
+        : { level: 'none', reason: 'no-open-offers', markedSlots: [], asOf: new Date(Date.now() - 14 * 60_000).toISOString() },
     });
     return {
       coacheeName: c.full_name,

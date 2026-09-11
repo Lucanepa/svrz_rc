@@ -44,6 +44,7 @@ import {
   type IcalSubscription,
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
+import { BoerseChip, BoerseNote, BoerseFreshness, boerseRowClass, inBoerse } from './components/BoerseNote';
 import InfoHint from './components/InfoHint';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import {
@@ -5499,20 +5500,35 @@ export default function App() {
                 const mixed = crew.some((r) => r.coachee) && crew.some((r) => !r.coachee);
                 return crew.filter((r) => r.name).map((r) => {
                   const group = r.coachee ? coacheeGroupOf(r.name) : undefined;
-                  const marked = (mixed && r.coachee) || !!group;
+                  const offered = inBoerse(g.boerse, r.role);
+                  // `marked` opens the MarkRow, and it used to need `mixed` — a
+                  // crew holding a coachee AND a non-coachee. In the case this
+                  // feature exists for that is often false: two coachees, one of
+                  // them in the börse, and neither chip would have had a MarkRow
+                  // for the warning to sit in. The word would have vanished and
+                  // only the aria-hidden ⚠ survived, which is the very failure
+                  // the marks are meant to avoid.
+                  const marked = (mixed && r.coachee) || !!group || offered;
                   return (
                     <ChipLine key={`${r.name}-${r.role}`}>
-                      <MetaChip wrap stack={marked} tone={mixed && r.coachee ? 'amber' : 'stone'}>
+                      <MetaChip
+                        wrap
+                        stack={marked}
+                        tone={offered ? 'boerse' : (mixed && r.coachee ? 'amber' : 'stone')}
+                        title={offered ? (de ? 'Dieser Einsatz steht in der SR-Börse' : 'This slot is in the SR-Börse') : undefined}
+                      >
                         {/* Slot and name in ONE inline box, with a real space
                             between them. As two flex items they run together into
                             "2SRSven Fremd" in the accessibility tree — the gap is
                             drawn, not spoken. */}
                         <span>
                           {r.role && <span className="font-bold opacity-70">{r.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
+                          {offered && <span aria-hidden>⚠&nbsp;</span>}
                           {r.name}
                         </span>
                         {marked && (
                           <MarkRow>
+                            {offered && <BoerseChip lang={de ? 'DE' : 'EN'} />}
                             {mixed && r.coachee && <CoacheeChip />}
                             <GroupChip group={group} />
                           </MarkRow>
@@ -5542,6 +5558,10 @@ export default function App() {
                   mapsUrl={g.mapsUrl}
                   onOpen={() => startFromSummary(g)}
                   chips={crewChips(g)}
+                  // The wash + ring. Not the row TONE, which already says which
+                  // list this row belongs to — a second meaning on that channel
+                  // would be unreadable.
+                  className={boerseRowClass(g.boerse)}
                   // Three labelled buttons on their own line under the game
                   // — see GameRow's `tools`. The pen, not an eye: the button
                   // starts writing an observation, it does not look at one.
@@ -5582,6 +5602,11 @@ export default function App() {
                     </button>
                   </>}
                 >
+                  {/* The answer to the check Infoschreiben 4.1 asks for, before
+                      the swap rather than after it. Says in words what the wash
+                      on this row means, so the colour is emphasis and never the
+                      message; nothing at all at level 'none'. */}
+                  <BoerseNote boerse={g.boerse} lang={formData.lang} />
                   {/* Infoschreiben 4.1: "mit der Börse sind Spiele schnell
                       getauscht", so the RC is asked to check before setting off
                       whether the game still has their referee on it. The tool

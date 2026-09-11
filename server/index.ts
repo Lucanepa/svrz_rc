@@ -29,7 +29,8 @@ import {
 // not a 403: it is a clean 200 with the wrong rows.
 import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
-import { fetchBoerseOffers, planReconcile } from './boerse.ts';
+import { fetchBoerseOffers, planReconcile, type BoerseOfferRow } from './boerse.ts';
+import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
 
 // Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
 import {
@@ -2632,6 +2633,109 @@ async function listCoacheesWithFallbackSort(): Promise<AnyRecord[]> {
 // Computed, never stored. Both rosters change during a season, and a flag
 // written onto the game when it was imported would keep answering with the
 // roster of the day the sync ran.
+
+// ── Börse projection: from stored offers to a verdict on a row ────────
+//
+// The offers are shared; the verdict is not. Whether a row is red depends on who
+// is asking — R4 turns on "am I whistling this myself" — so the INDEX is cached
+// and the verdict is computed per viewer, never cached across them.
+let boerseIndexCache: { at: number; byMatch: Map<string, BoerseSlotOffer[]>; asOf: string } | null = null;
+const BOERSE_INDEX_TTL_MS = 60_000;
+
+async function getBoerseIndex(): Promise<{ byMatch: Map<string, BoerseSlotOffer[]>; asOf: string }> {
+  if (boerseIndexCache && Date.now() - boerseIndexCache.at < BOERSE_INDEX_TTL_MS) return boerseIndexCache;
+  const rows = await withCollection(collectionCandidates.boerseOffers, (c) =>
+    c.getFullList<AnyRecord>({
+      filter: 'withdrawn_at = ""',
+      fields: 'match_no,slot,status,withdrawn_at,slot_person_name,slot_person_sv',
+    })).catch(() => [] as AnyRecord[]);
+
+  const byMatch = new Map<string, BoerseSlotOffer[]>();
+  for (const r of rows) {
+    const key = asText(r.match_no);
+    if (!key) continue;
+    const list = byMatch.get(key) ?? [];
+    list.push({
+      slot: asText(r.slot),
+      status: asText(r.status),
+      withdrawn: Boolean(asText(r.withdrawn_at)),
+      personName: asText(r.slot_person_name),
+      personSv: asText(r.slot_person_sv),
+    });
+    byMatch.set(key, list);
+  }
+  // One game can hold SEVERAL offers at once and they are not alternatives:
+  // #406977 carried a completed handover from August beside a live offer made
+  // today. boerseLevel filters to the open ones, so the whole list goes through.
+  const status = await readBoerseStatus();
+  boerseIndexCache = { at: Date.now(), byMatch, asOf: status?.lastSuccessAt ?? '' };
+  return boerseIndexCache;
+}
+
+export type BoerseOnGame = BoerseVerdict & { asOf: string };
+
+/**
+ * Build the per-game verdict function for one viewer.
+ *
+ * `asOf` rides on every verdict rather than being announced once, so any surface
+ * that shows a colour can also say how old it is. It is `lastSuccessAt`, never
+ * the last attempt: a poller that has been failing for a week still writes an
+ * attempt timestamp every hour, and a freshness check reading that can never
+ * fire in the failure it exists to catch.
+ */
+async function makeBoerseVerdict(viewer: { mySv: string; myNames: Set<string> }) {
+  const [index, coacheeNames, manual] = await Promise.all([
+    getBoerseIndex(), getCoacheeNameIndex(), getManualGameIds(),
+  ]);
+  const now = Date.now();
+
+  return (game: AnyRecord): BoerseOnGame => {
+    const offers = index.byMatch.get(asText(game.match_no)) ?? [];
+    const names = coacheeNames.forSeason(seasonOfGame(game.match_date));
+    const isCoachee = (value: unknown) => {
+      const text = normalizeName(value);
+      return text ? names.has(text) : false;
+    };
+    // Same shape as makeRcGameTest's isRc: the SV number first, because it
+    // survives a change of surname, and the recorded spellings after it.
+    const isMe = (value: unknown, svNumber: unknown) => {
+      const num = asText(svNumber);
+      if (num && viewer.mySv && num === viewer.mySv) return true;
+      const text = normalizeName(value);
+      return text ? viewer.myNames.has(text) : false;
+    };
+
+    const coacheeSlots: string[] = [];
+    if (isCoachee(game.first_referee)) coacheeSlots.push('1');
+    if (isCoachee(game.second_referee)) coacheeSlots.push('2');
+
+    let mySlot = '';
+    if (isMe(game.first_referee, game.first_referee_id)) mySlot = '1';
+    else if (isMe(game.second_referee, game.second_referee_id)) mySlot = '2';
+
+    const started = new Date(asText(game.match_date)).getTime();
+    const verdict = boerseLevel({
+      offers,
+      coacheeSlots,
+      mySlot,
+      gameInPast: Number.isFinite(started) && started < now,
+      isManual: manual.has(String(game.id)),
+    });
+    return { ...verdict, asOf: index.asOf };
+  };
+}
+
+/** The viewer's identity for the projection, from an RC session. */
+async function boerseViewerFor(subject: RcAuthInfo | null): Promise<{ mySv: string; myNames: Set<string> }> {
+  if (!subject) return { mySv: '', myNames: new Set() };
+  const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
+  const self = subject.rcId ? people.find((p) => p.id === subject.rcId) : undefined;
+  return {
+    mySv: asText(self?.svNumber),
+    myNames: new Set([subject.name, ...(self?.aliases ?? [])].map(normalizeName).filter(Boolean)),
+  };
+}
+
 async function makeRcGameTest(): Promise<(game: AnyRecord) => boolean> {
   const coacheeNames = await getCoacheeNameIndex();
   const people = await getActiveRcPeople();
@@ -2657,7 +2761,7 @@ async function makeRcGameTest(): Promise<(game: AnyRecord) => boolean> {
   };
 }
 
-async function getEligibleGames() {
+async function getEligibleGames(subject: RcAuthInfo | null = null) {
   await ensureAdminAuth();
   const coacheeNames = await getCoacheeNameIndex();
   // A test game exists to be walked through, so it is on the list whatever its
@@ -2674,6 +2778,8 @@ async function getEligibleGames() {
   };
 
   const isRcGame = await makeRcGameTest();
+  // Per viewer: R4 turns on whether THIS coach is the one whistling.
+  const boerseFor = await makeBoerseVerdict(await boerseViewerFor(subject));
 
   // Fetch all games in a single request and filter in-memory
   // to avoid PocketBase 414 (URI too long) and 429 (rate limit) errors
@@ -2729,6 +2835,11 @@ async function getEligibleGames() {
     // the projection the UI fell back to a free-text Google search of the hall
     // name — the ambiguity the precise link exists to avoid.
     maps_url: asText(game.maps_url),
+    // ALWAYS present, even at level 'none'. A missing field has to mean "this
+    // API is older than the feature", not "nothing is wrong" — otherwise a
+    // frontend that deploys ahead of the API (Pages ships on push, the API is
+    // copied by hand) would render silence and call it safe.
+    boerse: boerseFor(game),
   }));
 }
 
@@ -5866,9 +5977,11 @@ async function getManualGameIds(): Promise<Set<string>> {
   } catch { return new Set(); }
 }
 
-app.get('/api/eligible-games', requireRcSession, async (_req: Request, res: ExpressResponse) => {
+app.get('/api/eligible-games', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
-    const [games, starred] = await Promise.all([getEligibleGames(), getStarredGameIds()]);
+    const [games, starred] = await Promise.all([
+      getEligibleGames(rcAuthByReq.get(req) ?? null), getStarredGameIds(),
+    ]);
     res.json(games.map((g) => {
       const vmFlagged = isVmFlagged(g);
       return { ...g, vmFlagged, starred: vmFlagged || starred.has(String(g.id)) };
@@ -6242,11 +6355,12 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date',
-        fields: 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,game_result',
+        fields: 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,game_result',
       }),
     );
     const rcGames = allGames.filter((g) =>
       isSubject(g.assigned_rc_id, g.assigned_rc) && inSeason(g));
+    const boerseFor = await makeBoerseVerdict(await boerseViewerFor(subject));
 
     // Fetch feedbacks for this RC
     const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -6332,7 +6446,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
         if (!coachee) continue;
         matched = true;
         const entry = getOrCreate(refName, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: refName, refereeRole: role, crew, result };
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: refName, refereeRole: role, crew, result, boerse: boerseFor(game) };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {
@@ -6348,7 +6462,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
         const refNames = [game.first_referee, game.second_referee].map(asText).filter(Boolean);
         const label = refNames.join(' / ') || '?';
         const entry = getOrCreate(label, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: label, crew, noCoachee: true, result };
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: label, crew, noCoachee: true, result, boerse: boerseFor(game) };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {
@@ -6442,6 +6556,7 @@ type MyRcGame = {
   coacheeName: string;
   coacheeId: string;
   coacheeRole: string;
+  boerse?: BoerseOnGame;
 };
 
 // Every game this season where the SUBJECT coach held one whistle and a coachee
@@ -6476,6 +6591,14 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
   const mySvNumber = asText(self?.svNumber);
   const myNames = new Set([subject.name, ...(self?.aliases ?? [])].map(normalizeName).filter(Boolean));
   if (myNames.size === 0 && !mySvNumber) return [];
+
+  // R4 lives HERE and nowhere else. A game the coach whistles is generally not
+  // one they are also assigned to observe — that separation is the whole point
+  // of the 4.4.10 Rückmeldung — so these rows reach Home through srRow and are
+  // invisible to both /api/eligible-games and /api/rc-overview. Attaching the
+  // verdict only to those two would have left both R4 cases unreachable on the
+  // one screen this feature was asked for.
+  const boerseFor = await makeBoerseVerdict({ mySv: mySvNumber, myNames });
   const games = await withCollection(collectionCandidates.games, (collection) =>
     collection.getFullList<AnyRecord>({ sort: '-match_date', fields: GAME_NOTE_FIELDS }),
   );
@@ -6508,6 +6631,7 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
         coacheeName: coachee?.name || asText(slot.other),
         coacheeId: coachee?.id || '',
         coacheeRole: slot.otherRole,
+        boerse: boerseFor(game),
       });
       // One person cannot hold both whistles — stop before the mirrored slot
       // files the same game a second time.
@@ -6959,6 +7083,7 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
     // Same rule the open games list uses, so a game cannot be an RC game in one
     // list and an ordinary one in the other.
     const isRcGame = await makeRcGameTest();
+    const boerseFor = await makeBoerseVerdict(await boerseViewerFor(rcAuthByReq.get(req) ?? null));
     const games = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date,-created',

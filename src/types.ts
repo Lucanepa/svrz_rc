@@ -75,6 +75,16 @@ export interface EligibleGame {
   vmFlagged?: boolean;
   maps_url?: string;
   game_result?: string;
+
+  /** SR-Börse risk for THIS viewer. Always present from a current API — a
+   *  missing field means the API predates the feature, which must read as
+   *  unknown rather than as "nothing is wrong". */
+  boerse?: {
+    level: string;      // 'red' | 'amber' | 'blue' | 'none'
+    reason: string;
+    markedSlots: string[];
+    asOf: string;       // last SUCCESSFUL poll, never the last attempt
+  };
 }
 
 export const LEGEND = {
@@ -342,6 +352,10 @@ export interface rcCoachSummaryGame {
   /** Assigned to the coach, but no referee on it is a coachee — so no
    *  observation can be filed and the row is not clickable. */
   noCoachee?: boolean;
+  /** SR-Börse risk for THIS viewer, always present from a current API. */
+  boerse?: {
+    level: string; reason: string; markedSlots: string[]; asOf: string;
+  };
 }
 
 export interface rcCoachSummary {

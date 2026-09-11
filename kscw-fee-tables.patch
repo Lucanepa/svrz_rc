@@ -1,0 +1,294 @@
+From 5b61a096ec7e070f5b14b32f29f0f4e599ae3824 Mon Sep 17 00:00:00 2001
+From: Luca Canepa <l.canepa@aequitax.pro>
+Date: Fri, 11 Sep 2026 13:49:01 +0000
+Subject: [PATCH] fix(mitgliedschaft): the volleyball table names only the
+ total fee
+
+The "Davon Lizenz" column (added in d71f8e8's sibling fix to show the
+licence's share) put two amounts side by side, and a reader could not tell
+whether the licence comes on top of the fee. It is included; the table now
+shows only the amount the invoice carries. The Swiss Volley licence fees
+keep their own table directly beneath, and the note that the licence is
+part of the membership fee stays.
+
+With two columns the volleyball table lays out like basketball's, so the
+stacked phone layout from bfd06d4 and its in-cell labels go; the tighter
+phone cells stay. The asterisk footnote and both i18n keys had no other
+user and go with the column.
+
+Changelog 1.28.2.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01LjCj51XTjsHKhsGrPq2C5h
+---
+ CHANGELOG.md                            |  6 ++
+ package.json                            |  2 +-
+ public/js/i18n/de.json                  |  4 +-
+ public/js/i18n/en.json                  |  4 +-
+ src/pages/club/feedback.astro           | 26 +++++++-
+ src/pages/weiteres/mitgliedschaft.astro | 82 +++----------------------
+ 6 files changed, 40 insertions(+), 84 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c517044..adb5103 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,12 @@
+ 
+ All notable changes to the KSC Wiedikon website. This file is the curated, user-facing release record (semver); the same notes appear on the site's feedback page (DE + EN). For commit-level detail see `git log`.
+ 
++## [1.28.2] — 2026-09-11
++
++### Die Volleyball-Tabelle nennt nur noch den Gesamtbeitrag
++- Die Spalte **«Davon Lizenz»** ist weg. Zwei Beträge nebeneinander liessen offen, ob die Lizenz zum Beitrag dazukommt — sie ist enthalten, und die Tabelle zeigt jetzt nur den Betrag, der auf der Rechnung steht.
++- Die Swiss-Volley-Lizenzgebühren stehen weiterhin in der eigenen Tabelle direkt darunter.
++
+ ## [1.28.1] — 2026-09-11
+ 
+ ### Die Beitragstabellen passen wieder aufs Handy
+diff --git a/package.json b/package.json
+index f513b07..d9c6954 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "kscw-website",
+   "type": "module",
+-  "version": "1.28.1",
++  "version": "1.28.2",
+   "engines": {
+     "node": ">=22.12.0"
+   },
+diff --git a/public/js/i18n/de.json b/public/js/i18n/de.json
+index a3588c4..62f3cef 100644
+--- a/public/js/i18n/de.json
++++ b/public/js/i18n/de.json
+@@ -1084,7 +1084,5 @@
+   "faqLinkTeams": "Teams und Trainingszeiten",
+   "faqLinkYouth": "Zum Nachwuchs",
+   "navFaq": "Häufige Fragen",
+-  "membershipFaqLink": "Noch Fragen? Häufige Fragen und Antworten →",
+-  "membershipColLicence": "Davon Lizenz",
+-  "membershipFeesNoteLicenceStandard": "* Standardfall — abweichende Vereinbarungen sind möglich."
++  "membershipFaqLink": "Noch Fragen? Häufige Fragen und Antworten →"
+ }
+diff --git a/public/js/i18n/en.json b/public/js/i18n/en.json
+index 7c18f1b..80b806b 100644
+--- a/public/js/i18n/en.json
++++ b/public/js/i18n/en.json
+@@ -1084,7 +1084,5 @@
+   "faqLinkTeams": "Teams and training times",
+   "faqLinkYouth": "Go to the juniors section",
+   "navFaq": "FAQ",
+-  "membershipFaqLink": "Still have questions? Read the FAQ →",
+-  "membershipColLicence": "Of which licence",
+-  "membershipFeesNoteLicenceStandard": "* Standard case — different arrangements are possible by agreement."
++  "membershipFaqLink": "Still have questions? Read the FAQ →"
+ }
+diff --git a/src/pages/club/feedback.astro b/src/pages/club/feedback.astro
+index 9c3c472..9df11ce 100644
+--- a/src/pages/club/feedback.astro
++++ b/src/pages/club/feedback.astro
+@@ -150,9 +150,20 @@ const locale = 'de';
+               changelog, permanently: no data-i18n meant the engine could never
+               repair it. */}
+           <span data-i18n="changelogTitle">{t(locale, 'changelogTitle')}</span>
+-          <span class="changelog-badge">v1.28.1</span>
++          <span class="changelog-badge">v1.28.2</span>
+         </h2>
+ 
++        <div class="changelog-entry">
++          <div class="changelog-meta">v1.28.2 — 2026-09-11</div>
++          <div class="changelog-group">
++            <h3>Die Volleyball-Tabelle nennt nur noch den Gesamtbeitrag</h3>
++            <ul>
++              <li>Die Spalte <strong>«Davon Lizenz»</strong> ist weg. Zwei Beträge nebeneinander liessen offen, ob die Lizenz zum Beitrag dazukommt — sie ist enthalten, und die Tabelle zeigt jetzt nur den Betrag, der auf der Rechnung steht</li>
++              <li>Die Swiss-Volley-Lizenzgebühren stehen weiterhin in der eigenen Tabelle direkt darunter</li>
++            </ul>
++          </div>
++        </div>
++
+         <div class="changelog-entry">
+           <div class="changelog-meta">v1.28.1 — 2026-09-11</div>
+           <div class="changelog-group">
+@@ -965,9 +976,20 @@ const locale = 'de';
+               changelog, permanently: no data-i18n meant the engine could never
+               repair it. */}
+           <span data-i18n="changelogTitle">{t(locale, 'changelogTitle')}</span>
+-          <span class="changelog-badge">v1.28.1</span>
++          <span class="changelog-badge">v1.28.2</span>
+         </h2>
+ 
++        <div class="changelog-entry">
++          <div class="changelog-meta">v1.28.2 — 2026-09-11</div>
++          <div class="changelog-group">
++            <h3>The volleyball table shows only the total fee</h3>
++            <ul>
++              <li>The <strong>“Of which licence”</strong> column is gone. Two amounts side by side left open whether the licence comes on top of the fee — it is included, and the table now shows only the amount that appears on the invoice</li>
++              <li>The Swiss Volley licence fees remain in their own table directly beneath</li>
++            </ul>
++          </div>
++        </div>
++
+         <div class="changelog-entry">
+           <div class="changelog-meta">v1.28.1 — 2026-09-11</div>
+           <div class="changelog-group">
+diff --git a/src/pages/weiteres/mitgliedschaft.astro b/src/pages/weiteres/mitgliedschaft.astro
+index 79f6bd9..c495ecc 100644
+--- a/src/pages/weiteres/mitgliedschaft.astro
++++ b/src/pages/weiteres/mitgliedschaft.astro
+@@ -72,7 +72,6 @@ const locale = 'de';
+             <tr style="background: var(--kscw-blue); color: white;">
+               <th style="font-weight: 600;" data-i18n="membershipCategory">{t(locale, 'membershipCategory')}</th>
+               <th style="font-weight: 600;" data-i18n="membershipFee">{t(locale, 'membershipFee')}</th>
+-              <th style="font-weight: 600;" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</th>
+             </tr>
+           </thead>
+           <tbody>
+@@ -81,40 +80,35 @@ const locale = 'de';
+                 <strong data-i18n="membershipCategoryTournamentKWI">{t(locale, 'membershipCategoryTournamentKWI')}</strong><br>
+                 <span style="color: var(--text-secondary);" data-i18n="membershipCategoryTournamentKWIDesc">{t(locale, 'membershipCategoryTournamentKWIDesc')}</span>
+               </td>
+-              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 110</td>
+-              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>CHF 60*</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 110</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+               <td>
+                 <strong data-i18n="membershipCategoryTournament">{t(locale, 'membershipCategoryTournament')}</strong><br>
+                 <span style="color: var(--text-secondary);" data-i18n="membershipCategoryTournamentDesc">{t(locale, 'membershipCategoryTournamentDesc')}</span>
+               </td>
+-              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 210</td>
+-              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>CHF 60*</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 210</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+               <td>
+                 <strong data-i18n="membershipCategoryHighSchool">{t(locale, 'membershipCategoryHighSchool')}</strong><br>
+                 <span style="color: var(--text-secondary);" data-i18n="membershipCategoryHighSchoolDesc">{t(locale, 'membershipCategoryHighSchoolDesc')}</span>
+               </td>
+-              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 310</td>
+-              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>CHF 60</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 310</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+               <td>
+                 <strong data-i18n="membershipCategoryStudent">{t(locale, 'membershipCategoryStudent')}</strong><br>
+                 <span style="color: var(--text-secondary);" data-i18n="membershipCategoryStudentDesc">{t(locale, 'membershipCategoryStudentDesc')}</span>
+               </td>
+-              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 380</td>
+-              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>CHF 110</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 380</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+               <td>
+                 <strong data-i18n="membershipCategoryWorking">{t(locale, 'membershipCategoryWorking')}</strong><br>
+                 <span style="color: var(--text-secondary);" data-i18n="membershipCategoryWorkingDesc">{t(locale, 'membershipCategoryWorkingDesc')}</span>
+               </td>
+-              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 440</td>
+-              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>CHF 110</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 440</td>
+             </tr>
+             <!-- Passivmitglied is club-wide, not a volleyball category — it is listed in
+                  BOTH sport tables so a reader never has to look in the other sport to
+@@ -124,8 +118,7 @@ const locale = 'de';
+                 <strong data-i18n="membershipCategoryPassive">{t(locale, 'membershipCategoryPassive')}</strong><br>
+                 <span style="color: var(--text-secondary);" data-i18n="membershipCategoryPassiveDesc">{t(locale, 'membershipCategoryPassiveDesc')}</span>
+               </td>
+-              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 40</td>
+-              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>—</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 40</td>
+             </tr>
+           </tbody>
+         </table>
+@@ -138,11 +131,6 @@ const locale = 'de';
+           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline; vertical-align: middle; margin-right: 4px;"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+           <span data-i18n="membershipFeesNoteScorer">{t(locale, 'membershipFeesNoteScorer')}</span>
+         </p>
+-        <!-- The asterisk on the two entry tiers: their licence share is the
+-             normal arrangement, not a fixed rule the club is bound to. -->
+-        <p style="margin-top: var(--space-sm); font-size: 0.8125rem; color: var(--text-secondary);">
+-          <span data-i18n="membershipFeesNoteLicenceStandard">{t(locale, 'membershipFeesNoteLicenceStandard')}</span>
+-        </p>
+         </div>
+ 
+         <div class="fee-block fee-licence">
+@@ -446,8 +434,7 @@ const locale = 'de';
+   .fee-bb td:nth-child(2) {
+     font-size: 1.125rem;
+   }
+-  /* Phones: tighter cells and a smaller amount so the three volleyball columns fit a
+-     375px viewport without breaking the category text mid-word. */
++  /* Phones: tighter cells and a smaller amount so the category text keeps its width. */
+   @media (max-width: 639px) {
+     .fee-block th,
+     .fee-block td,
+@@ -468,65 +455,10 @@ const locale = 'de';
+     .fee-bb td:nth-child(2) {
+       font-size: 1rem;
+     }
+-    .fee-vb td:nth-child(3) {
+-      font-size: 0.875rem;
+-    }
+     .fee-block td:first-child span {
+       font-size: 0.8125rem;
+     }
+   }
+-  /* Column labels repeated inside the amount cells — only shown when the volleyball
+-     table stacks (below), where the header row is hidden. */
+-  .fee-label {
+-    display: none;
+-  }
+-  /* Narrow phones: three columns leave the German categories ("Mittelschüler:innen",
+-     "Fachhochschulen") ~120px and they broke mid-word. Stack each row instead — the
+-     category on top, both amounts on a row beneath with their column label above. */
+-  @media (max-width: 479px) {
+-    .fee-vb thead {
+-      position: absolute;
+-      width: 1px;
+-      height: 1px;
+-      overflow: hidden;
+-      clip: rect(0 0 0 0);
+-      white-space: nowrap;
+-    }
+-    .fee-vb tbody {
+-      display: block;
+-    }
+-    .fee-vb tr {
+-      display: grid;
+-      grid-template-columns: 1fr auto;
+-      column-gap: var(--space-md);
+-      padding: var(--space-sm) var(--space-md);
+-    }
+-    .fee-vb td {
+-      display: block;
+-      padding: 0;
+-      border-bottom: 0;
+-    }
+-    .fee-vb td:first-child {
+-      grid-column: 1 / -1;
+-      margin-bottom: var(--space-sm);
+-    }
+-    .fee-vb td:nth-child(2) {
+-      text-align: left;
+-    }
+-    .fee-vb td:nth-child(3) {
+-      text-align: right;
+-    }
+-    .fee-vb .fee-label {
+-      display: block;
+-      font-family: var(--font-display);
+-      font-weight: 600;
+-      font-size: 0.6875rem;
+-      text-transform: uppercase;
+-      letter-spacing: 0.06em;
+-      color: var(--text-muted);
+-      margin-bottom: 2px;
+-    }
+-  }
+   .reg-wrap {
+     max-width: 1100px;
+     margin: 0 auto;
+-- 
+2.43.0
+

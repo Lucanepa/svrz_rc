@@ -3112,6 +3112,7 @@ type BoerseSyncStatus = {
   matchedGames?: number;
   unmatchedOffers?: number;
   refereesCorrected?: number;
+  alerted?: number;
   joinVia?: Record<string, number>;
   blocked?: string;
   skipped?: string;
@@ -3198,9 +3199,11 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
 
   const now = new Date().toISOString();
   let created = 0; let updated = 0; let withdrawn = 0;
+  const createdRows: Array<{ id: string; row: BoerseOfferRow }> = [];
   for (const row of plan.creates) {
-    await withCollection(collectionCandidates.boerseOffers, (c) =>
-      c.create({ ...row, raw: row.raw, first_seen: now, last_seen: now, withdrawn_at: '' }));
+    const rec = await withCollection(collectionCandidates.boerseOffers, (c) =>
+      c.create<AnyRecord>({ ...row, raw: row.raw, first_seen: now, last_seen: now, withdrawn_at: '', alerted_at: '' }));
+    createdRows.push({ id: String(rec.id), row });
     created += 1;
   }
   for (const { id, row } of plan.updates) {
@@ -3249,6 +3252,11 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
     }
   }
 
+  // Mail the coach whose game just landed in the börse. AFTER the crew pass, so
+  // the verdict the mail quotes is computed from the corrected names rather than
+  // the ones this very run replaced.
+  const alerted = await alertBoerseOffers(createdRows);
+
   const joinVia: Record<string, number> = {};
   for (const o of result.offers) joinVia[o.join_via] = (joinVia[o.join_via] ?? 0) + 1;
 
@@ -3262,6 +3270,7 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
     matchedGames,
     unmatchedOffers: byMatch.size - matchedGames,
     refereesCorrected,
+    alerted,
     joinVia,
     blocked: plan.blocked || undefined,
     consecutiveFailures: 0,
@@ -3271,6 +3280,108 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
   log.info('boerse.sync', `börse: ${result.offers.length} offers (${status.open} open), ${created}+/${updated}~/${withdrawn}−, ${matchedGames} games matched`, { reason });
   publishLive({ type: 'boerse.synced', open: status.open, matched: matchedGames });
   return status;
+}
+
+
+/**
+ * Mail the assigned coach when a game they hold lands in the börse.
+ *
+ * Only for games that HAVE an assigned RC: an unassigned game has nobody to
+ * tell, which is why the eleven red rows on production today send nothing. Only
+ * for a newly created OPEN offer, and only once per offer — `alerted_at` is on
+ * the offer rather than the game, so a slot offered, withdrawn and offered again
+ * is a new row and earns a new mail, while an hourly poll never repeats one.
+ *
+ * Never blue. That level means the coach offered their own slot; they know.
+ *
+ * Never throws: the offers are already stored and the highlight is already on
+ * the row. Losing a poll to an SMTP hiccup would trade the thing that works for
+ * the thing that is only convenient.
+ */
+async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRow }>): Promise<number> {
+  if (created.length === 0) return 0;
+  let sent = 0;
+  const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
+  const testMode = await isEmailTestMode();
+  const testRecipient = asText(process.env.FEEDBACK_TEST_RECIPIENT);
+  if (testMode && !testRecipient) return 0; // nowhere safe to send
+
+  for (const { id, row } of created) {
+    try {
+      if (row.status !== 'open' || !row.match_no) continue;
+      let game: AnyRecord | null = null;
+      try {
+        game = await withCollection(collectionCandidates.games, (c) =>
+          c.getFirstListItem<AnyRecord>(`match_no = "${escapeFilterValue(row.match_no)}"`));
+      } catch { game = null; }
+      if (!game) continue;
+
+      const rcId = asText(game.assigned_rc_id);
+      const rcName = asText(game.assigned_rc);
+      if (!rcId && !rcName) continue;
+      const coach = people.find((p) => (rcId && p.id === rcId) || normalizeName(p.fullName) === normalizeName(rcName));
+      if (!coach?.email) continue;
+
+      // The same verdict the coach's own row shows — computed for THEM, so the
+      // mail cannot disagree with the screen it is about.
+      const verdict = (await makeBoerseVerdict({
+        mySv: asText(coach.svNumber),
+        myNames: new Set([coach.fullName, ...(coach.aliases ?? [])].map(normalizeName).filter(Boolean)),
+      }))(game);
+      if (verdict.level !== 'red' && verdict.level !== 'amber') continue;
+
+      // German, like every other mail here: the referee list is Swiss-German
+      // first. Zürich wall time, via the same helper the reminders use — the
+      // container runs UTC, and a kick-off printed in the server's zone is an
+      // hour wrong for half the year.
+      const startedAt = new Date(asText(game.match_date)).getTime();
+      const when = Number.isFinite(startedAt) ? zonedParts(startedAt) : null;
+      const dateText = when
+        ? `${when.day}.${when.month}.${when.year}, ${when.hour}:${when.minute}`
+        : asText(game.match_date);
+      const teams = `${asText(game.home_team)} – ${asText(game.away_team)}`;
+      const headline = verdict.level === 'red'
+        ? 'Ein Coachee hat seinen Einsatz in die SR-Börse gestellt'
+        : 'Einer von zwei Coachees steht in der SR-Börse';
+
+      const body = [
+        `<p style="${mailText(15, MAIL_INK)}">Hallo ${escapeHtml(coach.firstName || coach.fullName)}</p>`,
+        `<p style="${mailText(15, MAIL_INK)}">${escapeHtml(headline)} — auf einem Spiel, das du übernommen hast.</p>`,
+        `<div style="margin:18px 0;padding:14px 16px;background:${MAIL_PANEL};border:1px solid ${MAIL_LINE};border-radius:10px">`,
+        `<div style="${mailText(15, MAIL_INK, 'font-weight:700;')}">${escapeHtml(teams)}</div>`,
+        `<div style="${mailText(13, MAIL_INK_SOFT, 'margin-top:4px;')}">${escapeHtml(dateText)} · ${escapeHtml(asText(game.league))} · #${escapeHtml(asText(game.match_no))}</div>`,
+        asText(game.location) ? `<div style="${mailText(13, MAIL_INK_SOFT)}">${escapeHtml(asText(game.location))}</div>` : '',
+        `<div style="${mailText(13, MAIL_INK, 'margin-top:10px;font-weight:600;')}">${escapeHtml(row.slot_person_name)} · ${row.slot === '2' ? '2. SR' : '1. SR'}</div>`,
+        `<div style="${mailText(13, MAIL_INK_SOFT)}">steht seit ${escapeHtml(String(row.submitted_at).slice(0, 10).split('-').reverse().join('.'))} in der Börse</div>`,
+        `</div>`,
+        verdict.level === 'red'
+          ? `<p style="${mailText(14, MAIL_INK_SOFT)}">Übernimmt jemand den Einsatz, ist auf diesem Spiel kein Coachee mehr zu beobachten.</p>`
+          : `<p style="${mailText(14, MAIL_INK_SOFT)}">Der zweite Coachee pfeift weiterhin — die Beobachtung ist nicht verloren.</p>`,
+        `<p style="${mailText(13, MAIL_MUTED)}">Noch ist der Einsatz offen. Diese Nachricht kommt einmal pro Angebot; wird es zurückgezogen, verschwindet die Markierung im Tool von selbst.</p>`,
+      ].join('');
+
+      await sendMailResilient({
+        from: MAIL_FROM,
+        to: testMode ? testRecipient : coach.email,
+        subject: testMode
+          ? `[TEST → ${coach.email}] SR-Börse: ${teams} (${dateText})`
+          : `SR-Börse: ${teams} (${dateText})`,
+        html: emailShell(body),
+        text: `${headline}\n\n${teams}\n${dateText} · ${asText(game.league)} · #${asText(game.match_no)}\n${row.slot_person_name} · ${row.slot === '2' ? '2. SR' : '1. SR'}\n`,
+        attachments: emailAttachments(),
+      });
+      await withCollection(collectionCandidates.boerseOffers, (c) =>
+        c.update(id, { alerted_at: new Date().toISOString() }));
+      sent += 1;
+      log.info('boerse.alert', `börse alert sent to ${coach.fullName} for ${row.match_no}`, {
+        matchNo: row.match_no, level: verdict.level, testMode,
+      });
+    } catch (error) {
+      // One bad row must not stop the rest, and must not fail the poll.
+      log.warn('boerse.alert', 'could not alert for one offer', { matchNo: row.match_no, error: String(error) });
+    }
+  }
+  return sent;
 }
 
 /** runBoerseSync, but a thrown fetch is recorded rather than escaping. */

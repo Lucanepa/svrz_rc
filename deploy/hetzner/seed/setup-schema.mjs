@@ -113,6 +113,10 @@ await ensure('boerse_offers', [
   // last_seen is how a withdrawal is detected: an offer absent from a fetch we
   // can PROVE was complete. withdrawn_at is only ever set from such a fetch.
   T('first_seen'),T('last_seen'),T('withdrawn_at'),
+  // When the assigned RC was mailed about this offer. Per OFFER, not per game:
+  // a slot offered, withdrawn and offered again is a new row and deserves a new
+  // mail, while a poll that runs every hour must never send the same one twice.
+  T('alerted_at'),
   // A trimmed evidence blob — the offer's own scalars plus the one matching
   // convocation, so a wrong join can be diagnosed without re-running a sync.
   // Trimmed on purpose: games.source_payload is dead because storing whole VM

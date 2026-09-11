@@ -1243,6 +1243,16 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder, lang, l
   );
 }
 
+// Why a game carries the star: VolleyManager's RD mark, its RSV mark, or an
+// admin's own hand. All three land in the one "Flagged" filter and the one
+// amber chip — the RD mark used to get a filter and a chip of its own next to
+// them, saying the same thing twice — so the tooltip is where the source lives.
+function starredTitle(game: { isRdGame?: boolean; vmFlagged?: boolean }, de: boolean): string {
+  if (game.isRdGame) return de ? 'Im VolleyManager als RD-Spiel markiert' : 'Marked as an RD game in VolleyManager';
+  if (game.vmFlagged) return de ? 'Im VolleyManager mit RSV-Markierung versehen' : 'RSV-marked in VolleyManager';
+  return de ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation';
+}
+
 export default function App() {
   // Deep link the app was opened with — read once, before the first paint, so
   // a shared/bookmarked tab renders directly instead of flashing Home first.
@@ -1315,6 +1325,10 @@ export default function App() {
   const [gameFilterCoachees, setGameFilterCoachees] = useState<string[]>([]);
   const [gameFilterLevels, setGameFilterLevels] = useState<string[]>([]);
   const [gameFilterLeagues, setGameFilterLeagues] = useState<string[]>([]);
+  // SR-Börse, as a filter rather than only a colour: "show me what is at risk"
+  // is a question the list should be able to answer directly, and the rows it
+  // matches are otherwise scattered through a season of fixtures.
+  const [gameFilterBoerse, setGameFilterBoerse] = useState<string[]>([]);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [gameFilterFunction, setGameFilterFunction] = useState<string[]>([]);
   const [gameFilterDateFrom, setGameFilterDateFrom] = useState('');
@@ -1408,7 +1422,6 @@ export default function App() {
   const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });
   const [gameFilterNeedsObs, setGameFilterNeedsObs] = useState(true);
   const [gameFilterShowInactive, setGameFilterShowInactive] = useState(false);
-  const [gameFilterRd, setGameFilterRd] = useState(false);
   const [gameFilterRcGame, setGameFilterRcGame] = useState(false);
   const [gameFilterLd, setGameFilterLd] = useState(false);
   const [gameFilterRcAssigned, setGameFilterRcAssigned] = useState(false);
@@ -4497,10 +4510,9 @@ export default function App() {
   // loaded game rather than the filtered list: deriving it from what is on
   // screen would make one active filter erase its neighbours' controls.
   const filterAvailability = useMemo(() => {
-    const found = { rd: false, ld: false, rcGame: false, assigned: false, inactive: false, starred: false, focus: false };
+    const found = { ld: false, rcGame: false, assigned: false, inactive: false, starred: false, focus: false };
     const today = todayKey();
     for (const g of eligibleGames) {
-      if (g.isRdGame) found.rd = true;
       if (g.isLdGame) found.ld = true;
       if (g.isRcGame) found.rcGame = true;
       if (g.assignedRc) found.assigned = true;
@@ -4617,6 +4629,16 @@ export default function App() {
         const hasMatchingLevel = refCoachees.some((c) => gameFilterLevels.includes(levelDisplay(c.referee_level, c.stage).text));
         if (!hasMatchingLevel) return false;
       }
+      if (gameFilterBoerse.length > 0) {
+        const level = g.boerse?.level ?? 'none';
+        const marked = (g.boerse?.markedSlots?.length ?? 0) > 0;
+        // A union, like the filters around it. `marked` is its own option and
+        // deliberately not a level: a slot in the börse that belongs to nobody
+        // this coach follows colours no row, and "did anyone here offer their
+        // game" is still a fair thing to ask.
+        const match = gameFilterBoerse.some((f) => (f === 'marked' ? marked : f === level));
+        if (!match) return false;
+      }
       if (gameFilterFunction.length > 0) {
         const r1IsCoachee = coacheeNames.has(normName(g.firstReferee || ''));
         const r2IsCoachee = coacheeNames.has(normName(g.secondReferee || ''));
@@ -4632,7 +4654,6 @@ export default function App() {
         if (!match) return false;
       }
       if (gameFilterLeagues.length > 0 && !gameFilterLeagues.includes(g.league || '')) return false;
-      if (gameFilterRd && !g.isRdGame) return false;
       if (gameFilterLd && !g.isLdGame) return false;
       if (gameFilterRcGame && !g.isRcGame) return false;
       if (gameFilterStarred && !g.starred) return false;
@@ -4692,7 +4713,7 @@ export default function App() {
       // timestamps rather than strings so a stray offset cannot reorder a day,
       // and anything undated sinks to the bottom instead of leading.
       .sort((a, b) => gameTime(a.date) - gameTime(b.date));
-  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterRd, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, inSeasonOrManual, showAllLevels, outOfNiveauFocus]);
+  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterBoerse, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, inSeasonOrManual, showAllLevels, outOfNiveauFocus]);
 
   // Any filter can shrink a list below the page currently shown, and the pager
   // itself disappears under one page of rows — leaving a blank list with no
@@ -4818,7 +4839,6 @@ export default function App() {
           {opts?.status}
         </>}
         chips={<>
-          {game.isRdGame && badge('rd', 'dark', '', formData.lang === 'DE' ? 'RD Spiel' : 'RD Game')}
           {game.isLdGame && badge('ld', 'dark', '', formData.lang === 'DE' ? 'LD Spiel' : 'LD Game')}
           {game.isRcGame && badge('rc', 'sky',
             formData.lang === 'DE'
@@ -4830,12 +4850,7 @@ export default function App() {
               ? 'Von Hand angelegt — kein Spiel aus VolleyManager.'
               : 'Created by hand — not a VolleyManager fixture.',
             formData.lang === 'DE' ? 'Testspiel' : 'Test game')}
-          {game.starred && badge('star', 'amber',
-            game.vmFlagged
-              ? (formData.lang === 'DE'
-                ? 'In VolleyManager für eine Beobachtung markiert (RD/RSV)'
-                : 'Marked for observation in VolleyManager (RD/RSV)')
-              : (formData.lang === 'DE' ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation'),
+          {game.starred && badge('star', 'amber', starredTitle(game, formData.lang === 'DE'),
             <><Star size={10} className="fill-amber-500 text-amber-500" />{formData.lang === 'DE' ? 'Gewünscht' : 'Priority'}</>)}
           {hasEditingDraft(game.id) && badge('draft', draftIsOverdue(game.id) ? 'me' : 'stone',
             draftIsOverdue(game.id) ? t.draftUnsentHeading : t.draftHeading,
@@ -5512,6 +5527,11 @@ export default function App() {
                *  highlights nothing. The group — "Varia", "Beförderung?" — is
                *  what says why the evening is worth driving to, so it rides
                *  along on every coachee's chip. */
+              /** The börse stamp for this screen. Per-response, so any row that
+               *  has one has the same one; a list with no rows has none, and
+               *  BoerseFreshness says "unknown" rather than implying health. */
+              const homeBoerseAsOf = [...homeData?.nextGames ?? [], ...homeData?.missingGames ?? []]
+                .map((g) => g.boerse?.asOf).find(Boolean);
               const crewChips = (g: HomeGame) => {
                 const crew = g.crew?.length
                   ? g.crew
@@ -5945,6 +5965,13 @@ export default function App() {
                           icon={<CalendarDays size={14} />}
                           title={de ? 'Nächste Beobachtungen' : 'Next observations'}
                           count={homeData.nextGames.length || undefined}
+                          // Absence of a warning is itself a claim, and this is
+                          // the only thing that qualifies it. Three VolleyManager
+                          // roles answer the börse 200 with the WRONG row count —
+                          // one of them zero — so a drifted role reads as "no
+                          // games at risk". Without a visible timestamp that lie
+                          // is indistinguishable from good news.
+                          hint={<BoerseFreshness asOf={homeBoerseAsOf} lang={formData.lang} />}
                         />
                         {/* Every one of them: this list is the answer to the
                             counter beside it, and a cut-off row is a game the
@@ -6164,7 +6191,7 @@ export default function App() {
                     className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                   />
                   {(() => {
-                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo, gameFilterRd, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned].filter(Boolean).length;
+                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterBoerse.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned].filter(Boolean).length;
                     return (
                       <button
                         onClick={() => setFiltersOpen(!filtersOpen)}
@@ -6258,17 +6285,6 @@ export default function App() {
                         label={formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
                       />
                     )}
-                    {(filterAvailability.rd || gameFilterRd) && (
-                      <FilterToggle
-                        on={gameFilterRd}
-                        onToggle={() => setGameFilterRd(!gameFilterRd)}
-                        dotClass="bg-amber-500"
-                        title={formData.lang === 'DE'
-                          ? 'Im VolleyManager für eine SR-Beobachtung markiert.'
-                          : 'Marked in VolleyManager for referee supervision.'}
-                        label={formData.lang === 'DE' ? 'RD Spiel' : 'RD Game'}
-                      />
-                    )}
                     {(filterAvailability.rcGame || gameFilterRcGame) && (
                       <FilterToggle
                         on={gameFilterRcGame}
@@ -6325,6 +6341,23 @@ export default function App() {
                         selected={gameFilterLevels}
                         onChange={setGameFilterLevels}
                         placeholder={formData.lang === 'DE' ? 'Alle Level' : 'All levels'}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-[140px] max-w-[220px]">
+                      <label className="block text-xs font-medium text-stone-500 mb-0.5">
+                        {formData.lang === 'DE' ? 'SR-Börse' : 'SR-Börse'}
+                      </label>
+                      <MultiSelectDropdown
+                        lang={formData.lang}
+                        options={['red', 'amber', 'blue', 'marked']}
+                        selected={gameFilterBoerse}
+                        onChange={setGameFilterBoerse}
+                        placeholder={formData.lang === 'DE' ? 'Egal' : 'Any'}
+                        // Values stay stable ('red'), labels say what the colour
+                        // MEANS — nobody thinks of a game as "an amber".
+                        labelOf={(v) => (formData.lang === 'DE'
+                          ? { red: 'Rot · Coachee weg', amber: 'Gelb · 1 von 2', blue: 'Blau · eigener Einsatz', marked: 'Irgendwer in der Börse' }
+                          : { red: 'Red · coachee at risk', amber: 'Amber · 1 of 2', blue: 'Blue · own slot', marked: 'Anyone in the Börse' })[v] ?? v}
                       />
                     </div>
                     <div className="flex-1 min-w-[100px] max-w-[160px]">
@@ -6547,7 +6580,7 @@ export default function App() {
                                             {game.starred && (
                                               <MetaChip
                                                 tone="amber"
-                                                title={de ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation'}
+                                                title={starredTitle(game, de)}
                                               >
                                                 <Star size={10} className="fill-amber-500 text-amber-500" />
                                                 {de ? 'Gewünscht' : 'Priority'}
@@ -6702,8 +6735,8 @@ export default function App() {
                         icon={<Star size={14} className={cn(gameFilterStarred && 'fill-amber-500 text-amber-500')} />}
                         label={formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged'}
                         title={formData.lang === 'DE'
-                          ? 'Nur Spiele zeigen, die für eine Beobachtung vorgemerkt sind.'
-                          : 'Show only games flagged for observation.'}
+                          ? 'Nur Spiele zeigen, die für eine Beobachtung vorgemerkt sind — im VolleyManager als RD-Spiel oder mit RSV-Markierung, oder von Hand.'
+                          : 'Show only games flagged for observation — marked in VolleyManager as an RD game or with an RSV mark, or by hand.'}
                       />
                     )}
                     {(filterAvailability.focus || showAllLevels) && (

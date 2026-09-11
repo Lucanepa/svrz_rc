@@ -107,3 +107,44 @@ test('a payload with no börse field renders nothing rather than a false all-cle
   await expect(page.getByText('In Börse')).toHaveCount(0);
   await expect(page.getByText(/in der Börse/)).toHaveCount(0);
 });
+
+/**
+ * The Games tab — the list an UNASSIGNED game lives in, which is where most
+ * börse offers actually sit, because nobody has taken those games yet.
+ *
+ * It renders through `gameCard`/`refChip`, a different pair from the Home rows
+ * above, and was the last surface still unwired: every one of the eleven red
+ * games live on production was unassigned, so the feature was invisible in the
+ * one list its data was in.
+ */
+test.describe('the Games tab', () => {
+  const listGame = (over: Record<string, unknown> = {}) => ({
+    id: 'eg1', matchNo: '408178', league: 'DU23 3. Liga',
+    date: '2026-09-22T18:15:00Z', location: 'Zwingert, Buchs ZH',
+    homeTeam: 'VBC Furttal', awayTeam: 'KSC Wiedikon DU23-1',
+    firstReferee: 'Coachee Eins', secondReferee: '',
+    assignedRc: '', feedbackClosedRoles: [], starred: false, vmFlagged: false,
+    ...over,
+  });
+
+  test('an offered slot on an unassigned game is marked in the list', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({
+      json: [listGame({ boerse: { level: 'red', reason: 'only-coachee-offered', markedSlots: ['1'], asOf } })],
+    }));
+    await page.goto('/');
+    await page.getByRole('button', { name: /^(Spiele|Games)$/ }).first().click();
+    await expect(page.getByText('In Börse').first()).toBeVisible();
+    await expect(page.getByText(/Coachee-Einsatz in der Börse|Coachee's slot is in the Börse/)).toBeVisible();
+  });
+
+  test('a game nobody has offered carries nothing', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({
+      json: [listGame({ boerse: { level: 'none', reason: 'no-open-offers', markedSlots: [], asOf } })],
+    }));
+    await page.goto('/');
+    await page.getByRole('button', { name: /^(Spiele|Games)$/ }).first().click();
+    await expect(page.getByText('In Börse')).toHaveCount(0);
+  });
+});

@@ -4752,18 +4752,36 @@ export default function App() {
      *  this is the list an RC decides whom to watch from and both answers
      *  ("which level is this one?", "are they up for promotion?") used to mean
      *  a trip to the Coachees tab and back. */
-    const refChip = (name: string, role: string) => {
+    const refChip = (name: string, role: string, boerse?: EligibleGame['boerse']) => {
       const isCoachee = coacheeNames.has(normName(name));
       const level = isCoachee ? coacheeLevelOf(name) : undefined;
       const group = isCoachee ? coacheeGroupOf(name) : undefined;
+      // The Games tab is where an UNASSIGNED game lives, and an unassigned game
+      // is where most börse offers sit — nobody has taken it yet. So this is the
+      // list where the mark matters most, and it was the last one without it.
+      const offered = inBoerse(boerse, role === t.role2Short ? '2. SR' : '1. SR');
       return (
         <ChipLine key={role}>
-          <MetaChip wrap stack={isCoachee} tone={isCoachee ? 'amber' : 'stone'}>
-            <span><span className="font-bold opacity-70">{role}&nbsp;</span>{name}</span>
-            {isCoachee && (
-              <span className="rounded bg-amber-200/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide">
-                Coachee{level ? ` · ${level}` : ''}{group ? ` · ${group}` : ''}
-              </span>
+          <MetaChip
+            wrap
+            stack={isCoachee || offered}
+            tone={offered ? 'boerse' : (isCoachee ? 'amber' : 'stone')}
+            title={offered ? (formData.lang === 'DE' ? 'Dieser Einsatz steht in der SR-Börse' : 'This slot is in the SR-Börse') : undefined}
+          >
+            <span>
+              <span className="font-bold opacity-70">{role}&nbsp;</span>
+              {offered && <span aria-hidden>⚠&nbsp;</span>}
+              {name}
+            </span>
+            {(isCoachee || offered) && (
+              <MarkRow>
+                {offered && <BoerseChip lang={formData.lang} />}
+                {isCoachee && (
+                  <span className="rounded bg-amber-200/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide">
+                    Coachee{level ? ` · ${level}` : ''}{group ? ` · ${group}` : ''}
+                  </span>
+                )}
+              </MarkRow>
             )}
           </MetaChip>
         </ChipLine>
@@ -4788,7 +4806,9 @@ export default function App() {
         mapsUrl={game.maps_url}
         onOpen={opts?.onOpen}
         action={opts?.action}
-        className={opts?.className}
+        // The caller's class wins where it sets one — a list that is already
+        // tinting a row has a reason — otherwise the börse wash applies.
+        className={opts?.className || boerseRowClass(game.boerse) || undefined}
         status={<>
           {/* Whether anybody is on it, at a glance. */}
           <span
@@ -4820,10 +4840,11 @@ export default function App() {
           {hasEditingDraft(game.id) && badge('draft', draftIsOverdue(game.id) ? 'me' : 'stone',
             draftIsOverdue(game.id) ? t.draftUnsentHeading : t.draftHeading,
             draftIsOverdue(game.id) ? t.draftUnsentBadge : t.draftBadge)}
-          {r1 ? refChip(r1, t.role1Short) : <MetaChip tone="ghost">{t.role1Short} –</MetaChip>}
-          {r2 && refChip(r2, t.role2Short)}
+          {r1 ? refChip(r1, t.role1Short, game.boerse) : <MetaChip tone="ghost">{t.role1Short} –</MetaChip>}
+          {r2 && refChip(r2, t.role2Short, game.boerse)}
         </>}
       >
+        <BoerseNote boerse={game.boerse} lang={formData.lang} />
         {/* Which slot the coachee stands in, for a list that is about them
             rather than about the game. Line-judge duty shows here and nowhere
             else: the two referee chips above cannot name it. */}

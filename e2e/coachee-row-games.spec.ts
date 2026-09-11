@@ -145,7 +145,16 @@ test('a game somebody else holds says so instead of offering itself', async ({ p
   await page.getByRole('button', { name: /^Coachees$/ }).click();
   await openChevron(page).click();
 
-  await expect(page.getByText(`RC: Jasmin Zimmermann`)).toBeVisible();
-  await expect(page.getByRole('button', { name: /Take game|Spiel übernehmen/ })).toHaveCount(0);
+  // The button stays, greyed, and explains itself when clicked. It used to be
+  // replaced by a "RC: <name>" label, which reads as a caption rather than as
+  // the reason the action is gone — so the row just looked like it had none.
+  const take = page.getByRole('button', { name: /Take game|Spiel übernehmen/ }).first();
+  await expect(take).toBeVisible();
+  await expect(take).toHaveAttribute('aria-disabled', 'true');
+  // `force`, because Playwright honours aria-disabled in its actionability
+  // check — which is right, and exactly why a real user CAN still click it:
+  // the attribute is advisory, the handler is real.
+  await take.click({ force: true });
+  await expect(page.getByText(/Jasmin Zimmermann (hat dieses Spiel bereits übernommen|already took this game)/)).toBeVisible();
   expect(RC.name).not.toBe('Jasmin Zimmermann');
 });

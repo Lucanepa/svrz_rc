@@ -3352,34 +3352,55 @@ async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRo
       }))(game);
       if (verdict.level !== 'red' && verdict.level !== 'amber') continue;
 
-      // German, like every other mail here: the referee list is Swiss-German
-      // first. Zürich wall time, via the same helper the reminders use — the
-      // container runs UTC, and a kick-off printed in the server's zone is an
-      // hour wrong for half the year.
+      // Zürich wall time, via the same helper the reminders use — the container
+      // runs UTC, and a kick-off printed in the server's zone is an hour wrong
+      // for half the year.
       const startedAt = new Date(asText(game.match_date)).getTime();
       const when = Number.isFinite(startedAt) ? zonedParts(startedAt) : null;
       const dateText = when
         ? `${when.day}.${when.month}.${when.year}, ${when.hour}:${when.minute}`
         : asText(game.match_date);
       const teams = `${asText(game.home_team)} – ${asText(game.away_team)}`;
+      // German first, English under it — the house rule for anything that
+      // reaches a referee or a coach. The referee list is Swiss-German, and a
+      // third of the region reads the English one more comfortably; neither
+      // half replaces the other.
       const headline = verdict.level === 'red'
         ? 'Ein Coachee hat seinen Einsatz in die SR-Börse gestellt'
         : 'Einer von zwei Coachees steht in der SR-Börse';
+      const headlineEn = verdict.level === 'red'
+        ? 'A coachee has put their slot into the SR-Börse'
+        : 'One of two coachees is in the SR-Börse';
+      const lead = `${headline} — auf einem Spiel, das du übernommen hast.`;
+      const leadEn = `${headlineEn} — on a game you have taken.`;
+      const closing = verdict.level === 'red'
+        ? 'Übernimmt jemand den Einsatz, ist auf diesem Spiel kein Coachee mehr zu beobachten.'
+        : 'Der zweite Coachee pfeift weiterhin — die Beobachtung ist nicht verloren.';
+      const closingEn = verdict.level === 'red'
+        ? 'If somebody takes the slot, there is no coachee left to observe on this game.'
+        : 'The second coachee is still whistling — the observation is not lost.';
+      const slotLabel = row.slot === '2' ? '2. SR' : '1. SR';
+      const since = String(row.submitted_at).slice(0, 10).split('-').reverse().join('.');
 
       const body = [
-        `<p style="${mailText(15, MAIL_INK)}">Hallo ${escapeHtml(coach.firstName || coach.fullName)}</p>`,
-        `<p style="${mailText(15, MAIL_INK)}">${escapeHtml(headline)} — auf einem Spiel, das du übernommen hast.</p>`,
+        bilingualBlockHtml(`Hallo ${coach.firstName || coach.fullName}`, `Hello ${coach.firstName || coach.fullName}`),
+        bilingualBlockHtml(lead, leadEn),
+        // The fixture itself is not translated — team names, a league code and a
+        // hall are the same words in both halves, and repeating them would only
+        // make the mail longer and the real information harder to find.
         `<div style="margin:18px 0;padding:14px 16px;background:${MAIL_PANEL};border:1px solid ${MAIL_LINE};border-radius:10px">`,
         `<div style="${mailText(15, MAIL_INK, 'font-weight:700;')}">${escapeHtml(teams)}</div>`,
         `<div style="${mailText(13, MAIL_INK_SOFT, 'margin-top:4px;')}">${escapeHtml(dateText)} · ${escapeHtml(asText(game.league))} · #${escapeHtml(asText(game.match_no))}</div>`,
         asText(game.location) ? `<div style="${mailText(13, MAIL_INK_SOFT)}">${escapeHtml(asText(game.location))}</div>` : '',
-        `<div style="${mailText(13, MAIL_INK, 'margin-top:10px;font-weight:600;')}">${escapeHtml(row.slot_person_name)} · ${row.slot === '2' ? '2. SR' : '1. SR'}</div>`,
-        `<div style="${mailText(13, MAIL_INK_SOFT)}">steht seit ${escapeHtml(String(row.submitted_at).slice(0, 10).split('-').reverse().join('.'))} in der Börse</div>`,
+        `<div style="${mailText(13, MAIL_INK, 'margin-top:10px;font-weight:600;')}">${escapeHtml(row.slot_person_name)} · ${slotLabel}</div>`,
+        `<div style="${mailText(12, MAIL_INK_SOFT)}">in der Börse seit ${escapeHtml(since)}</div>`,
+        `<div style="${mailText(12, MAIL_MUTED)}">in the Börse since ${escapeHtml(since)}</div>`,
         `</div>`,
-        verdict.level === 'red'
-          ? `<p style="${mailText(14, MAIL_INK_SOFT)}">Übernimmt jemand den Einsatz, ist auf diesem Spiel kein Coachee mehr zu beobachten.</p>`
-          : `<p style="${mailText(14, MAIL_INK_SOFT)}">Der zweite Coachee pfeift weiterhin — die Beobachtung ist nicht verloren.</p>`,
-        `<p style="${mailText(13, MAIL_MUTED)}">Noch ist der Einsatz offen. Diese Nachricht kommt einmal pro Angebot; wird es zurückgezogen, verschwindet die Markierung im Tool von selbst.</p>`,
+        bilingualBlockHtml(closing, closingEn),
+        bilingualBlockHtml(
+          'Noch ist der Einsatz offen. Diese Nachricht kommt einmal pro Angebot; wird es zurückgezogen, verschwindet die Markierung im Tool von selbst.',
+          'The slot is still open. This message is sent once per offer; if it is withdrawn, the marking in the tool disappears on its own.',
+        ),
       ].join('');
 
       await sendMailResilient({
@@ -3389,7 +3410,10 @@ async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRo
           ? `[TEST → ${coach.email}] SR-Börse: ${teams} (${dateText})`
           : `SR-Börse: ${teams} (${dateText})`,
         html: emailShell(body),
-        text: `${headline}\n\n${teams}\n${dateText} · ${asText(game.league)} · #${asText(game.match_no)}\n${row.slot_person_name} · ${row.slot === '2' ? '2. SR' : '1. SR'}\n`,
+        text: bilingualText(
+          `${headline}\n\n${teams}\n${dateText} · ${asText(game.league)} · #${asText(game.match_no)}\n${row.slot_person_name} · ${slotLabel}\n\n${closing}`,
+          `${headlineEn}\n\n${teams}\n${dateText} · ${asText(game.league)} · #${asText(game.match_no)}\n${row.slot_person_name} · ${slotLabel}\n\n${closingEn}`,
+        ),
         attachments: emailAttachments(),
       });
       await withCollection(collectionCandidates.boerseOffers, (c) =>
@@ -4512,19 +4536,29 @@ async function sendCredentialCodeEmail(to: string, code: string, slotLabel: stri
     console.log(`[cred-2fa] TEST_MODE — not sent to ${to}; code is ${code}`);
     return;
   }
+  // The code box sits between the two halves rather than after both, so the
+  // number is reachable without reading to the bottom in either language.
+  const warn = 'Der Code ist 10 Minuten gültig und kann nur einmal verwendet werden. Hast du das nicht ausgelöst, wurde das Passwort NICHT geändert — aber jemand hat Zugriff auf eine Admin-Sitzung. Ändere in dem Fall umgehend das Admin-Passwort.';
+  const warnEn = 'The code is valid for 10 minutes and can be used only once. If you did not start this, the password was NOT changed — but somebody has access to an admin session. Change the admin password immediately in that case.';
   const html = emailShell(
     `<h1 style="margin:0 0 6px;${mailText(20, MAIL_INK, `font-weight:700;line-height:1.3;${MAIL_DISPLAY}`)}">Bestätigungscode</h1>`
-    + `<p style="margin:0 0 14px;${mailText(14, MAIL_INK)}">Jemand ändert gerade das Passwort für <strong>${escapeHtml(slotLabel)}</strong> in der Referee-Coaching-Administration. Mit diesem Code wird die Änderung bestätigt:</p>`
+    + `<p style="margin:0 0 14px;${mailText(13, MAIL_MUTED)}">Confirmation code</p>`
+    + bilingualBlockHtml(
+      `Jemand ändert gerade das Passwort für „${slotLabel}" in der Referee-Coaching-Administration. Mit diesem Code wird die Änderung bestätigt:`,
+      `Somebody is changing the password for "${slotLabel}" in the referee coaching administration. This code confirms the change:`,
+    )
     + emailCodeBox(code)
-    + `<p style="margin:22px 0 0;${mailText(13, MAIL_INK_SOFT)}">Der Code ist 10 Minuten gültig und kann nur einmal verwendet werden. Hast du das nicht ausgelöst, wurde das Passwort NICHT geändert — aber jemand hat Zugriff auf eine Admin-Sitzung. Ändere in dem Fall umgehend das Admin-Passwort.</p>`,
+    + `<p style="margin:22px 0 0;${mailText(13, MAIL_INK_SOFT)}">${escapeHtml(warn)}</p>`
+    + `<p style="margin:8px 0 0;${mailText(13, MAIL_MUTED)}">${escapeHtml(warnEn)}</p>`,
   );
   await sendMailResilient({
     from: MAIL_FROM,
     to,
-    subject: 'Bestätigungscode – Passwortänderung SVRZ Referee Coaching',
-    text: `Bestätigungscode für die Passwortänderung (${slotLabel}):\n\n    ${code}\n\n`
-      + `Gültig für 10 Minuten, einmalig verwendbar.\n\n`
-      + `Hast du das nicht ausgelöst, wurde nichts geändert — aber jemand hat Zugriff auf eine Admin-Sitzung. Ändere dann sofort das Admin-Passwort.\n\n${MAIL_APP_URL}`,
+    subject: 'Bestätigungscode / Confirmation code – Passwortänderung SVRZ Referee Coaching',
+    text: bilingualText(
+      `Bestätigungscode für die Passwortänderung (${slotLabel}):\n\n    ${code}\n\n${warn}`,
+      `Confirmation code for the password change (${slotLabel}):\n\n    ${code}\n\n${warnEn}`,
+    ) + MAIL_APP_URL,
     html,
     attachments: emailAttachments(),
   });
@@ -5613,17 +5647,17 @@ async function sendSurveyNotification(rec: AnyRecord, answers: Record<string, st
     const matchNo = asText(rec.match_no);
     const date = asText(rec.match_date);
     const rows: Array<[string, string]> = [
-      ['Schiedsrichter:in', anonymous ? '(anonym)' : asText(rec.referee_name)],
-      ['Datum', date],
-      ['Spiel Nr.', matchNo],
+      ['Schiedsrichter:in|Referee', anonymous ? '(anonym)' : asText(rec.referee_name)],
+      ['Datum|Date', date],
+      ['Spiel Nr.|Match no.', matchNo],
       ['Referee Coach', asText(rec.rc_name)],
     ];
-    // Always German, whatever language the coachee answered in: this mail goes
-    // to the RC commission, not back to the respondent. Only a free-text answer
-    // stays in the words it was written in — `lang` just records which form was
-    // used. Choice answers are stored as a stable value, so the German label is
-    // always available.
-    if (lang === 'EN') rows.push(['Sprache', 'auf Englisch ausgefüllt']);
+    // German leads, English under it — but the ANSWERS are a separate question
+    // from the labels. A free-text answer stays in the words it was written in,
+    // and a choice answer is stored as a stable value, so its German label is
+    // always available whichever form was filled in; `lang` only records which
+    // one that was.
+    if (lang === 'EN') rows.push(['Sprache|Language', 'auf Englisch ausgefüllt · answered in English']);
     const qa = surveyAnswerBlocks(await getSurveyConfig(), answers);
     const refereeLabel = anonymous ? '(anonym)' : asText(rec.referee_name);
     const built = buildTemplatedEmail({
@@ -5635,7 +5669,7 @@ async function sendSurveyNotification(rec: AnyRecord, answers: Record<string, st
       }),
       rows,
       qa,
-      footerNote: 'Automatisch vom SR-Coaching-System versendet.',
+      footerNote: 'Automatisch vom SR-Coaching-System versendet. · Sent automatically by the SR coaching system.',
     });
     // Test mode redirects this like every other mail. Without it, testing the
     // survey flow quietly mails the real RC commission.
@@ -6857,36 +6891,52 @@ async function sendRcGameNoteNotification(opts: {
     const rcRole = opts.rolesSwapped ? g.coacheeRole : g.rcRole;
     const coacheeRole = opts.rolesSwapped ? g.rcRole : g.coacheeRole;
     const rows: Array<[string, string]> = [
-      ['Schiedsrichter:in', `${g.coacheeName}${coacheeRole ? ` (${coacheeRole})` : ''}`],
+      ['Schiedsrichter:in|Referee', `${g.coacheeName}${coacheeRole ? ` (${coacheeRole})` : ''}`],
       ['Referee Coach', `${opts.rcName}${rcRole ? ` (${rcRole})` : ''}`],
-      ['Datum', fmtDateDe(g.gameDate)],
-      ['Liga', g.league],
-      ['Spiel Nr.', g.matchNo],
+      ['Datum|Date', fmtDateDe(g.gameDate)],
+      ['Liga|League', g.league],
+      ['Spiel Nr.|Match no.', g.matchNo],
       ['Teams', g.teams],
-      ['Halle', g.location],
-      ['Resultat', g.result],
+      ['Halle|Venue', g.location],
+      ['Resultat|Result', g.result],
     ];
     if (opts.rolesSwapped) {
       // 7.3 asks the RC to report the swap so it can be corrected in the VM.
       // That report is this line: it arrives with the note rather than as a
       // WhatsApp message somebody has to remember to send.
-      rows.push(['1./2. SR getauscht', `ja — im VM steht noch ${g.rcRole} / ${g.coacheeRole}`]);
+      rows.push(['1./2. SR getauscht|Roles swapped', `ja — im VM steht noch ${g.rcRole} / ${g.coacheeRole}`]);
     }
     const subject = `${opts.updated ? 'Aktualisierte Rückmeldung' : 'Rückmeldung'} SR-Spiel: ${g.coacheeName}`
       + (g.gameDate ? ` (${fmtDateDe(g.gameDate)})` : '');
     const intro = opts.updated
       ? `${opts.rcName} hat die Rückmeldung zu diesem SR-Spiel überarbeitet. Sie ersetzt die frühere Fassung.`
       : `${opts.rcName} hat neben ${g.coacheeName} gepfiffen und dazu eine Rückmeldung erfasst.`;
+    const introEn = opts.updated
+      ? `${opts.rcName} has revised the note on this refereeing assignment. It replaces the earlier version.`
+      : `${opts.rcName} whistled alongside ${g.coacheeName} and wrote a note about it.`;
+    const closing = 'Gemäss 4.4.10 wird für dieses Spiel kein Feedbackformular ausgefüllt; die Rückmeldung zählt entsprechend nicht ans Saisonziel. Sie ist ausserhalb dieser Mail nur im RC-Präsidiums-Bereich der App sichtbar — weder der Schiedsrichter noch die anderen Referee Coaches lesen sie.';
+    const closingEn = 'Under 4.4.10 no feedback form is filled in for this game, so the note does not count toward the season target. Outside this mail it is visible only in the RC presidency area of the app — neither the referee nor the other referee coaches can read it.';
     const html = emailShell(
       `<h1 style="margin:0 0 6px;${mailText(20, MAIL_INK, `font-weight:700;line-height:1.3;${MAIL_DISPLAY}`)}">Rückmeldung SR-Spiel</h1>`
-      + textBlockHtml(intro)
+      + `<p style="margin:0 0 14px;${mailText(13, MAIL_MUTED)}">Note on a refereeing assignment</p>`
+      + bilingualBlockHtml(intro, introEn)
       + detailRowsHtml(rows)
-      + qaBlocksHtml([['Rückmeldung', opts.note]])
-      + `<p style="margin:18px 0 0;${mailText(12, MAIL_MUTED)}">Gemäss 4.4.10 wird für dieses Spiel kein Feedbackformular ausgefüllt; die Rückmeldung zählt entsprechend nicht ans Saisonziel. Sie ist ausserhalb dieser Mail nur im RC-Präsidiums-Bereich der App sichtbar — weder der Schiedsrichter noch die anderen Referee Coaches lesen sie.</p>`,
+      // The note itself is NOT translated — it is what the coach wrote, and
+      // putting a machine-free English "version" under it would either be the
+      // same words twice or somebody else's paraphrase of a judgement call.
+      + qaBlocksHtml([['Rückmeldung · Note', opts.note]])
+      + `<p style="margin:18px 0 0;${mailText(12, MAIL_MUTED)}">${escapeHtml(closing)}</p>`
+      + `<p style="margin:8px 0 0;${mailText(12, MAIL_MUTED)}">${escapeHtml(closingEn)}</p>`,
     );
-    const text = `${subject}\n\n${intro}\n\n`
-      + rows.filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join('\n')
-      + `\n\nRückmeldung:\n${opts.note}\n`;
+    const detailLines = rows.filter(([, v]) => v);
+    const text = bilingualText(
+      `${subject}\n\n${intro}\n\n`
+        + detailLines.map(([k, v]) => `${k.split('|')[0]}: ${v}`).join('\n')
+        + `\n\nRückmeldung:\n${opts.note}\n\n${closing}`,
+      `${introEn}\n\n`
+        + detailLines.map(([k, v]) => `${k.split('|')[1] || k}: ${v}`).join('\n')
+        + `\n\nNote:\n${opts.note}\n\n${closingEn}`,
+    );
     await sendMailResilient({
       from: MAIL_FROM,
       to: testMode ? testRecipient : to.join(','),

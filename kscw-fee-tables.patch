@@ -1,0 +1,498 @@
+From dbe8ab8db9480bde02da584de3cabd92108d34e5 Mon Sep 17 00:00:00 2001
+From: Luca Canepa <l.canepa@aequitax.pro>
+Date: Fri, 11 Sep 2026 12:26:34 +0000
+Subject: [PATCH] fix(mitgliedschaft): the fee tables fit a phone
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On a phone the three fee tables ran past the right edge of the screen: the
+fee column read "CHF 2" and "Davon Lizenz" was gone entirely. The wrapper
+scrolled, but nothing hinted at it. Cause: the grid items (.fee-col,
+.fee-block) default to min-width:auto, and the tables' min-content width —
+nowrap headers, nowrap amounts, 24px cell padding — exceeded the 364px
+track, so the whole column widened past the viewport.
+
+- Grid items get min-width:0 so a table can never widen its column.
+- Cell padding, alignment and the amount's font-size move out of the inline
+  styles into the page stylesheet, where a phone breakpoint can tighten them
+  (below 640px: smaller cells, 1rem amounts, headers may wrap).
+- Below 480px the volleyball table stacks each row: category on top, "Beitrag"
+  and "Davon Lizenz" on a row beneath with their column label (repeated
+  inside the cells as a .fee-label span, translated by data-i18n, hidden
+  elsewhere). Three columns left the German categories ~120px and broke
+  "Mittelschüler:innen" and "Fachhochschulen" mid-word.
+- Category cells hyphenate before an overflow-wrap:anywhere last resort.
+
+Verified at 360/375/412/1280px in DE and EN: no table wider than its track,
+no mid-word breaks, desktop unchanged. Unit suite and the layout,
+accessibility, i18n and site-text e2e specs pass on desktop and mobile.
+
+Changelog 1.28.1 (CHANGELOG.md, feedback page DE + EN).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01LjCj51XTjsHKhsGrPq2C5h
+---
+ CHANGELOG.md                            |   7 +
+ package.json                            |   2 +-
+ src/pages/club/feedback.astro           |  28 ++-
+ src/pages/weiteres/mitgliedschaft.astro | 253 +++++++++++++++++-------
+ 4 files changed, 218 insertions(+), 72 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e1415e8..c517044 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,13 @@
+ 
+ All notable changes to the KSC Wiedikon website. This file is the curated, user-facing release record (semver); the same notes appear on the site's feedback page (DE + EN). For commit-level detail see `git log`.
+ 
++## [1.28.1] — 2026-09-11
++
++### Die Beitragstabellen passen wieder aufs Handy
++- Auf **Mitgliedschaft** liefen die drei Beitragstabellen am Handy über den rechten Bildschirmrand hinaus: Vom Beitrag war nur noch «CHF 2» zu sehen, und die Spalte **«Davon Lizenz»** fehlte ganz. Die Tabellen waren breiter als der Bildschirm, ohne dass etwas darauf hinwies.
++- Neu passen sie sich der Breite an: Auf schmalen Telefonen steht bei Volleyball die Kategorie oben und darunter auf einer eigenen Zeile **Beitrag** und **Davon Lizenz**, je mit Beschriftung. Die Lizenz- und Basketballtabellen behalten ihre zwei Spalten mit engeren Zellen und leicht kleinerer Schrift.
++- Am Computer sieht die Seite aus wie bisher.
++
+ ## [1.28.0] — 2026-09-07
+ 
+ ### Ein volles Team sagt es — und sammelt keine Anfragen mehr ein, die es nur absagen kann
+diff --git a/package.json b/package.json
+index 6cafe2f..f513b07 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "kscw-website",
+   "type": "module",
+-  "version": "1.28.0",
++  "version": "1.28.1",
+   "engines": {
+     "node": ">=22.12.0"
+   },
+diff --git a/src/pages/club/feedback.astro b/src/pages/club/feedback.astro
+index 81b252f..9c3c472 100644
+--- a/src/pages/club/feedback.astro
++++ b/src/pages/club/feedback.astro
+@@ -150,9 +150,21 @@ const locale = 'de';
+               changelog, permanently: no data-i18n meant the engine could never
+               repair it. */}
+           <span data-i18n="changelogTitle">{t(locale, 'changelogTitle')}</span>
+-          <span class="changelog-badge">v1.28.0</span>
++          <span class="changelog-badge">v1.28.1</span>
+         </h2>
+ 
++        <div class="changelog-entry">
++          <div class="changelog-meta">v1.28.1 — 2026-09-11</div>
++          <div class="changelog-group">
++            <h3>Die Beitragstabellen passen wieder aufs Handy</h3>
++            <ul>
++              <li>Auf <strong>Mitgliedschaft</strong> liefen die drei Beitragstabellen am Handy über den rechten Bildschirmrand hinaus: Vom Beitrag war nur noch «CHF 2» zu sehen, und die Spalte <strong>«Davon Lizenz»</strong> fehlte ganz</li>
++              <li>Neu passen sie sich der Breite an: Auf schmalen Telefonen steht bei Volleyball die Kategorie oben und darunter auf einer eigenen Zeile <strong>Beitrag</strong> und <strong>Davon Lizenz</strong>, je mit Beschriftung. Die Lizenz- und Basketballtabellen behalten ihre zwei Spalten mit engeren Zellen und leicht kleinerer Schrift</li>
++              <li>Am Computer sieht die Seite aus wie bisher</li>
++            </ul>
++          </div>
++        </div>
++
+         <div class="changelog-entry">
+           <div class="changelog-meta">v1.28.0 — 2026-09-07</div>
+           <div class="changelog-group">
+@@ -953,9 +965,21 @@ const locale = 'de';
+               changelog, permanently: no data-i18n meant the engine could never
+               repair it. */}
+           <span data-i18n="changelogTitle">{t(locale, 'changelogTitle')}</span>
+-          <span class="changelog-badge">v1.28.0</span>
++          <span class="changelog-badge">v1.28.1</span>
+         </h2>
+ 
++        <div class="changelog-entry">
++          <div class="changelog-meta">v1.28.1 — 2026-09-11</div>
++          <div class="changelog-group">
++            <h3>The fee tables fit a phone again</h3>
++            <ul>
++              <li>On <strong>Membership</strong> the three fee tables ran past the right edge of a phone screen: of the fee only “CHF 2” was left, and the <strong>“Of which licence”</strong> column was missing entirely</li>
++              <li>They now adapt to the width: on narrow phones the volleyball table puts the category on top and <strong>Fee</strong> and <strong>Of which licence</strong> on a row of their own beneath it, each with its label. The licence and basketball tables keep their two columns with tighter cells and slightly smaller type</li>
++              <li>On a computer the page looks as it did</li>
++            </ul>
++          </div>
++        </div>
++
+         <div class="changelog-entry">
+           <div class="changelog-meta">v1.28.0 — 2026-09-07</div>
+           <div class="changelog-group">
+diff --git a/src/pages/weiteres/mitgliedschaft.astro b/src/pages/weiteres/mitgliedschaft.astro
+index 5c92fc4..79f6bd9 100644
+--- a/src/pages/weiteres/mitgliedschaft.astro
++++ b/src/pages/weiteres/mitgliedschaft.astro
+@@ -70,62 +70,62 @@ const locale = 'de';
+         <table style="width: 100%; border-collapse: collapse; background: var(--surface); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-sm);">
+           <thead>
+             <tr style="background: var(--kscw-blue); color: white;">
+-              <th style="padding: var(--space-md) var(--space-lg); text-align: left; font-weight: 600;" data-i18n="membershipCategory">{t(locale, 'membershipCategory')}</th>
+-              <th style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 600;" data-i18n="membershipFee">{t(locale, 'membershipFee')}</th>
+-              <th style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 600; white-space: nowrap;" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</th>
++              <th style="font-weight: 600;" data-i18n="membershipCategory">{t(locale, 'membershipCategory')}</th>
++              <th style="font-weight: 600;" data-i18n="membershipFee">{t(locale, 'membershipFee')}</th>
++              <th style="font-weight: 600;" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</th>
+             </tr>
+           </thead>
+           <tbody>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryTournamentKWI">{t(locale, 'membershipCategoryTournamentKWI')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryTournamentKWIDesc">{t(locale, 'membershipCategoryTournamentKWIDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryTournamentKWIDesc">{t(locale, 'membershipCategoryTournamentKWIDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 110</td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; color: var(--text-secondary); white-space: nowrap;">CHF 60*</td>
++              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 110</td>
++              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>CHF 60*</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryTournament">{t(locale, 'membershipCategoryTournament')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryTournamentDesc">{t(locale, 'membershipCategoryTournamentDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryTournamentDesc">{t(locale, 'membershipCategoryTournamentDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 210</td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; color: var(--text-secondary); white-space: nowrap;">CHF 60*</td>
++              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 210</td>
++              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>CHF 60*</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryHighSchool">{t(locale, 'membershipCategoryHighSchool')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryHighSchoolDesc">{t(locale, 'membershipCategoryHighSchoolDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryHighSchoolDesc">{t(locale, 'membershipCategoryHighSchoolDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 310</td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; color: var(--text-secondary); white-space: nowrap;">CHF 60</td>
++              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 310</td>
++              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>CHF 60</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryStudent">{t(locale, 'membershipCategoryStudent')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryStudentDesc">{t(locale, 'membershipCategoryStudentDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryStudentDesc">{t(locale, 'membershipCategoryStudentDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 380</td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; color: var(--text-secondary); white-space: nowrap;">CHF 110</td>
++              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 380</td>
++              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>CHF 110</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryWorking">{t(locale, 'membershipCategoryWorking')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryWorkingDesc">{t(locale, 'membershipCategoryWorkingDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryWorkingDesc">{t(locale, 'membershipCategoryWorkingDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 440</td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; color: var(--text-secondary); white-space: nowrap;">CHF 110</td>
++              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 440</td>
++              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>CHF 110</td>
+             </tr>
+             <!-- Passivmitglied is club-wide, not a volleyball category — it is listed in
+                  BOTH sport tables so a reader never has to look in the other sport to
+                  find the fee that applies to them. Same key, same amount in both. -->
+             <tr>
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryPassive">{t(locale, 'membershipCategoryPassive')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryPassiveDesc">{t(locale, 'membershipCategoryPassiveDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryPassiveDesc">{t(locale, 'membershipCategoryPassiveDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 40</td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; color: var(--text-secondary); white-space: nowrap;">—</td>
++              <td style="font-weight: 700; color: var(--accent-text);"><span class="fee-label" data-i18n="membershipFee">{t(locale, 'membershipFee')}</span>CHF 40</td>
++              <td style="color: var(--text-secondary); white-space: nowrap;"><span class="fee-label" data-i18n="membershipColLicence">{t(locale, 'membershipColLicence')}</span>—</td>
+             </tr>
+           </tbody>
+         </table>
+@@ -152,38 +152,38 @@ const locale = 'de';
+         <table style="width: 100%; border-collapse: collapse; background: var(--surface); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-sm);">
+           <thead>
+             <tr style="background: var(--kscw-blue); color: white;">
+-              <th style="padding: var(--space-sm) var(--space-lg); text-align: left; font-weight: 600;" data-i18n="membershipCategory">{t(locale, 'membershipCategory')}</th>
+-              <th style="padding: var(--space-sm) var(--space-lg); text-align: right; font-weight: 600;" data-i18n="membershipFee">{t(locale, 'membershipFee')}</th>
++              <th style="font-weight: 600;" data-i18n="membershipCategory">{t(locale, 'membershipCategory')}</th>
++              <th style="font-weight: 600;" data-i18n="membershipFee">{t(locale, 'membershipFee')}</th>
+             </tr>
+           </thead>
+           <tbody>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-sm) var(--space-lg);" data-i18n="membershipLicenceNLL">{t(locale, 'membershipLicenceNLL')}</td>
+-              <td style="padding: var(--space-sm) var(--space-lg); text-align: right; font-weight: 600;">CHF 250</td>
++              <td data-i18n="membershipLicenceNLL">{t(locale, 'membershipLicenceNLL')}</td>
++              <td style="font-weight: 600;">CHF 250</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-sm) var(--space-lg);" data-i18n="membershipLicenceRLL">{t(locale, 'membershipLicenceRLL')}</td>
+-              <td style="padding: var(--space-sm) var(--space-lg); text-align: right; font-weight: 600;">CHF 110</td>
++              <td data-i18n="membershipLicenceRLL">{t(locale, 'membershipLicenceRLL')}</td>
++              <td style="font-weight: 600;">CHF 110</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-sm) var(--space-lg);" data-i18n="membershipLicenceJLL">{t(locale, 'membershipLicenceJLL')}</td>
+-              <td style="padding: var(--space-sm) var(--space-lg); text-align: right; font-weight: 600;">CHF 60</td>
++              <td data-i18n="membershipLicenceJLL">{t(locale, 'membershipLicenceJLL')}</td>
++              <td style="font-weight: 600;">CHF 60</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-sm) var(--space-lg);" data-i18n="membershipLicenceU16">{t(locale, 'membershipLicenceU16')}</td>
+-              <td style="padding: var(--space-sm) var(--space-lg); text-align: right; font-weight: 600;">CHF 30</td>
++              <td data-i18n="membershipLicenceU16">{t(locale, 'membershipLicenceU16')}</td>
++              <td style="font-weight: 600;">CHF 30</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-sm) var(--space-lg);" data-i18n="membershipLicenceU13">{t(locale, 'membershipLicenceU13')}</td>
+-              <td style="padding: var(--space-sm) var(--space-lg); text-align: right; font-weight: 600;">CHF 15</td>
++              <td data-i18n="membershipLicenceU13">{t(locale, 'membershipLicenceU13')}</td>
++              <td style="font-weight: 600;">CHF 15</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-sm) var(--space-lg);" data-i18n="membershipLicenceDoppelR">{t(locale, 'membershipLicenceDoppelR')}</td>
+-              <td style="padding: var(--space-sm) var(--space-lg); text-align: right; font-weight: 600;">CHF 110</td>
++              <td data-i18n="membershipLicenceDoppelR">{t(locale, 'membershipLicenceDoppelR')}</td>
++              <td style="font-weight: 600;">CHF 110</td>
+             </tr>
+             <tr>
+-              <td style="padding: var(--space-sm) var(--space-lg);" data-i18n="membershipLicenceDoppelN">{t(locale, 'membershipLicenceDoppelN')}</td>
+-              <td style="padding: var(--space-sm) var(--space-lg); text-align: right; font-weight: 600;">CHF 250</td>
++              <td data-i18n="membershipLicenceDoppelN">{t(locale, 'membershipLicenceDoppelN')}</td>
++              <td style="font-weight: 600;">CHF 250</td>
+             </tr>
+           </tbody>
+         </table>
+@@ -201,59 +201,59 @@ const locale = 'de';
+         <table style="width: 100%; border-collapse: collapse; background: var(--surface); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-sm);">
+           <thead>
+             <tr style="background: var(--kscw-blue); color: white;">
+-              <th style="padding: var(--space-md) var(--space-lg); text-align: left; font-weight: 600;" data-i18n="membershipCategory">{t(locale, 'membershipCategory')}</th>
+-              <th style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 600;" data-i18n="membershipFee">{t(locale, 'membershipFee')}</th>
++              <th style="font-weight: 600;" data-i18n="membershipCategory">{t(locale, 'membershipCategory')}</th>
++              <th style="font-weight: 600;" data-i18n="membershipFee">{t(locale, 'membershipFee')}</th>
+             </tr>
+           </thead>
+           <tbody>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryBBActive1L">{t(locale, 'membershipCategoryBBActive1L')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryBBActive1LDesc">{t(locale, 'membershipCategoryBBActive1LDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryBBActive1LDesc">{t(locale, 'membershipCategoryBBActive1LDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 570</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 570</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryBBStudent1L">{t(locale, 'membershipCategoryBBStudent1L')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryBBStudent1LDesc">{t(locale, 'membershipCategoryBBStudent1LDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryBBStudent1LDesc">{t(locale, 'membershipCategoryBBStudent1LDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 470</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 470</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryBBActive">{t(locale, 'membershipCategoryBBActive')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryBBActiveDesc">{t(locale, 'membershipCategoryBBActiveDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryBBActiveDesc">{t(locale, 'membershipCategoryBBActiveDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 520</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 520</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryBBStudent">{t(locale, 'membershipCategoryBBStudent')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryBBStudentDesc">{t(locale, 'membershipCategoryBBStudentDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryBBStudentDesc">{t(locale, 'membershipCategoryBBStudentDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 420</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 420</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryBBYouth">{t(locale, 'membershipCategoryBBYouth')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryBBYouthDesc">{t(locale, 'membershipCategoryBBYouthDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryBBYouthDesc">{t(locale, 'membershipCategoryBBYouthDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 320</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 320</td>
+             </tr>
+             <tr style="border-bottom: 1px solid var(--border);">
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryBBMinis">{t(locale, 'membershipCategoryBBMinis')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryBBMinisDesc">{t(locale, 'membershipCategoryBBMinisDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryBBMinisDesc">{t(locale, 'membershipCategoryBBMinisDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 220</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 220</td>
+             </tr>
+             <tr>
+-              <td style="padding: var(--space-md) var(--space-lg);">
++              <td>
+                 <strong data-i18n="membershipCategoryPassive">{t(locale, 'membershipCategoryPassive')}</strong><br>
+-                <span style="font-size: 0.875rem; color: var(--text-secondary);" data-i18n="membershipCategoryPassiveDesc">{t(locale, 'membershipCategoryPassiveDesc')}</span>
++                <span style="color: var(--text-secondary);" data-i18n="membershipCategoryPassiveDesc">{t(locale, 'membershipCategoryPassiveDesc')}</span>
+               </td>
+-              <td style="padding: var(--space-md) var(--space-lg); text-align: right; font-weight: 700; font-size: 1.125rem; color: var(--accent-text);">CHF 40</td>
++              <td style="font-weight: 700; color: var(--accent-text);">CHF 40</td>
+             </tr>
+           </tbody>
+         </table>
+@@ -396,22 +396,137 @@ const locale = 'de';
+       grid-template-columns: repeat(2, minmax(0, 1fr));
+     }
+   }
++  /* Grid items default to min-width:auto, so a table whose min-content width exceeds
++     the track (nowrap headers + nowrap fee cells + 24px cell padding) widened the whole
++     column past the viewport on phones and the fee columns were cut off — the wrapper
++     scrolled, but nothing hinted at it. Let the items shrink to the track instead. */
++  .fee-col,
++  .fee-block {
++    min-width: 0;
++  }
+   .fee-block > h3:first-child {
+     margin-top: 0;
+   }
+   /* Global `th` sets a muted colour, which wins over the white inherited from the blue
+-     header row and left the headers unreadable. */
++     header row and left the headers unreadable. Headers may wrap ("Davon Lizenz" /
++     "Of which licence") so they never dictate the column width. */
+   .fee-block th {
+     color: #fff;
++    white-space: normal;
++  }
++  .fee-block th,
++  .fee-block td {
++    padding: var(--space-md) var(--space-lg);
++  }
++  .fee-licence th,
++  .fee-licence td {
++    padding: var(--space-sm) var(--space-lg);
+   }
+   /* Global `td` is nowrap (built for score tables) — the category descriptions here need
+-     to wrap; only the fee stays on one line. */
++     to wrap; only the amounts stay on one line. */
+   .fee-block td {
+     white-space: normal;
+   }
+-  .fee-block td:last-child {
++  /* Long German category words ("Mittelschüler:innen") hyphenate before they are
++     forced to break mid-word; `anywhere` stays as the last resort so the table can
++     never be wider than its track. */
++  .fee-block td:first-child {
++    hyphens: auto;
++    overflow-wrap: anywhere;
++  }
++  .fee-block td:first-child span {
++    font-size: 0.875rem;
++  }
++  .fee-block th:not(:first-child),
++  .fee-block td:not(:first-child) {
++    text-align: right;
+     white-space: nowrap;
+   }
++  .fee-vb td:nth-child(2),
++  .fee-bb td:nth-child(2) {
++    font-size: 1.125rem;
++  }
++  /* Phones: tighter cells and a smaller amount so the three volleyball columns fit a
++     375px viewport without breaking the category text mid-word. */
++  @media (max-width: 639px) {
++    .fee-block th,
++    .fee-block td,
++    .fee-licence th,
++    .fee-licence td {
++      padding: var(--space-sm) var(--space-md);
++    }
++    .fee-block th:not(:first-child),
++    .fee-block td:not(:first-child) {
++      padding-left: var(--space-sm);
++      padding-right: var(--space-sm);
++    }
++    .fee-block th:last-child,
++    .fee-block td:last-child {
++      padding-right: var(--space-md);
++    }
++    .fee-vb td:nth-child(2),
++    .fee-bb td:nth-child(2) {
++      font-size: 1rem;
++    }
++    .fee-vb td:nth-child(3) {
++      font-size: 0.875rem;
++    }
++    .fee-block td:first-child span {
++      font-size: 0.8125rem;
++    }
++  }
++  /* Column labels repeated inside the amount cells — only shown when the volleyball
++     table stacks (below), where the header row is hidden. */
++  .fee-label {
++    display: none;
++  }
++  /* Narrow phones: three columns leave the German categories ("Mittelschüler:innen",
++     "Fachhochschulen") ~120px and they broke mid-word. Stack each row instead — the
++     category on top, both amounts on a row beneath with their column label above. */
++  @media (max-width: 479px) {
++    .fee-vb thead {
++      position: absolute;
++      width: 1px;
++      height: 1px;
++      overflow: hidden;
++      clip: rect(0 0 0 0);
++      white-space: nowrap;
++    }
++    .fee-vb tbody {
++      display: block;
++    }
++    .fee-vb tr {
++      display: grid;
++      grid-template-columns: 1fr auto;
++      column-gap: var(--space-md);
++      padding: var(--space-sm) var(--space-md);
++    }
++    .fee-vb td {
++      display: block;
++      padding: 0;
++      border-bottom: 0;
++    }
++    .fee-vb td:first-child {
++      grid-column: 1 / -1;
++      margin-bottom: var(--space-sm);
++    }
++    .fee-vb td:nth-child(2) {
++      text-align: left;
++    }
++    .fee-vb td:nth-child(3) {
++      text-align: right;
++    }
++    .fee-vb .fee-label {
++      display: block;
++      font-family: var(--font-display);
++      font-weight: 600;
++      font-size: 0.6875rem;
++      text-transform: uppercase;
++      letter-spacing: 0.06em;
++      color: var(--text-muted);
++      margin-bottom: 2px;
++    }
++  }
+   .reg-wrap {
+     max-width: 1100px;
+     margin: 0 auto;
+-- 
+2.43.0
+

@@ -30,6 +30,7 @@ import {
 import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
 import { fetchBoerseOffers, planReconcile, type BoerseOfferRow } from './boerse.ts';
+import { isVmMarkedRow, isRowWanted, vmFactsPatch } from './gamesSync.ts';
 import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
 
 // Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
@@ -2770,8 +2771,6 @@ async function getEligibleGames(subject: RcAuthInfo | null = null) {
   // testing lives.
   const manual = await getManualGameIds();
 
-  if (coacheeNames.size === 0 && manual.size === 0) return [];
-
   const matchesCoachee = (season: number | null, value: unknown) => {
     const text = normalizeName(value);
     return text ? coacheeNames.forSeason(season).has(text) : false;
@@ -2807,6 +2806,10 @@ async function getEligibleGames(subject: RcAuthInfo | null = null) {
 
   const games = allGames.filter((game) => {
     if (manual.has(String(game.id))) return true;
+    // VolleyManager's own mark puts a game on the list by itself, the same
+    // grounds the sync imports it on — an RD-marked game with no coachee on
+    // the whistle is still a game somebody asked to have watched.
+    if (isVmMarkedRow(game)) return true;
     const season = seasonOfGame(game.match_date);
     return matchesCoachee(season, game.first_referee) || matchesCoachee(season, game.second_referee);
   });
@@ -3020,7 +3023,10 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
     .map((raw) => transformVmGame(raw as Record<string, unknown>))
     .filter((row) => asText(row.match_no));
 
-  const matchedRows = transformed.filter(hasCoacheeOnRow);
+  // A coachee on it, or a VolleyManager mark on it — see gamesSync.ts for why
+  // the mark is grounds of its own.
+  const wanted = (row: Record<string, unknown>) => isRowWanted(row, hasCoacheeOnRow(row));
+  const matchedRows = transformed.filter(wanted);
 
   let imported = 0;
   for (const row of matchedRows) {
@@ -3029,33 +3035,32 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
     imported += 1;
   }
 
-  // Games we ALREADY have keep their league text current even when this sync
-  // finds no coachee on them. Only coachee rows are ever persisted, so a game
-  // whose description changed after it was stored — the U23 rename being the
-  // case in point — would otherwise carry the old text for good, and the one
-  // that decides whether it is in a coachee's focus is exactly that text.
-  // Nothing is created here and no other field is touched: a row with no
-  // coachee on it is not this sync's to rewrite, its stale name is.
-  let renamed = 0;
+  // Games we ALREADY have keep their VolleyManager-owned facts current even
+  // when this sync has no reason to keep them: the league text, and the
+  // observation marks — which is how a game that came in on its RD mark alone
+  // loses its star again once the RD takes the mark off. vmFactsPatch says
+  // exactly what is touched; nothing is created here.
+  let refreshed = 0;
   for (const row of transformed) {
-    if (hasCoacheeOnRow(row)) continue;
+    if (wanted(row)) continue;
     const matchNo = asText(row.match_no);
-    const league = asText(row.league);
-    if (!matchNo || !league) continue;
+    if (!matchNo) continue;
     try {
       const existing = await withCollection(collectionCandidates.games, (games) =>
         games.getFirstListItem<AnyRecord>(`match_no = "${escapeFilterValue(matchNo)}"`));
-      if (!existing || asText(existing.league) === league) continue;
-      await withCollection(collectionCandidates.games, (games) => games.update(existing.id, { league }));
-      renamed += 1;
-    } catch { /* not stored, or the lookup failed — nothing to rename */ }
+      if (!existing) continue;
+      const patch = vmFactsPatch(existing, row);
+      if (Object.keys(patch).length === 0) continue;
+      await withCollection(collectionCandidates.games, (games) => games.update(existing.id, patch));
+      refreshed += 1;
+    } catch { /* not stored, or the lookup failed — nothing to refresh */ }
   }
 
-  publishLive({ type: 'games.synced', imported, renamed });
+  publishLive({ type: 'games.synced', imported, refreshed });
 
   return {
     imported,
-    renamed,
+    refreshed,
     totalFetched: items.length,
     from,
     to,
@@ -3560,6 +3565,9 @@ async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: u
     totalFetched: items.length,
     withMatch: matchedRows.length,
     withoutMatch: unmatchedRows.length,
+    // Rows the sync keeps on VolleyManager's mark alone — no coachee on them,
+    // so they are in `withoutMatch` above, which is about names.
+    markedWithoutCoachee: unmatchedRows.filter((row) => isVmMarkedRow(row)).length,
     coacheeCount: coacheeNames.size,
     matchedSample: matchedRows.slice(0, 20).map((row) => ({
       match_no: asText(row.match_no),
@@ -6099,7 +6107,7 @@ app.get('/api/president-notes', requireSurveyReader, async (_req: Request, res: 
 // VM wins — a game VM marked stays flagged and the admin star can only add to
 // the set, never take away.
 function isVmFlagged(game: { isRdGame?: boolean; isRsvGame?: boolean }): boolean {
-  return Boolean(game.isRdGame || game.isRsvGame);
+  return isVmMarkedRow({ is_rd_game: game.isRdGame, is_rsv_game: game.isRsvGame });
 }
 
 async function getStarredGameIds(): Promise<Set<string>> {

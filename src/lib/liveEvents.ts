@@ -13,7 +13,7 @@ import { clientLog } from './logger';
 
 export type LiveEvent =
   | { type: 'game.assignment'; gameId: string; matchNo: string; assignedRc: string }
-  | { type: 'games.synced'; imported: number; renamed: number }
+  | { type: 'games.synced'; imported: number; refreshed: number }
   | { type: 'settings.changed'; keys: string[] };
 
 type Listener = (event: LiveEvent) => void;

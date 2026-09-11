@@ -799,13 +799,23 @@ Einsatzliste push has nothing to fire for either. wiedisync's crons carry no
 timezone argument and its code comments state UTC.
 
 ⚠ **The residual risk, and why it is accepted.** wiedisync's Einsatzliste push
-(`*/5 * * * *` → `vm-push-nomination.mjs`) logs into this account and does **not**
-take their own `claimVmAccount`, so it can collide with anything — including
-their own `vm_sync`. Windows cannot fence an event-driven job. A cross-host lease
-was considered and rejected: everything KSCW is on hetzner, this is on
-lenovoserver, and coupling the two at runtime buys less than it costs. The
-mitigations instead are: pick dead hours (above), keep every role hold as short
-as possible, and never leave the account resting in a role we chose.
+(`*/5 * * * *` → `vm-push-nomination.mjs`) is event-driven: it fires ~60 min
+before any KSCW kickoff, so no window on either side can fence it. Since
+2026-09-12 it does take their own `claimVmAccount` (both the cron and the manual
+`POST /kscw/games/:id/nomination-push`), which removes the collision with *their*
+`vm_sync` and `svrz_sync` — but that claim is process-local to their Directus, so
+**it cannot see us and we cannot see it**.
+
+A cross-host lease was considered and rejected: everything KSCW is on hetzner,
+this is on lenovoserver, and coupling the two at runtime buys less than it costs.
+The mitigations instead are: pick dead hours (above), keep every role hold as
+short as possible, and never leave the account resting in a role we chose.
+
+In practice the exposure is small and bounded: their push only runs in the hour
+before a KSCW game, we hold `RefAdmin:Referee` for seconds per poll, and our
+hourly poller skips the 04:00–05:00 UTC block that belongs to them. If a börse
+poll ever reads plausible-but-wrong rows on a Saturday afternoon, this is the
+first thing to suspect.
 
 **If you add or move a VM job:** read this table first, then update **both**
 `svrz_rc/infrastructure.md` and `wiedisync/INFRA.md` in the same change. A window

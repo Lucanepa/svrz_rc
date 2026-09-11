@@ -27,11 +27,17 @@ export type BoerseSlotOffer = {
 /**
  * Everything viewer-scoped, resolved server-side before this is called.
  *
- * `coacheeSlots` is THIS coach's coachees, not every coachee in the season. The
- * distinction is the whole of R2: if the surviving referee is some other RC's
- * coachee, this coach has nothing left to observe and the honest answer is red,
- * not a mild amber. Keying it on the global index fires the rule backwards on
- * precisely the multi-coach games it was written for.
+ * `coacheeSlots` is every coachee on the game, from the season-wide index — and
+ * that is correct HERE, though it would not be in a system that assigned
+ * coachees to coaches. This one does not: `coachees.groups` holds labels like
+ * "Neu-Schiedsrichter 26/27", `referee_coaches` has no group field, and the only
+ * ownership that exists is `games.assigned_rc`. So both coachees on a game are
+ * equally this coach's to observe, because they hold the GAME. "Somebody else's
+ * coachee is still whistling, so I have nothing left" is a case this data model
+ * cannot produce.
+ *
+ * If coachee-to-coach assignment is ever added, R2 has to be revisited: the
+ * survivor test below would then need to count only the asking coach's own.
  */
 export type BoerseView = {
   offers: BoerseSlotOffer[];
@@ -73,24 +79,24 @@ export function boerseLevel(view: BoerseView): BoerseVerdict {
   if (live.length === 0) return { level: 'none', reason: 'no-open-offers', markedSlots: [] };
 
   const offered = new Set(markedSlots);
-  const mine = view.coacheeSlots.filter((s) => HEAD_SLOTS.includes(s));
-  const myCoacheesOffered = mine.filter((s) => s !== view.mySlot && offered.has(s));
+  const coachees = view.coacheeSlots.filter((s) => HEAD_SLOTS.includes(s));
+  const coacheesOffered = coachees.filter((s) => s !== view.mySlot && offered.has(s));
 
-  if (myCoacheesOffered.length > 0) {
+  if (coacheesOffered.length > 0) {
     // An RC game: I am in that hall whatever happens, so only the observation is
     // at risk, never the trip. Amber even when my own slot is offered too —
     // the lost observation outranks the confirmation of my own offer.
     if (view.mySlot) return { level: 'amber', reason: 'rc-game-coachee-offered', markedSlots };
 
-    const survivors = mine.filter((s) => s !== view.mySlot && !offered.has(s));
-    // R2: somebody of mine is still whistling, so the evening is still worth it.
+    const survivors = coachees.filter((s) => s !== view.mySlot && !offered.has(s));
+    // R2: a coachee is still whistling, so the evening is still worth it.
     if (survivors.length > 0) return { level: 'amber', reason: 'one-of-mine-remains', markedSlots };
     // R1 and R2b land here together, and deliberately: losing the only coachee
     // and losing both of them are the same outcome, and there is no colour
     // sharper than red to tell them apart with.
     return {
       level: 'red',
-      reason: myCoacheesOffered.length > 1 ? 'both-mine-offered' : 'only-coachee-offered',
+      reason: coacheesOffered.length > 1 ? 'both-coachees-offered' : 'only-coachee-offered',
       markedSlots,
     };
   }

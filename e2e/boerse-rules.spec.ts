@@ -45,16 +45,17 @@ test.describe('R2 — two of my coachees', () => {
   test('both offered → red, same as losing the only one', () => {
     const v = boerseLevel(view({ offers: [open('1'), open('2')], coacheeSlots: ['1', '2'] }));
     expect(v.level).toBe('red');
-    expect(v.reason).toBe('both-mine-offered');
+    expect(v.reason).toBe('both-coachees-offered');
     expect(v.markedSlots.sort()).toEqual(['1', '2']);
   });
 
-  // The case the rule is actually for, and the one a global coachee index gets
-  // backwards: the surviving referee is a coachee, but somebody else's. This
-  // coach has nothing left to observe.
-  test('the survivor belongs to another RC → red, not amber', () => {
-    const v = boerseLevel(view({ offers: [open('1')], coacheeSlots: ['1'] }));
-    expect(v.level).toBe('red');
+  // There is no coachee-to-coach assignment in this app — `coachees.groups` is a
+  // label, not an owner, and scoping is by `games.assigned_rc`. So a game with
+  // one coachee is one coachee, whoever ends up observing it.
+  test('a lone coachee is red whether or not anyone else is on the game', () => {
+    expect(boerseLevel(view({ offers: [open('1')], coacheeSlots: ['1'] })).level).toBe('red');
+    // a non-coachee alongside changes nothing
+    expect(boerseLevel(view({ offers: [open('1')], coacheeSlots: ['1'] })).reason).toBe('only-coachee-offered');
   });
 });
 

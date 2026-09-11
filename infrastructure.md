@@ -127,6 +127,27 @@ VM_SYNC_TIMEZONE="Europe/Zurich"
 VM_SYNC_MAX_RETRIES="10"
 VM_SYNC_RETRY_DELAY_MS="15000"
 
+# SR-Börse poller. Off with VM_BOERSE_ENABLED=0 — a kill switch that needs no
+# deploy if VolleyManager ever starts rate-limiting the shared login.
+VM_BOERSE_ENABLED="1"
+VM_BOERSE_POLL_MINUTES="60"
+# How far back to read. The whole board is ~3600 rows and one unbounded pass
+# outran the request deadline; an offer on a game already played cannot threaten
+# an observation anyway.
+VM_BOERSE_LOOKBACK_DAYS="2"
+# This endpoint is SLOW: a 200-row page with the convocation array took ~40 s.
+VM_BOERSE_TIMEOUT_MS="120000"
+# The role the poller claims. ⚠ An ATTRIBUTE VALUE id, not a role name — the
+# account holds two different `RefAdmin:Referee` attributes and the other one
+# answers the börse 200 with ZERO rows.
+VM_ROLE_ATTRIBUTE_BOERSE="b87653c7-…"
+
+# Every VolleyManager request gets a deadline; Node's fetch has none, and a
+# connection dropped mid-response never resolves and never rejects.
+VM_REQUEST_TIMEOUT_MS="45000"
+# How long one job may hold the shared-account lock before another may take over.
+VM_JOB_TIMEOUT_MS="900000"
+
 # Absolute base the calendar subscription links are built from. Unset => derived
 # from the request (X-Forwarded-Proto/Host through the tunnel), which is right
 # in this setup; set it only if a client ever receives a wrong host.
@@ -535,6 +556,38 @@ Automatic sync runs inside `server/index.ts`:
   login from another host and cannot be locked against
 - timezone default: `Europe/Zurich`
 - retries (cron path): configurable via env vars
+
+### SR-Börse poller
+
+Hourly, round the clock, **skipping 04:00 UTC** — that hour belongs to wiedisync.
+Hourly rather than "waking hours plus 8 h and 4 h before kick-off" because hourly
+satisfies both for every game without anyone maintaining a table of kick-offs.
+
+- `server/boerse.ts` reads VolleyManager; `runBoerseSync` in `server/index.ts`
+  writes `boerse_offers` and the `boerse_sync_status` setting.
+- `scheduleEvery`, **not** a cron — see the node-cron note below; anything
+  sub-daily would answer "1 January next year" across a DST switch.
+- Takes `tryVmLock`, so it SKIPS when another VM job holds the account rather
+  than queueing in front of the nightly import.
+- Claims `RefAdmin:Referee`, asserts the **attribute value id**, and restores
+  whatever role it found — the account is shared and cannot be locked across
+  hosts.
+- Also corrects `games.first_referee/second_referee` from the convocation array
+  on any game it sees. That is not a bonus: `runGamesSync` refreshes only
+  `league` on a game whose coachee has been swapped off, so those names were
+  stale for good. The first run corrected 91.
+
+```bash
+# status, including matchedGames / unmatchedOffers / joinVia / consecutiveFailures
+curl -s -b cookies http://127.0.0.1:8787/api/admin/boerse/status
+# run it by hand (~80 s)
+curl -s -b cookies -X POST http://127.0.0.1:8787/api/admin/boerse/sync
+```
+
+⚠ **`unmatchedOffers` is the day-one alarm** for whether VM's `game.number` is
+formatted like our `match_no`. It sits around 55, and every one of those is a
+game with no coachee — `runGamesSync` only persists games that carry one — so it
+is expected, not a fault. A jump means the join broke.
 
 **Not node-cron.** Measured against the installed 4.2.1: ask its matcher for the
 next run after the last one before a DST switch and it answers **1 January of

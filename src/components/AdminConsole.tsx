@@ -18,6 +18,7 @@ import {
   getLogMuteRules, createLogMuteRule, setLogMuteRuleEnabled, deleteLogMuteRule,
   loadRcGameNotes, downloadFeedbackArchive,
   syncGames, type GamesSyncStatus,
+  getBoerseStatus, runBoerseSync, type BoerseSyncStatus,
   type PresidentNote,
   type RcGameNote,
   type Coachee, type RefereeCoachPerson, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplateKind, type EmailTemplates, type ReminderPreview, type ManualGame,
@@ -3285,6 +3286,140 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
 // runs it now. Both belong on the same card — the readout used to be the only
 // thing here, so the one question it provokes ("then run it again") had no
 // answer anywhere in the console and meant waiting for tomorrow's cron.
+
+/**
+ * The SR-Börse poller, and the three numbers worth watching.
+ *
+ * `matchedGames` / `unmatchedOffers` answer the one question no amount of code
+ * reading could: whether VolleyManager's `game.number` is formatted like our
+ * `match_no`. `joinVia` says how the slot owner was identified — dominated by
+ * `position+sv` is healthy, a rise in `unstaffed` or `unresolved` is not.
+ *
+ * The staleness test reads **lastSuccessAt**, never lastAttemptAt. A poller
+ * failing every hour still stamps an attempt every hour, so a card built on that
+ * stays green through exactly the outage it exists to report.
+ */
+function BoerseCard({ lang }: { lang: Lang }) {
+  const [data, setData] = useState<BoerseSyncStatus | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [note, setNote] = useState('');
+  const [error, setError] = useState('');
+  const de = lang === 'DE';
+
+  const load = useCallback(() => {
+    getBoerseStatus()
+      .then((d) => setData(d && typeof d === 'object' && !Array.isArray(d) ? d : null))
+      .catch(() => setData(null))
+      .finally(() => setLoaded(true));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const run = async () => {
+    setRunning(true); setNote(''); setError('');
+    try {
+      const r = await runBoerseSync();
+      setNote(de
+        ? `${r?.offers ?? 0} Angebote (${r?.open ?? 0} offen), ${r?.matchedGames ?? 0} Spiele zugeordnet.`
+        : `${r?.offers ?? 0} offers (${r?.open ?? 0} open), ${r?.matchedGames ?? 0} games matched.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setRunning(false); load(); }
+  };
+
+  const st = data?.status ?? null;
+  const lastGood = st?.lastSuccessAt ? new Date(st.lastSuccessAt) : null;
+  // Hourly, so three missed runs is the point at which something is wrong.
+  const stale = !lastGood || Number.isNaN(lastGood.getTime())
+    || (Date.now() - lastGood.getTime()) / 3_600_000 > 3;
+  const bad = loaded && data?.enabled !== false && (stale || (st ? !st.ok : false));
+  const when = (iso?: string) => (iso ? dayTimeLabel(iso) || '–' : '–');
+
+  return (
+    <div className={cn('mb-4 rounded-lg border p-4', bad ? 'border-red-300 bg-red-50/50' : 'border-stone-200 bg-white')}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-stone-800">
+          {de ? 'SR-Börse' : 'SR-Börse'}
+          {data?.enabled === false && (
+            <span className="ml-2 rounded bg-stone-200 px-1.5 py-px text-[10px] font-bold uppercase text-stone-600">
+              {de ? 'Aus' : 'Off'}
+            </span>
+          )}
+        </h3>
+        <button
+          onClick={run}
+          disabled={running}
+          className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+        >
+          {running ? (de ? 'Läuft… (~80 s)' : 'Running… (~80 s)') : (de ? 'Jetzt prüfen' : 'Check now')}
+        </button>
+      </div>
+
+      {!loaded ? (
+        <p className="mt-2 text-xs text-stone-400">{de ? 'Wird geladen…' : 'Loading…'}</p>
+      ) : !st ? (
+        <p className="mt-2 text-xs text-stone-500">{de ? 'Noch kein Lauf aufgezeichnet.' : 'No run recorded yet.'}</p>
+      ) : (
+        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3">
+          <div>
+            <dt className="text-stone-400">{de ? 'Zuletzt erfolgreich' : 'Last success'}</dt>
+            <dd className={cn('font-semibold', stale ? 'text-red-700' : 'text-stone-700')}>{when(st.lastSuccessAt)}</dd>
+          </div>
+          <div>
+            <dt className="text-stone-400">{de ? 'Letzter Versuch' : 'Last attempt'}</dt>
+            <dd className="text-stone-600">{when(st.lastAttemptAt)}</dd>
+          </div>
+          <div>
+            <dt className="text-stone-400">{de ? 'Offene Angebote' : 'Open offers'}</dt>
+            <dd className="font-semibold text-stone-700">{st.open ?? 0} <span className="font-normal text-stone-400">/ {data?.liveOffers ?? 0}</span></dd>
+          </div>
+          <div>
+            <dt className="text-stone-400">{de ? 'Spiele zugeordnet' : 'Games matched'}</dt>
+            <dd className="text-stone-700">{st.matchedGames ?? 0}</dd>
+          </div>
+          <div>
+            {/* Expected to sit around 55: those are games with no coachee, which
+                the nightly import never stores. A JUMP means the join broke. */}
+            <dt className="text-stone-400">{de ? 'Ohne Spiel' : 'Unmatched'}</dt>
+            <dd className="text-stone-700">{st.unmatchedOffers ?? 0}</dd>
+          </div>
+          <div>
+            <dt className="text-stone-400">{de ? 'Crew korrigiert' : 'Crew corrected'}</dt>
+            <dd className="text-stone-700">{st.refereesCorrected ?? 0}</dd>
+          </div>
+          {st.joinVia && (
+            <div className="col-span-2 sm:col-span-3">
+              <dt className="text-stone-400">{de ? 'Zuordnung' : 'Resolved by'}</dt>
+              <dd className="font-mono text-[11px] text-stone-600">
+                {Object.entries(st.joinVia).map(([k, v]) => `${k}: ${v}`).join('  ·  ')}
+              </dd>
+            </div>
+          )}
+        </dl>
+      )}
+
+      {st?.blocked && (
+        <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+          {de ? 'Zurückgehalten: ' : 'Held back: '}{st.blocked}
+        </p>
+      )}
+      {st?.skipped && <p className="mt-2 text-[11px] text-stone-500">{de ? 'Übersprungen: ' : 'Skipped: '}{st.skipped}</p>}
+      {st?.error && (
+        <p className="mt-2 rounded border border-red-200 bg-red-50 px-2 py-1 text-[11px] text-red-800">
+          {st.error}{st.consecutiveFailures ? ` (${st.consecutiveFailures}×)` : ''}
+        </p>
+      )}
+      {data?.accountHeldBy && (
+        <p className="mt-2 text-[11px] text-stone-500">
+          {de ? 'VM-Konto belegt von ' : 'VM account held by '}<span className="font-semibold">{data.accountHeldBy.label}</span>
+        </p>
+      )}
+      {note && <p className="mt-2 text-xs text-green-700">{note}</p>}
+      {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
+    </div>
+  );
+}
+
 function GameImportCard({ lang }: { lang: Lang }) {
   const [sync, setSync] = useState<GamesSyncStatus | null>(null);
   // Whether the status has been ASKED for and answered — distinct from "there
@@ -3887,6 +4022,7 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
   return (
     <>
       <GameImportCard lang={lang} />
+      <BoerseCard lang={lang} />
       <Card>
         <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.defaultSeason}</h2>
         <p className="text-xs text-stone-400 mb-3">{t.defaultSeasonHint}</p>

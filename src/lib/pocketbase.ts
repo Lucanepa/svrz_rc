@@ -305,6 +305,34 @@ export async function getGamesSyncStatus(): Promise<GamesSyncStatus> {
   return r.json() as Promise<GamesSyncStatus>;
 }
 
+export type BoerseSyncStatus = {
+  status: {
+    lastAttemptAt: string; lastSuccessAt: string; ok: boolean;
+    offers?: number; open?: number; created?: number; updated?: number; withdrawn?: number;
+    matchedGames?: number; unmatchedOffers?: number; refereesCorrected?: number;
+    alerted?: number; joinVia?: Record<string, number>;
+    blocked?: string; skipped?: string; error?: string; consecutiveFailures?: number;
+  } | null;
+  liveOffers: number;
+  enabled: boolean;
+  pollMinutes: number;
+  accountHeldBy: { label: string; heldMs: number } | null;
+};
+
+export async function getBoerseStatus(): Promise<BoerseSyncStatus> {
+  const r = await fetch(apiUrl('/api/admin/boerse/status'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json() as Promise<BoerseSyncStatus>;
+}
+
+/** ~80 s against production: the exchange endpoint is slow with the convocation
+ *  array attached, and the poll reads two pages of it. */
+export async function runBoerseSync(): Promise<BoerseSyncStatus['status']> {
+  const r = await fetch(apiUrl('/api/admin/boerse/sync'), { method: 'POST', credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
   if (isDemoMode()) return demo.getAdminAuthStatus();
   const response = await fetch(apiUrl('/api/admin/auth/status'), { credentials: 'include' });

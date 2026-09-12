@@ -1051,6 +1051,21 @@ const VM_BATCH_SIZE = 200;
 // at 03:30 — and still an hour when nothing kicks off, so wiedisync's
 // every-5-minutes Einsatzliste push has nothing to fire for either.
 const VM_SYNC_CRON = process.env.VM_SYNC_CRON || '0 1 * * *';
+/**
+ * Extra games syncs during the day, as local hours.
+ *
+ * The nightly sync alone means the referee list for tonight's game is whatever
+ * VolleyManager said at 01:00. A swap entered at 10:00 — which is exactly when
+ * they get entered — was invisible until 01:00 the NEXT morning, several hours
+ * after the game it was about. The freshness line in the app said "Games 12 h
+ * ago" and was telling the truth; there was simply nothing newer to have.
+ *
+ * 12:00 and 16:00 are roughly 8 h and 4 h before a normal 18:00–20:30 kick-off,
+ * so the last read of the day lands after the working day that produces most
+ * changes. Both are far from wiedisync's 04:00/04:30 on the shared account.
+ * Set to an empty string to go back to nightly-only.
+ */
+const VM_SYNC_REFRESH_HOURS = String(process.env.VM_SYNC_REFRESH_HOURS ?? '12,16');
 const VM_SYNC_MAX_RETRIES = Number(process.env.VM_SYNC_MAX_RETRIES || 10);
 const VM_SYNC_RETRY_DELAY_MS = Number(process.env.VM_SYNC_RETRY_DELAY_MS || 15000);
 const RENDER_PROPERTIES = [
@@ -10199,6 +10214,27 @@ app.listen(port, () => {
     const result = await runGamesSyncWithRetry();
     console.log(`[scheduler] Synced ${result.imported}/${result.totalFetched} games (${result.from} -> ${result.to})`);
   });
+
+  // ...and again during the day, so tonight's crew is today's answer.
+  //
+  // One scheduleDaily per hour rather than one "0 12,16 * * *": that expression
+  // does not match DAILY_CRON_RE, so it would fall through to node-cron — which
+  // this file already documents as skipping DST switches. Two armed timers cost
+  // nothing and keep the DST-safe path.
+  for (const raw of VM_SYNC_REFRESH_HOURS.split(',').map((h) => h.trim()).filter(Boolean)) {
+    const hour = Number(raw);
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+      log.warn('scheduler.pattern', `games refresh: "${raw}" is not an hour — ignored`, { raw });
+      continue;
+    }
+    scheduleDaily(`0 ${hour} * * *`, `games refresh ${hour}:00`, async () => {
+      // Same job as the nightly one: it is idempotent, and a narrower "today
+      // only" variant would be a second code path to keep in step with the
+      // first for no gain — the sync already costs one VolleyManager session.
+      const result = await runGamesSyncWithRetry();
+      console.log(`[scheduler] Refreshed ${result.imported}/${result.totalFetched} games (${result.from} -> ${result.to})`);
+    });
+  }
 
   // The SR-Börse, hourly and round the clock.
   //

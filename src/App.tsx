@@ -6012,12 +6012,6 @@ export default function App() {
                           title={de ? 'Nächste Beobachtungen' : 'Next observations'}
                           count={homeData.nextGames.length || undefined}
                           // Absence of a warning is itself a claim, and this is
-                          // the only thing that qualifies it. Three VolleyManager
-                          // roles answer the börse 200 with the WRONG row count —
-                          // one of them zero — so a drifted role reads as "no
-                          // games at risk". Without a visible timestamp that lie
-                          // is indistinguishable from good news.
-                          hint={<SyncFreshness games={freshness?.games} boerse={freshness?.boerse} lang={formData.lang} />}
                         />
                         {/* Every one of them: this list is the answer to the
                             counter beside it, and a cut-off row is a game the
@@ -6812,13 +6806,6 @@ export default function App() {
                       </p>
                     ) : null;
                   })()}
-                  {/* The same two clocks as Home. This list is where the börse
-                      marks actually land — an unassigned game is where most
-                      offers sit — so it is the list that most needs to say how
-                      old its answer is. */}
-                  <p className="mb-2">
-                    <SyncFreshness games={freshness?.games} boerse={freshness?.boerse} lang={formData.lang} />
-                  </p>
                   <div className="border border-stone-200 rounded">
                     {eligibleGames.length === 0 && (booting || loadingGames) ? (
                       <ListLoading label={t.loading} first={booting} rows={8} />
@@ -8546,7 +8533,20 @@ export default function App() {
           onClose={() => { setManualUploadCoachee(null); setManualUploadNotice(''); }}
         />
       )}
-      <p className="mx-auto max-w-5xl mt-6 pb-2 text-center text-[10px] text-stone-400 no-print">
+      {/* How old the two VolleyManager reads are. This sat on the Home section
+          header and again above the games list, where it read as a property of
+          the list under it. It is not: it describes the whole app's data, it
+          never changes while you work, and it is the kind of thing you go
+          LOOKING for — which is the footer's job, next to the build stamp.
+          Still exact, and still a warning: each clock turns amber on its own
+          schedule (a day is normal for the nightly games sync, three hours is
+          already several missed runs for the hourly börse poll), because three
+          VolleyManager roles answer the börse 200 with the WRONG row count —
+          one of them zero — so a drifted role reads as "no games at risk". */}
+      <p className="mx-auto max-w-5xl mt-6 text-center no-print">
+        <SyncFreshness games={freshness?.games} boerse={freshness?.boerse} lang={formData.lang} />
+      </p>
+      <p className="mx-auto max-w-5xl mt-1 pb-2 text-center text-[10px] text-stone-400 no-print">
         v{APP_VERSION} · Build {BUILD_INFO}
         {/* The loading spinner's ball and whistle are Game Icons artwork, which
             is CC BY 3.0 — the licence requires the credit to be visible, so it

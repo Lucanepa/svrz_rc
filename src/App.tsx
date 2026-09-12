@@ -9041,31 +9041,44 @@ function ResultField({ label, value, onChange, teams = '', readOnly = false, onU
       <div className="flex flex-col gap-1.5">
         {/* Centred: the cell is four columns wide and the score is the one
             thing in it, so it sits in the middle of that space rather than
-            hugging the left edge with three quarters of the row empty. */}
+            hugging the left edge with three quarters of the row empty.
+            justify-center alone centred the ROW, which is not the same thing —
+            the two team names are rarely the same length ("VBC Rämi D1" against
+            "VBC Freies Gymnasium ZH"), so the colon, which is what the eye
+            actually centres on, sat well left of the middle and no longer lined
+            up with the sets below, which ARE centred on the cell. Giving both
+            names an equal, capped column puts the colon on the true centre. */}
         <div className="flex items-center justify-center gap-1">
           {/* The row is a quarter full and the boxes say nothing about which
               side is which, so the teams stand where their numbers do: home to
               the left of the colon, away to the right — for the sets below as
-              much as for the count above them. */}
-          {pair && <span className="text-[10px] font-semibold text-stone-500 truncate max-w-[10rem] text-right print:max-w-none">{pair[0]}</span>}
+              much as for the count above them.
+              `flex-1 basis-0` makes the two columns equal: they grow together
+              until the cap, and below it they shrink together, so the pair stays
+              symmetric at every width rather than only on a wide screen. */}
+          {pair && <span className="min-w-0 flex-1 basis-0 max-w-[10rem] truncate text-right text-[10px] font-semibold text-stone-500 print:max-w-none">{pair[0]}</span>}
           {/* Computed from the sets below, never typed. */}
           <output className={sbox} aria-label={lang === 'DE' ? 'Sätze Heim' : 'Home sets'}>{home || '–'}</output>
           <span className="text-stone-400 font-bold">:</span>
           <output className={sbox} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'}>{away || '–'}</output>
-          {pair && <span className="text-[10px] font-semibold text-stone-500 truncate max-w-[10rem] print:max-w-none">{pair[1]}</span>}
+          {pair && <span className="min-w-0 flex-1 basis-0 max-w-[10rem] truncate text-[10px] font-semibold text-stone-500 print:max-w-none">{pair[1]}</span>}
           {/* A score already on the game may have come from the coach who filed
               the other referee — so it can be wrong, and locking it would leave
-              nobody able to fix it. */}
+              nobody able to fix it.
+              Zero-width and overflowing, so the one row that offers this button
+              is not the one row whose score sits off centre. */}
           {readOnly && onUnlock && (
-            <button
-              type="button"
-              onClick={onUnlock}
-              title={lang === 'DE' ? 'Ergebnis korrigieren' : 'Correct the result'}
-              aria-label={lang === 'DE' ? 'Ergebnis korrigieren' : 'Correct the result'}
-              className="no-print ml-1 p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
-            >
-              <Pencil size={12} />
-            </button>
+            <span className="no-print relative w-0 self-center">
+              <button
+                type="button"
+                onClick={onUnlock}
+                title={lang === 'DE' ? 'Ergebnis korrigieren' : 'Correct the result'}
+                aria-label={lang === 'DE' ? 'Ergebnis korrigieren' : 'Correct the result'}
+                className="absolute left-1 top-1/2 -translate-y-1/2 p-1 rounded text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
+              >
+                <Pencil size={12} />
+              </button>
+            </span>
           )}
         </div>
         {/* On its own line, so a long message cannot shove the score off centre. */}

@@ -83,6 +83,18 @@ test('the old GitHub Pages subpath still redirects, and still comes first', () =
   expect(dynamic[0]).toEqual(['/svrz_rc/*', '/:splat', '301']);
 });
 
+/**
+ * Measured on production 12.09.2026: Cloudflare Pages normalises /index.html to
+ * / with a 308, and a rewrite whose destination is /index.html inherits it —
+ * the exact routes became redirects and the id-carrying ones 404'd outright.
+ * The destination has to be "/".
+ */
+test('no rule rewrites to /index.html', () => {
+  for (const [from, to] of RULES) {
+    expect(to, `${from} rewrites to ${to}, which Pages 308s to "/"`).not.toBe('/index.html');
+  }
+});
+
 test('every rule is a 200 rewrite or a 301, which is all Pages supports here', () => {
   for (const rule of RULES) {
     expect(rule.length, `malformed rule: ${rule.join(' ')}`).toBe(3);

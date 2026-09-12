@@ -2,7 +2,7 @@
 #
 # ── Why every route is written out by hand ──────────────────────────────────
 #
-# NEVER add `/*  /index.html  200`.
+# NEVER add `/*  /  200`.
 #
 # Cloudflare's own documentation says it plainly: "Redirects are always
 # followed, regardless of whether or not an asset matches the incoming
@@ -21,22 +21,32 @@
 # public/404.html is the other half of this: everything NOT named below gets a
 # real 404 rather than a 200 full of HTML.
 #
+# ── Why the destination is "/" and not "/index.html" ────────────────────────
+#
+# Measured on production, 12.09.2026. Cloudflare Pages normalises /index.html
+# to / with a 308, and a rewrite whose destination is /index.html inherits that:
+#   /games          -> 308, location: /      (static rule, normalised away)
+#   /coachees/abc   -> 404                   (dynamic rule, did not resolve)
+# so the 200 rewrite silently became a redirect for the exact routes, and
+# nothing at all for the ones carrying an id. Rewriting to "/" serves the same
+# shell without going through that normalisation.
+#
 # There is deliberately no /sign or /survey rule. Those two keep their token in
 # the URL FRAGMENT, which is never sent to a server, so they are always served
 # from "/" and no token-shaped path can reach an edge log even by accident.
 # See src/lib/routes.ts → "Two transports, on purpose".
 
 # ── exact app routes ────────────────────────────────────────────────────────
-/home            /index.html  200
-/coachees        /index.html  200
-/games           /index.html  200
-/calendar        /index.html  200
-/form            /index.html  200
-/feedbacks       /index.html  200
-/coachee-games   /index.html  200
-/admin           /index.html  200
-/guide           /index.html  200
-/demo            /index.html  200
+/home            /            200
+/coachees        /            200
+/games           /            200
+/calendar        /            200
+/form            /            200
+/feedbacks       /            200
+/coachee-games   /            200
+/admin           /            200
+/guide           /            200
+/demo            /            200
 
 # ── dynamic ─────────────────────────────────────────────────────────────────
 # Stays first in this block: first match wins, and this one is more specific.
@@ -45,9 +55,9 @@
 # The #hash (survey and sign tokens live there) is preserved by the browser.
 /svrz_rc/*       /:splat      301
 
-/coachees/*      /index.html  200
-/games/*         /index.html  200
-/form/*          /index.html  200
-/feedbacks/*     /index.html  200
-/admin/*         /index.html  200
-/guide/*         /index.html  200
+/coachees/*      /            200
+/games/*         /            200
+/form/*          /            200
+/feedbacks/*     /            200
+/admin/*         /            200
+/guide/*         /            200

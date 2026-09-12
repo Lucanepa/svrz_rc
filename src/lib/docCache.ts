@@ -8,8 +8,9 @@
 // It is deliberately NOT the service worker's precache: 13 MB of rulebooks in
 // the install step would make every deploy a 13 MB download before the app is
 // usable, for the many coaches who only ever file observations. What is cheap
-// (the SVRZ letters, about 1.3 MB together) is fetched once the app is idle;
-// what is not (the two rulebooks, 12.5 MB) waits for someone to ask.
+// (the SVRZ letters, sheets and regulations, about 3 MB together) is fetched
+// once the app is idle; what is not (the two rulebooks, the Swiss Volley
+// regulation and the conference slides, 16 MB) waits for someone to ask.
 
 import { apiUrl } from './pocketbase';
 import { isDemoMode } from './demo';
@@ -35,7 +36,7 @@ export function docSourceUrl(doc: UsefulDoc): string {
 
 /** The link the reader offers as "open the original", and the card's fallback. */
 export function docLinkUrl(doc: UsefulDoc): string {
-  return /^https?:/i.test(doc.href)
+  return /^(https?|mailto):/i.test(doc.href)
     ? doc.href
     : `${import.meta.env.BASE_URL}${doc.href}`;
 }

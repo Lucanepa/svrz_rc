@@ -84,3 +84,31 @@ test('a document is downloaded once, however often it is opened', async ({ page 
   await expect(page.getByRole('dialog').locator('canvas').first()).toBeVisible({ timeout: 20_000 });
   expect(asked).toHaveLength(beforeSecondRead);
 });
+
+// September 2026: the RSK chair offered the sheets svrz.ch lists for referees,
+// the federation's regulations and the commission's addresses for the app.
+// The PDFs join the proxied set (svrz.ch sends no CORS header either); the
+// addresses are cards of their own that hand over to the mail app.
+
+test('an SVRZ regulation reads in the app, through the proxy', async ({ page }) => {
+  const asked: string[] = [];
+  page.on('request', (r) => { if (r.url().includes('/api/docs/')) asked.push(r.url()); });
+
+  await page.goto('/#/coachees');
+  await page.getByRole('button', { name: /Reglement der Unparteiischen|Regulation for officials/ }).click();
+
+  await expect(page.getByRole('dialog').locator('canvas').first()).toBeVisible({ timeout: 20_000 });
+  expect(asked.some((url) => url.endsWith('/api/docs/unparteiische'))).toBe(true);
+  expect(page.url()).toContain('#/coachees');
+});
+
+test('a contact is a mailto link that stays in this tab', async ({ page }) => {
+  await page.goto('/#/coachees');
+  const card = page.getByRole('link', { name: /Vorsitz RSK|RSK chair/ });
+  await expect(card).toBeVisible();
+  // The address, as written — not the app's base prefixed to it, and not in
+  // small caps: it is there to be read out to a coachee.
+  await expect(card).toHaveAttribute('href', 'mailto:rsk@svrz.ch');
+  await expect(card).not.toHaveAttribute('target', '_blank');
+  await expect(card).toContainText('rsk@svrz.ch');
+});

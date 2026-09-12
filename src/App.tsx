@@ -7066,8 +7066,12 @@ export default function App() {
                   {USEFUL_DOCS.filter((doc) => doc.group === group).map((doc) => {
                     const text = doc[formData.lang];
                     const busy = doc.kind === 'form' && downloadingEmptyForm;
-                    const Icon = doc.kind === 'video' ? Video : doc.kind === 'web' ? ExternalLink : Download;
+                    const Icon = doc.kind === 'video' ? Video : doc.kind === 'web' ? ExternalLink : doc.kind === 'mail' ? Mail : Download;
                     const cls = 'group flex items-center sm:items-start gap-2.5 sm:gap-3 text-left p-2.5 sm:p-3 rounded-xl border border-stone-200 hover:border-red-300 hover:bg-red-50/40 transition-colors';
+                    // A contact's badge is its address, which small caps would
+                    // turn into RSK@SVRZ.CH — kept as written, so it can be
+                    // read out to a coachee.
+                    const badgeCls = `text-[10px] font-semibold text-stone-400 ${doc.kind === 'mail' ? 'normal-case tracking-normal' : 'uppercase tracking-wide'}`;
                     const body = (
                       <>
                         <span className="shrink-0 grid place-items-center h-7 w-7 sm:h-8 sm:w-8 rounded-lg bg-red-50 text-red-700 group-hover:bg-red-100 transition-colors">
@@ -7081,12 +7085,14 @@ export default function App() {
                               sm up, where the grid has room for it beside the
                               next card rather than below it. */}
                           <span className="hidden sm:block text-xs text-stone-500 mt-0.5">{text.note}</span>
-                          <span className="hidden sm:block text-[10px] font-semibold uppercase tracking-wide text-stone-400 mt-1">{doc.badge}</span>
+                          <span className={`${doc.kind === 'mail' ? 'block mt-0.5 sm:mt-1' : 'hidden sm:block mt-1'} ${badgeCls}`}>{doc.badge}</span>
                         </span>
                         {/* The badge follows the title to the end of the row
                             instead — it is what says that the rulebook is a
-                            7 MB download, which matters most on gym wifi. */}
-                        <span className="sm:hidden shrink-0 text-[10px] font-semibold uppercase tracking-wide text-stone-400">{doc.badge}</span>
+                            7 MB download, which matters most on gym wifi. An
+                            address is too long for that and goes under the
+                            title, above. */}
+                        {doc.kind !== 'mail' && <span className={`sm:hidden shrink-0 ${badgeCls}`}>{doc.badge}</span>}
                       </>
                     );
                     // Anything we can fetch ourselves is read in the app —
@@ -7110,11 +7116,14 @@ export default function App() {
                         </button>
                       );
                     }
-                    const href = /^https?:/i.test(doc.href)
+                    const href = /^(https?|mailto):/i.test(doc.href)
                       ? doc.href
                       : `${import.meta.env.BASE_URL}${doc.href.replace('{lang}', formData.lang === 'DE' ? 'de' : 'en')}`;
+                    // A mailto: opens the mail app; given a new tab as well it
+                    // leaves a blank one behind in some browsers.
+                    const newTab = doc.kind === 'mail' ? {} : { target: '_blank', rel: 'noopener noreferrer' };
                     return (
-                      <a key={doc.id} href={href} target="_blank" rel="noopener noreferrer" className={cls}>
+                      <a key={doc.id} href={href} {...newTab} className={cls}>
                         {body}
                       </a>
                     );

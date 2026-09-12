@@ -31,6 +31,7 @@ import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
 import { fetchBoerseOffers, planReconcile, type BoerseOfferRow } from './boerse.ts';
 import { isVmMarkedRow, isRowWanted, vmFactsPatch } from './gamesSync.ts';
+import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
 import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
 
 // Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
@@ -3783,26 +3784,56 @@ app.get('/api/health', async (_req: Request, res: ExpressResponse) => {
 });
 
 /**
- * The rulebooks, fetched through us so the app can actually read them.
+ * The rulebooks and the SVRZ sheets, fetched through us so the app can
+ * actually read them.
  *
- * volleyball.ch and fivb.com serve their PDFs without an Access-Control-Allow-
- * Origin header, so a browser on svrz-rc.openvolley.app may link to them but
- * may not read the bytes — and the in-app reader needs the bytes. Copying the
- * files into the frontend build would fix that and go stale the day the SSK
- * publishes a correction, so we stay a proxy: the upstream URL remains the
- * source of truth, and it is revalidated with its own ETag.
+ * volleyball.ch, fivb.com and svrz.ch serve their PDFs without an Access-
+ * Control-Allow-Origin header, so a browser on svrz-rc.openvolley.app may link
+ * to them but may not read the bytes — and the in-app reader needs the bytes.
+ * Copying the files into the frontend build would fix that and go stale the
+ * day the SSK or the RSK publishes a correction, so we stay a proxy: the
+ * upstream URL remains the source of truth, and it is revalidated with its
+ * own ETag.
  *
  * The ids are a closed list on purpose. A proxy that forwards whatever URL it
- * is handed is an SSRF hole; this one can only ever fetch these four files.
+ * is handed is an SSRF hole; this one can only ever fetch these files. Each id
+ * is named by an entry in src/lib/usefulDocs.ts — add both, or neither.
  */
 const PROXIED_DOCS: Record<string, string> = {
   'rules-de': 'https://www.volleyball.ch/_Resources/Persistent/7/1/1/7/71171e2ba8b1b649012440750a2fc2338d4a2b7d/Offizielle_Volleyball_Regeln_2025-2028_d%20-%20final%20inkl%20Deckblatt.pdf',
   'rules-en': 'https://www.fivb.com/wp-content/uploads/2025/01/FIVB-Volleyball_Rules2025_2028-EN-v05.pdf',
   'rule-changes': 'https://www.volleyball.ch/_Resources/Persistent/c/b/3/f/cb3f0be3e71e90986627eb3a02716135646b33e3/26.08.24_%C3%84nderungen-Regeln-2027-d.pdf',
+  'volleyballreglement': 'https://www.volleyball.ch/_Resources/Persistent/0/e/9/f/0e9f8dcf5ae32a59a5fc7f9f3f3f3ea203d7ee32/Volleyballreglement_26-27_d.pdf',
+  // svrz.ch — what the RSK lists under "Informationen für SR" and "Reglemente".
   'niveau': 'https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf',
+  'kurz-sr': 'https://www.svrz.ch/_Resources/Persistent/e/f/b/0/efb0e24dea47d434e0d557e821dfbcd73d2b9c8d/Kurzzusammenfassung%20f%C3%BCr%20SR_2026.pdf',
+  'kurz-2sr': 'https://www.svrz.ch/_Resources/Persistent/9/6/4/7/96475bd5848d7f18ce9c83b68941fd4e97e842b4/Kurzzusammenfassung%20f%C3%BCr%202.SR_2026.pdf',
+  'vor-nachbereitung': 'https://www.svrz.ch/_Resources/Persistent/f/9/0/a/f90ad1f5031f103be411e34fff4aea13d5509cbf/Spiel%20Vor-%20und%20Nachbereitung_2026.pdf',
+  'sanktionen': 'https://www.svrz.ch/_Resources/Persistent/9/7/9/8/9798845fef96808713a25ab2c6aece8789dd921f/Sanktionen.pdf',
+  'unparteiische': 'https://www.svrz.ch/_Resources/Persistent/6/c/9/b/6c9b985a09ab5edafe4a06219e4cd737fe5ddde1/SVRZ_Reglement%20der%20Unparteiischen.pdf',
+  'row': 'https://www.svrz.ch/_Resources/Persistent/5/e/3/a/5e3ac6df82efc003eca8bd9958f7ebda624eb1e0/SVRZ_Reglement%20f%C3%BCr%20offizielle%20Wettk%C3%A4mpfe.pdf',
+  'zueri-cup': 'https://www.svrz.ch/_Resources/Persistent/0/6/1/a/061a1b2e822545a409d76335cb0bfb9434da8046/SVRZ%20Cup%20Reglement_25-26.pdf',
+  'gbo': 'https://www.svrz.ch/_Resources/Persistent/0/e/5/0/0e50e7cdd5c61ab180d07346e4052539d8573dfb/SVRZ_Geb%C3%BChrenordnung.pdf',
+  'sr-datenerfassung': 'https://www.svrz.ch/_Resources/Persistent/7/c/3/0/7c3059181062b783094d64d6bfe60ed30245e101/SR-Datenerfassung_2026.pdf',
+  'sr-konferenz-2026': 'https://www.svrz.ch/_Resources/Persistent/7/a/7/4/7a74c810f484d119adecec6bbf631a48304b0745/20260904-Pr%C3%A4sentation-SRV.pdf',
 };
 
-type CachedDoc = { body: Buffer; etag: string; checkedAt: number };
+/**
+ * What we put in front of a document before serving it. The GBO gets the
+ * one-page summary a referee actually needs; everything else is passed
+ * through untouched. A preface that fails is logged and skipped — the coach
+ * gets the plain document rather than an error.
+ */
+const DOC_PREFACES: Record<string, { version: number; apply: (upstream: Uint8Array) => Promise<Uint8Array> }> = {
+  gbo: { version: GBO_SUMMARY_VERSION, apply: withGboSummary },
+};
+
+/**
+ * `upstreamEtag` is what we revalidate with; `etag` is what the browser sees.
+ * They differ for a prefaced document, whose bytes are ours — its ETag carries
+ * the preface version so an edited summary supersedes the copies out there.
+ */
+type CachedDoc = { body: Buffer; etag: string; upstreamEtag: string; checkedAt: number };
 const docCache = new Map<string, CachedDoc>();
 /** Long enough that a gym full of coaches costs volleyball.ch one request. */
 const DOC_REVALIDATE_MS = 6 * 60 * 60 * 1000;
@@ -3814,7 +3845,7 @@ async function loadProxiedDoc(id: string): Promise<CachedDoc> {
 
   try {
     const upstream = await fetch(url, {
-      headers: cached ? { 'If-None-Match': cached.etag } : {},
+      headers: cached ? { 'If-None-Match': cached.upstreamEtag } : {},
       signal: AbortSignal.timeout(30_000),
     });
     if (upstream.status === 304 && cached) {
@@ -3822,16 +3853,25 @@ async function loadProxiedDoc(id: string): Promise<CachedDoc> {
       return cached;
     }
     if (!upstream.ok) throw new Error(`upstream ${upstream.status}`);
-    const body = Buffer.from(await upstream.arrayBuffer());
+    let body = Buffer.from(await upstream.arrayBuffer());
     // Not a PDF means the upstream replaced the file with a redirect or an
     // error page; serving that as application/pdf would break the reader with
     // no clue why.
     if (body.subarray(0, 5).toString('latin1') !== '%PDF-') throw new Error('upstream did not return a PDF');
-    const fresh: CachedDoc = {
-      body,
-      etag: upstream.headers.get('etag') || `W/"${id}-${body.byteLength}"`,
-      checkedAt: Date.now(),
-    };
+    const upstreamEtag = upstream.headers.get('etag') || `W/"${id}-${body.byteLength}"`;
+    let etag = upstreamEtag;
+    const preface = DOC_PREFACES[id];
+    if (preface) {
+      try {
+        body = Buffer.from(await preface.apply(body));
+        etag = `W/"${upstreamEtag.replace(/^W\//, '').replace(/"/g, '')}-p${preface.version}"`;
+      } catch (error) {
+        log.warn('docs.preface_failed', 'Serving a proxied document without its summary page', {
+          id, error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    const fresh: CachedDoc = { body, etag, upstreamEtag, checkedAt: Date.now() };
     docCache.set(id, fresh);
     return fresh;
   } catch (error) {

@@ -1,6 +1,53 @@
 # Cloudflare Pages redirects. Copied verbatim into dist/ by Vite.
+#
+# ── Why every route is written out by hand ──────────────────────────────────
+#
+# NEVER add `/*  /index.html  200`.
+#
+# Cloudflare's own documentation says it plainly: "Redirects are always
+# followed, regardless of whether or not an asset matches the incoming
+# request." A _redirects rule is evaluated BEFORE Pages looks for a file, so a
+# catch-all does not merely cover unmatched paths — it shadows every real file
+# on the site, including /assets/index-<hash>.js. And _headers marks /assets/*
+# immutable for a year, so the edge would cache the HTML shell under a script
+# URL and clients would get a blank page until somebody purged the cache. That
+# is the 12.08.2026 outage exactly (infrastructure.md → "Deploy trap"), and a
+# redeploy does not fix it.
+#
+# The obvious guard is unavailable: _redirects supports no non-3xx/200 status,
+# so a `/assets/* … 404` rule cannot be placed in front of a catch-all.
+# Enumeration is not a style preference, it is the only shape that works.
+#
+# public/404.html is the other half of this: everything NOT named below gets a
+# real 404 rather than a 200 full of HTML.
+#
+# There is deliberately no /sign or /survey rule. Those two keep their token in
+# the URL FRAGMENT, which is never sent to a server, so they are always served
+# from "/" and no token-shaped path can reach an edge log even by accident.
+# See src/lib/routes.ts → "Two transports, on purpose".
 
+# ── exact app routes ────────────────────────────────────────────────────────
+/home            /index.html  200
+/coachees        /index.html  200
+/games           /index.html  200
+/calendar        /index.html  200
+/form            /index.html  200
+/feedbacks       /index.html  200
+/coachee-games   /index.html  200
+/admin           /index.html  200
+/guide           /index.html  200
+/demo            /index.html  200
+
+# ── dynamic ─────────────────────────────────────────────────────────────────
+# Stays first in this block: first match wins, and this one is more specific.
 # The app used to live under the /svrz_rc/ subpath on GitHub Pages. Anyone who
 # pastes an old link with the new host keeps working instead of hitting a 404.
 # The #hash (survey and sign tokens live there) is preserved by the browser.
-/svrz_rc/*  /:splat  301
+/svrz_rc/*       /:splat      301
+
+/coachees/*      /index.html  200
+/games/*         /index.html  200
+/form/*          /index.html  200
+/feedbacks/*     /index.html  200
+/admin/*         /index.html  200
+/guide/*         /index.html  200

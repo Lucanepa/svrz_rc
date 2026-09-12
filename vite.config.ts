@@ -93,10 +93,32 @@ export default defineConfig(() => {
           // document instead (the CacheFirst rule below), and "Alle offline
           // speichern" pulls them in with the documents.
           globIgnores: ['**/pdf.worker*.mjs', '**/PdfReader-*.js'],
-          // Anything under docs/ is a real file, not an app route. Without the
-          // denylist the navigation fallback answered a click on the SR-Technik
-          // guide with the app shell — an HTML page where a PDF was expected.
-          navigateFallbackDenylist: [/^\/?docs\//, /\/docs\//, /\.pdf$/i],
+          // Routes live in the path now, so the navigation fallback is what
+          // serves /games or /form/<id>/1sr on a cold offline load. It is
+          // written out rather than left implicit because it is load-bearing.
+          navigateFallback: 'index.html',
+          // A DENYLIST and no allowlist, deliberately.
+          //
+          // The tidy-looking alternative — allowlisting the app's own route
+          // prefixes — is a trap. Workbox's NavigationRoute tests its patterns
+          // against `url.pathname + url.search` (workbox-routing/NavigationRoute.js),
+          // not the pathname, so `/^\/games(\/|$)/` does NOT match
+          // "/games?view=calendar": after "games" comes "?", which is neither a
+          // slash nor the end. The calendar view would silently lose its
+          // offline shell — and offline is a shipped feature here, for coaches
+          // standing in gyms with no signal.
+          //
+          // So: fall back for every navigation, and name only the things that
+          // are real files rather than app routes. Anything under docs/ is one
+          // — without this the fallback answered a click on the SR-Technik
+          // guide with the app shell, an HTML page where a PDF was expected.
+          navigateFallbackDenylist: [
+            /^\/?docs\//, /\/docs\//, /\.pdf$/i,
+            // Belt and braces: these are never navigations, but a fallback
+            // answering an asset request with HTML is the failure mode that
+            // blanked the app in August, and it costs one line to rule out.
+            /^\/(assets|img)\//,
+          ],
           // SPA shell precache already handles offline app loading. These runtime
           // rules make the DATA work offline too:
           runtimeCaching: [

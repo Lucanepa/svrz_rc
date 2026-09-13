@@ -451,6 +451,11 @@ export function installLogging(options: { apiBase?: string; ship?: boolean } = {
     installLifecycleLogging();
     clientLog.info('app.start', 'app loaded', {
       url: scrubTokens(location.href),
+      // Which build this session is running. On 13.09.2026 an opaque
+      // "Script error." was mailed as an error four days after the rule that
+      // demotes it had shipped — a PWA still on its precached build — and the
+      // log had no way to say so.
+      build: __BUILD_SHA__,
       ua: navigator.userAgent,
       lang: navigator.language,
       online: navigator.onLine,

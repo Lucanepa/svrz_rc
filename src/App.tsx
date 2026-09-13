@@ -4568,12 +4568,19 @@ export default function App() {
   /** The same rule asked of one game in the Games tab, where the two referees
    *  are weighed together: true when the focus filter would drop it. Lifted out
    *  of `filteredGames` so the switch that turns the rule off can ask the same
-   *  question the list does. */
-  const outOfNiveauFocus = useCallback((g: { league?: string; firstReferee?: string; secondReferee?: string }) => {
+   *  question the list does.
+   *
+   *  `about` narrows the question to those referees (folded names): with the
+   *  coachee filter set to one person, "their games" must mean games in THEIR
+   *  focus. Without it, an N2-2 candidate's 3. Liga evening beside a junior
+   *  2. SR — in focus for the junior, nothing for the candidate — came back as
+   *  one of the candidate's games, wearing his chip. */
+  const outOfNiveauFocus = useCallback((g: { league?: string; firstReferee?: string; secondReferee?: string }, about?: Set<string>) => {
     const refRoles: Array<{ name: string; role: TargetRole }> = [];
     if (g.firstReferee) refRoles.push({ name: g.firstReferee, role: '1SR' });
     if (g.secondReferee) refRoles.push({ name: g.secondReferee, role: '2SR' });
     const coacheeRefs = refRoles
+      .filter((r) => !about || about.has(normName(r.name)))
       .map((r) => ({ ...r, c: coacheeByName.get(normName(r.name)) }))
       .filter((r): r is { name: string; role: TargetRole; c: Coachee } => Boolean(r.c));
     if (coacheeRefs.length === 0) return false;
@@ -4719,6 +4726,7 @@ export default function App() {
     // of their games need to stay on the open list. Once the feedback is filed,
     // coverage lifts and needsObservation (latest "further visit" answer) governs.
     const coveredRefs = plannedObsByCoachee;
+    const pickedCoachees = gameFilterCoachees.length > 0 ? new Set(gameFilterCoachees.map(normName)) : undefined;
     return eligibleGames.filter((g) => {
       if (q && !(
         normName(g.matchNo || '').includes(q) ||
@@ -4811,9 +4819,10 @@ export default function App() {
         }
       }
       // Niveau-target pruning: keep the game only if it matches the target of at least
-      // one of its coachee referees (at their level + role). Coachees with no active
-      // target never prune. The "show all levels" toggle bypasses this entirely.
-      if (!showAllLevels && outOfNiveauFocus(g)) return false;
+      // one of its coachee referees (at their level + role) — of the PICKED ones,
+      // when the coachee filter names somebody. Coachees with no active target
+      // never prune. The "show all levels" toggle bypasses this entirely.
+      if (!showAllLevels && outOfNiveauFocus(g, pickedCoachees)) return false;
       return true;
     })
       // The API hands games back newest-first (`sort: '-match_date'`), which put
@@ -4905,6 +4914,13 @@ export default function App() {
       const isCoachee = coacheeNames.has(normName(name));
       const level = isCoachee ? coacheeLevelOf(name) : undefined;
       const group = isCoachee ? coacheeGroupOf(name) : undefined;
+      // A game can be on the list for the OTHER coachee on the whistle, or
+      // because the focus is switched off. Either way this chip must not read
+      // as "come and watch this one here": an N2-2 up for promotion on a
+      // 3. Liga evening is a referee helping out, not a visit.
+      const outOfFocus = isCoachee && !inNiveauFocus(
+        coacheeByName.get(normName(name)), game.league || '', [role === t.role2Short ? '2SR' : '1SR'],
+      );
       // The Games tab is where an UNASSIGNED game lives, and an unassigned game
       // is where most börse offers sit — nobody has taken it yet. So this is the
       // list where the mark matters most, and it was the last one without it.
@@ -4926,8 +4942,16 @@ export default function App() {
               <MarkRow>
                 {offered && <BoerseChip lang={formData.lang} />}
                 {isCoachee && (
-                  <span className="rounded bg-amber-200/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide">
+                  <span
+                    className={cn('rounded bg-amber-200/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide', outOfFocus && 'opacity-60')}
+                    title={outOfFocus
+                      ? (formData.lang === 'DE'
+                        ? `Ausserhalb des Fokus von ${name}${level ? ` (${level})` : ''} — das Spiel steht hier wegen des anderen Coachees oder weil „Alle Spiele" gewählt ist.`
+                        : `Outside ${name}'s focus${level ? ` (${level})` : ''} — the game is listed for the other coachee, or because "All games" is on.`)
+                      : undefined}
+                  >
                     Coachee{level ? ` · ${level}` : ''}{group ? ` · ${group}` : ''}
+                    {outOfFocus && (formData.lang === 'DE' ? ' · nicht im Fokus' : ' · out of focus')}
                   </span>
                 )}
               </MarkRow>

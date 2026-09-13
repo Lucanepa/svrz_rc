@@ -9,7 +9,7 @@ import {
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
   getCredentials, setCredential, requestCredentialCode, type CredentialSlotInfo,
   getAdminShortcutRcs, setAdminShortcutRcs,
-  loadRcOverview, listRefereeCoachPeople, assignRcToGame, setGameStarred,
+  loadRcOverview, loadrcCoachSummary, listRefereeCoachPeople, assignRcToGame, setGameStarred,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
   listReferees, importReferees, type RefereeRoster, type RosterReferee, type RefereeImportRow,
@@ -42,10 +42,10 @@ import { subscribeLive } from '../lib/liveEvents';
 import { groupLabel } from '../lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName, coacheeIndex } from '../lib/coacheeName';
 import { confirmDialog, toast } from './ui';
-import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
+import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame, type rcCoachSummary, type rcCoachSummaryGame } from '../types';
 import LevelText from './LevelText';
 import { CoacheeChip, GroupChip } from './CoacheeChips';
-import { GameList, GameRow, MetaChip } from './GameRow';
+import { GameList, GameRow, MetaChip, SectionHead, type RowTone } from './GameRow';
 import { Skeleton, SkeletonRows } from './Skeleton';
 import { dayLabel, dayTimeLabel, clockLabel, todayKey } from '../lib/appTime';
 import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
@@ -247,6 +247,11 @@ const STR = {
     ovHint: 'Saisonstand aller Referee Coaches. Die RC selbst sehen in der App nur ihre eigene Zeile.',
     ovName: 'Referee Coach', ovDone: 'Erledigt', ovPlanned: 'Geplant', ovOutstanding: 'Ausstehend',
     ovNone: 'Noch keine Daten für diese Saison.',
+    ovShow: 'Details anzeigen', ovHide: 'Details ausblenden',
+    ovOutstandingHint: 'Gespielt, dem RC zugewiesen, aber noch keine Beobachtung erfasst — diese Spiele sind noch zu erledigen.',
+    ovPlannedHint: 'Vom RC übernommen, noch nicht gespielt.',
+    ovDoneHint: 'Beobachtung erfasst und versendet.',
+    ovEmpty: 'Keine.',
     credentials: 'Passwörter', credentialsHint: 'Diese Passwörter öffnen die App und diese Seite. Sie werden nur als Hash gespeichert — ein gesetztes Passwort kann nicht wieder angezeigt, sondern nur ersetzt werden. Notiere es dir jetzt.',
     credShared: 'Team-Login (App)', credSharedHint: 'Das Passwort, das alle Referee Coaches für die App benutzen.',
     credAdmin: 'Admin (diese Seite)', credAdminHint: 'Öffnet diese Konsole.',
@@ -450,6 +455,11 @@ const STR = {
     ovHint: 'Season progress for every referee coach. Coaches themselves only ever see their own row in the app.',
     ovName: 'Referee coach', ovDone: 'Done', ovPlanned: 'Planned', ovOutstanding: 'Outstanding',
     ovNone: 'No data for this season yet.',
+    ovShow: 'Show details', ovHide: 'Hide details',
+    ovOutstandingHint: 'Played, assigned to the coach, but no observation filed yet — these are the games still to be done.',
+    ovPlannedHint: 'Taken by the coach, not played yet.',
+    ovDoneHint: 'Observation filed and sent.',
+    ovEmpty: 'None.',
     credentials: 'Passwords', credentialsHint: 'These passwords open the app and this page. Only a hash is stored — a password that has been set cannot be shown again, only replaced. Write it down now.',
     credShared: 'Team login (app)', credSharedHint: 'The password every referee coach uses for the app.',
     credAdmin: 'Admin (this page)', credAdminHint: 'Opens this console.',
@@ -963,7 +973,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} season={defaultSeason} active={tab === 'games'} /></div>
-        <div hidden={tab !== 'overview'}><OverviewAdmin t={t} paidCap={paidCap} /></div>
+        <div hidden={tab !== 'overview'}><OverviewAdmin t={t} lang={lang} paidCap={paidCap} /></div>
         <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} lang={lang} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
@@ -3560,10 +3570,102 @@ function GameImportCard({ lang }: { lang: Lang }) {
 // behind an "is this an admin" check, which meant the app had two personalities
 // depending on who was looking. Admin reporting belongs with the other admin
 // reporting; the coach app now shows a coach their own row and nothing else.
-function OverviewAdmin({ t, paidCap }: { t: T; paidCap: number }) {
+/** One game behind a coach's counters, with everyone of theirs on it. The
+ *  per-coachee summary hands a game over once per coachee, and the counters
+ *  above count it once — so a game with two of the coach's coachees on the
+ *  whistle is folded to one row naming both. */
+type OverviewGame = {
+  key: string; gameDate: string; league: string; matchNo?: string; teams: string;
+  location?: string; mapsUrl?: string; result?: string; who: string[];
+};
+
+function foldOverviewGames(rows: rcCoachSummary[], pick: (r: rcCoachSummary) => rcCoachSummaryGame[]): OverviewGame[] {
+  const byKey = new Map<string, OverviewGame>();
+  for (const r of rows) {
+    for (const g of pick(r)) {
+      const key = g.gameId || `${g.gameDate}|${g.teams}`;
+      const label = g.noCoachee ? '' : `${r.coacheeName}${g.refereeRole ? ` · ${g.refereeRole}` : ''}`;
+      const seen = byKey.get(key);
+      if (seen) {
+        if (label && !seen.who.includes(label)) seen.who.push(label);
+        continue;
+      }
+      byKey.set(key, {
+        key, gameDate: g.gameDate, league: g.league, matchNo: g.matchNo, teams: g.teams,
+        location: g.location, mapsUrl: g.mapsUrl, result: g.result, who: label ? [label] : [],
+      });
+    }
+  }
+  return [...byKey.values()].sort((a, b) => a.gameDate.localeCompare(b.gameDate));
+}
+
+/** What a coach's three numbers are made of, under their row. The chair read
+ *  a "1" under Ausstehend and asked what it meant and where to find the game —
+ *  the number was the whole answer the table had. This is the same detail the
+ *  coach sees on their own Home, drawn the same way. */
+function OverviewDetail({ t, lang, rcName }: { t: T; lang: Lang; rcName: string }) {
+  const [rows, setRows] = useState<rcCoachSummary[] | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    loadrcCoachSummary(rcName)
+      .then((r) => { if (!cancelled) setRows(Array.isArray(r) ? r : []); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { cancelled = true; };
+  }, [rcName]);
+
+  if (error) return <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>;
+  if (!rows) return <div className="flex items-center gap-2 py-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /></div>;
+
+  const outstanding = foldOverviewGames(rows, (r) => r.outstandingGames);
+  const planned = foldOverviewGames(rows, (r) => r.plannedGames);
+  // A filed feedback names no game id; the date and the teams are the game.
+  const done = foldOverviewGames(rows, (r) => r.doneFeedbacks.map((fb) => ({
+    gameId: '', gameDate: fb.gameDate, league: fb.league, teams: fb.teams,
+    refereeName: r.coacheeName, refereeRole: fb.role, result: fb.result,
+  })));
+
+  const section = (title: string, hint: string, tone: RowTone, icon: React.ReactNode, games: OverviewGame[]) => (
+    <div>
+      <SectionHead tone={tone} icon={icon} title={title} count={games.length} />
+      <p className="mt-1.5 text-xs text-stone-500">{hint}</p>
+      {games.length === 0 ? (
+        <p className="mt-1.5 text-xs text-stone-400">{t.ovEmpty}</p>
+      ) : (
+        <GameList className="mt-1">
+          {games.map((g) => (
+            <GameRow
+              key={g.key}
+              lang={lang}
+              tone={tone}
+              date={g.gameDate}
+              league={g.league}
+              matchNo={g.matchNo}
+              teams={g.teams}
+              location={g.location}
+              mapsUrl={g.mapsUrl}
+              chips={g.who.map((w) => <MetaChip key={w} tone="amber">{w}</MetaChip>)}
+            />
+          ))}
+        </GameList>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="space-y-4 py-1">
+      {section(t.ovOutstanding, t.ovOutstandingHint, 'amber', <AlertTriangle size={14} />, outstanding)}
+      {section(t.ovPlanned, t.ovPlannedHint, 'sky', <CalendarDays size={14} />, planned)}
+      {section(t.ovDone, t.ovDoneHint, 'emerald', <CheckCheck size={14} />, done)}
+    </div>
+  );
+}
+
+function OverviewAdmin({ t, lang, paidCap }: { t: T; lang: Lang; paidCap: number }) {
   const [rows, setRows] = useState<RcOverviewEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [openId, setOpenId] = useState<string | null>(null);
   useEffect(() => {
     loadRcOverview()
       .then((r) => setRows(Array.isArray(r) ? r : []))
@@ -3613,30 +3715,76 @@ function OverviewAdmin({ t, paidCap }: { t: T; paidCap: number }) {
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-[11px] uppercase tracking-wide text-stone-400 border-b border-stone-200">
-                <th className="py-2 pr-3 font-semibold">{t.ovName}</th>
-                <th className="py-2 pr-3 font-semibold text-right">{t.ovDone}</th>
-                <th className="py-2 pr-3 font-semibold text-right">{t.ovPlanned}</th>
-                <th className="py-2 pr-3 font-semibold text-right">{t.ovOutstanding}</th>
+              {/* Tighter on a phone: four uppercase headers at 11px with wide
+                  tracking are what pushed this table past a 393px screen. */}
+              <tr className="text-left text-[10px] sm:text-[11px] uppercase tracking-tight sm:tracking-wide text-stone-400 border-b border-stone-200">
+                <th className="py-2 pr-1.5 sm:pr-3 font-semibold">{t.ovName}</th>
+                <th className="py-2 pr-1.5 sm:pr-3 font-semibold text-right">{t.ovDone}</th>
+                <th className="py-2 pr-1.5 sm:pr-3 font-semibold text-right">{t.ovPlanned}</th>
+                <th className="py-2 pr-1.5 sm:pr-3 font-semibold text-right">{t.ovOutstanding}</th>
                 <th className="py-2 font-semibold text-right" title={t.paidCapHint}>{t.ovPaid}</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50/70">
-                  <td className="py-2 pr-3 font-medium text-stone-800 whitespace-nowrap">{r.fullName}</td>
-                  <td className="py-2 pr-3 text-right text-green-700 font-semibold">{r.done}</td>
-                  <td className="py-2 pr-3 text-right text-blue-700 font-semibold">{r.planned}</td>
-                  {/* Outstanding is the number worth acting on, so it is the one that shouts. */}
-                  <td className={cn('py-2 pr-3 text-right font-semibold', r.outstanding > 0 ? 'text-amber-700' : 'text-stone-400')}>{r.outstanding}</td>
-                  {/* What the season actually pays. Equal to Erledigt until a
-                      coach passes the ceiling, and then deliberately not. */}
-                  <td className="py-2 text-right tabular-nums text-stone-600">
-                    {Math.min(r.done, paidCap)}
-                    {r.done > paidCap && <span className="text-stone-400"> / {r.done}</span>}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((r) => {
+                const open = openId === r.id;
+                return (
+                  <React.Fragment key={r.id}>
+                    <tr className={cn('border-b border-stone-100 last:border-0 hover:bg-stone-50/70', open && 'bg-stone-50/70')}>
+                      {/* The chevron lives IN the name cell, not in a column of
+                          its own: on a phone the five columns fill the width
+                          exactly, and a sixth pushed the table into a sideways
+                          scroll with the chevron parked off-screen. */}
+                      <td className="py-1 pr-2 sm:pr-3 font-medium text-stone-800 sm:whitespace-nowrap">
+                        {/* A long name may wrap on a phone — the four numbers
+                            beside it must stay on screen, which nowrap did not
+                            allow once the chevron took its share of the line. */}
+                        <button
+                          type="button"
+                          onClick={() => setOpenId(open ? null : r.id)}
+                          aria-expanded={open}
+                          title={open ? t.ovHide : t.ovShow}
+                          className="inline-flex min-h-7 items-start gap-1 rounded-lg py-1 pl-0.5 pr-1.5 -ml-0.5 text-left hover:bg-stone-100"
+                        >
+                          {open ? <ChevronUp size={14} className="mt-[3px] text-stone-500 shrink-0" /> : <ChevronDown size={14} className="mt-[3px] text-stone-500 shrink-0" />}
+                          <span>{r.fullName}</span>
+                        </button>
+                      </td>
+                      <td className="py-2 pr-1.5 sm:pr-3 text-right text-green-700 font-semibold">{r.done}</td>
+                      <td className="py-2 pr-1.5 sm:pr-3 text-right text-blue-700 font-semibold">{r.planned}</td>
+                      {/* Outstanding is the number worth acting on, so it is the one that shouts. */}
+                      <td className={cn('py-2 pr-1.5 sm:pr-3 text-right font-semibold', r.outstanding > 0 ? 'text-amber-700' : 'text-stone-400')} title={t.ovOutstandingHint}>{r.outstanding}</td>
+                      {/* What the season actually pays. Equal to Erledigt until a
+                          coach passes the ceiling, and then deliberately not. */}
+                      <td className="py-2 text-right tabular-nums text-stone-600">
+                        {Math.min(r.done, paidCap)}
+                        {r.done > paidCap && <span className="text-stone-400"> / {r.done}</span>}
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr className="border-b border-stone-100 last:border-0">
+                        <td colSpan={5} className="pb-3 pt-1 pl-1 pr-1 sm:pl-4">
+                          {/* Outer w-0 + min-w-full: the panel fills the table
+                              but never widens it — a cell's content counts toward
+                              the column widths, and a chip line that does not
+                              wrap was pushing the whole table past a phone's
+                              edge. Inner: no wider than the screen (less the
+                              page's, the card's and this cell's padding) and
+                              pinned to its left edge, so when the table itself
+                              is wider than the phone (it scrolls sideways
+                              there) the panel is still read whole, not clipped
+                              mid-word. */}
+                          <div className="w-0 min-w-full">
+                            <div className="sticky left-0" style={{ width: 'min(100%, calc(100vw - 4.75rem))' }}>
+                              <OverviewDetail t={t} lang={lang} rcName={r.fullName} />
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

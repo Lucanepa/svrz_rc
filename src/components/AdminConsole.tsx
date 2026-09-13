@@ -9,7 +9,8 @@ import {
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
   getCredentials, setCredential, requestCredentialCode, type CredentialSlotInfo,
   getAdminShortcutRcs, setAdminShortcutRcs,
-  loadRcOverview, loadrcCoachSummary, listRefereeCoachPeople, assignRcToGame, setGameStarred, setRcPaid,
+  loadRcOverview, loadrcCoachSummary, listRefereeCoachPeople, assignRcToGame, setGameStarred, setRcPaid, setRcMeeting,
+  downloadRcExpenses, downloadAllRcExpenses, DEFAULT_EXPENSE_RATES, type ExpenseRates,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
   listReferees, importReferees, type RefereeRoster, type RosterReferee, type RefereeImportRow,
@@ -255,6 +256,14 @@ const STR = {
     ovPaidOn: 'Bezahlt am', ovPaidBy: 'von', ovMarkPaid: 'Als bezahlt markieren', ovUnmarkPaid: 'Bezahlt-Markierung entfernen',
     ovPaidHint: 'Spesen dieser Saison ausbezahlt. Ändert keine Zahl — „Vergütet" bleibt der Anspruch; das hier ist der Haken, wenn er beglichen ist.',
     ovPaidOk: 'Als bezahlt markiert.', ovUnpaidOk: 'Markierung entfernt.', ovPaidCol: 'Bezahlt am',
+    ovSheet: 'Spesenabrechnung (PDF)', ovSheetAll: 'Alle Spesenabrechnungen (ZIP)',
+    ovSheetHint: 'Das Blatt der Kommission, aus den erfassten Beobachtungen gezeichnet: ein Einsatz pro Spiel, die RC-Sitzung, das Total, die Unterschrift.',
+    ovSheetAllHint: 'Ein PDF pro RC mit mindestens einem Besuch oder Sitzungsbesuch in dieser Saison.',
+    ovMeeting: (d: string) => `RC-Sitzung${d ? ` vom ${d}` : ''} besucht`,
+    ovMeetingHint: 'Erscheint als Zeile auf der Spesenabrechnung. Datum und Ansatz stehen unter Einstellungen.',
+    ovMeetingOk: 'Sitzungsbesuch erfasst.', ovMeetingOff: 'Sitzungsbesuch entfernt.',
+    expenses: 'Spesen', expensesHint: 'Was eine Saison zahlt — die Zahlen auf der Spesenabrechnung. Gebührenordnung Art. 14 Abs. 3: pauschal pro Einsatz, Fahrkosten inbegriffen.',
+    expVisit: 'Ansatz pro Besuch (CHF)', expMeeting: 'RC-Sitzung: Ansatz (CHF)', expMeetingDate: 'RC-Sitzung: Datum',
     credentials: 'Passwörter', credentialsHint: 'Diese Passwörter öffnen die App und diese Seite. Sie werden nur als Hash gespeichert — ein gesetztes Passwort kann nicht wieder angezeigt, sondern nur ersetzt werden. Notiere es dir jetzt.',
     credShared: 'Team-Login (App)', credSharedHint: 'Das Passwort, das alle Referee Coaches für die App benutzen.',
     credAdmin: 'Admin (diese Seite)', credAdminHint: 'Öffnet diese Konsole.',
@@ -467,6 +476,14 @@ const STR = {
     ovPaidOn: 'Paid on', ovPaidBy: 'by', ovMarkPaid: 'Mark as paid', ovUnmarkPaid: 'Remove the paid mark',
     ovPaidHint: 'This season\'s expenses paid out. Changes no number — "Paid" stays the claim; this is the tick once it is settled.',
     ovPaidOk: 'Marked as paid.', ovUnpaidOk: 'Mark removed.', ovPaidCol: 'Paid on',
+    ovSheet: 'Expense sheet (PDF)', ovSheetAll: 'All expense sheets (ZIP)',
+    ovSheetHint: 'The commission\'s sheet, drawn from the filed observations: one claim per game, the RC meeting, the total, the signature.',
+    ovSheetAllHint: 'One PDF per coach with at least one visit or meeting this season.',
+    ovMeeting: (d: string) => `Attended the RC meeting${d ? ` of ${d}` : ''}`,
+    ovMeetingHint: 'Shows as a line on the expense sheet. Date and rate are under Settings.',
+    ovMeetingOk: 'Meeting attendance recorded.', ovMeetingOff: 'Meeting attendance removed.',
+    expenses: 'Expenses', expensesHint: 'What a season pays — the figures on the expense sheet. Fee regulations art. 14 par. 3: a flat rate per assignment, travel included.',
+    expVisit: 'Rate per visit (CHF)', expMeeting: 'RC meeting: rate (CHF)', expMeetingDate: 'RC meeting: date',
     credentials: 'Passwords', credentialsHint: 'These passwords open the app and this page. Only a hash is stored — a password that has been set cannot be shown again, only replaced. Write it down now.',
     credShared: 'Team login (app)', credSharedHint: 'The password every referee coach uses for the app.',
     credAdmin: 'Admin (this page)', credAdminHint: 'Opens this console.',
@@ -685,6 +702,7 @@ export default function AdminConsole() {
   // Infoschreiben 6.2's ceiling: what the season reimburses, which is not the
   // same number as what a mandate owes.
   const [paidCap, setPaidCap] = useState<number>(PAID_CAP);
+  const [expenseRates, setExpenseRates] = useState<ExpenseRates>(DEFAULT_EXPENSE_RATES);
   // The SR-Niveau table in force — official values with the admin's edits on top.
   const [niveauTable, setNiveauTable] = useState<NiveauMatrix>(() => resolveNiveauTable(null));
   const [leagueOptions, setLeagueOptions] = useState<string[]>([]);
@@ -724,6 +742,7 @@ export default function AdminConsole() {
         setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); setCoacheeTargets(s.coachee_targets || {});
         setRcMandates(s.rc_mandates || {}); if (s.default_goal) setDefaultGoal(s.default_goal);
         if (s.paid_cap) setPaidCap(s.paid_cap);
+        if (s.expense_rates) setExpenseRates(s.expense_rates);
         setNiveauTable(resolveNiveauTable(s.niveau_table || null));
         if (s.default_season) setDefaultSeason(s.default_season);
       })
@@ -752,6 +771,7 @@ export default function AdminConsole() {
           setNiveauTable(resolveNiveauTable(s.niveau_table || null));
           if (s.default_goal) setDefaultGoal(s.default_goal);
           if (s.paid_cap) setPaidCap(s.paid_cap);
+          if (s.expense_rates) setExpenseRates(s.expense_rates);
           if (s.default_season) setDefaultSeason(s.default_season);
           setTestMode(Boolean(s.test_mode));
         })
@@ -808,6 +828,17 @@ export default function AdminConsole() {
     }
   }, []);
 
+  const saveExpenseRates = useCallback(async (next: ExpenseRates) => {
+    let previous = DEFAULT_EXPENSE_RATES;
+    setExpenseRates((current) => { previous = current; return next; });
+    try {
+      await putSettings({ expense_rates: next });
+    } catch (e) {
+      setExpenseRates(previous);
+      setSettingsError(e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  }, []);
   const savePaidCap = useCallback(async (next: number) => {
     let previous = 0;
     setPaidCap((current) => { previous = current; return next; });
@@ -980,7 +1011,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} season={defaultSeason} settingsLoading={settingsLoading} active={tab === 'games'} /></div>
-        <div hidden={tab !== 'overview'}><OverviewAdmin t={t} lang={lang} paidCap={paidCap} season={defaultSeason} settingsLoading={settingsLoading} /></div>
+        <div hidden={tab !== 'overview'}><OverviewAdmin t={t} lang={lang} paidCap={paidCap} season={defaultSeason} settingsLoading={settingsLoading} meetingDate={expenseRates.meetingDate} /></div>
         <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} lang={lang} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
@@ -989,7 +1020,7 @@ export default function AdminConsole() {
         {!isPresident && <>
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} lang={lang} active={tab === 'logs'} mode={logMode} onMode={setLogMode} /></div>
         <div hidden={tab !== 'settings'}>
-          <SettingsAdmin t={t} lang={lang} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} paidCap={paidCap} onPaidCap={savePaidCap} />
+          <SettingsAdmin t={t} lang={lang} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} paidCap={paidCap} onPaidCap={savePaidCap} expenseRates={expenseRates} onExpenseRates={saveExpenseRates} />
           <ManualGameAdmin t={t} lang={lang} active={tab === 'settings'} />
           <CredentialsAdmin t={t} />
         </div>
@@ -3670,7 +3701,7 @@ function OverviewDetail({ t, lang, rcName, season }: { t: T; lang: Lang; rcName:
   );
 }
 
-function OverviewAdmin({ t, lang, paidCap, season, settingsLoading }: { t: T; lang: Lang; paidCap: number; season: number; settingsLoading: boolean }) {
+function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate }: { t: T; lang: Lang; paidCap: number; season: number; settingsLoading: boolean; meetingDate: string }) {
   const [rows, setRows] = useState<RcOverviewEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -3695,6 +3726,33 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading }: { t: T; la
   // Optimistic, with the server's answer written back over it — and rolled
   // back if the save fails, so a rejected mark never shows as recorded.
   const [paidBusy, setPaidBusy] = useState<string | null>(null);
+  const [meetingBusy, setMeetingBusy] = useState<string | null>(null);
+  const toggleMeeting = async (r: RcOverviewEntry) => {
+    const on = !r.meetingAttended;
+    setMeetingBusy(r.id);
+    const previous = rows;
+    setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, meetingAttended: on } : x)));
+    try {
+      await setRcMeeting(r.id, season, on);
+      toast.success(on ? t.ovMeetingOk : t.ovMeetingOff, { lang });
+    } catch (e) {
+      setRows(previous);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMeetingBusy(null);
+    }
+  };
+  const [sheetBusy, setSheetBusy] = useState<string | null>(null);
+  const downloadSheet = async (rcId: string | null) => {
+    setSheetBusy(rcId ?? '*');
+    try {
+      if (rcId) await downloadRcExpenses(rcId, season); else await downloadAllRcExpenses(season);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSheetBusy(null);
+    }
+  };
   const togglePaid = async (r: RcOverviewEntry) => {
     const on = !r.paidAt;
     setPaidBusy(r.id);
@@ -3741,10 +3799,16 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading }: { t: T; la
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <h2 className="text-sm font-semibold text-stone-700">{t.overview}</h2>
-        <button onClick={downloadCsv} disabled={loading || rows.length === 0} title={t.ovCsvHint}
-          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-40 transition-colors">
-          <Download size={14} /> {t.ovCsv}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => void downloadSheet(null)} disabled={loading || rows.length === 0 || sheetBusy === '*'} title={t.ovSheetAllHint}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-40 transition-colors">
+            {sheetBusy === '*' ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} {t.ovSheetAll}
+          </button>
+          <button onClick={downloadCsv} disabled={loading || rows.length === 0} title={t.ovCsvHint}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-40 transition-colors">
+            <Download size={14} /> {t.ovCsv}
+          </button>
+        </div>
       </div>
       <p className="mt-1 text-xs text-stone-500">{t.ovHint}</p>
       {error && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
@@ -3843,6 +3907,25 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading }: { t: T; la
                                 >
                                   {r.paidAt ? t.ovUnmarkPaid : t.ovMarkPaid}
                                 </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void downloadSheet(r.id)}
+                                  disabled={sheetBusy === r.id}
+                                  title={t.ovSheetHint}
+                                  className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-stone-200 px-2.5 text-xs font-medium text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-50"
+                                >
+                                  {sheetBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} {t.ovSheet}
+                                </button>
+                                <label className="inline-flex items-center gap-1.5 text-xs text-stone-600" title={t.ovMeetingHint}>
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(r.meetingAttended)}
+                                    disabled={meetingBusy === r.id}
+                                    onChange={() => void toggleMeeting(r)}
+                                    className="h-3.5 w-3.5 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500/40"
+                                  />
+                                  {t.ovMeeting(meetingDate ? dayLabel(meetingDate, { year: true }) : '')}
+                                </label>
                               </div>
                               <OverviewDetail t={t} lang={lang} rcName={r.fullName} season={season} />
                             </div>
@@ -4179,7 +4262,7 @@ function CredentialsAdmin({ t }: { t: T }) {
   );
 }
 
-function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups, defaultGoal, onDefaultGoal, paidCap, onPaidCap }: { t: T; lang: Lang; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void; defaultGoal: number; onDefaultGoal: (n: number) => Promise<void>; paidCap: number; onPaidCap: (n: number) => Promise<void> }) {
+function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups, defaultGoal, onDefaultGoal, paidCap, onPaidCap, expenseRates, onExpenseRates }: { t: T; lang: Lang; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void; defaultGoal: number; onDefaultGoal: (n: number) => Promise<void>; paidCap: number; onPaidCap: (n: number) => Promise<void>; expenseRates: ExpenseRates; onExpenseRates: (r: ExpenseRates) => Promise<void> }) {
   const [season, setSeason] = useState<number>(defaultSeason);
   const seasonTouched = useRef(false);
   useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
@@ -4203,6 +4286,23 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
     if (!Number.isFinite(n) || n <= 0) { setCap(String(paidCap)); return; }
     await onPaidCap(n);
     setCapSaved(true); setTimeout(() => setCapSaved(false), 2500);
+  };
+  // The three expense figures, edited together and saved as one.
+  const [rates, setRates] = useState({ visit: String(expenseRates.visit), meeting: String(expenseRates.meeting), meetingDate: expenseRates.meetingDate });
+  const ratesTouched = useRef(false);
+  useEffect(() => {
+    if (!ratesTouched.current) setRates({ visit: String(expenseRates.visit), meeting: String(expenseRates.meeting), meetingDate: expenseRates.meetingDate });
+  }, [expenseRates]);
+  const [ratesSaved, setRatesSaved] = useState(false);
+  const saveRates = async () => {
+    const money = (v: string, fallback: number) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : fallback; };
+    await onExpenseRates({
+      visit: money(rates.visit, expenseRates.visit),
+      meeting: money(rates.meeting, expenseRates.meeting),
+      meetingDate: /^\d{4}-\d{2}-\d{2}$/.test(rates.meetingDate) ? rates.meetingDate : '',
+    });
+    ratesTouched.current = false;
+    setRatesSaved(true); setTimeout(() => setRatesSaved(false), 2500);
   };
   const loading = settingsLoading;
   const [ng, setNg] = useState('');
@@ -4311,6 +4411,32 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
           />
           <button onClick={() => void saveCap()} className={btnPrimary}><Check size={15} /> {t.save}</button>
           {capSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
+        </div>
+      </Card>
+      <Card>
+        <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.expenses}</h2>
+        <p className="text-xs text-stone-400 mb-3">{t.expensesHint}</p>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="text-xs text-stone-500">
+            <span className="block mb-0.5">{t.expVisit}</span>
+            <input type="number" min={0} step="0.05" inputMode="decimal" disabled={loading}
+              className="h-9 w-24 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
+              value={rates.visit} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, visit: e.target.value })); }} />
+          </label>
+          <label className="text-xs text-stone-500">
+            <span className="block mb-0.5">{t.expMeeting}</span>
+            <input type="number" min={0} step="0.05" inputMode="decimal" disabled={loading}
+              className="h-9 w-24 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
+              value={rates.meeting} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, meeting: e.target.value })); }} />
+          </label>
+          <label className="text-xs text-stone-500">
+            <span className="block mb-0.5">{t.expMeetingDate}</span>
+            <input type="date" disabled={loading}
+              className="h-9 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
+              value={rates.meetingDate} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, meetingDate: e.target.value })); }} />
+          </label>
+          <button onClick={() => void saveRates()} className={btnPrimary}><Check size={15} /> {t.save}</button>
+          {ratesSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
         </div>
       </Card>
       <Card>

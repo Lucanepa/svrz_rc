@@ -319,6 +319,8 @@ export interface RcOverviewEntry {
   paidAt?: string | null;
   /** Who recorded the payout — sent to admin sessions only. */
   paidBy?: string;
+  /** Sat in the season's RC-Sitzung (the line on the expense sheet) — admin sessions only. */
+  meetingAttended?: boolean;
 }
 
 export interface rcCoachSummaryFeedback {

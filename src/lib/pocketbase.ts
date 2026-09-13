@@ -478,6 +478,41 @@ export async function downloadFeedbackArchive(season: number): Promise<number> {
   return Number(r.headers.get('X-Archive-Count')) || 0;
 }
 
+/** Save a file the API hands back with a Content-Disposition name. */
+async function downloadFrom(path: string, fallbackName: string): Promise<void> {
+  const r = await fetch(apiUrl(path), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  const named = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '');
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = named ? named[1] : fallbackName;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Admin-only: one coach's Spesenabrechnung for the season, as the sheet the
+// commission fills by hand — drawn by the server from the filed observations.
+export async function downloadRcExpenses(rcId: string, season: number): Promise<void> {
+  await downloadFrom(`/api/admin/rc-expenses/${encodeURIComponent(rcId)}?season=${season}`, `spesen-${season}.pdf`);
+}
+
+// Admin-only: every coach's sheet in one ZIP — the season-end run.
+export async function downloadAllRcExpenses(season: number): Promise<void> {
+  await downloadFrom(`/api/admin/rc-expenses?season=${season}`, `spesen-rc-${season}.zip`);
+}
+
+// Admin-only: whether a coach sat in the season's RC-Sitzung (a line on the sheet).
+export async function setRcMeeting(rcId: string, season: number, attended: boolean): Promise<void> {
+  if (isDemoMode()) return;
+  const r = await fetch(apiUrl(`/api/admin/rc-meeting/${encodeURIComponent(rcId)}`), {
+    method: 'PUT', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season, attended }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
 export async function listPresidentNotes(): Promise<PresidentNote[]> {
   const r = await fetch(apiUrl('/api/president-notes'), { credentials: 'include' });
   if (!r.ok) throw new Error(await r.text());
@@ -1078,6 +1113,9 @@ export async function importCoachees(coachees: ImportRow[], season: number): Pro
 
 // default_goal: observations a full mandate owes per season. rc_mandates lists
 // the RCs (by RC person id) on a half mandate; everyone else is on a full one.
+export type ExpenseRates = { visit: number; meeting: number; meetingDate: string };
+export const DEFAULT_EXPENSE_RATES: ExpenseRates = { visit: 60, meeting: 60, meetingDate: '' };
+
 export type Settings = {
   default_season: number | null;
   test_mode?: boolean;
@@ -1088,6 +1126,9 @@ export type Settings = {
   /** Infoschreiben 6.2: beyond this many games a season, an RC is not paid.
    *  Null means nobody has set it, and the app then says nothing about pay. */
   paid_cap?: number | null;
+  /** What a season pays: CHF per visited game, and the RC-Sitzung's date and
+   *  rate. The commission's figures for the expense sheet. */
+  expense_rates?: ExpenseRates;
   // Only the rows an admin changed; everything else follows the official table
   // shipped in niveauTargets.ts.
   niveau_table?: NiveauMatrix;
@@ -1102,7 +1143,7 @@ export async function getSettings(): Promise<Settings> {
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
-export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number; paid_cap?: number; niveau_table?: NiveauMatrix }): Promise<void> {
+export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number; paid_cap?: number; niveau_table?: NiveauMatrix; expense_rates?: ExpenseRates }): Promise<void> {
   const r = await fetch(apiUrl('/api/admin/settings'), {
     method: 'PUT', credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

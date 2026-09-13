@@ -110,3 +110,39 @@ test('a coach\'s expenses can be marked paid, and the mark can be taken back', a
   await expect(row.getByLabel(/Bezahlt am|Paid on/)).toHaveCount(0);
   expect(puts[1]).toEqual({ rcId: 'rc2', body: { season: 2026, paid: false } });
 });
+
+// The Spesenabrechnung and the RC-Sitzung line, from the opened row.
+test('the opened row hands out the coach\'s expense sheet and records the RC-Sitzung', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  await page.route('**/api/settings', (r) => r.fulfill({ json: {
+    default_season: 2026, test_mode: false, groups: [], coachee_targets: {}, rc_mandates: {}, default_goal: 10,
+    expense_rates: { visit: 60, meeting: 60, meetingDate: '2027-04-13' },
+  } }));
+  await page.route(/\/api\/rc-overview\?season=2026$/, (r) => r.fulfill({ json: OVERVIEW }));
+  await page.route('**/api/rc-overview/*/coachees*', (r) => r.fulfill({ json: [] }));
+  const sheets: string[] = [];
+  await page.route('**/api/admin/rc-expenses/*', async (r) => {
+    sheets.push(new URL(r.request().url()).pathname + new URL(r.request().url()).search);
+    await r.fulfill({ status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="Spesen_2026-27_Nguyen_Thanh_Ut.pdf"' }, body: '%PDF-1.4\n%%EOF' });
+  });
+  const meetings: unknown[] = [];
+  await page.route('**/api/admin/rc-meeting/*', async (r) => {
+    meetings.push(r.request().postDataJSON());
+    await r.fulfill({ json: { ok: true, attended: (r.request().postDataJSON() as { attended: boolean }).attended } });
+  });
+
+  await page.goto('/admin/overview');
+  await page.getByRole('button', { name: 'Thanh Ut Nguyen' }).click();
+
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Spesenabrechnung \(PDF\)|Expense sheet \(PDF\)/ }).click();
+  expect((await download).suggestedFilename()).toBe('Spesen_2026-27_Nguyen_Thanh_Ut.pdf');
+  expect(sheets).toEqual(['/api/admin/rc-expenses/rc2?season=2026']);
+
+  // The meeting line names the date from the settings and records attendance for the season.
+  const meeting = page.getByLabel(/RC-Sitzung vom 13\.04\.2027 besucht|Attended the RC meeting of 13\.04\.2027/);
+  await expect(meeting).not.toBeChecked();
+  await meeting.check();
+  await expect(meeting).toBeChecked();
+  expect(meetings).toEqual([{ season: 2026, attended: true }]);
+});

@@ -16,6 +16,7 @@ import {
 } from './logquery.ts';
 import { installErrorAlerts } from './erroralerts.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter, indexBySeason } from './season.ts';
+import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, type ExpenseVisit } from './expenses.ts';
 
 // Shared with the survey page so the mailed copy can never drift from the form
 // the coachee actually filled in. Pure data — no browser dependencies.
@@ -4471,6 +4472,7 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
     res.json({
       default_season, test_mode: await isEmailTestMode(), groups, coachee_targets,
       rc_mandates, default_goal, paid_cap, niveau_table,
+      expense_rates: await readExpenseRates(),
       freshness: {
         games: asText(gamesStatus?.lastSuccessAt) || (gamesStatus?.ok ? asText(gamesStatus.at) : ''),
         boerse: asText(boerseStatus?.lastSuccessAt),
@@ -4507,6 +4509,9 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
       // the app then says nothing about payment, which is the honest state when
       // nobody has set the figure.
       await setSetting('paid_cap', Number.isFinite(n) && n > 0 ? String(n) : '');
+    }
+    if ('expense_rates' in body && body.expense_rates && typeof body.expense_rates === 'object') {
+      await setSetting(EXPENSE_RATES_KEY, JSON.stringify(sanitizeExpenseRates(body.expense_rates)));
     }
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -6489,6 +6494,197 @@ async function seasonFilterExceptManual(seasonRaw: unknown): Promise<(game: AnyR
   return seasonWindowFilter(season, manual);
 }
 
+// ── Spesenabrechnung ─────────────────────────────────────────────────
+// What a season pays: CHF per visited game (GBO Art. 14 Abs. 3 says 60.–,
+// travel included) and the RC-Sitzung line — its date and what attending it
+// pays. The commission's figures, so they live in app_settings and the
+// console edits them; the defaults are the GBO's.
+type ExpenseRates = { visit: number; meeting: number; meetingDate: string };
+const EXPENSE_RATES_KEY = 'expense_rates';
+const DEFAULT_EXPENSE_RATES: ExpenseRates = { visit: 60, meeting: 60, meetingDate: '' };
+
+function sanitizeExpenseRates(raw: unknown): ExpenseRates {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const money = (v: unknown, fallback: number) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : fallback;
+  };
+  const date = asText(r.meetingDate);
+  return {
+    visit: money(r.visit, DEFAULT_EXPENSE_RATES.visit),
+    meeting: money(r.meeting, DEFAULT_EXPENSE_RATES.meeting),
+    meetingDate: /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : '',
+  };
+}
+
+async function readExpenseRates(): Promise<ExpenseRates> {
+  const rec = await getSettingRecord(EXPENSE_RATES_KEY);
+  if (!rec) return DEFAULT_EXPENSE_RATES;
+  try { return sanitizeExpenseRates(JSON.parse(asText(rec.value))); } catch { return DEFAULT_EXPENSE_RATES; }
+}
+
+// Who sat in the RC-Sitzung: a set of coach ids per season, like the stars.
+const rcMeetingKey = (season: number) => `rc_meeting_${season}`;
+async function readRcMeeting(season: number): Promise<Set<string>> {
+  const rec = await getSettingRecord(rcMeetingKey(season));
+  if (!rec) return new Set();
+  try {
+    const arr = JSON.parse(asText(rec.value)) as unknown;
+    return new Set(Array.isArray(arr) ? arr.map((v) => String(v)) : []);
+  } catch { return new Set(); }
+}
+
+app.put('/api/admin/rc-meeting/:rcId', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const rcId = String(req.params.rcId);
+    const body = (req.body ?? {}) as { season?: unknown; attended?: unknown };
+    const season = parseSeason(body.season);
+    if (season == null) { res.status(400).json({ error: 'season required' }); return; }
+    const on = Boolean(body.attended);
+    await withSettingLock(rcMeetingKey(season), async () => {
+      const set = await readRcMeeting(season);
+      if (on) set.add(rcId); else set.delete(rcId);
+      await setSetting(rcMeetingKey(season), JSON.stringify([...set]));
+    });
+    log.info('admin.rc_meeting', on ? 'RC-Sitzung attendance recorded' : 'RC-Sitzung attendance removed', { rcId, season }, reqCtx(req));
+    res.json({ ok: true, attended: on });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+/** "Nachname Vorname", the way the sheet lists people; the full name when
+ *  the record does not keep the two apart. */
+function surnameFirst(rec: AnyRecord | undefined, fallback: string): string {
+  const last = asText(rec?.last_name ?? rec?.nachname);
+  const first = asText(rec?.first_name ?? rec?.vorname);
+  return last ? `${last} ${first}`.trim() : fallback;
+}
+
+/** Every filed observation of the season, as sheet rows, by coach id. Read
+ *  once for the whole roster: the ZIP wants everyone and the table one row is
+ *  a special case of it. */
+async function collectExpenseVisits(
+  people: AnyRecord[],
+  season: number,
+): Promise<Map<string, ExpenseVisit[]>> {
+  await ensureAdminAuth();
+  const inSeason = await seasonFilterExceptManual(season);
+  const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+    collection.getFullList<AnyRecord>({ sort: 'submitted_at', expand: 'game,coachee' }),
+  );
+  const out = new Map<string, ExpenseVisit[]>();
+  const identities = people.map((p) => ({
+    id: String(p.id),
+    self: { rcId: String(p.id), name: `${asText(p.first_name)} ${asText(p.last_name)}`.trim() } as RcAuthInfo,
+  }));
+  for (const fb of feedbacks) {
+    const expanded = fb.expand as Record<string, AnyRecord> | undefined;
+    const game = expanded?.game;
+    if (!game || !inSeason(game)) continue;
+    const owner = identities.find((p) => rcRefMatches(fb.rc_id, fb.rc_name, p.self));
+    if (!owner) continue;
+    const meta = ((fb.feedback_json as { meta?: Record<string, unknown> } | undefined)?.meta ?? {}) as Record<string, unknown>;
+    const coachee = expanded?.coachee;
+    // The level and group AS OBSERVED — the form's own copy — before the
+    // coachee row, which may have moved on since (a promotion, a new group).
+    const level = asText(meta.srNiveau).replace(/\s+/g, '')
+      || (asText(coachee?.referee_level) && /^\d+$/.test(asText(coachee?.stage))
+        ? `${asText(coachee?.referee_level)}-${asText(coachee?.stage)}`
+        : asText(coachee?.referee_level));
+    const visit: ExpenseVisit = {
+      gameId: String(game.id),
+      matchNo: asText(game.match_no) || asText(meta.spielNr),
+      date: asText(game.match_date),
+      refereeName: surnameFirst(coachee, asText(meta.srName)),
+      group: asText(meta.gruppe) || asText(coachee?.groups),
+      role: asText(fb.role_assessed),
+      level,
+    };
+    const list = out.get(owner.id) ?? [];
+    list.push(visit);
+    out.set(owner.id, list);
+  }
+  return out;
+}
+
+let logoPngCache: Uint8Array | null | undefined;
+/** The SVRZ logo for the sheet's header — the app's own asset, read once;
+ *  a sheet without a logo beats no sheet when the file is not there. */
+function logoPng(): Uint8Array | undefined {
+  if (logoPngCache === undefined) {
+    try { logoPngCache = new Uint8Array(readFileSync('src/assets/svrz-logo.png')); } catch { logoPngCache = null; }
+  }
+  return logoPngCache ?? undefined;
+}
+
+async function activeRcRecords(): Promise<AnyRecord[]> {
+  await ensureAdminAuth();
+  return withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
+    collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }));
+}
+
+/** The sheet for one coach, drawn from the season's data. */
+async function expenseStatementFor(person: AnyRecord, season: number, visits: ExpenseVisit[], rates: ExpenseRates, attended: boolean, paidCap: number | null) {
+  const rcName = surnameFirst(person, asText(person.full_name));
+  const statement = {
+    rcName, season, visits, visitRate: rates.visit, paidCap,
+    meeting: attended ? { date: rates.meetingDate, rate: rates.meeting } : null,
+    issuedOn: new Date(),
+  };
+  return {
+    fileName: expenseStatementFileName(rcName, season),
+    bytes: await buildExpenseStatementPdf(statement, logoPng()),
+    plan: planExpenseRows(statement),
+  };
+}
+
+async function readPaidCap(): Promise<number | null> {
+  const rec = await getSettingRecord('paid_cap');
+  const n = rec ? Number(asText(rec.value)) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// One coach's Spesenabrechnung as a PDF.
+app.get('/api/admin/rc-expenses/:rcId', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const season = await resolveSeason(req.query.season);
+    const people = await activeRcRecords();
+    const person = people.find((p) => String(p.id) === String(req.params.rcId));
+    if (!person) { res.status(404).json({ error: 'Referee Coach nicht gefunden.' }); return; }
+    const [visits, rates, attended, paidCap] = await Promise.all([
+      collectExpenseVisits([person], season), readExpenseRates(), readRcMeeting(season), readPaidCap(),
+    ]);
+    const sheet = await expenseStatementFor(person, season, visits.get(String(person.id)) ?? [], rates, attended.has(String(person.id)), paidCap);
+    log.info('admin.rc_expenses', 'expense statement drawn', { rcId: String(person.id), season, rows: sheet.plan.rows.length }, reqCtx(req));
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${sheet.fileName}"`);
+    res.send(Buffer.from(sheet.bytes));
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// Every coach's sheet in one ZIP — the season-end run. Coaches with nothing
+// to claim (no visit, no meeting) are left out rather than sent an empty page.
+app.get('/api/admin/rc-expenses', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const season = await resolveSeason(req.query.season);
+    const people = await activeRcRecords();
+    const [visits, rates, attended, paidCap] = await Promise.all([
+      collectExpenseVisits(people, season), readExpenseRates(), readRcMeeting(season), readPaidCap(),
+    ]);
+    const entries: ZipEntry[] = [];
+    for (const person of people) {
+      const id = String(person.id);
+      const own = visits.get(id) ?? [];
+      if (own.length === 0 && !attended.has(id)) continue;
+      const sheet = await expenseStatementFor(person, season, own, rates, attended.has(id), paidCap);
+      entries.push({ name: sheet.fileName, data: Buffer.from(sheet.bytes) });
+    }
+    log.info('admin.rc_expenses', 'expense statements drawn for the roster', { season, sheets: entries.length }, reqCtx(req));
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="spesen-rc-${season}-${String((season + 1) % 100).padStart(2, '0')}.zip"`);
+    res.send(zipStore(entries));
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
 // ── Expense payout ("Bezahlt") ───────────────────────────────────────
 // Whether a coach's season expenses have been paid out. One mark per coach per
 // season, in app_settings under rc_paid_<season>: { [rcId]: { at, by } }. It
@@ -6580,7 +6776,7 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
       feedbackGameIdsByRc.get(rcKey)!.add(String(fb.game || ''));
     }
 
-    const paidMap = await readRcPaid(season);
+    const [paidMap, attended] = await Promise.all([readRcPaid(season), readRcMeeting(season)]);
     const result = people.map((p) => {
       const fullName = `${asText(p.first_name)} ${asText(p.last_name)}`.trim();
       const rcKey = normalizeName(fullName);
@@ -6615,7 +6811,7 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
       return {
         id: p.id, fullName, done, outstanding, planned,
         paidAt: paid ? paid.at : null,
-        ...(rcAuth ? {} : { paidBy: paid ? paid.by : '' }),
+        ...(rcAuth ? {} : { paidBy: paid ? paid.by : '', meetingAttended: attended.has(String(p.id)) }),
       };
     });
 

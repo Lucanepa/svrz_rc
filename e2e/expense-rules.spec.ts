@@ -55,7 +55,7 @@ test('the RC-Sitzung is its own line on top of the visits', () => {
   expect(plan.grandTotal).toBe(120);
 });
 
-test('the sheet is a PDF, and a name Helvetica cannot spell does not sink it', async () => {
+test('the sheet is a PDF, with Inter embedded so a Croatian name is drawn as written', async () => {
   const bytes = await buildExpenseStatementPdf({ ...base, visits: [visit('g1', '2025-09-16T18:00:00Z', '1. SR', 'Šarić Dražen')] });
   expect(Buffer.from(bytes.slice(0, 5)).toString()).toBe('%PDF-');
   expect(bytes.length).toBeGreaterThan(1000);

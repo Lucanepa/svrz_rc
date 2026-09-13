@@ -17,7 +17,9 @@
 //
 // Pure: index.ts assembles the input from PocketBase and hands the bytes out.
 
-import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
+import { PDFDocument, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
+import { INTER_REGULAR_B64, INTER_BOLD_B64 } from '../src/lib/pdfFonts.ts';
 
 export type ExpenseVisit = {
   gameId: string;
@@ -114,14 +116,22 @@ const INK = rgb(0.11, 0.1, 0.09);
 const MUTED = rgb(0.45, 0.43, 0.42);
 const RULE = rgb(0.6, 0.58, 0.57);
 
-/** Helvetica speaks WinAnsi: Latin-1 plus a few typographic extras. A name
- *  the encoding cannot hold — "Šarić" holds one it can and one it cannot —
- *  would throw; strip the letter to its base rather than lose the page. */
-const WINANSI_EXTRA = '€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ';
+// Inter, the app's own face, embedded from the same subset the coach's
+// feedback PDF uses (scripts/build-pdf-fonts.mjs): Basic Latin, Latin-1 and
+// Latin Extended-A — every name on the SVRZ roster, Šarić and Łukasz included
+// — plus the punctuation phones insert. Helvetica was here first, and its
+// WinAnsi encoding cannot hold a ć: the name went on the page without it.
+const INTER_REGULAR = Buffer.from(INTER_REGULAR_B64, 'base64');
+const INTER_BOLD = Buffer.from(INTER_BOLD_B64, 'base64');
+
+/** What the subset can draw. A character outside it — a Cyrillic or Greek
+ *  letter, an emoji — is folded to its base letter where one exists, else a
+ *  question mark, rather than an empty box on the sheet. */
+const EXTRA = 'ƒǄǅǆǇǈǉǊǋǌ–—‘’‚“”„•…‹›′″€™←↑→↓✓✔□☐';
 function safe(text: string): string {
   const ok = (ch: string) => {
-    const code = ch.charCodeAt(0);
-    return code < 0x80 || (code >= 0xa0 && code <= 0xff) || WINANSI_EXTRA.includes(ch);
+    const code = ch.codePointAt(0) ?? 0;
+    return (code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0x17f) || EXTRA.includes(ch);
   };
   return Array.from(text).map((ch) => {
     if (ok(ch)) return ch;
@@ -184,8 +194,9 @@ export async function buildExpenseStatementPdf(st: ExpenseStatement, logoPng?: U
   const doc = await PDFDocument.create();
   doc.setTitle(`Spesenabrechnung ${seasonLabel(st.season)} – ${safe(st.rcName)}`);
   doc.setProducer('svrz-rc');
-  const regular = await doc.embedFont(StandardFonts.Helvetica);
-  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  doc.registerFontkit(fontkit);
+  const regular = await doc.embedFont(INTER_REGULAR, { subset: true });
+  const bold = await doc.embedFont(INTER_BOLD, { subset: true });
   const logo = logoPng ? await doc.embedPng(logoPng) : null;
 
   const header = (page: PDFPage) => {

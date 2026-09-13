@@ -3329,9 +3329,20 @@ function BoerseCard({ lang }: { lang: Lang }) {
     setRunning(true); setNote(''); setError('');
     try {
       const r = await runBoerseSync();
-      setNote(de
-        ? `${r?.offers ?? 0} Angebote (${r?.open ?? 0} offen), ${r?.matchedGames ?? 0} Spiele zugeordnet.`
-        : `${r?.offers ?? 0} offers (${r?.open ?? 0} open), ${r?.matchedGames ?? 0} games matched.`);
+      if (!r) {
+        setNote(de ? 'Läuft noch — die Uhr unten aktualisiert sich, sobald die Abfrage fertig ist.' : 'Still running — the clock below updates when the poll finishes.');
+      } else if (r.skipped) {
+        // The account was in somebody else's hands (the hourly poll, or the
+        // games sync) — nothing was read, and nothing is wrong. The status
+        // line below names who held it; this only says the tap did not run.
+        setNote(de ? 'Nicht abgefragt — der VolleyManager-Zugang war gerade belegt.' : 'Not polled — the VolleyManager account was in use.');
+      } else if (!r.ok) {
+        setError(r.error || (de ? 'Abfrage fehlgeschlagen.' : 'Poll failed.'));
+      } else {
+        setNote(de
+          ? `${r.offers ?? 0} Angebote (${r.open ?? 0} offen), ${r.matchedGames ?? 0} Spiele zugeordnet.`
+          : `${r.offers ?? 0} offers (${r.open ?? 0} open), ${r.matchedGames ?? 0} games matched.`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally { setRunning(false); load(); }

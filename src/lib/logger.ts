@@ -266,6 +266,16 @@ function withTraceHeaders(url: string, init?: RequestInit): RequestInit | undefi
  *  a warning rather than an error, so the alert mail does not go out. An
  *  AbortError is the app's own cancellation and is not what this is about. */
 export const INSTANT_FAIL_MS = 50;
+/** How long a failure that looks like an outage is held before it is written,
+ *  in case the page turns out to be leaving. A navigation the browser starts
+ *  — pull-to-refresh on Android Chrome, the address bar, a bookmark — aborts
+ *  every request in flight ("Failed to fetch") BEFORE it fires `pagehide`, so
+ *  at the moment they fail nothing says the page is going anywhere. On
+ *  13.09.2026 three console requests died that way 700 ms before the new
+ *  document loaded, and were mailed out as an API outage the server had
+ *  already answered. The next document commits well inside this window; a
+ *  page that is really gone by then writes nothing, which is right. */
+export const LEAVE_GRACE_MS = 1500;
 
 /** True once this page has started to go away: the app called
  *  location.reload() itself, or the browser said `pagehide`. Every request in
@@ -332,14 +342,21 @@ function installFetchLogging(): void {
       // A rejected fetch means the request never got a status: offline, DNS,
       // TLS, or CORS. This is the *only* thing that should ever be reported to
       // the user as "Verbindungsfehler".
-      const { evt, lvl } = classifyFetchFailure(ms, error);
       // Scrubbed like every other line that carries a URL. This one was raw, so
       // a survey that failed to load filed its capability token — which answers
       // the questionnaire AS the referee, and re-links an anonymous answer to
       // the person who gave it — into a Protokoll every admin reads.
-      clientLog[lvl](evt, `${method} ${scrubTokens(url)} failed after ${ms}ms (no response)`, {
-        method, url: scrubTokens(url), ms, error, online: navigator.onLine,
-      });
+      const write = () => {
+        const { evt, lvl } = classifyFetchFailure(ms, error);
+        clientLog[lvl](evt, `${method} ${scrubTokens(url)} failed after ${ms}ms (no response)`, {
+          method, url: scrubTokens(url), ms, error, online: navigator.onLine,
+        });
+      };
+      // Anything already excused is written now. A failure that would go out
+      // as an outage waits LEAVE_GRACE_MS, so a navigation that has not fired
+      // pagehide yet gets the chance to claim it (see the constant).
+      if (classifyFetchFailure(ms, error).lvl === 'error') setTimeout(write, LEAVE_GRACE_MS);
+      else write();
       throw error;
     }
   };
@@ -456,6 +473,12 @@ export function installLogging(options: { apiBase?: string; ship?: boolean } = {
     installLifecycleLogging();
     clientLog.info('app.start', 'app loaded', {
       url: scrubTokens(location.href),
+      // Which build this browser is actually running. A service worker can
+      // pin a tab to a build for a long time, and without this line a
+      // "Script error." that the current rules demote to a warning is
+      // indistinguishable from one an older bundle still reports as an error
+      // — happened 13.09.2026 on an iPad, and could not be settled either way.
+      build: __BUILD_SHA__,
       ua: navigator.userAgent,
       lang: navigator.language,
       online: navigator.onLine,

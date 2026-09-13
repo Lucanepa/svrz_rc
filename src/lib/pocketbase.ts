@@ -325,12 +325,30 @@ export async function getBoerseStatus(): Promise<BoerseSyncStatus> {
   return r.json() as Promise<BoerseSyncStatus>;
 }
 
-/** ~80 s against production: the exchange endpoint is slow with the convocation
- *  array attached, and the poll reads two pages of it. */
-export async function runBoerseSync(): Promise<BoerseSyncStatus['status']> {
+/** Ask for a börse poll, and wait for its result by polling the status.
+ *
+ *  Two requests, on purpose. The poll takes ~80 s against production and a
+ *  phone will not hold one request open that long — the server answers 202 at
+ *  once and runs it in the background; the status record's `lastAttemptAt`
+ *  is written when the run ends, so a status stamped after the tap IS the
+ *  result of the tap. Resolves null when the run is still going after
+ *  `waitMs`, which the caller reports as "still running" rather than failed. */
+export async function runBoerseSync(waitMs = 3 * 60_000): Promise<BoerseSyncStatus['status']> {
   const r = await fetch(apiUrl('/api/admin/boerse/sync'), { method: 'POST', credentials: 'include' });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  if (!r.ok) {
+    const text = await r.text();
+    let message = text;
+    try { message = (JSON.parse(text) as { error?: string }).error || text; } catch { /* not JSON */ }
+    throw new Error(message);
+  }
+  const { startedAt } = await r.json() as { started: boolean; startedAt: string };
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const { status } = await getBoerseStatus().catch(() => ({ status: null }));
+    if (status?.lastAttemptAt && status.lastAttemptAt >= startedAt) return status;
+  }
+  return null;
 }
 
 export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {

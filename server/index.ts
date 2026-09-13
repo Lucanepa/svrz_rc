@@ -1571,6 +1571,14 @@ async function withCollection<T>(
   candidates: string[],
   action: (collection: ReturnType<typeof pb.collection>, collectionName: string) => Promise<T>,
 ): Promise<T> {
+  // The superuser token lives 24 hours, and the crons never asked for a fresh
+  // one: route handlers call ensureAdminAuth() themselves, so the token was
+  // renewed by whoever opened the app — and on a quiet day the first cron
+  // write after the 24-hour mark failed with "Only superusers can perform
+  // this action" (the börse poll, 13.09.2026 10:43 UTC, exactly a day after
+  // the container started). Renewed here, where every PocketBase access
+  // passes, so no caller has to remember. Cheap: a valid token returns at once.
+  await ensureAdminAuth();
   let lastError: unknown = null;
   for (const collectionName of candidates) {
     try {
@@ -1588,6 +1596,12 @@ async function withCollection<T>(
         } catch (retryError) {
           throw retryError;
         }
+      }
+      // A token PocketBase no longer accepts — expired between the check above
+      // and the call, or the superuser password was rotated. One fresh login
+      // and one more try; a second refusal is a real error.
+      if (await reauthOnRejection(error)) {
+        return await action(pb.collection(collectionName), collectionName);
       }
       throw error;
     }
@@ -9545,10 +9559,29 @@ app.get('/api/admin/boerse/status', requireAdminSession, async (_req: Request, r
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
+/** The manual börse run in flight, if any. One at a time: a second tap while
+ *  the first is still reading the exchange is answered with 409, not queued. */
+let boerseManualRun: Promise<unknown> | null = null;
+
+// Started, NOT awaited. A poll takes ~80 s against production (the exchange
+// endpoint is slow with the convocation array attached, and two pages of it
+// are read), and a phone does not keep a request open that long: on
+// 13.09.2026 Android Chrome gave up after 27 s ("Failed to fetch"), the run
+// finished at 82 s and its 200 went to a socket nobody held any more, and the
+// second tap hit the account lock and came back 502 — three error lines and an
+// alert mail for a sync that had in fact succeeded. The client polls
+// /api/admin/boerse/status until lastAttemptAt passes the moment it tapped.
 app.post('/api/admin/boerse/sync', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
-    const status = await runBoerseSyncSafely('manual');
-    res.status(status.ok ? 200 : 502).json(status);
+    if (boerseManualRun) {
+      res.status(409).json({ error: 'Die Börse wird gerade abgefragt — bitte einen Moment warten.' });
+      return;
+    }
+    const startedAt = new Date().toISOString();
+    // runBoerseSyncSafely never throws: a failure is recorded on the status
+    // and logged there, which is exactly where the poll below reads it.
+    boerseManualRun = runBoerseSyncSafely('manual').finally(() => { boerseManualRun = null; });
+    res.status(202).json({ started: true, startedAt });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 

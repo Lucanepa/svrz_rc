@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
+import { LEAVE_GRACE_MS } from '../src/lib/logger';
 
 /**
  * Which failures the page's own lifecycle excuses — the half of
@@ -16,8 +17,11 @@ import { stubSignedInApp } from './support/app';
 
 type Entry = { lvl: string; evt: string; msg?: string; data?: Record<string, unknown> };
 
-/** The logger's own in-memory tail, as the support line reads it over the phone. */
-function lastFailure(page: Page): Promise<Entry | undefined> {
+/** The logger's own in-memory tail, as the support line reads it over the phone.
+ *  Read after the grace period: a failure that would be an outage is held
+ *  that long in case the page is leaving, so an immediate read sees nothing. */
+async function lastFailure(page: Page): Promise<Entry | undefined> {
+  await page.waitForTimeout(LEAVE_GRACE_MS + 200);
   return page.evaluate(() => {
     const logs = (window as unknown as { svrzLogs: () => Entry[] }).svrzLogs();
     return logs.filter((e) => e.evt.startsWith('net.fail')).pop();
@@ -44,6 +48,16 @@ test.beforeEach(async ({ page }) => {
 test('a request that outlives the page is a warning', async ({ page }) => {
   await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
   await failSlowly(page);
+  expect(await lastFailure(page)).toMatchObject({ lvl: 'warn', evt: 'net.fail.unload' });
+});
+
+test('a navigation that aborts the request before pagehide fires still excuses it', async ({ page }) => {
+  // Pull-to-refresh on Android Chrome, 13.09.2026: the browser cancels every
+  // request in flight first, and only tells the page it is going away when
+  // the next document commits — 700 ms later. Three console requests the
+  // server had already answered went out as an outage.
+  await failSlowly(page);
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
   expect(await lastFailure(page)).toMatchObject({ lvl: 'warn', evt: 'net.fail.unload' });
 });
 

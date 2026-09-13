@@ -314,6 +314,11 @@ export interface RcOverviewEntry {
   done: number;
   outstanding: number;
   planned: number;
+  /** When the season's expenses were paid out to this coach, or null. Set in
+   *  the admin console once the treasurer has settled the claim. */
+  paidAt?: string | null;
+  /** Who recorded the payout — sent to admin sessions only. */
+  paidBy?: string;
 }
 
 export interface rcCoachSummaryFeedback {

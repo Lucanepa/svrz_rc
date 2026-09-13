@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp, GAME } from './support/app';
+import { stubSignedInApp, GAME, RC } from './support/app';
 
 // Coachees are per-season rows. A referee coached in 25/26 who was never
 // imported for 26/27 is not a coachee now — but the games list matched referees
@@ -77,4 +77,37 @@ test('both rows exist: the badge reads the current season, never the older row',
   // The group is stored in German and translated for display, so accept either.
   await expect(coacheeBadge(page)).toHaveText(/Coachee · N2-2 · (Befördert|Promoted)/);
   await expect(coacheeBadge(page)).not.toHaveText(/Referee Coaching/);
+});
+
+// The observation form prefills Niveau and Gruppe from the coachee row — this
+// season's row. It used to fall back to ANY season's row, so a referee coached
+// last season and not this one had last season's Niveau and group ride into
+// this season's PDF. Now the form is left blank for the coach to fill.
+test.describe('the form prefill', () => {
+  const HELD = { ...HER_GAME, assignedRc: RC.name };
+  const openHerForm = async (page: import('@playwright/test').Page, coachees: unknown[]) => {
+    await stubSignedInApp(page);
+    await page.route('**/api/coachees*', (r) => r.fulfill({ json: coachees }));
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [HELD] }));
+    await page.goto('/');
+    await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
+    await page.getByRole('button', { name: /^(Filters|Filter)$/ }).click();
+    await page.getByRole('button', { name: /RC assigned|RC zugewiesen/ }).click();
+    await page.getByText(HELD.homeTeam).first().click();
+    await page.getByRole('button', { name: /Start observation|Beobachtung starten/ }).click();
+    await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
+  };
+
+  test('only last season\'s row: nothing is prefilled', async ({ page }) => {
+    await openHerForm(page, [LAST_SEASON_ROW]);
+    await expect(page.getByLabel(/Referee level/i)).toHaveValue('');
+    await expect(page.getByLabel(/^Group$/i)).toHaveValue('');
+  });
+
+  test('both rows: this season\'s Niveau and group, never the older row\'s', async ({ page }) => {
+    await openHerForm(page, [LAST_SEASON_ROW, THIS_SEASON_ROW]);
+    await expect(page.getByLabel(/Referee level/i)).toHaveValue('N2 - 2');
+    await expect(page.getByLabel(/^Group$/i)).toHaveValue(/Befördert|Promoted/);
+    await expect(page.getByLabel(/^Group$/i)).not.toHaveValue(/Referee Coaching/);
+  });
 });

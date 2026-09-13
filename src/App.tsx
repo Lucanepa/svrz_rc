@@ -50,6 +50,7 @@ import {
   type AppRoute, type FeedbackSubView as RouteSubView,
 } from './lib/routes';
 import InfoHint from './components/InfoHint';
+import { inSeasonOrManual as inSeasonWindow, currentSeason, seasonLabel as seasonLabelOf } from './lib/season';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import {
   draftKey, putDrafts, listDrafts, getGameDrafts, setDraftStatus, deleteDraft, pruneDrafts,
@@ -1301,7 +1302,7 @@ export default function App() {
   const [gameFilterDateFrom, setGameFilterDateFrom] = useState('');
   const [gameFilterDateTo, setGameFilterDateTo] = useState('');
   // Season selector (Sep 1 -> Apr 30), persisted across reloads
-  const curSeasonYear = new Date().getMonth() <= 7 ? new Date().getFullYear() - 1 : new Date().getFullYear();
+  const curSeasonYear = currentSeason();
   // Season pref (v3) stores {s: chosen season, d: the default it was chosen under}:
   // a new admin default (season rollover) snaps everyone forward exactly once,
   // while a deliberate past-season choice survives reloads until the next rollover.
@@ -1314,25 +1315,18 @@ export default function App() {
     return curSeasonYear;
   });
   /** "2026/27" — the season as it is spoken and written on every list. */
-  const seasonLabel = `${seasonStartYear}/${String((seasonStartYear + 1) % 100).padStart(2, '0')}`;
-  const seasonFrom = `${seasonStartYear}-09-01`;
-  const seasonTo = `${seasonStartYear + 1}-04-30`;
+  const seasonLabel = seasonLabelOf(seasonStartYear);
   /** Inside the season on screen — or a test game, which is exempt.
    *
    *  A season runs September to April, and a test game is usually made today,
    *  which in May–August belongs to no season at all. It then disappeared from
    *  every list while sitting in the console that had just created it. The row
    *  says "Testspiel", so showing one out of season misleads nobody. */
-  const inSeasonOrManual = useCallback((g: { date?: string; isManual?: boolean }) => {
-    if (g.isManual) return true;
-    if (!g.date) return true;
-    // Zürich day keys, for the same reason as the date filter: the old bounds
-    // mixed a UTC start with a device-local end, and the last matchday of the
-    // season disappeared for a coach travelling east.
-    const key = dayKey(g.date);
-    if (!key) return true;
-    return key >= seasonFrom && key <= seasonTo;
-  }, [seasonFrom, seasonTo]);
+  const inSeasonOrManual = useCallback(
+    // The rule itself lives in lib/season.ts, shared with the admin console.
+    (g: { date?: string; isManual?: boolean }) => inSeasonWindow(g, seasonStartYear),
+    [seasonStartYear],
+  );
   const [emailTestMode, setEmailTestMode] = useState(false);
   // Per-coachee level/role targets (drives "watch at their level" game filtering).
   const [coacheeTargets, setCoacheeTargets] = useState<CoacheeTargetMap>({});
@@ -1355,7 +1349,7 @@ export default function App() {
   // needs that answer rather than the state setter's, because setState is not
   // visible until the next render and the bootstrap has to fire its
   // season-scoped requests now — see the mount effect.
-  const loadSettings = async (): Promise<number> => {
+  const loadSettings = async (opts: { claimSeason?: boolean } = {}): Promise<number> => {
     try {
       const s = await getSettings();
       setFreshness(s.freshness ?? null);
@@ -1370,11 +1364,13 @@ export default function App() {
       // admin console and everyone follows it. A stored preference used to win
       // here, which is how people ended up stranded in a finished 25/26.
       setSeasonStartYear(s.default_season);
-      // Claim it in the same breath, so the season-change effect sees the value
-      // as already loaded and stays quiet. The mount batch is about to fetch
-      // this exact season; without the claim that effect fires on the state
-      // change and fetches it a second time.
-      loadedSeasonRef.current = s.default_season;
+      // Claim it in the same breath — on the MOUNT path only, where the batch
+      // below is about to fetch this exact season and the season-change effect
+      // would otherwise fetch it a second time. The live path (an admin moved
+      // the default while the app was open) must NOT claim it: it used to,
+      // and the effect then stayed quiet, so the label said 2026/27 over
+      // numbers fetched for 2025/26 until the next poll.
+      if (opts.claimSeason) loadedSeasonRef.current = s.default_season;
       try {
         localStorage.removeItem('svrz_season_v3');
         localStorage.removeItem('svrz_season_v2');
@@ -1829,10 +1825,10 @@ export default function App() {
       return;
     }
     setBackendNotice('');
-    // Everything that does not depend on the season starts at once. The two
-    // that DO — overview and the Home dashboard — wait for settings to say
-    // which season, and only for that: settings is one small request, so they
-    // still overlap the rest.
+    // Everything that does not depend on the season starts at once. The three
+    // that DO — overview, the Home dashboard and the calendar — wait for
+    // settings to say which season, and only for that: settings is one small
+    // request, so they still overlap the rest.
     //
     // They used to launch immediately off the locally guessed season, and the
     // guess is usually wrong (the stored preference is deleted after the first
@@ -1840,18 +1836,18 @@ export default function App() {
     // routinely disagrees with). Both then ran a second time when the real
     // season arrived — two extra round trips per cold start, and a dashboard
     // that showed the wrong season's numbers until the rerun landed.
-    const seasonReady = loadSettings();
+    const seasonReady = loadSettings({ claimSeason: true });
     void Promise.allSettled([
       refreshGames(),
       refreshCoachees(),
-      refreshCalendarGames(),
       refreshRcPeople(),
       refreshAdminAuthStatus(),
       seasonReady.then((season) => {
         // The Home dashboard and the RC Overview tab read the same overview
-        // endpoint — fetch it once and share the promise.
+        // endpoint — fetch it once and share the promise. The calendar is
+        // season-scoped on the server too, so it waits for the season as well.
         const overview = refreshRcOverview(season);
-        return Promise.all([overview, loadHome(overview, season)]);
+        return Promise.all([overview, loadHome(overview, season), refreshCalendarGames(season, { keepNotice: true })]);
       }),
     ]).then(() => setBooting(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1884,11 +1880,12 @@ export default function App() {
       return false;
     };
     const srNorm = normalizeName(srName || '');
-    // Prefer this season's row: `find` over the raw list answers in load order,
-    // which is last season's copy for anyone imported twice. Falling back to any
-    // season beats refusing to prefill (the server re-resolves by game date).
-    const coacheeByName = coachees.find((c) => isInSeason(c, seasonStartYear) && matchesNorm(c, srNorm))
-      ?? coachees.find((c) => matchesNorm(c, srNorm));
+    // This season's row (isInSeason also admits a row with no season at all —
+    // imports predating the field). It used to fall back to ANY season's row,
+    // so a referee coached last season and not this one had last season's
+    // Niveau and group ride into this season's PDF. An unknown coachee leaves
+    // Niveau and Gruppe blank to type.
+    const coacheeByName = coachees.find((c) => isInSeason(c, seasonStartYear) && matchesNorm(c, srNorm));
     // Fall back to the navigated-from coachee only if they aren't the *other* referee of this game
     const otherRef = getRefereeForRole(selectedGame, formData.role === '1. SR' ? '2. SR' : '1. SR');
     const otherNorm = normalizeName(otherRef || '');
@@ -2259,6 +2256,7 @@ export default function App() {
     loadedSeasonRef.current = seasonStartYear;
     const overview = refreshRcOverview();
     void loadHome(overview);
+    void refreshCalendarGames(undefined, { keepNotice: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seasonStartYear]);
 
@@ -2418,20 +2416,30 @@ export default function App() {
   // lands: an assignment is patched into the row by id — the payload says who
   // holds it now, so there is nothing to go and ask.
   const [liveConnected, setLiveConnected] = useState(false);
+  // The stream is subscribed once per sign-in, so its handler would close over
+  // the loaders of THAT render — and loadHome reads the season from its own
+  // closure. After the admin's default season arrived, a pushed assignment
+  // re-fetched Home for the season the first render guessed. Same idiom as
+  // flushOutboxNowRef: the refs always hold this render's functions.
+  const liveHandlersRef = useRef({ loadHome, syncGamesQuietly, loadSettings });
+  liveHandlersRef.current = { loadHome, syncGamesQuietly, loadSettings };
   useEffect(() => {
     if (!rcAuth.rcName) return;
     return subscribeLive((event) => {
+      const live = liveHandlersRef.current;
       if (event.type === 'game.assignment') {
         setEligibleGames((prev) => prev.map((g) => (g.id === event.gameId ? { ...g, assignedRc: event.assignedRc } : g)));
         // Counters and "next appointments" are per coach, so they only move when
         // the game changed hands to or from this one.
         const mine = normName(event.assignedRc || '') === normName(rcAuth.rcName || '');
         const wasMine = eligibleGamesRef.current.some((g) => g.id === event.gameId && normName(g.assignedRc || '') === normName(rcAuth.rcName || ''));
-        if (mine || wasMine) void loadHome();
+        if (mine || wasMine) void live.loadHome();
       } else if (event.type === 'games.synced') {
-        void syncGamesQuietly();
+        void live.syncGamesQuietly();
       } else if (event.type === 'settings.changed') {
-        void loadSettings();
+        // No season claim here: if the default moved, the season-change effect
+        // is what re-fetches Home, the overview and the calendar for it.
+        void live.loadSettings();
       }
     }, setLiveConnected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2639,21 +2647,29 @@ export default function App() {
     void resumeDraftForGame(game.id, preferredRole);
   };
 
-  const refreshCalendarGames = async () => {
+  /** `keepNotice` for the calls nobody pressed a button for — the boot batch
+   *  and a season change — so a notice another loader has just written is
+   *  not wiped by this one starting. A generation guard like the sibling
+   *  loaders: now that the list is season-scoped, two overlapping fetches
+   *  can answer for different seasons, and only the latest may land. */
+  const refreshCalendarGames = async (seasonOverride?: number, opts: { keepNotice?: boolean } = {}) => {
     if (!hasPocketBaseConfig()) {
       setBackendNotice(t.pbMissing);
       return;
     }
+    const gen = beginLoad('calendar');
     setLoadingCalendar(true);
-    setBackendNotice('');
+    if (!opts.keepNotice) setBackendNotice('');
     try {
-      const games = await loadCalendarGames();
+      const games = await loadCalendarGames(seasonOverride ?? seasonStartYear);
+      if (!isCurrentLoad('calendar', gen)) return;
       setCalendarGames(games);
     } catch (error) {
+      if (!isCurrentLoad('calendar', gen)) return;
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(localizeRuntimeError(reason, formData.lang));
     } finally {
-      setLoadingCalendar(false);
+      if (isCurrentLoad('calendar', gen)) setLoadingCalendar(false);
     }
   };
 
@@ -2841,7 +2857,9 @@ export default function App() {
    *  carried over from the screen you would otherwise have come from. */
   const openDeepLink = async (r: AppRoute) => {
     if (!r.coacheeId) return;
-    const coachee = coachees.find((c) => c.id === r.coacheeId);
+    // This season's row only, like the game routes: last season's row of the
+    // same person would open with last season's Niveau in the header.
+    const coachee = coachees.find((c) => c.id === r.coacheeId && isInSeason(c, seasonStartYear));
     if (!coachee) {
       // Deleted, or on a season this coach is not looking at. Say so; landing
       // silently on the coachee list looks like the link simply did nothing.
@@ -3918,7 +3936,9 @@ export default function App() {
       return;
     }
     const game = eligibleGames.find((g) => g.id === gameId);
-    if (!game) {
+    // Outside the season on screen counts as not found: the list hides such a
+    // game, and a link from last March must not open a blank form on it.
+    if (!game || !inSeasonOrManual(game)) {
       setBackendNotice(formData.lang === 'DE'
         ? 'Spiel nicht gefunden — vielleicht eine andere Saison.'
         : 'Game not found — possibly a different season.');
@@ -3941,7 +3961,7 @@ export default function App() {
     urlGameOpenedRef.current = true;
     setLandingSettled(true);
     const game = eligibleGames.find((g) => g.id === initialRoute.gameId);
-    if (!game) {
+    if (!game || !inSeasonOrManual(game)) {
       // Deleted, on another season, or somebody else's link. Say so; landing
       // silently on the games list looks like the link simply did nothing.
       setBackendNotice(formData.lang === 'DE'
@@ -4455,9 +4475,11 @@ export default function App() {
       .filter(Boolean))].sort(),
     [coachees, seasonStartYear],
   );
+  // This season's leagues only: an option that exists because of last
+  // season's U18 final filters the list down to nothing.
   const gameLeagues = useMemo(
-    () => Array.from(new Set<string>(eligibleGames.map((g) => g.league).filter((l): l is string => Boolean(l)))).sort(),
-    [eligibleGames],
+    () => Array.from(new Set<string>(eligibleGames.filter(inSeasonOrManual).map((g) => g.league).filter((l): l is string => Boolean(l)))).sort(),
+    [eligibleGames, inSeasonOrManual],
   );
   // The games behind the "1SR: n · 2SR: n" line on a coachee row, kept as the
   // games themselves rather than a tally so the row can also LIST them once its
@@ -4629,6 +4651,9 @@ export default function App() {
     const found = { ld: false, rcGame: false, assigned: false, inactive: false, starred: false, focus: false };
     const today = todayKey();
     for (const g of eligibleGames) {
+      // Whole-app season scope first: a marking on last season's game must not
+      // put a control on this season's list that then empties it.
+      if (!inSeasonOrManual(g)) continue;
       if (g.isLdGame) found.ld = true;
       if (g.isRcGame) found.rcGame = true;
       if (g.assignedRc) found.assigned = true;
@@ -4642,7 +4667,6 @@ export default function App() {
       // are offered on that alone: a star on a game played in October, or a
       // focus rule that has only ever pruned finished fixtures, is not a filter
       // worth a button in March.
-      if (!inSeasonOrManual(g)) continue;
       const key = dayKey(g.date);
       if (key && key < today) continue;
       if (g.starred) found.starred = true;
@@ -4658,6 +4682,10 @@ export default function App() {
   const coacheeQuickFilters = useMemo(() => {
     const found = { starred: false, focus: false };
     for (const c of coachees) {
+      // Last season's row of somebody coached again this season carries last
+      // season's Niveau; measured through it, the switch was offered for a
+      // list it could not change.
+      if (!isInSeason(c, seasonStartYear)) continue;
       for (const { game, role } of upcomingGamesByReferee.get(normName(c.full_name || '')) ?? []) {
         const roles: TargetRole[] = [role === '1. SR' ? '1SR' : '2SR'];
         if (!found.focus && !inNiveauFocus(c, game.league || '', roles)) found.focus = true;
@@ -4666,7 +4694,7 @@ export default function App() {
       }
     }
     return found;
-  }, [coachees, upcomingGamesByReferee, inNiveauFocus, inCoacheeFocus]);
+  }, [coachees, seasonStartYear, upcomingGamesByReferee, inNiveauFocus, inCoacheeFocus]);
 
   // Niveau and group for the amber Coachee badge in the games list.
   const coacheeLevelOf = (name: string) => {
@@ -8634,7 +8662,10 @@ export default function App() {
       {manualUploadCoachee && (
         <ManualUploadModal
           coachee={manualUploadCoachee}
-          coachees={coachees}
+          // This season's rows, like every other picker: the raw list holds a
+          // row per season per person, so anyone imported twice was offered
+          // twice, next to people who are no longer coachees at all.
+          coachees={coachees.filter((c) => isInSeason(c, seasonStartYear))}
           rcPeople={rcPeople}
           fixedRcName={rcAuth.rcName}
           lang={formData.lang}
@@ -8756,9 +8787,7 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
     // one cohort the Infoschreiben defines separately was unreachable.
     // The season this coachee's row belongs to — the modal has no app-level
     // season, and the row it is editing is the right answer anyway.
-    const now = new Date();
-    const fallbackSeason = now.getMonth() <= 7 ? now.getFullYear() - 1 : now.getFullYear();
-    const set = new Set<string>([...COACHEE_GROUP_OPTIONS, ...newSrGroupOptions(coachee.season ?? fallbackSeason)]);
+    const set = new Set<string>([...COACHEE_GROUP_OPTIONS, ...newSrGroupOptions(coachee.season ?? currentSeason())]);
     coachees.forEach(c => splitCoacheeGroups(c.groups).forEach(g => set.add(g)));
     return Array.from(set).sort();
     // eslint-disable-next-line react-hooks/exhaustive-deps

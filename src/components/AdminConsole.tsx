@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle } from 'lucide-react';
+import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle, Coins } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import { adminTabFromPath, adminLogModeFromPath } from '../lib/routes';
@@ -9,7 +9,7 @@ import {
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
   getCredentials, setCredential, requestCredentialCode, type CredentialSlotInfo,
   getAdminShortcutRcs, setAdminShortcutRcs,
-  loadRcOverview, loadrcCoachSummary, listRefereeCoachPeople, assignRcToGame, setGameStarred,
+  loadRcOverview, loadrcCoachSummary, listRefereeCoachPeople, assignRcToGame, setGameStarred, setRcPaid,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
   listReferees, importReferees, type RefereeRoster, type RosterReferee, type RefereeImportRow,
@@ -48,13 +48,12 @@ import { CoacheeChip, GroupChip } from './CoacheeChips';
 import { GameList, GameRow, MetaChip, SectionHead, type RowTone } from './GameRow';
 import { Skeleton, SkeletonRows } from './Skeleton';
 import { dayLabel, dayTimeLabel, clockLabel, todayKey } from '../lib/appTime';
+import { inSeasonOrManual, currentSeason, seasonLabel } from '../lib/season';
 import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
 
 type Lang = 'DE' | 'EN';
-const NOW = new Date();
-const CUR_SEASON = NOW.getMonth() <= 7 ? NOW.getFullYear() - 1 : NOW.getFullYear();
+const CUR_SEASON = currentSeason();
 const SEASONS = [CUR_SEASON, CUR_SEASON + 1, CUR_SEASON + 2];
-const seasonLabel = (y: number) => `${y}/${String((y + 1) % 100).padStart(2, '0')}`;
 
 // SR-Niveau & Stufe scale (svrz.ch), lowest -> highest
 const STUFEN = ['N4-3', 'N4-2', 'N4-1', 'N3-3', 'N3-2', 'N3-1', 'N2-2', 'N2-1', 'N1'];
@@ -238,6 +237,7 @@ const STR = {
       N1: 'Nationalkader',
     } as Record<string, string>,
     gamesHint: 'Ein Spiel einem Referee Coach zuteilen oder für eine Beobachtung vormerken. Die RC übernehmen ihre Spiele sonst selbst — das hier ist der Weg, es für jemanden zu tun.',
+    gamesCount: (n: number, s: string) => `${n} Spiele · Saison ${s} (Testspiele immer dabei)`,
     gamesSearch: 'Spiel, Team, Liga oder Halle suchen …',
     gamesNone: 'Keine Spiele gefunden.',
     gamesUnassigned: 'Nur ohne RC',
@@ -252,6 +252,9 @@ const STR = {
     ovPlannedHint: 'Vom RC übernommen, noch nicht gespielt.',
     ovDoneHint: 'Beobachtung erfasst und versendet.',
     ovEmpty: 'Keine.',
+    ovPaidOn: 'Bezahlt am', ovPaidBy: 'von', ovMarkPaid: 'Als bezahlt markieren', ovUnmarkPaid: 'Bezahlt-Markierung entfernen',
+    ovPaidHint: 'Spesen dieser Saison ausbezahlt. Ändert keine Zahl — „Vergütet" bleibt der Anspruch; das hier ist der Haken, wenn er beglichen ist.',
+    ovPaidOk: 'Als bezahlt markiert.', ovUnpaidOk: 'Markierung entfernt.', ovPaidCol: 'Bezahlt am',
     credentials: 'Passwörter', credentialsHint: 'Diese Passwörter öffnen die App und diese Seite. Sie werden nur als Hash gespeichert — ein gesetztes Passwort kann nicht wieder angezeigt, sondern nur ersetzt werden. Notiere es dir jetzt.',
     credShared: 'Team-Login (App)', credSharedHint: 'Das Passwort, das alle Referee Coaches für die App benutzen.',
     credAdmin: 'Admin (diese Seite)', credAdminHint: 'Öffnet diese Konsole.',
@@ -446,6 +449,7 @@ const STR = {
       N1: 'National squad',
     } as Record<string, string>,
     gamesHint: 'Assign a game to a referee coach, or flag it for observation. Coaches normally take their own games — this is how you do it for someone.',
+    gamesCount: (n: number, s: string) => `${n} games · season ${s} (test games always included)`,
     gamesSearch: 'Search game, team, league or venue …',
     gamesNone: 'No games found.',
     gamesUnassigned: 'Unassigned only',
@@ -460,6 +464,9 @@ const STR = {
     ovPlannedHint: 'Taken by the coach, not played yet.',
     ovDoneHint: 'Observation filed and sent.',
     ovEmpty: 'None.',
+    ovPaidOn: 'Paid on', ovPaidBy: 'by', ovMarkPaid: 'Mark as paid', ovUnmarkPaid: 'Remove the paid mark',
+    ovPaidHint: 'This season\'s expenses paid out. Changes no number — "Paid" stays the claim; this is the tick once it is settled.',
+    ovPaidOk: 'Marked as paid.', ovUnpaidOk: 'Mark removed.', ovPaidCol: 'Paid on',
     credentials: 'Passwords', credentialsHint: 'These passwords open the app and this page. Only a hash is stored — a password that has been set cannot be shown again, only replaced. Write it down now.',
     credShared: 'Team login (app)', credSharedHint: 'The password every referee coach uses for the app.',
     credAdmin: 'Admin (this page)', credAdminHint: 'Opens this console.',
@@ -972,8 +979,8 @@ export default function AdminConsole() {
         <div hidden={tab !== 'rcs'}><RcsAdmin t={t} lang={lang} mandates={rcMandates} defaultGoal={defaultGoal} settingsLoading={settingsLoading} onMandates={saveMandates} /></div>
         <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
-        <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} season={defaultSeason} active={tab === 'games'} /></div>
-        <div hidden={tab !== 'overview'}><OverviewAdmin t={t} lang={lang} paidCap={paidCap} /></div>
+        <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} season={defaultSeason} settingsLoading={settingsLoading} active={tab === 'games'} /></div>
+        <div hidden={tab !== 'overview'}><OverviewAdmin t={t} lang={lang} paidCap={paidCap} season={defaultSeason} settingsLoading={settingsLoading} /></div>
         <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} lang={lang} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
@@ -3603,16 +3610,18 @@ function foldOverviewGames(rows: rcCoachSummary[], pick: (r: rcCoachSummary) => 
  *  a "1" under Ausstehend and asked what it meant and where to find the game —
  *  the number was the whole answer the table had. This is the same detail the
  *  coach sees on their own Home, drawn the same way. */
-function OverviewDetail({ t, lang, rcName }: { t: T; lang: Lang; rcName: string }) {
+function OverviewDetail({ t, lang, rcName, season }: { t: T; lang: Lang; rcName: string; season: number }) {
   const [rows, setRows] = useState<rcCoachSummary[] | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
     let cancelled = false;
-    loadrcCoachSummary(rcName)
+    setRows(null);
+    setError('');
+    loadrcCoachSummary(rcName, season)
       .then((r) => { if (!cancelled) setRows(Array.isArray(r) ? r : []); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
-  }, [rcName]);
+  }, [rcName, season]);
 
   if (error) return <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>;
   if (!rows) return <div className="flex items-center gap-2 py-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /></div>;
@@ -3661,23 +3670,53 @@ function OverviewDetail({ t, lang, rcName }: { t: T; lang: Lang; rcName: string 
   );
 }
 
-function OverviewAdmin({ t, lang, paidCap }: { t: T; lang: Lang; paidCap: number }) {
+function OverviewAdmin({ t, lang, paidCap, season, settingsLoading }: { t: T; lang: Lang; paidCap: number; season: number; settingsLoading: boolean }) {
   const [rows, setRows] = useState<RcOverviewEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
+  // Fetched for the console's season, once the settings have said which one
+  // — not for the calendar's guess in the meantime, which would put the
+  // wrong season's counters on screen and then swap them. Asked without a
+  // season at all, this table was the sum of every season ever synced: a
+  // March fixture from the season before, counted as this season's
+  // unfinished observation.
   useEffect(() => {
-    loadRcOverview()
-      .then((r) => setRows(Array.isArray(r) ? r : []))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
-  }, []);
+    if (settingsLoading) return;
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    loadRcOverview(season)
+      .then((r) => { if (!cancelled) setRows(Array.isArray(r) ? r : []); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [season, settingsLoading]);
+  // Optimistic, with the server's answer written back over it — and rolled
+  // back if the save fails, so a rejected mark never shows as recorded.
+  const [paidBusy, setPaidBusy] = useState<string | null>(null);
+  const togglePaid = async (r: RcOverviewEntry) => {
+    const on = !r.paidAt;
+    setPaidBusy(r.id);
+    const previous = rows;
+    setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, paidAt: on ? new Date().toISOString() : null } : x)));
+    try {
+      const saved = await setRcPaid(r.id, season, on);
+      setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, paidAt: saved.paidAt, paidBy: saved.paidBy } : x)));
+      toast.success(on ? t.ovPaidOk : t.ovUnpaidOk, { lang });
+    } catch (e) {
+      setRows(previous);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPaidBusy(null);
+    }
+  };
 
   // Infoschreiben 5.1: only what was filed in the tool gets reimbursed, so this
   // table is the claim. Semicolons and a BOM because the file is opened in a
   // German-locale Excel, where a comma-separated file lands in one column.
   const downloadCsv = () => {
-    const head = [t.ovName, t.ovDone, t.ovPlanned, t.ovOutstanding, t.ovPaid];
+    const head = [t.ovName, t.ovDone, t.ovPlanned, t.ovOutstanding, t.ovPaid, t.ovPaidCol];
     const cell = (v: string | number) => {
       const s = String(v);
       return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -3686,12 +3725,14 @@ function OverviewAdmin({ t, lang, paidCap }: { t: T; lang: Lang; paidCap: number
       // The order the table on screen uses, so the export can be checked
       // against it line by line (it sorted by given name — Anna Zünd first).
       .sort((a, b) => bySurname({ full_name: a.fullName }, { full_name: b.fullName }))
-      .map((r) => [r.fullName, r.done, r.planned, r.outstanding, Math.min(r.done, paidCap)].map(cell).join(';'));
+      .map((r) => [r.fullName, r.done, r.planned, r.outstanding, Math.min(r.done, paidCap), r.paidAt ? dayLabel(r.paidAt, { year: true }) : ''].map(cell).join(';'));
     const csv = '\ufeff' + [head.map(cell).join(';'), ...body].join('\r\n') + '\r\n';
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `spesen-rc-${new Date().toISOString().slice(0, 10)}.csv`;
+    // Named by the season it settles, then the day it was drawn: the claim is
+    // for one season, and a file named by date alone did not say which.
+    a.download = `spesen-rc-${seasonLabel(season).replace('/', '-')}-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -3756,9 +3797,19 @@ function OverviewAdmin({ t, lang, paidCap }: { t: T; lang: Lang; paidCap: number
                       <td className={cn('py-2 pr-1.5 sm:pr-3 text-right font-semibold', r.outstanding > 0 ? 'text-amber-700' : 'text-stone-400')} title={t.ovOutstandingHint}>{r.outstanding}</td>
                       {/* What the season actually pays. Equal to Erledigt until a
                           coach passes the ceiling, and then deliberately not. */}
-                      <td className="py-2 text-right tabular-nums text-stone-600">
+                      <td className="py-2 text-right tabular-nums text-stone-600 whitespace-nowrap">
                         {Math.min(r.done, paidCap)}
                         {r.done > paidCap && <span className="text-stone-400"> / {r.done}</span>}
+                        {/* The tick says the claim was settled; the action to
+                            set it sits in the opened row, where there is room
+                            to say when and by whom. */}
+                        {r.paidAt && (
+                          <Check
+                            size={13}
+                            aria-label={`${t.ovPaidOn} ${dayLabel(r.paidAt, { year: true })}`}
+                            className="ml-1 inline-block align-[-2px] text-emerald-600"
+                          />
+                        )}
                       </td>
                     </tr>
                     {open && (
@@ -3776,7 +3827,24 @@ function OverviewAdmin({ t, lang, paidCap }: { t: T; lang: Lang; paidCap: number
                               mid-word. */}
                           <div className="w-0 min-w-full">
                             <div className="sticky left-0" style={{ width: 'min(100%, calc(100vw - 4.75rem))' }}>
-                              <OverviewDetail t={t} lang={lang} rcName={r.fullName} />
+                              <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                                <span className={cn('inline-flex items-center gap-1', r.paidAt ? 'text-emerald-700' : 'text-stone-500')} title={t.ovPaidHint}>
+                                  {r.paidAt ? <Check size={13} /> : <Coins size={13} />}
+                                  {r.paidAt
+                                    ? <>{t.ovPaidOn} {dayLabel(r.paidAt, { year: true })}{r.paidBy ? ` ${t.ovPaidBy} ${r.paidBy}` : ''}</>
+                                    : `${t.ovPaid}: ${Math.min(r.done, paidCap)}`}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => void togglePaid(r)}
+                                  disabled={paidBusy === r.id}
+                                  className={cn('h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors disabled:opacity-50',
+                                    r.paidAt ? 'border-stone-200 text-stone-600 hover:bg-stone-100' : 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100')}
+                                >
+                                  {r.paidAt ? t.ovUnmarkPaid : t.ovMarkPaid}
+                                </button>
+                              </div>
+                              <OverviewDetail t={t} lang={lang} rcName={r.fullName} season={season} />
                             </div>
                           </div>
                         </td>
@@ -3797,7 +3865,7 @@ function OverviewAdmin({ t, lang, paidCap }: { t: T; lang: Lang; paidCap: number
 // FOR THEMSELVES — the server refuses anything else (see /api/games/:id/assign-rc)
 // unless the request carries an admin session. This is that exception, moved
 // out of the coach app and into the console where it is obviously an admin act.
-function GamesAdmin({ t, lang, season, active }: { t: T; lang: Lang; season: number; active: boolean }) {
+function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: Lang; season: number; settingsLoading: boolean; active: boolean }) {
   const [games, setGames] = useState<EligibleGame[]>([]);
   const [people, setPeople] = useState<{ id: string; fullName: string }[]>([]);
   const [coachees, setCoachees] = useState<Coachee[]>([]);
@@ -3864,6 +3932,10 @@ function GamesAdmin({ t, lang, season, active }: { t: T; lang: Lang; season: num
   // Folded on both sides, or a typed "Müller" would miss the folded haystack.
   const needle = foldName(q);
   const shown = games.filter((g) => {
+    // The season on the tab, test games exempt — the same rule the coach app
+    // applies to the same endpoint. Without it, last season's fixtures were
+    // offered for assignment under this season's heading.
+    if (!inSeasonOrManual(g, season)) return false;
     if (unassignedOnly && g.assignedRc) return false;
     if (!needle) return true;
     // Accent-blind, like every other name match: "muller" finds "Müller".
@@ -3882,7 +3954,13 @@ function GamesAdmin({ t, lang, season, active }: { t: T; lang: Lang; season: num
           {t.gamesUnassigned}
         </button>
       </div>
-      {loading ? (
+      {/* The list is cut to a season, so the season is on the tab — and the
+          list is not drawn until the settings have said which one, or it
+          would flash the calendar's guess and re-cut itself a moment later. */}
+      {!(loading || settingsLoading) && (
+        <p className="mt-2 text-xs text-stone-400">{t.gamesCount(shown.length, seasonLabel(season))}</p>
+      )}
+      {loading || settingsLoading ? (
         <div className="mt-3 flex items-center gap-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /></div>
       ) : shown.length === 0 ? (
         <p className="mt-3 text-sm text-stone-400">{t.gamesNone}</p>

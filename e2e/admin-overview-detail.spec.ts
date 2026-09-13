@@ -35,10 +35,14 @@ const SUMMARY = [
 
 test('a coach\'s row opens into the games behind the counters', async ({ page }) => {
   await stubSignedInApp(page, { admin: true });
-  await page.route('**/api/rc-overview', (r) => r.fulfill({ json: OVERVIEW }));
+  // A regex, because the request carries the season now (?season=2026, the
+  // stub's default) and a glob cannot say "with a query". The console used to
+  // ask without one, and the server read that as every season ever synced.
+  await page.route(/\/api\/rc-overview\?season=2026$/, (r) => r.fulfill({ json: OVERVIEW }));
   const asked: string[] = [];
   await page.route('**/api/rc-overview/*/coachees*', (r) => {
-    asked.push(decodeURIComponent(new URL(r.request().url()).pathname));
+    const u = new URL(r.request().url());
+    asked.push(decodeURIComponent(u.pathname) + u.search);
     r.fulfill({ json: SUMMARY });
   });
 
@@ -55,7 +59,7 @@ test('a coach\'s row opens into the games behind the counters', async ({ page })
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-  expect(asked.some((p) => p.includes('/Thanh Ut Nguyen/'))).toBe(true);
+  expect(asked.some((p) => p.includes('/Thanh Ut Nguyen/') && p.endsWith('?season=2026'))).toBe(true);
 
   // The outstanding game, under a heading that says what "outstanding" means.
   await expect(page.getByText('VBC Altdorf')).toBeVisible();
@@ -70,4 +74,39 @@ test('a coach\'s row opens into the games behind the counters', async ({ page })
   // And it closes again.
   await toggle.click();
   await expect(page.getByText('VBC Altdorf')).toHaveCount(0);
+});
+
+// The season's expenses, once paid out, get a mark — set from the opened row,
+// shown as a tick beside the Paid count, written into the CSV. It changes no
+// number: Vergütet stays the claim, this is the fact that it was settled.
+test('a coach\'s expenses can be marked paid, and the mark can be taken back', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  await page.route(/\/api\/rc-overview\?season=2026$/, (r) => r.fulfill({ json: [
+    ...OVERVIEW,
+    { id: 'rc3', fullName: 'Paula Paid', done: 3, outstanding: 0, planned: 0, paidAt: '2026-09-01T10:00:00Z', paidBy: 'admin@example.ch' },
+  ] }));
+  await page.route('**/api/rc-overview/*/coachees*', (r) => r.fulfill({ json: [] }));
+  const puts: { rcId: string; body: unknown }[] = [];
+  await page.route('**/api/admin/rc-paid/*', async (r) => {
+    const body = r.request().postDataJSON() as { season: number; paid: boolean };
+    puts.push({ rcId: new URL(r.request().url()).pathname.split('/').pop() || '', body });
+    await r.fulfill({ json: { ok: true, paidAt: body.paid ? '2026-09-14T08:00:00Z' : null, paidBy: body.paid ? 'admin@example.ch' : '' } });
+  });
+
+  await page.goto('/admin/overview');
+  // A row already paid carries the tick; an unpaid one does not.
+  const paula = page.getByRole('row', { name: /Paula Paid/ });
+  await expect(paula.getByLabel(/Bezahlt am|Paid on/)).toBeVisible();
+  const row = page.getByRole('row', { name: /Thanh Ut Nguyen/ });
+  await expect(row.getByLabel(/Bezahlt am|Paid on/)).toHaveCount(0);
+
+  await row.getByRole('button', { name: 'Thanh Ut Nguyen' }).click();
+  await page.getByRole('button', { name: /Als bezahlt markieren|Mark as paid/ }).click();
+  await expect(page.getByText(/(Bezahlt am|Paid on) .*14\.09\.2026/)).toBeVisible();
+  await expect(row.getByLabel(/Bezahlt am|Paid on/)).toBeVisible();
+  expect(puts).toEqual([{ rcId: 'rc2', body: { season: 2026, paid: true } }]);
+
+  await page.getByRole('button', { name: /Bezahlt-Markierung entfernen|Remove the paid mark/ }).click();
+  await expect(row.getByLabel(/Bezahlt am|Paid on/)).toHaveCount(0);
+  expect(puts[1]).toEqual({ rcId: 'rc2', body: { season: 2026, paid: false } });
 });

@@ -484,9 +484,9 @@ export async function listPresidentNotes(): Promise<PresidentNote[]> {
   return r.json();
 }
 
-export async function loadCalendarGames(): Promise<CalendarGameStatus[]> {
+export async function loadCalendarGames(season: number): Promise<CalendarGameStatus[]> {
   if (isDemoMode()) return demo.loadCalendarGames();
-  const response = await fetch(apiUrl('/api/games/calendar-status'), { credentials: 'include' });
+  const response = await fetch(apiUrl(`/api/games/calendar-status?season=${season}`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -575,6 +575,18 @@ export async function assignRcToGame(gameId: string, assignedRc: string): Promis
   }
 }
 
+// Admin-only: record that a coach's season expenses were paid out (or take
+// the mark back). Changes no counter — see the "Bezahlt" block in the server.
+export async function setRcPaid(rcId: string, season: number, paid: boolean): Promise<{ paidAt: string | null; paidBy: string }> {
+  if (isDemoMode()) return { paidAt: paid ? new Date().toISOString() : null, paidBy: 'demo' };
+  const r = await fetch(apiUrl(`/api/admin/rc-paid/${encodeURIComponent(rcId)}`), {
+    method: 'PUT', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season, paid }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 // Admin-only: highlight (or un-highlight) a game as one we want observed.
 export async function setGameStarred(gameId: string, starred: boolean): Promise<void> {
   if (isDemoMode()) return demo.setGameStarred(gameId, starred);
@@ -585,20 +597,24 @@ export async function setGameStarred(gameId: string, starred: boolean): Promise<
   if (!r.ok) throw new Error(await r.text());
 }
 
-export async function loadRcOverview(season?: number): Promise<RcOverviewEntry[]> {
+// The season is not optional on any season-windowed read (these two and
+// loadMyRcGames / submitRcGameNote below). It was, and the admin console left
+// it out — which the server read as "every season ever synced": a March game
+// from the season before was counted, and listed, as this season's unfinished
+// observation. The server now falls back to the default season on its own;
+// the signatures make sure no caller relies on that.
+export async function loadRcOverview(season: number): Promise<RcOverviewEntry[]> {
   if (isDemoMode()) return demo.loadRcOverview();
-  const qs = season != null ? `?season=${season}` : '';
-  const response = await fetch(apiUrl(`/api/rc-overview${qs}`), { credentials: 'include' });
+  const response = await fetch(apiUrl(`/api/rc-overview?season=${season}`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
   return response.json() as Promise<RcOverviewEntry[]>;
 }
 
-export async function loadrcCoachSummary(rcName: string, season?: number): Promise<rcCoachSummary[]> {
+export async function loadrcCoachSummary(rcName: string, season: number): Promise<rcCoachSummary[]> {
   if (isDemoMode()) return demo.loadrcCoachSummary(rcName);
-  const qs = season != null ? `?season=${season}` : '';
-  const response = await fetch(apiUrl(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees${qs}`), { credentials: 'include' });
+  const response = await fetch(apiUrl(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees?season=${season}`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -653,10 +669,9 @@ export type MyRcGame = {
   };
 };
 
-export async function loadMyRcGames(season?: number): Promise<MyRcGame[]> {
+export async function loadMyRcGames(season: number): Promise<MyRcGame[]> {
   if (isDemoMode()) return demo.loadMyRcGames();
-  const qs = season != null ? `?season=${season}` : '';
-  const response = await fetch(apiUrl(`/api/rc-games${qs}`), { credentials: 'include' });
+  const response = await fetch(apiUrl(`/api/rc-games?season=${season}`), { credentials: 'include' });
   if (!response.ok) throw await apiError(response, 'SR-Spiele konnten nicht geladen werden.');
   return response.json() as Promise<MyRcGame[]>;
 }
@@ -672,7 +687,7 @@ export async function loadRcGameNotes(): Promise<RcGameNote[]> {
   return response.json() as Promise<RcGameNote[]>;
 }
 
-export async function submitRcGameNote(payload: { gameId: string; note: string; season?: number; rolesSwapped?: boolean }): Promise<RcGameNote> {
+export async function submitRcGameNote(payload: { gameId: string; note: string; season: number; rolesSwapped?: boolean }): Promise<RcGameNote> {
   if (isDemoMode()) return demo.submitRcGameNote(payload);
   const response = await fetch(apiUrl('/api/rc-game-notes'), {
     method: 'POST',

@@ -15,6 +15,7 @@ import {
   type AnnotationStatus,
 } from './logquery.ts';
 import { installErrorAlerts } from './erroralerts.ts';
+import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter, indexBySeason } from './season.ts';
 
 // Shared with the survey page so the mailed copy can never drift from the form
 // the coachee actually filled in. Pure data — no browser dependencies.
@@ -2562,17 +2563,6 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
   };
 }
 
-/** The season a game belongs to (Sept-Apr, named by its starting year), or null
- *  when it carries no usable date. Null means "match any season" rather than
- *  "drop it" — an undated fixture is a data gap, not a reason to hide a game. */
-function seasonOfGame(value: unknown): number | null {
-  const text = asText(value);
-  if (!text) return null;
-  const d = new Date(text);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.getMonth() >= 8 ? d.getFullYear() : d.getFullYear() - 1;
-}
-
 // Coachees are per-season rows: a referee coached in 25/26 who was not imported
 // for 26/27 is NOT a coachee this season. Matching games against one flat set of
 // every name ever imported put last season's people back on this season's game
@@ -2599,12 +2589,9 @@ async function getCoacheeNameIndex(prefetchedCoachees?: AnyRecord[]): Promise<Co
   for (const coachee of coachees) {
     const firstName = asText(coachee.first_name ?? coachee.vorname);
     const lastName = asText(coachee.last_name ?? coachee.nachname);
-    // Number(null) and Number('') are both 0 — a falsy season must not be read
-    // as the year zero, or every seasonless row lands in a bucket of its own.
-    const raw = coachee.season;
-    const season = raw == null || raw === '' ? Number.NaN : Number(raw);
+    const season = coacheeRowSeason(coachee.season);
     let target = seasonless;
-    if (Number.isFinite(season)) {
+    if (season != null) {
       target = bySeason.get(season) ?? new Set<string>();
       bySeason.set(season, target);
     }
@@ -4412,9 +4399,36 @@ async function isEmailTestMode(): Promise<boolean> {
   if (rec) return asText(rec.value) === '1';
   return TEST_MODE;
 }
+/** The season the app opens to: the admin's default_season, else the latest
+ *  season that has coachee rows, else null. What GET /api/settings reports —
+ *  and, since 2026-09-13, what every season-scoped read falls back to when
+ *  its caller names no season. Rows are read through parseSeason so a
+ *  seasonless row (whose season reads as 0) cannot become "season 0". */
+async function resolveDefaultSeason(): Promise<number | null> {
+  const stored = parseSeason((await getSettingRecord('default_season'))?.value);
+  if (stored != null) return stored;
+  try {
+    await ensureAdminAuth();
+    const seasons = await withCollection(collectionCandidates.coachees, (c) =>
+      c.getFullList<AnyRecord>({ fields: 'season' }));
+    const known = seasons.map((s) => parseSeason(s.season)).filter((n): n is number => n != null);
+    if (known.length > 0) return Math.max(...known);
+  } catch { /* keep null */ }
+  return null;
+}
+
+/** The season a request is about — pickSeason() over what this process can
+ *  read: a valid ?season, else the default season above, else (no default
+ *  stored and no coachee row anywhere — a fresh install) the season today
+ *  falls in. The console now sends the season too, but the server must not
+ *  depend on that: a request that names no season gets the one the app opens
+ *  to, the same answer /api/settings gives. */
+async function resolveSeason(raw: unknown): Promise<number> {
+  return pickSeason(raw, await resolveDefaultSeason());
+}
+
 app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressResponse) => {
   try {
-    const rec = await getSettingRecord('default_season');
     const groupsRec = await getSettingRecord('groups');
     let groups: string[] = [];
     try { groups = groupsRec ? JSON.parse(asText(groupsRec.value)) : []; } catch { groups = []; }
@@ -4442,17 +4456,7 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
     const niveauRec = await getSettingRecord('niveau_table');
     let niveau_table: Record<string, unknown> = {};
     try { niveau_table = sanitizeNiveauTable(niveauRec ? JSON.parse(asText(niveauRec.value)) : {}); } catch { niveau_table = {}; }
-    let default_season = rec ? Number(asText(rec.value)) || null : null;
-    if (default_season == null) {
-      // No explicit default set — fall back to the latest season that has coachee data.
-      try {
-        await ensureAdminAuth();
-        const seasons = await withCollection(collectionCandidates.coachees, (c) =>
-          c.getFullList<AnyRecord>({ fields: 'season' }));
-        const latest = Math.max(...seasons.map((s) => Number(s.season)).filter(Number.isFinite));
-        if (Number.isFinite(latest)) default_season = latest;
-      } catch { /* keep null */ }
-    }
+    const default_season = await resolveDefaultSeason();
     // Both upstream clocks, for the freshness line a coach reads. LAST SUCCESS
     // on each, never the last attempt — see GamesSyncStatus. Here rather than on
     // every game row: it is one fact about the whole screen, and this endpoint
@@ -5928,13 +5932,6 @@ type PresidentNoteEntry = {
   updatedAt: string;
 };
 
-/** Season a date belongs to, named by its starting year (Sept–Apr). Undated
- *  input keeps its old answer (the current calendar year) — president-note keys
- *  are written with it and must not shift. */
-function seasonOfDate(value: string): number {
-  return seasonOfGame(value) ?? new Date().getFullYear();
-}
-
 const presidentNotesKey = (season: number) => `${PRESIDENT_NOTES_PREFIX}${season}`;
 
 function parseNoteMap(value: unknown): Record<string, PresidentNoteEntry> {
@@ -6483,44 +6480,65 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
 
 // ── RC Overview ──────────────────────────────────────────────────────
 
-// Season "2026" spans 2026-09-01 → 2027-04-30 (same window convention as the
-// client-side games filter). Records without a parseable date are kept.
-function seasonDateFilter(seasonRaw: unknown): ((dateText: string) => boolean) | null {
-  const season = Number(asText(seasonRaw));
-  if (!Number.isFinite(season) || season < 2000 || season > 2100) return null;
-  const from = new Date(`${season}-09-01T00:00:00`);
-  const to = new Date(`${season + 1}-04-30T23:59:59`);
-  return (dateText: string) => {
-    const d = new Date(dateText);
-    if (Number.isNaN(d.getTime())) return true;
-    return d >= from && d <= to;
-  };
+/** The season window a list is cut to (seasonWindowFilter), for a request:
+ *  the season is resolved here — a missing or invalid `seasonRaw` is the
+ *  default season, not the absence of a window — and the test-game exemption
+ *  list is read alongside it. */
+async function seasonFilterExceptManual(seasonRaw: unknown): Promise<(game: AnyRecord) => boolean> {
+  const [season, manual] = await Promise.all([resolveSeason(seasonRaw), getManualGameIds()]);
+  return seasonWindowFilter(season, manual);
 }
 
-/** The season window, with test games let through.
- *
- *  A season runs September to April, and a test game is usually made today —
- *  which in May, June, July or August is in no season at all. It then vanished
- *  from every list in the app while sitting in the console that made it: the
- *  one game whose whole purpose is to be walked through was the one game that
- *  could not be. Their badge says what they are, so showing them out of season
- *  misleads nobody. */
-function seasonFilterExceptManual(
-  seasonRaw: unknown,
-  manual: Set<string>,
-): (game: AnyRecord) => boolean {
-  const inSeason = seasonDateFilter(seasonRaw);
-  return (game: AnyRecord) => {
-    if (!inSeason) return true;
-    if (manual.has(String(game.id))) return true;
-    return inSeason(asText(game.match_date));
-  };
+// ── Expense payout ("Bezahlt") ───────────────────────────────────────
+// Whether a coach's season expenses have been paid out. One mark per coach per
+// season, in app_settings under rc_paid_<season>: { [rcId]: { at, by } }. It
+// changes no counter — Vergütet is the CLAIM, computed from the filed
+// observations and the cap; this is the fact the treasurer records after
+// settling it, so the table can say which rows are done with.
+type RcPaidEntry = { at: string; by: string };
+const rcPaidKey = (season: number) => `rc_paid_${season}`;
+
+async function readRcPaid(season: number): Promise<Record<string, RcPaidEntry>> {
+  const rec = await getSettingRecord(rcPaidKey(season));
+  if (!rec) return {};
+  try {
+    const parsed = JSON.parse(asText(rec.value)) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, RcPaidEntry> = {};
+    for (const [id, v] of Object.entries(parsed as Record<string, unknown>)) {
+      const e = v as { at?: unknown; by?: unknown };
+      if (e && asText(e.at)) out[id] = { at: asText(e.at), by: asText(e.by) };
+    }
+    return out;
+  } catch { return {}; }
 }
+
+app.put('/api/admin/rc-paid/:rcId', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const rcId = String(req.params.rcId);
+    const body = (req.body ?? {}) as { season?: unknown; paid?: unknown };
+    const season = parseSeason(body.season);
+    if (season == null) { res.status(400).json({ error: 'season required' }); return; }
+    const on = Boolean(body.paid);
+    const by = asText(verifyAdminSession(req).email) || 'admin';
+    const entry: RcPaidEntry | null = on ? { at: new Date().toISOString(), by } : null;
+    // Read-modify-write on one JSON value, like the stars: two marks in quick
+    // succession would otherwise each save over the other's.
+    await withSettingLock(rcPaidKey(season), async () => {
+      const map = await readRcPaid(season);
+      if (entry) map[rcId] = entry; else delete map[rcId];
+      await setSetting(rcPaidKey(season), JSON.stringify(map));
+    });
+    log.info('admin.rc_paid', on ? 'expenses marked paid' : 'paid mark removed', { rcId, season, by }, reqCtx(req));
+    res.json({ ok: true, paidAt: entry ? entry.at : null, paidBy: entry ? entry.by : '' });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
 
 app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    const inSeason = seasonFilterExceptManual(req.query.season, await getManualGameIds());
+    const season = await resolveSeason(req.query.season);
+    const inSeason = await seasonFilterExceptManual(season);
     // 1. RC people
     const allPeople = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
       collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }),
@@ -6562,6 +6580,7 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
       feedbackGameIdsByRc.get(rcKey)!.add(String(fb.game || ''));
     }
 
+    const paidMap = await readRcPaid(season);
     const result = people.map((p) => {
       const fullName = `${asText(p.first_name)} ${asText(p.last_name)}`.trim();
       const rcKey = normalizeName(fullName);
@@ -6590,7 +6609,14 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
         }
       }
 
-      return { id: p.id, fullName, done, outstanding, planned };
+      // The payout mark rides along for the console. A coach's own row gets
+      // the date too (it is their money); who recorded it is admin business.
+      const paid = paidMap[String(p.id)];
+      return {
+        id: p.id, fullName, done, outstanding, planned,
+        paidAt: paid ? paid.at : null,
+        ...(rcAuth ? {} : { paidBy: paid ? paid.by : '' }),
+      };
     });
 
     res.json(result);
@@ -6608,7 +6634,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
     // and pin the query to the session's own name — the id-backed identity.
     const rcName = rcAuth ? rcAuth.name : decodeURIComponent(String(req.params.rcName));
     const rcKey = normalizeName(rcName);
-    const inSeason = seasonFilterExceptManual(req.query.season, await getManualGameIds());
+    const inSeason = await seasonFilterExceptManual(req.query.season);
     // Who this page is about, as an identity. For a plain RC it is the session;
     // for an admin reading someone's detail it is whoever that name resolves to.
     // Rows carrying an id are matched on it, so a rename — or a second coach
@@ -6835,7 +6861,7 @@ type MyRcGame = {
 // row in referee_coaches with no SV number of their own to match on.
 async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<MyRcGame[]> {
   await ensureAdminAuth();
-  const inSeason = seasonFilterExceptManual(seasonRaw, await getManualGameIds());
+  const inSeason = await seasonFilterExceptManual(seasonRaw);
   const coachees = await listCoacheesWithFallbackSort();
   const coacheeNames = await getCoacheeNameIndex(coachees);
   // Name -> row, so a note can carry the coachee's id and not only a spelling.
@@ -7584,9 +7610,13 @@ app.get('/api/observations/summary', requireRcSession, async (req: Request, res:
   }
 });
 
-app.get('/api/games/calendar-status', requireRcSession, async (_req: Request, res: ExpressResponse) => {
+app.get('/api/games/calendar-status', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
+    // Season-scoped like every other list, test games exempt. This route had
+    // no window at all: every game ever synced came back, and the calendar
+    // showed last March's final with an "outstanding" dot under this season.
+    const inSeason = await seasonFilterExceptManual(req.query.season);
     const listCalendarGamesWithFallback = async () => {
       try {
         return await withCollection(collectionCandidates.games, (collection) =>
@@ -7624,7 +7654,7 @@ app.get('/api/games/calendar-status', requireRcSession, async (_req: Request, re
     let summaryById = new Map<string, CoacheeObservationSummary>();
 
     try {
-      games = await listCalendarGamesWithFallback();
+      games = (await listCalendarGamesWithFallback()).filter(inSeason);
     } catch (error) {
       throw new Error(`calendar_status_stage:games_fetch failed: ${String(error)}`);
     }
@@ -7639,27 +7669,28 @@ app.get('/api/games/calendar-status', requireRcSession, async (_req: Request, re
       throw new Error(`calendar_status_stage:observation_summary failed: ${String(error)}`);
     }
 
-    const activeCoacheeByName = new Map<string, { id: string; full_name: string }>();
-    for (const coachee of coachees) {
-      if ((asText(coachee.stage) || 'active') === 'inactive') {
-        continue;
-      }
-      const firstName = asText(coachee.first_name ?? coachee.vorname);
-      const lastName = asText(coachee.last_name ?? coachee.nachname);
-      const variants = [
-        normalizeName(coachee.full_name),
-        normalizeName(coachee.name),
-        normalizeName(coachee.coachee_name),
-        normalizeName(coachee.referee_name),
-        normalizeName(`${firstName} ${lastName}`.trim()),
-        normalizeName(`${lastName} ${firstName}`.trim()),
-      ].filter(Boolean);
-      for (const name of variants) {
-        if (!activeCoacheeByName.has(name)) {
-          activeCoacheeByName.set(name, { id: coachee.id, full_name: asText(coachee.full_name) });
-        }
-      }
-    }
+    // Coachees are per-season rows: a game is matched against the row of ITS
+    // season (see indexBySeason). One flat map kept the first row per name —
+    // the oldest season's, by row order — so this season's game took its dot
+    // from last season's observations.
+    const activeCoacheeByName = indexBySeason(coachees
+      .filter((coachee) => (asText(coachee.stage) || 'active') !== 'inactive')
+      .map((coachee) => {
+        const firstName = asText(coachee.first_name ?? coachee.vorname);
+        const lastName = asText(coachee.last_name ?? coachee.nachname);
+        return {
+          season: coacheeRowSeason(coachee.season),
+          names: [
+            normalizeName(coachee.full_name),
+            normalizeName(coachee.name),
+            normalizeName(coachee.coachee_name),
+            normalizeName(coachee.referee_name),
+            normalizeName(`${firstName} ${lastName}`.trim()),
+            normalizeName(`${lastName} ${firstName}`.trim()),
+          ].filter(Boolean),
+          value: { id: String(coachee.id), full_name: asText(coachee.full_name) },
+        };
+      }));
 
     const result = games.map((game) => {
       const assigned = getAssignedPeopleFromGameRecord(game);
@@ -7670,8 +7701,9 @@ app.get('/api/games/calendar-status', requireRcSession, async (_req: Request, re
         assigned.secondLineJudge,
       ].filter(Boolean);
 
+      const gameSeason = seasonOfGame(game.match_date);
       const matchedCoachees = assignedPeople
-        .map((name) => activeCoacheeByName.get(normalizeName(name)))
+        .map((name) => activeCoacheeByName.find(gameSeason, normalizeName(name)))
         .filter(Boolean) as Array<{ id: string; full_name: string }>;
 
       const statuses = matchedCoachees.map((coachee) => summaryById.get(coachee.id)).filter(Boolean) as CoacheeObservationSummary[];

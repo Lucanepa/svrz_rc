@@ -6897,25 +6897,21 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
   return out;
 }
 
-// Where a filed Rückmeldung is mailed. Her own roster record carries the
-// address — the same is_rc_president flag that labels her there — so there is
-// nothing to configure and nothing to update when the office changes hands.
+// Where a filed Rückmeldung is mailed: the RC commission's inbox, the same
+// SURVEY_NOTIFY_EMAIL the questionnaire answers go to. It used to go to the
+// chair's own roster address instead (the is_rc_president flag), on the
+// reasoning that the note was promised to one person — and the first real one
+// landed in her private mailbox, where the commission's history of these notes
+// does not live and the next chair cannot find it. Her word, 2026-09-12: it
+// belongs in the shared inbox. She reads that inbox, and the Notizen tab in the
+// app is hers either way.
 //
-// Deliberately NOT SURVEY_NOTIFY_EMAIL: that inbox belongs to the RC
-// commission, and this note was promised to one person. Deliberately not an env
-// var either — a second place to state who the chair is, is a second place for
-// it to be wrong the season after next.
-async function rcPresidentEmails(): Promise<string[]> {
-  const people = await getActiveRcPeople();
-  return people.filter((p) => p.isRcPresident && p.email).map((p) => p.email);
-}
-
-// Mails one Rückmeldung to the chair. Never throws and never blocks the reply:
-// the note is already stored, the Notizen tab is the canonical copy, and losing
-// the coach's words to an SMTP hiccup would be far worse than a missing mail.
+// Mails one Rückmeldung. Never throws and never blocks the reply: the note is
+// already stored, the Notizen tab is the canonical copy, and losing the coach's
+// words to an SMTP hiccup would be far worse than a missing mail.
 //
-// German throughout, like the survey notification: it goes to the chair, not
-// back to whoever wrote it.
+// German throughout, like the survey notification: it goes to the commission,
+// not back to whoever wrote it.
 async function sendRcGameNoteNotification(opts: {
   note: string;
   game: MyRcGame;
@@ -6924,12 +6920,12 @@ async function sendRcGameNoteNotification(opts: {
   rolesSwapped: boolean;
 }): Promise<void> {
   try {
-    const to = await rcPresidentEmails();
+    const to = SURVEY_NOTIFY_EMAILS;
     if (to.length === 0) {
       // Loud, because from the coach's side this looked like it was sent. The
-      // flag lives in PocketBase and nowhere in the console, so an unflagged
-      // roster is silent by construction unless a line like this exists.
-      log.warn('rc_note.no_recipient', 'Rückmeldung stored but no active RC is flagged is_rc_president — nobody was mailed', {
+      // survey notification goes quiet on the same missing variable; a note
+      // that somebody sat down to write deserves a line in the log.
+      log.warn('rc_note.no_recipient', 'Rückmeldung stored but SURVEY_NOTIFY_EMAIL is not set — nobody was mailed', {
         gameId: opts.game.gameId,
       });
       return;

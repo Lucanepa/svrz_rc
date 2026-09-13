@@ -184,7 +184,8 @@ FEEDBACK_CC="rc_coaching@openvolley.app"
 FEEDBACK_EMAIL_TEST="1"              # 1 => redirect all emails to test recipient
 FEEDBACK_TEST_RECIPIENT="you@..."
 
-# Where each submitted survey is mailed as it arrives. Unset => stored only.
+# The RC commission's inbox: where each submitted survey and each 4.4.10
+# SR-Spiel Rückmeldung is mailed as it arrives. Unset => stored only.
 # (Who may READ them in the tool is the chair's console password below, not this
 #  address and not the is_rc_president flag — receiving each answer as it arrives
 #  and reading the collected set are different jobs.)
@@ -250,12 +251,13 @@ post-visit survey responses; when the per-person login went, that gate moved to
 the chair's own console password (`PRESIDENT_UI_PASSWORD` — see Credentials),
 and the flag was left behind as a label on her row.
 
-Since 2026-09-07 it has one job again: it is the address the 4.4.10 SR-Spiel
-Rückmeldung is **mailed** to as it is filed. Flag nobody and the notes are still
-stored and still readable in her tab, but no mail goes out — the API logs
-`rc_note.no_recipient` when that happens. Set it directly in PocketBase: it is
-intentionally absent from the admin console's RC editor, because a flag an admin
-can tick is a flag an admin can tick for themselves.
+From 2026-09-07 to 2026-09-13 it was also the address the 4.4.10 SR-Spiel
+Rückmeldung was **mailed** to as it was filed. The first real one landed in the
+chair's private mailbox, and she asked for the commission's inbox instead so the
+history stays with the office — so the notes now go to `SURVEY_NOTIFY_EMAIL`,
+like the survey answers (the API logs `rc_note.no_recipient` when that is
+unset). The flag is a label again; it is still set directly in PocketBase and
+intentionally absent from the admin console's RC editor.
 
 ### `referee_coach_feedbacks` (feedback records)
 

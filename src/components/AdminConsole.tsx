@@ -44,7 +44,7 @@ import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame } from '../types';
 import LevelText from './LevelText';
 import { CoacheeChip, GroupChip } from './CoacheeChips';
-import { GameList, GameRow, MetaChip } from './GameRow';
+import { ChipLine, GameList, GameRow, MarkRow, MetaChip } from './GameRow';
 import { Skeleton, SkeletonRows } from './Skeleton';
 import { dayLabel, dayTimeLabel, clockLabel, todayKey } from '../lib/appTime';
 import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
@@ -3754,12 +3754,24 @@ function GamesAdmin({ t, lang, season, active }: { t: T; lang: Lang; season: num
                   .map(([slot, name]) => {
                     const c = coacheeFor(name);
                     const group = c ? groupLabel(c.groups, lang) : '';
+                    // Stacked like the coach app's lists, marks under the name:
+                    // beside it, a surname that is one long word plus "Coachee"
+                    // and a group could not wrap and ran past the list's edge,
+                    // which gave the whole Games tab a sideways scroll on a
+                    // phone (13.09.2026). Each referee on a line of their own,
+                    // so 1SR sits over 2SR at one indent.
                     return (
-                      <MetaChip key={slot} wrap tone={c ? 'amber' : 'stone'}>
-                        <span><span className="font-bold opacity-70">{slot}&nbsp;</span>{name}</span>
-                        {c && <CoacheeChip />}
-                        <GroupChip group={group} />
-                      </MetaChip>
+                      <ChipLine key={slot}>
+                        <MetaChip wrap stack={!!c} tone={c ? 'amber' : 'stone'}>
+                          <span><span className="font-bold opacity-70">{slot}&nbsp;</span>{name}</span>
+                          {c && (
+                            <MarkRow>
+                              <CoacheeChip />
+                              <GroupChip group={group} />
+                            </MarkRow>
+                          )}
+                        </MetaChip>
+                      </ChipLine>
                     );
                   })}
               </>}
@@ -3893,8 +3905,8 @@ function CredentialsAdmin({ t }: { t: T }) {
               {!armed ? (
                 // Nothing is editable until a code has been asked for: a change
                 // starts by proving you can read the mailbox, not by typing.
-                <div className="mt-2 flex items-center gap-2">
-                  <button className={btnGhost} disabled={busy === slot.slot} onClick={() => void sendCode(slot)}>
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <button className={`${btnGhost} shrink-0 whitespace-nowrap`} disabled={busy === slot.slot} onClick={() => void sendCode(slot)}>
                     {busy === slot.slot ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />} {t.credSendCode}
                   </button>
                   <span className="text-[11px] text-stone-400">{t.credCodeWhy}</span>

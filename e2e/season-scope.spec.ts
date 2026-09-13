@@ -28,6 +28,11 @@ const HER_GAME = {
   ...GAME,
   id: 'g-25',
   matchNo: '9990001',
+  // A league the Niveau table can read, in this season's row's focus (N2-2 as
+  // 1. SR: 2. Liga men). The shared fixture's bare "3L" carries no gender, and
+  // a "Befördert" coachee is held to the table strictly — a game it cannot
+  // place is out of their focus, and this spec is about the badge, not that.
+  league: '2L ♂',
   homeTeam: 'VBC Limmattal H1',
   awayTeam: 'Audax SSC 1',
   firstReferee: LAST_SEASON_ROW.full_name,

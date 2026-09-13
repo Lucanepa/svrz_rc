@@ -64,7 +64,7 @@ import { dayLabel, dayTimeLabel, shortDayLabel, clockLabel, dayKey, todayKey, sh
 import { subscribeLive } from './lib/liveEvents';
 import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml, sanitizeRich } from './lib/richText';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
-import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, newSrGroupOptions, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
+import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, isPromotionGroup, newSrGroupOptions, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName as normName, coacheeIndex } from './lib/coacheeName';
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
@@ -4488,13 +4488,19 @@ export default function App() {
   /** Is this game inside the coachee's focus (the Niveau they are watched at)?
    *  Shared by the per-coachee games list and the row's inline list, so the same
    *  game cannot be worth watching on one and hidden on the other. A game with
-   *  no referee role on it (a line judge) has nothing to compare and stays. */
+   *  no referee role on it (a line judge) has nothing to compare and stays.
+   *
+   *  A promotion candidate is held to the table strictly: a game it cannot
+   *  place (a cup round, say) is out of their focus, where for anyone else it
+   *  is left in. Asked for by the coaches, 2026-09-12 — a "Beförderung" list
+   *  full of cup games is not a list of games to judge a promotion on. */
   const inNiveauFocus = useCallback((coachee: Coachee | undefined, league: string, roles: TargetRole[]) => {
     if (!coachee || roles.length === 0) return true;
     const key = levelKey(coachee.referee_level, coachee.stage);
     const target = coacheeTargets[coachee.id];
     if (!isTargetActive(target, key, niveauTable)) return true;
-    return roles.some((role) => keepGame({ league, role, target, levelKey: key, table: niveauTable }));
+    const strict = isPromotionGroup(coachee.groups);
+    return roles.some((role) => keepGame({ league, role, target, levelKey: key, table: niveauTable, strict }));
   }, [coacheeTargets, niveauTable]);
   /** The rule as the lists apply it, escape hatch included. Split from the rule
    *  itself above because the switch that opens the hatch has to ask whether it
@@ -4573,8 +4579,15 @@ export default function App() {
     if (coacheeRefs.length === 0) return false;
     const anyTargeted = coacheeRefs.some((r) => isTargetActive(coacheeTargets[r.c.id], levelKey(r.c.referee_level, r.c.stage), niveauTable));
     if (!anyTargeted) return false;
+    // Kept when it is in focus for ANY coachee on the whistle — the strict
+    // reading of a promotion candidate hides nothing from the colleague beside
+    // them who is watched at every level.
     return !coacheeRefs.some((r) =>
-      keepGame({ league: g.league || '', role: r.role, target: coacheeTargets[r.c.id], levelKey: levelKey(r.c.referee_level, r.c.stage), table: niveauTable }));
+      keepGame({
+        league: g.league || '', role: r.role, target: coacheeTargets[r.c.id],
+        levelKey: levelKey(r.c.referee_level, r.c.stage), table: niveauTable,
+        strict: isPromotionGroup(r.c.groups),
+      }));
   }, [coacheeByName, coacheeTargets, niveauTable]);
 
   // The coachee filter on the games tab. Its VALUES stay the raw name the game
@@ -6848,8 +6861,8 @@ export default function App() {
                           ? (formData.lang === 'DE' ? 'Alle Spiele' : 'All games')
                           : (formData.lang === 'DE' ? 'Nur im Fokus' : 'In focus only')}
                         title={formData.lang === 'DE'
-                          ? 'Nur Spiele im Fokus der Coachees, aus ihrem Niveau (Standard). Antippen, um alle Spiele zu zeigen.'
-                          : "Only games in the coachees' focus, from their level (default). Tap to show all games."}
+                          ? 'Nur Spiele im Fokus der Coachees, aus ihrem Niveau (Standard). Bei „Beförderung?"/„Beförderung" nur Spiele, die sich dem Niveau eindeutig zuordnen lassen — kein Cup. Antippen, um alle Spiele zu zeigen.'
+                          : "Only games in the coachees' focus, from their level (default). For \"Promotion?\"/\"Promoted\" only games the level can be read off — no cup. Tap to show all games."}
                       />
                     )}
                   </div>

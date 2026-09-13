@@ -99,6 +99,17 @@ export function isNewSrGroup(groups?: string, season?: number): boolean {
   });
 }
 
+/** Is this coachee on the list for a promotion — 4.4.4's "Beförderung?" (still
+ *  to be decided) or 4.4.5's "Beförderung" (decided last season, to be seen at
+ *  the new level now)? Both say the same thing about the visit: it is about ONE
+ *  kind of game, the one the SR-Niveau table names for their level, and the
+ *  Infoschreiben asks the coach to pick exactly that one. The focus is stricter
+ *  for them because of it — see keepGame's `strict`. "Befördert" too: rows a
+ *  coach picked by hand before the picker was cleaned up still carry it. */
+export function isPromotionGroup(groups?: string): boolean {
+  return splitCoacheeGroups(groups).some((g) => /^beförder(?:ung\??|t)$/i.test(g));
+}
+
 /** Split a groups field into its individual groups. A bare 2- or 4-digit part
  *  is the tail of a season ("Neu-SR 2025/26"), not a group of its own. */
 export function splitCoacheeGroups(value?: string): string[] {

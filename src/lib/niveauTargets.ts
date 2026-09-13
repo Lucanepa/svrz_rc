@@ -221,13 +221,24 @@ export function columnFor(parsed: ParsedLeague, role: TargetRole): NiveauColumn 
 }
 
 // Should a game be KEPT (shown) for a coachee playing `role` in it?
-// Returns true to keep, false to prune. Fails open (keeps) when uncertain.
+// Returns true to keep, false to prune. Fails open (keeps) when uncertain —
+// unless asked not to, see `strict`.
 export function keepGame(opts: {
   league: string;
   role: TargetRole;
   target?: CoacheeTarget;
   levelKey: string;
   table?: NiveauMatrix;
+  /** Fail CLOSED on a league the table cannot read — a cup round, a U18
+   *  final, last season's bare "U23": out of focus rather than kept. Asked for
+   *  the promotion cohort (isPromotionGroup), whose visit is about a game the
+   *  table can vouch for at their level and nothing else; at the start of a
+   *  season the cup rounds are most of the fixture list, and every one of them
+   *  was shown to a coach looking for that game. Everyone else keeps the
+   *  fail-open default: for a Varia or a Neu-SR any evening will do, and a
+   *  misread league must not cost them one. A level the table has no row for
+   *  is never pruned either way — there is nothing to be strict against. */
+  strict?: boolean;
 }): boolean {
   const target = opts.target ?? { mode: 'auto' };
 
@@ -246,7 +257,7 @@ export function keepGame(opts: {
   const table = opts.table ?? NIVEAU_TABLE;
   if (!hasNiveauRules(opts.levelKey, table)) return true; // unknown / unset level → never prune
   const parsed = parseLeague(opts.league);
-  if (!parsed.ok) return true; // can't parse confidently → keep
+  if (!parsed.ok) return !opts.strict; // can't parse confidently → keep, unless strict
   const column = columnFor(parsed, opts.role);
   if (!column) return false;
   return table[opts.levelKey][column].includes(parsed.division);

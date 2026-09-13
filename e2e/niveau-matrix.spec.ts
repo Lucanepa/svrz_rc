@@ -24,7 +24,7 @@ const chip = (page: Page, level: string, column: string, league: string) =>
   page.getByRole('button', { name: `${level} · ${column} · ${league}`, exact: true });
 
 test('the published table is what the console shows', async ({ page }) => {
-  await page.goto('/#/admin/niveau');
+  await page.goto('/admin/niveau');
 
   // N3-3 · Herren · 1. SR is "4. Liga" on the paper, and nothing else.
   await expect(chip(page, 'N3-3', 'Herren 1. SR', '4. Liga')).toHaveAttribute('aria-pressed', 'true');
@@ -53,7 +53,7 @@ test('an edit is stored as an override of that row alone, and Reset undoes it', 
     await r.fulfill({ json: { ok: true } });
   });
 
-  await page.goto('/#/admin/niveau');
+  await page.goto('/admin/niveau');
   await chip(page, 'N3-3', 'Herren 1. SR', '3. Liga').click();
 
   await expect(page.getByText(/1 Zelle weicht von der offiziellen Tabelle ab/)).toBeVisible();
@@ -77,6 +77,6 @@ test('an edit is stored as an override of that row alone, and Reset undoes it', 
 test('the table says the focus hides rather than blocks', async ({ page }) => {
   // Said out loud by the first person who read the matrix: an unlit cell looks
   // like a ban. The sentence that says otherwise has to stay next to the grid.
-  await page.goto('/#/admin/niveau');
+  await page.goto('/admin/niveau');
   await expect(page.getByText(/blendet nur aus, er sperrt nichts/)).toBeVisible();
 });

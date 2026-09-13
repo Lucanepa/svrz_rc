@@ -23,7 +23,7 @@ test('an admin flags a game from the console, and cannot unflag VolleyManager', 
     await r.fulfill({ json: { ok: true, starred: true, vmFlagged: false } });
   });
 
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
   await expect(page.getByText(/VBC Züri Unterland/)).toBeVisible();
 

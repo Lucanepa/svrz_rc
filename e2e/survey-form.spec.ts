@@ -91,7 +91,7 @@ test.describe('the questionnaire editor', () => {
       await r.fulfill({ json: { config: CUSTOM, defaults: DEFAULT_SURVEY_CONFIG } });
     });
 
-    await page.goto('/#/admin/form');
+    await page.goto('/admin/form');
     await expect(page.getByLabel(/Frage \(Deutsch\)|Question \(German\)/).first()).toHaveValue('War der Coach da?');
 
     await page.getByRole('button', { name: /Frage hinzufügen|Add question/ }).click();
@@ -120,7 +120,7 @@ test.describe('the questionnaire editor', () => {
       await r.fulfill({ json: { config: CUSTOM, defaults: DEFAULT_SURVEY_CONFIG } });
     });
 
-    await page.goto('/#/admin/form');
+    await page.goto('/admin/form');
     await page.getByRole('button', { name: /Nach unten|Move down/ }).first().click();
     await page.getByRole('button', { name: /^(Speichern|Save)$/ }).click();
     await expect(page.getByText(/Gespeichert|Saved/)).toBeVisible();

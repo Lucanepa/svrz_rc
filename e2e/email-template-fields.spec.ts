@@ -29,7 +29,7 @@ test.beforeEach(async ({ page }) => {
 test('the subject box is as tall as the text in it, even when the tab was hidden first', async ({ page }) => {
   // Arrive from another tab: the Emails tab is mounted, and hidden, before it
   // is ever shown — the path that broke it.
-  await page.goto('/#/admin/coachees');
+  await page.goto('/admin/coachees');
   // The console opens in German, which is what the club uses.
   await page.getByRole('button', { name: 'E-Mails', exact: true }).click();
 
@@ -50,7 +50,7 @@ test('the subject box is as tall as the text in it, even when the tab was hidden
 });
 
 test('a placeholder the server does substitute is not flagged as unknown', async ({ page }) => {
-  await page.goto('/#/admin/emails');
+  await page.goto('/admin/emails');
   await page.getByRole('textbox').first().waitFor();
   // {{coachee}} is an alias: not offered as a chip, but it renders — so it must
   // not be marked amber, and the warning must stay away.

@@ -51,7 +51,7 @@ async function openManualGameForm(page: Page) {
   await page.route('**/api/admin/referees*', (r) => r.fulfill({ json: DIRECTORY }));
   await page.route('**/api/referee-coach-people', (r) => r.fulfill({ json: RC_PEOPLE }));
   await page.route('**/api/admin/games/manual*', (r) => r.fulfill({ json: [] }));
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   await page.getByRole('button', { name: /Einstellungen|Settings/ }).click();
 }
 

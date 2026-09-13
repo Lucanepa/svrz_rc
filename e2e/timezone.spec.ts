@@ -43,7 +43,7 @@ test.beforeEach(async ({ page }) => {
 test('the dashboard shows a fixture at its Zürich kick-off, on the Swiss day', async ({ page }) => {
   // The Home dashboard is the view the report came from ("Next observations"),
   // and this is the hard case: the reader's device is already on the 16th.
-  await page.goto('/#/home');
+  await page.goto('/home');
   await expect(page.getByText(GAME.homeTeam).first()).toBeVisible();
   await expect(page.getByText('23:30', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('15.11.').first()).toBeVisible();
@@ -52,7 +52,7 @@ test('the dashboard shows a fixture at its Zürich kick-off, on the Swiss day', 
 });
 
 test('the games list shows the same Zürich kick-off', async ({ page }) => {
-  await page.goto('/#/games');
+  await page.goto('/games');
   // The coach's own assigned game is hidden behind this filter by default.
   await page.getByRole('button', { name: /Filter/i }).first().click();
   await page.getByRole('button', { name: /RC assigned/i }).first().click();
@@ -63,7 +63,7 @@ test('the games list shows the same Zürich kick-off', async ({ page }) => {
 
 test('the calendar files it under the Swiss day too', async ({ page }) => {
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [{ ...GAME, date: PLANNED_DATE }] }));
-  await page.goto('/#/games');
+  await page.goto('/games');
   await page.getByRole('button', { name: /Filter/i }).first().click();
   await page.getByRole('button', { name: /RC assigned/i }).first().click();
   await expect(page.getByText(GAME.homeTeam).first()).toBeVisible();
@@ -79,7 +79,7 @@ test('"Heute" means the Swiss day, even when the reader is already on the next o
   // so it fell out of "Gestern" too.
   await page.clock.setFixedTime(new Date('2026-11-15T22:35:00Z'));
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [{ ...GAME, date: PLANNED_DATE }] }));
-  await page.goto('/#/games');
+  await page.goto('/games');
   await page.getByRole('button', { name: /Filter/i }).first().click();
   await page.getByRole('button', { name: /RC assigned/i }).first().click();
   await expect(page.getByText(GAME.homeTeam).first()).toBeVisible();

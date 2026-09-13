@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
+import { adminTabFromPath, adminLogModeFromPath } from '../lib/routes';
 import {
   getAdminAuthStatus, adminUiLogin, logoutAdmin, getAuthMe, getGamesSyncStatus,
   listCoachees, createCoachee, updateCoachee, deleteCoachee, importCoachees,
@@ -635,15 +636,12 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
   return out;
 }
 
-// Console tabs live in the URL as #/admin/<tab>, so each one is linkable and
-// the Back button steps between them.
+// Console tabs live in the URL as /admin/<tab>, so each one is linkable and
+// the Back button steps between them. The Protokoll tab's own two views are
+// one level down: /admin/logs and /admin/logs/history.
 const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'niveau', 'emails', 'form', 'survey', 'notes', 'archive', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
-const adminTabFromHash = (): AdminTab => {
-  const m = /^#\/?admin\/([a-z]+)/i.exec(window.location.hash);
-  const found = ADMIN_TABS.find((x) => x === m?.[1]?.toLowerCase());
-  return found ?? 'coachees';
-};
+const adminTabFromUrl = (): AdminTab => adminTabFromPath(window.location.pathname, ADMIN_TABS) as AdminTab;
 
 export default function AdminConsole() {
   const [checking, setChecking] = useState(true);
@@ -653,7 +651,8 @@ export default function AdminConsole() {
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [tab, setTab] = useState<AdminTab>(adminTabFromHash);
+  const [tab, setTab] = useState<AdminTab>(adminTabFromUrl);
+  const [logMode, setLogMode] = useState<'live' | 'history'>(() => adminLogModeFromPath(window.location.pathname));
   // Which credential opened this session. null while unknown: a deep link to
   // #/admin/survey must not bounce the one person allowed to be there just
   // because the check hasn't come back yet.
@@ -804,21 +803,28 @@ export default function AdminConsole() {
     }
   }, []);
 
-  // Tab ↔ URL. pushState keeps the hashchange listener in main.tsx (which
-  // reloads on a root change) out of it; popstate handles Back/Forward.
-  const didSyncHash = useRef(false);
-  const isAdminHash = () => /^#\/?admin(\/|$)/i.test(window.location.hash);
+  // Tab ↔ URL. pushState, so each tab is a Back step; popstate handles
+  // Back/Forward. The Logs sub-tab REPLACES rather than pushes: Live/Verlauf
+  // is a toggle inside one tab, and Back through it should leave Logs, not
+  // step through the toggle first.
+  const didSyncPath = useRef(false);
+  const isAdminPath = () => /^\/admin(\/|$)/i.test(window.location.pathname);
   useEffect(() => {
-    if (!isAdminHash()) return; // leaving the console — main.tsx takes over
-    const target = `#/admin/${tab}`;
-    if (window.location.hash !== target) {
-      if (didSyncHash.current) window.history.pushState(null, '', target);
+    if (!isAdminPath()) return; // leaving the console — main.tsx takes over
+    const target = tab === 'logs' && logMode === 'history' ? '/admin/logs/history' : `/admin/${tab}`;
+    if (window.location.pathname !== target) {
+      const sameTab = adminTabFromUrl() === tab;
+      if (didSyncPath.current && !sameTab) window.history.pushState(null, '', target);
       else window.history.replaceState(null, '', target);
     }
-    didSyncHash.current = true;
-  }, [tab]);
+    didSyncPath.current = true;
+  }, [tab, logMode]);
   useEffect(() => {
-    const onPop = () => { if (isAdminHash()) setTab(adminTabFromHash()); };
+    const onPop = () => {
+      if (!isAdminPath()) return;
+      setTab(adminTabFromUrl());
+      setLogMode(adminLogModeFromPath(window.location.pathname));
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
@@ -909,7 +915,7 @@ export default function AdminConsole() {
           <SvrzLogo className="h-7 w-auto" />
           <span className="text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">{t.admin}</span>
           {testMode && <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-[11px] font-semibold px-2 py-0.5"><FlaskConical size={12} /> {t.testBadge}</span>}
-          <button onClick={() => { window.location.href = window.location.pathname + window.location.search; }} aria-label={t.toApp} className="ml-auto inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Home size={14} /><span className="hidden sm:inline">{t.toApp}</span></button>
+          <button onClick={() => { window.location.assign('/'); }} aria-label={t.toApp} className="ml-auto inline-flex items-center gap-1.5 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Home size={14} /><span className="hidden sm:inline">{t.toApp}</span></button>
           <button onClick={toggleLang} className="inline-flex items-center gap-1 h-9 px-2.5 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 transition-colors"><Languages size={14} />{lang}</button>
           <button onClick={logout} aria-label={t.logout} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"><LogOut size={15} /> <span className="hidden sm:inline">{t.logout}</span></button>
         </div>
@@ -964,7 +970,7 @@ export default function AdminConsole() {
         {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
         {isPresident && <div hidden={tab !== 'archive'}><ArchiveAdmin t={t} defaultSeason={defaultSeason} /></div>}
         {!isPresident && <>
-        <div hidden={tab !== 'logs'}><LogsAdmin t={t} lang={lang} active={tab === 'logs'} /></div>
+        <div hidden={tab !== 'logs'}><LogsAdmin t={t} lang={lang} active={tab === 'logs'} mode={logMode} onMode={setLogMode} /></div>
         <div hidden={tab !== 'settings'}>
           <SettingsAdmin t={t} lang={lang} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} paidCap={paidCap} onPaidCap={savePaidCap} />
           <ManualGameAdmin t={t} lang={lang} active={tab === 'settings'} />
@@ -2531,8 +2537,12 @@ const logActionBtn = 'inline-flex items-center gap-1 h-7 px-2 rounded-md border 
 // The Protokoll tab. Two views over the same store: the live ring (fast, and
 // empty again after every redeploy) and the stored daily files (30 days, and
 // the only place a report from yesterday can be answered).
-function LogsAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolean }) {
-  const [mode, setMode] = useState<'live' | 'history'>('live');
+// `mode` is owned by the console so the URL can carry it: /admin/logs/history
+// is what makes "the error is under Verlauf" a linkable sentence.
+function LogsAdmin({ t, lang, active, mode, onMode }: {
+  t: T; lang: Lang; active: boolean; mode: 'live' | 'history'; onMode: (m: 'live' | 'history') => void;
+}) {
+  const setMode = onMode;
   return (
     <Card>
       <div className="flex items-center gap-2 flex-wrap mb-3">

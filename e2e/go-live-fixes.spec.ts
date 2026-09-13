@@ -18,7 +18,7 @@ test.describe('Ambiguous contact-sync names are surfaced, not guessed at', () =>
         updatedFromGames: 0, gameRefereesFound: 0, gamesError: '',
       },
     }));
-    await page.goto('/#/admin');
+    await page.goto('/admin');
     await page.getByRole('button', { name: /Fetch contacts|Kontakte/ }).click();
 
     await expect(page.getByText(/Marco Simon/)).toBeVisible();

@@ -103,7 +103,7 @@ function errorMessage(err: unknown, t: Strings, fallback = ''): string {
 }
 
 // Identity of the session that passed the gate. rcName/rcId are null when the
-// only cookie present is a console one — someone who signed in at #/admin and
+// only cookie present is a console one — someone who signed in at /admin and
 // then navigated to the app without a team session of their own.
 export type RcAuth = {
   rcId: string | null;
@@ -116,7 +116,7 @@ export type RcAuth = {
   isAdminSession: boolean;
   /** Signed in to the app — the name was chosen off a list, not proven. */
   sharedSession: boolean;
-  /** Draw the #/admin shortcut. Cosmetic: the name behind it was picked, not
+  /** Draw the /admin shortcut. Cosmetic: the name behind it was picked, not
    *  proven, so this decides a button and never an access decision. */
   adminShortcut: boolean;
   /** Reopens the picker without signing out. */
@@ -440,7 +440,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                   second form behind this one — the console no longer sits
                   behind this gate at all (see main.tsx). */}
               <p className="text-center text-[11px] text-stone-400 mt-5">
-                <a href="#/admin" className="underline hover:text-stone-600">{t.adminLogin}</a>
+                <a href="/admin" className="underline hover:text-stone-600">{t.adminLogin}</a>
               </p>
             </>
           )}

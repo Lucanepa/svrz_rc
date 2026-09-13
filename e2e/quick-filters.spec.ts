@@ -46,7 +46,7 @@ test.describe('games', () => {
   test('a flag no game carries is not a button', async ({ page }) => {
     await stubSignedInApp(page);
     await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE] }));
-    await page.goto('/#/games');
+    await page.goto('/games');
     await expect(page.getByText(FREE.homeTeam).first()).toBeVisible();
     await expect(flagPill(page)).toHaveCount(0);
   });
@@ -54,7 +54,7 @@ test.describe('games', () => {
   test('a flagged game brings the pill, and the pill filters to it', async ({ page }) => {
     await stubSignedInApp(page);
     await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE, STARRED] }));
-    await page.goto('/#/games');
+    await page.goto('/games');
     await flagPill(page).click();
     await expect(page.getByText(STARRED.homeTeam)).toBeVisible();
     await expect(page.getByText(FREE.homeTeam)).toHaveCount(0);
@@ -63,7 +63,7 @@ test.describe('games', () => {
   test('a flag on a game already played is not offered', async ({ page }) => {
     await stubSignedInApp(page);
     await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE, PLAYED] }));
-    await page.goto('/#/games');
+    await page.goto('/games');
     await expect(page.getByText(PLAYED.homeTeam)).toBeVisible();
     await expect(flagPill(page)).toHaveCount(0);
   });
@@ -71,7 +71,7 @@ test.describe('games', () => {
   test('the focus pill goes away when the Niveau prunes nothing', async ({ page }) => {
     await stubSignedInApp(page);
     await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE] }));
-    await page.goto('/#/games');
+    await page.goto('/games');
     await expect(page.getByText(FREE.homeTeam).first()).toBeVisible();
     await expect(focusPill(page)).toHaveCount(0);
   });
@@ -81,7 +81,7 @@ test.describe('games', () => {
     // Watched as a 2. SR only, and the fixture has them on the 1. SR line.
     await targets(page, { [COACHEE.id]: { mode: 'custom', roles: ['2SR'] } });
     await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE] }));
-    await page.goto('/#/games');
+    await page.goto('/games');
     await expect(focusPill(page)).toBeVisible();
     await expect(page.getByText(FREE.homeTeam)).toHaveCount(0);
 

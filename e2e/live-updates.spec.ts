@@ -29,7 +29,7 @@ test('a game taken elsewhere leaves the list on a pushed event, with no refetch'
     ]));
   });
 
-  await page.goto('/#/games');
+  await page.goto('/games');
   await expect(page.getByText(GAME.homeTeam)).toBeVisible();
   const afterFirstLoad = listFetches;
 
@@ -44,7 +44,7 @@ test('a refused stream costs nothing — the list still works', async ({ page })
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [{ ...GAME, id: 'g1', assignedRc: '' }] }));
   await page.route('**/api/events', (r) => r.abort('failed'));
 
-  await page.goto('/#/games');
+  await page.goto('/games');
   await expect(page.getByText(GAME.homeTeam)).toBeVisible();
   // Still interactive: the row opens, and the take button is there to be used.
   await page.getByText(GAME.homeTeam).click();

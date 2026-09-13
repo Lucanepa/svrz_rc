@@ -23,7 +23,7 @@ const flagPill = (page: import('@playwright/test').Page) =>
 test('an RD-marked game with no coachee on it is listed, and the Flagged pill finds it', async ({ page }) => {
   await stubSignedInApp(page);
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [COACHEE_GAME, MARKED_NO_COACHEE] }));
-  await page.goto('/#/games');
+  await page.goto('/games');
 
   // On the open list as-is: no coachee-aware filter drops it.
   await expect(page.getByText(MARKED_NO_COACHEE.homeTeam)).toBeVisible();

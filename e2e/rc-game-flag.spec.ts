@@ -19,7 +19,7 @@ test('an RC game is labelled, and only listed when its filter is on', async ({ p
     ],
   }));
 
-  await page.goto('/#/games');
+  await page.goto('/games');
   // Out of the way by default: a coach is already on the whistle there.
   await expect(page.getByText('Volley Obfelden')).toBeVisible();
   await expect(page.getByText('VBC Voléro Zürich')).toHaveCount(0);

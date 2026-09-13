@@ -12,12 +12,12 @@ const FAKE_PW = 'not-a-real-password';
 
 test.beforeEach(async ({ page }) => {
   // No console session is what puts the gate on screen. The app session is
-  // irrelevant now — #/admin does not sit behind the app's login any more.
+  // irrelevant now — /admin does not sit behind the app's login any more.
   await stubSignedInApp(page);
 });
 
 test('the gate asks for a username and a password', async ({ page }) => {
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   const user = page.getByPlaceholder(/Benutzername|Username/);
   const pw = page.locator('input[type="password"]');
   await expect(user).toBeVisible();
@@ -28,7 +28,7 @@ test('the gate asks for a username and a password', async ({ page }) => {
 });
 
 test('a password on its own cannot submit', async ({ page }) => {
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   const submit = page.getByRole('button', { name: /Anmelden|Sign in/ });
   await page.locator('input[type="password"]').fill(FAKE_PW);
   await expect(submit).toBeDisabled();
@@ -42,7 +42,7 @@ test('both fields are sent to the API', async ({ page }) => {
     posted = r.request().postDataJSON();
     await r.fulfill({ json: { ok: true } });
   });
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   await page.getByPlaceholder(/Benutzername|Username/).fill('admin');
   await page.locator('input[type="password"]').fill(FAKE_PW);
   await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();
@@ -54,7 +54,7 @@ test('both fields are sent to the API', async ({ page }) => {
 test('a rejected sign-in names neither half', async ({ page }) => {
   await page.route('**/api/admin/ui-login', (r) =>
     r.fulfill({ status: 401, json: { error: 'Invalid credentials.' } }));
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   await page.getByPlaceholder(/Benutzername|Username/).fill('admin');
   await page.locator('input[type="password"]').fill('wrong');
   await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();

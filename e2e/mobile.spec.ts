@@ -60,7 +60,7 @@ test.describe('Mobile layout', () => {
     test.skip(!isMobile, 'Mobile viewport only');
     // Admin is its own hash route now, not a toolbar toggle, and it asks for
     // the admin password when the session carries no admin rights.
-    await page.goto('/#/admin');
+    await page.goto('/admin');
 
     await expect(page.locator('input[type="password"]')).toBeVisible();
     await expect(page.getByRole('button', { name: /Anmelden|Sign in/ })).toBeVisible();

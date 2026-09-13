@@ -10,23 +10,37 @@ import GuidePage from './components/GuidePage.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { UiHost } from './components/ui';
 import { enableDemo, isDemoMode } from './lib/demo';
+import { canonicalizeLegacyHash, routeRoot } from './lib/routes';
 import { installLogging, clientLog, noteReloadingPage } from './lib/logger';
 import {
   decideSwReload, recentSwReloads, noteSwReload, retryDelayMs, SW_RELOAD_STATE_KEY,
 } from './lib/swReload';
 import './index.css';
 
-// Hidden demo entry: #/demo turns on throwaway client-side demo mode, then drops
-// the hash (via replaceState, which doesn't fire hashchange) so the normal app
-// renders as the demo coach — and a reload stays in the demo (flag in sessionStorage).
+// FIRST statement, before anything reads a route: an old `#/…` link becomes
+// its path form, in place. Routes lived in the hash until 13.09.2026 and the
+// hash links are out there for good — in mails already sent, in the retired
+// GitHub Pages kill switch (legacy/index.html forwards location.hash verbatim
+// and can never be updated again), in home-screen icons captured before the
+// change. Cloudflare cannot do this for us: a fragment is never sent to the
+// server, so `/#/form` arrives at the edge as `/` and no _redirects rule can
+// see it. replaceState, so the hash URL leaves no Back entry of its own.
+{
+  const canonical = canonicalizeLegacyHash(window.location);
+  if (canonical) history.replaceState(null, '', canonical);
+}
+
+// Hidden demo entry: /demo turns on throwaway client-side demo mode, then drops
+// the path (via replaceState) so the normal app renders as the demo coach — and
+// a reload stays in the demo (flag in sessionStorage).
 //
 // This has to happen BEFORE logging is installed. The flag lives in
-// sessionStorage, so on the first navigation to #/demo in a fresh tab it is not
+// sessionStorage, so on the first navigation to /demo in a fresh tab it is not
 // set yet — installing first latched shipping to "on" and the whole demo
 // session posted clicks and device ids to the production API.
-if (/^#\/?demo\/?$/i.test(window.location.hash)) {
+if (/^\/demo\/?$/i.test(window.location.pathname)) {
   enableDemo();
-  history.replaceState(null, '', window.location.pathname + window.location.search);
+  history.replaceState(null, '', '/' + window.location.search);
 }
 
 // FIRST thing that runs after the demo latch: patches fetch and the error
@@ -157,22 +171,26 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('svrz:form-clean', () => { if (pendingReload) void reloadIfSafe(); });
 }
 
-// Hash routes: #/admin[/tab] -> admin console; #/sign/<slug> -> public
-// signature page; #/survey/<token> -> public post-visit survey; #/guide[/de|en]
-// -> the public video guide; anything else -> the app, which routes its own tabs.
-const routeKind = (): 'admin' | 'sign' | 'survey' | 'guide' | 'app' => {
-  const h = window.location.hash;
-  if (/^#\/?admin(\/|$)/i.test(h)) return 'admin';
-  if (/^#\/sign\//i.test(h)) return 'sign';
-  if (/^#\/survey\//i.test(h)) return 'survey';
-  if (/^#\/?guide(\/|$)/i.test(h)) return 'guide';
-  return 'app';
-};
+// Which tree owns the document: /admin[/tab] -> admin console; /guide[/de|en]
+// -> the public video guide; #/sign/<slug> and #/survey/<token> -> the two
+// public pages whose token stays in the fragment (see routes.ts for why);
+// anything else -> the app, which routes its own tabs.
+const routeKind = () => routeRoot(window.location.pathname, window.location.hash);
+// A root change is a different tree, and the cheapest correct way to swap
+// trees is to load the document again. Roots switch through full navigations
+// (location.assign) in the normal case; this catches the URL being edited by
+// hand, and Back/Forward landing on an entry another root pushed.
 let _route = routeKind();
-window.addEventListener('hashchange', () => { const k = routeKind(); if (k !== _route) { _route = k; noteReloadingPage(); window.location.reload(); } });
+const reloadOnRootChange = () => { const k = routeKind(); if (k !== _route) { _route = k; noteReloadingPage(); window.location.reload(); } };
+window.addEventListener('hashchange', reloadOnRootChange);
+window.addEventListener('popstate', reloadOnRootChange);
 
 const kind = routeKind();
-clientLog.info('app.route', `mounting "${kind}"`, { hash: window.location.hash || undefined, demo: isDemoMode() });
+clientLog.info('app.route', `mounting "${kind}"`, {
+  path: window.location.pathname + window.location.search,
+  hash: window.location.hash || undefined,
+  demo: isDemoMode(),
+});
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>

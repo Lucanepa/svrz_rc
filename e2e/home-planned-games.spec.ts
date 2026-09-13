@@ -34,7 +34,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('every planned game the counter promises is listed', async ({ page }) => {
-  await page.goto('/#/home');
+  await page.goto('/home');
   // The dashboard's summary strip, which replaced the three counter tiles:
   // the same figures, still labelled, on one line.
   await expect(page.getByText(/10 planned|10 geplant/)).toBeVisible();
@@ -57,7 +57,7 @@ test('a game can be given back from the row that shows it', async ({ page }) => 
     await r.fulfill({ json: { ok: true } });
   });
 
-  await page.goto('/#/home');
+  await page.goto('/home');
   const giveBack = page.getByRole('button', { name: 'Give game back' }).first();
   await expect(giveBack).toBeVisible();
 

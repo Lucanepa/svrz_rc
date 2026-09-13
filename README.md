@@ -25,7 +25,7 @@ setup and `infrastructure.private.md` (gitignored) for the actual secrets.
 - `server/index.ts` — the whole API: auth, games sync, feedback submit, e-mail,
   iCal, activity log. The frontend never talks to PocketBase directly.
 - `src/App.tsx` — the coach's app: games, coachees, the observation form.
-- `src/components/AdminConsole.tsx` — `#/admin`: coachees, RCs, e-mail
+- `src/components/AdminConsole.tsx` — `/admin`: coachees, RCs, e-mail
   templates, the post-visit questionnaire, surveys, president's notes, activity
   log, settings.
 - `src/lib/survey.ts` — the post-visit questionnaire: the shipped default

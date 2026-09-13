@@ -50,7 +50,7 @@ test('the XLSX is read for its numbers, and the coachees it links are reported',
     });
   });
 
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   await page.getByLabel(/Register importieren|Import register/).setInputFiles({
     name: 'Schiedsrichter-verwalten.xlsx',
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

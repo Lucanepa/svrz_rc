@@ -117,7 +117,7 @@ ADMIN_SESSION_TTL_MS="28800000"           # default 8h
 SHARED_LOGIN_USERNAME="Referee-Coaching"
 SHARED_LOGIN_PASSWORD="<set in the env, or change it in the admin console>"
 
-# The RC chair's own login, typed on the same form as the admin one at #/admin.
+# The RC chair's own login, typed on the same form as the admin one at /admin.
 PRESIDENT_UI_USERNAME="praesidium"
 PRESIDENT_UI_PASSWORD="<set to open the chair's tabs; unset keeps them shut>"
 
@@ -661,7 +661,7 @@ an HTTP request proves nothing about a cron.
 Three sinks: stdout (`docker compose logs -f svrz-api`), a 20k-entry in-memory
 ring (what the admin console reads), and daily JSONL files.
 
-Read it in **Admin → Protokoll** (`#/admin/logs`): live tail, filter by
+Read it in **Admin → Protokoll** (`/admin/logs`, Verlauf at `/admin/logs/history`): live tail, filter by
 level/source/session, click a line for the full record. Or on the host:
 
 ```bash
@@ -948,6 +948,42 @@ The retired `lucanepa.github.io/svrz_rc/` still publishes `legacy/` via
 service worker that clears the old precache and unregisters itself. See
 `legacy/README.md`.
 
+### URL routing (since 2026-09-13)
+
+Routes live in the **path**, and `src/lib/routes.ts` is the only place that
+reads or writes them (pure functions; `e2e/routes.spec.ts` is its table).
+
+| URL | what is on screen |
+|---|---|
+| `/`, `/home`, `/coachees`, `/games` | the app's tabs |
+| `/games?view=calendar[&month=YYYY-MM]` | the Games tab as a month grid |
+| `/games/<coachee>` | that coachee's own games |
+| `/feedbacks/<coachee>/<observation>` | a filed observation, read-only |
+| `/form/<game>/1sr` · `/form/<game>/2sr` | the observation being written, and which half — the two public thirds of the draft key `(owner, game, role)`; the content stays in IndexedDB |
+| `/admin/<tab>`, `/admin/logs/history` | the console, and Protokoll on Verlauf |
+| `/guide[/de\|/en]` | the public video guide |
+| `#/sign/<slug>`, `#/survey/<token>` | **still in the fragment, on purpose** — the token is the capability, and a fragment never reaches a request log or a Referer |
+
+Three rules that follow from this:
+
+- **Every path the app emits needs a line in `public/_redirects`**, and never
+  `/*`. See the deploy trap below; `e2e/redirects-config.spec.ts` enforces it.
+  The edge must accept a route one deploy *before* a client starts emitting it.
+  Measured 2026-09-13: a rewritten route (`/games`, `/form/abc/1sr`) answers
+  `cf-cache-status: DYNAMIC` with `cache-control: public, max-age=0,
+  must-revalidate` — never held at the edge, revalidated by the browser every
+  time, i.e. the same guarantee the `/` rule in `_headers` gives the shell.
+- **The `#/…` links are rewritten client-side, forever.** `main.tsx` runs
+  `canonicalizeLegacyHash` as its first statement — `/#/games/abc` becomes
+  `/games/abc` in place. Cloudflare cannot do this: a fragment is never sent
+  to the server. Old links live in mails already sent, in the retired GitHub
+  Pages kill switch (which forwards `location.hash` verbatim and can never be
+  updated), and in home-screen icons. `e2e/legacy-links.spec.ts` is the contract.
+- **Tabs are Back steps; views inside a tab are not.** Swapping the referee
+  inside one form and paging the calendar *replace* the history entry. A Back
+  that re-entered the other half's form would re-initialise it, and with
+  IndexedDB blocked the in-memory stash is all there is.
+
 ## Session cookies
 
 The app (`svrz-rc.openvolley.app`) and the API (`svrz-rc-api.openvolley.app`)
@@ -977,10 +1013,17 @@ on 2026-08-12; `cf-cache-status: HIT` with `content-type: text/html` on
 
 **Fixed 2026-08-12** by adding `public/404.html`. Cloudflare Pages serves that
 with a real **404** for unmatched paths instead of falling back to `index.html`
-at 200, and a 404 does not get cached in an asset's place. Nothing needed the
-fallback: every route in this app lives in the URL hash (`#/admin`,
-`#/sign/<slug>`, `#/survey/<token>`), so no path other than `/` is ever
-requested from the server. Verify after any change to Pages' not-found handling:
+at 200, and a 404 does not get cached in an asset's place. Nothing needs the
+generic fallback: since 2026-09-13 the app's routes live in the **path**
+(`/games`, `/form/<game>/1sr`, `/admin/logs/history` …) and every one of them
+is written out by hand in `public/_redirects` — **never** `/*  /  200`, because
+Cloudflare evaluates `_redirects` *before* it looks for a file, so a catch-all
+shadows `/assets/index-<hash>.js` and re-creates this exact outage.
+`e2e/redirects-config.spec.ts` checks that every route prefix the app emits
+has a rule and that no catch-all crept in. The two capability pages
+(`#/sign/<slug>`, `#/survey/<token>`) deliberately stay in the fragment and have
+no rule at all — see `src/lib/routes.ts` → "Two transports, on purpose".
+Verify after any change to Pages' not-found handling:
 
 ```bash
 curl -so /dev/null -w '%{http_code} %{content_type}\n' \

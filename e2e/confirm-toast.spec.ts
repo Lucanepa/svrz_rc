@@ -44,7 +44,7 @@ async function openHome(page: Page): Promise<{ assigned: Assignment[] }> {
     assigned.push({ url: r.request().url(), body: r.request().postData() || '' });
     await r.fulfill({ json: { ok: true } });
   });
-  await page.goto('/#/home');
+  await page.goto('/home');
   await expect(page.getByRole('button', { name: 'Give game back' }).first()).toBeVisible();
   return { assigned };
 }

@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
 
 /**
- * The #/admin shortcut in the coach toolbar.
+ * The /admin shortcut in the coach toolbar.
  *
  * It is DISPLAY ONLY. The name on an app session is picked off a list, never
  * proven, so anyone holding the team credential can make the flag true by

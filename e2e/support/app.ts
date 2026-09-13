@@ -56,7 +56,7 @@ export type StubOptions = {
   admin?: boolean;
   /** Let this session read the president-only surfaces. */
   surveyReader?: boolean;
-  /** Draw the #/admin shortcut in the toolbar. Cosmetic — grants nothing. */
+  /** Draw the /admin shortcut in the toolbar. Cosmetic — grants nothing. */
   adminShortcut?: boolean;
 };
 

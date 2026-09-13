@@ -9,7 +9,7 @@ import { stubSignedInApp } from './support/app';
 
 test('the Game Icons credit is on screen, as the licence requires', async ({ page }) => {
   await stubSignedInApp(page);
-  await page.goto('/#/home');
+  await page.goto('/home');
   await expect(page.getByRole('link', { name: 'Game Icons' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'CC BY 3.0' })).toBeVisible();
 });

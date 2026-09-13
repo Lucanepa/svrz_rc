@@ -45,6 +45,10 @@ import {
 } from './lib/pocketbase';
 import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
 import { BoerseChip, BoerseNote, SyncFreshness, boerseRowClass, inBoerse } from './components/BoerseNote';
+import {
+  parsePath, routeToPath, isForeignPath,
+  type AppRoute, type FeedbackSubView as RouteSubView,
+} from './lib/routes';
 import InfoHint from './components/InfoHint';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import {
@@ -434,72 +438,21 @@ const UI_STRINGS = {
   }
 };
 
-type FeedbackSubView = 'coachees' | 'coacheeGames' | 'calendar' | 'feedbackForm';
-
 // ── URL routing ───────────────────────────────────────────────────────
-// The hash mirrors what is on screen, so every tab is linkable, bookmarkable
-// and reachable with the browser/Android Back button. `#/admin` and `#/sign/…`
-// belong to other roots and are handled in main.tsx.
-type AppRoute = {
-  subView: FeedbackSubView;
-  listTab: 'home' | 'coachees' | 'games';
-  /** Whom the route is about, when it is about somebody. This is what makes a
-   *  coachee's own list and a filed observation addressable: with the id in the
-   *  URL the app can fetch what it needs instead of relying on a selection that
-   *  only exists if you arrived from the screen before. */
-  coacheeId: string | null;
-  feedbackId: string | null;
+// The path mirrors what is on screen, so every tab is linkable, bookmarkable
+// and reachable with the browser/Android Back button. The route table itself —
+// which URL means which state, and back — lives in lib/routes.ts with its
+// tests; this file only decides WHEN to write and read it. `/admin` and
+// `/guide` belong to other roots and are handled in main.tsx.
+type FeedbackSubView = RouteSubView;
+
+/** YYYY-MM for the calendar grid's month, which is what the URL carries. */
+const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+const thisMonth = () => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); };
+const monthFromKey = (key: string | null): Date => {
+  const m = key ? /^(\d{4})-(\d{2})$/.exec(key) : null;
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, 1) : thisMonth();
 };
-
-const DEFAULT_ROUTE: AppRoute = { subView: 'coachees', listTab: 'home', coacheeId: null, feedbackId: null };
-
-// Hashes owned by another root (main.tsx swaps the whole tree and reloads for
-// these). The app must neither read nor rewrite them, or it would fight that
-// router mid-navigation.
-const isForeignHash = (hash: string) => /^#\/?(admin|sign|survey|guide)(\/|$)/i.test(hash);
-
-function routeToHash(r: AppRoute): string {
-  // A FILED observation has an address; one still being written does not — it
-  // lives in a draft on this device and nobody else could open the link.
-  if (r.subView === 'feedbackForm') {
-    return r.coacheeId && r.feedbackId ? `#/feedbacks/${r.coacheeId}/${r.feedbackId}` : '#/form';
-  }
-  if (r.subView === 'coacheeGames') return r.coacheeId ? `#/games/${r.coacheeId}` : '#/coachees';
-  if (r.subView === 'calendar') return '#/calendar';
-  return `#/${r.listTab}`;
-}
-
-// `restorable` is false on a cold load: a view that only makes sense with a
-// selection carried from the previous screen resolves to its parent list rather
-// than to an empty shell. A route carrying an id is exempt — the id IS the
-// selection, and openDeepLink fetches the rest.
-function parseHash(hash: string, restorable: boolean): AppRoute {
-  const path = hash.replace(/^#\/?/, '').replace(/\/+$/, '');
-  const [head, ...rest] = path.split('/').map((part) => decodeURIComponent(part));
-  switch (head) {
-    case 'calendar': return { ...DEFAULT_ROUTE, subView: 'calendar' };
-    case 'form': return restorable ? { ...DEFAULT_ROUTE, subView: 'feedbackForm' } : { ...DEFAULT_ROUTE, listTab: 'games' };
-    // One noun per surface, narrowed by an id. `#/games` is every fixture;
-    // `#/games/<coachee>` is that coachee's own list, which used to be
-    // `#/coachee-games` and could only be reached by clicking your way to it.
-    case 'games': return rest[0]
-      ? { ...DEFAULT_ROUTE, subView: 'coacheeGames', coacheeId: rest[0] }
-      : { ...DEFAULT_ROUTE, listTab: 'games' };
-    // `#/feedbacks/<coachee>/<observation>` opens that observation. Without the
-    // second id it opens the coachee's list of them, which is a modal over the
-    // coachees tab and so is an entry point rather than a state we write back.
-    case 'feedbacks': return rest[0]
-      ? rest[1]
-        ? { ...DEFAULT_ROUTE, subView: 'feedbackForm', coacheeId: rest[0], feedbackId: rest[1] }
-        : { ...DEFAULT_ROUTE, listTab: 'coachees', coacheeId: rest[0] }
-      : { ...DEFAULT_ROUTE, listTab: 'coachees' };
-    // Written before the id was in the URL, and never emitted now. Kept so a
-    // bookmark from then still lands on the coachee list instead of nowhere.
-    case 'coachee-games': return restorable ? { ...DEFAULT_ROUTE, subView: 'coacheeGames' } : { ...DEFAULT_ROUTE, listTab: 'coachees' };
-    case 'coachees': return { ...DEFAULT_ROUTE, listTab: 'coachees' };
-    default: return DEFAULT_ROUTE;
-  }
-}
 
 function getRefereeForRole(game: EligibleGame, role: FeedbackFormData['role']) {
   return role === '1. SR' ? game.firstReferee : game.secondReferee;
@@ -677,7 +630,11 @@ function ratingsFromSections(sections: AssessmentSection[]): Record<string, stri
 const KNOWN_RATING_IDS: string[] = [SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN]
   .flatMap((catalogue) => catalogue.flatMap((s) => s.items.map((i) => i.id)));
 
-const signUrlFor = (slug: string) => `${window.location.origin}${window.location.pathname}#/sign/${slug}`;
+// Served from "/" on purpose, never from the path the coach happens to be on:
+// the slug is the capability and belongs in the fragment, and the form's own
+// URL (/form/<game>/1sr) has no business in a link the referee's phone scans.
+// See lib/routes.ts → "Two transports, on purpose".
+const signUrlFor = (slug: string) => `${window.location.origin}/#/sign/${slug}`;
 
 // One editable surface, used both inline and in the full-screen editor.
 //
@@ -1256,7 +1213,14 @@ function starredTitle(game: { isRdGame?: boolean; vmFlagged?: boolean }, de: boo
 export default function App() {
   // Deep link the app was opened with — read once, before the first paint, so
   // a shared/bookmarked tab renders directly instead of flashing Home first.
-  const initialRoute = useRef(parseHash(window.location.hash, false)).current;
+  const initialRoute = useRef(parsePath(window.location.pathname, window.location.search, false)).current;
+  /** A landing URL that names something the state does not have yet — a
+   *  coachee, a record, a game — is answered once the roster is here. Until
+   *  then the URL is NOT written back: the state is still empty, and writing
+   *  "/form" over "/feedbacks/c1/fb1" for the half-second the fetch takes left
+   *  a junk Back step underneath the record. Settled means answered — opened,
+   *  or "not found" and landed on a list. */
+  const [landingSettled, setLandingSettled] = useState(!initialRoute.coacheeId && !initialRoute.gameId);
   const rcAuth = useRcAuth();
   // An admin-console session is nobody in particular: it carries no RC record,
   // so the Home tab has no dashboard to show it — only a "Willkommen." dead
@@ -1267,7 +1231,7 @@ export default function App() {
   // Rather than inventing a landing screen, send it where it was going.
   const homelessAdmin = !rcAuth.rcName && rcAuth.isAdminSession;
   useEffect(() => {
-    if (homelessAdmin) window.location.hash = '/admin';
+    if (homelessAdmin) window.location.assign('/admin');
   }, [homelessAdmin]);
   const landingTab = (tab: AppRoute['listTab']): AppRoute['listTab'] => tab;
   // Legacy in-app database panel: no control switches to it any more, so it
@@ -1419,11 +1383,11 @@ export default function App() {
     } catch { /* keep the local season pref and defaults */ }
     return seasonStartYear;
   };
-  const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>('list');
+  const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>(initialRoute.gamesView);
   const [expandedGameId, setExpandedGameId] = useState<string | null>(null);
   // The coachee row whose games are unfolded underneath it.
   const [expandedCoacheeId, setExpandedCoacheeId] = useState<string | null>(null);
-  const [calendarMonth, setCalendarMonth] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });
+  const [calendarMonth, setCalendarMonth] = useState(() => monthFromKey(initialRoute.month));
   const [gameFilterNeedsObs, setGameFilterNeedsObs] = useState(true);
   const [gameFilterShowInactive, setGameFilterShowInactive] = useState(false);
   const [gameFilterRcGame, setGameFilterRcGame] = useState(false);
@@ -1761,48 +1725,85 @@ export default function App() {
   }, [formData.lang]);
 
   // ── URL ↔ view sync ────────────────────────────────────────────────
-  // State → URL. pushState (not location.hash) so this never fires the
-  // hashchange listener in main.tsx, and each view becomes a Back step.
-  const currentHash = routeToHash({
+  // State → URL. pushState, so each view becomes a Back step — except the two
+  // changes that are not views: swapping the referee inside one form, and
+  // paging the calendar. Those REPLACE the entry. A Back that stepped
+  // 2. SR → 1. SR → previous screen would first re-enter the other half's
+  // form, and re-entering is what re-initialises it: with IndexedDB blocked
+  // the stash in dualFormData is all there is, and that step wiped it.
+  const currentRoute: AppRoute = {
     subView: feedbackSubView,
     listTab,
     coacheeId: selectedCoacheeId || null,
     feedbackId: openFeedbackId,
-  });
-  const didSyncHashRef = useRef(false);
+    // A form still being written names its game and half. A FILED one is
+    // addressed by its record instead — routeToPath prefers the feedback id.
+    gameId: feedbackSubView === 'feedbackForm' && !openFeedbackId ? selectedGameId || null : null,
+    role: formData.role,
+    gamesView: gameViewMode,
+    // The month rides along only when it is not the one the grid opens on
+    // anyway, so an ordinary tap does not produce a URL full of today.
+    month: monthKey(calendarMonth) === monthKey(thisMonth()) ? null : monthKey(calendarMonth),
+  };
+  const currentPath = routeToPath(currentRoute);
+  /** The part of a route that IS a view. Same key, different URL → replace. */
+  const historyKeyOf = (r: AppRoute) => routeToPath({ ...r, role: null, month: null });
+  const didSyncPathRef = useRef(false);
+  /** Set by popstate: whatever the state settles on after Back/Forward must
+   *  REPLACE the entry just landed on, never push. A push there is how Back
+   *  onto a route the app rewrites (a game no longer on the list, say) bounced
+   *  straight back to where it came from, and Back could never get past it. */
+  const replaceAfterPopRef = useRef(false);
   useEffect(() => {
-    if (isForeignHash(window.location.hash)) return; // main.tsx is switching roots
-    if (window.location.hash !== currentHash) {
+    if (!landingSettled) return;
+    if (isForeignPath(window.location.pathname)) return; // main.tsx is switching roots
+    const url = window.location.pathname + window.location.search;
+    if (url !== currentPath) {
+      const urlKey = historyKeyOf(parsePath(window.location.pathname, window.location.search, true));
       // The very first sync only names the landing view — it must not become a
       // Back step of its own (Back from the landing tab should leave the app).
-      if (didSyncHashRef.current) window.history.pushState(null, '', currentHash);
-      else window.history.replaceState(null, '', currentHash);
+      const push = didSyncPathRef.current
+        && !replaceAfterPopRef.current
+        && urlKey !== historyKeyOf(currentRoute);
+      if (push) window.history.pushState(null, '', currentPath);
+      else window.history.replaceState(null, '', currentPath);
     }
-    didSyncHashRef.current = true;
-  }, [currentHash]);
+    didSyncPathRef.current = true;
+    replaceAfterPopRef.current = false;
+    // currentPath is a pure function of currentRoute; it is the dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPath, landingSettled]);
 
   // URL → state, for Back/Forward. Registered once; the handler only calls
-  // setters, so it needs no fresh render values.
+  // setters and refs, so it needs no fresh render values.
   useEffect(() => {
     const onPop = () => {
-      if (isForeignHash(window.location.hash)) return;
-      const r = parseHash(window.location.hash, true);
-      // Back onto a different coachee's list or observation has to fetch it —
-      // the state on screen belongs to whoever we are stepping away from.
-      if (r.coacheeId) void openDeepLinkRef.current(r);
+      if (isForeignPath(window.location.pathname)) return;
+      const r = parsePath(window.location.pathname, window.location.search, true);
+      replaceAfterPopRef.current = true;
+      // Consumed by the sync effect above when the state changes; cleared here
+      // when it does not (an entry that parses to the view already on screen),
+      // so the flag cannot linger and swallow the next real navigation's step.
+      setTimeout(() => { replaceAfterPopRef.current = false; }, 0);
       setFeedbackSubView(r.subView);
-      const tab = landingTab(r.listTab);
-      // Rewriting the tab must REPLACE the entry, not push one: otherwise Back
-      // onto #/home would bounce here and push #/rc straight back on, and Back
-      // could never get past it.
-      if (tab !== r.listTab) didSyncHashRef.current = false;
-      setListTab(tab);
+      setListTab(r.listTab);
+      if (r.listTab === 'games' && !r.coacheeId && r.subView === 'coachees') {
+        setGameViewMode(r.gamesView);
+        setCalendarMonth(monthFromKey(r.month));
+      }
+      // Back onto a different coachee's list or observation has to fetch it —
+      // the state on screen belongs to whoever we are stepping away from. Same
+      // for a form: the game and half come off the URL, not off the screen.
+      // Both after the plain setters, because a route that cannot be honoured
+      // ("not found") lands on a list instead, and that must be the last word.
+      if (r.coacheeId) void openDeepLinkRef.current(r);
+      else if (r.gameId) openGameRouteRef.current(r.gameId, r.role);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  // A landing hash that names a coachee — `#/games/<id>`, `#/feedbacks/<id>/…`.
+  // A landing URL that names a coachee — `/games/<id>`, `/feedbacks/<id>/…`.
   // Nothing is on screen yet and the roster has not arrived, so the open waits
   // for it, once. If the bootstrap finishes with an empty roster the link is
   // answered anyway, with "not found", rather than waiting for a list that is
@@ -1812,7 +1813,7 @@ export default function App() {
     if (deepLinkOpenedRef.current || !initialRoute.coacheeId) return;
     if (coachees.length === 0 && booting) return;
     deepLinkOpenedRef.current = true;
-    void openDeepLink(initialRoute);
+    void openDeepLink(initialRoute).finally(() => setLandingSettled(true));
     // openDeepLink is rebuilt every render; the ref above is what guards it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coachees, booting]);
@@ -1997,9 +1998,14 @@ export default function App() {
   /** Set synchronously while a game's drafts are being read, so the debounced
    *  autosave cannot write the blank form over the draft it is about to load. */
   const draftLoadingRef = useRef('');
-  /** Read synchronously from sessionStorage so the games-list auto-select cannot
-   *  claim the selection before a resume lands on top of it. */
-  const autoResumeRef = useRef<string>(resumeHint());
+  /** Read synchronously so the games-list auto-select cannot claim the
+   *  selection before a resume lands on top of it. A game named in the URL
+   *  wins over the session hint: `/form/<game>/…` is the coach's explicit ask,
+   *  the hint only says what this tab happened to be on. */
+  const autoResumeRef = useRef<string>(initialRoute.gameId || resumeHint());
+  /** Set once the URL's game has been opened (or answered with "not found"),
+   *  so neither of the two paths that can open it does so twice. */
+  const urlGameOpenedRef = useRef(false);
   const didBootDraftsRef = useRef(false);
   const parkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const parkImmediatelyRef = useRef<() => void>(() => {});
@@ -2544,7 +2550,10 @@ export default function App() {
     }));
   };
 
-  const handleSelectGame = (game: EligibleGame | CoacheeGame, preferredRef?: string) => {
+  /** `preferredRole` is the half named in the URL — `/form/<game>/2sr`. An
+   *  explicit ask, so it beats the coachee-based guess below; ignored only when
+   *  the game has no second referee to observe. */
+  const handleSelectGame = (game: EligibleGame | CoacheeGame, preferredRef?: string, preferredRole?: '1. SR' | '2. SR') => {
     // First statement, before any setter: the outgoing game's last keystrokes
     // are still only in the render being left behind.
     void flushDraftNowRef.current();
@@ -2593,6 +2602,7 @@ export default function App() {
     // Coming from the RC view we know whom the coach plans to observe — start there.
     if (preferredRef && has2 && normName(preferredRef) === normName(r2)) role = '2. SR';
     else if (preferredRef && normName(preferredRef) === normName(r1)) role = '1. SR';
+    if (preferredRole && (preferredRole === '1. SR' || has2)) role = preferredRole;
     setObservationTarget(target);
     setFormData(prev => {
       if (!isNewGame && prev.role === role) return prev;
@@ -2626,7 +2636,7 @@ export default function App() {
     // stored draft occupies, so the blank form must not be allowed to overwrite
     // the draft in the window before it loads.
     draftLoadingRef.current = game.id;
-    void resumeDraftForGame(game.id);
+    void resumeDraftForGame(game.id, preferredRole);
   };
 
   const refreshCalendarGames = async () => {
@@ -2822,8 +2832,8 @@ export default function App() {
   // the row tap because the row's own buttons reach those views without ever
   // opening the sheet, and a games list under the previously selected name is
   // an observation started on the wrong person.
-  /** Open a route that names a coachee — `#/games/<coachee>` and
-   *  `#/feedbacks/<coachee>[/<observation>]`.
+  /** Open a route that names a coachee — `/games/<coachee>` and
+   *  `/feedbacks/<coachee>[/<observation>]`.
    *
    *  Everything these need is fetched here rather than assumed, which is the
    *  whole point of putting the id in the URL: the link works pasted into a
@@ -3807,13 +3817,16 @@ export default function App() {
     };
   };
 
-  const resumeDraft = (records: DraftRecord[]) => {
+  /** `preferRole`: the half the URL names. Otherwise the most recently edited
+   *  half is the one put on screen, and the other is stashed. */
+  const resumeDraft = (records: DraftRecord[], preferRole?: '1. SR' | '2. SR' | null) => {
     const editing = records.filter((d) => d.status === 'editing' && (d.schema ?? 1) <= DRAFT_SCHEMA);
     if (editing.length === 0) { releaseAutoSelect(); draftLoadingRef.current = ''; return; }
     const game = eligibleGames.find((g) => g.id === editing[0].gameId);
     if (!game) { setBackendNotice(t.draftGameMissing); releaseAutoSelect(); draftLoadingRef.current = ''; return; }
     const has2SR = !!game.secondReferee;   // THIS game, not a stale flag from the last one
-    const live = editing.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    const live = (preferRole && editing.find((d) => d.role === preferRole))
+      || editing.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
     const other = editing.find((d) => d.role !== live.role);
 
     const stash: typeof dualFormData = { '1. SR': null, '2. SR': null };
@@ -3853,7 +3866,7 @@ export default function App() {
     );
   };
 
-  const resumeDraftForGame = async (gameId: string) => {
+  const resumeDraftForGame = async (gameId: string, preferRole?: '1. SR' | '2. SR') => {
     try {
       const found = await getGameDrafts(outboxOwnerId, gameId);
       const editing = found.filter((d) => d.status === 'editing' && (d.schema ?? 1) <= DRAFT_SCHEMA);
@@ -3862,7 +3875,7 @@ export default function App() {
       if (editing.length === 0) { draftLoadingRef.current = ''; return; }
       // The unfiltered list: resumeDraft filters internally, and it needs to see
       // a sibling that is queued or filed to tell that apart from one never started.
-      resumeDraft(found);
+      resumeDraft(found, preferRole);
       toast.success(t.draftRestored, { lang: formData.lang });
     } catch { draftLoadingRef.current = ''; }
   };
@@ -3894,15 +3907,63 @@ export default function App() {
     void refreshDrafts();
   };
 
+  /** `/form/<game>/<half>` landed on by Back/Forward, or typed. Opens that
+   *  game's form — or, when it is the game already selected and not a filed
+   *  record, only swaps the half. The form's memory is left alone on purpose:
+   *  re-selecting the game would flush, reset and re-read the draft, and
+   *  with IndexedDB blocked the re-read comes back empty. */
+  const openGameRoute = (gameId: string, role: AppRoute['role']) => {
+    if (gameId === selectedGameId && !openFeedbackId) {
+      if (role && role !== formData.role) toggleRole();
+      return;
+    }
+    const game = eligibleGames.find((g) => g.id === gameId);
+    if (!game) {
+      setBackendNotice(formData.lang === 'DE'
+        ? 'Spiel nicht gefunden — vielleicht eine andere Saison.'
+        : 'Game not found — possibly a different season.');
+      setFeedbackSubView('coachees');
+      setListTab('games');
+      return;
+    }
+    handleSelectGame(game, undefined, role || undefined);
+  };
+  // Back/Forward reaches it through a ref, like openDeepLink: the listener is
+  // registered once and must not close over a stale game list.
+  const openGameRouteRef = useRef(openGameRoute);
+  openGameRouteRef.current = openGameRoute;
+
+  /** The game the URL named on arrival, opened once the roster is here — a
+   *  blank form, or its draft if this coach has one. Returns false when there
+   *  was nothing to open, so the caller falls back to the ordinary auto-select. */
+  const openUrlGame = (): boolean => {
+    if (!initialRoute.gameId || urlGameOpenedRef.current) return false;
+    urlGameOpenedRef.current = true;
+    setLandingSettled(true);
+    const game = eligibleGames.find((g) => g.id === initialRoute.gameId);
+    if (!game) {
+      // Deleted, on another season, or somebody else's link. Say so; landing
+      // silently on the games list looks like the link simply did nothing.
+      setBackendNotice(formData.lang === 'DE'
+        ? 'Spiel nicht gefunden — vielleicht eine andere Saison.'
+        : 'Game not found — possibly a different season.');
+      setFeedbackSubView('coachees');
+      setListTab('games');
+      return false;
+    }
+    handleSelectGame(game, undefined, initialRoute.role || undefined);
+    return true;
+  };
+
   // Boot: is there a store at all, is there anything old to retire, and was the
-  // coach on a form a moment ago?
+  // coach on a form a moment ago (or does the URL say which form to open)?
   useEffect(() => {
     if (booting || didBootDraftsRef.current || outboxOwnerId === 'anon') return;
     didBootDraftsRef.current = true;
     void (async () => {
       const available = await draftStoreAvailable();
       setDraftStoreOk(available);
-      if (!available) { releaseAutoSelect(); return; }
+      if (!available) { if (!openUrlGame()) releaseAutoSelect(); return; }
       try { await pruneDrafts(outboxOwnerId); } catch { /* a prune failure is not worth a word */ }
       let mine: DraftRecord[] = [];
       try { mine = await listDrafts(outboxOwnerId); } catch { /* ignore */ }
@@ -3934,9 +3995,12 @@ export default function App() {
       // shared tablet, jumping into the previous session's screen would be wrong.
       if (forGame.length > 0 && eligibleGames.some((g) => g.id === wanted)) {
         draftOwnerRef.current = outboxOwnerId;
-        resumeDraft(mine.filter((d) => d.gameId === wanted));
+        // The URL's game, when it is the one: the draft IS the open, and the
+        // half it names is the half to show.
+        if (wanted === initialRoute.gameId) { urlGameOpenedRef.current = true; setLandingSettled(true); }
+        resumeDraft(mine.filter((d) => d.gameId === wanted), wanted === initialRoute.gameId ? initialRoute.role : null);
         toast.success(t.draftRestored, { lang: formData.lang });
-      } else {
+      } else if (!openUrlGame()) {
         releaseAutoSelect();
       }
     })();
@@ -5383,7 +5447,7 @@ export default function App() {
                     honoured as one. */}
                 {(isPrivileged || rcAuth.adminShortcut) && (
                 <button
-                  onClick={() => { window.location.hash = '/admin'; }}
+                  onClick={() => { window.location.assign('/admin'); }}
                   className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
                   // The label is hidden below sm, which left an icon with no
                   // accessible name on every phone — the same trap the console's
@@ -6999,6 +7063,7 @@ export default function App() {
                         <button
                           onClick={() => setCalendarMonth(new Date(year, month - 1, 1))}
                           className="p-1 rounded hover:bg-stone-200 transition-colors"
+                          aria-label={formData.lang === 'DE' ? 'Vorheriger Monat' : 'Previous month'}
                         >
                           <ChevronLeft size={18} className="text-stone-600" />
                         </button>
@@ -7008,6 +7073,7 @@ export default function App() {
                         <button
                           onClick={() => setCalendarMonth(new Date(year, month + 1, 1))}
                           className="p-1 rounded hover:bg-stone-200 transition-colors"
+                          aria-label={formData.lang === 'DE' ? 'Nächster Monat' : 'Next month'}
                         >
                           <ChevronRight size={18} className="text-stone-600" />
                         </button>
@@ -8059,7 +8125,7 @@ export default function App() {
                   <>
                     <div className="flex items-center gap-2 my-3"><div className="flex-1 h-px bg-stone-200" /><span className="text-[10px] uppercase text-stone-400 font-semibold">{formData.lang === 'DE' ? 'oder' : 'or'}</span><div className="flex-1 h-px bg-stone-200" /></div>
                     <div className="flex flex-col items-center gap-2">
-                      <div className="p-2 bg-white border border-stone-200 rounded-lg"><QRCodeSVG value={`${window.location.origin}${window.location.pathname}#/sign/${sigSlug}`} size={116} level="M" /></div>
+                      <div className="p-2 bg-white border border-stone-200 rounded-lg"><QRCodeSVG value={signUrlFor(sigSlug)} size={116} level="M" /></div>
                       <p className="text-[11px] text-stone-500 text-center">{formData.lang === 'DE' ? 'Mit dem Handy scannen und dort unterschreiben.' : 'Scan with a phone and sign there.'}</p>
                       {/* Faster than holding a QR up at someone who is already
                           packing their bag: the link lands in the referee's own

@@ -405,7 +405,7 @@ const ERROR_ALERT_EMAIL = (process.env.ERROR_ALERT_EMAIL || '').trim();
 if (!ERROR_ALERT_EMAIL) console.warn('[startup] ERROR_ALERT_EMAIL not set — nobody is told when the app breaks.');
 installErrorAlerts({
   to: ERROR_ALERT_EMAIL,
-  consoleUrl: `${MAIL_APP_URL.replace(/\/$/, '')}/#/admin/logs`,
+  consoleUrl: `${MAIL_APP_URL.replace(/\/$/, '')}/admin/logs`,
   suppressed: TEST_MODE,
   timezone: VM_SYNC_TIMEZONE,
   debounceMs: Number(process.env.ERROR_ALERT_DEBOUNCE_MS || 120_000),
@@ -4494,7 +4494,7 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-// Which RCs get the #/admin shortcut drawn in their toolbar. A list of ids in
+// Which RCs get the /admin shortcut drawn in their toolbar. A list of ids in
 // app_settings, edited from the admin console. Grants nothing — see the comment
 // at /api/auth/me — so a wrong entry here costs somebody a button, not access.
 const ADMIN_SHORTCUT_KEY = 'admin_shortcut_rcs';
@@ -5401,7 +5401,7 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
   // the client mirrors the server's answer rather than a record's flag, so it
   // is never shown a door the API would slam.
   const surveyReader = verifyPresidentSession(req).ok;
-  // Whether to DRAW the shortcut to #/admin in the coach toolbar. Cosmetic,
+  // Whether to DRAW the shortcut to /admin in the coach toolbar. Cosmetic,
   // and it has to stay that way: the name on an app session was picked off a
   // list, never proven, so anyone holding the team password can make this true
   // by choosing a different name. It decides one button, and the page behind

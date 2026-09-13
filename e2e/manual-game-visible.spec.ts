@@ -18,7 +18,7 @@ test('a test game is listed even with nobody coachable on it, and says what it i
     ],
   }));
 
-  await page.goto('/#/games');
+  await page.goto('/games');
   await expect(page.getByText('VBC Test 1')).toBeVisible();
   // Badged, or "Test 1 vs Test 2 on a Tuesday" is obvious only to whoever made it.
   // The suite's stubbed session runs in English, like the RC-game spec.
@@ -39,7 +39,7 @@ test('a test game dated out of season is still shown, an ordinary game is not', 
     ],
   }));
 
-  await page.goto('/#/games');
+  await page.goto('/games');
   await expect(page.getByText('VBC August Test')).toBeVisible();
   // The season bound still holds for everything else.
   await expect(page.getByText('VBC August Real')).toHaveCount(0);

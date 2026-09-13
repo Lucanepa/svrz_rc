@@ -217,7 +217,7 @@ function installClickLogging(): void {
   window.addEventListener('click', (e) => {
     const el = e.target instanceof Element ? e.target : null;
     const d = describeElement(el);
-    clientLog.info('ui.click', d?.text ? `click: ${d.text}` : 'click', { ...d, hash: location.hash ? scrubTokens(location.hash) : undefined });
+    clientLog.info('ui.click', d?.text ? `click: ${d.text}` : 'click', { ...d, path: scrubTokens(location.pathname + location.search + location.hash) });
   }, { capture: true, passive: true });
 
   window.addEventListener('submit', (e) => {
@@ -404,7 +404,12 @@ function installErrorLogging(): void {
 function installLifecycleLogging(): void {
   window.addEventListener('online', () => clientLog.info('net.online', 'back online'));
   window.addEventListener('offline', () => clientLog.warn('net.offline', 'went offline'));
-  window.addEventListener('hashchange', () => clientLog.info('nav.hashchange', scrubTokens(location.hash || '#')));
+  // Routes live in the path, and the app moves between them with pushState —
+  // which fires no event at all. Back/Forward does (popstate), and the two
+  // fragment roots still fire hashchange; both are logged as one kind.
+  const logNav = () => clientLog.info('nav.change', scrubTokens(location.pathname + location.search + (location.hash || '')));
+  window.addEventListener('popstate', logNav);
+  window.addEventListener('hashchange', logNav);
   document.addEventListener('visibilitychange', () => clientLog.debug('app.visibility', document.visibilityState));
   window.addEventListener('pagehide', () => { noteLeavingPage(); void flush(true); });
   window.addEventListener('pageshow', () => { noteBackOnPage(); });

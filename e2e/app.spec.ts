@@ -51,21 +51,21 @@ test.describe('Admin console', () => {
   // Admin used to be a toggle on the toolbar; it is its own hash route now, and
   // it asks for the admin password when the session has no admin rights.
   test('asks for the admin password when the session has none', async ({ page }) => {
-    await page.goto('/#/admin');
+    await page.goto('/admin');
     await expect(page.getByRole('button', { name: /Anmelden|Sign in/ })).toBeVisible();
     await expect(page.locator('input[type="password"]')).toBeVisible();
   });
 
   test('an admin session gets the console itself', async ({ page }) => {
     await stubSignedInApp(page, { admin: true });
-    await page.goto('/#/admin');
+    await page.goto('/admin');
     await expect(page.getByRole('button', { name: /^Coachees$/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /Referee Coaches/ })).toBeVisible();
   });
 
   test('can get back to the app from the console', async ({ page }) => {
     await stubSignedInApp(page, { admin: true });
-    await page.goto('/#/admin');
+    await page.goto('/admin');
     await page.getByRole('button', { name: /Zur App|To app/ }).click();
     await expect(page.locator('h1')).toContainText('Coaching Feedback');
   });

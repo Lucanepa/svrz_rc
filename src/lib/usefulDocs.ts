@@ -149,7 +149,7 @@ export const USEFUL_DOCS: UsefulDoc[] = [
     id: 'guide',
     group: 'coaching',
     kind: 'video',
-    href: '#/guide/{lang}',
+    href: 'guide/{lang}',
     badge: 'Video',
     DE: { title: 'Video-Anleitung', note: 'Vom Spiel antippen bis zur E-Mail an den Schiedsrichter.' },
     EN: { title: 'Video guide', note: 'From tapping the game to the email the referee receives.' },

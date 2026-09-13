@@ -47,7 +47,7 @@ test.describe('Game import', () => {
       return r.fulfill({ json: { imported: 7, totalFetched: 231, from: '', to: '' } });
     });
 
-    await page.goto('/#/admin');
+    await page.goto('/admin');
     await page.getByRole('button', { name: /Einstellungen|Settings/ }).click();
     await page.getByRole('button', { name: /Jetzt importieren|Import now/ }).click();
 
@@ -62,7 +62,7 @@ test.describe('Game import', () => {
       json: { error: 'Could not open the VolleyManager game list (role: club).' },
     }));
 
-    await page.goto('/#/admin');
+    await page.goto('/admin');
     await page.getByRole('button', { name: /Einstellungen|Settings/ }).click();
     await page.getByRole('button', { name: /Jetzt importieren|Import now/ }).click();
 
@@ -76,7 +76,7 @@ test.describe('Activity log', () => {
   test('a log message keeps a readable width on a phone', async ({ page, isMobile }) => {
     test.skip(!isMobile, 'Mobile viewport only');
     await stubAdminConsole(page);
-    await page.goto('/#/admin');
+    await page.goto('/admin');
     await page.getByRole('button', { name: /Protokoll|Activity log/ }).click();
 
     const msg = page.getByText(/api\/admin\/coachees\/sync-contacts 500/);
@@ -91,7 +91,7 @@ test.describe('Activity log', () => {
   test('the log does not push the page sideways on a phone', async ({ page, isMobile }) => {
     test.skip(!isMobile, 'Mobile viewport only');
     await stubAdminConsole(page);
-    await page.goto('/#/admin');
+    await page.goto('/admin');
     await page.getByRole('button', { name: /Protokoll|Activity log/ }).click();
     await expect(page.getByText(/api\/admin\/coachees\/sync-contacts 500/)).toBeVisible();
 

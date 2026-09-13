@@ -54,7 +54,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('a planned game says which group its coachees are in', async ({ page }) => {
-  await page.goto('/#/home');
+  await page.goto('/home');
   await expect(page.getByText(/\d+ planned|\d+ geplant/)).toBeVisible();
 
   // A mixed pair keeps the "Coachee" mark that tells the two referees apart,

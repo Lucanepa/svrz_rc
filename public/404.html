@@ -8,16 +8,18 @@
       This page exists to stop Cloudflare Pages answering unknown paths with
       index.html at status 200.
 
-      Every route in this app lives in the URL hash (#/admin, #/sign/<slug>,
-      #/survey/<token>), so nothing is ever served from a path other than "/" —
-      the SPA fallback was doing no work here. What it DID do was turn a missing
-      file into a success: during the propagation window after a deploy, a
-      request for a hashed asset that had not landed yet was answered with this
-      HTML at 200, and _headers marks /assets/* immutable for a year, so the
-      edge cached it under the script's URL and clients got a blank page. A 404
-      is not a success and does not get cached in its place.
+      The app's routes live in the path (/games, /form/<id>/1sr, /admin/…),
+      and every one of them is written out by hand in _redirects — so the
+      generic SPA fallback still does no work here. What it DID do, before this
+      file existed, was turn a missing file into a success: during the
+      propagation window after a deploy, a request for a hashed asset that had
+      not landed yet was answered with HTML at 200, and _headers marks
+      /assets/* immutable for a year, so the edge cached it under the script's
+      URL and clients got a blank page. A 404 is not a success and does not get
+      cached in its place.
 
-      See infrastructure.md → "Deploy trap".
+      See infrastructure.md → "Deploy trap", and public/_redirects for why the
+      routes are enumerated rather than caught with /*.
     -->
     <style>
       :root { color-scheme: light; }

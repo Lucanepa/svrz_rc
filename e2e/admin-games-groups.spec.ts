@@ -25,7 +25,7 @@ test('the console says which group each referee on a game is in', async ({ page 
   ] }));
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: GAMES }));
 
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
   await expect(page.getByText('Nina Adler')).toBeVisible();
 
@@ -50,7 +50,7 @@ test('a referee who is only ANOTHER season\'s coachee is not marked', async ({ p
   ] }));
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [GAMES[0]] }));
 
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
   await expect(page.getByText('1SR Nina Adler')).toBeVisible();
   await expect(page.getByText('Varia', { exact: true })).toHaveCount(0);

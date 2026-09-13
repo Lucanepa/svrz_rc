@@ -19,7 +19,7 @@ async function importFile(page: import('@playwright/test').Page, buf: Buffer) {
     posted.push(r.request().postDataJSON());
     await r.fulfill({ json: { created: 1, updated: 0, total: 1 } });
   });
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   // By its label, not by "the xlsx input": the console has two of those now —
   // this one and the referee register's.
   await page.getByLabel(/xlsx importieren|Import xlsx/).setInputFiles({

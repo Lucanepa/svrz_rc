@@ -17,7 +17,7 @@ const games = [
 test.beforeEach(async ({ page }) => {
   await stubSignedInApp(page);
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: games }));
-  await page.goto('/#/games');
+  await page.goto('/games');
   await page.getByRole('button', { name: /Filter/i }).first().click();
 });
 

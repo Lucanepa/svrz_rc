@@ -63,7 +63,7 @@ test.describe('Team login', () => {
     await expect(page.getByPlaceholder(/Benutzername|Username/)).toHaveValue('');
     await expect(page.getByPlaceholder(/^(Passwort|Password)$/)).toHaveValue('');
     // There is no second form to reach from here any more: the per-person
-    // e-mail login is gone, and #/admin is a separate page with its own password.
+    // e-mail login is gone, and /admin is a separate page with its own password.
     await expect(page.getByRole('button', { name: /Persönlicher Zugang|Personal access/ })).toHaveCount(0);
     await expect(page.getByPlaceholder(/E-Mail|^Email$/)).toHaveCount(0);
     await signInWithTeamCredential(page);
@@ -108,9 +108,9 @@ test.describe('Team login', () => {
     await expect(page.getByRole('button', { name: /^Games$/ })).toBeVisible();
   });
 
-  test('#/admin asks for its OWN password, not the team one', async ({ page }) => {
+  test('/admin asks for its OWN password, not the team one', async ({ page }) => {
     await stubLoginFlow(page);
-    await page.goto('/#/admin');
+    await page.goto('/admin');
 
     // The console no longer sits behind the app's gate (main.tsx): it renders
     // its own username + password form, and the copy says as much so nobody

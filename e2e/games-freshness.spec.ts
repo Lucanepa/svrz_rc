@@ -14,7 +14,7 @@ test('a game taken elsewhere leaves the open list when the window is looked at a
     json: [{ ...GAME, assignedRc: takenBySomeoneElse ? 'Bea Beispiel' : '' }],
   }));
 
-  await page.goto('/#/games');
+  await page.goto('/games');
   await expect(page.getByText(GAME.homeTeam)).toBeVisible();
 
   // Somebody else takes it while this window sits in the background.
@@ -37,7 +37,7 @@ test('a refused take says so and repairs the row it was refused on', async ({ pa
     await r.fulfill({ status: 409, json: { error: 'Dieses Spiel wurde bereits von einem anderen RC übernommen.' } });
   });
 
-  await page.goto('/#/games');
+  await page.goto('/games');
   await page.getByText(GAME.homeTeam).click();
   await page.getByRole('button', { name: 'Take game' }).click();
 

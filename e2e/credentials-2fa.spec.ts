@@ -30,7 +30,7 @@ async function openCredentials(page: import('@playwright/test').Page) {
     if (r.request().method() === 'GET') return r.fulfill({ json: SLOTS });
     return r.fulfill({ json: { ok: true, slot: 'admin', username: 'admin' } });
   });
-  await page.goto('/#/admin/settings');
+  await page.goto('/admin/settings');
 }
 
 test('a password cannot be typed before a code has been asked for', async ({ page }) => {
@@ -70,7 +70,7 @@ test('the code travels with the change, and a short one cannot be sent', async (
     put = r.request().postDataJSON();
     return r.fulfill({ json: { ok: true, slot: 'shared', username: 'Referee-Coaching', feedsRevoked: true } });
   });
-  await page.goto('/#/admin/settings');
+  await page.goto('/admin/settings');
 
   await page.getByRole('button', { name: /Bestätigungscode senden|Send confirmation code/ }).first().click();
   const save = page.getByRole('button', { name: /Passwort setzen|Set password/ });

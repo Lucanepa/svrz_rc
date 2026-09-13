@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Video, ExternalLink, Subtitles, Check } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { getStoredLang, type Lang } from '../lib/prefs';
+import { guideLangFromPath } from '../lib/routes';
 
 /**
  * The narrated guide, on its own page.
@@ -99,15 +100,12 @@ const STR = {
   },
 } satisfies Record<Lang, Record<string, unknown>>;
 
-/** `#/guide/en` pins a language; a bare `#/guide` follows the device. */
-function langFromHash(): Lang | null {
-  const m = window.location.hash.match(/#\/guide\/(de|en)\b/i);
-  return m ? (m[1].toLowerCase() === 'en' ? 'EN' : 'DE') : null;
-}
+/** `/guide/en` pins a language; a bare `/guide` follows the device. */
+const langFromUrl = (): Lang | null => guideLangFromPath(window.location.pathname);
 
 export default function GuidePage() {
   const [lang, setLang] = useState<Lang>(() =>
-    langFromHash()
+    langFromUrl()
     ?? getStoredLang()
     ?? (navigator.language?.toLowerCase().startsWith('en') ? 'EN' : 'DE'));
   const t = STR[lang];
@@ -122,14 +120,14 @@ export default function GuidePage() {
     setLang(next);
     // Deliberately NOT setStoredLang: this page is public and its URL gets
     // pasted into a group chat. Writing the shared preference would mean a
-    // colleague opening someone's `#/guide/en` link found their whole app in
+    // colleague opening someone's `/guide/en` link found their whole app in
     // English afterwards — a setting they never touched, changed by reading a
     // message. The stored language is read as a DEFAULT above and left alone.
     //
-    // Safe to write the hash: main.tsx only reloads when the route KIND
-    // changes, and de -> en is the same kind. The link a coach copies out of
-    // the address bar then carries the language they actually watched.
-    window.location.hash = `#/guide/${next === 'DE' ? 'de' : 'en'}`;
+    // replaceState, not push: the toggle is not a page, and Back should leave
+    // the guide rather than step through languages. The link a coach copies
+    // out of the address bar then carries the language they actually watched.
+    window.history.replaceState(null, '', `/guide/${next === 'DE' ? 'de' : 'en'}`);
   };
 
   return (

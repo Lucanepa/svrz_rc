@@ -20,21 +20,21 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('a document opens in the app instead of a browser tab', async ({ page }) => {
-  await page.goto('/#/coachees');
+  await page.goto('/coachees');
   await page.getByRole('button', { name: /Leitfaden SR-Technik|Refereeing technique guide/ }).click();
 
   const reader = page.getByRole('dialog', { name: /Leitfaden SR-Technik|Refereeing technique guide/ });
   await expect(reader).toBeVisible();
   await expect(reader.locator('canvas').first()).toBeVisible({ timeout: 20_000 });
   // Still the app underneath, not a navigation.
-  expect(page.url()).toContain('#/coachees');
+  expect(new URL(page.url()).pathname).toBe('/coachees');
 });
 
 test('the rulebook comes through the API proxy, because volleyball.ch sends no CORS header', async ({ page }) => {
   const asked: string[] = [];
   page.on('request', (r) => { if (r.url().includes('/api/docs/')) asked.push(r.url()); });
 
-  await page.goto('/#/coachees');
+  await page.goto('/coachees');
   await page.getByRole('button', { name: /Offizielle Volleyball-Regeln|Official volleyball rules/ }).click();
 
   await expect(page.getByRole('dialog').locator('canvas').first()).toBeVisible({ timeout: 20_000 });
@@ -42,7 +42,7 @@ test('the rulebook comes through the API proxy, because volleyball.ch sends no C
 });
 
 test('searching the document finds the word and jumps to it', async ({ page }) => {
-  await page.goto('/#/coachees');
+  await page.goto('/coachees');
   await page.getByRole('button', { name: /Leitfaden SR-Technik|Refereeing technique guide/ }).click();
   const reader = page.getByRole('dialog');
   await expect(reader.locator('canvas').first()).toBeVisible({ timeout: 20_000 });
@@ -55,7 +55,7 @@ test('searching the document finds the word and jumps to it', async ({ page }) =
 });
 
 test('Escape gives the page back', async ({ page }) => {
-  await page.goto('/#/coachees');
+  await page.goto('/coachees');
   await page.getByRole('button', { name: /Leitfaden SR-Technik|Refereeing technique guide/ }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.keyboard.press('Escape');
@@ -70,7 +70,7 @@ test('a document is downloaded once, however often it is opened', async ({ page 
   const asked: string[] = [];
   page.on('request', (r) => { if (r.url().includes('Leitfaden-SR-Technik.pdf')) asked.push(r.url()); });
 
-  await page.goto('/#/coachees');
+  await page.goto('/coachees');
   const open = () => page.getByRole('button', { name: /Leitfaden SR-Technik|Refereeing technique guide/ }).click();
 
   await open();
@@ -94,16 +94,16 @@ test('an SVRZ regulation reads in the app, through the proxy', async ({ page }) 
   const asked: string[] = [];
   page.on('request', (r) => { if (r.url().includes('/api/docs/')) asked.push(r.url()); });
 
-  await page.goto('/#/coachees');
+  await page.goto('/coachees');
   await page.getByRole('button', { name: /Reglement der Unparteiischen|Regulation for officials/ }).click();
 
   await expect(page.getByRole('dialog').locator('canvas').first()).toBeVisible({ timeout: 20_000 });
   expect(asked.some((url) => url.endsWith('/api/docs/unparteiische'))).toBe(true);
-  expect(page.url()).toContain('#/coachees');
+  expect(new URL(page.url()).pathname).toBe('/coachees');
 });
 
 test('a contact is a mailto link that stays in this tab', async ({ page }) => {
-  await page.goto('/#/coachees');
+  await page.goto('/coachees');
   const card = page.getByRole('link', { name: /Vorsitz RSK|RSK chair/ });
   await expect(card).toBeVisible();
   // The address, as written — not the app's base prefixed to it, and not in

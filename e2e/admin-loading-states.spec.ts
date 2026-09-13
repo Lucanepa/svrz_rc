@@ -35,7 +35,7 @@ test('the console holds its answers until it has them', async ({ page }) => {
   const sync = await gated(page, '**/api/admin/games/sync-status', SYNC);
   const manual = await gated(page, '**/api/admin/games/manual*', []);
 
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   await page.getByRole('button', { name: /Einstellungen|Settings/ }).click();
 
   // Nothing is known yet, so nothing may be claimed.
@@ -69,7 +69,7 @@ test('the coachee list waits for the season it is filtered by', async ({ page })
   }));
   const settings = await gated(page, '**/api/settings', SETTINGS);
 
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   // Anchored on a control that does not depend on any fetch, so the absence
   // checks below cannot pass merely because nothing has rendered yet.
   await expect(page.getByLabel(/xlsx importieren|Import xlsx/)).toBeAttached();
@@ -97,7 +97,7 @@ test('the console asks once, not on every render', async ({ page }) => {
   let logCalls = 0;
   await page.route('**/api/admin/logs?*', (r) => { logCalls += 1; return r.fulfill({ json: { entries: [], total: 0, lastSeq: 0, stats: {} } }); });
 
-  await page.goto('/#/admin');
+  await page.goto('/admin');
   await expect(page.getByLabel(/xlsx importieren|Import xlsx/)).toBeAttached();
   await page.waitForTimeout(800);
   const settled = coacheeCalls;

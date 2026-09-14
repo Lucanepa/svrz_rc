@@ -1927,14 +1927,20 @@ function hasUnknownPlaceholder(text: string, known: Set<string>): boolean {
 // Blue = this mail will fill it in. Amber = it will not, and the spot goes out
 // blank — the failure mode this colouring exists to catch.
 //
-// Drawn as a pill showing the bare name. The braces are still in the text —
-// the mirror must trace the textarea character for character or the caret
-// drifts — so they stay in the DOM at their full monospace width and are simply
-// painted transparent: they are the pill's padding.
+// Drawn as a pill showing the bare name — in the console's language, whatever
+// name the text holds: {{datum}} reads "date" to an English admin and
+// {{firstName}} reads "vorname" to a German one, and the text is not touched.
+// The original `{{name}}` stays in the DOM invisible, because the mirror must
+// trace the textarea character for character or the caret drifts; the label is
+// painted over it, centred. Every name fits inside its twin's braces (the
+// braces are four characters of room), so the pill never grows.
 //
 // `markerAt` plants a zero-width span at that text offset (inside plain text,
 // never inside a placeholder), which the suggestion list is anchored to.
-function placeholderParts(value: string, known: Set<string>, markerAt?: number, markerRef?: React.RefObject<HTMLSpanElement | null>): React.ReactNode[] {
+function placeholderParts(
+  value: string, known: Set<string>, markerAt?: number, markerRef?: React.RefObject<HTMLSpanElement | null>,
+  label: (name: string) => string = (n) => n,
+): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   const plain = (from: number, to: number) => {
     if (markerAt !== undefined && markerAt >= from && markerAt <= to) {
@@ -1951,11 +1957,10 @@ function placeholderParts(value: string, known: Set<string>, markerAt?: number, 
   while ((m = PLACEHOLDER_RE.exec(value))) {
     plain(last, m.index);
     const name = m[1];
-    const open = m[0].slice(0, m[0].indexOf(name));
-    const close = m[0].slice(open.length + name.length);
     out.push(
-      <span key={m.index} className={cn('rounded', known.has(m[1]) ? 'bg-blue-100 text-blue-700 font-semibold' : 'bg-amber-100 text-amber-700 font-semibold')}>
-        <span className="text-transparent">{open}</span>{name}<span className="text-transparent">{close}</span>
+      <span key={m.index} data-placeholder={name} className={cn('relative inline-block rounded align-baseline font-semibold', known.has(name) ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700')}>
+        <span className="invisible">{m[0]}</span>
+        <span aria-hidden className="absolute inset-0 text-center">{known.has(name) ? label(name) : name}</span>
       </span>,
     );
     last = m.index + m[0].length;
@@ -1981,10 +1986,12 @@ function openPlaceholderAt(value: string, caret: number): { start: number; query
 /** The field that last had the caret — where a chip click inserts. */
 let lastTemplateField: { el: HTMLTextAreaElement; kind: EmailTemplateKind; field: keyof EmailTemplate } | null = null;
 
-function TemplateField({ value, onChange, rows, singleLine, known, suggest, kind, field: fieldName }: {
+function TemplateField({ value, onChange, rows, singleLine, known, suggest, label, kind, field: fieldName }: {
   value: string; onChange: (v: string) => void; rows: number; singleLine?: boolean; known: Set<string>;
   /** The names offered while typing `{{`, in the console's language. */
   suggest: string[];
+  /** The name a pill shows for the name in the text — the console's language. */
+  label: (name: string) => string;
   kind: EmailTemplateKind; field: keyof EmailTemplate;
 }) {
   const mirror = useRef<HTMLDivElement>(null);
@@ -2058,7 +2065,7 @@ function TemplateField({ value, onChange, rows, singleLine, known, suggest, kind
         ref={mirror}
         aria-hidden
         className={cn(FIELD_METRICS, 'tpl-field pointer-events-none absolute inset-0 overflow-hidden rounded-lg border border-transparent text-stone-800')}
-      >{placeholderParts(value, known, open?.start, marker)}</div>
+      >{placeholderParts(value, known, open?.start, marker, label)}</div>
       <textarea
         ref={field}
         value={value}
@@ -2200,6 +2207,21 @@ function EmailsAdmin({ t, lang }: { t: T; lang: Lang }) {
     // one {{firstName}}. Both render, in either half of the mail.
     const offered = placeholdersFor(data, kind, lang);
     const known = new Set(acceptedPlaceholdersFor(data, kind));
+    // The two lists are twins in the same order, so a name in the text shows
+    // as its twin when the console is in the other language. An older server
+    // sends no English list — then a name is shown as it is.
+    const de = placeholdersFor(data, kind, 'DE');
+    const en = placeholdersFor(data, kind, 'EN');
+    const twin = new Map<string, string>();
+    if (en !== de && en.length === de.length) {
+      de.forEach((d, i) => { twin.set(d, en[i]); twin.set(en[i], d); });
+    }
+    const label = (name: string) => {
+      const other = twin.get(name);
+      if (!other) return name;
+      const isDe = de.includes(name);
+      return lang === 'EN' ? (isDe ? other : name) : (isDe ? name : other);
+    };
     // A chip click writes {{name}} where the caret last was in THIS card —
     // or at the end of the body when no field of it has been touched yet.
     const insert = (name: string) => {
@@ -2214,7 +2236,7 @@ function EmailsAdmin({ t, lang }: { t: T; lang: Lang }) {
       const el = target?.el ?? document.querySelector<HTMLTextAreaElement>(`textarea[data-tpl-kind="${kind}"][data-tpl-field="${fieldKey}"]`);
       requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(pos, pos); });
     };
-    const fieldProps = (field: keyof EmailTemplate) => ({ known, suggest: offered, kind, field });
+    const fieldProps = (field: keyof EmailTemplate) => ({ known, suggest: offered, label, kind, field });
     const unknownUsed = [tpl.subject, tpl.heading, tpl.intro, tpl.outro, tpl.headingEn ?? '', tpl.introEn ?? '', tpl.outroEn ?? '']
       .some((v) => hasUnknownPlaceholder(v, known));
     // A mail that ships with an English half is edited in both halves. The

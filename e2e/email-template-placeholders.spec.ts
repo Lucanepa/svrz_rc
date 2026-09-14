@@ -84,17 +84,32 @@ test('typing {{ opens the list, typing narrows it, Enter completes it', async ({
   await expect(field).toHaveValue('Liebe/r {{coachVorname}} {{');
 });
 
-test('the overlay shows the name as a pill and hides the braces', async ({ page }) => {
+test('the overlay shows the name as a pill, the braces kept invisible for the width', async ({ page }) => {
   await openEmails(page, 'DE');
   const field = body(page);
   await field.fill('Hallo {{vorname}}');
-  const mirror = page.locator('div.tpl-field').filter({ hasText: 'vorname' }).first();
-  const pill = mirror.locator('span.rounded').first();
-  await expect(pill).toHaveText('{{vorname}}'); // still in the DOM, for the width…
-  const braces = await pill.locator('span.text-transparent').first().evaluate((el) => getComputedStyle(el).color);
-  expect(braces).toBe('rgba(0, 0, 0, 0)'); // …but painted transparent
+  const pill = page.locator('div.tpl-field [data-placeholder="vorname"]').first();
+  await expect(pill.locator('span.invisible')).toHaveText('{{vorname}}'); // still in the DOM, for the width…
+  expect(await pill.locator('span.invisible').evaluate((el) => getComputedStyle(el).visibility)).toBe('hidden'); // …but not painted
+  await expect(pill.locator('span.absolute')).toHaveText('vorname');
   const bg = await pill.evaluate((el) => getComputedStyle(el).backgroundColor);
   expect(bg).not.toBe('rgba(0, 0, 0, 0)');
+  // The pill is exactly as wide as the text it stands for: the caret must not drift.
+  const w = await pill.evaluate((el) => ({ pill: el.getBoundingClientRect().width, text: el.querySelector('span.invisible')!.getBoundingClientRect().width }));
+  expect(Math.abs(w.pill - w.text)).toBeLessThanOrEqual(1);
+});
+
+test('a pill reads in the console language whatever name the text holds', async ({ page }) => {
+  await openEmails(page, 'DE');
+  const field = body(page);
+  await field.fill('Hallo {{vorname}} und {{date}}');
+  const label = (name: string) => page.locator(`div.tpl-field [data-placeholder="${name}"] span.absolute`).first();
+  await expect(label('vorname')).toHaveText('vorname');
+  await expect(label('date')).toHaveText('datum');       // an English name, shown to a German admin as its twin
+  await page.getByRole('button', { name: 'DE', exact: true }).click();
+  await expect(label('vorname')).toHaveText('firstName'); // and the other way round
+  await expect(label('date')).toHaveText('date');
+  await expect(field).toHaveValue('Hallo {{vorname}} und {{date}}'); // the text itself is never rewritten
 });
 
 // The server's side of the English set.

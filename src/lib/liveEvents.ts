@@ -29,6 +29,11 @@ let connected = false;
 // the tab stays open. After a few failures in a row this backs off to once a
 // minute, and a window coming back to the foreground tries again immediately.
 let failures = 0;
+// Backoff rounds since the stream last opened. One outage is one warn: a laptop
+// off the network for a lunch break logged the same "backing off" line every
+// 67 s for twenty minutes (18 warns, 14.09.2026), which reads like a failing
+// server and was a closed lid.
+let backoffs = 0;
 let retryTimer: number | null = null;
 const FAILURES_BEFORE_BACKOFF = 3;
 const BACKOFF_MS = 60_000;
@@ -46,8 +51,9 @@ function open() {
   source = new EventSource(apiUrl('/api/events'), { withCredentials: true });
   source.onopen = () => {
     failures = 0;
+    clientLog.info('live.open', backoffs ? `event stream back after ${backoffs} backoff round(s)` : 'event stream open');
+    backoffs = 0;
     setConnected(true);
-    clientLog.info('live.open', 'event stream open');
   };
   source.onmessage = (message) => {
     let event: LiveEvent;
@@ -69,8 +75,17 @@ function open() {
     setConnected(false);
     failures += 1;
     if (failures < FAILURES_BEFORE_BACKOFF) return; // a blip: let the browser retry
-    clientLog.warn('live.error', 'event stream failing, backing off', { failures });
+    backoffs += 1;
+    const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    // The first round of an outage is the warning; the rounds after it are the
+    // same fact again and go out as debug with the count.
+    clientLog[backoffs === 1 ? 'warn' : 'debug']('live.error',
+      backoffs === 1 ? 'event stream failing, backing off' : 'event stream still failing',
+      { failures, backoffs, offline });
     close();
+    // Off the network, a retry every minute proves nothing the browser does not
+    // already know: the 'online' event reopens the stream instead (onWake).
+    if (offline) return;
     if (retryTimer === null && listeners.size > 0) {
       retryTimer = window.setTimeout(() => { retryTimer = null; failures = 0; open(); }, BACKOFF_MS);
     }
@@ -104,12 +119,14 @@ export function subscribeLive(listener: Listener, onStatus?: StatusListener): ()
   }
   open();
   window.addEventListener('focus', onWake);
+  window.addEventListener('online', onWake);
   document.addEventListener('visibilitychange', onWake);
   return () => {
     listeners.delete(listener);
     if (onStatus) statusListeners.delete(onStatus);
     if (listeners.size === 0) {
       window.removeEventListener('focus', onWake);
+      window.removeEventListener('online', onWake);
       document.removeEventListener('visibilitychange', onWake);
       if (retryTimer !== null) { window.clearTimeout(retryTimer); retryTimer = null; }
       close();

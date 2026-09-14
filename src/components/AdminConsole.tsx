@@ -48,7 +48,7 @@ import LevelText from './LevelText';
 import { CoacheeChip, GroupChip } from './CoacheeChips';
 import { GameList, GameRow, MetaChip, SectionHead, type RowTone } from './GameRow';
 import { Skeleton, SkeletonRows } from './Skeleton';
-import { dayLabel, dayTimeLabel, clockLabel, todayKey } from '../lib/appTime';
+import { dayLabel, dayTimeLabel, clockLabel, dayKey, todayKey, instantOf } from '../lib/appTime';
 import { inSeasonOrManual, currentSeason, seasonLabel } from '../lib/season';
 import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
 
@@ -242,6 +242,8 @@ const STR = {
     gamesSearch: 'Spiel, Team, Liga oder Halle suchen …',
     gamesNone: 'Keine Spiele gefunden.',
     gamesUnassigned: 'Nur ohne RC',
+    gamesPast: 'Auch vergangene',
+    gamesMore: (n: number) => `Weitere ${n} Spiele anzeigen`,
     gamesFlag: 'Vormerken', gamesFlagged: 'Vorgemerkt', gamesFlaggedVm: 'Vorgemerkt (VM)',
     gamesFlagHint: 'Für eine Beobachtung vormerken — die RC sehen das Spiel dann unter „Vorgemerkt".',
     gamesFlagVmHint: 'Aus VolleyManager übernommen (RD/RSV-Markierung) — hier nicht änderbar.',
@@ -462,6 +464,8 @@ const STR = {
     gamesSearch: 'Search game, team, league or venue …',
     gamesNone: 'No games found.',
     gamesUnassigned: 'Unassigned only',
+    gamesPast: 'Include past',
+    gamesMore: (n: number) => `Show ${n} more games`,
     gamesFlag: 'Flag', gamesFlagged: 'Flagged', gamesFlaggedVm: 'Flagged (VM)',
     gamesFlagHint: 'Flag for observation — coaches then find the game under "Flagged".',
     gamesFlagVmHint: 'Taken from VolleyManager (RD/RSV marking) — not editable here.',
@@ -3954,6 +3958,7 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
   const [coachees, setCoachees] = useState<Coachee[]>([]);
   const [q, setQ] = useState('');
   const [unassignedOnly, setUnassignedOnly] = useState(false);
+  const [showPast, setShowPast] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -4014,17 +4019,34 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
 
   // Folded on both sides, or a typed "Müller" would miss the folded haystack.
   const needle = foldName(q);
+  const today = todayKey();
   const shown = games.filter((g) => {
     // The season on the tab, test games exempt — the same rule the coach app
     // applies to the same endpoint. Without it, last season's fixtures were
     // offered for assignment under this season's heading.
     if (!inSeasonOrManual(g, season)) return false;
     if (unassignedOnly && g.assignedRc) return false;
+    // Handing out and flagging are about games still to come, so a played
+    // game is off the list unless asked for — but a search looks through all
+    // of them: a typed match number is a question about THAT game, wherever
+    // it is. The Zürich day, so tonight's game stays listed until midnight.
+    if (!showPast && !needle && dayKey(g.date) < today) return false;
     if (!needle) return true;
     // Accent-blind, like every other name match: "muller" finds "Müller".
     return [g.matchNo, g.league, g.location, g.homeTeam, g.awayTeam, g.firstReferee, g.secondReferee, g.assignedRc]
       .some((v) => foldName(v || '').includes(needle));
-  });
+  // The endpoint serves newest-first, which read as "the season starts in
+  // March": the first rows were the last games, and September was 300 rows
+  // down and cut. Chronological — the next game is the first row.
+  }).sort((a, b) => (instantOf(a.date) ?? 0) - (instantOf(b.date) ?? 0));
+
+  // 637 rows of selects is a slow render, so the list is paged — but by a
+  // button, not by the "narrow the search" the old 300-cut ended in: the rest
+  // of the season is a click away, not a search away. Back to the first page
+  // whenever the list is re-cut, or a narrowed search would keep the old depth.
+  const PAGE = 200;
+  const [limit, setLimit] = useState(PAGE);
+  useEffect(() => { setLimit(PAGE); }, [q, unassignedOnly, showPast, season]);
 
   return (
     <Card>
@@ -4035,6 +4057,9 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
         <input className={cn(input, 'flex-1 min-w-[16rem]')} placeholder={t.gamesSearch} value={q} onChange={(e) => setQ(e.target.value)} />
         <button onClick={() => setUnassignedOnly((v) => !v)} className={cn(btnGhost, unassignedOnly && 'text-red-600 border-red-200')}>
           {t.gamesUnassigned}
+        </button>
+        <button onClick={() => setShowPast((v) => !v)} className={cn(btnGhost, showPast && 'text-red-600 border-red-200')}>
+          {t.gamesPast}
         </button>
       </div>
       {/* The list is cut to a season, so the season is on the tab — and the
@@ -4049,7 +4074,7 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
         <p className="mt-3 text-sm text-stone-400">{t.gamesNone}</p>
       ) : (
         <GameList className="mt-3 max-h-[70vh] overflow-y-auto">
-          {shown.slice(0, 300).map((g) => (
+          {shown.slice(0, limit).map((g) => (
             <GameRow
               key={g.id}
               lang={lang}
@@ -4128,10 +4153,12 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
               </div>
             </GameRow>
           ))}
-          {shown.length > 300 && (
-            // Said out loud rather than silently truncated: a list that stops at
-            // 300 without mentioning it reads as "that is all of them".
-            <p className="py-2 text-xs text-stone-400">… {shown.length - 300} more — narrow the search.</p>
+          {shown.length > limit && (
+            // Said out loud rather than silently truncated: a list that stops
+            // without mentioning it reads as "that is all of them".
+            <div className="py-2">
+              <button onClick={() => setLimit((n) => n + PAGE)} className={btnGhost}>{t.gamesMore(Math.min(PAGE, shown.length - limit))}</button>
+            </div>
           )}
         </GameList>
       )}

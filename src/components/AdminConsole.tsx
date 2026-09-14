@@ -262,7 +262,7 @@ const STR = {
     ovSheetHint: 'Das Blatt der Kommission, aus den erfassten Beobachtungen gezeichnet: ein Einsatz pro Spiel, die RC-Sitzung, das Total, die Unterschrift.',
     ovSheetAllHint: 'Ein PDF pro RC mit mindestens einem Besuch oder Sitzungsbesuch in dieser Saison.',
     ovMeeting: (d: string) => `RC-Sitzung${d ? ` vom ${d}` : ''} besucht`,
-    ovMeetingHint: 'Erscheint als Zeile auf der Spesenabrechnung. Datum und Ansatz stehen unter Einstellungen.',
+    ovMeetingHint: 'Erscheint als Zeile auf der Spesenabrechnung. Datum und Ansatz stehen unten in der Karte „Spesen“.',
     ovMeetingOk: 'Sitzungsbesuch erfasst.', ovMeetingOff: 'Sitzungsbesuch entfernt.',
     expenses: 'Spesen', expensesHint: 'Was eine Saison zahlt — die Zahlen auf der Spesenabrechnung. Gebührenordnung Art. 14 Abs. 3: pauschal pro Einsatz, Fahrkosten inbegriffen.',
     expVisit: 'Ansatz pro Besuch (CHF)', expMeeting: 'RC-Sitzung: Ansatz (CHF)', expMeetingDate: 'RC-Sitzung: Datum',
@@ -296,7 +296,7 @@ const STR = {
     colMandate: 'Pensum', mandateLabel: 'Pensum (Beobachtungen pro Saison)',
     mandateHint: (fallback: number) => `Wie viele Beobachtungen dieser RC pro Saison übernimmt. Leer = Standard (${fallback}). 0 ist erlaubt und schränkt nichts ein — das Pensum ist rein informativ.`,
     defaultGoal: 'Standard-Pensum',
-    defaultGoalHint: () => 'Beobachtungen pro Saison für alle RC, die kein eigenes Pensum haben. Einzelne Pensen (auch 0) werden im Tab „Referee Coaches" gesetzt.',
+    defaultGoalHint: () => 'Beobachtungen pro Saison für alle RC, die kein eigenes Pensum haben. Einzelne Pensen (auch 0) stehen in der Liste oben (Spalte „Pensum“).',
     paidCap: 'Vergütete Spiele (max.)',
     paidCapHint: 'Infoschreiben 6.2: mehr Spiele darf ein RC coachen, vergütet werden sie nicht. Wird dem RC auf der Startseite angezeigt und in der Spesen-Datei mitgerechnet. Leer = keine Obergrenze.',
     ovCsv: 'Spesen-CSV',
@@ -484,7 +484,7 @@ const STR = {
     ovSheetHint: 'The commission\'s sheet, drawn from the filed observations: one claim per game, the RC meeting, the total, the signature.',
     ovSheetAllHint: 'One PDF per coach with at least one visit or meeting this season.',
     ovMeeting: (d: string) => `Attended the RC meeting${d ? ` of ${d}` : ''}`,
-    ovMeetingHint: 'Shows as a line on the expense sheet. Date and rate are under Settings.',
+    ovMeetingHint: 'Shows as a line on the expense sheet. Date and rate are in the “Expenses” card below.',
     ovMeetingOk: 'Meeting attendance recorded.', ovMeetingOff: 'Meeting attendance removed.',
     expenses: 'Expenses', expensesHint: 'What a season pays — the figures on the expense sheet. Fee regulations art. 14 par. 3: a flat rate per assignment, travel included.',
     expVisit: 'Rate per visit (CHF)', expMeeting: 'RC meeting: rate (CHF)', expMeetingDate: 'RC meeting: date',
@@ -517,7 +517,7 @@ const STR = {
     colMandate: 'Target', mandateLabel: 'Season target (observations)',
     mandateHint: (fallback: number) => `How many observations this coach takes on per season. Empty = the default (${fallback}). 0 is allowed and restricts nothing — the target is informative only.`,
     defaultGoal: 'Default season target',
-    defaultGoalHint: () => 'Observations per season for every coach without their own target. Individual targets (0 included) are set in the "Referee Coaches" tab.',
+    defaultGoalHint: () => 'Observations per season for every coach without their own target. Individual targets (0 included) are set per coach in the list above (“Pensum” column).',
     paidCap: 'Paid games (max.)',
     paidCapHint: 'Infoschreiben 6.2: a coach may take on more, but they are not reimbursed. Shown to the coach on the dashboard and applied in the expenses file. Empty = no ceiling.',
     ovCsv: 'Expenses CSV',
@@ -1009,13 +1009,38 @@ export default function AdminConsole() {
         {settingsError && (
           <p className="mb-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{settingsError}</p>
         )}
+        {/* Each setting sits under the tab whose content it changes; the daily
+            work (lists, forms) comes first in every panel, the number or switch
+            that shapes it closes the panel. Einstellungen keeps only what no
+            tab owns. */}
         {!isPresident && <>
-        <div hidden={tab !== 'coachees'}><CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} settingsLoading={settingsLoading} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} /></div>
-        <div hidden={tab !== 'rcs'}><RcsAdmin t={t} lang={lang} mandates={rcMandates} defaultGoal={defaultGoal} settingsLoading={settingsLoading} onMandates={saveMandates} /></div>
-        <div hidden={tab !== 'emails'}><EmailsAdmin t={t} /></div>
+        <div hidden={tab !== 'coachees'}>
+          <CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} settingsLoading={settingsLoading} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} />
+          <GroupsCard t={t} lang={lang} groups={groups} onGroups={setGroups} loading={settingsLoading} />
+        </div>
+        <div hidden={tab !== 'rcs'}>
+          <RcsAdmin t={t} lang={lang} mandates={rcMandates} defaultGoal={defaultGoal} settingsLoading={settingsLoading} onMandates={saveMandates} />
+          <DefaultGoalCard t={t} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} loading={settingsLoading} />
+        </div>
+        <div hidden={tab !== 'emails'}>
+          {/* The mail switches head the tab — the templates below are long. */}
+          <TestModeCard t={t} testMode={testMode} onTestMode={setTestMode} loading={settingsLoading} />
+          <EmailsAdmin t={t} />
+        </div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
-        <div hidden={tab !== 'games'}><GamesAdmin t={t} lang={lang} season={defaultSeason} settingsLoading={settingsLoading} active={tab === 'games'} /></div>
-        <div hidden={tab !== 'overview'}><OverviewAdmin t={t} lang={lang} paidCap={paidCap} season={defaultSeason} settingsLoading={settingsLoading} meetingDate={expenseRates.meetingDate} /></div>
+        <div hidden={tab !== 'games'}>
+          {/* Import status strip first: it turns red exactly when the list
+              below looks wrong. Börse and the test-game form are rare work. */}
+          <GameImportCard lang={lang} />
+          <GamesAdmin t={t} lang={lang} season={defaultSeason} settingsLoading={settingsLoading} active={tab === 'games'} />
+          <BoerseCard lang={lang} />
+          <ManualGameAdmin t={t} lang={lang} active={tab === 'games'} />
+        </div>
+        <div hidden={tab !== 'overview'}>
+          <OverviewAdmin t={t} lang={lang} paidCap={paidCap} season={defaultSeason} settingsLoading={settingsLoading} meetingDate={expenseRates.meetingDate} />
+          <PaidCapCard t={t} paidCap={paidCap} onPaidCap={savePaidCap} loading={settingsLoading} />
+          <ExpenseRatesCard t={t} expenseRates={expenseRates} onExpenseRates={saveExpenseRates} loading={settingsLoading} />
+        </div>
         <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} lang={lang} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
@@ -1024,8 +1049,7 @@ export default function AdminConsole() {
         {!isPresident && <>
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} lang={lang} active={tab === 'logs'} mode={logMode} onMode={setLogMode} /></div>
         <div hidden={tab !== 'settings'}>
-          <SettingsAdmin t={t} lang={lang} testMode={testMode} onTestMode={setTestMode} defaultSeason={defaultSeason} settingsLoading={settingsLoading} groups={groups} onGroups={setGroups} defaultGoal={defaultGoal} onDefaultGoal={saveDefaultGoal} paidCap={paidCap} onPaidCap={savePaidCap} expenseRates={expenseRates} onExpenseRates={saveExpenseRates} />
-          <ManualGameAdmin t={t} lang={lang} active={tab === 'settings'} />
+          <SettingsAdmin t={t} defaultSeason={defaultSeason} settingsLoading={settingsLoading} />
           <CredentialsAdmin t={t} />
         </div>
         </>}
@@ -1987,11 +2011,29 @@ function EmailsAdmin({ t }: { t: T }) {
   const [err, setErr] = useState('');
   const [preview, setPreview] = useState<ReminderPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [flagErr, setFlagErr] = useState('');
 
   useEffect(() => { getEmailTemplates().then(setData).catch((e) => setErr(e instanceof Error ? e.message : String(e))); }, []);
 
   const patch = (kind: EmailTemplateKind, p: Partial<EmailTemplate>) =>
     setData((d) => (d ? { ...d, [kind]: { ...d[kind], ...p } } : d));
+
+  // The switch saves itself on toggle, like Test-Modus above it: a switch at
+  // the top that only persists via the Save button at the bottom is how it got
+  // lost in the first place. Optimistic, rolled back with a line in the card
+  // when the write is rejected. The rollback uses the functional form so a
+  // template edit typed meanwhile is not thrown away with it.
+  const toggleReminder = async (next: boolean) => {
+    if (!data) return;
+    const previous = data.reminder_enabled;
+    setData({ ...data, reminder_enabled: next });
+    setFlagErr('');
+    try { await putEmailTemplates({ reminder_enabled: next }); }
+    catch (e) {
+      setData((d) => (d ? { ...d, reminder_enabled: previous } : d));
+      setFlagErr(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const save = async () => {
     if (!data) return;
@@ -1999,6 +2041,8 @@ function EmailsAdmin({ t }: { t: T }) {
     try {
       await putEmailTemplates({
         feedback: data.feedback, reminder: data.reminder, survey: data.survey,
+        // The switch already saved itself; sending it again is idempotent and
+        // keeps a toggle-then-Speichern from ever disagreeing with the server.
         reminder_enabled: data.reminder_enabled,
       });
       setSaved(true); window.setTimeout(() => setSaved(false), 2500);
@@ -2080,16 +2124,18 @@ function EmailsAdmin({ t }: { t: T }) {
 
   return (
     <>
-      {editor('reminder', t.tplReminder, t.tplReminderHint)}
+      {/* The on/off switch first, under Test-Modus; the three long editors and
+          their one Save button follow. */}
       <Card>
         <label className="flex items-start gap-3 cursor-pointer">
           <input type="checkbox" className="mt-0.5 h-4 w-4 accent-red-600" checked={data.reminder_enabled}
-            onChange={(e) => setData({ ...data, reminder_enabled: e.target.checked })} />
+            onChange={(e) => void toggleReminder(e.target.checked)} />
           <span>
             <span className="block text-sm font-medium text-stone-700">{t.reminderEnabled}</span>
             <span className="block text-xs text-stone-400">{t.reminderEnabledHint}</span>
           </span>
         </label>
+        {flagErr && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{flagErr}</p>}
         <div className="mt-3 flex items-center gap-2">
           <button onClick={loadPreview} disabled={previewLoading} className={btnGhost}>
             {previewLoading ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />} {t.reminderPreview}
@@ -2113,6 +2159,7 @@ function EmailsAdmin({ t }: { t: T }) {
           </div>
         )}
       </Card>
+      {editor('reminder', t.tplReminder, t.tplReminderHint)}
       {editor('feedback', t.tplFeedback, t.tplFeedbackHint)}
       {editor('survey', t.tplSurvey, t.tplSurveyHint)}
       <Card>
@@ -3133,7 +3180,7 @@ function refereeOptions(coachees: Coachee[], roster: RosterReferee[], notACoache
   return options.sort((a, b) => bySurname({ full_name: a.name }, { full_name: b.name }));
 }
 
-// Settings are fetched once by the console shell and handed down — this tab
+// Settings are fetched once by the console shell and handed down — this card
 // never issues its own /api/settings request.
 // Create (and delete) a one-off game. VolleyManager is the normal source; this
 // covers fixtures it doesn't carry and throwaway games used to exercise the
@@ -4289,11 +4336,9 @@ function CredentialsAdmin({ t }: { t: T }) {
   );
 }
 
-function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsLoading, groups, onGroups, defaultGoal, onDefaultGoal, paidCap, onPaidCap, expenseRates, onExpenseRates }: { t: T; lang: Lang; testMode: boolean; onTestMode: (v: boolean) => void; defaultSeason: number; settingsLoading: boolean; groups: string[]; onGroups: (g: string[]) => void; defaultGoal: number; onDefaultGoal: (n: number) => Promise<void>; paidCap: number; onPaidCap: (n: number) => Promise<void>; expenseRates: ExpenseRates; onExpenseRates: (r: ExpenseRates) => Promise<void> }) {
-  const [season, setSeason] = useState<number>(defaultSeason);
-  const seasonTouched = useRef(false);
-  useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
-  const [saved, setSaved] = useState(false);
+// Standard-Pensum sits at the bottom of Referee Coaches: the list above shows
+// each RC's own Pensum, whose placeholder is this number.
+function DefaultGoalCard({ t, defaultGoal, onDefaultGoal, loading }: { t: T; defaultGoal: number; onDefaultGoal: (n: number) => Promise<void>; loading: boolean }) {
   const [goal, setGoal] = useState<string>(String(defaultGoal));
   const goalTouched = useRef(false);
   useEffect(() => { if (!goalTouched.current) setGoal(String(defaultGoal)); }, [defaultGoal]);
@@ -4304,6 +4349,31 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
     await onDefaultGoal(n);
     setGoalSaved(true); setTimeout(() => setGoalSaved(false), 2500);
   };
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.defaultGoal}</h2>
+      {/* The saved goal drives the hint, not the field being typed in — the
+          half only becomes real once it is saved. */}
+      <p className="text-xs text-stone-400 mb-3">{t.defaultGoalHint()}</p>
+      <div className="flex items-center gap-2">
+        <input
+          type="number" min={1} inputMode="numeric" disabled={loading}
+          className="h-9 w-20 px-3 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
+          value={goal}
+          onChange={(e) => { goalTouched.current = true; setGoal(e.target.value); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') void saveGoal(); }}
+        />
+        <button onClick={() => void saveGoal()} className={btnPrimary}><Check size={15} /> {t.save}</button>
+        {goalSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
+      </div>
+    </Card>
+  );
+}
+
+// Under the Übersicht table whose Vergütet column it caps; the Pensum (what is
+// owed) lives with the RCs — one is owed, the other is paid, and each sits
+// where its number shows.
+function PaidCapCard({ t, paidCap, onPaidCap, loading }: { t: T; paidCap: number; onPaidCap: (n: number) => Promise<void>; loading: boolean }) {
   const [cap, setCap] = useState<string>(String(paidCap));
   const capTouched = useRef(false);
   useEffect(() => { if (!capTouched.current) setCap(String(paidCap)); }, [paidCap]);
@@ -4314,6 +4384,29 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
     await onPaidCap(n);
     setCapSaved(true); setTimeout(() => setCapSaved(false), 2500);
   };
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.paidCap}</h2>
+      <p className="text-xs text-stone-400 mb-3">{t.paidCapHint}</p>
+      <div className="flex items-center gap-2">
+        <input
+          type="number" min={1} inputMode="numeric" disabled={loading}
+          className="h-9 w-20 px-3 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
+          value={cap}
+          onChange={(e) => { capTouched.current = true; setCap(e.target.value); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') void saveCap(); }}
+        />
+        <button onClick={() => void saveCap()} className={btnPrimary}><Check size={15} /> {t.save}</button>
+        {capSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
+      </div>
+    </Card>
+  );
+}
+
+// Last card of Übersicht: the Spesenabrechnung is downloaded from the table
+// above, and the RC-Sitzung checkbox in an opened row is labelled with the
+// meeting date set here.
+function ExpenseRatesCard({ t, expenseRates, onExpenseRates, loading }: { t: T; expenseRates: ExpenseRates; onExpenseRates: (r: ExpenseRates) => Promise<void>; loading: boolean }) {
   // The three expense figures, edited together and saved as one.
   const [rates, setRates] = useState({ visit: String(expenseRates.visit), meeting: String(expenseRates.meeting), meetingDate: expenseRates.meetingDate });
   const ratesTouched = useRef(false);
@@ -4331,7 +4424,39 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
     ratesTouched.current = false;
     setRatesSaved(true); setTimeout(() => setRatesSaved(false), 2500);
   };
-  const loading = settingsLoading;
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.expenses}</h2>
+      <p className="text-xs text-stone-400 mb-3">{t.expensesHint}</p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="text-xs text-stone-500">
+          <span className="block mb-0.5">{t.expVisit}</span>
+          <input type="number" min={0} step="0.05" inputMode="decimal" disabled={loading}
+            className="h-9 w-24 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
+            value={rates.visit} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, visit: e.target.value })); }} />
+        </label>
+        <label className="text-xs text-stone-500">
+          <span className="block mb-0.5">{t.expMeeting}</span>
+          <input type="number" min={0} step="0.05" inputMode="decimal" disabled={loading}
+            className="h-9 w-24 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
+            value={rates.meeting} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, meeting: e.target.value })); }} />
+        </label>
+        <label className="text-xs text-stone-500">
+          <span className="block mb-0.5">{t.expMeetingDate}</span>
+          <input type="date" disabled={loading}
+            className="h-9 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
+            value={rates.meetingDate} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, meetingDate: e.target.value })); }} />
+        </label>
+        <button onClick={() => void saveRates()} className={btnPrimary}><Check size={15} /> {t.save}</button>
+        {ratesSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
+      </div>
+    </Card>
+  );
+}
+
+// The group catalogue closes the Coachees tab: nothing but the GroupMultiSelect
+// in the add form and the edit rows above reads it.
+function GroupsCard({ t, lang, groups, onGroups, loading }: { t: T; lang: Lang; groups: string[]; onGroups: (g: string[]) => void; loading: boolean }) {
   const [ng, setNg] = useState('');
   const [gi, setGi] = useState<number | null>(null);
   // The name the open edit row started on — the index alone is not stable across
@@ -4391,12 +4516,71 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
     if (v) { const next = current.slice(); next[nowAt] = v; void saveGroups(Array.from(new Set(next)).sort()).then((ok) => { if (ok && v !== original) toast.success(t.renameGroupOk(original, v), { lang }); }); }
     setGi(null);
   };
-  const save = async () => { await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.groups}</h2>
+      <p className="text-xs text-stone-400 mb-3">{t.groupsHint}</p>
+      <div className="flex gap-2 mb-3">
+        <input className={input} placeholder={t.newGroup} value={ng} onChange={(e) => setNg(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addGroup(); }} />
+        <button onClick={addGroup} className={btnPrimary}><Plus size={15} /> {t.add}</button>
+      </div>
+      <div className="divide-y divide-stone-100">
+        {groups.map((g, i) => gi === i ? (
+          <div key={g} className="py-2 flex items-center gap-2">
+            <input className={input} value={gv} onChange={(e) => setGv(e.target.value)} />
+            <button onClick={() => { void saveEditGroup(i); }} className={btnPrimary}><Check size={15} /></button>
+            <button onClick={() => setGi(null)} className={btnGhost}><X size={14} /></button>
+          </div>
+        ) : (
+          <div key={g} className="py-2 flex items-center gap-3">
+            <span className="flex-1 text-sm text-stone-800">{g}</span>
+            <button onClick={() => { setGi(i); setGiName(g); setGv(g); }} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
+            <button onClick={() => { void delGroup(i); }} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+          </div>
+        ))}
+        {loading && groups.length === 0 && <SkeletonRows rows={3} />}
+        {!loading && groups.length === 0 && <p className="py-4 text-center text-xs text-stone-400">—</p>}
+      </div>
+      {groupsError && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{groupsError}</p>}
+    </Card>
+  );
+}
+
+// The kill switch for every outgoing mail, so it heads the E-Mails tab; the
+// reminder switch right below it says the test mode suppresses sending too.
+// `onTestMode` is the console's own setter — the header badge reads the same
+// state, so switch and badge can never disagree.
+function TestModeCard({ t, testMode, onTestMode, loading }: { t: T; testMode: boolean; onTestMode: (v: boolean) => void; loading: boolean }) {
   const toggleTest = async () => { const next = !testMode; onTestMode(next); try { await putSettings({ test_mode: next }); } catch { onTestMode(!next); } };
   return (
+    <Card>
+      <div className="flex items-start gap-3">
+        <FlaskConical size={18} className={testMode ? 'text-amber-600 mt-0.5' : 'text-stone-400 mt-0.5'} />
+        <div className="flex-1"><h2 className="text-sm font-semibold text-stone-700">{t.testTitle}</h2><p className="text-xs text-stone-400">{t.testHint}</p></div>
+        <button onClick={toggleTest} disabled={loading} role="switch" aria-checked={loading ? undefined : testMode} className={cn('relative inline-flex h-7 w-12 shrink-0 rounded-full transition-colors', testMode ? 'bg-amber-500' : 'bg-stone-300', loading && 'opacity-50')}><span className={`inline-block h-6 w-6 rounded-full bg-white shadow transform transition-transform mt-0.5 ${testMode ? 'translate-x-5' : 'translate-x-0.5'}`} /></button>
+      </div>
+      {/* Held until the setting has actually been read. `testMode` starts
+          false, so this line used to announce "E-Mails werden versendet" on
+          every console load — including the loads where the truth was the
+          opposite. */}
+      {loading
+        ? <Skeleton className="mt-2 h-4 w-56" />
+        : <p className={`mt-2 text-xs font-medium ${testMode ? 'text-amber-700' : 'text-green-600'}`}>{testMode ? t.testOn : t.testOff}</p>}
+    </Card>
+  );
+}
+
+// What is left of Einstellungen: the one setting no tab owns. Everything else
+// that used to live here sits under the tab whose content it changes.
+function SettingsAdmin({ t, defaultSeason, settingsLoading }: { t: T; defaultSeason: number; settingsLoading: boolean }) {
+  const [season, setSeason] = useState<number>(defaultSeason);
+  const seasonTouched = useRef(false);
+  useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
+  const [saved, setSaved] = useState(false);
+  const loading = settingsLoading;
+  const save = async () => { await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
+  return (
     <>
-      <GameImportCard lang={lang} />
-      <BoerseCard lang={lang} />
       <Card>
         <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.defaultSeason}</h2>
         <p className="text-xs text-stone-400 mb-3">{t.defaultSeasonHint}</p>
@@ -4405,106 +4589,6 @@ function SettingsAdmin({ t, lang, testMode, onTestMode, defaultSeason, settingsL
           <button onClick={save} className={btnPrimary}><Check size={15} /> {t.save}</button>
           {saved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
         </div>
-      </Card>
-      <Card>
-        <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.defaultGoal}</h2>
-        {/* The saved goal drives the hint, not the field being typed in — the
-            half only becomes real once it is saved. */}
-        <p className="text-xs text-stone-400 mb-3">{t.defaultGoalHint()}</p>
-        <div className="flex items-center gap-2">
-          <input
-            type="number" min={1} inputMode="numeric" disabled={loading}
-            className="h-9 w-20 px-3 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
-            value={goal}
-            onChange={(e) => { goalTouched.current = true; setGoal(e.target.value); }}
-            onKeyDown={(e) => { if (e.key === 'Enter') void saveGoal(); }}
-          />
-          <button onClick={() => void saveGoal()} className={btnPrimary}><Check size={15} /> {t.save}</button>
-          {goalSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
-        </div>
-      </Card>
-      <Card>
-        {/* Directly under the Pensum, because the two are read together and
-            confusing them is the whole risk: one is owed, the other is paid. */}
-        <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.paidCap}</h2>
-        <p className="text-xs text-stone-400 mb-3">{t.paidCapHint}</p>
-        <div className="flex items-center gap-2">
-          <input
-            type="number" min={1} inputMode="numeric" disabled={loading}
-            className="h-9 w-20 px-3 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500"
-            value={cap}
-            onChange={(e) => { capTouched.current = true; setCap(e.target.value); }}
-            onKeyDown={(e) => { if (e.key === 'Enter') void saveCap(); }}
-          />
-          <button onClick={() => void saveCap()} className={btnPrimary}><Check size={15} /> {t.save}</button>
-          {capSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
-        </div>
-      </Card>
-      <Card>
-        <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.expenses}</h2>
-        <p className="text-xs text-stone-400 mb-3">{t.expensesHint}</p>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="text-xs text-stone-500">
-            <span className="block mb-0.5">{t.expVisit}</span>
-            <input type="number" min={0} step="0.05" inputMode="decimal" disabled={loading}
-              className="h-9 w-24 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
-              value={rates.visit} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, visit: e.target.value })); }} />
-          </label>
-          <label className="text-xs text-stone-500">
-            <span className="block mb-0.5">{t.expMeeting}</span>
-            <input type="number" min={0} step="0.05" inputMode="decimal" disabled={loading}
-              className="h-9 w-24 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
-              value={rates.meeting} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, meeting: e.target.value })); }} />
-          </label>
-          <label className="text-xs text-stone-500">
-            <span className="block mb-0.5">{t.expMeetingDate}</span>
-            <input type="date" disabled={loading}
-              className="h-9 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
-              value={rates.meetingDate} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, meetingDate: e.target.value })); }} />
-          </label>
-          <button onClick={() => void saveRates()} className={btnPrimary}><Check size={15} /> {t.save}</button>
-          {ratesSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
-        </div>
-      </Card>
-      <Card>
-        <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.groups}</h2>
-        <p className="text-xs text-stone-400 mb-3">{t.groupsHint}</p>
-        <div className="flex gap-2 mb-3">
-          <input className={input} placeholder={t.newGroup} value={ng} onChange={(e) => setNg(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addGroup(); }} />
-          <button onClick={addGroup} className={btnPrimary}><Plus size={15} /> {t.add}</button>
-        </div>
-        <div className="divide-y divide-stone-100">
-          {groups.map((g, i) => gi === i ? (
-            <div key={g} className="py-2 flex items-center gap-2">
-              <input className={input} value={gv} onChange={(e) => setGv(e.target.value)} />
-              <button onClick={() => { void saveEditGroup(i); }} className={btnPrimary}><Check size={15} /></button>
-              <button onClick={() => setGi(null)} className={btnGhost}><X size={14} /></button>
-            </div>
-          ) : (
-            <div key={g} className="py-2 flex items-center gap-3">
-              <span className="flex-1 text-sm text-stone-800">{g}</span>
-              <button onClick={() => { setGi(i); setGiName(g); setGv(g); }} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
-              <button onClick={() => { void delGroup(i); }} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
-            </div>
-          ))}
-          {loading && groups.length === 0 && <SkeletonRows rows={3} />}
-          {!loading && groups.length === 0 && <p className="py-4 text-center text-xs text-stone-400">—</p>}
-        </div>
-        {groupsError && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{groupsError}</p>}
-      </Card>
-      <Card>
-        <div className="flex items-start gap-3">
-          <FlaskConical size={18} className={testMode ? 'text-amber-600 mt-0.5' : 'text-stone-400 mt-0.5'} />
-          <div className="flex-1"><h2 className="text-sm font-semibold text-stone-700">{t.testTitle}</h2><p className="text-xs text-stone-400">{t.testHint}</p></div>
-          <button onClick={toggleTest} disabled={loading} role="switch" aria-checked={loading ? undefined : testMode} className={cn('relative inline-flex h-7 w-12 shrink-0 rounded-full transition-colors', testMode ? 'bg-amber-500' : 'bg-stone-300', loading && 'opacity-50')}><span className={`inline-block h-6 w-6 rounded-full bg-white shadow transform transition-transform mt-0.5 ${testMode ? 'translate-x-5' : 'translate-x-0.5'}`} /></button>
-        </div>
-        {/* Held until the setting has actually been read. `testMode` starts
-            false, so this line used to announce "E-Mails werden versendet" on
-            every console load — including the loads where the truth was the
-            opposite. */}
-        {loading
-          ? <Skeleton className="mt-2 h-4 w-56" />
-          : <p className={`mt-2 text-xs font-medium ${testMode ? 'text-amber-700' : 'text-green-600'}`}>{testMode ? t.testOn : t.testOff}</p>}
       </Card>
     </>
   );

@@ -36,7 +36,8 @@ test('the console holds its answers until it has them', async ({ page }) => {
   const manual = await gated(page, '**/api/admin/games/manual*', []);
 
   await page.goto('/admin');
-  await page.getByRole('button', { name: /Einstellungen|Settings/ }).click();
+  // Import strip and test-game list live on Spiele; the mail switch on E-Mails.
+  await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
 
   // Nothing is known yet, so nothing may be claimed.
   await expect(page.getByText(/Status nicht abrufbar|Status unavailable/)).toHaveCount(0);
@@ -56,6 +57,7 @@ test('the console holds its answers until it has them', async ({ page }) => {
   await expect(page.getByText(/4 importiert|4 imported/)).toBeVisible();
   await expect(page.getByText(/Keine Testspiele vorhanden|No test games/)).toBeVisible();
   // test_mode is ON in this fixture, which is the case the old code got backwards.
+  await page.getByRole('button', { name: /^(E-Mails|Emails)$/ }).click();
   await expect(page.getByText(/AN — es werden keine E-Mails versendet|ON — no emails are sent/)).toBeVisible();
 });
 

@@ -52,7 +52,7 @@ async function openManualGameForm(page: Page) {
   await page.route('**/api/referee-coach-people', (r) => r.fulfill({ json: RC_PEOPLE }));
   await page.route('**/api/admin/games/manual*', (r) => r.fulfill({ json: [] }));
   await page.goto('/admin');
-  await page.getByRole('button', { name: /Einstellungen|Settings/ }).click();
+  await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
 }
 
 test.describe('Manual game name pickers', () => {

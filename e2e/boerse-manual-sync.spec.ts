@@ -37,7 +37,7 @@ test('the card waits for the run the tap started, then reports it', async ({ pag
     polls = 0;
     return r.fulfill({ status: 202, json: { started: true, startedAt: tappedAt } });
   });
-  await page.goto('/admin/settings');
+  await page.goto('/admin/games');
 
   await page.getByRole('button', { name: /^(Jetzt prüfen|Check now)$/ }).click();
   await expect(page.getByRole('button', { name: /Läuft…|Running…/ })).toBeVisible();
@@ -61,7 +61,7 @@ test('a run the account lock skipped is reported as skipped, not as a failure', 
     tappedAt = new Date().toISOString();
     return r.fulfill({ status: 202, json: { started: true, startedAt: tappedAt } });
   });
-  await page.goto('/admin/settings');
+  await page.goto('/admin/games');
 
   await page.getByRole('button', { name: /^(Jetzt prüfen|Check now)$/ }).click();
   await expect(page.getByText(/Nicht abgefragt|Not polled/)).toBeVisible({ timeout: 15_000 });
@@ -76,7 +76,7 @@ test('a second tap while one runs is refused with the reason, in words', async (
   await page.route('**/api/admin/boerse/sync', (r) => r.fulfill({
     status: 409, json: { error: 'Die Börse wird gerade abgefragt — bitte einen Moment warten.' },
   }));
-  await page.goto('/admin/settings');
+  await page.goto('/admin/games');
 
   await page.getByRole('button', { name: /^(Jetzt prüfen|Check now)$/ }).click();
   // The server's sentence, not the JSON it came wrapped in.

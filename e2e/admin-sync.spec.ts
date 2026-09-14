@@ -39,7 +39,7 @@ async function stubAdminConsole(page: import('@playwright/test').Page) {
 }
 
 test.describe('Game import', () => {
-  test('the settings tab can run the import and reports what it did', async ({ page }) => {
+  test('the games tab can run the import and reports what it did', async ({ page }) => {
     await stubAdminConsole(page);
     let posted = 0;
     await page.route('**/api/games/sync', (r) => {
@@ -48,7 +48,7 @@ test.describe('Game import', () => {
     });
 
     await page.goto('/admin');
-    await page.getByRole('button', { name: /Einstellungen|Settings/ }).click();
+    await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
     await page.getByRole('button', { name: /Jetzt importieren|Import now/ }).click();
 
     await expect(page.getByText(/7 (Spiele importiert|games imported)/)).toBeVisible();
@@ -63,7 +63,7 @@ test.describe('Game import', () => {
     }));
 
     await page.goto('/admin');
-    await page.getByRole('button', { name: /Einstellungen|Settings/ }).click();
+    await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
     await page.getByRole('button', { name: /Jetzt importieren|Import now/ }).click();
 
     await expect(page.getByText(/Could not open the VolleyManager game list/)).toBeVisible();

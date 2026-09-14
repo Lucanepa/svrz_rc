@@ -96,7 +96,12 @@ test.describe('the hidden demo entry', () => {
       await expect(page.getByText(/^DEMO — /)).toBeVisible();
       // The entry is a switch, not a place: the URL is the plain app afterwards,
       // so a reload stays in the demo by the sessionStorage flag, not by re-entering.
-      expect(new URL(page.url()).pathname).toBe('/');
+      // main.tsx drops the route to `/`, and the app — now a signed-in coach on
+      // Home — writes its own Home URL over that a tick later, the same URL a
+      // coach who logged in sees. Wait for that settled URL: asserting `/` the
+      // instant the banner shows raced the sync and lost on a fast machine.
+      await expect(page).toHaveURL(/\/home$/);
+      expect(new URL(page.url()).pathname).toBe('/home');
       expect(new URL(page.url()).hash).toBe('');
     });
   }

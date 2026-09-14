@@ -611,7 +611,7 @@ pattern.
 Production note: the API container runs with `restart: unless-stopped` so the
 schedule stays alive; if the container is stopped, nothing runs.
 
-To run the import without waiting for the cron: admin console → Settings →
+To run the import without waiting for the cron: admin console → Spiele (Games) →
 "Game import (VolleyManager)" → **Import now**. Same window and same code path
 as the nightly run, and it records the same status note.
 
@@ -914,7 +914,7 @@ no e-mail, and feedback cannot be submitted for them. As of 2026-08-13 that is
 
 The failure used to be **silent to users**: the cron logged an error and
 stopped, and nothing surfaced it, which is how three weeks passed unnoticed.
-The admin console's Settings tab now carries both halves of the answer — the
+The admin console's Spiele (Games) tab carries both halves of the answer — the
 last-run readout and the button that runs it again — and the contact sync
 reports the upstream error itself rather than `Internal server error`.
 

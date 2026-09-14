@@ -1330,8 +1330,7 @@ If either of these times is not possible for you, please let {{coachVorname}} kn
 // console's Speichern writes all three templates back verbatim, so pressing it
 // once to switch the reminder on stores the shipped text as if somebody had
 // written it, and from then on a reworded default never reaches an inbox. Such
-// a copy follows the current default instead. Only the German fields are
-// compared: the save endpoint drops the English ones anyway.
+// a copy follows the current default instead.
 const RETIRED_EMAIL_TEMPLATES: Partial<Record<EmailTemplateKind, EmailTemplate[]>> = {
   reminder: [{
     subject: 'Coaching-Begleitung bei deinem nächsten Einsatz',
@@ -1357,7 +1356,12 @@ Bei Fragen oder falls sich am Einsatz etwas ändert, melde dich bitte rechtzeiti
 function isShippedTemplate(kind: EmailTemplateKind, stored: Partial<EmailTemplate>): boolean {
   const norm = (v: unknown) => String(v ?? '').replace(/\r\n/g, '\n').trim();
   const same = (shipped: EmailTemplate) =>
-    (['subject', 'heading', 'intro', 'outro'] as const).every((k) => norm(stored[k]) === norm(shipped[k]));
+    (['subject', 'heading', 'intro', 'outro'] as const).every((k) => norm(stored[k]) === norm(shipped[k]))
+    // An English field is only a customisation once it was stored: a record
+    // from before the console could send one has none, and that is the shipped
+    // English by definition. A stored one must match, or the admin rewrote it
+    // and returning the default would throw their text away.
+    && (['headingEn', 'introEn', 'outroEn'] as const).every((k) => typeof stored[k] !== 'string' || norm(stored[k]) === norm(shipped[k]));
   return same(DEFAULT_EMAIL_TEMPLATES[kind]) || (RETIRED_EMAIL_TEMPLATES[kind] ?? []).some(same);
 }
 
@@ -9908,6 +9912,15 @@ app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, 
         intro: String(t.intro ?? '').slice(0, 8000),
         outro: String(t.outro ?? '').slice(0, 4000),
       };
+      // The English half, when the console sends it (it did not until
+      // 2026-09-14 — the fields were dropped here, so the mail could only ever
+      // carry the shipped English, and only while the German was the shipped
+      // German). Stored as sent: an empty string is "German only", which
+      // getEmailTemplate honours; a field the client did not send stays
+      // absent, so an older console keeps the fallback it always had.
+      if (typeof t.headingEn === 'string') clean.headingEn = oneLine(t.headingEn, 300);
+      if (typeof t.introEn === 'string') clean.introEn = t.introEn.slice(0, 8000);
+      if (typeof t.outroEn === 'string') clean.outroEn = t.outroEn.slice(0, 4000);
       if (!clean.subject.trim()) { res.status(400).json({ error: `Betreff darf nicht leer sein (${kind}).` }); return; }
       pending.push([kind, clean]);
     }

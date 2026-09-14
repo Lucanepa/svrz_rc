@@ -128,6 +128,9 @@ const STR = {
     tplSurvey: 'RC-Feedback-Benachrichtigung',
     tplSurveyHint: 'Geht an die RC-Kommission, sobald jemand den Fragebogen abgeschickt hat. Die Antworten hängen automatisch darunter — anonyme Rückmeldungen ohne Namen.',
     tplSubject: 'Betreff', tplHeading: 'Titel (optional)', tplIntro: 'Text', tplOutro: 'Schluss / Grussformel',
+    tplEnglish: 'Englische Fassung',
+    tplEnglishHint: 'Steht in der E-Mail unter dem deutschen Text. Leer lassen = nur Deutsch. Der Betreff bleibt einer für beide.',
+    tplHeadingEn: 'Titel (EN, optional)', tplIntroEn: 'Text (EN)', tplOutroEn: 'Schluss (EN)',
     tplPlaceholders: 'Platzhalter (werden automatisch ersetzt):',
     tplUnknown: 'Orange markierte Platzhalter kennt diese E-Mail nicht — sie bleiben im Versand leer.',
     tplReset: 'Standard wiederherstellen', tplSaved: 'Gespeichert ✓',
@@ -355,6 +358,9 @@ const STR = {
     tplSurvey: 'RC feedback notification',
     tplSurveyHint: 'Goes to the RC commission as soon as somebody submits the questionnaire. The answers are appended automatically — anonymous responses without a name.',
     tplSubject: 'Subject', tplHeading: 'Title (optional)', tplIntro: 'Body', tplOutro: 'Closing / sign-off',
+    tplEnglish: 'English version',
+    tplEnglishHint: 'Shown under the German text in the mail. Leave empty for German only. The subject is one for both.',
+    tplHeadingEn: 'Title (EN, optional)', tplIntroEn: 'Body (EN)', tplOutroEn: 'Closing (EN)',
     tplPlaceholders: 'Placeholders (filled in automatically):',
     tplUnknown: 'Placeholders marked amber are unknown to this email — they render empty when it is sent.',
     tplReset: 'Restore default', tplSaved: 'Saved ✓',
@@ -2079,7 +2085,12 @@ function EmailsAdmin({ t }: { t: T }) {
     // app's own default template would send empty values.
     const offered = new Set(placeholdersFor(data, kind));
     const known = new Set(acceptedPlaceholdersFor(data, kind));
-    const unknownUsed = [tpl.subject, tpl.heading, tpl.intro, tpl.outro].some((v) => hasUnknownPlaceholder(v, known));
+    const unknownUsed = [tpl.subject, tpl.heading, tpl.intro, tpl.outro, tpl.headingEn ?? '', tpl.introEn ?? '', tpl.outroEn ?? '']
+      .some((v) => hasUnknownPlaceholder(v, known));
+    // A mail that ships with an English half is edited in both halves. The
+    // survey notification goes to the commission in German only, and offering
+    // it English fields would only invite a translation nobody reads.
+    const bilingual = data.defaults?.[kind]?.introEn !== undefined;
     return (
       <Card>
         <div className="flex items-start justify-between gap-3 mb-1">
@@ -2108,6 +2119,26 @@ function EmailsAdmin({ t }: { t: T }) {
             <span className={fieldLabel}>{t.tplOutro}</span>
             <TemplateField value={tpl.outro} onChange={(v) => patch(kind, { outro: v })} rows={3} known={known} />
           </label>
+          {bilingual && (
+            <div className="pt-2 mt-1 border-t border-stone-100 space-y-2.5" data-testid={`tpl-english-${kind}`}>
+              <div>
+                <span className="block text-[11px] font-semibold uppercase tracking-wide text-stone-500">{t.tplEnglish}</span>
+                <span className="block text-xs text-stone-400">{t.tplEnglishHint}</span>
+              </div>
+              <label className="block">
+                <span className={fieldLabel}>{t.tplHeadingEn}</span>
+                <TemplateField value={tpl.headingEn ?? ''} onChange={(v) => patch(kind, { headingEn: v })} rows={1} singleLine known={known} />
+              </label>
+              <label className="block">
+                <span className={fieldLabel}>{t.tplIntroEn}</span>
+                <TemplateField value={tpl.introEn ?? ''} onChange={(v) => patch(kind, { introEn: v })} rows={kind === 'reminder' ? 14 : 6} known={known} />
+              </label>
+              <label className="block">
+                <span className={fieldLabel}>{t.tplOutroEn}</span>
+                <TemplateField value={tpl.outroEn ?? ''} onChange={(v) => patch(kind, { outroEn: v })} rows={3} known={known} />
+              </label>
+            </div>
+          )}
         </div>
         <p className="mt-3 text-[11px] text-stone-400">
           {t.tplPlaceholders}{' '}

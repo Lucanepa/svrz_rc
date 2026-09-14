@@ -936,7 +936,12 @@ export async function listManualGames(q = ''): Promise<ManualGame[]> {
 }
 
 // ── Editable email templates (admin) ──────────────────────────────────
-export type EmailTemplate = { subject: string; heading: string; intro: string; outro: string };
+// The English half sits under the German in the mail; absent = the shipped
+// English (while the German is the shipped German), '' = German only.
+export type EmailTemplate = {
+  subject: string; heading: string; intro: string; outro: string;
+  headingEn?: string; introEn?: string; outroEn?: string;
+};
 export type EmailTemplateKind = 'feedback' | 'reminder' | 'survey';
 export type EmailTemplates = {
   feedback: EmailTemplate;

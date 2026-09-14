@@ -1227,6 +1227,10 @@ ${MAIL_FONT_LINK}
   body, div, p, h1, h2, td, span, a { font-family:${MAIL_FONT}; }
   h1, h2 { ${MAIL_DISPLAY} }
   a { color:${MAIL_BRAND}; }
+  /* Prose is justified (textBlockHtml) — on a phone's 40-character column that
+     opens rivers between the words, so there it falls back to a ragged edge.
+     A class, not the inline style, so the query can override it. */
+  @media only screen and (max-width: 480px) { p.prose { text-align: left !important; } }
 </style>
 </head>
 <body style="margin:0;padding:0;background-color:${MAIL_SURFACE};${mailText(14, MAIL_INK)}">
@@ -1294,12 +1298,13 @@ Einsatz-Details:
 
 Datum: {{datum}}
 Zeit: {{uhrzeit}}
-Spiel: {{heim}} – {{gast}} ({{liga}})
+Spiel: {{heim}} – {{gast}}
+Liga: {{liga}}
 Ort/Halle: {{halle}}
 
-{{coachVorname}} meldet sich vor Ort kurz bei dir. Das Coaching ist keine Prüfung – im Anschluss nehmt ihr euch gemeinsam Zeit für ein Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen.
+Ablauf: Im Normalfall triffst du {{coachVorname}} 45 Minuten vor Spielbeginn in der Halle. Nach dem Spiel nehmt ihr euch im Schnitt 30 Minuten Zeit für das gemeinsame Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen. Das Coaching ist keine Prüfung.
 
-Bei Fragen oder falls sich am Einsatz etwas ändert, melde dich bitte rechtzeitig.`,
+Falls einer dieser Zeitpunkte für dich nicht möglich ist, melde dich bitte vorgängig bei {{coachVorname}} – ebenso bei Fragen oder falls sich am Einsatz etwas ändert. {{coach}} ist in Kopie (Cc) dieser E-Mail; deine Antwort geht direkt an {{coachVorname}}.`,
     outro: 'Sportliche Grüsse\n{{coach}}',
     introEn: `Dear {{vorname}},
 
@@ -1309,15 +1314,52 @@ Appointment details:
 
 Date: {{datum}}
 Time: {{uhrzeit}}
-Match: {{heim}} – {{gast}} ({{liga}})
+Match: {{heim}} – {{gast}}
+League: {{liga}}
 Venue: {{halle}}
 
-{{coachVorname}} will say hello on site. The coaching is not an examination — afterwards you take the time for a conversation together, to consolidate strengths and to discuss where you can develop.
+How it works: as a rule you meet {{coachVorname}} at the hall 45 minutes before the game. After the game, allow about 30 minutes for the discussion together, to consolidate strengths and to discuss where you can develop. The coaching is not an examination.
 
-If you have questions, or if anything about the appointment changes, please get in touch in good time.`,
+If either of these times is not possible for you, please let {{coachVorname}} know beforehand — likewise if you have questions or if anything about the appointment changes. {{coach}} is copied (Cc) on this e-mail; your reply goes directly to {{coachVorname}}.`,
     outroEn: 'Best regards\n{{coach}}',
   },
 };
+
+// Wordings this file used to ship. A stored template that matches one of
+// these — or the current default — field for field was never customised: the
+// console's Speichern writes all three templates back verbatim, so pressing it
+// once to switch the reminder on stores the shipped text as if somebody had
+// written it, and from then on a reworded default never reaches an inbox. Such
+// a copy follows the current default instead. Only the German fields are
+// compared: the save endpoint drops the English ones anyway.
+const RETIRED_EMAIL_TEMPLATES: Partial<Record<EmailTemplateKind, EmailTemplate[]>> = {
+  reminder: [{
+    subject: 'Coaching-Begleitung bei deinem nächsten Einsatz',
+    heading: '',
+    intro: `Liebe/r {{vorname}},
+
+bei deinem nächsten Einsatz wirst du im Rahmen unseres Schiedsrichter-Coachings begleitet: {{coach}} ist als Coach vor Ort, um dich zu unterstützen und gemeinsam mit dir an deiner Weiterentwicklung zu arbeiten.
+
+Einsatz-Details:
+
+Datum: {{datum}}
+Zeit: {{uhrzeit}}
+Spiel: {{heim}} – {{gast}} ({{liga}})
+Ort/Halle: {{halle}}
+
+{{coachVorname}} meldet sich vor Ort kurz bei dir. Das Coaching ist keine Prüfung – im Anschluss nehmt ihr euch gemeinsam Zeit für ein Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen.
+
+Bei Fragen oder falls sich am Einsatz etwas ändert, melde dich bitte rechtzeitig.`,
+    outro: 'Sportliche Grüsse\n{{coach}}',
+  }],
+};
+
+function isShippedTemplate(kind: EmailTemplateKind, stored: Partial<EmailTemplate>): boolean {
+  const norm = (v: unknown) => String(v ?? '').replace(/\r\n/g, '\n').trim();
+  const same = (shipped: EmailTemplate) =>
+    (['subject', 'heading', 'intro', 'outro'] as const).every((k) => norm(stored[k]) === norm(shipped[k]));
+  return same(DEFAULT_EMAIL_TEMPLATES[kind]) || (RETIRED_EMAIL_TEMPLATES[kind] ?? []).some(same);
+}
 
 // Replace {{placeholders}}; unknown keys render empty rather than leaking braces.
 function renderPlaceholders(text: string, vars: Record<string, string>): string {
@@ -1334,6 +1376,7 @@ async function getEmailTemplate(kind: EmailTemplateKind): Promise<EmailTemplate>
   if (!rec) return def;
   try {
     const p = JSON.parse(asText(rec.value)) as Partial<EmailTemplate>;
+    if (isShippedTemplate(kind, p)) return def;
     const str = (v: unknown, d: string) => (typeof v === 'string' ? v : d);
     // Subject must never be blank (a blank subject is a broken mail); heading is
     // optional — blank simply renders no title line.
@@ -1453,8 +1496,11 @@ const EMAIL_PLACEHOLDERS_SURVEY = ['vorname', 'name', 'coach', 'coachVorname', '
 function textBlockHtml(text: string, colour: string = MAIL_INK): string {
   const t = String(text ?? '').trim();
   if (!t) return '';
+  // Justified, as the commission's letters are. A line that ends in a forced
+  // break — every "Datum: …" row — is aligned like a last line and never
+  // stretched, so the detail block keeps its left edge.
   return t.split(/\n{2,}/).map((p) =>
-    `<p style="margin:0 0 14px;${mailText(14, colour)}">${escapeHtml(p).replace(/\n/g, '<br />')}</p>`,
+    `<p class="prose" style="margin:0 0 14px;text-align:justify;${mailText(14, colour)}">${escapeHtml(p).replace(/\n/g, '<br />')}</p>`,
   ).join('');
 }
 

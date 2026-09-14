@@ -395,12 +395,13 @@ Einsatz-Details:
 
 Datum: ${fmtDate(game.date)}
 Zeit: 20:00
-Spiel: ${game.homeTeam} – ${game.awayTeam} (${game.league})
+Spiel: ${game.homeTeam} – ${game.awayTeam}
+Liga: ${game.league}
 Ort/Halle: ${game.location}
 
-${first(RC.name)} meldet sich vor Ort kurz bei dir. Das Coaching ist keine Prüfung – im Anschluss nehmt ihr euch gemeinsam Zeit für ein Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen.
+Ablauf: Im Normalfall triffst du ${first(RC.name)} 45 Minuten vor Spielbeginn in der Halle. Nach dem Spiel nehmt ihr euch im Schnitt 30 Minuten Zeit für das gemeinsame Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen. Das Coaching ist keine Prüfung.
 
-Bei Fragen oder falls sich am Einsatz etwas ändert, melde dich bitte rechtzeitig.
+Falls einer dieser Zeitpunkte für dich nicht möglich ist, melde dich bitte vorgängig bei ${first(RC.name)} – ebenso bei Fragen oder falls sich am Einsatz etwas ändert. ${RC.name} ist in Kopie (Cc) dieser E-Mail; deine Antwort geht direkt an ${first(RC.name)}.
 
 Sportliche Grüsse
 ${RC.name}

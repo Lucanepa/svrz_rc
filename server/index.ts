@@ -1266,16 +1266,22 @@ type EmailTemplate = {
   headingEn?: string; introEn?: string; outroEn?: string;
 };
 
+// The German half of the feedback mail, on its own so a retired copy of the
+// template can say "the same German, this older English".
+const DEFAULT_EMAIL_TEMPLATES_FEEDBACK_DE = {
+  subject: 'SR-Coaching Feedback – Spiel {{spielNr}} ({{datum}})',
+  heading: 'SR-Coaching Feedback',
+  // The documented German names, the ones the editor lists as chips; the
+  // English half is written in the English ones. Either set renders in both.
+  intro: 'Hallo {{name}}\n\nHier ist das Feedback zu deinem Einsatz als {{rolle}}. Der vollständige Bericht ist als PDF angehängt.',
+  outro: 'Wir freuen uns über dein Feedback zum Coaching-Erlebnis:',
+};
+
 const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
   feedback: {
-    subject: 'SR-Coaching Feedback – Spiel {{spielNr}} ({{datum}})',
-    heading: 'SR-Coaching Feedback',
-    // The documented German names, the ones the editor lists as chips. The
-    // English aliases below still work for a template written the other way.
-    intro: 'Hallo {{name}}\n\nHier ist das Feedback zu deinem Einsatz als {{rolle}}. Der vollständige Bericht ist als PDF angehängt.',
-    outro: 'Wir freuen uns über dein Feedback zum Coaching-Erlebnis:',
+    ...DEFAULT_EMAIL_TEMPLATES_FEEDBACK_DE,
     headingEn: 'Referee coaching feedback',
-    introEn: 'Hello {{name}}\n\nHere is the feedback on your appearance as {{rolle}}. The full report is attached as a PDF.',
+    introEn: 'Hello {{name}}\n\nHere is the feedback on your appearance as {{role}}. The full report is attached as a PDF.',
     outroEn: 'We would be glad to hear how you found the coaching:',
   },
   // Goes to the RC commission, not back to the coachee — always German, and
@@ -1306,6 +1312,45 @@ Ablauf: Im Normalfall triffst du {{coachVorname}} 45 Minuten vor Spielbeginn in 
 
 Falls einer dieser Zeitpunkte für dich nicht möglich ist, melde dich bitte vorgängig bei {{coachVorname}} – ebenso bei Fragen oder falls sich am Einsatz etwas ändert. {{coach}} ist in Kopie (Cc) dieser E-Mail; deine Antwort geht direkt an {{coachVorname}}.`,
     outro: 'Sportliche Grüsse\n{{coach}}',
+    introEn: `Dear {{firstName}},
+
+Your next appointment will be accompanied as part of our referee coaching: {{coach}} will be there as your coach, to support you and to work on your development together with you.
+
+Appointment details:
+
+Date: {{date}}
+Time: {{time}}
+Match: {{home}} – {{away}}
+League: {{league}}
+Venue: {{venue}}
+
+How it works: as a rule you meet {{coachFirstName}} at the hall 45 minutes before the game. After the game, allow about 30 minutes for the discussion together, to consolidate strengths and to discuss where you can develop. The coaching is not an examination.
+
+If either of these times is not possible for you, please let {{coachFirstName}} know beforehand — likewise if you have questions or if anything about the appointment changes. {{coach}} is copied (Cc) on this e-mail; your reply goes directly to {{coachFirstName}}.`,
+    outroEn: 'Best regards\n{{coach}}',
+  },
+};
+
+// Wordings this file used to ship. A stored template that matches one of
+// these — or the current default — field for field was never customised: the
+// console's Speichern writes all three templates back verbatim, so pressing it
+// once to switch the reminder on stores the shipped text as if somebody had
+// written it, and from then on a reworded default never reaches an inbox. Such
+// a copy follows the current default instead.
+const RETIRED_EMAIL_TEMPLATES: Partial<Record<EmailTemplateKind, EmailTemplate[]>> = {
+  // 14.09.2026, the English half written with German placeholder names.
+  feedback: [{
+    ...DEFAULT_EMAIL_TEMPLATES_FEEDBACK_DE,
+    headingEn: 'Referee coaching feedback',
+    introEn: 'Hello {{name}}\n\nHere is the feedback on your appearance as {{rolle}}. The full report is attached as a PDF.',
+    outroEn: 'We would be glad to hear how you found the coaching:',
+  }],
+  reminder: [{
+    // 14.09.2026 — the reworded text, English half still in German names.
+    subject: 'Coaching-Begleitung bei deinem nächsten Einsatz',
+    heading: '',
+    intro: DEFAULT_EMAIL_TEMPLATES.reminder.intro,
+    outro: 'Sportliche Grüsse\n{{coach}}',
     introEn: `Dear {{vorname}},
 
 Your next appointment will be accompanied as part of our referee coaching: {{coach}} will be there as your coach, to support you and to work on your development together with you.
@@ -1322,17 +1367,8 @@ How it works: as a rule you meet {{coachVorname}} at the hall 45 minutes before 
 
 If either of these times is not possible for you, please let {{coachVorname}} know beforehand — likewise if you have questions or if anything about the appointment changes. {{coach}} is copied (Cc) on this e-mail; your reply goes directly to {{coachVorname}}.`,
     outroEn: 'Best regards\n{{coach}}',
-  },
-};
-
-// Wordings this file used to ship. A stored template that matches one of
-// these — or the current default — field for field was never customised: the
-// console's Speichern writes all three templates back verbatim, so pressing it
-// once to switch the reminder on stores the shipped text as if somebody had
-// written it, and from then on a reworded default never reaches an inbox. Such
-// a copy follows the current default instead.
-const RETIRED_EMAIL_TEMPLATES: Partial<Record<EmailTemplateKind, EmailTemplate[]>> = {
-  reminder: [{
+  }, {
+    // Before that: one line for match and league, no meeting times.
     subject: 'Coaching-Begleitung bei deinem nächsten Einsatz',
     heading: '',
     intro: `Liebe/r {{vorname}},
@@ -1477,24 +1513,33 @@ function emailVars(o: {
     datum: o.date, uhrzeit: o.time,
     heim: o.homeTeam, gast: o.awayTeam, liga: o.league, halle: o.location,
     spielNr: o.matchNo, rolle: o.role,
-    // English aliases
-    coachee: o.refereeName, rc: o.rcName, date: o.date, time: o.time,
-    location: o.location, homeTeam: o.homeTeam, awayTeam: o.awayTeam,
-    match: `${o.homeTeam} – ${o.awayTeam}`, league: o.league, matchNo: o.matchNo, role: o.role,
+    // The English names — one per German name, so the English half of a mail
+    // can be written in English placeholders (the console offers these chips
+    // when it is switched to English) — plus the older aliases, kept so a
+    // template written with them keeps working.
+    firstName: first(o.refereeName), coachFirstName: first(o.rcName),
+    date: o.date, time: o.time, home: o.homeTeam, away: o.awayTeam, league: o.league, venue: o.location,
+    matchNo: o.matchNo, role: o.role,
+    coachee: o.refereeName, rc: o.rcName, location: o.location, homeTeam: o.homeTeam, awayTeam: o.awayTeam,
+    match: `${o.homeTeam} – ${o.awayTeam}`,
   };
 }
 
 // What the guided editor offers for a mail built around a game. Names only —
 // emailVars() also answers to English aliases, kept working but not advertised.
 const EMAIL_PLACEHOLDERS_MATCH = ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'uhrzeit', 'heim', 'gast', 'liga', 'halle', 'spielNr', 'rolle'];
+// The same twelve in English, same order: what the console offers when it is
+// switched to English. Both sets render in either language of the mail.
+const EMAIL_PLACEHOLDERS_MATCH_EN = ['firstName', 'name', 'coach', 'coachFirstName', 'date', 'time', 'home', 'away', 'league', 'venue', 'matchNo', 'role'];
 
 // Everything emailVars() answers to but does not advertise. The editor warns
 // about a placeholder it does not recognise — "renders empty when it is sent" —
 // so a name that DOES render has to be in this list, or the warning is a lie
 // about a template that works. It was one: the shipped default used {{coachee}}
 // and {{role}}, and the editor flagged both.
-const EMAIL_PLACEHOLDER_ALIASES = ['coachee', 'rc', 'date', 'time', 'location', 'homeTeam', 'awayTeam', 'match', 'league', 'matchNo', 'role'];
+const EMAIL_PLACEHOLDER_ALIASES = ['coachee', 'rc', 'location', 'homeTeam', 'awayTeam', 'match'];
 const EMAIL_PLACEHOLDERS_SURVEY = ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'spielNr'];
+const EMAIL_PLACEHOLDERS_SURVEY_EN = ['firstName', 'name', 'coach', 'coachFirstName', 'date', 'matchNo'];
 
 // Admin-edited prose → escaped HTML paragraphs (blank line = new paragraph).
 function textBlockHtml(text: string, colour: string = MAIL_INK): string {
@@ -9881,12 +9926,19 @@ app.get('/api/admin/email-templates', requireAdminSession, async (_req: Request,
         reminder: EMAIL_PLACEHOLDERS_MATCH,
         survey: EMAIL_PLACEHOLDERS_SURVEY,
       },
-      // What renders, as opposed to what is offered: the chips stay German, and
-      // a template using an alias is left in peace instead of being warned about.
+      // The same chips in English, for a console switched to English.
+      placeholdersEn: {
+        feedback: EMAIL_PLACEHOLDERS_MATCH_EN,
+        reminder: EMAIL_PLACEHOLDERS_MATCH_EN,
+        survey: EMAIL_PLACEHOLDERS_SURVEY_EN,
+      },
+      // What renders, as opposed to what is offered: both languages and the
+      // older aliases, so a template using any of them is left in peace
+      // instead of being warned about.
       accepted: {
-        feedback: [...EMAIL_PLACEHOLDERS_MATCH, ...EMAIL_PLACEHOLDER_ALIASES],
-        reminder: [...EMAIL_PLACEHOLDERS_MATCH, ...EMAIL_PLACEHOLDER_ALIASES],
-        survey: [...EMAIL_PLACEHOLDERS_SURVEY, 'coachee', 'rc', 'date', 'matchNo'],
+        feedback: [...EMAIL_PLACEHOLDERS_MATCH, ...EMAIL_PLACEHOLDERS_MATCH_EN, ...EMAIL_PLACEHOLDER_ALIASES],
+        reminder: [...EMAIL_PLACEHOLDERS_MATCH, ...EMAIL_PLACEHOLDERS_MATCH_EN, ...EMAIL_PLACEHOLDER_ALIASES],
+        survey: [...EMAIL_PLACEHOLDERS_SURVEY, ...EMAIL_PLACEHOLDERS_SURVEY_EN, 'coachee', 'rc'],
       },
     });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }

@@ -21,14 +21,14 @@ const reminderDefault = (): string => {
 test('the league sits on its own line, in both languages', () => {
   const tpl = reminderDefault();
   expect(tpl).toContain('Spiel: {{heim}} – {{gast}}\nLiga: {{liga}}');
-  expect(tpl).toContain('Match: {{heim}} – {{gast}}\nLeague: {{liga}}');
+  expect(tpl).toContain('Match: {{home}} – {{away}}\nLeague: {{league}}');
   expect(tpl).not.toContain('({{liga}})');
 });
 
 test('the mail says when to meet, that the coach is in Cc, and where a reply goes', () => {
   const tpl = reminderDefault();
   for (const phrase of ['45 Minuten vor Spielbeginn', '30 Minuten', 'in Kopie (Cc)', 'Antwort geht direkt an {{coachVorname}}',
-    '45 minutes before the game', '30 minutes', 'copied (Cc)', 'reply goes directly to {{coachVorname}}']) {
+    '45 minutes before the game', '30 minutes', 'copied (Cc)', 'reply goes directly to {{coachFirstName}}']) {
     expect(tpl, phrase).toContain(phrase);
   }
 });

@@ -953,13 +953,17 @@ export type EmailTemplates = {
   // A plain array is the pre-3-templates shape, which a cached response can
   // still be; read it as "the same list for every kind".
   placeholders: Record<string, string[]> | string[];
+  // The same names in English, one per German one — offered when the console
+  // is in English. Absent on an older server, which then offers German only.
+  placeholdersEn?: Record<string, string[]>;
   // What the server will actually substitute, including the English aliases it
   // does not advertise. Absent on an older server — then the advertised list is
   // all we know.
   accepted?: Record<string, string[]>;
 };
 
-export function placeholdersFor(t: EmailTemplates, kind: EmailTemplateKind): string[] {
+export function placeholdersFor(t: EmailTemplates, kind: EmailTemplateKind, lang: 'DE' | 'EN' = 'DE'): string[] {
+  if (lang === 'EN' && t.placeholdersEn?.[kind]) return t.placeholdersEn[kind];
   if (Array.isArray(t.placeholders)) return t.placeholders;
   return t.placeholders?.[kind] ?? [];
 }

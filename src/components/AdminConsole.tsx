@@ -131,7 +131,7 @@ const STR = {
     tplEnglish: 'Englische Fassung',
     tplEnglishHint: 'Steht in der E-Mail unter dem deutschen Text. Leer lassen = nur Deutsch. Der Betreff bleibt einer für beide.',
     tplHeadingEn: 'Titel (EN, optional)', tplIntroEn: 'Text (EN)', tplOutroEn: 'Schluss (EN)',
-    tplPlaceholders: 'Platzhalter (werden automatisch ersetzt):',
+    tplPlaceholders: 'Platzhalter — anklicken zum Einfügen, oder {{ tippen:',
     tplUnknown: 'Orange markierte Platzhalter kennt diese E-Mail nicht — sie bleiben im Versand leer.',
     tplReset: 'Standard wiederherstellen', tplSaved: 'Gespeichert ✓',
     form: 'Fragebogen',
@@ -361,7 +361,7 @@ const STR = {
     tplEnglish: 'English version',
     tplEnglishHint: 'Shown under the German text in the mail. Leave empty for German only. The subject is one for both.',
     tplHeadingEn: 'Title (EN, optional)', tplIntroEn: 'Body (EN)', tplOutroEn: 'Closing (EN)',
-    tplPlaceholders: 'Placeholders (filled in automatically):',
+    tplPlaceholders: 'Placeholders — click to insert, or type {{:',
     tplUnknown: 'Placeholders marked amber are unknown to this email — they render empty when it is sent.',
     tplReset: 'Restore default', tplSaved: 'Saved ✓',
     form: 'Questionnaire',
@@ -1031,7 +1031,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'emails'}>
           {/* The mail switches head the tab — the templates below are long. */}
           <TestModeCard t={t} testMode={testMode} onTestMode={setTestMode} loading={settingsLoading} />
-          <EmailsAdmin t={t} />
+          <EmailsAdmin t={t} lang={lang} />
         </div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'games'}>
@@ -1093,8 +1093,8 @@ export default function AdminConsole() {
   );
 }
 
-function Card({ children }: { children: React.ReactNode }) {
-  return <div className="bg-white rounded-2xl shadow-card border border-stone-200/70 p-4 sm:p-5 mb-4">{children}</div>;
+function Card({ children, testId }: { children: React.ReactNode; testId?: string }) {
+  return <div data-testid={testId} className="bg-white rounded-2xl shadow-card border border-stone-200/70 p-4 sm:p-5 mb-4">{children}</div>;
 }
 
 function GroupMultiSelect({ groups, value, onChange, placeholder }: { groups: string[]; value: string; onChange: (v: string) => void; placeholder: string }) {
@@ -1926,30 +1926,106 @@ function hasUnknownPlaceholder(text: string, known: Set<string>): boolean {
 
 // Blue = this mail will fill it in. Amber = it will not, and the spot goes out
 // blank — the failure mode this colouring exists to catch.
-function placeholderParts(value: string, known: Set<string>): React.ReactNode[] {
+//
+// Drawn as a pill showing the bare name. The braces are still in the text —
+// the mirror must trace the textarea character for character or the caret
+// drifts — so they stay in the DOM at their full monospace width and are simply
+// painted transparent: they are the pill's padding.
+//
+// `markerAt` plants a zero-width span at that text offset (inside plain text,
+// never inside a placeholder), which the suggestion list is anchored to.
+function placeholderParts(value: string, known: Set<string>, markerAt?: number, markerRef?: React.RefObject<HTMLSpanElement | null>): React.ReactNode[] {
   const out: React.ReactNode[] = [];
+  const plain = (from: number, to: number) => {
+    if (markerAt !== undefined && markerAt >= from && markerAt <= to) {
+      if (markerAt > from) out.push(value.slice(from, markerAt));
+      out.push(<span key={`m${markerAt}`} ref={markerRef} data-caret-marker className="inline-block w-0 align-baseline" />);
+      if (to > markerAt) out.push(value.slice(markerAt, to));
+    } else if (to > from) {
+      out.push(value.slice(from, to));
+    }
+  };
   let last = 0;
   let m: RegExpExecArray | null;
   PLACEHOLDER_RE.lastIndex = 0;
   while ((m = PLACEHOLDER_RE.exec(value))) {
-    if (m.index > last) out.push(value.slice(last, m.index));
+    plain(last, m.index);
+    const name = m[1];
+    const open = m[0].slice(0, m[0].indexOf(name));
+    const close = m[0].slice(open.length + name.length);
     out.push(
-      <span key={m.index} className={known.has(m[1]) ? 'text-blue-600 font-semibold' : 'text-amber-600 underline decoration-dotted'}>{m[0]}</span>,
+      <span key={m.index} className={cn('rounded', known.has(m[1]) ? 'bg-blue-100 text-blue-700 font-semibold' : 'bg-amber-100 text-amber-700 font-semibold')}>
+        <span className="text-transparent">{open}</span>{name}<span className="text-transparent">{close}</span>
+      </span>,
     );
     last = m.index + m[0].length;
   }
-  out.push(value.slice(last));
+  plain(last, value.length);
   // A block box swallows a trailing newline. Without this the mirror is a line
   // shorter than the textarea and the bottom of a long text sits off by a row.
   out.push('\n');
   return out;
 }
 
-function TemplateField({ value, onChange, rows, singleLine, known }: {
+/** The unfinished placeholder the caret sits in, if any: the `{{` behind it
+ *  with only name characters between, and no `}}` closing it right after —
+ *  that would be an existing placeholder being edited, not a new one typed. */
+function openPlaceholderAt(value: string, caret: number): { start: number; query: string } | null {
+  const before = value.slice(0, caret);
+  const m = /\{\{\s*([a-zA-Z0-9_]*)$/.exec(before);
+  if (!m) return null;
+  if (/^[a-zA-Z0-9_]*\s*\}\}/.test(value.slice(caret))) return null;
+  return { start: before.length - m[0].length, query: m[1] };
+}
+
+/** The field that last had the caret — where a chip click inserts. */
+let lastTemplateField: { el: HTMLTextAreaElement; kind: EmailTemplateKind; field: keyof EmailTemplate } | null = null;
+
+function TemplateField({ value, onChange, rows, singleLine, known, suggest, kind, field: fieldName }: {
   value: string; onChange: (v: string) => void; rows: number; singleLine?: boolean; known: Set<string>;
+  /** The names offered while typing `{{`, in the console's language. */
+  suggest: string[];
+  kind: EmailTemplateKind; field: keyof EmailTemplate;
 }) {
   const mirror = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
+  const marker = useRef<HTMLSpanElement>(null);
+  // Typing `{{` opens the list; every keystroke narrows it; Enter, Tab or a
+  // click completes the name and closes it, Escape just closes it. Recomputed
+  // from the caret, never from the keystroke, so a click into the middle of an
+  // unfinished `{{na` opens it too.
+  const [open, setOpen] = useState<{ start: number; query: string } | null>(null);
+  const [pick, setPick] = useState(0);
+  const [anchor, setAnchor] = useState<{ top: number; left: number } | null>(null);
+  const matches = open
+    ? suggest.filter((n) => n.toLowerCase().startsWith(open.query.toLowerCase()))
+    : [];
+  const syncOpen = () => {
+    const el = field.current;
+    if (!el) return;
+    const next = openPlaceholderAt(el.value, el.selectionStart);
+    setOpen((prev) => (prev?.start === next?.start && prev?.query === next?.query ? prev : next));
+    if (!next) return;
+    setPick(0);
+  };
+  // The marker is rendered at the `{{`; read where it landed after that render.
+  useEffect(() => {
+    if (!open || !marker.current || !mirror.current) { setAnchor(null); return; }
+    const m = marker.current;
+    // Under the caret, clamped so the list never leaves the field's right edge.
+    const left = Math.max(0, Math.min(m.offsetLeft, mirror.current.clientWidth - 184));
+    setAnchor({ top: m.offsetTop + m.offsetHeight - mirror.current.scrollTop, left });
+  }, [open, value]);
+  const complete = (name: string) => {
+    const el = field.current;
+    if (!el || !open) return;
+    const caret = el.selectionStart;
+    const next = `${value.slice(0, open.start)}{{${name}}}${value.slice(caret)}`;
+    const pos = open.start + name.length + 4;
+    onChange(next);
+    setOpen(null);
+    requestAnimationFrame(() => { el.focus(); el.setSelectionRange(pos, pos); });
+  };
   // A fixed one-row box clips a subject that wraps on a narrow screen, and a
   // scrollbar on a single line reads worse than a second line does. Grow to
   // fit instead — the mirror is sized by this wrapper, so it follows.
@@ -1982,17 +2058,31 @@ function TemplateField({ value, onChange, rows, singleLine, known }: {
         ref={mirror}
         aria-hidden
         className={cn(FIELD_METRICS, 'tpl-field pointer-events-none absolute inset-0 overflow-hidden rounded-lg border border-transparent text-stone-800')}
-      >{placeholderParts(value, known)}</div>
+      >{placeholderParts(value, known, open?.start, marker)}</div>
       <textarea
         ref={field}
         value={value}
         rows={rows}
+        data-tpl-kind={kind}
+        data-tpl-field={fieldName}
+        onFocus={() => { if (field.current) lastTemplateField = { el: field.current, kind, field: fieldName }; }}
+        onBlur={() => window.setTimeout(() => setOpen(null), 150)} // after a click on the list lands
+        onClick={syncOpen}
+        onKeyUp={(e) => { if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key)) syncOpen(); }}
         // The mirror has no scrollbar of its own, so it follows this one.
         onScroll={() => { if (mirror.current && field.current) mirror.current.scrollTop = field.current.scrollTop; }}
         // Subject and title are textareas too, so a single overlay serves all
         // four fields. A newline in a subject line is a mail-header split, so
         // Enter is simply not a character there.
-        onKeyDown={singleLine ? (e) => { if (e.key === 'Enter') e.preventDefault(); } : undefined}
+        onKeyDown={(e) => {
+          if (open && matches.length > 0) {
+            if (e.key === 'ArrowDown') { e.preventDefault(); setPick((p) => (p + 1) % matches.length); return; }
+            if (e.key === 'ArrowUp') { e.preventDefault(); setPick((p) => (p - 1 + matches.length) % matches.length); return; }
+            if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); complete(matches[pick]); return; }
+          }
+          if (e.key === 'Escape' && open) { e.preventDefault(); setOpen(null); return; }
+          if (singleLine && e.key === 'Enter') e.preventDefault();
+        }}
         onChange={(e) => onChange(singleLine ? e.target.value.replace(/[\r\n]+/g, ' ') : e.target.value)}
         className={cn(
           FIELD_METRICS,
@@ -2003,6 +2093,29 @@ function TemplateField({ value, onChange, rows, singleLine, known }: {
           singleLine ? 'resize-none overflow-hidden' : 'resize-y',
         )}
       />
+      {open && matches.length > 0 && anchor && (
+        <ul
+          role="listbox"
+          data-testid="tpl-suggest"
+          className="absolute z-20 min-w-[10rem] max-h-44 overflow-auto rounded-lg border border-stone-200 bg-white py-1 shadow-lg"
+          style={{ top: anchor.top + 2, left: anchor.left }}
+        >
+          {matches.map((n, i) => (
+            <li
+              key={n}
+              role="option"
+              aria-selected={i === pick}
+              // mousedown, not click: the field blurs on mousedown and the
+              // list would be gone before a click could land.
+              onMouseDown={(e) => { e.preventDefault(); complete(n); }}
+              onMouseEnter={() => setPick(i)}
+              className={cn('px-2.5 py-1 cursor-pointer text-xs font-mono', i === pick ? 'bg-stone-100' : '')}
+            >
+              <span className="rounded bg-blue-100 px-1.5 py-0.5 font-semibold text-blue-700">{n}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -2010,7 +2123,7 @@ function TemplateField({ value, onChange, rows, singleLine, known }: {
 // Guided template editor: admins edit subject/title/body/closing with
 // {{placeholders}}; the branded layout, detail rows and attachments are fixed,
 // so an edit can never break rendering.
-function EmailsAdmin({ t }: { t: T }) {
+function EmailsAdmin({ t, lang }: { t: T; lang: Lang }) {
   const [data, setData] = useState<EmailTemplates | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -2083,8 +2196,25 @@ function EmailsAdmin({ t }: { t: T }) {
     // Two different questions: which names to offer as chips, and which ones
     // render. Warning about the second using the first told admins that the
     // app's own default template would send empty values.
-    const offered = new Set(placeholdersFor(data, kind));
+    // In the console's language: a German admin gets {{vorname}}, an English
+    // one {{firstName}}. Both render, in either half of the mail.
+    const offered = placeholdersFor(data, kind, lang);
     const known = new Set(acceptedPlaceholdersFor(data, kind));
+    // A chip click writes {{name}} where the caret last was in THIS card —
+    // or at the end of the body when no field of it has been touched yet.
+    const insert = (name: string) => {
+      const target = lastTemplateField && lastTemplateField.kind === kind ? lastTemplateField : null;
+      const fieldKey: keyof EmailTemplate = target ? target.field : 'intro';
+      const current = String(tpl[fieldKey] ?? '');
+      const at = target ? target.el.selectionStart : current.length;
+      const end = target ? target.el.selectionEnd : current.length;
+      const next = `${current.slice(0, at)}{{${name}}}${current.slice(end)}`;
+      patch(kind, { [fieldKey]: next });
+      const pos = at + name.length + 4;
+      const el = target?.el ?? document.querySelector<HTMLTextAreaElement>(`textarea[data-tpl-kind="${kind}"][data-tpl-field="${fieldKey}"]`);
+      requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(pos, pos); });
+    };
+    const fieldProps = (field: keyof EmailTemplate) => ({ known, suggest: offered, kind, field });
     const unknownUsed = [tpl.subject, tpl.heading, tpl.intro, tpl.outro, tpl.headingEn ?? '', tpl.introEn ?? '', tpl.outroEn ?? '']
       .some((v) => hasUnknownPlaceholder(v, known));
     // A mail that ships with an English half is edited in both halves. The
@@ -2092,7 +2222,7 @@ function EmailsAdmin({ t }: { t: T }) {
     // it English fields would only invite a translation nobody reads.
     const bilingual = data.defaults?.[kind]?.introEn !== undefined;
     return (
-      <Card>
+      <Card testId={`tpl-editor-${kind}`}>
         <div className="flex items-start justify-between gap-3 mb-1">
           <h2 className="text-sm font-semibold text-stone-700">{title}</h2>
           <button
@@ -2105,19 +2235,19 @@ function EmailsAdmin({ t }: { t: T }) {
         <div className="space-y-2.5">
           <label className="block">
             <span className={fieldLabel}>{t.tplSubject}</span>
-            <TemplateField value={tpl.subject} onChange={(v) => patch(kind, { subject: v })} rows={1} singleLine known={known} />
+            <TemplateField value={tpl.subject} onChange={(v) => patch(kind, { subject: v })} rows={1} singleLine {...fieldProps('subject')} />
           </label>
           <label className="block">
             <span className={fieldLabel}>{t.tplHeading}</span>
-            <TemplateField value={tpl.heading} onChange={(v) => patch(kind, { heading: v })} rows={1} singleLine known={known} />
+            <TemplateField value={tpl.heading} onChange={(v) => patch(kind, { heading: v })} rows={1} singleLine {...fieldProps('heading')} />
           </label>
           <label className="block">
             <span className={fieldLabel}>{t.tplIntro}</span>
-            <TemplateField value={tpl.intro} onChange={(v) => patch(kind, { intro: v })} rows={kind === 'reminder' ? 14 : 6} known={known} />
+            <TemplateField value={tpl.intro} onChange={(v) => patch(kind, { intro: v })} rows={kind === 'reminder' ? 14 : 6} {...fieldProps('intro')} />
           </label>
           <label className="block">
             <span className={fieldLabel}>{t.tplOutro}</span>
-            <TemplateField value={tpl.outro} onChange={(v) => patch(kind, { outro: v })} rows={3} known={known} />
+            <TemplateField value={tpl.outro} onChange={(v) => patch(kind, { outro: v })} rows={3} {...fieldProps('outro')} />
           </label>
           {bilingual && (
             <div className="pt-2 mt-1 border-t border-stone-100 space-y-2.5" data-testid={`tpl-english-${kind}`}>
@@ -2127,15 +2257,15 @@ function EmailsAdmin({ t }: { t: T }) {
               </div>
               <label className="block">
                 <span className={fieldLabel}>{t.tplHeadingEn}</span>
-                <TemplateField value={tpl.headingEn ?? ''} onChange={(v) => patch(kind, { headingEn: v })} rows={1} singleLine known={known} />
+                <TemplateField value={tpl.headingEn ?? ''} onChange={(v) => patch(kind, { headingEn: v })} rows={1} singleLine {...fieldProps('headingEn')} />
               </label>
               <label className="block">
                 <span className={fieldLabel}>{t.tplIntroEn}</span>
-                <TemplateField value={tpl.introEn ?? ''} onChange={(v) => patch(kind, { introEn: v })} rows={kind === 'reminder' ? 14 : 6} known={known} />
+                <TemplateField value={tpl.introEn ?? ''} onChange={(v) => patch(kind, { introEn: v })} rows={kind === 'reminder' ? 14 : 6} {...fieldProps('introEn')} />
               </label>
               <label className="block">
                 <span className={fieldLabel}>{t.tplOutroEn}</span>
-                <TemplateField value={tpl.outroEn ?? ''} onChange={(v) => patch(kind, { outroEn: v })} rows={3} known={known} />
+                <TemplateField value={tpl.outroEn ?? ''} onChange={(v) => patch(kind, { outroEn: v })} rows={3} {...fieldProps('outroEn')} />
               </label>
             </div>
           )}
@@ -2144,8 +2274,14 @@ function EmailsAdmin({ t }: { t: T }) {
           {t.tplPlaceholders}{' '}
           {/* Offered, not accepted: the aliases render but are not advertised,
               and a chip for each would double this list to no purpose. */}
-          {[...offered].map((p) => (
-            <code key={p} className="inline-block mx-0.5 rounded bg-blue-50 border border-blue-100 px-1 py-0.5 text-[10px] text-blue-600">{`{{${p}}}`}</code>
+          {offered.map((p) => (
+            <button
+              key={p} type="button"
+              onMouseDown={(e) => e.preventDefault()} // keep the field's caret where it is
+              onClick={() => insert(p)}
+              title={`{{${p}}}`}
+              className="inline-block mx-0.5 my-0.5 rounded bg-blue-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-blue-700 hover:bg-blue-200"
+            >{p}</button>
           ))}
         </p>
         {unknownUsed && <p className="mt-1.5 text-[11px] text-amber-600">{t.tplUnknown}</p>}

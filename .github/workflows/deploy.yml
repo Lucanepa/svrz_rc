@@ -13,20 +13,17 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+# Nothing gated a push to main before this: a type error or a broken user
+# journey went straight to production and was only noticed by a coach.
+#
+# Shape: build once, test in four shards on four runners, publish when all of
+# it is green. The suite ran 11–16 minutes on one worker and 9 on three — one
+# Vite server and four cores shared by three browsers cap it — so the lever is
+# runners, not workers. Public repo: the runners are free.
 jobs:
-  # Nothing gated a push to main before this: a type error or a broken user
-  # journey went straight to production and was only noticed by a coach.
-  #
-  # One job, not check → deploy: the second job checked out and installed
-  # everything again for a 20-second build, and waited for a runner to do it.
-  # The build now runs BEFORE the tests, so a broken build fails in seconds
-  # instead of after the suite; the tests still gate the publish.
-  build-test-deploy:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    environment:
-      name: production
-      url: https://svrz-rc.openvolley.app
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -45,6 +42,27 @@ jobs:
           # that is what keeps the session cookie first-party (see
           # infrastructure.md, "Session cookies").
           VITE_API_BASE_URL: https://svrz-rc-api.openvolley.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 1
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # Every shard reports; a failure in one must not hide a second one.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
       # The browser binary is ~150 MB and only changes with the Playwright
       # version — keyed on the lockfile. On a hit only the OS libraries are
       # installed (apt, a few seconds); on a miss both.
@@ -60,15 +78,36 @@ jobs:
       - name: Install Playwright system deps
         if: steps.pw-cache.outputs.cache-hit == 'true'
         run: npx playwright install-deps chromium
-      - name: End-to-end tests
-        run: npm test
+      - name: End-to-end tests (shard ${{ matrix.shard }} of 4)
+        run: npm test -- --shard=${{ matrix.shard }}/4
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-shard-${{ matrix.shard }}
           path: playwright-report
           retention-days: 7
+
+  deploy:
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://svrz-rc.openvolley.app
+    steps:
+      # Checked out for wrangler.jsonc and the pinned wrangler in package-lock —
+      # the site itself is the artifact the build job made.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
       - name: Publish to Cloudflare Pages
         # Wrangler is pinned in package-lock, so the deploy tool cannot change
         # under us between runs. Project + output dir come from wrangler.jsonc.

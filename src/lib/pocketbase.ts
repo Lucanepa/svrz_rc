@@ -592,6 +592,7 @@ export async function listRefereeCoachPeople(): Promise<RefereeCoachPerson[]> {
  *  hold. Same template and same recipients, and it stamps the job's own dedupe
  *  key so tomorrow's run does not send it twice. */
 export async function sendGameReminder(gameId: string): Promise<{ sent: number; suppressed: boolean; recipients: string[] }> {
+  if (isDemoMode()) return demo.sendGameReminder(gameId);
   const r = await fetch(apiUrl(`/api/games/${gameId}/reminder`), { method: 'POST', credentials: 'include' });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not send the reminder');
   return r.json();

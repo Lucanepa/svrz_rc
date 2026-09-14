@@ -682,6 +682,20 @@ export function assignRcToGame(gameId: string, assignedRc: string): Promise<void
   return ok(undefined);
 }
 
+// "Send the reminder now" — the day-before mail, into the demo mailbox. Home's
+// "Erinnerung" button and a late "Spiel übernehmen" both end here, so the demo
+// shows the mail they promise instead of a failed call to an API it never has.
+export function sendGameReminder(gameId: string): Promise<{ sent: number; suppressed: boolean; recipients: string[] }> {
+  const s = store();
+  const g = s.games.find((x) => x.id === gameId);
+  const coachee = g ? s.coachees.find((c) => c.id === g.coacheeId) : undefined;
+  if (!g || !coachee) return ok({ sent: 0, suppressed: false, recipients: [] });
+  const mail = buildDemoReminderEmail(g, coachee);
+  mail.label = 'Erinnerung (jetzt gesendet)';
+  s.sentMail.unshift(mail);
+  return ok({ sent: 1, suppressed: false, recipients: [mail.to] });
+}
+
 // Signature-on-another-device isn't wired in the demo — stub so nothing hits
 // the network; the coach can still complete a feedback without a signature.
 export function startSignature(): Promise<{ slug: string }> {

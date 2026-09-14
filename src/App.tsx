@@ -78,6 +78,7 @@ import { useRcAuth } from './components/AuthGate';
 import { isDemoMode, getSentMail, demoTips, type DemoEmail } from './lib/demo';
 import { APP_VERSION, BUILD_INFO, VERSION_STAMP } from './lib/buildInfo';
 import { confirmDialog, toast } from './components/ui';
+import { takenAfterReminder } from './lib/reminder';
 
 // Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
 // "ITA" — never a fabricated or TBD value (the red TBD is a UI-only concept).
@@ -1416,7 +1417,15 @@ export default function App() {
   const eligibleGamesRef = useRef<EligibleGame[]>([]);
   useEffect(() => { eligibleGamesRef.current = eligibleGames; }, [eligibleGames]);
   // A pending RC assignment held back by the "already observed" notice.
-  const [takeNotice, setTakeNotice] = useState<{ gameId: string; rcName: string; previousRc?: string; observed: Array<{ name: string; count: number }> } | null>(null);
+  // What "take game" wants a word about before it goes through: coachees on
+  // the game who are already covered, and/or a take the daily reminder has
+  // already looked past (`late`, see src/lib/reminder.ts) — that one mails the
+  // referees the moment the take lands, so it is confirmed, never silent.
+  const [takeNotice, setTakeNotice] = useState<{
+    gameId: string; rcName: string; previousRc?: string; label: string;
+    observed: Array<{ name: string; count: number; plannedBy?: string; plannedOn?: string }>;
+    late: boolean;
+  } | null>(null);
   const [rcPeople, setRcPeople] = useState<RefereeCoachPerson[]>([]);
   const [calendarGames, setCalendarGames] = useState<CalendarGameStatus[]>([]);
   const [selectedGameId, setSelectedGameId] = useState('');
@@ -2309,17 +2318,21 @@ export default function App() {
     }
   };
 
-  const applyRcAssignment = async (gameId: string, rcName: string, previousRc?: string) => {
+  // Answers whether the take landed: a late take mails the referees right
+  // after, and a mail about a game the server just refused must not go out.
+  const applyRcAssignment = async (gameId: string, rcName: string, previousRc?: string): Promise<boolean> => {
     try {
       await assignRcToGame(gameId, rcName);
       setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: rcName } : g));
       refreshAfterAssignment(previousRc, rcName);
+      return true;
     } catch (err) {
       // The server refuses to hand over a game somebody else holds (409). That
       // answer only ever reaches a screen that was already out of date, so the
       // row is corrected in the same breath as the message.
       setBackendNotice(localizeRuntimeError(err instanceof Error ? err.message : String(err), formData.lang));
       void syncGamesQuietly();
+      return false;
     }
   };
 
@@ -2378,13 +2391,52 @@ export default function App() {
   );
 
   const requestRcAssignment = (game: EligibleGame, rcName: string) => {
-    // Clearing an assignment needs no warning — nobody is being observed twice.
+    // Clearing an assignment needs no warning — nobody is being observed twice,
+    // and nobody is mailed about a coach who is no longer coming.
     const observed = rcName ? observedCoacheesOnGame(game) : [];
-    if (observed.length > 0) {
-      setTakeNotice({ gameId: game.id, rcName, previousRc: game.assignedRc, observed });
+    // Past 10:00 the day before, the daily reminder has already run without
+    // this game on it. Taking it now informs the referees straight away — a
+    // mail in somebody's inbox, so the coach confirms it rather than finding
+    // out afterwards.
+    const late = !!rcName && takenAfterReminder(game.date);
+    if (observed.length > 0 || late) {
+      setTakeNotice({
+        gameId: game.id, rcName, previousRc: game.assignedRc,
+        label: `${game.homeTeam} vs ${game.awayTeam}`, observed, late,
+      });
       return;
     }
     void applyRcAssignment(game.id, rcName, game.assignedRc);
+  };
+
+  // A confirmed take. When it is a late one, the reminder follows on its heels:
+  // the same mail the 10:00 job would have sent, to the same people, the coach
+  // in Cc — through the same endpoint as Home's "Erinnerung" button, so the
+  // two cannot drift apart. The take stands whatever the mail does; a failed
+  // mail is reported as exactly that, not as a failed take.
+  const confirmTake = async (notice: NonNullable<typeof takeNotice>) => {
+    const taken = await applyRcAssignment(notice.gameId, notice.rcName, notice.previousRc);
+    if (!taken || !notice.late) return;
+    const german = formData.lang === 'DE';
+    const lang = german ? 'DE' : 'EN';
+    const takenText = german ? `„${notice.label}" übernommen.` : `Took "${notice.label}".`;
+    try {
+      const res = await sendGameReminder(notice.gameId);
+      if (res.suppressed) {
+        toast.info(german
+          ? `${takenText} Test-Modus ist aktiv — es wurde keine E-Mail versendet.`
+          : `${takenText} Test mode is on — no e-mail was sent.`, { lang });
+      } else {
+        toast.success(german
+          ? `${takenText} Die SR wurden per E-Mail informiert (${res.sent} Empfänger).`
+          : `${takenText} The referees were informed by e-mail (${res.sent} recipient(s)).`, { lang });
+      }
+    } catch (e) {
+      const why = localizeRuntimeError(e instanceof Error ? e.message : String(e), formData.lang);
+      toast.error(german
+        ? `${takenText} Die E-Mail an die SR ging aber nicht raus: ${why}`
+        : `${takenText} But the e-mail to the referees did not go out: ${why}`, { lang });
+    }
   };
 
   // Give a taken game back: clears the RC assignment, so the game (and its
@@ -8510,11 +8562,14 @@ export default function App() {
         </div>
       )}
 
-      {/* "Already observed" notice — shown before an assignment goes through,
-          never after; the RC decides whether a second look is what they want. */}
+      {/* The word before a take goes through — never after. "Already observed":
+          the RC decides whether a second look is what they want. "Late": the
+          daily reminder has passed this game by, so taking it mails the SR now,
+          and that is said before it happens. Both can be true of one game. */}
       {takeNotice && (() => {
         const de = formData.lang === 'DE';
         const self = !!rcAuth.rcName && normName(takeNotice.rcName) === normName(rcAuth.rcName);
+        const onlyLate = takeNotice.late && takeNotice.observed.length === 0;
         // Written as whole sentences per case: a coachee can be here for a
         // filed observation, for one somebody else has booked, or for both.
         const sentence = (o: { count: number; plannedBy?: string; plannedOn?: string }) => {
@@ -8541,22 +8596,37 @@ export default function App() {
         };
         return (
           <div className="fixed inset-0 bg-stone-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-            <div role="dialog" aria-modal="true" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6">
+            <div role="dialog" aria-modal="true" data-testid="take-notice" className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6">
               <h3 className="text-lg font-bold text-stone-900 flex items-center gap-2">
-                <Info size={18} className="text-amber-500" />
-                {de ? 'Hinweis' : 'Notice'}
+                {onlyLate ? <Mail size={18} className="text-amber-500" /> : <Info size={18} className="text-amber-500" />}
+                {onlyLate
+                  ? (de ? `Spiel ${self ? 'übernehmen' : 'zuweisen'} und SR informieren?` : `${self ? 'Take' : 'Assign'} the game and inform the SR?`)
+                  : (de ? 'Hinweis' : 'Notice')}
               </h3>
-              <ul className="mt-3 space-y-1.5 text-sm text-stone-700">
-                {takeNotice.observed.map((o) => (
-                  <li key={o.name}>
-                    <span className="font-semibold">{o.name}</span> {sentence(o)}
-                  </li>
-                ))}
-              </ul>
+              {takeNotice.observed.length > 0 && (
+                <ul className="mt-3 space-y-1.5 text-sm text-stone-700">
+                  {takeNotice.observed.map((o) => (
+                    <li key={o.name}>
+                      <span className="font-semibold">{o.name}</span> {sentence(o)}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {takeNotice.late && (
+                // Which game, then what happens: the automatic mail for it is
+                // behind us, so this take carries its own, right now.
+                <p className="mt-3 text-sm text-stone-700" data-testid="take-notice-late">
+                  {de
+                    ? <>Die automatische Erinnerung für <span className="font-semibold">{takeNotice.label}</span> (Vortag, 10:00) ist bereits vorbei. Beim Übernehmen werden die SR <span className="font-semibold">sofort per E-Mail</span> über das Coaching informiert{self ? ' — du erhältst eine Kopie' : ''}.</>
+                    : <>The automatic reminder for <span className="font-semibold">{takeNotice.label}</span> (10:00 the day before) has already passed. On taking it, the referees are informed about the coaching <span className="font-semibold">by e-mail straight away</span>{self ? ' — you are copied in' : ''}.</>}
+                </p>
+              )}
               <p className="mt-3 text-sm text-stone-500">
-                {de
-                  ? `Spiel trotzdem ${self ? 'übernehmen' : 'zuweisen'}?`
-                  : `${self ? 'Take' : 'Assign'} the game anyway?`}
+                {onlyLate
+                  ? (de ? 'Bist du sicher?' : 'Are you sure?')
+                  : (de
+                    ? `Spiel trotzdem ${self ? 'übernehmen' : 'zuweisen'}?`
+                    : `${self ? 'Take' : 'Assign'} the game anyway?`)}
               </p>
               <div className="mt-5 flex gap-2">
                 <button
@@ -8567,12 +8637,14 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => {
-                    void applyRcAssignment(takeNotice.gameId, takeNotice.rcName, takeNotice.previousRc);
+                    void confirmTake(takeNotice);
                     setTakeNotice(null);
                   }}
                   className="flex-1 h-10 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors"
                 >
-                  {de ? (self ? 'Trotzdem übernehmen' : 'Trotzdem zuweisen') : (self ? 'Take anyway' : 'Assign anyway')}
+                  {takeNotice.late
+                    ? (de ? (self ? 'Übernehmen & informieren' : 'Zuweisen & informieren') : (self ? 'Take & inform' : 'Assign & inform'))
+                    : (de ? (self ? 'Trotzdem übernehmen' : 'Trotzdem zuweisen') : (self ? 'Take anyway' : 'Assign anyway'))}
                 </button>
               </div>
             </div>

@@ -16,32 +16,14 @@ concurrency:
 jobs:
   # Nothing gated a push to main before this: a type error or a broken user
   # journey went straight to production and was only noticed by a coach.
-  check:
+  #
+  # One job, not check → deploy: the second job checked out and installed
+  # everything again for a 20-second build, and waited for a runner to do it.
+  # The build now runs BEFORE the tests, so a broken build fails in seconds
+  # instead of after the suite; the tests still gate the publish.
+  build-test-deploy:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - name: Type check
-        run: npm run lint
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-      - name: End-to-end tests
-        run: npm test
-      - name: Upload Playwright report
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: playwright-report
-          retention-days: 7
-
-  deploy:
-    needs: check
-    runs-on: ubuntu-latest
+    timeout-minutes: 25
     environment:
       name: production
       url: https://svrz-rc.openvolley.app
@@ -52,6 +34,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Type check
+        run: npm run lint
       - name: Build (production)
         run: npm run build
         env:
@@ -61,6 +45,30 @@ jobs:
           # that is what keeps the session cookie first-party (see
           # infrastructure.md, "Session cookies").
           VITE_API_BASE_URL: https://svrz-rc-api.openvolley.app
+      # The browser binary is ~150 MB and only changes with the Playwright
+      # version — keyed on the lockfile. On a hit only the OS libraries are
+      # installed (apt, a few seconds); on a miss both.
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Install Playwright system deps
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      - name: End-to-end tests
+        run: npm test
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
       - name: Publish to Cloudflare Pages
         # Wrangler is pinned in package-lock, so the deploy tool cannot change
         # under us between runs. Project + output dir come from wrangler.jsonc.

@@ -14,7 +14,11 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  // Three of the runner's four cores. It was ONE, the template's default, and
+  // the suite took 12–17 minutes per push — every test is stubbed at the
+  // network boundary and runs fully parallel here at home, so nothing about
+  // it needs a single lane. The fourth core is left for the Vite server.
+  workers: process.env.CI ? 3 : undefined,
   reporter: 'html',
   use: {
     baseURL: BASE_URL,

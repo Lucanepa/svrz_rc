@@ -1,5 +1,6 @@
 import type { EligibleGame, FeedbackFormData, RcMandateMap, RcOverviewEntry, rcCoachSummary } from '../types';
 import type { CoacheeTargetMap, NiveauMatrix } from './niveauTargets';
+import type { StatFilters, StatisticsResponse } from './statistics';
 import { normalizeSurveyConfig, type SurveyConfig } from './survey';
 import { draftKey, type DraftRecord } from './formDraft';
 import { sanitizeRich } from './richText';
@@ -640,6 +641,20 @@ export async function setGameStarred(gameId: string, starred: boolean): Promise<
 // from the season before was counted, and listed, as this season's unfinished
 // observation. The server now falls back to the default season on its own;
 // the signatures make sure no caller relies on that.
+// Admin → Statistik: the season's observations aggregated on the server. Only
+// counts and sums come back — see src/lib/statistics.ts for the shape.
+export async function loadStatistics(season: number, filters: StatFilters, compare: boolean): Promise<StatisticsResponse> {
+  const q = new URLSearchParams({ season: String(season) });
+  if (filters.rc) q.set('rc', filters.rc);
+  if (filters.group) q.set('group', filters.group);
+  if (filters.level) q.set('level', filters.level);
+  if (filters.role) q.set('role', filters.role);
+  if (compare) q.set('compare', '1');
+  const response = await fetch(apiUrl(`/api/admin/statistics?${q.toString()}`), { credentials: 'include' });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json() as Promise<StatisticsResponse>;
+}
+
 export async function loadRcOverview(season: number): Promise<RcOverviewEntry[]> {
   if (isDemoMode()) return demo.loadRcOverview();
   const response = await fetch(apiUrl(`/api/rc-overview?season=${season}`), { credentials: 'include' });

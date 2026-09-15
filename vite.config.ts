@@ -55,6 +55,11 @@ export default defineConfig(() => {
     // GitHub Pages served this as a project page; on its own domain the app
     // owns the root, and dev/prod no longer disagree about where assets live.
     base: '/',
+    // pptxgenjs is only ever reached through a dynamic import (the Statistik
+    // export). Left to discovery, the dev server meets it on the first click,
+    // re-optimises its dependencies and RELOADS the page — which throws the
+    // export away, in a Playwright run every time. Pre-bundled instead.
+    optimizeDeps: { include: ['pptxgenjs'] },
     plugins: [
       pdfjsStandardFonts(),
       react(), 

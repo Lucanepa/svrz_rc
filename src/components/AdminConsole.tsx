@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle, Coins } from 'lucide-react';
+import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle, Coins, BarChart3 } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import { adminTabFromPath, adminLogModeFromPath } from '../lib/routes';
@@ -45,6 +45,7 @@ import { bySurname, surnameFirstLabel, foldName, coacheeIndex } from '../lib/coa
 import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame, type rcCoachSummary, type rcCoachSummaryGame } from '../types';
 import LevelText from './LevelText';
+import StatisticsAdmin from './StatisticsAdmin';
 import { CoacheeChip, GroupChip } from './CoacheeChips';
 import { GameList, GameRow, MetaChip, SectionHead, type RowTone } from './GameRow';
 import { Skeleton, SkeletonRows } from './Skeleton';
@@ -216,7 +217,7 @@ const STR = {
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
     mgDeleteOk: (n: string) => `Spiel „${n}" gelöscht.`,
     shortcutToggle: 'Admin-Link in der Toolbar zeigen (nur Anzeige — gibt keine Rechte)',
-    games: 'Spiele', overview: 'Übersicht',
+    games: 'Spiele', overview: 'Übersicht', stats: 'Statistik',
     niveau: 'Niveau',
     nvHint: 'Auf welche Spiele ein SR dieser Stufe im Fokus steht — pro Kategorie und Rolle. Angeklickt heisst: das Spiel erscheint in der Spielliste des Coachees. Nichts angeklickt heisst: in dieser Kategorie und Rolle keine Fokus-Spiele („x" in der offiziellen Tabelle).',
     nvOfficial: 'Offizielle Tabelle, Stand 9. April 2026',
@@ -441,7 +442,7 @@ const STR = {
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
     mgDeleteOk: (n: string) => `Game "${n}" deleted.`,
     shortcutToggle: 'Show the admin link in their toolbar (display only — grants nothing)',
-    games: 'Games', overview: 'Overview',
+    games: 'Games', overview: 'Overview', stats: 'Statistics',
     niveau: 'Levels',
     nvHint: 'Which games a referee at this level is focused on — per category and role. Lit means the game shows up in that coachee\'s game list. Nothing lit means no focused games in this category and role (an "x" in the official table).',
     nvOfficial: 'Official table, as of 9 April 2026',
@@ -683,7 +684,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 // Console tabs live in the URL as /admin/<tab>, so each one is linkable and
 // the Back button steps between them. The Protokoll tab's own two views are
 // one level down: /admin/logs and /admin/logs/history.
-const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'niveau', 'emails', 'form', 'survey', 'notes', 'archive', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'stats', 'niveau', 'emails', 'form', 'survey', 'notes', 'archive', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 const adminTabFromUrl = (): AdminTab => adminTabFromPath(window.location.pathname, ADMIN_TABS) as AdminTab;
 
@@ -959,6 +960,7 @@ export default function AdminConsole() {
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
     { id: 'games', label: t.games, icon: <CalendarDays size={15} /> },
     { id: 'overview', label: t.overview, icon: <Target size={15} /> },
+    { id: 'stats', label: t.stats, icon: <BarChart3 size={15} /> },
     { id: 'niveau', label: t.niveau, icon: <Gauge size={15} /> },
     { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
     { id: 'form', label: t.form, icon: <ClipboardList size={15} /> },
@@ -1047,6 +1049,7 @@ export default function AdminConsole() {
           <PaidCapCard t={t} paidCap={paidCap} onPaidCap={savePaidCap} loading={settingsLoading} />
           <ExpenseRatesCard t={t} expenseRates={expenseRates} onExpenseRates={saveExpenseRates} loading={settingsLoading} />
         </div>
+        <div hidden={tab !== 'stats'}><StatisticsAdmin lang={lang} defaultSeason={defaultSeason} settingsLoading={settingsLoading} active={tab === 'stats'} /></div>
         <div hidden={tab !== 'niveau'}><NiveauAdmin t={t} lang={lang} table={niveauTable} onTable={saveNiveau} loading={settingsLoading} /></div>
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}

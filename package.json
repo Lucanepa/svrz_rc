@@ -35,6 +35,7 @@
     "pdfjs-dist": "^6.3.289",
     "perfect-freehand": "^1.2.3",
     "pocketbase": "^0.26.8",
+    "pptxgenjs": "^4.0.1",
     "qrcode-generator": "^2.0.4",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.4",

@@ -784,6 +784,7 @@ protection is disjoint windows and the table below.
 | **every 5 min** | Einsatzliste push, for a game ~60 min out | wiedisync | club — ⚠ takes NO claim |
 | **daily 23:00 / 00:00 UTC** | games sync (`0 1 * * *` Europe/Zurich) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
 | on demand | game push (booking confirmed) | wiedisync | club |
+| on demand | **team-roster assign** (`POST /kscw/admin/vm-team-assign`, `/admin/vm-teams`) — ~1 min, in-process | wiedisync | club — claims `vm_team_assign` |
 | on demand | manual import, contact sync, auth check | svrz_rc | RefereeDelegate / club |
 
 **Why 01:00 Zürich (fixed 2026-09-10).** The hour has to clear two unrelated

@@ -667,3 +667,195 @@ test.describe('A signature is work that cannot be retyped', () => {
     expect(record.tipsAndTricks).toBe('Signals: hold them, the line judge is watching');
   });
 });
+
+/**
+ * The send and the row it leaves behind.
+ *
+ * A confirmed send blanks the record to a 'filed' tombstone, but the write was
+ * fired and forgotten and the on-screen list was never re-read — so Zurück
+ * showed the Home banner still offering "Weiterarbeiten" on the report the
+ * referee was already reading. Tapping it opened the form, locked, and only the
+ * store read behind THAT tap made the row go away. The log replay of 15.09.2026
+ * showed exactly that sequence, twice in one evening.
+ */
+
+const sendButton = (page: Page) =>
+  page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ });
+
+const resumeButton = (page: Page) =>
+  page.getByRole('button', { name: /^(Resume|Weiterarbeiten)$/ });
+
+/**
+ * The form once the games list has caught up with the send: the role is closed
+ * on the server's say-so, not merely locked in memory. Waited on instead of the
+ * "saved and sent" notice, which `refreshGames` blanks the moment the refetch
+ * begins — against a stubbed server that is before anyone can read it.
+ */
+const closedRoleBox = (page: Page) =>
+  page.getByText(/This game has already been observed for this role|Dieses Spiel wurde für diese Rolle bereits beobachtet/);
+
+/** The list screen, whichever tab: the one heading the form never shows. */
+const listHeading = (page: Page) =>
+  page.getByRole('heading', { name: /^(Referee Coaching Feedback|SR-Coaching Feedback)$/ });
+
+/**
+ * Everything the send path insists on — every criterion, the results strip, a
+ * legal 3:0 and both signatures. Condensed from `fillFeedbackForm` in
+ * e2e/feedback-email.spec.ts, which stops at the confirmation dialog; this file
+ * has to go through it.
+ */
+async function fillWholeForm(page: Page): Promise<void> {
+  const cells = page.locator('td.rating-cell');
+  if (await cells.count() > 0 && await cells.first().isVisible()) {
+    const rows = page.locator('tr', { has: page.locator('td.rating-cell') });
+    for (let r = 0; r < await rows.count(); r++) {
+      const row = rows.nth(r).locator('td.rating-cell');
+      // A criterion marked N/A collapses its five cells into one, which would
+      // shift every later row's C — so row by row, and only a full row.
+      if (await row.count() === 5) await row.nth(2).click();
+    }
+  } else {
+    const cs = page.locator('button', { hasText: /^C$/ });
+    for (let i = 0; i < await cs.count(); i++) await cs.nth(i).click();
+  }
+  const group = (heading: RegExp) => page.getByRole('heading', { name: heading }).locator('xpath=..');
+  await group(/Match Level|Spielniveau/).getByRole('button', { name: /^(Normal)$/ }).click();
+  await group(/^(Motivation)$/).getByRole('button', { name: '✓' }).click();
+  await group(/Outlook|Ausblick/).getByRole('button', { name: '✓' }).click();
+  await group(/Further visit|Weiterer Besuch/).getByRole('button', { name: 'N', exact: true }).click();
+  await group(/Referee Goal|SR-Ziel/).locator('input').fill('2L');
+  for (const set of [1, 2, 3]) {
+    await page.getByLabel(new RegExp(`(Set|Satz) ${set} (home|Heim)`)).fill('25');
+    await page.getByLabel(new RegExp(`(Set|Satz) ${set} (away|Gast)`)).fill('20');
+  }
+  for (const index of [0, 1]) {
+    await page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).nth(index).click();
+    await signOpenPad(page);
+  }
+}
+
+test.describe('A report that has just gone leaves the banner', () => {
+  test('the send itself takes the row off the list, not the next tap', async ({ page }) => {
+    await stubSignedInApp(page);
+    // The server's side of a send: the report is accepted, and from then on
+    // the games list carries the role as closed. Switched inside the submit
+    // handler rather than re-routed after the click, so the refetch
+    // refreshAfterFeedback fires cannot race the registration and read the
+    // open role by accident.
+    let sent = false;
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({
+      json: [sent ? { ...GAME, feedbackClosedRoles: ['1. SR'] } : GAME],
+    }));
+    await page.route('**/api/feedback/submit', async (r) => {
+      sent = true;
+      await r.fulfill({ status: 201, json: { id: 'fb1', emailSent: true } });
+    });
+    // The park on every signature, and the unpark the send issues.
+    await page.route(/\/api\/drafts\/parked\//, (r) => r.fulfill({
+      json: r.request().method() === 'DELETE' ? { removed: 1 } : { parked: 1 },
+    }));
+    await page.goto('/');
+    await openFeedbackForm(page);
+
+    await fillWholeForm(page);
+    // The record this send has to retire is on disk — otherwise there is no
+    // row for the banner to keep, and the test proves nothing.
+    await expect(savedStrip(page)).toBeVisible();
+    expect((await storedRole(page, '1. SR')).status).toBe('editing');
+
+    await sendButton(page).click();
+    await page.getByRole('dialog').getByRole('button', { name: /^(Save|Speichern)$/ }).click();
+    await expect(closedRoleBox(page)).toBeVisible();
+    // The line that says the mail went out — and would carry a warning about
+    // the copy — has to survive the refetch the send kicks off. The loaders
+    // blank the notice as they start, so set before them it was erased in the
+    // same render and no coach ever read it.
+    await expect(page.getByText(/Feedback (saved and email sent|gespeichert und E-Mail gesendet)\./)).toBeVisible();
+
+    await page.getByRole('button', { name: /^(Back|Zurück)$/ }).click();
+    await expect(listHeading(page)).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toHaveCount(0);
+
+    // No row at all — not "Weiterarbeiten", and not the closed-role wording
+    // either, which is what the same stale record renders as once the games
+    // list has caught up. The only draft on this device has gone.
+    await expect(draftsBanner(page)).toHaveCount(0);
+    await expect(page.locator('p', { hasText: DRAFT_LABEL })).toHaveCount(0);
+    await expect(resumeButton(page)).toHaveCount(0);
+    await expect(draftPill(page)).toHaveCount(0);
+
+    // Gone from the screen because it went on disk: the tombstone is what the
+    // next reload reads, and it must remember the send without the assessment.
+    const filed = await storedRole(page, '1. SR');
+    expect(filed.status).toBe('filed');
+    expect(filed.ratings).toEqual({});
+    expect(filed.signature).toBe('');
+    expect(filed.rcSignature).toBe('');
+  });
+
+  test('a send held in the outbox is queued on the banner, not offered as unfinished', async ({ page }) => {
+    await stubSignedInApp(page);
+    // No server behind the submit: the send a coach makes in a gym with no
+    // signal, which goes to the outbox. The park on every signature still
+    // answers, so the form reaches the send.
+    await page.route('**/api/feedback/submit', (r) => r.abort('failed'));
+    await page.route(/\/api\/drafts\/parked\//, (r) => r.fulfill({
+      json: r.request().method() === 'DELETE' ? { removed: 1 } : { parked: 1 },
+    }));
+    await page.goto('/');
+    await openFeedbackForm(page);
+
+    await fillWholeForm(page);
+    await expect(savedStrip(page)).toBeVisible();
+    expect((await storedRole(page, '1. SR')).status).toBe('editing');
+
+    await sendButton(page).click();
+    await page.getByRole('dialog').getByRole('button', { name: /^(Save|Speichern)$/ }).click();
+    // The strip under the locked form takes the store's word for the role —
+    // 'queued' — which it can only have once the list was re-read behind the
+    // send; fired and forgotten, it read "Feedback submitted".
+    const queued = page.getByText(/Being sent — waiting in the queue|Wird gesendet — wartet in der Warteschlange/);
+    await expect(queued.first()).toBeVisible();
+
+    await page.getByRole('button', { name: /^(Back|Zurück)$/ }).click();
+    await expect(listHeading(page)).toBeVisible();
+    await page.getByRole('button', { name: /^(Home|Start)$/ }).click();
+
+    // The row stays — the report is still on this device — but as work in
+    // flight: no "Weiterarbeiten", and not the roles-and-date line of a draft.
+    await expect(draftsBanner(page)).toBeVisible();
+    await expect(queued.first()).toBeVisible();
+    await expect(resumeButton(page)).toHaveCount(0);
+    expect((await storedRole(page, '1. SR')).status).toBe('queued');
+  });
+
+  test('Resume asks the store first and drops a row whose work went', async ({ page }) => {
+    await stubSignedInApp(page);
+    await seedDraft(page, RC.id);
+    await page.goto('/');
+    await expect(draftsBanner(page)).toBeVisible({ timeout: 15000 });
+    await expect(resumeButton(page)).toBeVisible();
+
+    // The store moves on under a render that has not: the tombstone lands
+    // without a reload, so the row on screen still says 'editing'. This is the
+    // one-send lag the banner is built on, recreated without the send.
+    await fileRoleInStore(page, GAME.id, '1. SR');
+    expect((await storedRole(page, '1. SR')).status).toBe('filed');
+
+    await resumeButton(page).click();
+
+    // The store's answer wins over the row's: no form, and the row itself is
+    // withdrawn rather than left for the coach to tap again.
+    await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toHaveCount(0);
+    await expect(page).toHaveURL(/\/home$/);
+    await expect(draftsBanner(page)).toHaveCount(0);
+    await expect(page.locator('p', { hasText: DRAFT_LABEL })).toHaveCount(0);
+    await expect(resumeButton(page)).toHaveCount(0);
+    await expect(restoredToast(page)).toHaveCount(0);
+
+    // And the tap did not write the stale row back over the tombstone.
+    const filed = await storedRole(page, '1. SR');
+    expect(filed.status).toBe('filed');
+    expect(filed.ratings).toEqual({});
+  });
+});

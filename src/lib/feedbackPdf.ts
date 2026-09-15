@@ -18,7 +18,7 @@ import qrcode from 'qrcode-generator';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
 import { VERSION_STAMP } from './buildInfo';
 import { INTER_BOLD_B64, INTER_BOLD_ITALIC_B64, INTER_ITALIC_B64, INTER_REGULAR_B64 } from './pdfFonts';
-import { toRuns, type RichRun } from './richText';
+import { richToPlain, toRuns, type RichRun } from './richText';
 import {
   FeedbackFormData,
   LEGEND,
@@ -748,6 +748,43 @@ function drawProseLine(sheet: Sheet, line: string, x: number, y: number, width: 
   }
 }
 
+type RemarkBlockName = 'remarks' | 'highlights' | 'improvements' | 'goals';
+
+/**
+ * Which of the four remark fields the sheet draws, in form order, and whether
+ * each carries its own small label.
+ *
+ * A heading over an empty band is an instruction, and this page is often
+ * printed to be written on by hand — three of them turn an open page into a
+ * form to be complied with. So on the filled sheet only fields with text are
+ * drawn, and a page with nothing written keeps one open area (the caller gives
+ * it the height all four bands would have had). Text is judged on the plain
+ * reading of the rich markup the editor stores, not on the raw value: a bolded
+ * space or a lone newline is an empty field, or a coach who filled only the
+ * goals still got an empty Bemerkungen band with a rule under it.
+ *
+ * The remarks are titled by the box heading itself and carry no label of their
+ * own; every other field is labelled whether or not the remarks were written —
+ * keyed on position, the first drawn block lost its label the moment the
+ * remarks were skipped, and the highlights then read as the remarks.
+ *
+ * The blank form draws all four regardless: there the empty band is the point.
+ */
+export function remarkBlocksToDraw(
+  results: FeedbackFormData['results'],
+  blank: boolean,
+): { name: RemarkBlockName; labelled: boolean; value: string }[] {
+  const all: { name: RemarkBlockName; labelled: boolean; value: string }[] = [
+    { name: 'remarks', labelled: false, value: results.bemerkungen || '' },
+    { name: 'highlights', labelled: true, value: results.highlights || '' },
+    { name: 'improvements', labelled: true, value: results.improvements || '' },
+    { name: 'goals', labelled: true, value: results.goals || '' },
+  ];
+  if (blank) return all;
+  const written = all.filter((block) => richToPlain(block.value).trim() !== '');
+  return written.length ? written : [{ name: 'remarks', labelled: false, value: '' }];
+}
+
 /**
  * The remarks block, which is the one part of the form that can be any length.
  * It may span pages, so the enclosing rule is drawn per page segment once the
@@ -784,21 +821,24 @@ function drawRemarks(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
   // the first segment's origin is known.
   sheet.y += 24;
 
-  const allBlocks: { label: string; value: string; name: string; minH: number }[] = [
-    { label: t.remarks, value: data.results.bemerkungen, name: 'remarks', minH: 34 },
-    { label: t.highlights, value: data.results.highlights || '', name: 'highlights', minH: 22 },
-    { label: t.improvements, value: data.results.improvements || '', name: 'improvements', minH: 22 },
-    { label: t.goalsNext, value: data.results.goals || '', name: 'goals', minH: 22 },
-  ];
-  // A heading over an empty band is an instruction, and this page is often
-  // printed to be written on by hand — three of them turn an open page into a
-  // form to be complied with. So a sub-heading only appears where there is text
-  // under it, and a page with nothing written keeps one open area of the height
-  // all four bands would have had.
-  const written = allBlocks.filter((b, i) => i === 0 || (!sheet.blank && (b.value || '').trim() !== ''));
-  const blocks = written.length === 1
-    ? [{ ...written[0], minH: allBlocks.reduce((total, b) => total + b.minH, 0) }]
-    : written;
+  // The label and the least height each band keeps, so the printed form stays
+  // usable by hand where the coach wrote little.
+  const bands: Record<RemarkBlockName, { label: string; minH: number }> = {
+    remarks: { label: t.remarks, minH: 34 },
+    highlights: { label: t.highlights, minH: 22 },
+    improvements: { label: t.improvements, minH: 22 },
+    goals: { label: t.goalsNext, minH: 22 },
+  };
+  // Which fields appear, and which carry a label, is decided by
+  // remarkBlocksToDraw. A lone block — nothing written, or only the remarks —
+  // is given the open area all four bands would have had.
+  const drawn = remarkBlocksToDraw(data.results, sheet.blank);
+  const wholeH = Object.values(bands).reduce((total, band) => total + band.minH, 0);
+  const blocks = drawn.map((block) => ({
+    ...block,
+    label: bands[block.name].label,
+    minH: drawn.length === 1 ? wholeH : bands[block.name].minH,
+  }));
 
   for (const [index, block] of blocks.entries()) {
     sheet.font('normal', 8, INK);
@@ -816,10 +856,10 @@ function drawRemarks(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
 
     // Never strand a heading at the foot of a page: keep it with its first two
     // lines, or move the whole thing down.
-    const labelH = index > 0 ? 10 : 0;
+    const labelH = block.labelled ? 10 : 0;
     breakIfNeeded(labelH + Math.min(lines.length || 1, 2) * 10.5 + 6);
 
-    if (index > 0) {
+    if (block.labelled) {
       sheet.font('bold', 5.6, FAINT);
       doc.text(block.label.toUpperCase(), MARGIN + 10, sheet.y + 4, { baseline: 'middle', charSpace: 0.2 });
       sheet.y += labelH;
@@ -852,8 +892,14 @@ function drawRemarks(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
     if (sheet.y - blockTop < block.minH) sheet.y = blockTop + block.minH;
     sheet.field({ name: block.name, x: MARGIN + 8, y: blockTop - 2, w: CONTENT_W - 16, h: sheet.y - blockTop, multiline: true });
 
-    sheet.stroke(HAIR, 0.5);
-    doc.line(MARGIN + 10, sheet.y + 1, MARGIN + CONTENT_W - 10, sheet.y + 1);
+    // The hairline separates two bands; the box itself closes the last one, and
+    // a rule under it was a stray line beneath the coach's closing sentence. The
+    // blank form keeps it under every band, where it is the writable area's
+    // lower edge.
+    if (sheet.blank || index < blocks.length - 1) {
+      sheet.stroke(HAIR, 0.5);
+      doc.line(MARGIN + 10, sheet.y + 1, MARGIN + CONTENT_W - 10, sheet.y + 1);
+    }
     sheet.y += 8;
   }
 

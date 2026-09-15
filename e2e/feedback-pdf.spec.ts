@@ -141,6 +141,7 @@ test.describe('Feedback PDF builder', () => {
         empty: pdf.buildFeedbackPdf(base).getNumberOfPages(),
         typical: pdf.buildFeedbackPdf({ ...base, results: { ...base.results, bemerkungen: long.slice(0, 900) } }).getNumberOfPages(),
         verbose: pdf.buildFeedbackPdf({ ...base, results: { ...base.results, bemerkungen: long, highlights: long.slice(0, 1500) } }).getNumberOfPages(),
+        goalsOnly: pdf.buildFeedbackPdf({ ...base, results: { ...base.results, goals: 'Fokus auf konstantes Timing.' } }).getNumberOfPages(),
       };
     });
 
@@ -150,8 +151,51 @@ test.describe('Feedback PDF builder', () => {
     // to 3.
     expect(pages.empty).toBe(2);
     expect(pages.typical).toBe(2);
+    // A coach who filled only the goals gets that one labelled block on page
+    // 2, with no empty Bemerkungen band pushed in above it.
+    expect(pages.goalsOnly).toBe(2);
     // A coach who writes at length gets more sheets rather than clipped text.
     expect(pages.verbose).toBeGreaterThanOrEqual(3);
+  });
+
+  test('draws only the remark fields the coach wrote', async ({ page }) => {
+    await page.goto('/');
+    const picked = await page.evaluate(async () => {
+      const load = (path: string): Promise<Record<string, never>> => import(path);
+      const pdf = await load('/src/lib/feedbackPdf.ts') as unknown as typeof import('../src/lib/feedbackPdf');
+      const empty = {
+        motivation: 'up' as const, einstufung: 'check' as const,
+        bemerkungen: '', highlights: '', improvements: '', goals: '',
+        srZiel: '2L', spielniveau: 'normal' as const, secondBesuch: 'Y' as const,
+      };
+      const pick = (results: Partial<typeof empty>, blank = false) =>
+        pdf.remarkBlocksToDraw({ ...empty, ...results }, blank).map((b) => `${b.name}${b.labelled ? '*' : ''}`);
+      return {
+        remarksOnly: pick({ bemerkungen: 'Souverän.' }),
+        goalsOnly: pick({ goals: 'Timing.' }),
+        remarksAndGoals: pick({ bemerkungen: 'Souverän.', goals: 'Timing.' }),
+        // What the rich editor leaves behind when a coach formats a space,
+        // hits return, or types blanks: markup and whitespace, no text.
+        richButEmpty: pick({ bemerkungen: '<b> </b>', highlights: '\n', improvements: '  ', goals: '&nbsp;' }),
+        richButEmptyWithGoals: pick({ bemerkungen: '<b> </b>', goals: '<i>Timing.</i>' }),
+        nothing: pick({}),
+        blank: pick({ bemerkungen: '<b> </b>' }, true),
+      };
+    });
+
+    // The remarks are titled by the box heading (no label of their own, hence
+    // no asterisk); every other field carries its label whether or not the
+    // remarks were written.
+    expect(picked.remarksOnly).toEqual(['remarks']);
+    expect(picked.goalsOnly).toEqual(['goals*']);
+    expect(picked.remarksAndGoals).toEqual(['remarks', 'goals*']);
+    // Emptiness is judged on the plain text behind the markup, so none of
+    // these count as written and the page keeps its one open area.
+    expect(picked.richButEmpty).toEqual(['remarks']);
+    expect(picked.richButEmptyWithGoals).toEqual(['goals*']);
+    expect(picked.nothing).toEqual(['remarks']);
+    // The blank form is the writable one: all four bands, whatever the values.
+    expect(picked.blank).toEqual(['remarks', 'highlights*', 'improvements*', 'goals*']);
   });
 
   test('shows the match date as dd.mm.yyyy HH:MM', async ({ page }) => {

@@ -9103,6 +9103,10 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     }
 
     // Phase 2 — Save (existing logic)
+    // Wall time per phase, reported on the way out: this is the slowest
+    // request in the app, and "Abschliessen took six seconds" is only
+    // answerable if the log says which part took them.
+    const writeStarted = Date.now();
     const submittedAt = new Date().toISOString();
     const refereeCoachPersonId = rcAuth
       ? rcAuth.rcId
@@ -9230,7 +9234,10 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       throw writeError;
     }
 
+    const writeMs = Date.now() - writeStarted;
+
     // Phase 3 — Email (best-effort)
+    const emailStarted = Date.now();
     let emailSent = false;
     let emailError: string | null = null;
     let emailWarning: string | null = null;
@@ -9278,7 +9285,9 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         // That is what the copies have looked like all along, and what a report
         // filed against the register looks like — there is no token for
         // somebody who is not a coachee.
-        tpl: linkForThisCopy ? feedbackTpl : { ...feedbackTpl, outro: '' },
+        // Both languages of it: blanking only `outro` left the copy ending on
+        // the English half of the lead-in, promising a button it does not have.
+        tpl: linkForThisCopy ? feedbackTpl : { ...feedbackTpl, outro: '', outroEn: '' },
         vars: emailVars({
           refereeName,
           rcName: asText(formData.meta?.rc),
@@ -9374,19 +9383,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         // burns the referee's token, the chair reads her answer as his, and his
         // genuine attempt then gets a 409. Merely opening the link also reveals
         // whether he has answered yet.
-        await sendMailResilient({
-          from: MAIL_FROM,
-          replyTo: rcEmail || undefined,
-          to: mailTo,
-          subject: mailSubject,
-          html: built.html,
-          text: built.text,
-          attachments,
-        });
-        // The referee has their report; a failure below must not report
-        // otherwise.
-        emailSent = true;
-
+        //
         // The same mailbox does not need it twice. A coach who is also the
         // referee on the game — which is every test game somebody makes for
         // themselves — was sent the report and then the copy of it, and the
@@ -9394,16 +9391,80 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         // withheld by dropping it: the address already has the fuller message.
         const copyRecipients = [...(mailCc ?? []), ...(mailBcc ?? [])]
           .filter((address) => !sameMailbox(address, mailTo));
-        if (copyRecipients.length > 0) {
-          await sendMailResilient({
+        // Sent side by side, not one after the other. Each message carries the
+        // whole report, and the coach sits in front of a spinner for the entire
+        // exchange — two sequential uploads of it were most of a six-second
+        // "Abschliessen". The pool has three connections; this uses two.
+        const mailStarted = Date.now();
+        const [mainOutcome, copyOutcome] = await Promise.allSettled([
+          sendMailResilient({
             from: MAIL_FROM,
             replyTo: rcEmail || undefined,
-            to: copyRecipients,
+            to: mailTo,
             subject: mailSubject,
-            html: builtForCopies.html,
-            text: builtForCopies.text,
+            html: built.html,
+            text: built.text,
             attachments,
-          });
+          }),
+          copyRecipients.length > 0
+            ? sendMailResilient({
+              from: MAIL_FROM,
+              replyTo: rcEmail || undefined,
+              to: copyRecipients,
+              subject: mailSubject,
+              html: builtForCopies.html,
+              text: builtForCopies.text,
+              attachments,
+            })
+            : Promise.resolve(null),
+        ]);
+        if (mainOutcome.status === 'rejected') {
+          // The two left together, so the copy can have been accepted while
+          // the referee's was refused — a bounced address, a greeting that
+          // timed out on the retry too. The rethrow must not swallow that:
+          // the RC and the commission are holding the report, and a coach
+          // told only "nicht gesendet" forwards it to them by hand, or has
+          // the record deleted and re-files, which mails them twice. Before
+          // the sends were paired the copy never left after a failure, so
+          // this state could not arise.
+          if (copyOutcome.status === 'fulfilled' && copyRecipients.length > 0) {
+            log.warn('feedback.mail', 'referee send failed — the copy to the RC / commission did go out', { feedbackId: created.id, copies: copyRecipients.length });
+            const delivered = 'Kopie an RC und Kommission wurde gesendet / copy to RC and commission was sent';
+            emailWarning = emailWarning ? `${emailWarning}; ${delivered}` : delivered;
+          }
+          throw mainOutcome.reason;
+        }
+        // The referee has their report; a failure of the copy must not report
+        // otherwise.
+        emailSent = true;
+        // The one positive line this request writes about its mail. Until now
+        // only a FAILURE left a trace, so "did the report go out?" could only
+        // be answered by the absence of an error. Recipient counts, never
+        // addresses. Mailbox ids come back from the provider and identify the
+        // message for a delivery query.
+        const mainInfo = mainOutcome.value as { messageId?: string; accepted?: unknown[] };
+        log.info('feedback.mail', `report mailed to the referee${copyRecipients.length > 0 ? ` + ${copyRecipients.length} cop${copyRecipients.length === 1 ? 'y' : 'ies'}` : ''} (${Date.now() - mailStarted} ms)`, {
+          feedbackId: created.id,
+          game: asText(game.match_no) || game.id,
+          role: String(role),
+          ms: Date.now() - mailStarted,
+          attachmentBytes: pdfBuffer.length,
+          messageId: mainInfo?.messageId || '',
+          accepted: Array.isArray(mainInfo?.accepted) ? mainInfo.accepted.length : undefined,
+          copies: copyRecipients.length,
+          copyOk: copyOutcome.status === 'fulfilled',
+          testMode: isTestMode,
+        });
+        if (copyOutcome.status === 'rejected') {
+          // The referee has the report; the RC and the commission do not. Worth
+          // an alert, not a failure of the submit.
+          const reason = copyOutcome.reason instanceof Error ? copyOutcome.reason.message : String(copyOutcome.reason);
+          log.error('feedback.mail', 'copy to the RC / commission failed', { feedbackId: created.id, copies: copyRecipients.length, error: reason });
+          // Both languages, like the mails: the client shows this verbatim
+          // inside its localised notice, and the submit never learns which
+          // language the coach worked in.
+          const undelivered = 'Kopie an RC und Kommission nicht gesendet / copy to RC and commission not sent';
+          emailWarning = emailWarning ? `${emailWarning}; ${undelivered}` : undelivered;
         }
       }
     } catch (emailErr) {
@@ -9411,8 +9472,11 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       console.error('[feedback-email] Failed to send:', emailError);
     }
 
+    const emailMs = Date.now() - emailStarted;
+
     // Phase 4 — Closure. closedRoles was read inside the game lock, so the
     // other role's closure cannot have landed in between.
+    const closeStarted = Date.now();
     const gamePatch: Record<string, unknown> = {};
     if (formData.results?.secondBesuch !== 'Y') {
       gamePatch.feedback_closed_roles = [...closedRoles, String(role)];
@@ -9454,6 +9518,14 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     }
 
     // Phase 5 — Response
+    log.info('feedback.submit', `filed ${asText(game.match_no) || game.id} · ${String(role)}${emailSent ? '' : ' (no mail)'}`, {
+      feedbackId: created.id,
+      observationId,
+      role: String(role),
+      emailSent,
+      closureFailed,
+      ms: { write: writeMs, mail: emailMs, close: Date.now() - closeStarted, total: Date.now() - writeStarted },
+    });
     res.status(201).json({
       id: created.id,
       emailSent,

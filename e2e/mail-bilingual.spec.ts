@@ -18,6 +18,10 @@ import { fileURLToPath } from 'node:url';
  * none of which exist here. What it can prove is the thing that actually
  * regressed: a new `sendMailResilient` call that never reaches for either
  * bilingual helper, which is what German-only looks like from the outside.
+ *
+ * The rule cuts both ways, and the last test guards the other edge: a
+ * paragraph a mail drops on purpose has to drop in both languages, or the
+ * reader is left with the English half of a sentence the German never said.
  */
 
 // The specs run as ES modules, so `__dirname` is not defined — and a path
@@ -31,6 +35,14 @@ function fnBody(name: string): string {
   const start = SRC.indexOf(`async function ${name}(`);
   expect(start, `${name} still exists`).toBeGreaterThan(-1);
   const end = SRC.indexOf('\n}\n', start);
+  return SRC.slice(start, end === -1 ? undefined : end);
+}
+
+/** Source text of the handler registered for `path`, to its top-level `});`. */
+function routeBody(path: string): string {
+  const start = SRC.indexOf(`app.post('${path}'`);
+  expect(start, `${path} still exists`).toBeGreaterThan(-1);
+  const end = SRC.indexOf('\n});\n', start);
   return SRC.slice(start, end === -1 ? undefined : end);
 }
 
@@ -86,4 +98,35 @@ test('bilingualText separates the halves with a rule, not a blank line', () => {
 test('the error alert is English by design', () => {
   const alerts = server('erroralerts.ts');
   expect(alerts).not.toMatch(/bilingualBlockHtml|bilingualText/);
+});
+
+/**
+ * The mirror of the rule: a paragraph dropped on purpose drops BOTH halves.
+ *
+ * The feedback template's outro is the survey's lead-in ("Wir freuen uns über
+ * dein Feedback zum Coaching-Erlebnis:"), and the copy to the RC and the
+ * commission has no survey button under it — the token is the referee's and
+ * must not travel to anyone else. The copy blanked `outro` alone, so it ended
+ * on the muted English half, "We would be glad to hear how you found the
+ * coaching:", a colon promising a button that was not there. That is the mail
+ * the RC found in his own inbox on 15.09.2026.
+ *
+ * Read from the source: the demo at #/demo composes ONE German mail with the
+ * lead-in kept (`buildDemoEmail` in src/lib/demo.ts) and never the copy, so
+ * there is no rendered message anywhere in this suite to read it from.
+ */
+test('the RC copy of the feedback mail drops the survey lead-in in both languages', () => {
+  const submit = routeBody('/api/feedback/submit');
+  // The copy is the render without a link; the referee's keeps the token.
+  expect(submit).toContain('const built = renderFeedbackMail(surveyUrl);');
+  expect(submit).toContain("const builtForCopies = surveyUrl ? renderFeedbackMail('') : built;");
+  // The exact line, both fields — `outro: ''` on its own is the bug.
+  expect(submit).toContain("tpl: linkForThisCopy ? feedbackTpl : { ...feedbackTpl, outro: '', outroEn: '' },");
+
+  // And those two fields are what the renderer prints, in both parts of the
+  // mail: a template that blanks both leaves no lead-in in either language.
+  const renderer = SRC.slice(SRC.indexOf('function buildTemplatedEmail('), SRC.indexOf('function emailCodeBox('));
+  expect(renderer).toContain("const outroEn = r(opts.tpl.outroEn ?? '');");
+  expect(renderer).toContain('bilingualBlockHtml(outro, outroEn)');
+  expect(renderer).toContain('bilingualText(outro, outroEn)');
 });

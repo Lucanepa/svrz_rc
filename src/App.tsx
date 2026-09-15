@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy } from 'react';
-import { Maximize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle } from 'lucide-react';
+import { Maximize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 // About a megabyte of renderer, fetched the first time a coach opens a
 // document and never for anyone who does not.
@@ -40,6 +40,7 @@ import {
   unparkDrafts,
   loadMyRcGames,
   submitRcGameNote,
+  apiUrl,
   type MyRcGame,
   type IcalSubscription,
 } from './lib/pocketbase';
@@ -87,6 +88,8 @@ import { isDemoMode, getSentMail, demoTips, type DemoEmail } from './lib/demo';
 import { APP_VERSION, BUILD_INFO, VERSION_STAMP } from './lib/buildInfo';
 import { confirmDialog, toast } from './components/ui';
 import { takenAfterReminder } from './lib/reminder';
+import { runOfflineCheck, type OfflineReport } from './lib/offlineReady';
+import { clientLog } from './lib/logger';
 
 // Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
 // "ITA" — never a fabricated or TBD value (the red TBD is a UI-only concept).
@@ -282,6 +285,11 @@ const UI_STRINGS = {
     sigLinkCopied: "Link kopiert.",
     sigLinkHint: "Der Link öffnet sich auf dem Handy des Schiedsrichters. Dieses Fenster offen lassen, bis die Unterschrift da ist.",
     parkFailed: "Die Server-Sicherung hat nicht geklappt — der Entwurf ist auf diesem Gerät gespeichert.",
+    offlineChecking: "Offline-Check…",
+    offlineReady: "Offline bereit",
+    offlineCheckAgain: "Erneut prüfen",
+    offlineReadyHint: "Alles, was diese Beobachtung ohne Netz braucht, ist auf diesem Gerät.",
+    offlineMissingHint: "Ohne die markierten Punkte lässt sich die Beobachtung ohne Netz nicht fertigstellen oder senden.",
   },
   EN: {
     title: "Referee Coaching Feedback",
@@ -445,6 +453,11 @@ const UI_STRINGS = {
     sigLinkCopied: "Link copied.",
     sigLinkHint: "The link opens on the referee's phone. Keep this dialog open until the signature arrives.",
     parkFailed: "The server backup did not go through — the draft is saved on this device.",
+    offlineChecking: "Offline check…",
+    offlineReady: "Offline ready",
+    offlineCheckAgain: "Check again",
+    offlineReadyHint: "Everything this observation needs with no signal is on this device.",
+    offlineMissingHint: "Without the marked items the observation cannot be finished or sent with no signal.",
   }
 };
 
@@ -1401,6 +1414,87 @@ export default function App() {
   const [draftClaimedElsewhere, setDraftClaimedElsewhere] = useState(false);
   const [parkFailed, setParkFailed] = useState(false);
   const [parkedOk, setParkedOk] = useState(false);
+
+  // ── Offline-Ready ─────────────────────────────────────────────────────
+  // Whether THIS device can finish and send the open observation with no
+  // signal (src/lib/offlineReady.ts). The app has always opened offline from
+  // the precache and answered from the API cache — what nobody checked is that
+  // those caches hold what this coach needs tonight, on this phone. The check
+  // runs itself once per form open, warming what is missing while there is
+  // still a network, and again whenever the coach asks from the pill.
+  const [offlineReport, setOfflineReport] = useState<OfflineReport | null>(null);
+  const [offlineChecking, setOfflineChecking] = useState(false);
+  const [offlineDetailsOpen, setOfflineDetailsOpen] = useState(false);
+  // The game — and the language — the automatic check already ran for.
+  // Without it the effect below would fire on every render of the form, and
+  // each run refetches whatever the API cache is missing.
+  const offlineCheckedForRef = useRef('');
+  // Each run's ticket: a check that finishes after a newer one started must
+  // not overwrite the newer report with a stale one.
+  const offlineRunRef = useRef(0);
+
+  const runOfflineReadyCheck = async () => {
+    const run = ++offlineRunRef.current;
+    setOfflineChecking(true);
+    const de = formData.lang === 'DE';
+    const report = await runOfflineCheck({
+      lang: formData.lang,
+      warm: true,
+      loadPdf: loadPdfBuilder,
+      apiUrls: [
+        // What the form itself reads back offline: the session, the games, the
+        // coachees and the settings. Without any one of them a cold offline
+        // load shows the login screen or an empty games list.
+        { url: apiUrl('/api/auth/me'), must: true, label: de ? 'Anmeldung' : 'Sign-in' },
+        { url: apiUrl('/api/eligible-games'), must: true, label: de ? 'Spiele' : 'Games' },
+        { url: apiUrl('/api/coachees'), must: true, label: 'Coachees' },
+        { url: apiUrl('/api/settings'), must: true, label: de ? 'Einstellungen' : 'Settings' },
+        // The Home reads, spelled exactly as loadHome and loadCalendarGames
+        // request them — the cache is keyed by the full URL, season included.
+        // Nice to have: a dashboard that cannot refresh in the gym does not
+        // stop an observation from being filed.
+        { url: apiUrl(`/api/rc-overview?season=${seasonStartYear}`), must: false, label: de ? 'Übersicht' : 'Overview' },
+        { url: apiUrl(`/api/rc-games?season=${seasonStartYear}`), must: false, label: de ? 'Spielplan' : 'Schedule' },
+        { url: apiUrl(`/api/games/calendar-status?season=${seasonStartYear}`), must: false, label: de ? 'Kalender' : 'Calendar' },
+      ],
+    });
+    if (run !== offlineRunRef.current) return;
+    setOfflineReport(report);
+    setOfflineChecking(false);
+    const missing = report.items.filter((i) => !i.ok).map((i) => i.key);
+    // warn only when a required item is missing: an optional one (persistent
+    // storage on a browser that never grants it) is not a failure worth a row
+    // in the error digest.
+    clientLog[report.ok ? 'info' : 'warn']('offline.check',
+      report.ok ? 'offline ready' : `offline: ${report.missingMust} required item(s) missing`,
+      { ok: report.ok, missing });
+  };
+
+  // Once per form open — keyed on the game, and forgotten again when the form
+  // closes, so reopening the same game after a walk through the list checks
+  // afresh. The demo promises zero backend calls and has no caches to probe.
+  //
+  // Not before the landing has settled: a cold `/feedbacks/<coachee>/<record>`
+  // parses to the form view with no game, so the games list auto-selects its
+  // first entry while the record is still being fetched — and the check ran
+  // for that game, pulling the PDF chunk and writing a log row, on a screen
+  // that then showed a filed, locked record.
+  //
+  // Keyed on the language as well: the report's rows are worded when it is
+  // made, so after a toggle the pill and the hint switched with `t` while the
+  // panel kept the other language until "Erneut prüfen". A re-run is cheap —
+  // what the cache holds is skipped — and it keeps the panel open.
+  useEffect(() => {
+    const formOpen = landingSettled && feedbackSubView === 'feedbackForm' && !!selectedGameId && !openFeedbackId;
+    if (!formOpen) { offlineCheckedForRef.current = ''; return; }
+    const checkFor = `${selectedGameId}:${formData.lang}`;
+    if (isDemoMode() || offlineCheckedForRef.current === checkFor) return;
+    const sameGame = offlineCheckedForRef.current.startsWith(`${selectedGameId}:`);
+    offlineCheckedForRef.current = checkFor;
+    if (!sameGame) setOfflineDetailsOpen(false);
+    void runOfflineReadyCheck();
+  }, [landingSettled, feedbackSubView, selectedGameId, openFeedbackId, formData.lang]);
+
   const [backendNotice, setBackendNotice] = useState('');
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
   // Admin via the admin-console session or the in-app database login: keeps
@@ -3174,7 +3268,12 @@ export default function App() {
         tipsAndTricks: '',
       });
       if (result.emailSent) {
-        setManualUploadNotice(t.manualUploadSuccess);
+        // The warning is set precisely on this path — the referee has the
+        // report, the copy to the RC and the commission failed — and a plain
+        // success here left that known only to the error alert.
+        setManualUploadNotice(result.emailWarning
+          ? `${t.manualUploadSuccess} (${result.emailWarning})`
+          : t.manualUploadSuccess);
       } else {
         setManualUploadNotice(result.emailWarning
           ? `${t.saveOkNoEmail} ${result.emailWarning}`
@@ -3242,7 +3341,15 @@ export default function App() {
       // '2. SR'. The record is blanked to a tombstone: what survives is only the
       // memory that this game+role was sent, which feedbackLocked cannot provide
       // because it dies with the page.
-      void setDraftStatus(outboxOwnerId, selectedGame.id, fd.role, 'filed').catch(() => {});
+      //
+      // AWAITED, and the on-screen list re-read behind it. Fired and forgotten,
+      // the render kept the 'editing' record it had loaded before the send, so
+      // the Home banner offered "Weiterarbeiten" on a report the referee was
+      // already reading — and only a later store read (the next tap on the game)
+      // made it go away. Best-effort still: a store that refuses the write must
+      // not turn a filed report into an error.
+      await setDraftStatus(outboxOwnerId, selectedGame.id, fd.role, 'filed').catch(() => {});
+      void refreshDrafts();
       // The local record is blanked to a tombstone, so the parked copy must not
       // outlive it — it is a full signed assessment with nothing left to guard.
       void unparkDrafts(selectedGame.id).catch(() => {});
@@ -3265,7 +3372,11 @@ export default function App() {
           ? `${fd.role}: ${t.saveOkEmail} (${result.emailWarning})${closureNote}`
           : `${fd.role}: ${t.saveOkEmail}${closureNote}`;
       }
-      return `${fd.role}: ${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}${closureNote}`;
+      // The warning rides along here too: the two messages leave together, so
+      // the copy can have reached the RC and the commission while the
+      // referee's failed — and "nicht gesendet" alone sends the coach off to
+      // forward the PDF by hand to people who already have it.
+      return `${fd.role}: ${t.saveOkNoEmail} ${result.emailError || 'Unknown error'}${result.emailWarning ? ` (${result.emailWarning})` : ''}${closureNote}`;
     } catch (err) {
       const e = err as Error & { status?: number; reachedServer?: boolean };
       const de = fd.lang === 'DE';
@@ -3284,7 +3395,12 @@ export default function App() {
       // to a login screen is a reload and nothing persists the form.
       if (e.status === 401) {
         await enqueueFeedback(payload, label, outboxOwnerId);
-        void setDraftStatus(outboxOwnerId, selectedGame.id, fd.role, 'queued').catch(() => {});
+        // Awaited and re-read like the online send above: the banner row is
+        // built from the `drafts` render state, and left at 'editing' it kept
+        // offering "Weiterarbeiten" — and, past the match, "Nicht gesendet" —
+        // on a report that was sitting in the outbox.
+        await setDraftStatus(outboxOwnerId, selectedGame.id, fd.role, 'queued').catch(() => {});
+        void refreshDrafts();
         void refreshOutboxCount();
         return `${fd.role}: ${de
           ? 'Sitzung abgelaufen – Beobachtung zwischengespeichert. Bitte neu anmelden, sie wird dann automatisch gesendet.'
@@ -3299,7 +3415,11 @@ export default function App() {
       // and terminal covers 400/403/422 — the FIXABLE errors. With the draft
       // gone, one tap on Discard would destroy the only copy of a finished
       // observation.
-      void setDraftStatus(outboxOwnerId, selectedGame.id, fd.role, 'queued').catch(() => {});
+      // Awaited and re-read, for the same reason as the 401 path: this is the
+      // send a coach makes in a gym with no signal, and Zurück took them to a
+      // banner still offering the queued report as unfinished work.
+      await setDraftStatus(outboxOwnerId, selectedGame.id, fd.role, 'queued').catch(() => {});
+      void refreshDrafts();
       void refreshOutboxCount();
       return `${fd.role}: ${de ? 'Offline gespeichert – wird gesendet, sobald du online bist.' : 'Saved offline – will send when you are back online.'}`;
     }
@@ -3339,7 +3459,11 @@ export default function App() {
       const { sent } = await flushOutbox(outboxOwnerId, sendOutbox, () => void refreshOutboxCount(),
         (item, outcome) => {
           if (outcome === 'sent' || outcome === 'duplicate') {
-            void setDraftStatus(outboxOwnerId, item.payload.gameId, item.payload.role, 'filed').catch(() => {});
+            // Re-read once the tombstone is down, for the same reason as the
+            // online send: the banner must not keep offering work that went.
+            void setDraftStatus(outboxOwnerId, item.payload.gameId, item.payload.role, 'filed')
+              .catch(() => {})
+              .finally(() => { void refreshDrafts(); });
             void unparkDrafts(item.payload.gameId).catch(() => {});
           }
         });
@@ -3391,6 +3515,7 @@ export default function App() {
     // notice; only a real SERVER error throws. Locking the form after a
     // successful send/queue prevents accidental duplicate submissions.
     try {
+      let notice: string;
       if (dualMode) {
         const notices: string[] = [];
         const roles = ['1. SR', '2. SR'] as const;
@@ -3412,22 +3537,28 @@ export default function App() {
           }
         }
         setFormData(formData);
-        setBackendNotice(notices.join(' | '));
-        setFeedbackLocked(true);
+        notice = notices.join(' | ');
       } else {
-        const notice = await submitSingleFeedback(formData, tipsAndTricks);
-        setBackendNotice(notice.replace(`${formData.role}: `, ''));
-        setFeedbackLocked(true);
+        notice = (await submitSingleFeedback(formData, tipsAndTricks)).replace(`${formData.role}: `, '');
       }
+      // Refreshed in the background so every other tab is already up to date
+      // when the coach navigates back to it.
+      //
+      // Started BEFORE the notice is set, deliberately. Every loader blanks the
+      // notice as it begins — a stale error must not outlive the list it was
+      // about — and it does so synchronously, so a refresh begun after the
+      // notice erased "gespeichert und gesendet" in the same render: the coach
+      // saw the locked form and never the line saying the mail went out, nor
+      // the warning it can carry. Begun first, the notice wins the batch.
+      void refreshAfterFeedback();
+      setBackendNotice(notice);
+      setFeedbackLocked(true);
       // In the demo nothing is emailed — show the message(s) that would have gone out.
       if (isDemoMode()) {
         const mail = getSentMail();
         setDemoMail(mail);
         if (mail.length > 0) setDemoMailOpen(true);
       }
-      // Refreshed in the background so every other tab is already up to date
-      // when the coach navigates back to it.
-      void refreshAfterFeedback();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(`${t.saveError} ${localizeRuntimeError(reason, formData.lang)}`);
@@ -3908,6 +4039,25 @@ export default function App() {
       live.resultUnlocked && game.game_result && game.game_result !== (live.meta.ergebnis || '')
         ? game.game_result : ''
     );
+  };
+
+  /**
+   * The Home banner's "Weiterarbeiten". The row it sits on was built from the
+   * `drafts` render state, which can lag the store by one send: the record it
+   * shows may already be a tombstone. So the store is asked first, and a row
+   * whose work has since been filed is dropped instead of reopened as a form.
+   * `shown` is the fallback for a store that cannot be read at all.
+   */
+  const resumeFromBanner = async (gameId: string, shown: DraftRecord[]) => {
+    let found: DraftRecord[] | null = null;
+    try { found = await getGameDrafts(outboxOwnerId, gameId); } catch { found = null; }
+    if (found) {
+      const editing = found.filter((d) => d.status === 'editing' && (d.schema ?? 1) <= DRAFT_SCHEMA);
+      if (editing.length === 0) { void refreshDrafts(); return; }
+      resumeDraft(found);
+      return;
+    }
+    resumeDraft(shown);
   };
 
   const resumeDraftForGame = async (gameId: string, preferRole?: '1. SR' | '2. SR') => {
@@ -5503,7 +5653,7 @@ export default function App() {
                       </div>
                       {g.resumable && !g.queued && !g.allClosed && (
                         <button
-                          onClick={() => { draftOwnerRef.current = outboxOwnerId; resumeDraft(g.list); }}
+                          onClick={() => { draftOwnerRef.current = outboxOwnerId; void resumeFromBanner(g.gameId, g.list); }}
                           className="shrink-0 rounded border border-stone-300 bg-white px-2 py-0.5 font-semibold text-stone-700 hover:bg-stone-100"
                         >
                           {t.draftResume}
@@ -7731,6 +7881,61 @@ export default function App() {
               )}
             </p>
           )}
+          {/* Offline-Ready. A coach walks into a gym trusting that the form
+              works there; this is where the app says whether it actually
+              will — and, opened up, which piece is missing and what to do. */}
+          {!isDemoMode() && (offlineChecking || offlineReport) && (
+            <div className="text-xs">
+              <button
+                type="button"
+                data-testid="offline-ready-pill"
+                data-state={offlineChecking ? 'checking' : offlineReport?.ok ? 'ok' : 'missing'}
+                aria-expanded={offlineDetailsOpen}
+                onClick={() => setOfflineDetailsOpen((v) => !v)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-medium',
+                  offlineChecking
+                    ? 'border-stone-200 bg-stone-50 text-stone-500'
+                    : offlineReport?.ok
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                      : 'border-amber-300 bg-amber-50 text-amber-800',
+                )}
+              >
+                {offlineChecking
+                  ? <><Loader2 size={12} className="animate-spin" />{t.offlineChecking}</>
+                  : offlineReport?.ok
+                    ? <><CheckCircle2 size={12} />{t.offlineReady}</>
+                    : <><AlertTriangle size={12} />{formData.lang === 'DE'
+                        ? `Offline: ${offlineReport?.missingMust} Punkt${offlineReport?.missingMust === 1 ? ' fehlt' : 'e fehlen'}`
+                        : `Offline: ${offlineReport?.missingMust} item${offlineReport?.missingMust === 1 ? '' : 's'} missing`}</>}
+                <ChevronDown size={12} className={cn('transition-transform', offlineDetailsOpen && 'rotate-180')} />
+              </button>
+              {offlineDetailsOpen && offlineReport && (
+                <div data-testid="offline-ready-panel" className="mt-2 space-y-1.5 rounded-lg border border-stone-200 bg-white px-3 py-2">
+                  <ul className="space-y-1">
+                    {offlineReport.items.map((item) => (
+                      <li key={item.key} data-testid="offline-check-item" data-key={item.key} data-ok={item.ok ? '1' : '0'} className="flex items-start gap-1.5">
+                        {item.ok
+                          ? <Check size={12} className="shrink-0 mt-0.5 text-emerald-600" />
+                          : <X size={12} className={cn('shrink-0 mt-0.5', item.must ? 'text-red-600' : 'text-amber-600')} />}
+                        <span className={cn('font-medium', !item.ok && item.must ? 'text-red-800' : 'text-stone-700')}>{item.label}</span>
+                        {item.detail && <span className="text-stone-500">· {item.detail}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-stone-500">{offlineReport.ok ? t.offlineReadyHint : t.offlineMissingHint}</p>
+                  <button
+                    type="button"
+                    onClick={() => void runOfflineReadyCheck()}
+                    disabled={offlineChecking}
+                    className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-0.5 font-semibold text-stone-700 hover:bg-stone-100 disabled:opacity-50"
+                  >
+                    <RotateCcw size={12} />{t.offlineCheckAgain}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           {draftScoreConflict && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
               <span className="flex-1">
@@ -8800,7 +9005,8 @@ export default function App() {
           fixedRcName={rcAuth.rcName}
           lang={formData.lang}
           notice={manualUploadNotice}
-          noticeIsError={Boolean(manualUploadNotice) && manualUploadNotice !== t.manualUploadSuccess && !manualUploadNotice.startsWith(t.saveOkNoEmail)}
+          // A success with a warning in brackets is still a success.
+          noticeIsError={Boolean(manualUploadNotice) && !manualUploadNotice.startsWith(t.manualUploadSuccess) && !manualUploadNotice.startsWith(t.saveOkNoEmail)}
           submitting={manualUploadSubmitting}
           onSubmit={handleManualUploadSubmit}
           onClose={() => { setManualUploadCoachee(null); setManualUploadNotice(''); }}

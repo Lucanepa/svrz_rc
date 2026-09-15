@@ -252,8 +252,10 @@ export function richToEditableHtml(value: string): string {
  * is markup by isHtmlValue's own test, the plain side is escaped exactly once
  * and the markup side is re-sanitised, so a page containing a literal "<b>"
  * typed as text is shown as those three characters while a page formatted in
- * the editor keeps its bold. Never leaves trailing whitespace: the PDF prints
- * a sub-heading over any non-blank band, and a dangling newline would be one.
+ * the editor keeps its bold. Never leaves trailing whitespace: the PDF judges
+ * a band by its plain reading (remarkBlocksToDraw), so a dangling newline no
+ * longer earns a heading — but it would still be stored, and re-read as a
+ * blank line by the next append.
  */
 export function appendToRich(existing: string, incoming: string): string {
   const text = (incoming || '').replace(/\s+$/, '');

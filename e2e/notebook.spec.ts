@@ -155,6 +155,32 @@ test.describe('The device keeps the page', () => {
     expect((await storedPages(page))[0]?.deleted).toBe(true);
   });
 
+  test('pages are turned with the arrows and the pills, newest first', async ({ page }) => {
+    await stubSignedInApp(page);
+    await seedPad(page, [
+      padPage({ pageId: 'p-older', text: 'older page', createdAt: Date.now() - 3 * 60 * 60 * 1000 }),
+      padPage({ pageId: 'p-newer', text: 'newer page', createdAt: Date.now() - 60 * 60 * 1000 }),
+    ]);
+    await page.goto('/');
+    await openPad(page);
+    await expect(pageBox(page)).toHaveValue('newer page');
+    await expect(sheet(page).getByText(/^(Seite 1 von 2|Page 1 of 2)$/)).toBeVisible();
+    await sheet(page).getByRole('button', { name: /^(Ältere Seite|Older page)$/ }).click();
+    await expect(pageBox(page)).toHaveValue('older page');
+    await expect(sheet(page).getByText(/^(Seite 2 von 2|Page 2 of 2)$/)).toBeVisible();
+    await expect(sheet(page).getByRole('button', { name: /^(Ältere Seite|Older page)$/ })).toBeDisabled();
+    await sheet(page).getByRole('button', { name: /^(Neuere Seite|Newer page)$/ }).click();
+    await expect(pageBox(page)).toHaveValue('newer page');
+    // The pills do the same; the current one is marked.
+    await sheet(page).locator('button[aria-current="page"]').click();
+    await expect(pageBox(page)).toHaveValue('newer page');
+    // A fresh page sits in front of the others and takes the count with it.
+    await sheet(page).getByRole('button', { name: /^(Text)$/ }).click();
+    await pageBox(page).fill('third');
+    await expect(padSaved(page)).toBeVisible();
+    await expect(sheet(page).getByText(/^(Seite 1 von 3|Page 1 of 3)$/)).toBeVisible();
+  });
+
   test('Zeit inserts the clock at the caret', async ({ page }) => {
     await stubSignedInApp(page);
     await page.goto('/');

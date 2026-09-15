@@ -10,7 +10,7 @@
 // so opening and closing the sheet never syncs an empty row.
 
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { Clock, Eraser, Hand, Maximize2, Minimize2, NotebookPen, PenLine, Pencil, Plus, Trash2, Undo2, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Clock, Eraser, Hand, LayoutTemplate, Maximize2, Minimize2, NotebookPen, PenLine, Pencil, Plus, Trash2, Undo2, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clockLabel, dayLabel, dayTimeLabel } from '../lib/appTime';
 import { PAD_STRINGS, fill, type PadLang } from '../lib/notepadStrings';
@@ -68,7 +68,6 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const [mode, setMode] = useState<'pages' | 'import'>('pages');
   const [currentId, setCurrentId] = useState<string>(() => (pages[0] ? pages[0].pageId : ''));
   const [virtual, setVirtual] = useState<{ kind: PageKind; bg: PageBackground } | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [ink, setInk] = useState<InkPage | null>(null);
   const [inkLoading, setInkLoading] = useState(false);
   const [tool, setTool] = useState<InkTool>({ kind: 'pen', colour: 0 });
@@ -183,12 +182,18 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const toggleFinger = () => { setFingerDraws((v) => { writePref(FINGER_KEY, v ? '0' : '1'); return !v; }); };
 
   // ── pages ───────────────────────────────────────────────────────────
-  const newPage = (kind: PageKind, bg: PageBackground = '') => {
-    setMenuOpen(false);
+  const newPage = (kind: PageKind) => {
     if (pages.length >= NOTEBOOK_MAX_PAGES) { toast.error(tp.padPagesFull, { lang }); return; }
-    setVirtual({ kind, bg });
+    setVirtual({ kind, bg: '' });
     setCurrentId('');
     setInk(null);
+  };
+  // The court outline under a pen page: a toggle, so a coach who started
+  // sketching can still put the lines under what is already there.
+  const toggleCourt = () => {
+    const next: PageBackground = activeBg === 'court' ? '' : 'court';
+    if (current && current.kind === 'ink') notebookSync.commit({ ...current, bg: next }, undefined, 0);
+    else if (virtual) setVirtual({ ...virtual, bg: next });
   };
   const deletePage = async () => {
     if (!current) { setVirtual(null); return; }
@@ -263,6 +268,28 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
       {clockLabel(p.createdAt)}
       {p.usedIn.length > 0 && <span className="text-emerald-500">✓</span>}
     </button>
+  );
+
+  // Pages run newest first, like the strip: ‹ is the newer page, › the older.
+  const currentIndex = current ? pages.findIndex((p) => p.pageId === current.pageId) : -1;
+  const goTo = (index: number) => {
+    const target = pages[index];
+    if (!target) return;
+    setVirtual(null);
+    setCurrentId(target.pageId);
+  };
+  const pageNav = pages.length > 0 && (
+    <div className="flex items-center gap-1 shrink-0" role="group" aria-label={tp.padPageOf.replace('{n}', '').replace('{m}', '').trim()}>
+      <button type="button" onClick={() => goTo(currentIndex - 1)} disabled={currentIndex <= 0} aria-label={tp.padPrevPage} title={tp.padPrevPage} className="h-7 w-7 inline-flex items-center justify-center rounded border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 disabled:opacity-40">
+        <ChevronLeft size={14} />
+      </button>
+      <span className="text-[11px] text-stone-600 tabular-nums min-w-[5.5rem] text-center">
+        {currentIndex >= 0 ? fill(tp.padPageOf, { n: currentIndex + 1, m: pages.length }) : fill(tp.padPageOf, { n: '–', m: pages.length })}
+      </span>
+      <button type="button" onClick={() => goTo(currentIndex < 0 ? 0 : currentIndex + 1)} disabled={currentIndex >= pages.length - 1} aria-label={tp.padNextPage} title={tp.padNextPage} className="h-7 w-7 inline-flex items-center justify-center rounded border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 disabled:opacity-40">
+        <ChevronRight size={14} />
+      </button>
+    </div>
   );
 
   const wrapper = full
@@ -352,29 +379,28 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
           </>
         ) : (
           <>
-            <p className="px-4 py-1.5 text-[11px] text-stone-500 bg-stone-50 border-b border-stone-200 leading-snug">{reviewOnly ? tp.padReviewOnly : tp.padPrivacy}</p>
+            {reviewOnly && <p className="px-4 py-1.5 text-[11px] text-stone-500 bg-stone-50 border-b border-stone-200 leading-snug">{tp.padReviewOnly}</p>}
 
             {/* page strip */}
             <div className="flex items-center gap-1.5 px-3 py-2 border-b border-stone-100">
               <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }} data-log-redact>
-                {showVirtual && (
+                {/* A page not yet written shows as a page would — with the
+                    time it will carry — and only once there are other pages
+                    to come back from. */}
+                {showVirtual && pages.length > 0 && (
                   <span aria-current="page" className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border border-slate-900 bg-slate-900 text-white text-[11px] font-medium">
-                    {virtualKind === 'ink' ? <PenLine size={12} /> : <Pencil size={12} />}{tp.padNewPage}
+                    {virtualKind === 'ink' ? <PenLine size={12} /> : <Pencil size={12} />}{clockLabel(Date.now())}
                   </span>
                 )}
                 {pages.map(pill)}
               </div>
-              <div className="relative shrink-0">
-                <button type="button" onClick={() => setMenuOpen((v) => !v)} aria-haspopup="menu" aria-expanded={menuOpen} className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
-                  <Plus size={13} /> {tp.padNewPage}
+              <div className="shrink-0 flex items-center gap-1.5">
+                <button type="button" onClick={() => newPage('text')} className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
+                  <Plus size={13} /><Pencil size={12} /> {tp.padTextPageShort}
                 </button>
-                {menuOpen && (
-                  <div role="menu" className="absolute right-0 top-9 z-10 w-56 rounded-lg border border-stone-200 bg-white shadow-lg py-1 text-sm">
-                    <button type="button" role="menuitem" onClick={() => newPage('text')} className="w-full text-left px-3 py-2 hover:bg-stone-50 inline-flex items-center gap-2"><Pencil size={14} /> {tp.padNewText}</button>
-                    <button type="button" role="menuitem" onClick={() => newPage('ink')} className="w-full text-left px-3 py-2 hover:bg-stone-50 inline-flex items-center gap-2"><PenLine size={14} /> {tp.padNewInk}</button>
-                    <button type="button" role="menuitem" onClick={() => newPage('ink', 'court')} className="w-full text-left px-3 py-2 hover:bg-stone-50 inline-flex items-center gap-2"><PenLine size={14} /> {tp.padNewCourt}</button>
-                  </div>
-                )}
+                <button type="button" onClick={() => newPage('ink')} className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
+                  <Plus size={13} /><PenLine size={12} /> {tp.padInkPageShort}
+                </button>
               </div>
             </div>
 
@@ -391,12 +417,15 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       <span className="text-emerald-700 truncate">· {fill(tp.padUsedIn, { field: fieldLabel(current.usedIn[current.usedIn.length - 1].f), role: current.usedIn[current.usedIn.length - 1].r, label: current.usedIn[current.usedIn.length - 1].label })}</span>
                     )}
                   </>
-                ) : <span>{tp.padNewPage}</span>}
-                {activeKind === 'text' && (
-                  <button type="button" onClick={insertTime} title={tp.padTimeTitle} className="ml-auto inline-flex items-center gap-1 h-6 px-2 rounded border border-stone-300 bg-white text-[11px] text-stone-600 hover:bg-stone-50">
-                    <Clock size={12} /> {tp.padTime}
-                  </button>
-                )}
+                ) : <span>{fill(tp.padExpires, { date: dayLabel(Date.now() + NOTEBOOK_TTL_MS) })}</span>}
+                <span className="ml-auto flex items-center gap-2">
+                  {pageNav}
+                  {activeKind === 'text' && (
+                    <button type="button" onClick={insertTime} title={tp.padTimeTitle} className="inline-flex items-center gap-1 h-7 px-2 rounded border border-stone-300 bg-white text-[11px] text-stone-600 hover:bg-stone-50">
+                      <Clock size={12} /> {tp.padTime}
+                    </button>
+                  )}
+                </span>
               </div>
             )}
 
@@ -445,6 +474,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                         {b.icon} {b.label}
                       </button>
                     ))}
+                    <button type="button" onClick={toggleCourt} aria-pressed={activeBg === 'court'} title={tp.padCourt} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium', activeBg === 'court' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><LayoutTemplate size={14} /> {tp.padCourt}</button>
                     <button type="button" onClick={undo} disabled={inkPage.strokes.length === 0} aria-label={tp.padUndo} title={tp.padUndo} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><Undo2 size={14} /> {tp.padUndo}</button>
                     <button type="button" onClick={() => void clearPage()} disabled={inkPage.strokes.length === 0} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40">{tp.padClearPage}</button>
                     <button type="button" onClick={toggleFinger} aria-pressed={fingerDraws} title={fingerDraws ? tp.padFingerOn : tp.padFingerOff} className={cn('shrink-0 ml-auto h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium', fingerDraws ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><Hand size={14} /> {tp.padFinger}</button>

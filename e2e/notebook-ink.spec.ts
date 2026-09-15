@@ -38,9 +38,9 @@ const pad = (page: Page) => sheet(page).getByTestId('ink-page');
 
 async function openPenPage(page: Page, court = false): Promise<void> {
   await launcher(page).click();
-  await sheet(page).getByRole('button', { name: /^(\+ )?(Neue Seite|New page)$/ }).click();
-  await sheet(page).getByRole('menuitem', { name: court ? /Spielfeld|court/ : /^(Stiftseite|Pen page)$/ }).click();
+  await sheet(page).getByRole('button', { name: /^(Stift|Pen)$/ }).click();
   await expect(pad(page)).toBeVisible();
+  if (court) await sheet(page).getByRole('button', { name: /^(Spielfeld|Court)$/ }).click();
 }
 
 async function mouseStroke(page: Page, fromX: number, fromY: number, toX: number, toY: number): Promise<void> {

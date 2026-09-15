@@ -3901,6 +3901,8 @@ const PROXIED_DOCS: Record<string, string> = {
   'rules-en': 'https://www.fivb.com/wp-content/uploads/2025/01/FIVB-Volleyball_Rules2025_2028-EN-v05.pdf',
   'rule-changes': 'https://www.volleyball.ch/_Resources/Persistent/c/b/3/f/cb3f0be3e71e90986627eb3a02716135646b33e3/26.08.24_%C3%84nderungen-Regeln-2027-d.pdf',
   'volleyballreglement': 'https://www.volleyball.ch/_Resources/Persistent/0/e/9/f/0e9f8dcf5ae32a59a5fc7f9f3f3f3ea203d7ee32/Volleyballreglement_26-27_d.pdf',
+  'spielprotokoll-regional': 'https://www.volleyball.ch/_Resources/Persistent/f/b/b/a/fbba891628ab5c4cae3a0783b4d480de2712e05f/Spielprotokoll%20regional%20Version%2001.07.2023_D.pdf',
+  'spielprotokoll-nl': 'https://www.volleyball.ch/_Resources/Persistent/0/0/7/9/007906b62accd1615aaf268a200d69cb1cdeb9ba/Spielprotokoll%20NL_d.pdf',
   // svrz.ch — what the RSK lists under "Informationen für SR" and "Reglemente".
   'niveau': 'https://www.svrz.ch/_Resources/Persistent/8/6/d/d/86dd9a07156e7501b5e74ec3e0eeeab30975bcbd/Uebersicht%20SR-Niveau%20und%20Stufe.pdf',
   'kurz-sr': 'https://www.svrz.ch/_Resources/Persistent/e/f/b/0/efb0e24dea47d434e0d557e821dfbcd73d2b9c8d/Kurzzusammenfassung%20f%C3%BCr%20SR_2026.pdf',

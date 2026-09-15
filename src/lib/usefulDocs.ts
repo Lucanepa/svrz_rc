@@ -134,6 +134,37 @@ export const USEFUL_DOCS: UsefulDoc[] = [
     DE: { title: 'Spiel Vor- und Nachbereitung', note: 'Was vor der Auslosung, nach dem Schlusspfiff und danach zu tun ist.' },
     EN: { title: 'Before and after the match', note: 'What to do before the toss, after the final whistle and afterwards.' },
   },
+  // The two match protocols: what the referees and the teams do at each minute
+  // mark from H-60 to the first whistle. Swiss Volley writes both; the RSK
+  // adopted the regional one for Zürich from 2023/24 with a single deviation
+  // the sheet itself does not show — position sheets are due at H-4, not H-12
+  // (svrz.ch → Reglemente) — so the note carries it, or a coach marks a
+  // referee down for following the paper.
+  {
+    id: 'spielprotokollRegional',
+    group: 'coaching',
+    kind: 'pdf',
+    href: 'https://www.volleyball.ch/_Resources/Persistent/f/b/b/a/fbba891628ab5c4cae3a0783b4d480de2712e05f/Spielprotokoll%20regional%20Version%2001.07.2023_D.pdf',
+    proxyId: 'spielprotokoll-regional',
+    bytes: 91712,
+    badge: 'PDF',
+    DE: { title: 'Spielprotokoll Regional- und Juniorenligen', note: 'Der offizielle Ablauf vor dem Spiel, H-60 bis Anpfiff. In Zürich mit einer Abweichung: Positionsblätter bis H-4 statt H-12.' },
+    EN: { title: 'Regional & junior league match protocol', note: 'The official pre-match procedure, H-60 to the first whistle. Zürich applies one deviation: position sheets by H-4 instead of H-12.' },
+  },
+  // The national leagues' one (Anhang 1 to the Volleyballreglement): a 1L,
+  // NLB or NLA game runs on this, presentation, set breaks and the 10-minute
+  // break included.
+  {
+    id: 'spielprotokoll',
+    group: 'coaching',
+    kind: 'pdf',
+    href: 'https://www.volleyball.ch/_Resources/Persistent/0/0/7/9/007906b62accd1615aaf268a200d69cb1cdeb9ba/Spielprotokoll%20NL_d.pdf',
+    proxyId: 'spielprotokoll-nl',
+    bytes: 228342,
+    badge: 'PDF',
+    DE: { title: 'Spielprotokoll Nationale Ligen', note: 'Der offizielle Ablauf vor dem Spiel in NLA, NLB und 1. Liga — von H-60 bis zum Anpfiff, Minute für Minute.' },
+    EN: { title: 'National league match protocol', note: 'The official pre-match procedure for NLA, NLB and 1st league — from H-60 to the first whistle, minute by minute.' },
+  },
   {
     id: 'niveau',
     group: 'coaching',

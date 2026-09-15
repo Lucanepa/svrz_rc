@@ -80,7 +80,14 @@ registerSW({
       if (document.visibilityState === 'visible' && Date.now() - lastCheck > SW_UPDATE_MIN_GAP_MS) check();
     });
   },
-  onRegisterError(error) { clientLog.error('sw.error', 'service worker registration failed', { error }); },
+  onRegisterError(error) {
+    // The reason goes into the line itself, not only into `data`: the log
+    // groups and mutes by message, and "Rejected" from Google's page renderer
+    // (which refuses every service worker by design, and visits weekly) must
+    // not share a row — or an alert mail — with a real browser's failure.
+    const reason = error instanceof Error ? error.message : String(error);
+    clientLog.error('sw.error', `service worker registration failed: ${reason}`, { error });
+  },
 });
 
 // Auto-reload once a freshly deployed service worker takes control (no more

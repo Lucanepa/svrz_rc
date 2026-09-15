@@ -35,7 +35,7 @@ export function normalizeColor(value: string): string | null {
   return raw;
 }
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -241,4 +241,25 @@ export function domToRich(root: HTMLElement): string {
 /** The stored value as HTML for a contenteditable: newlines become <br>. */
 export function richToEditableHtml(value: string): string {
   return richToDisplayHtml(value).split('\n').join('<br>');
+}
+
+/**
+ * Append plain text (a notebook page) to a rich-subset value.
+ *
+ * Plain stays plain, byte for byte (see sanitizeRich above): escaping a field
+ * that never held markup would rewrite history. The value flips to markup only
+ * when either side is markup by isHtmlValue's own test — and then both halves
+ * are escaped exactly once, so a page containing "<b>" is shown as those three
+ * characters and a "&" in a previously plain field still reads "&".
+ * Never leaves trailing whitespace: the PDF prints a sub-heading over any
+ * non-blank band (feedbackPdf.ts), and a dangling newline would be one.
+ */
+export function appendPlainToRich(existing: string, plain: string): string {
+  const text = (plain || '').replace(/\s+$/, '');
+  if (!text) return existing || '';
+  const base = (existing || '').replace(/\s+$/, '');
+  const baseIsHtml = isHtmlValue(base);
+  if (!baseIsHtml && !isHtmlValue(text)) return base ? `${base}\n${text}` : text;
+  const head = baseIsHtml ? base : escapeHtml(base);
+  return sanitizeRich(base ? `${head}\n${escapeHtml(text)}` : escapeHtml(text));
 }

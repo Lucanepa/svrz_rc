@@ -151,7 +151,11 @@ export default defineConfig(() => {
               // cache.
               urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/')
                 && url.pathname !== '/api/events'
-                && !url.pathname.startsWith('/api/docs/'),
+                && !url.pathname.startsWith('/api/docs/')
+                // A notebook list answered from a 30-day cache after a 6 s
+                // timeout is a list from another evening; offline review is
+                // served from IndexedDB, and the server answers no-store.
+                && !url.pathname.startsWith('/api/notebook'),
               method: 'GET',
               handler: 'NetworkFirst',
               options: {

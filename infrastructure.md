@@ -339,6 +339,27 @@ rather than silently succeeding, because a coach told their work is safe when it
 is nowhere is the one failure this feature must not have. Reads stay quiet and
 answer "nothing parked", which is true.
 
+### `rc_notebook` — the coach's private notebook
+
+Pages of text or pen ink a coach writes anywhere in the app (the floating
+Notizblock button), one row per page: `owner_id` (from the session, never the
+body), `page_id`, `kind` (`text` | `ink`), `created_at` / `updated_at` (the
+device's clock: which of two copies is newer, and when the page expires),
+`deleted` (a tombstone, so a stale copy elsewhere cannot bring a page back),
+`schema`, `payload` (JSON — text, or the stroke vectors of an ink page; `{}` on
+a tombstone). Author-only: the chair's president session and the admin console
+are refused by `/api/notebook`. **Every page is deleted one week after it was
+written** — the client hides it at once, the server's prune (per owner, after a
+push, at most every ten minutes) deletes the row — and nothing extends that.
+The device keeps a copy in IndexedDB `svrz-notebook`; the server is what
+survives a phone that wipes its site data.
+
+Created by the same schema script. Run it **BEFORE** the code that reads the
+collection ships (push the script into the running container with `docker cp`,
+then `docker exec … node deploy/hetzner/seed/setup-schema.mjs`): reads on a
+missing collection answer an empty notebook, writes say
+`Die Sammlung „rc_notebook" fehlt in PocketBase`.
+
 ## API Authentication Model
 
 Three layers, plus capability tokens:

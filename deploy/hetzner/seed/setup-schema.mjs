@@ -260,6 +260,28 @@ await ensure('signatures', [T('slug'),T('context'),T('signer'),T('data'),B('sign
 await ensure('parked_drafts', [
   T('owner_id'),T('game_id'),T('role'),T('updated_at'),NUM('schema'),J('payload')
 ]);
+// The coach's PRIVATE notebook: pages of text or ink written anywhere in the app,
+// kept for ONE WEEK after they were written and then deleted — a scratch pad,
+// not a record. ONE ROW PER PAGE: two devices in one evening merge per page, a
+// deleted page stays as a tombstone (deleted = true, payload = {}) until its
+// week is up so a stale copy elsewhere cannot bring it back, and a page of ink
+// gets its own 2_000_000 J() budget.
+//
+// owner_id is the RC's id from the SESSION and never from a request body — the
+// same rule as parked_drafts. Author-only: the chair's president session and the
+// admin console are refused (see /api/notebook in server/index.ts). The server
+// stores it opaquely: it files nothing, mails nothing, and nothing here reaches
+// feedback_json or the PDF unless the coach inserts it in the app.
+//
+// created_at / updated_at are the DEVICE clock (which of two copies is newer;
+// when the page expires); `created` / `updated` (autodate) are the server's, for
+// sort — a tablet that boots in 1970 must not be able to make a page immortal.
+//
+// PocketBase drops keys a collection does not declare: the first tombstone
+// written in the hand verification must read `deleted: true` back.
+await ensure('rc_notebook', [
+  T('owner_id'),T('page_id'),T('kind'),T('created_at'),T('updated_at'),B('deleted'),NUM('schema'),J('payload')
+]);
 console.log('SCHEMA_OK');
 
 // seed RCs (idempotent-ish: skip if any exist)

@@ -63,7 +63,14 @@ import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
 import { dayLabel, dayTimeLabel, shortDayLabel, clockLabel, dayKey, todayKey, shiftDayKey, zonedParts, instantOf } from './lib/appTime';
 import { subscribeLive } from './lib/liveEvents';
-import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml, sanitizeRich } from './lib/richText';
+import { domToRich, richToEditableHtml, richToPlain, richToDisplayHtml, sanitizeRich, appendPlainToRich } from './lib/richText';
+import { NotebookPen } from 'lucide-react';
+import NotebookSheet, { type InsertContext } from './components/NotebookSheet';
+import * as notebookSync from './lib/notebookSync';
+import type { PadSyncStatus } from './lib/notebookSync';
+import { PAD_STRINGS, fill as padFill } from './lib/notepadStrings';
+import type { NotebookPage, PadField } from './lib/notebook';
+import { importBlock } from './lib/notebookImport';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, isPromotionGroup, newSrGroupOptions, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName as normName, coacheeIndex } from './lib/coacheeName';
@@ -1503,6 +1510,52 @@ export default function App() {
   // Identity that owns any outbox item created now — a queued submission is only
   // ever sent back under this same identity, never a different coach's.
   const outboxOwnerId = rcAuth.rcId || (isPrivileged ? 'admin' : 'anon');
+
+  // ── Notizblock ────────────────────────────────────────────────────────
+  // The coach's private pages (src/lib/notebook.ts). The engine is a module;
+  // React only mirrors what it emits. Owner from a ref, so the flushes that
+  // run on pagehide read the LIVE identity, never the one a render captured.
+  const [padOpen, setPadOpen] = useState(false);
+  const padOpenRef = useRef(false);
+  padOpenRef.current = padOpen;
+  const [padPages, setPadPages] = useState<NotebookPage[]>([]);
+  const [padStatus, setPadStatus] = useState<PadSyncStatus>(notebookSync.currentStatus());
+  const [padFull, setPadFull] = useState<boolean>(() => { try { return localStorage.getItem('svrz_pad_full') === '1'; } catch { return false; } });
+  const padOwnerRef = useRef(outboxOwnerId);
+  padOwnerRef.current = outboxOwnerId;
+  // ONE effect for configure and stop: StrictMode mounts, cleans up and mounts
+  // again in dev, and two separate effects would leave the engine stopped.
+  useEffect(() => {
+    notebookSync.configure({ getOwner: () => padOwnerRef.current, onStatus: setPadStatus, onPages: setPadPages });
+    return () => notebookSync.stop();
+  }, []);
+  // Browser-level fullscreen on the DOCUMENT, never on the sheet: a fullscreen
+  // element sits alone on the top layer, and the toasts and confirm dialogs
+  // mount at the root (UiHost) — a fullscreened panel would hide its own
+  // delete confirm. Where the API is missing (iPhone Safari, the installed
+  // PWA) the layout-level mode is the whole feature.
+  const enterBrowserFullscreen = () => {
+    try { if (document.fullscreenEnabled && !document.fullscreenElement) void document.documentElement.requestFullscreen().catch(() => {}); } catch { /* unsupported */ }
+  };
+  const leaveBrowserFullscreen = () => {
+    try { if (document.fullscreenElement) void document.exitFullscreen().catch(() => {}); } catch { /* unsupported */ }
+  };
+  const closeNotebook = useCallback(() => {
+    setPadOpen(false);
+    void notebookSync.flushNow();
+    leaveBrowserFullscreen();
+  }, []);
+  const openNotebook = () => {
+    setPadOpen(true);
+    void notebookSync.refresh();
+    if (padFull) enterBrowserFullscreen();
+  };
+  const togglePadFull = () => {
+    const next = !padFull;
+    setPadFull(next);
+    try { localStorage.setItem('svrz_pad_full', next ? '1' : '0'); } catch { /* private mode — this session only */ }
+    if (next) enterBrowserFullscreen(); else leaveBrowserFullscreen();
+  };
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   /** The document open in the reader, or null. */
@@ -1784,6 +1837,9 @@ export default function App() {
   useEffect(() => {
     const onPop = () => {
       if (isForeignPath(window.location.pathname)) return;
+      // A Back that parses to the view already on screen changes no state the
+      // effect above watches; the sheet still has to go.
+      if (padOpenRef.current) closeNotebook();
       const r = parsePath(window.location.pathname, window.location.search, true);
       replaceAfterPopRef.current = true;
       // Consumed by the sync effect above when the state changes; cleared here
@@ -2277,7 +2333,7 @@ export default function App() {
   useEffect(() => {
     // A logout that never reached the server is retried the moment there is a
     // network, so the session really is revoked rather than merely hidden.
-    const goOnline = () => { setIsOffline(false); void settlePendingLogout(); void flushOutboxNowRef.current(); };
+    const goOnline = () => { setIsOffline(false); void settlePendingLogout(); void flushOutboxNowRef.current(); void notebookSync.refresh(); };
     const goOffline = () => setIsOffline(true);
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
@@ -3600,6 +3656,8 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      // The notebook is the most transient layer of all: it opens over any screen.
+      if (padOpen) { closeNotebook(); return; }
       if (showConfirmModal !== null) { setShowConfirmModal(null); return; }
       if (sigModalOpen) { setSigModalOpen(false); return; }
       if (demoMailOpen) { setDemoMailOpen(false); return; }
@@ -3609,7 +3667,14 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showConfirmModal, sigModalOpen, demoMailOpen, showCalendarModal, showEmptyFormModal, expandedCoacheeId]);
+  }, [padOpen, closeNotebook, showConfirmModal, sigModalOpen, demoMailOpen, showCalendarModal, showEmptyFormModal, expandedCoacheeId]);
+
+  // The sheet closes on any navigation under it — a Back that pops the URL, a
+  // link, a game switch — or it would sit over a screen it was not opened on.
+  useEffect(() => {
+    if (padOpenRef.current) closeNotebook();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGameId, feedbackSubView, listTab, selectedCoacheeId]);
 
   const isGameRoleClosed = selectedGame?.feedbackClosedRoles?.includes(formData.role) ?? false;
   /**
@@ -3805,7 +3870,7 @@ export default function App() {
     // `pagehide` and a hidden `visibilitychange` are what actually fire when
     // iOS Safari kills a tab or an installed PWA — `beforeunload` does not fire
     // there at all, which is exactly the case this whole feature exists for.
-    const flush = () => { void flushDraftNowRef.current(); parkImmediatelyRef.current(); };
+    const flush = () => { void flushDraftNowRef.current(); parkImmediatelyRef.current(); notebookSync.flushOnHide(); };
     const onHide = () => {
       flush();
       // Leaving, not merely backgrounding: a backgrounded tab still holds the
@@ -3815,7 +3880,10 @@ export default function App() {
     const onVis = () => { if (document.visibilityState === 'hidden') flush(); };
     window.addEventListener('pagehide', onHide);
     document.addEventListener('visibilitychange', onVis);
-    window.__svrzFlushDraft = () => flushDraftNowRef.current();
+    // Local only for the notebook: a page of ink inside the 1.5 s reload race
+    // is cancelled by the reload anyway; the unsaved guard holds the reload
+    // while a commit is pending.
+    window.__svrzFlushDraft = () => Promise.all([flushDraftNowRef.current(), notebookSync.flushLocal()]).then(() => undefined);
     return () => {
       window.removeEventListener('pagehide', onHide);
       document.removeEventListener('visibilitychange', onVis);
@@ -4093,6 +4161,9 @@ export default function App() {
     lastDraftOwnerRef.current = outboxOwnerId;
     draftOwnerRef.current = '';
     releaseDraft();
+    // The notebook belongs to a person too: its pages go with the owner.
+    notebookSync.reset();
+    setPadOpen(false);
     setDrafts([]); setDraftScoreConflict(''); setDraftSaveFailed(false);
     setParkFailed(false); setParkedOk(false);
     clearResumeHint();
@@ -4276,6 +4347,39 @@ export default function App() {
     };
   };
 
+  // The one bridge from the notebook into the report. Verbatim pages joined by
+  // a blank line, through the same writes the ExpandableTextarea makes; the
+  // greyed wrapper only blocks pointer events, so the gate is re-checked here.
+  // No server call: /api/feedback/submit stays the only door.
+  const padCanInsert = feedbackSubView === 'feedbackForm' && !!selectedGame && !formDisabled && !openFeedbackId && !isDemoMode() && draftLoadingRef.current === '';
+  const importPagesIntoForm = (field: PadField, pages: NotebookPage[]) => {
+    if (!padCanInsert || !selectedGame) return;
+    const block = importBlock(pages);
+    if (!block) return;
+    if (field === 'tips') {
+      setTipsAndTricks((prev) => (prev ? `${prev.replace(/\s+$/, '')}\n${block}` : block));
+    } else {
+      const key = field as 'bemerkungen' | 'highlights' | 'improvements' | 'goals';
+      setFormData((prev) => ({ ...prev, results: { ...prev.results, [key]: appendPlainToRich(prev.results[key] || '', block) } }));
+    }
+    const label = `${selectedGame.homeTeam} vs ${selectedGame.awayTeam}`;
+    notebookSync.markUsed(pages.map((p) => p.pageId), { f: field, r: formData.role, g: selectedGame.id, label, t: Date.now() });
+    const tp = PAD_STRINGS[formData.lang] || PAD_STRINGS.DE;
+    const fieldLabel = { bemerkungen: tp.padInsertRemarks, highlights: tp.padInsertHighlights, improvements: tp.padInsertImprovements, goals: tp.padInsertGoals, tips: tp.padInsertTips }[field];
+    toast.success(padFill(pages.length === 1 ? tp.padInserted1 : tp.padInsertedN, { n: pages.length, field: fieldLabel }), { lang: formData.lang });
+  };
+  const padInsert: InsertContext | null = padCanInsert && selectedGame
+    ? { role: formData.role, gameId: selectedGame.id, label: `${selectedGame.homeTeam} vs ${selectedGame.awayTeam}`, name: getRefereeForRole(selectedGame, formData.role) || '', onInsert: importPagesIntoForm }
+    : null;
+  // Hidden for the console (the server refuses it anyway), for a session with no
+  // identity, in the demo ("nothing is stored" must stay literally true) and for
+  // an admin who is being sent to /admin.
+  const padLauncher = outboxOwnerId !== 'admin' && outboxOwnerId !== 'anon' && !isDemoMode() && !homelessAdmin;
+  const tpPad = PAD_STRINGS[formData.lang] || PAD_STRINGS.DE;
+  // A page not yet in IndexedDB, a write that failed, or a device that cannot
+  // store at all with pages the server has not acknowledged: the reload waits.
+  const padUnsaved = padStatus.local === 'saving' || padStatus.local === 'failed' || (padStatus.serverOnly && padStatus.dirty > 0);
+
   const formIsDirty = !formDisabled && draftHasWork(formData, tipsAndTricks);
   /**
    * Work that exists NOWHERE ELSE. This used to stay true until the whole
@@ -4285,7 +4389,9 @@ export default function App() {
    * IndexedDB, demo) or the write is failing, for as long as that lasts, which
    * is exactly when postponing the reload is still the right answer.
    */
-  const workUnsaved = formIsDirty && (!draftContext || draftUnsaved || draftSaveFailed);
+  // The notebook's clause sits OUTSIDE the form's: on a filed record formIsDirty
+  // is false by construction, and a page typed there must still hold a reload.
+  const workUnsaved = (formIsDirty && (!draftContext || draftUnsaved || draftSaveFailed)) || padUnsaved;
   useEffect(() => {
     window.__svrzFormDirty = workUnsaved;
     if (!workUnsaved) window.dispatchEvent(new Event('svrz:form-clean'));
@@ -5124,7 +5230,42 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0">
+    <div className={cn("min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0", padLauncher && "pb-24")}>
+      {/* The Notizblock launcher: floating, on every screen the coach can be on.
+          z-40 sits under every overlay (z-50) and the toasts (z-60); the extra
+          bottom padding on the page above keeps the red Senden block able to
+          scroll clear of it. On a phone the toast stack is pointer-events-none,
+          so a courtside tap still reaches this button under a toast. */}
+      {padLauncher && !padOpen && (
+        <button
+          type="button"
+          onClick={openNotebook}
+          aria-label={tpPad.padLaunch}
+          title={tpPad.padLaunch}
+          data-testid="pad-launcher"
+          className="no-print fixed z-40 right-4 sm:right-6 h-14 w-14 sm:h-12 sm:w-auto sm:px-4 rounded-full bg-slate-900 text-white shadow-lg hover:bg-slate-800 active:scale-95 transition flex items-center justify-center gap-2"
+          style={{ bottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))' }}
+        >
+          <NotebookPen size={22} />
+          <span className="hidden sm:inline text-sm font-semibold">{tpPad.padTitle}</span>
+          {padPages.length > 0 && (
+            <span data-testid="pad-total" aria-hidden="true" className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 px-1 rounded-full bg-red-600 text-white text-[11px] font-bold flex items-center justify-center">{padPages.length}</span>
+          )}
+        </button>
+      )}
+      {padOpen && padLauncher && (
+        <NotebookSheet
+          lang={formData.lang}
+          ownerId={outboxOwnerId}
+          pages={padPages}
+          status={padStatus}
+          insert={padInsert}
+          reviewOnly={feedbackSubView === 'feedbackForm' && (!!openFeedbackId || formDisabled)}
+          full={padFull}
+          onToggleFull={togglePadFull}
+          onClose={closeNotebook}
+        />
+      )}
       {isDemoMode() && (
         <div className="max-w-5xl mx-auto mb-3 no-print">
           <div className="flex items-center justify-between gap-3 rounded-xl bg-red-600 text-white text-xs font-semibold px-3 py-2 shadow-sm">

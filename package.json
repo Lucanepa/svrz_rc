@@ -33,6 +33,7 @@
     "nodemailer": "^8.0.2",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.3.289",
+    "perfect-freehand": "^1.2.3",
     "pocketbase": "^0.26.8",
     "qrcode-generator": "^2.0.4",
     "qrcode.react": "^4.2.0",

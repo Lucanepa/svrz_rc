@@ -5,6 +5,7 @@ import { draftKey, type DraftRecord } from './formDraft';
 import { sanitizeRich } from './richText';
 import * as demo from './demo';
 import { isDemoMode } from './demo';
+import type { PageAck, PageWire, ServerPage } from './notebook';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
@@ -1522,6 +1523,68 @@ export async function listParkedDrafts(): Promise<DraftRecord[]> {
  * device already, or never parked this game at all, and "the copy is gone" is
  * what the caller asked to be true either way.
  */
+// ── Notebook (the coach's private pages; see src/lib/notebook.ts) ─────
+//
+// Same shape as the park wrappers: the owner comes from the session cookie and
+// nothing here sends one; offline throws a plain fetch error (retried silently),
+// a server refusal carries `reachedServer` (worth a word in the sheet); demo
+// mode makes no call at all.
+
+export async function listNotebook(): Promise<{ ownerId: string; pages: ServerPage[] }> {
+  if (isDemoMode()) return { ownerId: '', pages: [] };
+  const response = await fetch(apiUrl('/api/notebook'), { credentials: 'include', cache: 'no-store' });
+  if (!response.ok) throw await parkError(response, 'Could not load the notebook');
+  const raw = await response.json() as { ownerId?: string; pages?: ServerPage[] };
+  const ownerId = parkedText(raw && raw.ownerId);
+  const pages = Array.isArray(raw && raw.pages) ? raw.pages : [];
+  return { ownerId, pages: ownerId ? pages : [] };
+}
+
+export async function fetchNotebookInk(pageId: string): Promise<{ ownerId: string; page: ServerPage } | null> {
+  if (isDemoMode() || !pageId) return null;
+  const response = await fetch(apiUrl(`/api/notebook/pages/${encodeURIComponent(pageId)}`), { credentials: 'include', cache: 'no-store' });
+  if (response.status === 404) return null;
+  if (!response.ok) throw await parkError(response, 'Could not load the page');
+  const raw = await response.json() as { ownerId?: string; page?: ServerPage };
+  return raw && raw.page && raw.ownerId ? { ownerId: parkedText(raw.ownerId), page: raw.page } : null;
+}
+
+/**
+ * Push pages. `keepalive` is the pagehide send: it can only POST, is limited to
+ * ~64 KiB and only reaches the server when the CORS preflight for this URL is
+ * still cached — a bonus, never the guarantee (the local store is).
+ */
+export async function pushNotebookPages(pages: PageWire[], opts: { keepalive?: boolean } = {}): Promise<PageAck> {
+  if (isDemoMode()) return { ownerId: '', saved: [], stale: [], rejected: [] };
+  const response = await fetch(apiUrl('/api/notebook/pages'), {
+    credentials: 'include',
+    method: opts.keepalive ? 'POST' : 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pages }),
+    ...(opts.keepalive ? { keepalive: true } : {}),
+  });
+  if (!response.ok) throw await parkError(response, 'Could not save the notebook');
+  const raw = await response.json() as Partial<PageAck>;
+  // The e2e catch-all answers `[]` to a PUT as well; a 2xx that is not an ack
+  // must read as "nothing acknowledged", not as "everything saved".
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray(raw.saved)) {
+    throw Object.assign(new Error('Unexpected notebook answer'), { reachedServer: false });
+  }
+  return {
+    ownerId: parkedText(raw.ownerId),
+    saved: raw.saved || [],
+    stale: Array.isArray(raw.stale) ? raw.stale : [],
+    rejected: Array.isArray(raw.rejected) ? raw.rejected : [],
+  };
+}
+
+export async function deleteNotebookPage(pageId: string): Promise<{ removed: number }> {
+  if (isDemoMode() || !pageId) return { removed: 0 };
+  const response = await fetch(apiUrl(`/api/notebook/pages/${encodeURIComponent(pageId)}`), { credentials: 'include', method: 'DELETE' });
+  if (!response.ok) throw await parkError(response, 'Could not delete the page');
+  return response.json() as Promise<{ removed: number }>;
+}
+
 export async function unparkDrafts(gameId: string): Promise<{ removed: number }> {
   if (isDemoMode() || !gameId) return { removed: 0 };
   const response = await fetch(apiUrl(`/api/drafts/parked/${encodeURIComponent(gameId)}`), {

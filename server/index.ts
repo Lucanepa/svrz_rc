@@ -189,6 +189,17 @@ app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
     parkJson(req, res, next);
     return;
   }
+  if (NOTEBOOK_BODY_PATH_RE.test(req.path)) {
+    if (Number(req.headers['content-length'] || 0) > NOTEBOOK_MAX_BYTES) {
+      // This gate answers before the request-log middleware runs, so without
+      // its own line the refusal would be invisible in the Protokoll.
+      log.warn('notebook.too-big', 'notebook push refused by size', { bytes: Number(req.headers['content-length'] || 0) }, reqCtx(req));
+      res.status(413).json({ error: 'Die Seite ist zu gross zum Sichern.' });
+      return;
+    }
+    notebookJson(req, res, next);
+    return;
+  }
   (BIG_BODY_PATH_RE.test(req.path) ? generousJson : modestJson)(req, res, next);
 });
 
@@ -260,6 +271,14 @@ const PARK_BODY_PATH_RE = /^\/api\/drafts\/parked\/[^/]+\/?$/i;
 const PARK_MAX_BYTES = 1_900_000;
 const parkJson = express.json({ limit: PARK_MAX_BYTES });
 
+// The notebook's push route, same gate for the same reason: one page of ink is
+// a few hundred kB of stroke samples. The list GET (/api/notebook) and the
+// per-page GET/DELETE live on other paths, so they keep the modest parser.
+// Strictly below J()'s 2_000_000 as well — see the note above PARK_MAX_BYTES.
+const NOTEBOOK_BODY_PATH_RE = /^\/api\/notebook\/pages\/?$/i;
+const NOTEBOOK_MAX_BYTES = 1_500_000;
+const notebookJson = express.json({ limit: NOTEBOOK_MAX_BYTES });
+
 // Two routes carry something its author was promised stays with the RC chair:
 // a coach's private note, and a referee's survey answers. This log is read by
 // every admin, so their bodies are reduced to shape — and the survey's
@@ -284,6 +303,12 @@ const CONFIDENTIAL_BODY_PATHS = [
   // in the ring, the daily .jsonl and Admin -> Protokoll verbatim, referee name
   // beside remarks the coach may never even file.
   PARK_BODY_PATH_RE,
+  // A notebook page is the coach's private words, written in a hall about the
+  // people in it, and notebookOwner refuses the console session that reads
+  // this log. A literal, not the constant declared beside the routes: this
+  // array is built at module load, when that constant is still in its
+  // temporal dead zone.
+  /^\/api\/notebook(\/[^/]+){0,2}\/?$/i,
 ];
 
 function logBody(path: string, body: unknown): unknown {
@@ -698,7 +723,7 @@ setInterval(() => {
   // Every bucket, not just the login ones: clientLogRl is fed by an
   // unauthenticated endpoint that any scanner can reach, so a forgotten map
   // grows one entry per source IP for the life of the process.
-  for (const store of [gateAttempts, signatureAttempts, sharedLoginGlobal, surveyAttempts, clientLogRl, clientLogGlobalRl]) {
+  for (const store of [gateAttempts, signatureAttempts, sharedLoginGlobal, surveyAttempts, clientLogRl, clientLogGlobalRl, parkAttempts, notebookAttempts]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
@@ -10485,6 +10510,478 @@ app.delete('/api/drafts/parked/:gameId', requireRcSession, async (req: Request, 
     // Nothing to delete because the collection does not exist yet is still
     // "there is no parked copy of this game", which is what the caller asked to
     // be true.
+    if (isMissingCollectionError(error)) { res.json({ ok: true, removed: 0 }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+// ── Notebook: the coach's private pages ─────────────────────────────
+//
+// A referee coach in a hall wants somewhere to write — a line, a sketch, the
+// time a thing happened — without deciding first what it is for. The notebook
+// is that: pages of text or ink, kept on the device (src/lib/notebook.ts) and
+// mirrored here so a phone that throws its site data away between two games
+// does not take the evening's notes with it. It is not per game and it is not
+// a record: every page is DELETED ONE WEEK after it was written, on both sides,
+// and nothing extends that. What must outlive the week goes into the report —
+// the app lets a coach lift a page into a form field — where it belongs.
+//
+// What the server does with a page is store it, hand it back to the coach who
+// wrote it, and delete it a week later. It files nothing, mails nothing, and
+// nothing here reaches feedback_json or the PDF unless the coach inserts it in
+// the app; /api/feedback/submit stays the only door.
+//
+// THE OWNERSHIP RULE is the parked-drafts one, verbatim: the owner is derived
+// from the SESSION and never from the body, the query or the path; every read
+// and every write carries `owner_id = "<this session's RC id>"`; an admin
+// console session is refused (notebookOwner) because a notebook belongs to a
+// person and "no identity means full access" is exactly the reading a private
+// page must not inherit. Nobody but the author reads a page — not the chair,
+// not the console: the coach was promised as much (Luca, 2026-09-15).
+//
+// ONE ROW PER PAGE, never one row per coach: two devices in one evening merge
+// per page (last writer wins, per page), a deleted page stays as a tombstone
+// (deleted = true, payload = {}) until its week is up so a stale copy elsewhere
+// cannot bring it back, and one page of ink gets its own 2_000_000 J() budget
+// instead of sharing it with every other page.
+const NOTEBOOK_COLLECTION = 'rc_notebook';
+
+// Bounds on one stored page. Generous for honest use, tight enough that a
+// wedged or hostile client cannot grow the collection without limit. The wire
+// size is capped separately and earlier, ahead of the JSON parser
+// (NOTEBOOK_MAX_BYTES).
+const NOTEBOOK_MAX_PAGES_PER_REQUEST = 50;
+const NOTEBOOK_MAX_TEXT_LEN = 20_000;          // a page, not a report
+const NOTEBOOK_MAX_INK_CHARS = 800_000;        // serialised ink page — the SAME predicate src/lib/notebook.ts checks at stroke end
+const NOTEBOOK_MAX_INK_STROKES = 4_000;
+const NOTEBOOK_MAX_PAGES = 40;                 // live pages per coach: a backstop, not a working budget
+const NOTEBOOK_MAX_USED_IN = 10;
+const NOTEBOOK_MAX_EXTRA_BYTES = 20_000;
+const NOTEBOOK_MAX_CLOCK_SKEW_MS = 24 * 60 * 60 * 1000;
+// "Deleted at most one week after" — Luca, 2026-09-15. The client mirrors the
+// number (NOTEBOOK_TTL_MS in src/lib/notebook.ts) and hides a page the moment
+// its week is up; this is the side that actually deletes.
+const NOTEBOOK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// The prune reads the owner's whole notebook; once per ten minutes per owner is
+// plenty for a table whose rows die in a week, and it keeps a five-second
+// autosave loop from reading forty rows on every push.
+const NOTEBOOK_PRUNE_EVERY_MS = 10 * 60 * 1000;
+const NOTEBOOK_PAGE_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+const NOTEBOOK_KINDS = new Set(['text', 'ink']);
+const NOTEBOOK_FIELDS = new Set(['bemerkungen', 'highlights', 'improvements', 'goals', 'tips']);
+// A pen page may carry a printed background under the ink — today only the
+// court outline a coach sketches positions on. Not ink, not stored as ink.
+const NOTEBOOK_BACKGROUNDS = new Set(['', 'court']);
+const NOTEBOOK_INDEX_FIELDS = 'id,page_id,kind,created_at,updated_at,deleted,schema,created,updated';
+
+// Its own bucket, keyed by RC id (a hall is one NAT). Two devices of one coach
+// share it; a game is about sixty pushes per device plus the pulls.
+const notebookAttempts: RateLimitStore = new Map();
+const NOTEBOOK_RATE_LIMIT_MAX = 300;
+function checkNotebookRateLimit(rcId: string) {
+  return checkRateLimit(notebookAttempts, rcId, NOTEBOOK_RATE_LIMIT_MAX, PARK_RATE_LIMIT_WINDOW_MS);
+}
+
+// One notebook per coach, so one lock per coach: the upsert below is a
+// read-then-write, and two devices pushing at once would otherwise both miss
+// a row and both create it.
+const notebookWrites = new Map<string, Promise<unknown>>();
+function withNotebookLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  return chainOnKey(notebookWrites, key, fn);
+}
+const notebookPrunedAt = new Map<string, number>();
+
+/** The identity a page belongs to, or null with the response already sent.
+ *  Same shape and same reasoning as parkOwner. */
+async function notebookOwner(req: Request, res: ExpressResponse): Promise<ActiveRcPerson | null> {
+  const session = verifyRcSession(req);
+  const person = session.rcId ? (await getActiveRcPeople()).find((p) => p.id === session.rcId) : undefined;
+  if (!person) {
+    res.status(403).json({ error: 'Den Notizblock gibt es nur für angemeldete Referee Coaches.' });
+    return null;
+  }
+  return person;
+}
+
+type NotebookUse = { f: string; r: string; g: string; label: string; t: number };
+type NotebookPagePayload = {
+  pageId: string;
+  kind: 'text' | 'ink';
+  text: string;
+  bg: string;
+  points: number;
+  usedIn: NotebookUse[];
+  createdAt: number;
+  updatedAt: number;
+  deleted: boolean;
+  schema: number;
+  ink?: unknown;
+  extra?: Record<string, unknown>;
+};
+// Flat, not a tagged union: tsconfig has no `strict`, so a union tagged by an
+// optional key does not narrow.
+type NotebookSanitised = { page: NotebookPagePayload | null; reason: string; pageId: string };
+
+// A device clock that is merely wrong is normal; one a day ahead would pin a
+// page to the top of every list and, for createdAt, stretch its week. Beyond a
+// day of skew the server's own now is used, and the client adopts what the ack
+// reports back, so the expiry it shows is the one that will be enforced.
+function notebookStamp(raw: unknown, now: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return now;
+  return n > now + NOTEBOOK_MAX_CLOCK_SKEW_MS ? now : Math.floor(n);
+}
+
+function notebookRawId(raw: unknown): string {
+  return raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? asText((raw as Record<string, unknown>).pageId).slice(0, 64)
+    : '';
+}
+
+// Ink is numbers and nothing else: a page is { w: 1000, h: 1414, strokes }, a
+// stroke is { c, w, p, d } with `d` a flat array of integers in groups of four.
+// There is no string anywhere in it, so nothing in a stored page can be a URL,
+// markup or a beacon — the reason parkSignature exists does not arise here.
+function sanitizeNotebookInk(raw: unknown): { page: { w: number; h: number; strokes: unknown[] }; points: number } | { reason: string } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { reason: 'ink-shape' };
+  const source = raw as Record<string, unknown>;
+  if (source.w !== 1000 || source.h !== 1414 || !Array.isArray(source.strokes)) return { reason: 'ink-shape' };
+  if (source.strokes.length > NOTEBOOK_MAX_INK_STROKES) return { reason: 'ink-too-big' };
+  const strokes: unknown[] = [];
+  let points = 0;
+  for (const item of source.strokes) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return { reason: 'ink-shape' };
+    const st = item as Record<string, unknown>;
+    const c = st.c === 1 ? 1 : st.c === 0 ? 0 : -1;
+    const w = Number(st.w);
+    const p = st.p === 1 ? 1 : st.p === 0 ? 0 : -1;
+    const d = st.d;
+    if (c < 0 || p < 0 || !Number.isInteger(w) || w < 1 || w > 20 || !Array.isArray(d) || d.length % 4 !== 0) return { reason: 'ink-shape' };
+    for (const v of d) if (!Number.isInteger(v)) return { reason: 'ink-shape' };
+    points += d.length / 4;
+    strokes.push({ c, w, p, d });
+  }
+  const page = { w: 1000, h: 1414, strokes };
+  if (JSON.stringify(page).length > NOTEBOOK_MAX_INK_CHARS) return { reason: 'ink-too-big' };
+  return { page, points };
+}
+
+/**
+ * One page, reduced to what may be stored. DROPPED: `ownerId` and `id` (the
+ * body asserting whose page this is — the session says), `dirty`, `savedAt`,
+ * `rejectedReason` (one device's bookkeeping). An unreadable page is refused
+ * with a reason the client can show, never defaulted into something else.
+ */
+function sanitizeNotebookPage(raw: unknown, now: number): NotebookSanitised {
+  const pageId = notebookRawId(raw);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { page: null, reason: 'bad-page', pageId };
+  const source = raw as Record<string, unknown>;
+  if (!NOTEBOOK_PAGE_ID_RE.test(pageId)) return { page: null, reason: 'bad-id', pageId };
+  const kind = parkText(source.kind, 8);
+  if (!NOTEBOOK_KINDS.has(kind)) return { page: null, reason: 'bad-kind', pageId };
+  const deleted = source.deleted === true;
+  const schema = Number(source.schema);
+  const usedIn: NotebookUse[] = [];
+  if (Array.isArray(source.usedIn)) {
+    for (const u of source.usedIn.slice(0, NOTEBOOK_MAX_USED_IN)) {
+      if (!u || typeof u !== 'object' || Array.isArray(u)) continue;
+      const use = u as Record<string, unknown>;
+      const f = parkText(use.f, 32);
+      const r = parkText(use.r, 8);
+      if (!NOTEBOOK_FIELDS.has(f) || !FEEDBACK_ROLES.includes(r)) continue;
+      usedIn.push({ f, r, g: parkText(use.g, 64), label: parkText(use.label, PARK_MAX_SHORT_LEN), t: notebookStamp(use.t, now) });
+    }
+  }
+  const page: NotebookPagePayload = {
+    pageId,
+    kind: kind as 'text' | 'ink',
+    text: deleted || kind !== 'text' ? '' : parkText(source.text, NOTEBOOK_MAX_TEXT_LEN),
+    bg: !deleted && kind === 'ink' && NOTEBOOK_BACKGROUNDS.has(parkText(source.bg, 16)) ? parkText(source.bg, 16) : '',
+    points: 0,
+    usedIn: deleted ? [] : usedIn,
+    createdAt: notebookStamp(source.createdAt, now),
+    updatedAt: notebookStamp(source.updatedAt, now),
+    deleted,
+    schema: Number.isFinite(schema) && schema >= 1 ? Math.floor(schema) : 1,
+    extra: deleted ? undefined : parkExtra(source.extra),
+  };
+  if (!deleted && kind === 'ink') {
+    // An ink page pushed without its strokes is a metadata-only update (a
+    // usedIn mark cannot happen on ink, so in practice: nothing) — and a page
+    // whose strokes are present must pass the shape check whole.
+    if (source.ink !== undefined) {
+      const ink = sanitizeNotebookInk(source.ink);
+      if ('reason' in ink) return { page: null, reason: ink.reason, pageId };
+      page.ink = ink.page;
+      page.points = ink.points;
+    } else {
+      const points = Number(source.points);
+      page.points = Number.isFinite(points) && points >= 0 ? Math.floor(points) : 0;
+    }
+  }
+  return { page, reason: '', pageId };
+}
+
+// The rows this owner holds. Every caller in this section goes through here,
+// so the owner clause cannot be forgotten at one of them.
+async function notebookRowsFor(ownerId: string, fields?: string): Promise<AnyRecord[]> {
+  return pb.collection(NOTEBOOK_COLLECTION).getFullList<AnyRecord>({
+    filter: `owner_id = "${escapeFilterValue(ownerId)}"`,
+    sort: '-created',
+    ...(fields ? { fields } : {}),
+  });
+}
+
+// When a row's week is up. The DEVICE's creation stamp when it is readable —
+// it was clamped to "no later than the server's now" on the way in, so it can
+// only be earlier than `created`, and earlier is what "one week after it was
+// written" means for a page that sat offline for days before it synced. The
+// server's own `created` is the fallback for a row whose stamp cannot be read.
+function notebookExpiry(row: AnyRecord): number {
+  const device = Date.parse(asText(row.created_at));
+  const server = Date.parse(asText(row.created));
+  const base = Number.isFinite(device) ? device : server;
+  return Number.isFinite(base) ? base + NOTEBOOK_TTL_MS : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Delete what is past its week, and the oldest live pages above the cap. This
+ * owner only, by ids read under the owner filter — a prune can no more reach a
+ * colleague's page than a read can. Tombstones go with the rest: once the row
+ * that a tombstone guards against would itself be expired, the tombstone has
+ * nothing left to do.
+ */
+async function pruneNotebook(ownerId: string): Promise<void> {
+  const rows = await notebookRowsFor(ownerId, 'id,created_at,created,deleted');
+  const now = Date.now();
+  let live = 0;
+  const doomed = rows.filter((row) => {
+    if (notebookExpiry(row) <= now) return true;
+    if (row.deleted === true) return false;
+    live += 1;
+    return live > NOTEBOOK_MAX_PAGES;   // rows come newest first, so the overflow is the oldest
+  });
+  for (const row of doomed) await pb.collection(NOTEBOOK_COLLECTION).delete(row.id);
+}
+
+async function pruneNotebookThrottled(ownerId: string, req: Request): Promise<void> {
+  const last = notebookPrunedAt.get(ownerId) ?? 0;
+  if (Date.now() - last < NOTEBOOK_PRUNE_EVERY_MS) return;
+  notebookPrunedAt.set(ownerId, Date.now());
+  // Best-effort and after the answer's data is settled: a coach whose oldest
+  // page could not be swept has still saved this one.
+  await withNotebookLock(ownerId, () => pruneNotebook(ownerId)).catch((error: unknown) => {
+    log.warn('notebook.prune', 'could not prune notebook pages', { error: String(error) }, reqCtx(req));
+  });
+}
+
+function notebookSchemaError(): SchemaOutOfDateError {
+  return new SchemaOutOfDateError('Die Sammlung „rc_notebook" fehlt in PocketBase — bitte setup-schema.mjs neu ausführen.');
+}
+
+function toNotebookIndexRow(row: AnyRecord) {
+  return {
+    pageId: asText(row.page_id),
+    kind: asText(row.kind),
+    // Epoch milliseconds, the unit the client keeps. Stored as ISO text so the
+    // columns sort and read in PocketBase.
+    createdAt: Date.parse(asText(row.created_at)) || 0,
+    updatedAt: Date.parse(asText(row.updated_at)) || 0,
+    deleted: row.deleted === true,
+    schema: Number(row.schema) || 1,
+    savedAt: asText(row.updated) || asText(row.created),
+  };
+}
+
+function toNotebookWire(row: AnyRecord, withInk: boolean) {
+  const p = (row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload) ? row.payload : {}) as Record<string, unknown>;
+  const { ink, ...rest } = p;
+  return { ...toNotebookIndexRow(row), ...rest, ...(withInk && ink ? { ink } : {}) };
+}
+
+// Express otherwise emits an ETag a proxy could revalidate, and a notebook list
+// answered from any cache is a list from another evening.
+function notebookNoStore(res: ExpressResponse): void {
+  res.set('Cache-Control', 'no-store');
+}
+
+// The index: every live page's metadata and text, never its ink. Ink is fetched
+// per page when a pen page is opened, so a sheet opening in a gym does not pull
+// megabytes it may never look at.
+app.get('/api/notebook', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  const owner = await notebookOwner(req, res);
+  if (!owner) return;
+  const rl = checkNotebookRateLimit(owner.id);
+  if (!rl.allowed) { denyRateLimited(req, res, 'notebook', rl.retryAfterMs); return; }
+  notebookNoStore(res);
+  try {
+    await ensureAdminAuth();
+    const rows = await notebookRowsFor(owner.id);
+    const now = Date.now();
+    // `ownerId` travels so the client keys the restored pages under the
+    // identity the SERVER resolved (the same reason as the parked list).
+    res.json({ ownerId: owner.id, pages: rows.filter((row) => notebookExpiry(row) > now).map((row) => toNotebookWire(row, false)) });
+  } catch (error) {
+    if (isMissingCollectionError(error)) { res.json({ ownerId: owner.id, pages: [] }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.get('/api/notebook/pages/:pageId', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  const owner = await notebookOwner(req, res);
+  if (!owner) return;
+  const rl = checkNotebookRateLimit(owner.id);
+  if (!rl.allowed) { denyRateLimited(req, res, 'notebook', rl.retryAfterMs); return; }
+  notebookNoStore(res);
+  const pageId = asText(req.params.pageId).slice(0, 64);
+  // Fixed sentences on every 4xx: req.out logs their bodies, and a page must
+  // never be echoed into the Protokoll by way of an error message.
+  if (!NOTEBOOK_PAGE_ID_RE.test(pageId)) { res.status(404).json({ error: 'Seite nicht gefunden.' }); return; }
+  try {
+    await ensureAdminAuth();
+    const row = await pb.collection(NOTEBOOK_COLLECTION).getFirstListItem<AnyRecord>(
+      `owner_id = "${escapeFilterValue(owner.id)}" && page_id = "${escapeFilterValue(pageId)}"`,
+    );
+    if (notebookExpiry(row) <= Date.now()) { res.status(404).json({ error: 'Seite nicht gefunden.' }); return; }
+    res.json({ ownerId: owner.id, page: toNotebookWire(row, true) });
+  } catch (error) {
+    if (isMissingCollectionError(error) || isRecordNotFound(error)) { res.status(404).json({ error: 'Seite nicht gefunden.' }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+/**
+ * Push (upsert) pages. Per page: a row that is already as new or newer is left
+ * alone and reported in `stale` — the client then pulls; an unreadable page is
+ * reported in `rejected` with a reason and never defaulted; everything else is
+ * written, and `saved` carries the stamps the SERVER stored (clamped when the
+ * device was a day ahead), which the client adopts.
+ *
+ * POST as well as PUT, same handler, same reason as the park route: the send
+ * that survives a page going away can only POST.
+ */
+async function handleNotebookPush(req: Request, res: ExpressResponse): Promise<void> {
+  const owner = await notebookOwner(req, res);
+  if (!owner) return;
+  const rl = checkNotebookRateLimit(owner.id);
+  if (!rl.allowed) { denyRateLimited(req, res, 'notebook', rl.retryAfterMs); return; }
+  try {
+    const now = Date.now();
+    const incoming = Array.isArray((req.body ?? {}).pages) ? ((req.body as AnyRecord).pages as unknown[]) : [];
+    const saved: { pageId: string; savedAt: string; updatedAt: number; createdAt: number }[] = [];
+    const stale: { pageId: string; updatedAt: number }[] = [];
+    const rejected: { pageId: string; reason: string }[] = [];
+    // Deduplicated by page id BEFORE the store is touched: `existing` is read
+    // once, so two copies of one new id in a batch would otherwise both miss it
+    // and both create a row — the duplicate the lock exists to prevent,
+    // reachable inside a single request.
+    const byId = new Map<string, NotebookPagePayload>();
+    for (const raw of incoming) {
+      const s = sanitizeNotebookPage(raw, now);
+      if (!s.page) { rejected.push({ pageId: s.pageId, reason: s.reason }); continue; }
+      if (!byId.has(s.page.pageId) && byId.size >= NOTEBOOK_MAX_PAGES_PER_REQUEST) { rejected.push({ pageId: s.page.pageId, reason: 'too-many' }); continue; }
+      const prev = byId.get(s.page.pageId);
+      if (!prev || prev.updatedAt < s.page.updatedAt) byId.set(s.page.pageId, s.page);
+    }
+    if (byId.size === 0 && rejected.length === 0) { res.status(400).json({ error: 'Nichts zu sichern.' }); return; }
+
+    await ensureAdminAuth();
+    await withNotebookLock(owner.id, async () => {
+      const existing = await notebookRowsFor(owner.id, 'id,page_id,kind,created_at,updated_at,deleted,created').catch((error: unknown) => {
+        if (isMissingCollectionError(error)) throw notebookSchemaError();
+        throw error;
+      });
+      let livePages = existing.filter((r) => r.deleted !== true && notebookExpiry(r) > now).length;
+      for (const page of byId.values()) {
+        const row = existing.find((r) => asText(r.page_id) === page.pageId);
+        const rowAt = row ? Date.parse(asText(row.updated_at)) || 0 : -1;
+        // Tie goes to the server: the copy that got here first stays.
+        if (row && rowAt >= page.updatedAt) { stale.push({ pageId: page.pageId, updatedAt: rowAt }); continue; }
+        const rowLive = !!row && row.deleted !== true;
+        if (!page.deleted && !rowLive) {
+          if (livePages >= NOTEBOOK_MAX_PAGES) { rejected.push({ pageId: page.pageId, reason: 'too-many-pages' }); continue; }
+          livePages += 1;
+        }
+        if (rowLive && page.deleted) livePages -= 1;
+        // A page created on one device keeps its creation stamp on every other:
+        // the row's created_at is written once and never moved by a later edit,
+        // or a week would restart with every keystroke.
+        const createdAt = row && Date.parse(asText(row.created_at)) ? (Date.parse(asText(row.created_at)) as number) : page.createdAt;
+        const { pageId, kind, updatedAt, deleted, schema, ink, ...payloadRest } = page;
+        const payload = deleted ? {} : { ...payloadRest, ...(ink ? { ink } : {}) };
+        delete (payload as Record<string, unknown>).createdAt;
+        const fields = {
+          // Written from the session on every single upsert, so a row cannot
+          // drift onto another owner even if one were somehow reached.
+          owner_id: owner.id,
+          page_id: pageId,
+          kind,
+          created_at: new Date(createdAt).toISOString(),
+          updated_at: new Date(updatedAt).toISOString(),
+          deleted,
+          schema,
+          payload,
+        };
+        try {
+          const written = row
+            ? await pb.collection(NOTEBOOK_COLLECTION).update<AnyRecord>(row.id, fields)
+            : await pb.collection(NOTEBOOK_COLLECTION).create<AnyRecord>(fields);
+          if (row) Object.assign(row, { updated_at: fields.updated_at, deleted, kind });
+          else existing.push(written);
+          saved.push({ pageId, savedAt: asText(written.updated) || asText(written.created), updatedAt, createdAt });
+        } catch (error) {
+          // A column refusal the sanitiser missed is this PAGE's problem, not a
+          // 500 and an alert mail for the whole batch.
+          if (isPocketBaseBadRequest(error)) {
+            rejected.push({ pageId, reason: 'server-refused' });
+            log.warn('notebook.refused', 'PocketBase refused a notebook page', { pageId, error: String(error) }, reqCtx(req));
+            continue;
+          }
+          throw error;
+        }
+      }
+    });
+    await pruneNotebookThrottled(owner.id, req);
+    const data = { saved: saved.length, stale: stale.length, rejected: rejected.length, bytes: Number(req.headers['content-length'] || 0) };
+    if (rejected.length > 0) log.warn('notebook.saved', 'notebook synced with refusals', { ...data, reasons: rejected.map((r) => r.reason) }, reqCtx(req));
+    else log.info('notebook.saved', 'notebook synced', data, reqCtx(req));
+    res.json({ ok: true, ownerId: owner.id, saved, stale, rejected });
+  } catch (error) {
+    if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+}
+
+app.put('/api/notebook/pages', requireRcSession, handleNotebookPush);
+app.post('/api/notebook/pages', requireRcSession, handleNotebookPush);
+
+/**
+ * Tombstone one page — the fallback behind the client-driven tombstone that
+ * travels through the push. Stamped ABOVE the row it replaces, so a device
+ * whose clock ran ahead cannot out-vote the deletion. Removing nothing is a
+ * success: the page may be gone from another device already.
+ */
+app.delete('/api/notebook/pages/:pageId', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  const owner = await notebookOwner(req, res);
+  if (!owner) return;
+  const rl = checkNotebookRateLimit(owner.id);
+  if (!rl.allowed) { denyRateLimited(req, res, 'notebook', rl.retryAfterMs); return; }
+  const pageId = asText(req.params.pageId).slice(0, 64);
+  if (!NOTEBOOK_PAGE_ID_RE.test(pageId)) { res.json({ ok: true, removed: 0 }); return; }
+  try {
+    await ensureAdminAuth();
+    const removed = await withNotebookLock(owner.id, async () => {
+      // Read this owner's rows and update by id — never a filtered write built
+      // from the path.
+      const rows = (await notebookRowsFor(owner.id, 'id,page_id,updated_at,deleted')).filter((r) => asText(r.page_id) === pageId && r.deleted !== true);
+      for (const row of rows) {
+        const at = Math.max(Date.now(), (Date.parse(asText(row.updated_at)) || 0) + 1);
+        await pb.collection(NOTEBOOK_COLLECTION).update(row.id, { deleted: true, payload: {}, updated_at: new Date(at).toISOString() });
+      }
+      return rows.length;
+    });
+    res.json({ ok: true, removed });
+  } catch (error) {
     if (isMissingCollectionError(error)) { res.json({ ok: true, removed: 0 }); return; }
     res.status(500).json({ error: safeError(error) });
   }

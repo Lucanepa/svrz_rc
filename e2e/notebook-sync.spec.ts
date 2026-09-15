@@ -146,7 +146,7 @@ test("the ack's stamps are adopted, so the shown expiry is the enforced one", as
   await launcher(page).click();
   await pageBox(page).fill('clamped');
   await expect.poll(async () => (await storedPages(page))[0]?.createdAt, SYNC).toBe(sixDaysAgo);
-  await expect(sheet(page).getByText(/wird morgen gelöscht|deleted tomorrow/)).toBeVisible();
+  await expect(sheet(page).getByText(/Wird morgen gelöscht|Deleted tomorrow/)).toBeVisible();
 });
 
 test('the server refusing is said in words; the network failing is not', async ({ page }) => {

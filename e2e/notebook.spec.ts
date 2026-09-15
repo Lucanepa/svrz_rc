@@ -203,7 +203,7 @@ test.describe('A week is a week', () => {
     await page.goto('/');
     await openPad(page);
     await expect(pageBox(page)).toHaveValue('six days old');
-    await expect(sheet(page).locator('span', { hasText: /^(wird (am .+|morgen) gelöscht|deleted (on .+|tomorrow))$/ })).toBeVisible();
+    await expect(sheet(page).locator('span', { hasText: /^(Wird (am .+|morgen) gelöscht|Deleted (on .+|tomorrow))$/ })).toBeVisible();
     await expect(sheet(page).getByText('eight days old')).toHaveCount(0);
     await expect.poll(async () => (await storedPages(page)).map((r) => r.pageId).sort()).toEqual(['page-fresh']);
   });
@@ -213,7 +213,7 @@ test.describe('A week is a week', () => {
     await seedPad(page, [padPage({ createdAt: Date.now() - 6.5 * DAY })]);
     await page.goto('/');
     await openPad(page);
-    await expect(sheet(page).getByText(/wird morgen gelöscht|deleted tomorrow/)).toBeVisible();
+    await expect(sheet(page).getByText(/Wird morgen gelöscht|Deleted tomorrow/)).toBeVisible();
   });
 });
 

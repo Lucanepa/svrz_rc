@@ -4606,14 +4606,16 @@ export default function App() {
       }
       const isActive = (c.stage || 'active') !== 'inactive';
       if (!listFilterShowInactive && !isActive) return false;
-      if (listFilterNeedsObs && !c.observation_status?.needsObservation) return false;
       // Somebody asked for one of their upcoming games to be watched. Matched
       // against the games the row actually lists — the focus rule included — so
       // the switch cannot leave a coachee on the list with nothing under them.
-      if (coacheeFilterStarred) {
-        const games = upcomingGamesByReferee.get(normName(c.full_name || '')) ?? [];
-        if (!games.some(({ game, role }) => game.starred && inCoacheeFocus(c, game.league || '', [role === '1. SR' ? '1SR' : '2SR']))) return false;
-      }
+      const flagged = (upcomingGamesByReferee.get(normName(c.full_name || '')) ?? [])
+        .some(({ game, role }) => game.starred && inCoacheeFocus(c, game.league || '', [role === '1. SR' ? '1SR' : '2SR']));
+      // ...and it keeps them on the "Beobachtung nötig" list whatever their
+      // status says, the way the Games tab keeps the flagged game itself: a
+      // referee already signed off can still have a game somebody wants seen.
+      if (listFilterNeedsObs && !c.observation_status?.needsObservation && !flagged) return false;
+      if (coacheeFilterStarred && !flagged) return false;
       return true;
     });
     const statusPriority = (c: Coachee) => {
@@ -4883,16 +4885,24 @@ export default function App() {
         const refCoachees = refs.map((r) => coacheeByName.get(r)).filter(Boolean) as Coachee[];
         // If no referees are coachees at all, keep the game visible
         if (refCoachees.length > 0) {
+          // The two "does this person still need a visit?" rules below are
+          // guesses about the referee. A star is somebody asking for THIS game
+          // — VolleyManager's RD/RSV mark, or an admin's hand — so it is not
+          // theirs to hide: with the flag switch on and the default
+          // "Beobachtung nötig" beside it, every flagged game of a referee an
+          // RC had already booked, or had already signed off, vanished, and the
+          // list read "keine passenden Spiele" until the default was switched
+          // off (Jasmin, 2026-09-15). The "taken games" view is an assignment
+          // audit — that one is not thinned out by the state either.
+          const askNeedsObs = gameFilterNeedsObs && !gameFilterRcAssigned && !g.starred;
           const hasEligibleRef = refCoachees.some((c) => {
             const isActive = (c.stage || 'active') !== 'inactive';
             if (!gameFilterShowInactive && !isActive) return false;
-            // The "taken games" view is an assignment audit — don't thin it out
-            // with the needs-observation state.
-            if (gameFilterNeedsObs && !gameFilterRcAssigned && !c.observation_status?.needsObservation) return false;
+            if (askNeedsObs && !c.observation_status?.needsObservation) return false;
             // Covered by a planned observation → all their games leave the open list.
-            // Skipped when viewing taken games, and when the user explicitly picked
-            // coachees in the filter (explicit intent beats the coverage default).
-            if (gameFilterNeedsObs && !gameFilterRcAssigned && gameFilterCoachees.length === 0 && coveredRefs.has(normName(c.full_name || ''))) return false;
+            // Skipped when the user explicitly picked coachees in the filter
+            // (explicit intent beats the coverage default).
+            if (askNeedsObs && gameFilterCoachees.length === 0 && coveredRefs.has(normName(c.full_name || ''))) return false;
             return true;
           });
           if (!hasEligibleRef) return false;

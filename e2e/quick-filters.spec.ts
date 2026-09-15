@@ -32,6 +32,24 @@ const TWOS_GAME = {
   firstReferee: COACHEE_TWO.full_name,
 };
 
+/** Signed off: the latest visit said no further one is needed, so the default
+ *  "needs observation" switch drops them — unless somebody flagged a game. */
+const COACHEE_DONE = {
+  id: 'c3', full_name: 'Nia Done', email: 'nia.done@example.ch',
+  referee_level: 'N3', stage: '2',
+  observation_status: { needsObservation: false, count: 1, hasCompletedObservation: true },
+};
+const DONES_STARRED = {
+  ...FREE, id: 'g-done-star', matchNo: '2400333',
+  homeTeam: 'TV Dietikon', awayTeam: 'VBC Kanti Baden',
+  firstReferee: COACHEE_DONE.full_name, starred: true,
+};
+const DONES_PLAIN = {
+  ...FREE, id: 'g-done-plain', matchNo: '2400334',
+  homeTeam: 'VBC Glattal', awayTeam: 'SV Volley Wetzikon',
+  firstReferee: COACHEE_DONE.full_name,
+};
+
 const flagPill = (page: Page) => page.getByRole('button', { name: /^(Flagged|Vorgemerkt)$/ });
 const focusPill = (page: Page) => page.getByRole('button', { name: /In focus only|Nur im Fokus|All games|Alle Spiele/ });
 
@@ -90,6 +108,36 @@ test.describe('games', () => {
     // Switched on, it stays reachable even though nothing is out of focus now.
     await expect(focusPill(page)).toBeVisible();
   });
+
+  // The default "needs observation" switch is a guess about the referee; a star
+  // is somebody asking for that game. Under the two together every flagged
+  // game of a referee already signed off, or already booked, went missing and
+  // the flag pill emptied the list (2026-09-15).
+  test('a flagged game stays on the default list when its referee is signed off', async ({ page }) => {
+    await stubSignedInApp(page);
+    await targets(page, { [COACHEE.id]: { mode: 'all' }, [COACHEE_DONE.id]: { mode: 'all' } });
+    await page.route('**/api/coachees*', (r) => r.fulfill({ json: [COACHEE, COACHEE_DONE] }));
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE, DONES_STARRED, DONES_PLAIN] }));
+    await page.goto('/games');
+    await expect(page.getByText(FREE.homeTeam).first()).toBeVisible();
+    await expect(page.getByText(DONES_STARRED.homeTeam)).toBeVisible();
+    // Their unflagged game is still nothing to plan around.
+    await expect(page.getByText(DONES_PLAIN.homeTeam)).toHaveCount(0);
+
+    await flagPill(page).click();
+    await expect(page.getByText(DONES_STARRED.homeTeam)).toBeVisible();
+    await expect(page.getByText(FREE.homeTeam)).toHaveCount(0);
+  });
+
+  test('a flagged game stays on the default list when a coach already took another of theirs', async ({ page }) => {
+    await stubSignedInApp(page);
+    // GAME is held by the signed-in coach with its feedback still open, which
+    // books the referee and hides the rest of their games — the star excepted.
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [GAME, FREE, STARRED] }));
+    await page.goto('/games');
+    await expect(page.getByText(STARRED.homeTeam)).toBeVisible();
+    await expect(page.getByText(FREE.homeTeam)).toHaveCount(0);
+  });
 });
 
 test.describe('coachees', () => {
@@ -138,5 +186,27 @@ test.describe('coachees', () => {
     await expect(page.getByText(FREE.homeTeam, { exact: true })).toHaveCount(0);
     await focusPill(page).click();
     await expect(page.getByText(FREE.homeTeam, { exact: true })).toBeVisible();
+  });
+
+  test('a flagged game keeps a signed-off coachee on the default list', async ({ page }) => {
+    await stubSignedInApp(page);
+    await targets(page, { [COACHEE.id]: { mode: 'all' }, [COACHEE_DONE.id]: { mode: 'all' } });
+    await page.route('**/api/coachees*', (r) => r.fulfill({ json: [COACHEE, COACHEE_DONE] }));
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE, DONES_STARRED] }));
+    await openCoachees(page);
+    await expect(page.getByText('Done, Nia')).toBeVisible();
+
+    await flagPill(page).click();
+    await expect(page.getByText('Done, Nia')).toBeVisible();
+    await expect(page.getByText(COACHEE_LISTED)).toHaveCount(0);
+  });
+
+  test('signed off with nothing flagged, the coachee stays off the default list', async ({ page }) => {
+    await stubSignedInApp(page);
+    await targets(page, { [COACHEE.id]: { mode: 'all' }, [COACHEE_DONE.id]: { mode: 'all' } });
+    await page.route('**/api/coachees*', (r) => r.fulfill({ json: [COACHEE, COACHEE_DONE] }));
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE, DONES_PLAIN] }));
+    await openCoachees(page);
+    await expect(page.getByText('Done, Nia')).toHaveCount(0);
   });
 });

@@ -6,9 +6,11 @@
 // appendPlainToRich (richText.ts); Tipps & Tricks is a plain textarea.
 
 import type { NotebookPage } from './notebook';
+import { richToPlain } from './richText';
 
 export function pageBlock(page: NotebookPage): string {
-  return (page.text || '').replace(/\s+$/, '');
+  const text = (page.text || '').replace(/\s+$/, '');
+  return richToPlain(text).trim() ? text : '';
 }
 
 export function importBlock(pages: NotebookPage[]): string {

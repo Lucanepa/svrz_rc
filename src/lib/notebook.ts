@@ -16,6 +16,7 @@
 // identity that may ever read it back on a shared tablet.
 
 import { requestPersistentStorage } from './formDraft';
+import { sanitizeRich } from './richText';
 
 export const NOTEBOOK_SCHEMA = 1;              // "newer is skipped, never migrated blind" — the drafts policy
 /** "Deleted at most one week after" — from the page's creation, both sides. */
@@ -273,7 +274,10 @@ export function pageFromServer(ownerId: string, s: ServerPage): NotebookPage | n
   const kind: PageKind = s.kind === 'ink' ? 'ink' : 'text';
   return {
     id: pageKey(ownerId, s.pageId), schema: Number(s.schema) || 1, ownerId, pageId: s.pageId, kind,
-    text: kind === 'text' && typeof s.text === 'string' ? s.text : '',
+    // A page is markup from the editor's subset; what the server hands back is
+    // untrusted at this boundary and lands in a contenteditable, so it goes
+    // through the sanitiser exactly like a parked draft's rich boxes.
+    text: kind === 'text' && typeof s.text === 'string' ? sanitizeRich(s.text) : '',
     bg: kind === 'ink' ? SAFE_BG(s.bg) : '',
     points: kind === 'ink' ? Number(s.points) || (s.ink ? s.ink.strokes.reduce((n, st) => n + st.d.length / 4, 0) : 0) : 0,
     usedIn: SAFE_USES(s.usedIn),

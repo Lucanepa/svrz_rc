@@ -21,6 +21,8 @@ import {
 import * as notebookSync from '../lib/notebookSync';
 import type { PadSyncStatus } from '../lib/notebookSync';
 import { importBlock, pageBlock } from '../lib/notebookImport';
+import { richToPlain } from '../lib/richText';
+import { RichSurface, RichToolbar, appendBullet, appendNumbered } from './RichText';
 import { confirmDialog, toast } from './ui';
 import AppSpinner from './AppSpinner';
 import type { InkTool } from './InkPad';
@@ -81,7 +83,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [field, setField] = useState<PadField>('bemerkungen');
   const [showUsed, setShowUsed] = useState(false);
-  const textRef = useRef<HTMLTextAreaElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const pressedBackdrop = useRef(false);
 
   const current = pages.find((p) => p.pageId === currentId) || null;
@@ -139,17 +141,27 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     setCurrentId(page.pageId);
   };
 
+  const currentText = current && current.kind === 'text' ? current.text : '';
   const insertTime = () => {
-    const el = textRef.current;
-    if (!el) return;
     const stamp = `${clockLabel(Date.now())} `;
-    const start = el.selectionStart ?? el.value.length;
-    const end = el.selectionEnd ?? start;
-    const before = el.value.slice(0, start);
-    const prefix = before && !/\n$/.test(before) ? '\n' : '';
-    el.setRangeText(prefix + stamp, start, end, 'end');
-    handleText(el.value);
-    el.focus();
+    const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
+    if (surface && document.activeElement === surface) {
+      // At the caret: execCommand keeps the selection and fires the surface's
+      // own input event, which is what commits the page.
+      document.execCommand('insertText', false, stamp);
+      return;
+    }
+    const plain = richToPlain(currentText);
+    handleText(currentText ? `${currentText.replace(/\s+$/, '')}${plain ? '\n' : ''}${stamp}` : stamp);
+  };
+  const format = (command: string, value?: string) => {
+    const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
+    if (surface && document.activeElement !== surface) surface.focus();
+    // styleWithCSS off: the browser emits <b>/<i>/<font color> rather than
+    // inline styles, which is closer to the stored subset — domToRich
+    // normalises either way.
+    document.execCommand('styleWithCSS', false, 'false');
+    document.execCommand(command, false, value);
   };
 
   // ── ink ─────────────────────────────────────────────────────────────
@@ -271,22 +283,24 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   );
 
   // Pages run newest first, like the strip: ‹ is the newer page, › the older.
+  // The page not yet written sits in front of the others and counts as one.
   const currentIndex = current ? pages.findIndex((p) => p.pageId === current.pageId) : -1;
+  const onVirtual = !current && showVirtual;
+  const total = pages.length + (onVirtual ? 1 : 0);
+  const position = onVirtual ? 1 : currentIndex + 1;
   const goTo = (index: number) => {
     const target = pages[index];
     if (!target) return;
     setVirtual(null);
     setCurrentId(target.pageId);
   };
-  const pageNav = pages.length > 0 && (
-    <div className="flex items-center gap-1 shrink-0" role="group" aria-label={tp.padPageOf.replace('{n}', '').replace('{m}', '').trim()}>
-      <button type="button" onClick={() => goTo(currentIndex - 1)} disabled={currentIndex <= 0} aria-label={tp.padPrevPage} title={tp.padPrevPage} className="h-7 w-7 inline-flex items-center justify-center rounded border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 disabled:opacity-40">
+  const pageNav = total > 0 && (
+    <div className="flex items-center gap-1 shrink-0" role="group">
+      <button type="button" onClick={() => goTo(currentIndex - 1)} disabled={onVirtual || currentIndex <= 0} aria-label={tp.padPrevPage} title={tp.padPrevPage} className="h-7 w-7 inline-flex items-center justify-center rounded border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 disabled:opacity-40">
         <ChevronLeft size={14} />
       </button>
-      <span className="text-[11px] text-stone-600 tabular-nums min-w-[5.5rem] text-center">
-        {currentIndex >= 0 ? fill(tp.padPageOf, { n: currentIndex + 1, m: pages.length }) : fill(tp.padPageOf, { n: '–', m: pages.length })}
-      </span>
-      <button type="button" onClick={() => goTo(currentIndex < 0 ? 0 : currentIndex + 1)} disabled={currentIndex >= pages.length - 1} aria-label={tp.padNextPage} title={tp.padNextPage} className="h-7 w-7 inline-flex items-center justify-center rounded border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 disabled:opacity-40">
+      <span className="text-[11px] text-stone-600 tabular-nums min-w-[5.5rem] text-center">{fill(tp.padPageOf, { n: position, m: total })}</span>
+      <button type="button" onClick={() => goTo(onVirtual ? 0 : currentIndex + 1)} disabled={position >= total} aria-label={tp.padNextPage} title={tp.padNextPage} className="h-7 w-7 inline-flex items-center justify-center rounded border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 disabled:opacity-40">
         <ChevronRight size={14} />
       </button>
     </div>
@@ -353,7 +367,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                           <span className="block text-[10.5px] text-stone-500">{dayTimeLabel(p.createdAt)}{used ? ` · ${tp.padUsedIn.split(' → ')[0]}` : ''}</span>
                           {isInk
                             ? <span className="block text-xs">{tp.padInkOnly}</span>
-                            : <span className="block whitespace-pre-wrap break-words line-clamp-3 text-stone-800">{pageBlock(p)}</span>}
+                            : <span className="block whitespace-pre-wrap break-words line-clamp-3 text-stone-800">{richToPlain(pageBlock(p))}</span>}
                         </span>
                       </label>
                     </li>
@@ -363,7 +377,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
               {chosen.length > 0 && (
                 <div className="mt-3">
                   <p className="text-[10.5px] font-bold uppercase text-stone-500 mb-1">{de ? 'Vorschau' : 'Preview'}</p>
-                  <pre className="whitespace-pre-wrap break-words text-xs text-stone-700 bg-stone-50 border border-stone-200 rounded-lg p-3 max-h-40 overflow-y-auto font-sans">{importBlock(chosen)}</pre>
+                  <pre className="whitespace-pre-wrap break-words text-xs text-stone-700 bg-stone-50 border border-stone-200 rounded-lg p-3 max-h-40 overflow-y-auto font-sans">{richToPlain(importBlock(chosen))}</pre>
                 </div>
               )}
             </div>
@@ -432,16 +446,18 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
             {/* body */}
             <div className="flex-1 min-h-0 flex flex-col" data-log-redact>
               {activeKind === 'text' ? (
-                <textarea
-                  ref={textRef}
-                  aria-label={tp.padTitle}
-                  autoFocus
-                  enterKeyHint="enter"
-                  placeholder={tp.padPlaceholder}
-                  value={current ? current.text : ''}
-                  onChange={(e) => handleText(e.target.value)}
-                  className="flex-1 w-full min-h-[40vh] text-sm leading-relaxed resize-none outline-none px-4 py-3 placeholder:text-stone-300 bg-white"
-                />
+                <div ref={surfaceRef} className="flex-1 min-h-0 flex flex-col">
+                  <div className="px-3 py-1.5 border-b border-stone-100 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+                    <RichToolbar de={de} onCommand={format} onBullet={() => handleText(appendBullet(currentText))} onNumber={() => handleText(appendNumbered(currentText))} />
+                  </div>
+                  <RichSurface
+                    autoFocus
+                    value={currentText}
+                    onChange={handleText}
+                    placeholder={tp.padPlaceholder}
+                    className="notebook-surface flex-1 w-full min-h-[40vh] overflow-auto text-sm leading-relaxed px-4 py-3 bg-white"
+                  />
+                </div>
               ) : (
                 <div className="flex-1 min-h-0 flex flex-col">
                   <div className="flex-1 min-h-0 flex items-center justify-center bg-stone-100 p-2">

@@ -244,16 +244,31 @@ export function richToEditableHtml(value: string): string {
 }
 
 /**
- * Append plain text (a notebook page) to a rich-subset value.
+ * Append one value to another inside the rich subset — the bridge from a
+ * notebook page into a form field.
  *
- * Plain stays plain, byte for byte (see sanitizeRich above): escaping a field
- * that never held markup would rewrite history. The value flips to markup only
- * when either side is markup by isHtmlValue's own test — and then both halves
- * are escaped exactly once, so a page containing "<b>" is shown as those three
- * characters and a "&" in a previously plain field still reads "&".
- * Never leaves trailing whitespace: the PDF prints a sub-heading over any
- * non-blank band (feedbackPdf.ts), and a dangling newline would be one.
+ * Plain onto plain stays plain, byte for byte (see sanitizeRich): escaping a
+ * field that never held markup would rewrite history. The moment either side
+ * is markup by isHtmlValue's own test, the plain side is escaped exactly once
+ * and the markup side is re-sanitised, so a page containing a literal "<b>"
+ * typed as text is shown as those three characters while a page formatted in
+ * the editor keeps its bold. Never leaves trailing whitespace: the PDF prints
+ * a sub-heading over any non-blank band, and a dangling newline would be one.
  */
+export function appendToRich(existing: string, incoming: string): string {
+  const text = (incoming || '').replace(/\s+$/, '');
+  if (!text) return existing || '';
+  const base = (existing || '').replace(/\s+$/, '');
+  const baseIsHtml = isHtmlValue(base);
+  const textIsHtml = isHtmlValue(text);
+  if (!baseIsHtml && !textIsHtml) return base ? `${base}\n${text}` : text;
+  const head = baseIsHtml ? base : escapeHtml(base);
+  const tail = textIsHtml ? sanitizeRich(text) : escapeHtml(text);
+  return sanitizeRich(base ? `${head}\n${tail}` : tail);
+}
+
+/** Plain text onto a rich value — appendToRich with the incoming side taken
+ *  as text even when it looks like markup. */
 export function appendPlainToRich(existing: string, plain: string): string {
   const text = (plain || '').replace(/\s+$/, '');
   if (!text) return existing || '';

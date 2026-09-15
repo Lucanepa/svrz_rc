@@ -68,7 +68,8 @@ async function stubNotebook(page: Page, opts: { index?: ServerPage[]; onPush?: (
 
 const launcher = (page: Page) => page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ });
 const sheet = (page: Page) => page.getByRole('dialog', { name: /^(Notizblock|Notebook)$/ });
-const pageBox = (page: Page) => sheet(page).getByPlaceholder(/^(Schreib hier|Write here)/);
+/** The page is the app's rich editor (a contenteditable): fill() and toHaveText(), never toHaveValue(). */
+const pageBox = (page: Page) => sheet(page).locator('.rich-surface');
 const padSynced = (page: Page) => sheet(page).getByText(/Auf dem Server gesichert|Backed up on the server/);
 
 test('a page is pushed within seconds, without its bookkeeping, and marked saved', async ({ page }) => {
@@ -92,7 +93,7 @@ test('a wiped device gets its pages back', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByTestId('pad-total')).toHaveText('1');
   await launcher(page).click();
-  await expect(pageBox(page)).toHaveValue('from the server');
+  await expect(pageBox(page)).toHaveText('from the server');
   const rows = await storedPages(page);
   expect(rows).toHaveLength(1);
   expect(rows[0].dirty).toBe(false);
@@ -129,7 +130,7 @@ test('a server tombstone hides an older local copy; absence on the server never 
   await stubNotebook(page, { index: [remote({ pageId: 'p-deleted-elsewhere', deleted: true, updatedAt: now - 1000, text: '' })] });
   await page.goto('/');
   await launcher(page).click();
-  await expect(pageBox(page)).toHaveValue('only on this phone');
+  await expect(pageBox(page)).toHaveText('only on this phone');
   await expect(sheet(page).getByText('deleted on the tablet')).toHaveCount(0);
   const rows = await storedPages(page);
   expect(rows.find((r) => r.pageId === 'p-deleted-elsewhere')?.deleted).toBe(true);

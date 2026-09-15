@@ -74,7 +74,8 @@ function storedPages(page: Page): Promise<StoredPage[]> {
 
 const launcher = (page: Page) => page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ });
 const sheet = (page: Page) => page.getByRole('dialog', { name: /^(Notizblock|Notebook)$/ });
-const pageBox = (page: Page) => sheet(page).getByPlaceholder(/^(Schreib hier|Write here)/);
+/** The page is the app's rich editor (a contenteditable): fill() and toHaveText(), never toHaveValue(). */
+const pageBox = (page: Page) => sheet(page).locator('.rich-surface');
 /** Anchored, and scoped to the sheet: the form's own strip says "gespeichert" too. */
 const padSaved = (page: Page) => sheet(page).getByText(/^(Gespeichert|Saved)/);
 
@@ -98,7 +99,7 @@ test.describe('The device keeps the page', () => {
     expect(rows[0].dirty).toBe(true);
     await page.reload();
     await openPad(page);
-    await expect(pageBox(page)).toHaveValue('19:41 2. SR steht zu weit links');
+    await expect(pageBox(page)).toHaveText('19:41 2. SR steht zu weit links');
   });
 
   test("another coach's pages on this device are not this coach's to see", async ({ page }) => {
@@ -107,7 +108,7 @@ test.describe('The device keeps the page', () => {
     await page.goto('/');
     await openPad(page);
     await expect(sheet(page).getByText('not yours')).toHaveCount(0);
-    await expect(pageBox(page)).toHaveValue('');
+    await expect(pageBox(page)).toHaveText('');
   });
 
   test('the empty notebook writes no row until the first keystroke', async ({ page }) => {
@@ -163,17 +164,17 @@ test.describe('The device keeps the page', () => {
     ]);
     await page.goto('/');
     await openPad(page);
-    await expect(pageBox(page)).toHaveValue('newer page');
+    await expect(pageBox(page)).toHaveText('newer page');
     await expect(sheet(page).getByText(/^(Seite 1 von 2|Page 1 of 2)$/)).toBeVisible();
     await sheet(page).getByRole('button', { name: /^(Ältere Seite|Older page)$/ }).click();
-    await expect(pageBox(page)).toHaveValue('older page');
+    await expect(pageBox(page)).toHaveText('older page');
     await expect(sheet(page).getByText(/^(Seite 2 von 2|Page 2 of 2)$/)).toBeVisible();
     await expect(sheet(page).getByRole('button', { name: /^(Ältere Seite|Older page)$/ })).toBeDisabled();
     await sheet(page).getByRole('button', { name: /^(Neuere Seite|Newer page)$/ }).click();
-    await expect(pageBox(page)).toHaveValue('newer page');
+    await expect(pageBox(page)).toHaveText('newer page');
     // The pills do the same; the current one is marked.
     await sheet(page).locator('button[aria-current="page"]').click();
-    await expect(pageBox(page)).toHaveValue('newer page');
+    await expect(pageBox(page)).toHaveText('newer page');
     // A fresh page sits in front of the others and takes the count with it.
     await sheet(page).getByRole('button', { name: /^(Text)$/ }).click();
     await pageBox(page).fill('third');
@@ -186,7 +187,7 @@ test.describe('The device keeps the page', () => {
     await page.goto('/');
     await openPad(page);
     await sheet(page).getByRole('button', { name: /^(Zeit|Time)$/ }).click();
-    await expect(pageBox(page)).toHaveValue(/^\d\d:\d\d $/);
+    await expect(pageBox(page)).toHaveText(/^\d\d:\d\d\s*$/);
   });
 });
 
@@ -202,7 +203,7 @@ test.describe('A week is a week', () => {
     ]);
     await page.goto('/');
     await openPad(page);
-    await expect(pageBox(page)).toHaveValue('six days old');
+    await expect(pageBox(page)).toHaveText('six days old');
     await expect(sheet(page).locator('span', { hasText: /^(Wird (am .+|morgen) gelöscht|Deleted (on .+|tomorrow))$/ })).toBeVisible();
     await expect(sheet(page).getByText('eight days old')).toHaveCount(0);
     await expect.poll(async () => (await storedPages(page)).map((r) => r.pageId).sort()).toEqual(['page-fresh']);
@@ -303,6 +304,8 @@ test.describe('Fullscreen', () => {
 
 test.describe('Into the form', () => {
   const tipsBox = (page: Page) => page.locator('textarea[placeholder*="tips" i], textarea[placeholder*="tipps" i]');
+  /** The form's Bemerkungen editor — the first rich surface that is not the notebook's own. */
+  const remarks = (page: Page) => page.locator('.rich-surface:not(.notebook-surface)').first();
 
   test('the current page is inserted verbatim into Bemerkungen, marked used, and the sentence says it is mailed', async ({ page }) => {
     await stubSignedInApp(page);
@@ -315,14 +318,14 @@ test.describe('Into the form', () => {
     await sheet(page).getByRole('button', { name: /1 Seite → Bemerkungen \(1\. SR\)|1 page → Remarks \(1\. SR\)/ }).click();
     await expect(page.getByText(/übernommen|inserted/).first()).toBeVisible();
     // The rich fields are contenteditable: ask for the text, not a value.
-    await expect(page.locator('.rich-surface').first()).toContainText('Pfiff klar, Handzeichen sauber');
-    await expect(page.locator('.rich-surface').first()).toContainText('Aufschlag zu früh gepfiffen');
-    await expect(page.locator('.rich-surface').first().locator('b')).toHaveCount(0);
+    await expect(remarks(page)).toContainText('Pfiff klar, Handzeichen sauber');
+    await expect(remarks(page)).toContainText('Aufschlag zu früh gepfiffen');
+    await expect(remarks(page).locator('b')).toHaveCount(0);
     await expect.poll(async () => (await storedPages(page))[0]?.usedIn?.[0]?.f).toBe('bemerkungen');
     expect((await storedPages(page))[0].usedIn[0].r).toBe('1. SR');
     expect((await storedPages(page))[0].usedIn[0].g).toBe(GAME.id);
     // The notebook itself is untouched — it is a copy, not a move.
-    await expect(pageBox(page)).toHaveValue('Pfiff klar, Handzeichen sauber\nAufschlag zu früh gepfiffen');
+    await expect(pageBox(page)).toHaveText(/Pfiff klar, Handzeichen sauber\s*Aufschlag zu früh gepfiffen/);
   });
 
   test('insert into Tipps & Tricks, and the warning swaps', async ({ page }) => {
@@ -338,17 +341,38 @@ test.describe('Into the form', () => {
     await expect(tipsBox(page)).toHaveValue(/seeded page/);
   });
 
-  test('a page that looks like markup becomes text, not a tag', async ({ page }) => {
+  test('formatting made in the notebook survives the insert; a typed "<b>" stays text', async ({ page }) => {
     await stubSignedInApp(page);
-    await seedPad(page, [padPage({ text: 'a <b>b</b> & c' })]);
+    // What the editor stores: real bold from the toolbar, and the escaped
+    // characters a coach gets when they TYPE an angle bracket.
+    await seedPad(page, [padPage({ text: '<b>fett</b> und a &lt;b&gt;b&lt;/b&gt; &amp; c' })]);
     await page.goto('/');
     await openFeedbackForm(page);
     await openPad(page);
+    await expect(pageBox(page).locator('b')).toHaveText('fett');
     await sheet(page).getByRole('button', { name: /^(Übernehmen…|Insert…)$/ }).click();
     await sheet(page).getByRole('button', { name: /1 Seite →|1 page →/ }).click();
-    const remarks = page.locator('.rich-surface').first();
-    await expect(remarks).toContainText('a <b>b</b> & c');
-    await expect(remarks.locator('b')).toHaveCount(0);
+    await expect(remarks(page)).toContainText('fett und a <b>b</b> & c');
+    await expect(remarks(page).locator('b')).toHaveCount(1);
+    await expect(remarks(page).locator('b')).toHaveText('fett');
+  });
+
+  test('bold, a bullet and a numbered line from the toolbar land in the page', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await pageBox(page).fill('erster Satz');
+    await pageBox(page).evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); const sel = window.getSelection(); sel?.removeAllRanges(); sel?.addRange(r); });
+    await sheet(page).getByRole('button', { name: /^(Fett|Bold)$/ }).click();
+    await expect(pageBox(page).locator('b')).toHaveText('erster Satz');
+    await sheet(page).getByRole('button', { name: /Aufzählung|Bullet/ }).click();
+    await expect(pageBox(page)).toHaveText(/•/);
+    await sheet(page).getByRole('button', { name: /Nummerierung|Numbered/ }).click();
+    await expect(pageBox(page)).toHaveText(/1\. ?$/);
+    await sheet(page).getByRole('button', { name: /Nummerierung|Numbered/ }).click();
+    await expect(pageBox(page)).toHaveText(/2\. ?$/);
+    await expect(padSaved(page)).toBeVisible();
+    expect((await storedPages(page))[0].text).toMatch(/<b>erster Satz<\/b>/);
   });
 
   test('a second insert into the same field asks first', async ({ page }) => {
@@ -369,7 +393,7 @@ test.describe('Into the form', () => {
     await expect(page.getByTestId('confirm-dialog')).toBeVisible();
     await page.getByTestId('confirm-accept').click();
     // textContent joins the two lines differently per layout; twice is twice.
-    await expect(page.locator('.rich-surface').first()).toHaveText(/twice[\s\S]*twice/);
+    await expect(remarks(page)).toHaveText(/twice[\s\S]*twice/);
   });
 
   test('a closed role offers no insert', async ({ page }) => {
@@ -381,6 +405,6 @@ test.describe('Into the form', () => {
     await openPad(page);
     await expect(sheet(page).getByRole('button', { name: /^(Übernehmen…|Insert…)$/ })).toHaveCount(0);
     await expect(sheet(page).getByText(/gesendet|sent/)).toBeVisible();
-    await expect(pageBox(page)).toHaveValue('seeded page');
+    await expect(pageBox(page)).toHaveText('seeded page');
   });
 });

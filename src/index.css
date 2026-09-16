@@ -1,5 +1,6 @@
 @import "tailwindcss";
-@import "@fontsource-variable/inter";
+/* The build with the optical-size axis: "opsz" 32 is Inter Display. */
+@import "@fontsource-variable/inter/opsz.css";
 
 @theme {
   --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -27,6 +28,11 @@
 
   body {
     font-family: var(--font-sans);
+    /* Inter Display at every size — the whole app in the headline cut, by
+       request. The axis runs 14 (Text) to 32 (Display); pinned rather than
+       left to font-optical-sizing, which would give small text the Text cut. */
+    font-variation-settings: "opsz" 32;
+    font-optical-sizing: none;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;

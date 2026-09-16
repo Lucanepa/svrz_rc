@@ -67,3 +67,24 @@ const header = `// GENERATED FILE — do not edit by hand.
 const out = `${root}src/lib/pdfFonts.ts`;
 await writeFile(out, `${header}\n${parts.join('\n\n')}\n`);
 console.log(`wrote ${out}`);
+
+// Inter Display — the optical size Inter cuts for headlines — for the
+// statistics deck (statsPdf.ts), which is slides, not a form. Its own file,
+// so the feedback-PDF chunk every coach downloads does not carry two more
+// faces it never draws. The TTFs come from the Inter 4.1 release
+// (extras/ttf, https://github.com/rsms/inter/releases), kept in scripts/fonts.
+const DISPLAY = [
+  { file: `${root}scripts/fonts/InterDisplay-Regular.ttf`, name: 'INTER_DISPLAY_REGULAR' },
+  { file: `${root}scripts/fonts/InterDisplay-Bold.ttf`, name: 'INTER_DISPLAY_BOLD' },
+];
+const displayParts = [];
+for (const { file, name } of DISPLAY) {
+  const original = await readFile(file);
+  const subset = await subsetFont(original, CHARSET, { targetFormat: 'truetype' });
+  const b64 = subset.toString('base64');
+  console.log(`${name}: ${original.length} B -> ${subset.length} B subset (${b64.length} B base64)`);
+  displayParts.push(`export const ${name}_B64 =\n  '${b64}';`);
+}
+const outDisplay = `${root}src/lib/pdfFontsDisplay.ts`;
+await writeFile(outDisplay, `${header.replace('Inter, Copyright', 'Inter Display (Inter 4.1, extras/ttf), Copyright')}\n${displayParts.join('\n\n')}\n`);
+console.log(`wrote ${outDisplay}`);

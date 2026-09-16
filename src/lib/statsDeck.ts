@@ -11,7 +11,7 @@ import {
 } from './statistics';
 import {
   categoryLabel, criterionLabel, divisionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER,
-  outcomeLabel, roleLabel, sectionTitle, seasonName, statStrings, type StatStrings,
+  outcomeColor, outcomeLabel, roleLabel, sectionTitle, seasonName, statStrings, type StatStrings,
 } from './statsLabels';
 
 export type DeckTile = { label: string; value: string; sub?: string };
@@ -19,9 +19,16 @@ export type DeckChart =
   | { kind: 'columns'; series: string[]; categories: string[]; values: number[][]; grouping: 'stacked' | 'clustered' }
   | { kind: 'bars'; categories: string[]; values: number[] }
   | { kind: 'grade'; categories: string[]; values: Array<number | null>; ns: number[] }
-  | { kind: 'donut'; categories: string[]; values: number[] };
+  | { kind: 'donut'; categories: string[]; values: number[]; colors?: string[] };
 export type DeckFigure = { title: string; chart: DeckChart };
-export type DeckTable = { head: string[]; rows: string[][] };
+export type DeckTable = {
+  head: string[];
+  rows: string[][];
+  /** Column widths as fractions of the table; even when absent. */
+  widths?: number[];
+  /** Per column; text columns left, numbers right. Default: first left, rest right. */
+  align?: Array<'l' | 'r'>;
+};
 export type DeckSlide = {
   title: string;
   subtitle?: string;
@@ -169,18 +176,26 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
     .filter((c) => c.role === role && gradeAvg(c.grade) !== null)
     .map((c) => ({ label: criterionLabel(role, c.id, lang), avg: gradeAvg(c.grade)!, n: c.grade.obs }))
     .sort((a, b) => b.avg - a.avg);
-  const strongWeakRows: string[][] = [];
+  // One slide per form that has data: five strongest, five weakest.
   for (const role of ['1SR', '2SR'] as StatRole[]) {
     const list = ranked(role);
+    if (list.length === 0) continue;
     const top = list.slice(0, 5);
     const bottom = list.slice(-5).reverse().filter((x) => !top.includes(x));
-    for (const x of top) strongWeakRows.push([roleLabel(role, lang), t.deckStrong, x.label, gradeText(x.avg, t), String(x.n)]);
-    for (const x of bottom) strongWeakRows.push([roleLabel(role, lang), t.deckWeak, x.label, gradeText(x.avg, t), String(x.n)]);
+    slides.push({
+      title: t.deckStrongWeak,
+      subtitle: roleLabel(role, lang),
+      table: {
+        head: ['', t.criteria, t.gradeCol, 'n'],
+        widths: [0.14, 0.6, 0.16, 0.1],
+        align: ['l', 'l', 'r', 'r'],
+        rows: [
+          ...top.map((x) => [t.deckStrong, x.label, gradeText(x.avg, t), String(x.n)]),
+          ...bottom.map((x) => [t.deckWeak, x.label, gradeText(x.avg, t), String(x.n)]),
+        ],
+      },
+    });
   }
-  slides.push({
-    title: t.deckStrongWeak,
-    table: { head: [t.role, '', t.criteria, t.gradeCol, 'n'], rows: strongWeakRows },
-  });
 
   // 8 — by level and group
   const gradeFigure = (title: string, rows: StatBucket[], label: (b: StatBucket) => string): DeckFigure => ({
@@ -203,6 +218,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
       kind: 'donut',
       categories: OUTCOME_ORDER[kind].map((k) => outcomeLabel(kind, k, lang)),
       values: OUTCOME_ORDER[kind].map((k) => stats.outcomes[kind][k] ?? 0),
+      colors: OUTCOME_ORDER[kind].map((k) => outcomeColor(kind, k)),
     },
   });
   slides.push({
@@ -214,6 +230,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   slides.push({
     title: t.perRc,
     table: {
+      widths: [0.28, 0.12, 0.12, 0.12, 0.12, 0.12, 0.12],
       head: [t.rc, t.observations, t.coacheesCol, t.gamesCol, t.setsCol, t.wordsCol, t.goalCol],
       rows: stats.byRc.filter((r) => r.observations > 0 || r.goal > 0).map((r) => [
         r.label, int(r.observations), int(r.coachees), int(r.games), int(r.sets), int(r.words),

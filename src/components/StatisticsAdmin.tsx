@@ -13,8 +13,8 @@ import {
   type StatBucket, type StatFilters, type StatRole, type StatisticsResponse,
 } from '../lib/statistics';
 import {
-  categoryLabel, criterionLabel, divisionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER, outcomeLabel,
-  roleLabel, sectionCount, sectionTitle, seasonName, srGoalLabel, statStrings, weekdayKeyLabel,
+  categoryLabel, criterionLabel, divisionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER, outcomeColor, outcomeLabel,
+  roleLabel, sectionCount, sectionTitle, seasonName, statStrings, weekdayKeyLabel,
 } from '../lib/statsLabels';
 import { SECTIONS_1SR_DE, SECTIONS_2SR_DE } from '../types';
 import { buildDeck, deckFileName } from '../lib/statsDeck';
@@ -117,6 +117,9 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
   const [exporting, setExporting] = useState<'pptx' | 'pdf' | null>(null);
   const [includeRcGrades, setIncludeRcGrades] = useState(false);
   const [includeLeagues, setIncludeLeagues] = useState(false);
+  // The deck's language is chosen at export time; it starts as the console's.
+  const [exportLang, setExportLang] = useState<Lang>(lang);
+  useEffect(() => { setExportLang(lang); }, [lang]);
   // The request is heavier than the other tabs' (four full lists on the
   // server), so it waits for the first time the tab is actually opened —
   // and then stays loaded across tab switches.
@@ -144,7 +147,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     if (!stats) return;
     setExporting(kind);
     try {
-      const deck = buildDeck(stats, { lang, includeRcGrades, includeLeagues, rcNames });
+      const deck = buildDeck(stats, { lang: exportLang, includeRcGrades, includeLeagues, rcNames });
       if (kind === 'pptx') {
         const { buildDeckPptx } = await import('../lib/statsPptx');
         download(await buildDeckPptx(deck), deckFileName(stats, 'pptx'));
@@ -196,6 +199,12 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
             {exportOpen && (
               <div className="absolute left-0 sm:left-auto sm:right-0 mt-1 z-10 w-72 max-w-[calc(100vw-2rem)] rounded-xl border border-stone-200 bg-white shadow-lg p-3 text-xs space-y-2" data-testid="stats-export-menu">
                 <p className="text-stone-500">{t.exportHint}</p>
+                <div className="flex items-center gap-3 text-stone-700" role="radiogroup" aria-label={t.exportLang}>
+                  <span className="text-stone-500">{t.exportLang}</span>
+                  {(['DE', 'EN'] as Lang[]).map((l) => (
+                    <label key={l} className="inline-flex items-center gap-1"><input type="radio" name="stats-export-lang" value={l} checked={exportLang === l} onChange={() => setExportLang(l)} /> {l}</label>
+                  ))}
+                </div>
                 <label className="flex items-start gap-2 text-stone-700"><input type="checkbox" className="mt-0.5" checked={includeRcGrades} onChange={(e) => setIncludeRcGrades(e.target.checked)} /> {t.optRcGrades}</label>
                 <label className="flex items-start gap-2 text-stone-700"><input type="checkbox" className="mt-0.5" checked={includeLeagues} onChange={(e) => setIncludeLeagues(e.target.checked)} /> {t.optLeagues}</label>
                 <div className="flex gap-2 pt-1">
@@ -271,7 +280,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           {/* ── Observations: when, by whom, of whom ── */}
           <Section title={t.secObservations} hint={t.secObservationsHint} testId="stats-section-observations">
             <Grid>
-              <Block span="lg:col-span-6" title={t.perMonth} hint={`${t.role1} / ${t.role2}`} testId="stats-months">
+              <Block span="lg:col-span-5" title={t.perMonth} hint={`${t.role1} / ${t.role2}`} testId="stats-months">
                 <ColumnChart
                   series={[t.role1, t.role2]}
                   data={stats.byMonth.map((b) => ({ key: b.key, label: monthLabel(b.key, lang), values: [b.roles['1SR'], b.roles['2SR']], hint: `${monthLabel(b.key, lang)} ${b.key.slice(0, 4)}` }))}
@@ -281,9 +290,8 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                 <BarList rows={['0', '1', '2', '3+'].map((k) => ({ key: k, label: t.visits(k), value: stats.coacheeVisits[k] ?? 0 }))} />
                 <p className="mt-3 text-[11px] text-stone-500">{t.coacheesVisited}: <b className="text-stone-700">{fmtInt(T.coachees)} / {fmtInt(T.roster)}</b> · {pctText(pct(T.coachees, T.roster))}</p>
               </Block>
-              <Block span="lg:col-span-3" title={t.role} hint={t.observations} testId="stats-roles">
+              <Block span="lg:col-span-4" title={t.role} hint={t.observations} testId="stats-roles">
                 <BarList rows={stats.byRole.map((b) => bucketRow(b, roleLabel(b.key, lang), t))} />
-                <p className="mt-3 text-[11px] text-stone-500">{t.language}: <b className="text-stone-700">DE {fmtInt(T.langDE)} · EN {fmtInt(T.langEN)}</b></p>
               </Block>
               <Block span="lg:col-span-12" title={t.perRc} testId="stats-rcs">
                 <div className="overflow-x-auto -mx-1">
@@ -402,15 +410,12 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
 
           {/* ── Assessments ── */}
           <Section title={t.secOutcomes} hint={t.secOutcomesHint} testId="stats-section-outcomes">
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
               {(['einstufung', 'motivation', 'spielniveau', 'secondBesuch'] as const).map((kind) => (
                 <Block key={kind} title={kind === 'einstufung' ? t.einstufung : kind === 'motivation' ? t.motivation : kind === 'spielniveau' ? t.difficulty : t.secondVisit} testId={`stats-${kind}`}>
-                  <Donut emptyLabel="–" slices={OUTCOME_ORDER[kind].map((k) => ({ key: k, label: outcomeLabel(kind, k, lang), value: stats.outcomes[kind][k] ?? 0 }))} />
+                  <Donut emptyLabel="–" slices={OUTCOME_ORDER[kind].map((k) => ({ key: k, label: outcomeLabel(kind, k, lang), value: stats.outcomes[kind][k] ?? 0, color: outcomeColor(kind, k) }))} />
                 </Block>
               ))}
-              <Block title={t.srGoal} hint={t.observations} testId="stats-srziel">
-                <BarList rows={(Object.entries(stats.outcomes.srZiel) as Array<[string, number]>).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ key: k, label: srGoalLabel(k, lang), value: v }))} />
-              </Block>
             </div>
           </Section>
 
@@ -488,7 +493,6 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                   [t.signedRef, pctText(pct(T.signedReferee, T.observations))],
                   [t.signedRc, pctText(pct(T.signedRc, T.observations))],
                   [t.completeness, pctText(pct(T.ratedItems, T.offeredItems))],
-                  [t.language, `DE ${fmtInt(T.langDE)} · EN ${fmtInt(T.langEN)}`],
                 ]} />
               </Block>
               <Block span="lg:col-span-4" title={t.fun} testId="stats-fun">

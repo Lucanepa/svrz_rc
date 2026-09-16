@@ -5,7 +5,7 @@
 // Google Slides or PowerPoint — not pictures of charts.
 import type PptxGenJS from 'pptxgenjs';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
-import type { Deck, DeckChart, DeckSlide, DeckTile } from './statsDeck';
+import type { Deck, DeckChart, DeckSlide, DeckTable, DeckTile } from './statsDeck';
 import { isThin, scoreToLetter } from './statistics';
 
 // 16:9 — 10" × 5.625".
@@ -25,7 +25,9 @@ const LINE = 'E7E5E4';
 const TILE_FILL = 'FAFAF9';
 const ACCENT = 'DC2626';
 const SERIES = ['2A78D6', 'DC2626', 'EDA100'];
-const FONT = 'Calibri';
+// Rendered as Inter Display where the font is installed; PowerPoint cannot
+// embed a font from here, so a machine without it substitutes its default.
+const FONT = 'Inter Display';
 
 type Slide = PptxGenJS.Slide;
 
@@ -50,21 +52,29 @@ function addChrome(slide: Slide, deck: Deck, index: number, total: number) {
   slide.addText(`${index + 1} / ${total}`, { x: W - MARGIN - 1, y: FOOTER_Y, w: 1, h: 0.3, fontFace: FONT, fontSize: 8, color: MUTED, align: 'right', valign: 'middle' });
 }
 
+/** Tiles in rows of up to four. Everything inside is placed relative to the
+ *  tile's height, so a compact row (tiles above a chart) still holds label,
+ *  value and sub-line without one running into the next. */
 function addTiles(slide: Slide, tiles: DeckTile[], y: number, h: number): number {
   const perRow = tiles.length <= 4 ? tiles.length : Math.ceil(tiles.length / Math.ceil(tiles.length / 4));
   const rows = Math.ceil(tiles.length / perRow);
   const gap = 0.12;
   const tileW = (CONTENT_W - gap * (perRow - 1)) / perRow;
-  const tileH = Math.min(1.15, (h - gap * (rows - 1)) / rows);
+  const tileH = Math.max(0.62, Math.min(1.15, (h - gap * (rows - 1)) / rows));
+  const compact = tileH < 0.9;
   tiles.forEach((tile, i) => {
     const col = i % perRow;
     const row = Math.floor(i / perRow);
     const x = MARGIN + col * (tileW + gap);
     const ty = y + row * (tileH + gap);
+    const hasSub = Boolean(tile.sub);
+    const labelH = compact ? 0.2 : 0.28;
+    const subH = hasSub ? (compact ? 0.18 : 0.26) : 0;
+    const valueH = tileH - labelH - subH - 0.1;
     slide.addShape('roundRect', { x, y: ty, w: tileW, h: tileH, fill: { color: TILE_FILL }, line: { color: LINE, width: 0.75 }, rectRadius: 0.08 });
-    slide.addText(tile.label, { x: x + 0.12, y: ty + 0.06, w: tileW - 0.24, h: 0.3, fontFace: FONT, fontSize: 9, color: MUTED, valign: 'top' });
-    slide.addText(tile.value, { x: x + 0.12, y: ty + 0.32, w: tileW - 0.24, h: 0.45, fontFace: FONT, fontSize: tile.value.length > 12 ? 16 : 22, bold: true, color: INK, valign: 'middle' });
-    if (tile.sub) slide.addText(tile.sub, { x: x + 0.12, y: ty + tileH - 0.34, w: tileW - 0.24, h: 0.28, fontFace: FONT, fontSize: 8.5, color: INK_2, valign: 'middle' });
+    slide.addText(tile.label, { x: x + 0.12, y: ty + 0.05, w: tileW - 0.24, h: labelH, fontFace: FONT, fontSize: compact ? 8 : 9, color: MUTED, valign: 'top', fit: 'shrink' });
+    slide.addText(tile.value, { x: x + 0.12, y: ty + 0.05 + labelH, w: tileW - 0.24, h: valueH, fontFace: FONT, fontSize: compact ? (tile.value.length > 10 ? 12 : 15) : (tile.value.length > 12 ? 16 : 22), bold: true, color: INK, valign: 'middle', fit: 'shrink' });
+    if (tile.sub) slide.addText(tile.sub, { x: x + 0.12, y: ty + tileH - subH - 0.04, w: tileW - 0.24, h: subH, fontFace: FONT, fontSize: compact ? 7.5 : 8.5, color: INK_2, valign: 'middle', fit: 'shrink' });
   });
   return rows * tileH + (rows - 1) * gap;
 }
@@ -117,22 +127,35 @@ function addChart(pptx: PptxGenJS, slide: Slide, title: string, chart: DeckChart
     }
   } else {
     slide.addChart(pptx.ChartType.doughnut, [{ name: title, labels: chart.categories, values: chart.values }], {
-      ...common, holeSize: 55, showPercent: true, showValue: false, showLegend: true, legendPos: 'b', dataLabelColor: 'FFFFFF',
+      ...common, chartColors: chart.colors ? chart.colors.map((c) => c.replace('#', '').toUpperCase()) : SERIES,
+      holeSize: 55, showPercent: true, showValue: false, showLegend: true, legendPos: 'b', dataLabelColor: 'FFFFFF',
       showLabel: false,
     });
   }
 }
 
-function addTable(slide: Slide, table: { head: string[]; rows: string[][] }, x: number, y: number, w: number, h: number) {
-  const colW = table.head.map((_, i) => (i === 0 ? w * 0.34 : (w * 0.66) / Math.max(1, table.head.length - 1)));
+function addTable(slide: Slide, table: DeckTable, x: number, y: number, w: number, h: number) {
+  const cols = table.head.length;
+  const fractions = table.widths && table.widths.length === cols
+    ? table.widths
+    : table.head.map((_, i) => (cols === 1 ? 1 : i === 0 ? 0.34 : 0.66 / (cols - 1)));
+  const colW = fractions.map((f) => f * w);
+  const alignOf = (i: number) => (table.align ? (table.align[i] === 'r' ? 'right' as const : 'left' as const) : i === 0 ? 'left' as const : 'right' as const);
+  // Rows past the slide's height are cut, not spilled over the footer.
+  const rowH = 0.26;
+  const fit = Math.max(1, Math.floor(h / rowH) - 1);
+  const body = table.rows.slice(0, fit);
   const rows: PptxGenJS.TableRow[] = [
-    table.head.map((cell) => ({ text: cell, options: { bold: true, color: MUTED, fontSize: 8, fill: { color: TILE_FILL } } })),
-    ...table.rows.map((r) => r.map((cell, i) => ({ text: cell, options: { color: INK, fontSize: 8.5, align: i === 0 ? 'left' as const : 'right' as const } }))),
+    table.head.map((cell, i) => ({ text: cell, options: { bold: true, color: MUTED, fontSize: 8, fill: { color: TILE_FILL }, align: alignOf(i) } })),
+    ...body.map((r) => r.map((cell, i) => ({ text: cell, options: { color: INK, fontSize: 8.5, align: alignOf(i) } }))),
   ];
   slide.addTable(rows, {
-    x, y, w, colW, h: Math.min(h, 0.26 * rows.length),
-    fontFace: FONT, border: { type: 'solid', color: LINE, pt: 0.5 }, rowH: 0.24, margin: 0.04, autoPage: false, valign: 'middle',
+    x, y, w, colW, h: rowH * rows.length,
+    fontFace: FONT, border: { type: 'solid', color: LINE, pt: 0.5 }, rowH, margin: 0.04, autoPage: false, valign: 'middle',
   });
+  if (table.rows.length > body.length) {
+    slide.addText(`… +${table.rows.length - body.length}`, { x, y: y + rowH * rows.length, w, h: 0.22, fontFace: FONT, fontSize: 7.5, color: MUTED, align: 'right' });
+  }
 }
 
 function addBullets(slide: Slide, bullets: string[], x: number, y: number, w: number, h: number, size = 13) {
@@ -155,7 +178,7 @@ function renderSlide(pptx: PptxGenJS, deck: Deck, s: DeckSlide, index: number, t
   let hLeft = BODY_H;
   if (s.tiles?.length) {
     const wantFull = !s.figures?.length && !s.table;
-    const used = addTiles(slide, s.tiles, y, wantFull ? hLeft : Math.min(1.25, hLeft * 0.4));
+    const used = addTiles(slide, s.tiles, y, wantFull ? hLeft : Math.min(1.7, hLeft * 0.5));
     y += used + 0.18;
     hLeft -= used + 0.18;
   }

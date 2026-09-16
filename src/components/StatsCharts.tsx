@@ -2,7 +2,7 @@
 // own palette — no chart library, and the same numbers the deck exporters
 // read. Every mark carries a <title> for the hover, every chart says its n,
 // and the grade charts sit on the 1–15 scale with C marked as the Normalfall.
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { GRADE_SCALE, NORMAL_SCORE, isThin, scoreToLetter } from '../lib/statistics';
 
 // Validated (dataviz six checks, light surface): blue / SVRZ red / yellow are
@@ -16,6 +16,24 @@ const GRID = '#e7e5e4';     // stone-200
 
 export const fmtInt = (n: number): string => new Intl.NumberFormat('de-CH').format(Math.round(n));
 export const fmtDec = (n: number, digits = 1): string => new Intl.NumberFormat('de-CH', { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(n);
+
+/** The rendered width of an element, kept current — a chart draws itself at
+ *  the block's width instead of being scaled as a picture, so its text stays
+ *  the same size whether the block is three columns wide or six. */
+function useWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.getBoundingClientRect().width);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => { for (const e of entries) setWidth(e.contentRect.width); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width];
+}
 
 // ── Columns ──────────────────────────────────────────────────────────────────
 export type ColumnDatum = { key: string; label: string; values: number[]; hint?: string };
@@ -34,21 +52,22 @@ export function ColumnChart({ data, series, height = 180, soft = [], slotWidth =
   // and its total never share pixels with them.
   const left = 8;
   const right = 30;
-  const width = Math.max(320, data.length * slotWidth + left + right);
+  const [box, boxWidth] = useWidth<HTMLDivElement>();
+  // As wide as the block, never narrower than the columns need — below that it
+  // scrolls rather than squeezes.
+  const width = Math.max(data.length * slotWidth + left + right, Math.floor(boxWidth) || 320);
   const top = 22;
   const bottom = 26;
   const plotH = height - top - bottom;
   const totals = data.map((d) => d.values.reduce((a, b) => a + b, 0));
   const max = Math.max(1, ...totals);
   const slot = (width - left - right) / Math.max(1, data.length);
-  const barW = Math.min(24, slot * 0.62);
+  const barW = Math.min(36, slot * 0.62);
   const y = (v: number) => top + plotH - (v / max) * plotH;
   const gridSteps = niceSteps(max, 3);
   return (
-    <div className="overflow-x-auto">
-      {/* Scales down to 300px before it scrolls: a chart that has to be
-          scrolled to be read is not read. */}
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ minWidth: Math.min(width, 300), maxWidth: width * 1.3 }} role="img" className="block">
+    <div ref={box} className="overflow-x-auto">
+      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" className="block">
         {gridSteps.map((g) => (
           <g key={g}>
             <line x1={left} x2={width - right} y1={y(g)} y2={y(g)} stroke={GRID} strokeWidth={1} />
@@ -120,8 +139,11 @@ export function BarList({ rows, color = SERIES[0], format = fmtInt, max: maxIn }
   return (
     <div className="space-y-1.5">
       {rows.map((r) => (
-        <div key={r.key} className="grid grid-cols-[minmax(0,7rem)_1fr_auto] sm:grid-cols-[minmax(0,10rem)_1fr_auto] items-center gap-2 text-xs" title={r.hint ?? `${r.label}: ${format(r.value)}`}>
-          <span className="truncate text-stone-700">{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
+        <div key={r.key} className="grid grid-cols-[minmax(0,42%)_1fr_auto] items-center gap-2 text-xs" title={r.hint ?? `${r.label}: ${format(r.value)}`}>
+          <span className="min-w-0 leading-tight">
+            <span className="block truncate text-stone-700">{r.label}</span>
+            {r.sub && <span className="block truncate text-[10px] text-stone-400">{r.sub}</span>}
+          </span>
           <span className="h-3 rounded-r-[3px] bg-stone-100 overflow-hidden">
             <span className="block h-full rounded-r-[3px]" style={{ width: `${Math.max(r.value > 0 ? 2 : 0, (r.value / max) * 100)}%`, background: color }} />
           </span>
@@ -155,7 +177,7 @@ export function GradeScale({ rows, minLabel, maxLabel, nLabel }: { rows: ScaleRo
             <span className="truncate text-stone-700">{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
             <span className="relative h-4">
               <span className="absolute inset-x-0 top-1/2 h-px bg-stone-200" />
-              <span className="absolute top-0 bottom-0 w-px bg-stone-400" style={{ left: `${pos(NORMAL_SCORE)}%` }} title="C" />
+              <span className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-stone-400" style={{ left: `${pos(NORMAL_SCORE)}%` }} title="C" />
               {r.avg !== null && (isThin(r.n)
                 ? <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white border-2" style={{ left: `${pos(r.avg)}%`, borderColor: SERIES[0] }} />
                 : <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white" style={{ left: `${pos(r.avg)}%`, background: SERIES[0] }} />)}

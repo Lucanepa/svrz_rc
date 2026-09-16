@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
 import { statsResponse } from './support/statsFixture';
+import { buildDeck } from '../src/lib/statsDeck';
 
 // Admin → Statistik: the tab reads one aggregated response per season and
 // filter slice, shows it as tiles, charts and tables, and exports the same
@@ -128,6 +129,8 @@ test('the export builds a PowerPoint deck and a PDF from the same numbers', asyn
   const { statSync } = await import('node:fs');
   expect(statSync(pptxPath!).size).toBeGreaterThan(20_000);
 
+  // The deck can be asked for in the other language than the console's.
+  await page.getByRole('radio', { name: 'EN' }).check();
   const pdf = page.waitForEvent('download');
   await page.getByTestId('stats-export-pdf').click();
   const pdfFile = await pdf;
@@ -135,9 +138,11 @@ test('the export builds a PowerPoint deck and a PDF from the same numbers', asyn
   const { readFileSync } = await import('node:fs');
   const bytes = readFileSync((await pdfFile.path())!);
   expect(bytes.subarray(0, 5).toString()).toBe('%PDF-');
-  // One page per slide: 14 standing slides + the optional one + the comparison.
+  // One page per slide, as many as the deck model says for this slice.
+  const expected = buildDeck(statsResponse(2026).stats, { lang: 'EN', includeRcGrades: true, includeLeagues: false }).slides.length;
   const pages = (bytes.toString('latin1').match(/\/Type\s*\/Page[^s]/g) ?? []).length;
-  expect(pages).toBe(16);
+  expect(pages).toBe(expected);
+  expect(expected).toBeGreaterThanOrEqual(15);
 });
 
 test('the console\'s English follows into the tab', async ({ page }) => {

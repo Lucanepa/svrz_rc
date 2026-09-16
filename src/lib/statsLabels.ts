@@ -36,6 +36,7 @@ export const STAT_STR = {
     exportPptx: 'PowerPoint (.pptx)',
     exportPdf: 'PDF',
     exportHint: 'Foliensatz aus den Zahlen oben, mit den gesetzten Filtern.',
+    exportLang: 'Sprache der Folien',
     optRcGrades: 'Folie „Noten pro Coach" (wer streng bewertet)',
     optLeagues: 'Folie „Ligen"',
     exporting: 'Wird erstellt …',
@@ -175,6 +176,7 @@ export const STAT_STR = {
     exportPptx: 'PowerPoint (.pptx)',
     exportPdf: 'PDF',
     exportHint: 'A slide deck from the numbers above, with the filters set.',
+    exportLang: 'Slide language',
     optRcGrades: 'Slide "Grades per coach" (who grades strictly)',
     optLeagues: 'Slide "Leagues"',
     exporting: 'Building …',
@@ -349,6 +351,22 @@ export const OUTCOME_ORDER = {
   spielniveau: ['leicht', 'normal', 'schwierig'],
   secondBesuch: ['Y', 'N'],
 } as const;
+// Green is the good end, red the one that asks for attention, blue the middle —
+// the commission's own reading of these three-way ticks. "Second visit: yes"
+// is not bad news, so it takes the neutral blue and "no" the green.
+export const OUTCOME_GREEN = '#1f7a4d';
+export const OUTCOME_BLUE = '#2a78d6';
+export const OUTCOME_RED = '#dc2626';
+export const OUTCOME_COLORS: Record<keyof typeof OUTCOME_ORDER, Record<string, string>> = {
+  einstufung: { up: OUTCOME_GREEN, check: OUTCOME_BLUE, down: OUTCOME_RED },
+  motivation: { up: OUTCOME_GREEN, check: OUTCOME_BLUE, down: OUTCOME_RED },
+  spielniveau: { leicht: OUTCOME_GREEN, normal: OUTCOME_BLUE, schwierig: OUTCOME_RED },
+  secondBesuch: { Y: OUTCOME_BLUE, N: OUTCOME_GREEN },
+};
+export function outcomeColor(kind: keyof typeof OUTCOME_ORDER, key: string): string {
+  return OUTCOME_COLORS[kind][key] ?? OUTCOME_BLUE;
+}
+
 export function outcomeLabel(kind: keyof typeof OUTCOME_LABELS, key: string, lang: Lang): string {
   const table = OUTCOME_LABELS[kind][lang] as Record<string, string>;
   return table[key] ?? key;

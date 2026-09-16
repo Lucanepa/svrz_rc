@@ -1,12 +1,12 @@
 // Deck model → PDF, one slide per A4 landscape page, drawn with jsPDF (which
-// the feedback form already uses) and the same embedded Inter. Everything is
+// the feedback form already uses) in embedded Inter Display. Everything is
 // vector: text stays searchable, charts are rectangles and circles, and the
 // numbers are the deck's — nothing is computed here.
 import { jsPDF } from 'jspdf';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
-import { INTER_BOLD_B64, INTER_REGULAR_B64 } from './pdfFonts';
+import { INTER_DISPLAY_BOLD_B64, INTER_DISPLAY_REGULAR_B64 } from './pdfFontsDisplay';
 import { pdfSafeText } from './feedbackPdf';
-import type { Deck, DeckChart, DeckSlide, DeckTile } from './statsDeck';
+import type { Deck, DeckChart, DeckSlide, DeckTable, DeckTile } from './statsDeck';
 import { isThin, scoreToLetter, GRADE_SCALE, NORMAL_SCORE } from './statistics';
 
 const PAGE_W = 841.89;
@@ -31,10 +31,10 @@ class Sheet {
   doc: jsPDF;
   constructor() {
     this.doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
-    this.doc.addFileToVFS('Inter-Regular.ttf', INTER_REGULAR_B64);
-    this.doc.addFont('Inter-Regular.ttf', 'Inter', 'normal');
-    this.doc.addFileToVFS('Inter-Bold.ttf', INTER_BOLD_B64);
-    this.doc.addFont('Inter-Bold.ttf', 'Inter', 'bold');
+    this.doc.addFileToVFS('InterDisplay-Regular.ttf', INTER_DISPLAY_REGULAR_B64);
+    this.doc.addFont('InterDisplay-Regular.ttf', 'Inter', 'normal');
+    this.doc.addFileToVFS('InterDisplay-Bold.ttf', INTER_DISPLAY_BOLD_B64);
+    this.doc.addFont('InterDisplay-Bold.ttf', 'Inter', 'bold');
   }
   text(value: string, x: number, y: number, opts: { size?: number; bold?: boolean; color?: Rgb; align?: 'left' | 'center' | 'right'; maxWidth?: number } = {}) {
     this.doc.setFont('Inter', opts.bold ? 'bold' : 'normal');
@@ -82,6 +82,10 @@ class Sheet {
 }
 
 const fmt = (n: number) => new Intl.NumberFormat('de-CH').format(Math.round(n));
+const hexRgb = (hex: string): Rgb => {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+};
 
 // The embedded Inter subset is Latin only; the few symbols the deck uses that
 // fall outside it get an ASCII stand-in rather than the □ placeholder.
@@ -225,33 +229,37 @@ function drawChart(s: Sheet, heading: string, chart: DeckChart, x: number, y: nu
   const barY = top + 4;
   const barH = 14;
   if (total === 0) { s.rect(x, barY, w, barH, LINE); s.text('–', x + w / 2, barY + 10, { size: 7, color: MUTED, align: 'center' }); return; }
+  const sliceColor = (i: number): Rgb => (chart.colors?.[i] ? hexRgb(chart.colors[i]) : SERIES[i % SERIES.length]);
   let cx = x;
   chart.values.forEach((v, i) => {
     const bw = (v / total) * w;
-    if (bw > 0) s.rect(cx, barY, Math.max(0, bw - 1), barH, SERIES[i % SERIES.length]);
+    if (bw > 0) s.rect(cx, barY, Math.max(0, bw - 1), barH, sliceColor(i));
     cx += bw;
   });
   chart.categories.forEach((label, i) => {
     const ly = barY + barH + 14 + i * 12;
-    s.rect(x, ly - 6, 7, 7, SERIES[i % SERIES.length]);
+    s.rect(x, ly - 6, 7, 7, sliceColor(i));
     s.text(`${label}  ${fmt(chart.values[i])}  (${Math.round((chart.values[i] / total) * 100)} %)`, x + 11, ly, { size: 7.5, color: INK_2, maxWidth: w - 11 });
   });
 }
 
-function table(s: Sheet, t: { head: string[]; rows: string[][] }, x: number, y: number, w: number, maxH: number) {
+function table(s: Sheet, t: DeckTable, x: number, y: number, w: number, maxH: number) {
   const cols = t.head.length;
-  const first = cols > 1 ? w * 0.34 : w;
-  const rest = cols > 1 ? (w - first) / (cols - 1) : 0;
-  const colX = (i: number) => (i === 0 ? x : x + first + (i - 1) * rest);
-  const colW = (i: number) => (i === 0 ? first : rest);
+  const fractions = t.widths && t.widths.length === cols
+    ? t.widths
+    : t.head.map((_, i) => (cols === 1 ? 1 : i === 0 ? 0.34 : 0.66 / (cols - 1)));
+  const colW = (i: number) => fractions[i] * w;
+  const colX = (i: number) => x + fractions.slice(0, i).reduce((a, f) => a + f, 0) * w;
+  const alignOf = (i: number): 'left' | 'right' => (t.align ? (t.align[i] === 'r' ? 'right' : 'left') : i === 0 ? 'left' : 'right');
+  const anchor = (i: number) => (alignOf(i) === 'left' ? colX(i) + 4 : colX(i) + colW(i) - 4);
   const rowH = 18;
   s.rect(x, y, w, rowH, TILE);
-  t.head.forEach((cell, i) => s.text(cell, i === 0 ? colX(i) + 4 : colX(i) + colW(i) - 4, y + 12, { size: 7, bold: true, color: MUTED, align: i === 0 ? 'left' : 'right', maxWidth: colW(i) - 8 }));
+  t.head.forEach((cell, i) => s.text(cell, anchor(i), y + 12, { size: 7, bold: true, color: MUTED, align: alignOf(i), maxWidth: colW(i) - 8 }));
   const maxRows = Math.floor((maxH - rowH) / rowH);
   t.rows.slice(0, maxRows).forEach((r, ri) => {
     const ry = y + rowH * (ri + 1);
     s.line(x, ry + rowH, x + w, ry + rowH);
-    r.forEach((cell, i) => s.text(cell, i === 0 ? colX(i) + 4 : colX(i) + colW(i) - 4, ry + 12, { size: 8, color: INK, align: i === 0 ? 'left' : 'right', maxWidth: colW(i) - 8 }));
+    r.forEach((cell, i) => s.text(cell, anchor(i), ry + 12, { size: 8, color: INK, align: alignOf(i), maxWidth: colW(i) - 8 }));
   });
   if (t.rows.length > maxRows) s.text(`… +${t.rows.length - maxRows}`, x + w, y + rowH * (maxRows + 1) + 10, { size: 7, color: MUTED, align: 'right' });
 }

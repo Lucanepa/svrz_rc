@@ -130,3 +130,16 @@ test('the RC copy of the feedback mail drops the survey lead-in in both language
   expect(renderer).toContain('bilingualBlockHtml(outro, outroEn)');
   expect(renderer).toContain('bilingualText(outro, outroEn)');
 });
+
+test('the feedback intro points at the attachment, and the old "Hier ist" wording is retired', () => {
+  // The body of the feedback mail carries the match rows and nothing of the
+  // feedback itself — that is the PDF — so "Hier ist das Feedback" over those
+  // rows pointed at nothing. The shipped text now names the attachment, in
+  // both halves, and greets by first name.
+  expect(SRC).toContain("intro: 'Hallo {{vorname}}\\n\\nIm Anhang findest du das Feedback zu deinem Einsatz als {{rolle}}.'");
+  expect(SRC).toContain("introEn: 'Hello {{firstName}}\\n\\nAttached you will find the feedback on your appearance as {{role}}.'");
+  // A stored copy of the previous wording must still count as "shipped", or
+  // every console that ever pressed Save would keep the old sentence for good.
+  expect(SRC).toMatch(/RETIRED_EMAIL_TEMPLATES_FEEDBACK_DE = \{[\s\S]*?intro: 'Hallo \{\{name\}\}\\n\\nHier ist das Feedback zu deinem Einsatz als \{\{rolle\}\}\. Der vollständige Bericht ist als PDF angehängt\.'/);
+  expect(SRC).toMatch(/RETIRED_EMAIL_TEMPLATES[\s\S]*feedback: \[\{[\s\S]*?\.\.\.RETIRED_EMAIL_TEMPLATES_FEEDBACK_DE[\s\S]*?\}, \{[\s\S]*?\.\.\.RETIRED_EMAIL_TEMPLATES_FEEDBACK_DE[\s\S]*?introEn: 'Hello \{\{name\}\}\\n\\nHere is the feedback on your appearance as \{\{role\}\}/);
+});

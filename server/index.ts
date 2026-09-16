@@ -1304,15 +1304,28 @@ const DEFAULT_EMAIL_TEMPLATES_FEEDBACK_DE = {
   heading: 'SR-Coaching Feedback',
   // The documented German names, the ones the editor lists as chips; the
   // English half is written in the English ones. Either set renders in both.
-  intro: 'Hallo {{name}}\n\nHier ist das Feedback zu deinem Einsatz als {{rolle}}. Der vollständige Bericht ist als PDF angehängt.',
+  //
+  // "Im Anhang", not "Hier ist": the body holds the match details and nothing
+  // of the feedback itself — that is the PDF — so "here is the feedback" over
+  // a table of rows pointed at nothing (Luca, 16.09.2026). First name, as the
+  // reminder already does; the fixed footer line names the attachment, so
+  // the intro does not say "PDF" a second time.
+  intro: 'Hallo {{vorname}}\n\nIm Anhang findest du das Feedback zu deinem Einsatz als {{rolle}}.',
   outro: 'Wir freuen uns über dein Feedback zum Coaching-Erlebnis:',
+};
+
+// The German half as shipped until 16.09.2026, kept so a stored copy of it is
+// still recognised as "the shipped text" and follows the rewording.
+const RETIRED_EMAIL_TEMPLATES_FEEDBACK_DE = {
+  ...DEFAULT_EMAIL_TEMPLATES_FEEDBACK_DE,
+  intro: 'Hallo {{name}}\n\nHier ist das Feedback zu deinem Einsatz als {{rolle}}. Der vollständige Bericht ist als PDF angehängt.',
 };
 
 const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
   feedback: {
     ...DEFAULT_EMAIL_TEMPLATES_FEEDBACK_DE,
     headingEn: 'Referee coaching feedback',
-    introEn: 'Hello {{name}}\n\nHere is the feedback on your appearance as {{role}}. The full report is attached as a PDF.',
+    introEn: 'Hello {{firstName}}\n\nAttached you will find the feedback on your appearance as {{role}}.',
     outroEn: 'We would be glad to hear how you found the coaching:',
   },
   // Goes to the RC commission, not back to the coachee — always German, and
@@ -1369,11 +1382,17 @@ If either of these times is not possible for you, please let {{coachFirstName}} 
 // written it, and from then on a reworded default never reaches an inbox. Such
 // a copy follows the current default instead.
 const RETIRED_EMAIL_TEMPLATES: Partial<Record<EmailTemplateKind, EmailTemplate[]>> = {
-  // 14.09.2026, the English half written with German placeholder names.
   feedback: [{
-    ...DEFAULT_EMAIL_TEMPLATES_FEEDBACK_DE,
+    // 14.09.2026, the English half written with German placeholder names.
+    ...RETIRED_EMAIL_TEMPLATES_FEEDBACK_DE,
     headingEn: 'Referee coaching feedback',
     introEn: 'Hello {{name}}\n\nHere is the feedback on your appearance as {{rolle}}. The full report is attached as a PDF.',
+    outroEn: 'We would be glad to hear how you found the coaching:',
+  }, {
+    // 14.–16.09.2026, "Hier ist das Feedback" over a body that holds none.
+    ...RETIRED_EMAIL_TEMPLATES_FEEDBACK_DE,
+    headingEn: 'Referee coaching feedback',
+    introEn: 'Hello {{name}}\n\nHere is the feedback on your appearance as {{role}}. The full report is attached as a PDF.',
     outroEn: 'We would be glad to hear how you found the coaching:',
   }],
   reminder: [{

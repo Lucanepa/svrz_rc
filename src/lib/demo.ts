@@ -506,6 +506,18 @@ export function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackRecord[
   return ok((store().feedbacks[coacheeId] ?? []).map((r) => ({ ...r })));
 }
 
+export function loadPriorGoals(coacheeId: string): Promise<{ observed: number; prior: Array<{ id: string; date: string; role: '1. SR' | '2. SR'; rc: string; goals: string }> }> {
+  const records = store().feedbacks[coacheeId] ?? [];
+  return ok({
+    observed: records.length,
+    prior: records.flatMap((r) => {
+      const goals = r.feedback_json?.results?.goals ?? '';
+      if (!goals.trim()) return [];
+      return [{ id: r.id, date: (r.expand?.game?.match_date ?? '').slice(0, 10), role: r.role_assessed ?? '1. SR', rc: r.rc_name ?? '', goals }];
+    }),
+  });
+}
+
 // ── 4.4.10 SR-Spiel ───────────────────────────────────────────────────
 // Invented here rather than added to the fixture store: every game in there is
 // one the demo coach was assigned to WATCH, and a game he refereed himself

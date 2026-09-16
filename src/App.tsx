@@ -15,6 +15,8 @@ import {
   hasPocketBaseConfig,
   listCoacheeFeedbacks,
   shareFeedbackFile,
+  loadPriorGoals,
+  type PriorGoals,
   listCoacheeGames,
   listCoachees,
   loadCalendarGames,
@@ -68,7 +70,7 @@ import { subscribeLive } from './lib/liveEvents';
 import { richToPlain, richToDisplayHtml, sanitizeRich, appendToRich } from './lib/richText';
 import { NotebookPen } from 'lucide-react';
 import NotebookSheet, { type InsertContext } from './components/NotebookSheet';
-import { RichSurface, RichToolbar, appendBullet } from './components/RichText';
+import { RichSurface, RichToolbar, RichView, appendBullet } from './components/RichText';
 import * as notebookSync from './lib/notebookSync';
 import type { PadSyncStatus } from './lib/notebookSync';
 import { PAD_STRINGS, fill as padFill } from './lib/notepadStrings';
@@ -157,6 +159,11 @@ const UI_STRINGS = {
     highlights: "Highlights & Potenziale",
     improvements: "Bereiche / Potenzial zur Verbesserung",
     goalsNext: "Ziele für nächste Spiele",
+    priorGoalsTitle: "Aus der letzten Beobachtung",
+    priorGoalsMeta: (date: string, role: string, rc: string) => [date, role, rc ? `RC ${rc}` : ''].filter(Boolean).join(' · '),
+    priorGoalsOlder: (n: number) => `${n} frühere Beobachtung${n === 1 ? '' : 'en'}`,
+    priorGoalsNone: (n: number) => `${n} frühere Beobachtung${n === 1 ? '' : 'en'} — keine Ziele notiert.`,
+    priorGoalsHint: "Was dem/der SR beim letzten Mal mitgegeben wurde — worauf jetzt zu achten ist.",
     required: "Pflicht",
     goalPlaceholder: "Ziele werden basierend auf dem gewählten Niveau und den Bemerkungen festgelegt.",
     version: "Stand",
@@ -328,6 +335,11 @@ const UI_STRINGS = {
     highlights: "Highlights & potential",
     improvements: "Areas / potential for improvement",
     goalsNext: "Goals for next games",
+    priorGoalsTitle: "From the last observation",
+    priorGoalsMeta: (date: string, role: string, rc: string) => [date, role, rc ? `RC ${rc}` : ''].filter(Boolean).join(' · '),
+    priorGoalsOlder: (n: number) => `${n} earlier observation${n === 1 ? '' : 's'}`,
+    priorGoalsNone: (n: number) => `${n} earlier observation${n === 1 ? '' : 's'} — no goals noted.`,
+    priorGoalsHint: "What the referee was given to work on last time — what to watch for now.",
     required: "required",
     goalPlaceholder: "Goals are set based on the selected level and remarks.",
     version: "Version",
@@ -1366,6 +1378,14 @@ export default function App() {
   const [selectedCoacheeName, setSelectedCoacheeName] = useState('');
   const [selectedCoacheeLevel, setSelectedCoacheeLevel] = useState('');
   const [selectedCoacheeId, setSelectedCoacheeId] = useState('');
+  // The coachee the OPEN form is about — resolved from the game's referee line
+  // by the meta-fill effect, which is the one place that rule lives. '' when
+  // the referee is nobody's coachee.
+  const [observedCoacheeId, setObservedCoacheeId] = useState('');
+  // What earlier observations of that person set as goals, for the panel
+  // above the criteria. null while unknown or not applicable.
+  const [priorGoals, setPriorGoals] = useState<PriorGoals | null>(null);
+  const [priorGoalsOlderOpen, setPriorGoalsOlderOpen] = useState(false);
   // The filed feedback record currently on screen, if any. Set when an already
   // submitted observation is reopened (or right after sending one). It is what
   // the private note to the RC president hangs off — the note belongs to a
@@ -1963,6 +1983,7 @@ export default function App() {
     const otherRef = getRefereeForRole(selectedGame, formData.role === '1. SR' ? '2. SR' : '1. SR');
     const otherNorm = normalizeName(otherRef || '');
     const coachee = coacheeByName || (coacheeById && !matchesNorm(coacheeById, otherNorm) ? coacheeById : undefined);
+    setObservedCoacheeId(coachee?.id ?? '');
     const has2SR = !!selectedGame.secondReferee;
     setFormData((prev) => ({
       ...prev,
@@ -1985,6 +2006,26 @@ export default function App() {
       },
     }));
   }, [selectedGameId, selectedGame?.assignedRc, formData.role, coachees, selectedCoacheeId, openFeedbackId]);
+
+  // The previous coach's goals for this referee, fetched for a FRESH
+  // observation only: a reopened record is its own document, and the goals
+  // it carries are its own. Cleared the moment the form is about someone
+  // else, so the panel never shows one referee's goals over another's name.
+  // Waits for the landing to settle like formOpen does: a deep link to a
+  // filed record starts on the form view before the record has arrived, and
+  // that gap looks exactly like a fresh observation from here.
+  useEffect(() => {
+    setPriorGoals(null);
+    setPriorGoalsOlderOpen(false);
+    if (!landingSettled || feedbackSubView !== 'feedbackForm' || openFeedbackId || !selectedGameId || !observedCoacheeId) return;
+    const gen = beginLoad('priorGoals');
+    loadPriorGoals(observedCoacheeId)
+      .then((r) => { if (isCurrentLoad('priorGoals', gen)) setPriorGoals(r); })
+      // Nothing to hand on is the common case and a failed fetch looks the
+      // same; the form must not depend on it.
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [landingSettled, feedbackSubView, openFeedbackId, selectedGameId, observedCoacheeId]);
 
   const updateMeta = (key: keyof typeof formData.meta, value: string) => {
     setFormData(prev => ({
@@ -8079,6 +8120,48 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {/* What the last coach asked this referee to work on. Only on a fresh
+            observation of somebody observed before, and only the goals: the
+            rest of a colleague's assessment stays theirs. Sits above the
+            criteria because it is read BEFORE the game, not after. */}
+        {!openFeedbackId && priorGoals && priorGoals.observed > 0 && (
+          <div className="mb-6 rounded-lg border border-sky-200 bg-sky-50/60 p-3 no-print" data-testid="prior-goals">
+            <div className="flex items-start gap-2">
+              <Target size={16} className="text-sky-700 shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-stone-800">{t.priorGoalsTitle}</div>
+                {priorGoals.prior.length === 0 ? (
+                  <p className="text-xs text-stone-600 mt-0.5">{t.priorGoalsNone(priorGoals.observed)}</p>
+                ) : (
+                  <>
+                    <p className="text-[11px] text-stone-500 mt-0.5">{t.priorGoalsHint}</p>
+                    {(priorGoalsOlderOpen ? priorGoals.prior : priorGoals.prior.slice(0, 1)).map((g) => (
+                      <div key={g.id} className="mt-2" data-testid="prior-goal">
+                        <div className="text-[11px] font-medium text-stone-500 tabular-nums">
+                          {t.priorGoalsMeta(g.date ? dayLabel(g.date, { year: true }) : '', g.role, g.rc)}
+                        </div>
+                        <div className="text-[11px] uppercase tracking-wider text-sky-800 font-semibold mt-1">{t.goalsNext}</div>
+                        <RichView value={g.goals} className="text-sm text-stone-800 mt-0.5" />
+                      </div>
+                    ))}
+                    {priorGoals.prior.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setPriorGoalsOlderOpen((v) => !v)}
+                        className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-sky-800 hover:underline"
+                        data-testid="prior-goals-older"
+                      >
+                        <ChevronDown size={14} className={cn('transition-transform', priorGoalsOlderOpen && 'rotate-180')} />
+                        {t.priorGoalsOlder(priorGoals.prior.length - 1)}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className={cn(formDisabled && 'pointer-events-none opacity-60')}>
 

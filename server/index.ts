@@ -18,7 +18,7 @@ import { installErrorAlerts } from './erroralerts.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter, indexBySeason } from './season.ts';
 import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, type ExpenseVisit } from './expenses.ts';
 import { computeStatistics, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
-import { archiveSlug, formsRowOf, formsEntryName, groupForms, type FormsRow } from './forms.ts';
+import { archiveSlug, formsRowOf, formsEntryName, groupForms, folderKeys, type FormsRow } from './forms.ts';
 import type { StatFilters, StatRole } from '../src/lib/statistics.ts';
 import { goalForMandate, OBSERVATION_GOAL } from '../src/types.ts';
 import { splitCoacheeGroups } from '../src/lib/coacheeGroup.ts';
@@ -8092,6 +8092,46 @@ app.get('/api/coachees/:id/feedbacks', requireRcSession, async (req: Request, re
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
+});
+
+// ── What the last coach wrote under "Ziele für nächste Spiele" ─────────
+// A second observation — this season or a later one — should start from what
+// the previous one asked the referee to work on. The written assessment stays
+// with its author (a plain RC reads only their own feedback_json, see
+// /api/coachees/:id/feedbacks); this hands the NEXT coach one field of it,
+// the goals, agreed with the chair as the part worth passing on. Matched by
+// person across seasons the way the forms database does, so last season's
+// goals reach this season's observation.
+app.get('/api/coachees/:id/prior-goals', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    let coachee: AnyRecord;
+    try {
+      coachee = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(asText(req.params.id)));
+    } catch (error) {
+      if (isRecordNotFound(error)) { res.status(404).json({ error: 'Coachee not found' }); return; }
+      throw error;
+    }
+    const rows = await loadFormsRows();
+    // The coachee stands in as a row of its own, so the same rule that folders
+    // the filed forms — the SV-Nr. when either side has one, else the name in
+    // either order — decides which of them are about this person.
+    const probe: FormsRow = {
+      rec: { id: `probe-${coachee.id}` }, coachee,
+      refereeId: asText(coachee.referee_id), name: asText(coachee.full_name),
+      role: '1. SR', date: '',
+    };
+    const keys = folderKeys([...rows, probe]);
+    const mine = rows.filter((r) => keys.get(r) === keys.get(probe));
+    mine.sort((a, b) => (b.date || '').localeCompare(a.date || '') || asText(b.rec.submitted_at).localeCompare(asText(a.rec.submitted_at)));
+    const prior = mine.flatMap((r) => {
+      const results = ((r.rec.feedback_json as AnyRecord | undefined)?.results ?? {}) as AnyRecord;
+      const goals = asText(results.goals);
+      if (!richTextToPlain(goals).trim()) return [];
+      return [{ id: r.rec.id, date: r.date, role: r.role, rc: asText(r.rec.rc_name), goals }];
+    });
+    res.json({ observed: mine.length, prior });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
 app.get('/api/referee-coaches', requireAdminSession, async (_req: Request, res: ExpressResponse) => {

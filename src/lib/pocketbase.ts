@@ -429,6 +429,20 @@ export async function listCoacheeGames(coacheeId: string): Promise<CoacheeGame[]
   return response.json() as Promise<CoacheeGame[]>;
 }
 
+/** What earlier observations of this person set as "Ziele für nächste
+ *  Spiele" — one field of each, newest first, whichever coach wrote it and
+ *  whichever season. `observed` counts every earlier observation, goals or
+ *  not, so the form can say "observed before, nothing set" rather than nothing. */
+export type PriorGoal = { id: string; date: string; role: '1. SR' | '2. SR'; rc: string; goals: string };
+export type PriorGoals = { observed: number; prior: PriorGoal[] };
+
+export async function loadPriorGoals(coacheeId: string): Promise<PriorGoals> {
+  if (isDemoMode()) return demo.loadPriorGoals(coacheeId);
+  const response = await fetch(apiUrl(`/api/coachees/${encodeURIComponent(coacheeId)}/prior-goals`), { credentials: 'include' });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
 export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackRecord[]> {
   if (isDemoMode()) return demo.listCoacheeFeedbacks(coacheeId);
   const response = await fetch(apiUrl(`/api/coachees/${coacheeId}/feedbacks`), { credentials: 'include' });

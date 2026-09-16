@@ -5,7 +5,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { cn } from '../lib/utils';
-import { domToRich, richToEditableHtml, richToPlain } from '../lib/richText';
+import { domToRich, richToEditableHtml, richToPlain, toRuns } from '../lib/richText';
 
 // One editable surface, used both inline and in the full-screen editor.
 //
@@ -122,4 +122,28 @@ export function appendNumbered(value: string): string {
   }
   const next = `${last + 1}. `;
   return value ? `${value.replace(/\s+$/, '')}${richToPlain(value) ? '\n' : ''}${next}` : next;
+}
+
+/** A stored value shown, not edited: the subset rendered as elements, so no
+ *  markup is ever handed to the DOM as a string. Lines become lines. */
+export function RichView({ value, className }: { value: string; className?: string }) {
+  const lines = toRuns(value || '');
+  return (
+    <div className={cn('whitespace-pre-wrap break-words', className)}>
+      {lines.map((runs, li) => (
+        <React.Fragment key={li}>
+          {li > 0 && '\n'}
+          {runs.map((run, ri) => {
+            let node: React.ReactNode = run.text;
+            if (run.color) node = <span style={{ color: run.color }}>{node}</span>;
+            if (run.strike) node = <s>{node}</s>;
+            if (run.underline) node = <u>{node}</u>;
+            if (run.italic) node = <i>{node}</i>;
+            if (run.bold) node = <b>{node}</b>;
+            return <React.Fragment key={ri}>{node}</React.Fragment>;
+          })}
+        </React.Fragment>
+      ))}
+    </div>
+  );
 }

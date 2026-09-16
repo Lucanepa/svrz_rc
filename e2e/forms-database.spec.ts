@@ -139,18 +139,18 @@ test('the search finds a person by name — accent-blind — or by SV-Nr.', asyn
   await expect(page.getByTestId('forms-folder')).toHaveCount(2);
 });
 
-test('the admin has the same tab: the filed forms are the commission\'s records, not one password\'s', async ({ page }) => {
+test('the admin has no Formulare: the folders are the chair\'s alone', async ({ page }) => {
   await stubSignedInApp(page, { admin: true });
   const asked = await stubForms(page);
   await page.goto('/admin/forms');
-  await expect(page).toHaveURL(/\/admin\/forms$/);
-  await expect(page.getByTestId('forms-body')).toBeVisible();
-  await expect.poll(() => asked).toEqual(['index']);
-  await expect(page.getByTestId('forms-folder')).toHaveCount(2);
-  // The chair's own tabs stay hers.
+  // Bounced onto the admin's own first tab, and nothing fetched on the way.
+  await expect(page).toHaveURL(/\/admin\/coachees$/);
+  await expect(page.getByTestId('forms-body')).toHaveCount(0);
   const rail = page.getByRole('navigation').first();
-  await expect(rail.getByRole('button', { name: 'Formulare' })).toBeVisible();
-  await expect(rail.getByRole('button', { name: 'RC-Notizen' })).toHaveCount(0);
+  await expect(rail.getByRole('button', { name: 'Coachees' })).toBeVisible();
+  await expect(rail.getByRole('button', { name: 'Formulare' })).toHaveCount(0);
+  await page.waitForTimeout(300);
+  expect(asked).toEqual([]);
 });
 
 test('the old /admin/archive bookmark lands on the forms database', async ({ page }) => {
@@ -208,8 +208,8 @@ test('a coach gets the sent PDF back from the Feedback-Verlauf, without redrawin
   expect(served).toEqual(['/api/feedback/fb1/file', '/api/feedback/fb2/file']);
 });
 
-test('the admin can delete a form from its folder; the chair only reads', async ({ page }) => {
-  await stubSignedInApp(page, { admin: true });
+test('the chair can delete a form from its folder, and everything filed with it goes', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true, surveyReader: true });
   await stubForms(page);
   const deleted: string[] = [];
   await page.route('**/api/referee-coaches/*', (r) => {
@@ -230,12 +230,4 @@ test('the admin can delete a form from its folder; the chair only reads', async 
   await dialog.getByRole('button', { name: /^Löschen$/ }).click();
   await expect.poll(() => deleted).toEqual(['/api/referee-coaches/fb3']);
   await expect(page.getByText('Formular gelöscht.')).toBeVisible();
-
-  // The chair's half has no bin.
-  await stubSignedInApp(page, { admin: true, surveyReader: true });
-  await stubForms(page);
-  await page.goto('/admin/forms');
-  await page.getByTestId('forms-folder').nth(0).getByRole('button', { name: /Hans Muster/ }).click();
-  await expect(page.getByTestId('forms-open').first()).toBeVisible();
-  await expect(page.getByTestId('forms-delete')).toHaveCount(0);
 });

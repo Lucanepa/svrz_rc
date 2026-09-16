@@ -6383,10 +6383,14 @@ function zipStore(entries: ZipEntry[]): Buffer {
   return Buffer.concat([...chunks, dirBuf, end]);
 }
 
-// The chair archives, per 4.4 — and an admin may too, so a lost console password
-// never strands two years of records nobody can export.
+// The chair archives, per 4.4, and reads the folders — and nobody else: asked
+// whether the admin should see them too, she said "if possible only me"
+// (2026-09-16). An admin used to be let in so a lost console password never
+// stranded two years of records; the credential slots are editable in the
+// console behind mailed 2FA now, so a lost chair password is reset, not
+// worked around.
 async function requireArchiveReader(req: Request, res: ExpressResponse, next: () => void) {
-  if (verifyAdminSession(req).ok || isSurveyReader(req)) { next(); return; }
+  if (isSurveyReader(req)) { next(); return; }
   res.status(403).json({ error: 'Forbidden' });
 }
 
@@ -6507,17 +6511,17 @@ app.get('/api/forms/archive', requireArchiveReader, async (req: Request, res: Ex
 // The document itself — the PDF as it was mailed, or the scan a coach uploaded
 // in its place. Shown inline, so the folder opens it like a folder would.
 //
-// Two kinds of reader: the console (admin or chair — the archive gate), and the
-// coach who filed it, reading their own back from the Feedback-Verlauf. The
-// coach's list already shows only their own, but the route checks again: a
-// record id is guessable, and the written assessment inside is not theirs to
-// read for the asking.
+// Two kinds of reader: the chair (the archive gate — hers alone, see
+// requireArchiveReader), and the coach who filed it, reading their own back
+// from the Feedback-Verlauf. The coach's list already shows only their own,
+// but the route checks again: a record id is guessable, and the written
+// assessment inside is not theirs to read for the asking.
 app.get('/api/feedback/:id/file', async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     // Who is asking, before what they are asking for: a stranger gets the same
     // 401 whether or not the id exists, so the route cannot be used to probe.
-    const fromConsole = verifyAdminSession(req).ok || isSurveyReader(req);
+    const fromConsole = isSurveyReader(req);
     const me = fromConsole ? null : await sessionRcIdentity(req);
     if (!fromConsole && !me) { res.status(401).json({ error: 'Unauthorized' }); return; }
     let record: AnyRecord;
@@ -9165,7 +9169,15 @@ async function deleteWhere(collection: string[], filter: string, what: string): 
   return n;
 }
 
-app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+// The chair deletes from her folders, the admin from the API — either
+// password, since a form filed on a throwaway is cleaned up by whoever
+// notices it.
+async function requireFormCurator(req: Request, res: ExpressResponse, next: () => void) {
+  if (verifyAdminSession(req).ok || isSurveyReader(req)) { next(); return; }
+  res.status(403).json({ error: 'Forbidden' });
+}
+
+app.delete('/api/referee-coaches/:id', requireFormCurator, async (req: Request, res: ExpressResponse) => {
   const feedbackId = String(req.params.id);
   try {
     await ensureAdminAuth();

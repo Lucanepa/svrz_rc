@@ -293,7 +293,7 @@ const STR = {
     credentials: 'Passwörter', credentialsHint: 'Diese Passwörter öffnen die App und diese Seite. Sie werden nur als Hash gespeichert — ein gesetztes Passwort kann nicht wieder angezeigt, sondern nur ersetzt werden. Notiere es dir jetzt.',
     credShared: 'Team-Login (App)', credSharedHint: 'Das Passwort, das alle Referee Coaches für die App benutzen.',
     credAdmin: 'Admin (diese Seite)', credAdminHint: 'Öffnet diese Konsole.',
-    credPresident: 'RC-Präsidium', credPresidentHint: 'Öffnet die Tabs Umfrage, RC-Notizen und Formulare. Umfrage und Notizen bleiben Admin-Rechten verschlossen.',
+    credPresident: 'RC-Präsidium', credPresidentHint: 'Öffnet die Tabs Umfrage, RC-Notizen und Formulare — alle drei bleiben Admin-Rechten verschlossen.',
     credUser: 'Benutzername', credNew: 'Neues Passwort', credSave: 'Passwort setzen',
     credSendCode: 'Bestätigungscode senden', credCode: '6-stelliger Code',
     credCodeSent: (to: string) => `Code an ${to} gesendet. 10 Minuten gültig.`,
@@ -537,7 +537,7 @@ const STR = {
     credentials: 'Passwords', credentialsHint: 'These passwords open the app and this page. Only a hash is stored — a password that has been set cannot be shown again, only replaced. Write it down now.',
     credShared: 'Team login (app)', credSharedHint: 'The password every referee coach uses for the app.',
     credAdmin: 'Admin (this page)', credAdminHint: 'Opens this console.',
-    credPresident: 'RC chair', credPresidentHint: 'Opens the Survey, RC notes and Forms tabs. Survey and notes stay closed to admin rights.',
+    credPresident: 'RC chair', credPresidentHint: 'Opens the Survey, RC notes and Forms tabs — all three stay closed to admin rights.',
     credUser: 'Username', credNew: 'New password', credSave: 'Set password',
     credSendCode: 'Send confirmation code', credCode: '6-digit code',
     credCodeSent: (to: string) => `Code sent to ${to}. Valid for 10 minutes.`,
@@ -723,7 +723,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 // Console tabs live in the URL as /admin/<tab>, so each one is linkable and
 // the Back button steps between them. The Protokoll tab's own two views are
 // one level down: /admin/logs and /admin/logs/history.
-const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'forms', 'stats', 'niveau', 'emails', 'form', 'survey', 'notes', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'stats', 'niveau', 'emails', 'form', 'survey', 'notes', 'forms', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 // /admin/archive was the chair's season-ZIP tab before the forms database
 // absorbed it; a bookmark of it still lands where the ZIP now lives.
@@ -782,7 +782,7 @@ export default function AdminConsole() {
   // page whose every request would 401.
   useEffect(() => {
     if (role === 'president' && tab !== 'survey' && tab !== 'notes' && tab !== 'forms') setTab('survey');
-    if (role === 'admin' && (tab === 'survey' || tab === 'notes')) setTab('coachees');
+    if (role === 'admin' && (tab === 'survey' || tab === 'notes' || tab === 'forms')) setTab('coachees');
     // 'form' edits the questionnaire and is admin-only, even though its
     // subject — the survey — belongs to the chair's half of the console.
   }, [role, tab]);
@@ -994,9 +994,9 @@ export default function AdminConsole() {
   // The chair gets her tabs and nothing else. She is not a lesser admin —
   // she is a different person with a different password, and the admin half of
   // this console is closed to her exactly as her half is closed to the admin.
-  // The one shared door is Formulare: the filed forms are the commission's
-  // records, and the server opens them to either password on purpose, so a
-  // lost console password never strands two years of them.
+  // Formulare is hers too: asked whether the admin should see the folders as
+  // well, she said "if possible only me" (2026-09-16), and the server gate
+  // agrees.
   const isPresident = role === 'president';
   const tabs: { id: typeof tab; label: string; icon: React.ReactNode }[] = isPresident ? [
     { id: 'survey', label: t.survey, icon: <MessageSquare size={15} /> },
@@ -1007,7 +1007,6 @@ export default function AdminConsole() {
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
     { id: 'games', label: t.games, icon: <CalendarDays size={15} /> },
     { id: 'overview', label: t.overview, icon: <Target size={15} /> },
-    { id: 'forms', label: t.forms, icon: <FolderOpen size={15} /> },
     { id: 'stats', label: t.stats, icon: <BarChart3 size={15} /> },
     { id: 'niveau', label: t.niveau, icon: <Gauge size={15} /> },
     { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
@@ -1104,10 +1103,12 @@ export default function AdminConsole() {
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
-        <div hidden={tab !== 'forms'}>
-          <FormsAdmin t={t} lang={lang} active={tab === 'forms'} canDelete={!isPresident} />
-          <ArchiveAdmin t={t} defaultSeason={defaultSeason} />
-        </div>
+        {isPresident && (
+          <div hidden={tab !== 'forms'}>
+            <FormsAdmin t={t} lang={lang} active={tab === 'forms'} />
+            <ArchiveAdmin t={t} defaultSeason={defaultSeason} />
+          </div>
+        )}
         {!isPresident && <>
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} lang={lang} active={tab === 'logs'} mode={logMode} onMode={setLogMode} /></div>
         <div hidden={tab !== 'settings'}>
@@ -2807,7 +2808,7 @@ const FORMS_GRID = 'sm:grid-cols-[5.5rem_3rem_minmax(0,1fr)_8rem_8rem] sm:gap-x-
 // Field labels exist only on the phone; the desk has a header row instead.
 const FORMS_LABEL = 'sm:hidden text-stone-500';
 
-function FormsAdmin({ t, lang, active, canDelete }: { t: T; lang: Lang; active: boolean; canDelete: boolean }) {
+function FormsAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolean }) {
   const [folders, setFolders] = useState<FormsFolder[] | null>(null);
   const [deleting, setDeleting] = useState('');
   const [err, setErr] = useState('');
@@ -2828,8 +2829,9 @@ function FormsAdmin({ t, lang, active, canDelete }: { t: T; lang: Lang; active: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
-  // Admin only: the chair reads and archives, the admin curates. Everything
-  // the submit wrote goes with the form (see deleteFeedbackRecord).
+  // The chair's bin: she keeps the records, so she is the one to remove a
+  // form filed on a throwaway. Everything the submit wrote goes with it
+  // (see deleteFeedbackRecord).
   const remove = async (f: FormsFolder, e: FormsFolder['forms'][number]) => {
     const when = e.date ? dayLabel(e.date, { year: true }) : '–';
     if (!(await confirmDialog({ title: t.formsDeleteConfirm(f.name || t.formsUnnamed, when), message: t.formsDeleteWarn, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
@@ -2958,19 +2960,17 @@ function FormsAdmin({ t, lang, active, canDelete }: { t: T; lang: Lang; active: 
                               ) : (
                                 <span className="text-stone-400 flex-1 sm:flex-none">{t.formsNoFile}</span>
                               )}
-                              {canDelete && (
-                                <button
-                                  type="button"
-                                  onClick={() => void remove(f, e)}
-                                  disabled={deleting === e.id}
-                                  aria-label={t.formsDelete}
-                                  title={t.formsDelete}
-                                  data-testid="forms-delete"
-                                  className={cn(btnGhost, 'px-2 text-red-700 hover:bg-red-50 hover:border-red-200 disabled:opacity-50')}
-                                >
-                                  {deleting === e.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-                                </button>
-                              )}
+                              <button
+                                type="button"
+                                onClick={() => void remove(f, e)}
+                                disabled={deleting === e.id}
+                                aria-label={t.formsDelete}
+                                title={t.formsDelete}
+                                data-testid="forms-delete"
+                                className={cn(btnGhost, 'px-2 text-red-700 hover:bg-red-50 hover:border-red-200 disabled:opacity-50')}
+                              >
+                                {deleting === e.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                              </button>
                             </span>
                           </div>
                         ))}

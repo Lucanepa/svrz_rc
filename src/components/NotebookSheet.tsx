@@ -25,11 +25,16 @@ import { richToPlain } from '../lib/richText';
 import { RichSurface, RichToolbar, appendBullet, appendNumbered } from './RichText';
 import { confirmDialog, toast } from './ui';
 import AppSpinner from './AppSpinner';
+import StaleBuildNotice from './StaleBuildNotice';
+import { importFresh } from '../lib/freshImport';
 import type { InkTool } from './InkPad';
 
 // perfect-freehand and the canvas code load the first time a coach opens a
 // pen page, never for one who only types.
-const InkPad = lazy(() => import('./InkPad'));
+const InkPad = lazy(() => importFresh(() => import('./InkPad')).catch((error: unknown) => ({
+  // A stale build cannot draw the pad; the notice takes its place in the sheet.
+  default: () => <StaleBuildNotice inline message={error instanceof Error ? error.message : String(error)} />,
+})));
 
 export type InsertContext = {
   role: '1. SR' | '2. SR';
@@ -111,7 +116,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   }, []);
 
   // Warm the pen chunk while the coach is still typing.
-  useEffect(() => { void import('./InkPad'); }, []);
+  useEffect(() => { void import('./InkPad').catch(() => { /* warmed on the next open */ }); }, []);
 
   // The strokes of the pen page on screen: local first, the server if newer.
   useEffect(() => {

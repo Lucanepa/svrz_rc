@@ -5,6 +5,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { BarChart3, Download, FileText, Loader2, Presentation } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { importFresh } from '../lib/freshImport';
 import type { Lang } from '../lib/appTime';
 import { dayLabel } from '../lib/appTime';
 import { loadStatistics } from '../lib/pocketbase';
@@ -149,10 +150,10 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     try {
       const deck = buildDeck(stats, { lang: exportLang, includeRcGrades, includeLeagues, rcNames });
       if (kind === 'pptx') {
-        const { buildDeckPptx } = await import('../lib/statsPptx');
+        const { buildDeckPptx } = await importFresh(() => import('../lib/statsPptx'));
         download(await buildDeckPptx(deck), deckFileName(stats, 'pptx'));
       } else {
-        const { buildDeckPdf } = await import('../lib/statsPdf');
+        const { buildDeckPdf } = await importFresh(() => import('../lib/statsPdf'));
         download(buildDeckPdf(deck), deckFileName(stats, 'pdf'));
       }
     } catch (e) {

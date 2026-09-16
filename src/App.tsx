@@ -3,7 +3,14 @@ import { Maximize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftR
 import { QRCodeSVG } from 'qrcode.react';
 // About a megabyte of renderer, fetched the first time a coach opens a
 // document and never for anyone who does not.
-const PdfReader = lazy(() => import('./components/PdfReader'));
+// Lazy chunks go through importFresh: after a deploy the old page's chunk
+// URLs 404, and a reader that cannot load must reload the page or say so —
+// not crash the app to the error screen (16.09.2026).
+const PdfReader = lazy(() => importFresh(() => import('./components/PdfReader')).catch((error: unknown) => ({
+  // Rendered in the reader's place with the reader's props: a notice with the
+  // way out, instead of a rejection the root boundary turns into a crash.
+  default: (props: { onClose: () => void }) => <StaleBuildNotice message={error instanceof Error ? error.message : String(error)} onClose={props.onClose} />,
+})));
 import { USEFUL_DOCS, USEFUL_DOC_GROUPS, ATTACHABLE_DOCS, ATTACH_BUDGET_BYTES, attachedBytes, normalizeAttachedDocs, type UsefulDoc } from './lib/usefulDocs';
 import { docLinkUrl, docSourceUrl, prefetchSmallDocs, storeAllDocs, storedState } from './lib/docCache';
 import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, PAID_CAP, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
@@ -68,6 +75,8 @@ import { getStoredLang, setStoredLang } from './lib/prefs';
 import { dayLabel, dayTimeLabel, shortDayLabel, clockLabel, dayKey, todayKey, shiftDayKey, zonedParts, instantOf } from './lib/appTime';
 import { subscribeLive } from './lib/liveEvents';
 import { richToPlain, richToDisplayHtml, sanitizeRich, appendToRich } from './lib/richText';
+import { importFresh } from './lib/freshImport';
+import StaleBuildNotice from './components/StaleBuildNotice';
 import { NotebookPen } from 'lucide-react';
 import NotebookSheet, { type InsertContext } from './components/NotebookSheet';
 import { RichSurface, RichToolbar, RichView, appendBullet } from './components/RichText';
@@ -775,7 +784,7 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
 // jsPDF, the embedded font subsets and the PDF layout only matter the moment a
 // coach asks for a document, so they load on demand rather than at startup.
 // Workbox precaches the chunk with everything else, so this still works offline.
-const loadPdfBuilder = () => import('./lib/feedbackPdf');
+const loadPdfBuilder = () => importFresh(() => import('./lib/feedbackPdf'));
 
 /**
  * The match result the way the games list shows it: the set count, then the
@@ -1636,7 +1645,7 @@ export default function App() {
     // The reader's own code counts as part of "offline": documents in the
     // cache and no renderer to open them with would be a cruel joke in a gym
     // with no signal.
-    void import('./components/PdfReader');
+    void import('./components/PdfReader').catch(() => { /* warmed on the next open */ });
     await storeAllDocs((done, total) => setStoringDocs(done / total));
     setStoringDocs(0);
     setDocsOffline(await storedState());
@@ -3287,6 +3296,9 @@ export default function App() {
       // coach their download broke because they changed their mind is worse
       // than saying nothing.
       if ((err as Error)?.name === 'AbortError') return;
+      // importFresh reloads for a gone chunk when it may; when it may not
+      // (mid-form), it says so in the error, in words the coach can act on.
+      if ((err as Error)?.name === 'StaleBuildError') { toast.error((err as Error).message, { lang: formData.lang }); return; }
       toast.error(de
         ? 'PDF konnte nicht erstellt werden (App-Update nötig). Bitte die Seite neu laden — deine Eingaben bleiben erhalten.'
         : 'Could not build the PDF (app update needed). Please reload the page — your entries are kept.', { lang: formData.lang });

@@ -52,11 +52,11 @@ const COOPERATION: SurveyChoice[] = [
 // a word: the numbers in between need no translation, and an English half that
 // merely repeats the digit would print "4 · 4".
 const RATING_1_5: SurveyChoice[] = [
-  { value: '5', DE: '5 — sehr gut', EN: '5 — very good' },
+  { value: '5', DE: '5 — Sehr gut', EN: '5 — Very good' },
   { value: '4', DE: '4', EN: '' },
   { value: '3', DE: '3', EN: '' },
   { value: '2', DE: '2', EN: '' },
-  { value: '1', DE: '1 — ungenügend', EN: '1 — poor' },
+  { value: '1', DE: '1 — Ungenügend', EN: '1 — Poor' },
 ];
 
 export const SURVEY_SCALES: Record<SurveyScaleId, { DE: string; EN: string; options: SurveyChoice[] }> = {
@@ -79,6 +79,9 @@ export type SurveyQuestion = {
   // Shown small under the question — the original form's helper lines.
   hintDE?: string;
   hintEN?: string;
+  // Asked only when the match had a second referee. A referee who whistled
+  // alone was being asked how the cooperation with the other referee went.
+  twoRefereesOnly?: boolean;
 };
 
 export function optionsOf(q: SurveyQuestion): SurveyChoice[] {
@@ -113,7 +116,7 @@ export const DEFAULT_SURVEY_QUESTIONS: SurveyQuestion[] = [
   // 1–5 rather than the coaching form's A–E: this question is answered by the
   // referee, not by a coach reading a criteria table, and A–E means nothing
   // away from that table. The A–E scale stays available for anyone who wants it.
-  { id: 'cooperation', kind: 'choice', scale: 'rating15',
+  { id: 'cooperation', kind: 'choice', scale: 'rating15', twoRefereesOnly: true,
     DE: 'Wie hast du die Zusammenarbeit mit dem / der anderen Schiedsrichter:in empfunden?',
     EN: 'How did you find the cooperation with the other referee?' },
   { id: 'anything', kind: 'text',
@@ -249,6 +252,16 @@ export function normalizeSurveyConfig(raw: unknown): SurveyConfig {
     const out: SurveyQuestion = { id, kind, DE: DE || EN, EN: EN || DE };
     if (kind === 'choice') out.scale = SURVEY_SCALES[q.scale as SurveyScaleId] ? q.scale as SurveyScaleId : 'yesno';
     if (hintDE || hintEN) { out.hintDE = hintDE || hintEN; out.hintEN = hintEN || hintDE; }
+    // A config saved before the flag existed carries no key for it; the
+    // shipped cooperation question is the one it was made for, so it inherits
+    // the default until an admin unticks it (which stores an explicit false).
+    const shippedFlag = DEFAULT_SURVEY_QUESTIONS.find((d) => d.id === id)?.twoRefereesOnly ?? false;
+    const twoRefereesOnly = typeof q.twoRefereesOnly === 'boolean' ? q.twoRefereesOnly : shippedFlag;
+    // Written out whenever it differs from "absent": a ticked box as true, and
+    // an unticked shipped default as an explicit false — dropped, the next
+    // normalise would read "no key" and tick it again.
+    if (twoRefereesOnly) out.twoRefereesOnly = true;
+    else if (shippedFlag) out.twoRefereesOnly = false;
     questions.push(out);
   }
   return {

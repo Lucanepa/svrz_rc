@@ -152,3 +152,52 @@ test.describe('the answer travels with the name', () => {
     expect(posted).not.toHaveProperty('anonymous');
   });
 });
+
+test.describe('the other-referee question', () => {
+  const COOPERATION = /Zusammenarbeit mit dem \/ der anderen Schiedsrichter:in/;
+  const session = (twoReferees: boolean | undefined) => ({
+    referee: 'Anna Beispiel', date: '14.09.2026', matchNo: '312456', rc: 'Max Muster', submitted: false,
+    ...(twoReferees === undefined ? {} : { twoReferees }),
+  });
+
+  test('is not asked when the match had one referee', async ({ page }) => {
+    await page.route('**/api/survey/*', (r) => r.fulfill({ json: session(false) }));
+    await page.goto('/#/survey/tok123');
+    await expect(page.getByText(/Ist der RC pünktlich/)).toBeVisible();
+    await expect(page.getByText(COOPERATION)).toHaveCount(0);
+    // The questions around it are untouched.
+    await expect(page.getByText(/Was du uns schon immer sagen wolltest/)).toBeVisible();
+  });
+
+  test('is asked with two referees, and when the server cannot say', async ({ page }) => {
+    await page.route('**/api/survey/*', (r) => r.fulfill({ json: session(true) }));
+    await page.goto('/#/survey/tok123');
+    await expect(page.getByText(COOPERATION)).toBeVisible();
+    // An older server sends no flag at all: never suppress on a guess.
+    await page.route('**/api/survey/*', (r) => r.fulfill({ json: session(undefined) }));
+    await page.goto('/#/survey/tok456');
+    await expect(page.getByText(COOPERATION)).toBeVisible();
+  });
+
+  test('a stored form inherits the flag for the shipped question, and an untick sticks', async ({ page }) => {
+    await page.goto('/');
+    const out = await page.evaluate(async () => {
+      // Resolved by the browser against the dev server; the string keeps the
+      // specifier out of TypeScript's module resolution.
+      const load = (path: string): Promise<Record<string, never>> => import(path);
+      const m = await load('/src/lib/survey.ts') as unknown as typeof import('../src/lib/survey');
+      const saved = (q: Record<string, unknown>) => m.normalizeSurveyConfig({ questions: [q] } as never).questions[0];
+      return {
+        // Saved before the flag existed: no key, so the shipped default applies.
+        inherited: saved({ id: 'cooperation', kind: 'choice', scale: 'rating15', DE: 'Zusammenarbeit?', EN: 'Cooperation?' }).twoRefereesOnly,
+        // The commission unticked it: stored as an explicit false, which survives the next normalise.
+        unticked: saved({ id: 'cooperation', kind: 'choice', scale: 'rating15', DE: 'Zusammenarbeit?', EN: 'Cooperation?', twoRefereesOnly: false }).twoRefereesOnly,
+        // Any other question can be ticked …
+        ticked: saved({ id: 'lines', kind: 'choice', scale: 'yesno', DE: 'Linienrichter?', EN: 'Line judges?', twoRefereesOnly: true }).twoRefereesOnly,
+        // … and is plain when it was not.
+        plain: saved({ id: 'lines', kind: 'choice', scale: 'yesno', DE: 'Linienrichter?', EN: 'Line judges?' }).twoRefereesOnly,
+      };
+    });
+    expect(out).toEqual({ inherited: true, unticked: false, ticked: true, plain: undefined });
+  });
+});

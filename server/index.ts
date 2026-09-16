@@ -6041,9 +6041,31 @@ app.get('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
       // round trip, and the page can never render a question set that belongs
       // to a different moment than the visit it is asking about.
       form: await getSurveyConfig(),
+      twoReferees: await surveyGameHadTwoReferees(asText(rec.match_no)),
     });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
+
+/**
+ * Whether the match this survey is about had a second referee — what decides
+ * if the "Zusammenarbeit mit dem / der anderen Schiedsrichter:in" question is
+ * asked at all. The token record names the match, not the game row, so the
+ * game is looked up by match number; the newest one wins if a number was ever
+ * reused across seasons. Not knowing (no row, a lookup that failed) means
+ * asking: a question too many is a blank answer, a question suppressed by
+ * mistake is one the commission never sees.
+ */
+async function surveyGameHadTwoReferees(matchNo: string): Promise<boolean> {
+  if (!matchNo) return true;
+  try {
+    const game = await withCollection(collectionCandidates.games, (c) =>
+      c.getFirstListItem<AnyRecord>(`match_no = "${escapeFilterValue(matchNo)}"`, { sort: '-match_date', fields: 'second_referee' }));
+    return asText(game.second_referee) !== '';
+  } catch (error) {
+    if (!isRecordNotFound(error)) log.warn('survey.game_lookup', 'could not tell whether the match had two referees — asking', { matchNo, error: safeError(error) });
+    return true;
+  }
+}
 
 app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
   try {
@@ -7070,12 +7092,24 @@ function workloadByRc(
   // Each RC below reads both buckets, so a half-migrated table still counts
   // every feedback exactly once.
   const feedbackGameIdsByRc = new Map<string, Set<string>>();
+  // A report filed against the referee register — a Testspiel, or a marked
+  // game whose referee is nobody's coachee — has no coachee and, by the
+  // submit's own contract, counts toward nothing. It must not make its game
+  // "done" (a test send showed as "2 of 10 done" on Home, 16.09.2026), and
+  // must not leave it "outstanding" either: such a game drops out of the
+  // workload, unless a coachee's report on its other role keeps it in.
+  const registerOnlyGames = new Set<string>();
+  const coacheeFiledGames = new Set<string>();
   for (const fb of allFeedbacks) {
+    const gameId = String(fb.game || '');
+    if (!asText(fb.coachee)) { registerOnlyGames.add(gameId); continue; }
+    coacheeFiledGames.add(gameId);
     const rcKey = asText(fb.rc_id) || normalizeName(fb.rc_name);
     if (!rcKey) continue;
     if (!feedbackGameIdsByRc.has(rcKey)) feedbackGameIdsByRc.set(rcKey, new Set());
-    feedbackGameIdsByRc.get(rcKey)!.add(String(fb.game || ''));
+    feedbackGameIdsByRc.get(rcKey)!.add(gameId);
   }
+  for (const id of coacheeFiledGames) registerOnlyGames.delete(id);
   const out = new Map<string, RcWorkload>();
   for (const p of people) {
     const fullName = `${asText(p.first_name)} ${asText(p.last_name)}`.trim();
@@ -7088,6 +7122,7 @@ function workloadByRc(
     for (const game of allGames) {
       if (!rcRefMatches(game.assigned_rc_id, game.assigned_rc, self)) continue;
       if (!inSeason(game)) continue;
+      if (registerOnlyGames.has(String(game.id))) continue;
       if (fbGameIds.has(game.id)) load.done++;
       else if (new Date(asText(game.match_date)) < now) load.outstanding++;
       else load.planned++;
@@ -7126,7 +7161,7 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
     // 3. All feedback records
     const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
       collection.getFullList<AnyRecord>({
-        fields: 'id,rc_name,rc_id,game,submitted_at',
+        fields: 'id,rc_name,rc_id,game,coachee,submitted_at',
       }),
     );
 
@@ -8040,33 +8075,35 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
     ].filter(Boolean);
     const uniqueNames = [...new Set(rawNames)];
 
-    const nameFilterParts = uniqueNames.flatMap((name) => {
-      const escaped = escapeFilterValue(name);
-      return [
-        `first_referee = "${escaped}"`,
-        `second_referee = "${escaped}"`,
-        `first_line_judge = "${escaped}"`,
-        `second_line_judge = "${escaped}"`,
-      ];
-    });
-
     // A coachee with no usable name anywhere leaves no filter at all, and
     // PocketBase reads an empty filter as "no filter" — so the endpoint answered
     // a nameless record with every game in the collection. Nothing to match on
     // means nothing matches.
-    if (nameFilterParts.length === 0) { res.json([]); return; }
+    if (uniqueNames.length === 0) { res.json([]); return; }
+
+    // Matched in memory, with accents folded — the comparison every other list
+    // uses. An exact `first_referee = "<name>"` in the query missed every game
+    // of a referee whom VolleyManager spells with the accents his passport has
+    // and the xlsx import did not ("Kevin León …" against a "Kevin Leon …"
+    // row): his row opened to "No games found" while the overview, which folds
+    // in memory, listed eight (16.09.2026). SQLite cannot fold accents, and no
+    // word of the name is safe to search for — the accent can sit on either
+    // side. So the games are read whole, as the overview reads them on every
+    // Home load anyway, and the fold decides.
+    const gameFields = 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge,assigned_rc,assigned_rc_id,feedback_closed_roles,game_result,maps_url';
 
     // Same rule the open games list uses, so a game cannot be an RC game in one
     // list and an ordinary one in the other.
     const isRcGame = await makeRcGameTest();
     const boerseFor = await makeBoerseVerdict(await boerseViewerFor(rcAuthByReq.get(req) ?? null));
-    const games = await withCollection(collectionCandidates.games, (collection) =>
-      collection.getFullList<AnyRecord>({
-        sort: '-match_date,-created',
-        filter: nameFilterParts.join(' || '),
-        fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge,assigned_rc,assigned_rc_id,feedback_closed_roles,game_result,maps_url',
-      }),
+    const candidates = await withCollection(collectionCandidates.games, (collection) =>
+      collection.getFullList<AnyRecord>({ sort: '-match_date,-created', fields: gameFields }),
     );
+    const games = candidates.filter((game) => {
+      const assigned = getAssignedPeopleFromGameRecord(game);
+      return [assigned.firstReferee, assigned.secondReferee, assigned.firstLineJudge, assigned.secondLineJudge]
+        .some((person) => variants.has(normalizeName(person)));
+    });
 
     const [starredIds, manualIds] = await Promise.all([getStarredGameIds(), getManualGameIds()]);
     const result = games.map((game) => {
@@ -9326,10 +9363,9 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       return;
     }
 
-    // A "second visit needed" submission deliberately leaves the role open, so
-    // the 409 above cannot catch a replay of it. A genuine second observation
-    // is days or weeks later, never minutes — anything inside the window is the
-    // same submission arriving twice.
+    // Belt and braces under the 409 above, for a role a failed closure write
+    // left open: anything inside the window is the same submission arriving
+    // twice, never a genuine second observation.
     // Exact first: a replayed outbox item is the same submission no matter how
     // much time has passed, and answering 409 is what makes the client drop it.
     const replayed = await findSubmissionByKey(asText(submissionKey));
@@ -9832,9 +9868,14 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     // other role's closure cannot have landed in between.
     const closeStarted = Date.now();
     const gamePatch: Record<string, unknown> = {};
-    if (formData.results?.secondBesuch !== 'Y') {
-      gamePatch.feedback_closed_roles = [...closedRoles, String(role)];
-    }
+    // Closed whatever "Weiterer Besuch" says. A further visit is a statement
+    // about the COACHEE — another observation, at another match — and the
+    // observations table carries it (second_observation → "Weitere Beobachtung
+    // nötig"). Leaving THIS game's role open, as it was since March, made the
+    // filed game look booked: the coachee row named it as the "2. Beobachtung
+    // geplant", Home kept it under the next observations, and a second report
+    // on the same game was one tap away.
+    gamePatch.feedback_closed_roles = [...closedRoles, String(role)];
     // The score belongs to the match, not to the referee being observed, so the
     // coach who files the other role — possibly weeks later, from a different
     // session — should not have to type it in again. Keep whatever this form
@@ -9900,6 +9941,43 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
 // ever fills a blank id, never rewrites one, and never touches the names. Rows
 // whose name matches no active RC are reported as `unresolved` and left as they
 // are: the name fallback still serves them, and guessing would be worse.
+// Close, on every game, each role that has a feedback filed on it. Until
+// 16.09.2026 a report answering "Weiterer Besuch: Ja" left its role open on
+// purpose, so those games still read as booked. Idempotent: a role already
+// closed is left alone, a feedback whose game is gone is skipped.
+app.post('/api/admin/backfill-closed-roles', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const rows = await withCollection(collectionCandidates.refereeCoaches, (c) =>
+      c.getFullList<AnyRecord>({ fields: 'id,game,role_assessed' }));
+    const rolesByGame = new Map<string, Set<string>>();
+    for (const row of rows) {
+      const gameId = asText(row.game), role = asText(row.role_assessed);
+      if (!gameId || !FEEDBACK_ROLES.includes(role)) continue;
+      if (!rolesByGame.has(gameId)) rolesByGame.set(gameId, new Set());
+      rolesByGame.get(gameId)!.add(role);
+    }
+    let closed = 0, already = 0, missing = 0;
+    const touched: string[] = [];
+    for (const [gameId, roles] of rolesByGame) {
+      await withGameLock(gameId, async () => {
+        let game: AnyRecord;
+        try { game = await withCollection(collectionCandidates.games, (c) => c.getOne<AnyRecord>(gameId)); }
+        catch (e) { if (isRecordNotFound(e)) { missing++; return; } throw e; }
+        const have: string[] = Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [];
+        const add = [...roles].filter((r) => !have.includes(r));
+        if (add.length === 0) { already++; return; }
+        await withCollection(collectionCandidates.games, (c) =>
+          c.update(gameId, { feedback_closed_roles: [...have, ...add] }));
+        closed += add.length;
+        touched.push(`${asText(game.match_no) || gameId}: ${add.join(', ')}`);
+      });
+    }
+    log.info('admin.backfill_closed_roles', `closed ${closed} role(s) on ${touched.length} game(s)`, { closed, already, missing, touched });
+    res.json({ closed, games: touched.length, already, missing, touched });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
 app.post('/api/admin/migrate-rc-ids', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();

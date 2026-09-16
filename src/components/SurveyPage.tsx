@@ -153,7 +153,7 @@ export default function SurveyPage() {
 
             <p className="text-[11px] text-stone-400 text-center -mb-1"><Both entry={SURVEY_UI.optional} /></p>
 
-            {form.questions.map((q) => {
+            {form.questions.filter((q) => !(q.twoRefereesOnly && visit.twoReferees === false)).map((q) => {
               const hint = bothLangs({ DE: q.hintDE, EN: q.hintEN });
               return (
                 // data-log-redact: the click logger copies the clicked

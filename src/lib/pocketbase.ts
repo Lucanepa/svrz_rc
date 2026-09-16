@@ -1309,7 +1309,7 @@ export async function submitSignatureSession(slug: string, data: string, signer?
 // ---- Post-visit survey (coachee's feedback on the RC) ----
 // No demo branch: #/survey/<token> mounts its own root, which the demo never
 // reaches, and a token only exists once a real feedback mail has gone out.
-export async function getSurveySession(token: string): Promise<{ referee: string; date: string; matchNo: string; rc: string; submitted: boolean; form?: SurveyConfig }> {
+export async function getSurveySession(token: string): Promise<{ referee: string; date: string; matchNo: string; rc: string; submitted: boolean; form?: SurveyConfig; twoReferees?: boolean }> {
   const res = await fetch(apiUrl(`/api/survey/${encodeURIComponent(token)}`));
   if (!res.ok) throw new Error('Survey not found');
   return res.json();

@@ -166,6 +166,7 @@ const STR = {
     formTypeText: 'Freitext',
     formQuestionDe: 'Frage (Deutsch)', formQuestionEn: 'Frage (Englisch)',
     formHintDe: 'Hinweis DE (optional)', formHintEn: 'Hinweis EN (optional)',
+    formTwoRefsOnly: 'Nur bei Spielen mit zwei Schiedsrichter:innen',
     formKey: 'Kennung',
     formKeyHint: 'Unter dieser Kennung werden die Antworten gespeichert. Sie bleibt fest, auch wenn du die Frage umformulierst — so bleiben alte Antworten zur Frage lesbar.',
     formUp: 'Nach oben', formDown: 'Nach unten',
@@ -414,6 +415,7 @@ const STR = {
     formTypeText: 'Free text',
     formQuestionDe: 'Question (German)', formQuestionEn: 'Question (English)',
     formHintDe: 'Hint DE (optional)', formHintEn: 'Hint EN (optional)',
+    formTwoRefsOnly: 'Only for matches with two referees',
     formKey: 'Key',
     formKeyHint: 'Answers are stored under this key. It stays fixed even when you reword the question, so older answers keep reading against it.',
     formUp: 'Move up', formDown: 'Move down',
@@ -2590,6 +2592,17 @@ function SurveyFormAdmin({ t, lang }: { t: T; lang: Lang }) {
                 {pairInput(t.formHintDe, q.hintDE ?? '', (v) => patchQ(i, { hintDE: v }), SURVEY_LIMITS.hint)}
                 {pairInput(t.formHintEn, q.hintEN ?? '', (v) => patchQ(i, { hintEN: v }), SURVEY_LIMITS.hint)}
               </div>
+              {/* A referee who whistled alone must not be asked about the other
+                  one: the page drops the question when the match had one referee. */}
+              <label className="mt-2 flex items-center gap-2 text-xs text-stone-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!q.twoRefereesOnly}
+                  onChange={(e) => patchQ(i, { twoRefereesOnly: e.target.checked })}
+                  className="h-3.5 w-3.5 rounded border-stone-300 text-red-600 focus:ring-red-500"
+                />
+                {t.formTwoRefsOnly}
+              </label>
               <p className="mt-2 text-[10px] text-stone-400">
                 {t.formKey}: <code className="rounded bg-stone-100 border border-stone-200 px-1 py-0.5 text-stone-500">{q.id || '—'}</code>
               </p>

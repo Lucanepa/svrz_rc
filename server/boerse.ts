@@ -21,6 +21,7 @@
 //      projection that omits it however you ask.
 import { CookieJar, followRedirects, VM_USER_AGENT } from './vmhttp.ts';
 import { vmFetch } from './vmlock.ts';
+import { samePerson } from '../src/lib/identity.ts';
 
 const SEARCH_PATH = '/api/indoorvolleyball.refadmin/api%5crefereegameexchange/search';
 const PAGE_PATH = '/indoorvolleyball.refadmin/refereegameexchange/index';
@@ -426,4 +427,36 @@ export function planReconcile(opts: {
   }
 
   return { creates, updates, withdraws, blocked: '' };
+}
+
+// ── Who holds the game ───────────────────────────────────────────────
+
+/** A coach as the roster hands them to the holder rule: the record id and
+ *  the name that stands beside it on a game. */
+export type HolderCandidate = { id: string; fullName: string };
+
+/**
+ * Which coach on the roster holds this game — the one the SR-Börse alert and
+ * the day-before reminder are addressed to.
+ *
+ * `samePerson` per coach, with the whole roster as the known ids: the stored
+ * id decides when it names a coach on the roster, a stored id nobody on the
+ * roster carries (a deactivated coach, a row from before the ids were
+ * written) falls to the folded name, and a row with no id at all is matched
+ * on its name alone. It is the same rule `rcRefMatches` applies to every
+ * ownership check in the API, so a mail cannot reach a coach the screen says
+ * does not hold the game. The two used to disagree: the alert took
+ * `id || name` with no known-id veto, and would have mailed a namesake whose
+ * id said the game was somebody else's.
+ *
+ * Pure, and pinned in boerse-rules.spec.ts.
+ */
+export function gameHolder<T extends HolderCandidate>(
+  game: Record<string, unknown>,
+  people: T[],
+): T | undefined {
+  const rec = { id: String(game.assigned_rc_id ?? '').trim(), name: String(game.assigned_rc ?? '').trim() };
+  if (!rec.id && !rec.name) return undefined;
+  const known = new Set(people.map((p) => p.id));
+  return people.find((p) => samePerson(rec, { id: p.id, name: p.fullName }, known));
 }

@@ -23,6 +23,8 @@ export type OutboxPayload = {
   submissionKey?: string;
   gameId: string;
   role: '1. SR' | '2. SR';
+  /** The observed coachee's SV number, when known — see saveFeedbackToPocketBase. */
+  refereeId?: string;
   formData: unknown;
   pdfBase64: string;
   pdfFilename: string;

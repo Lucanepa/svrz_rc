@@ -87,7 +87,8 @@ import type { NotebookPage, PadField } from './lib/notebook';
 import { importBlock } from './lib/notebookImport';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, isPromotionGroup, newSrGroupOptions, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
-import { bySurname, surnameFirstLabel, foldName as normName, coacheeIndex } from './lib/coacheeName';
+import { bySurname, surnameFirstLabel, foldName as normName } from './lib/coacheeName';
+import { coacheeLookup, isMyGame, isMyRecord, samePerson, svClaimOnSlot, type SlotRole } from './lib/identity';
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
@@ -1407,11 +1408,16 @@ export default function App() {
   // already looked past (`late`, see src/lib/reminder.ts) — that one mails the
   // referees the moment the take lands, so it is confirmed, never silent.
   const [takeNotice, setTakeNotice] = useState<{
-    gameId: string; rcName: string; previousRc?: string; label: string;
+    gameId: string; rcName: string; rcId: string; previousRc?: string; previousRcId?: string; label: string;
     observed: Array<{ name: string; count: number; plannedBy?: string; plannedOn?: string }>;
     late: boolean;
   } | null>(null);
   const [rcPeople, setRcPeople] = useState<RefereeCoachPerson[]>([]);
+  // The roster's ids, for isMyGame / samePerson: a game whose holder id is one
+  // of these but not mine is somebody else's however the name reads. Empty
+  // before the roster arrives, which vetoes nothing — the same as passing no
+  // set at all — so the client never refuses an id the server would honour.
+  const rcKnownIds = useMemo(() => new Set(rcPeople.map((p) => p.id)), [rcPeople]);
   const [calendarGames, setCalendarGames] = useState<CalendarGameStatus[]>([]);
   const [selectedGameId, setSelectedGameId] = useState('');
   const [selectedCoacheeName, setSelectedCoacheeName] = useState('');
@@ -1434,6 +1440,17 @@ export default function App() {
   const [loadingGames, setLoadingGames] = useState(false);
   const [loadingCalendar, setLoadingCalendar] = useState(false);
   const [coachees, setCoachees] = useState<Coachee[]>([]);
+  // Who is on a game's slot, read off the ids the server resolved for it
+  // (firstCoacheeId / secondCoacheeId) — never re-derived from the printed
+  // name, which is what every list in here used to do on its own and what
+  // broke on the licence spelling. The name index survives inside the lookup
+  // as the one fallback for a row the server did not answer at all (an older
+  // API, a cached list); see src/lib/identity.ts.
+  const roster = useMemo(() => coacheeLookup(coachees, seasonStartYear), [coachees, seasonStartYear]);
+  /** This season's coachee rows by record id — what everything keyed by
+   *  coachee (planned observations, upcoming games, Home's done rows) is
+   *  keyed on. */
+  const coacheesById = roster.byId;
   const [coacheeGames, setCoacheeGames] = useState<CoacheeGame[]>([]);
   const [loadingCoacheeGames, setLoadingCoacheeGames] = useState(false);
   const [loadingCoachees, setLoadingCoachees] = useState(false);
@@ -1997,31 +2014,22 @@ export default function App() {
       return;
     }
     const srName = getRefereeForRole(selectedGame, formData.role);
-    // Match the coachee against the referee currently being observed (handles first/last name order)
-    const coacheeById = coachees.find((c) => c.id === selectedCoacheeId);
-    // Fold accents, like normName does everywhere else. Without it VolleyManager's
-    // "Kevin León Peña de los Santos" missed the imported "Kevin Leon Peña de los
-    // Santos", so the games list badged him a coachee — that lookup DOES fold —
-    // while this one found nobody and left Niveau and Gruppe empty on his form
-    // and in the PDF the coachee receives.
-    const normalizeName = (name: string) => normName(name).split(' ').sort().join(' ');
-    const matchesNorm = (c: Coachee, norm: string) => {
-      if (!norm) return false;
-      if (normalizeName(c.full_name || '') === norm) return true;
-      if (c.first_name && c.last_name && normalizeName(`${c.first_name} ${c.last_name}`) === norm) return true;
-      return false;
-    };
-    const srNorm = normalizeName(srName || '');
-    // This season's row (isInSeason also admits a row with no season at all —
-    // imports predating the field). It used to fall back to ANY season's row,
-    // so a referee coached last season and not this one had last season's
-    // Niveau and group ride into this season's PDF. An unknown coachee leaves
-    // Niveau and Gruppe blank to type.
-    const coacheeByName = coachees.find((c) => isInSeason(c, seasonStartYear) && matchesNorm(c, srNorm));
-    // Fall back to the navigated-from coachee only if they aren't the *other* referee of this game
-    const otherRef = getRefereeForRole(selectedGame, formData.role === '1. SR' ? '2. SR' : '1. SR');
-    const otherNorm = normalizeName(otherRef || '');
-    const coachee = coacheeByName || (coacheeById && !matchesNorm(coacheeById, otherNorm) ? coacheeById : undefined);
+    // The coachee on the observed slot, by the id the server resolved for the
+    // game's season (SV number first — so VolleyManager's "Kevin León Peña de
+    // los Santos" reaches the "Kevin Peña" row the moment either carries the
+    // number). This used to be a private sorted-words fold of the printed
+    // name against the roster, which found nobody for exactly that referee
+    // and left Niveau and Gruppe empty on the form and in the PDF. The
+    // lookup reads this season's rows only: a referee coached last season
+    // and not this one leaves Niveau and Gruppe blank to type rather than
+    // riding last season's into this season's PDF.
+    const onSlot = roster.onSlot(selectedGame, formData.role);
+    // Fall back to the navigated-from coachee only if they aren't the *other*
+    // referee of this game.
+    const otherRole: SlotRole = formData.role === '1. SR' ? '2. SR' : '1. SR';
+    const otherId = roster.idOnSlot(selectedGame, otherRole);
+    const navigatedFrom = coachees.find((c) => c.id === selectedCoacheeId);
+    const coachee = onSlot ?? (navigatedFrom && navigatedFrom.id !== otherId ? navigatedFrom : undefined);
     setObservedCoacheeId(coachee?.id ?? '');
     const has2SR = !!selectedGame.secondReferee;
     setFormData((prev) => ({
@@ -2044,7 +2052,7 @@ export default function App() {
         rc: rcAuth.rcName || selectedGame.assignedRc || prev.meta.rc,
       },
     }));
-  }, [selectedGameId, selectedGame?.assignedRc, formData.role, coachees, selectedCoacheeId, openFeedbackId]);
+  }, [selectedGameId, selectedGame?.assignedRc, formData.role, coachees, roster, selectedCoacheeId, openFeedbackId]);
 
   // The previous coach's goals for this referee, fetched for a FRESH
   // observation only: a reopened record is its own document, and the goals
@@ -2286,9 +2294,12 @@ export default function App() {
     rcSummaryAttemptRef.current = `${myName}|${season}`;
     setHomeLoading(true);
     try {
-      const norm = (s: string) => s.trim().toLowerCase();
       const [overview, summary, rcGames] = await Promise.all([
         overviewInFlight ?? loadRcOverview(season),
+        // By name, as always: the API pins a coach's request to their
+        // session whatever the URL says, so the id would decide nothing
+        // here — and the name keeps the PWA cache entry Home had before the
+        // ids, where a changed URL would blank the first offline open.
         loadrcCoachSummary(myName, season),
         // Never allowed to take the dashboard down with it: a coach whose
         // SR-Spiele cannot be read still needs their counters and their games.
@@ -2296,7 +2307,9 @@ export default function App() {
       ]);
       if (!isCurrentLoad('home', gen)) return;
       setMyRcGames(rcGames);
-      const myRow = overview.find((r) => norm(r.fullName) === norm(myName));
+      // My own row, by id — the overview names every coach by their roster id.
+      // The name is the fallback for a session that has none.
+      const myRow = overview.find((r) => samePerson({ id: r.id, name: r.fullName }, { id: rcAuth.rcId ?? '', name: myName }, rcKnownIds));
       const byDate = (a: rcCoachSummaryGame, b: rcCoachSummaryGame) => a.gameDate.localeCompare(b.gameDate);
       // The summary is per coachee, so a game with two coachees on the whistle
       // arrives twice and Home listed the same appointment twice — while the
@@ -2376,15 +2389,15 @@ export default function App() {
     setRcDetailTab(has((cs) => cs.plannedGames) ? 'planned' : has((cs) => cs.outstandingGames) ? 'outstanding' : 'done');
   };
 
-  const loadRcSummary = async (rcName: string) => {
+  const loadRcSummary = async (rcRef: string) => {
     const gen = beginLoad('rcSummary');
     setrcCoachSummaryLoading(true);
     setRcCoachSummaryFailed(false);
     try {
-      const data = await loadrcCoachSummary(rcName, seasonStartYear);
+      const data = await loadrcCoachSummary(rcRef, seasonStartYear);
       if (!isCurrentLoad('rcSummary', gen)) return;
       setrcCoachSummaryData(data);
-      setRcSummaryKey(`${rcName}|${seasonStartYear}`);
+      setRcSummaryKey(`${rcRef}|${seasonStartYear}`);
     } catch {
       if (!isCurrentLoad('rcSummary', gen)) return;
       setrcCoachSummaryData([]);
@@ -2435,9 +2448,9 @@ export default function App() {
   // list, which Home reads from the server. Without this the dashboard kept the
   // figures it loaded with, and the game only showed up after a page reload.
   // Both the old and the new holder count, so handing a game back refreshes too.
-  const refreshAfterAssignment = (...affected: Array<string | undefined>) => {
-    const me = rcAuth.rcName ? normName(rcAuth.rcName) : '';
-    if (me && affected.some((n) => n && normName(n) === me)) {
+  const refreshAfterAssignment = (...affected: Array<{ id?: string; name?: string } | undefined>) => {
+    const me = { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' };
+    if ((me.id || me.name) && affected.some((ref) => ref && samePerson({ id: ref.id ?? '', name: ref.name ?? '' }, me, rcKnownIds))) {
       // One overview request feeds both the counters and the dashboard.
       const overview = refreshRcOverview();
       void loadHome(overview);
@@ -2464,11 +2477,14 @@ export default function App() {
 
   // Answers whether the take landed: a late take mails the referees right
   // after, and a mail about a game the server just refused must not go out.
-  const applyRcAssignment = async (gameId: string, rcName: string, previousRc?: string): Promise<boolean> => {
+  const applyRcAssignment = async (gameId: string, rcName: string, previous?: { id?: string; name?: string }): Promise<boolean> => {
     try {
-      await assignRcToGame(gameId, rcName);
-      setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: rcName } : g));
-      refreshAfterAssignment(previousRc, rcName);
+      // Both halves: the id is what decides whose the game is, the name is
+      // what an API older than the id reads.
+      const rcId = rcAuth.rcId ?? '';
+      await assignRcToGame(gameId, { assignedRc: rcName, assignedRcId: rcId });
+      setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: rcName, assignedRcId: rcId } : g));
+      refreshAfterAssignment(previous, { id: rcId, name: rcName });
       return true;
     } catch (err) {
       // The server refuses to hand over a game somebody else holds (409). That
@@ -2486,21 +2502,19 @@ export default function App() {
   const observedCoacheesOnGame = (game: EligibleGame) => {
     const seen = new Set<string>();
     const out: Array<{ name: string; count: number; plannedBy?: string; plannedOn?: string }> = [];
-    for (const r of [game.firstReferee, game.secondReferee]) {
-      if (!r) continue;
-      const c = coacheeByName.get(normName(r));
+    for (const role of ['1. SR', '2. SR'] as const) {
+      const c = roster.onSlot(game, role);
       if (!c) continue;
-      const name = c.full_name || r;
-      const key = normName(name);
-      if (seen.has(key)) continue;
+      const name = c.full_name || getRefereeForRole(game, role);
+      if (seen.has(c.id)) continue;
       const count = observationCount(c);
       // A booking on ANOTHER game counts as coverage too: two coaches taking
       // the same coachee in the same week is the duplicate nobody notices,
       // because neither observation has been filed yet.
-      const booked = plannedObsByCoachee.get(key);
+      const booked = plannedObsByCoachee.get(c.id);
       const elsewhere = booked && booked.game.id !== game.id ? booked : undefined;
       if (count === 0 && !elsewhere) continue;
-      seen.add(key);
+      seen.add(c.id);
       out.push({ name, count, plannedBy: elsewhere?.rc, plannedOn: elsewhere?.game.date });
     }
     return out;
@@ -2569,12 +2583,12 @@ export default function App() {
     const late = !!rcName && takenAfterReminder(game.date);
     if (observed.length > 0 || late) {
       setTakeNotice({
-        gameId: game.id, rcName, previousRc: game.assignedRc,
+        gameId: game.id, rcName, rcId: rcAuth.rcId ?? '', previousRc: game.assignedRc, previousRcId: game.assignedRcId,
         label: `${game.homeTeam} vs ${game.awayTeam}`, observed, late,
       });
       return;
     }
-    void applyRcAssignment(game.id, rcName, game.assignedRc);
+    void applyRcAssignment(game.id, rcName, { id: game.assignedRcId, name: game.assignedRc });
   };
 
   // A confirmed take. When it is a late one, the reminder follows on its heels:
@@ -2583,7 +2597,7 @@ export default function App() {
   // two cannot drift apart. The take stands whatever the mail does; a failed
   // mail is reported as exactly that, not as a failed take.
   const confirmTake = async (notice: NonNullable<typeof takeNotice>) => {
-    const taken = await applyRcAssignment(notice.gameId, notice.rcName, notice.previousRc);
+    const taken = await applyRcAssignment(notice.gameId, notice.rcName, { id: notice.previousRcId, name: notice.previousRc });
     if (!taken || !notice.late) return;
     const german = formData.lang === 'DE';
     const lang = german ? 'DE' : 'EN';
@@ -2613,16 +2627,16 @@ export default function App() {
   // notice + resync), so a caller that wants to confirm the hand-back cannot
   // tell from a rejection and needs this answer instead.
   const handleUnassignGame = async (gameId: string) => {
-    const previousRc = eligibleGames.find((g) => g.id === gameId)?.assignedRc;
+    const previous = eligibleGames.find((g) => g.id === gameId);
     try {
-      await assignRcToGame(gameId, '');
-      setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: '' } : g));
+      await assignRcToGame(gameId, { assignedRc: '', assignedRcId: '' });
+      setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: '', assignedRcId: '' } : g));
       setrcCoachSummaryData((prev) => prev.map((cs) => ({
         ...cs,
         plannedGames: cs.plannedGames.filter((g) => g.gameId !== gameId),
         outstandingGames: cs.outstandingGames.filter((g) => g.gameId !== gameId),
       })));
-      refreshAfterAssignment(previousRc);
+      refreshAfterAssignment({ id: previous?.assignedRcId, name: previous?.assignedRc });
       return true;
     } catch (err) {
       setBackendNotice(localizeRuntimeError(err instanceof Error ? err.message : String(err), formData.lang));
@@ -2641,18 +2655,24 @@ export default function App() {
   // closure. After the admin's default season arrived, a pushed assignment
   // re-fetched Home for the season the first render guessed. Same idiom as
   // flushOutboxNowRef: the refs always hold this render's functions.
-  const liveHandlersRef = useRef({ loadHome, syncGamesQuietly, loadSettings });
-  liveHandlersRef.current = { loadHome, syncGamesQuietly, loadSettings };
+  // `isMine` rides along for the same reason: the roster's ids arrive after
+  // the subscription and the check must read the current set.
+  const isMine = (game: { assignedRc?: string; assignedRcId?: string }) => isMyGame(game, rcAuth, rcKnownIds);
+  const liveHandlersRef = useRef({ loadHome, syncGamesQuietly, loadSettings, isMine });
+  liveHandlersRef.current = { loadHome, syncGamesQuietly, loadSettings, isMine };
   useEffect(() => {
     if (!rcAuth.rcName) return;
     return subscribeLive((event) => {
       const live = liveHandlersRef.current;
       if (event.type === 'game.assignment') {
-        setEligibleGames((prev) => prev.map((g) => (g.id === event.gameId ? { ...g, assignedRc: event.assignedRc } : g)));
+        // The id decides whose the game is now; an event from an API older
+        // than the field carries none, and the row then reads as the name says.
+        const holder = { assignedRc: event.assignedRc, assignedRcId: event.assignedRcId };
+        setEligibleGames((prev) => prev.map((g) => (g.id === event.gameId ? { ...g, ...holder } : g)));
         // Counters and "next appointments" are per coach, so they only move when
         // the game changed hands to or from this one.
-        const mine = normName(event.assignedRc || '') === normName(rcAuth.rcName || '');
-        const wasMine = eligibleGamesRef.current.some((g) => g.id === event.gameId && normName(g.assignedRc || '') === normName(rcAuth.rcName || ''));
+        const mine = live.isMine(holder);
+        const wasMine = eligibleGamesRef.current.some((g) => g.id === event.gameId && live.isMine(g));
         if (mine || wasMine) void live.loadHome();
       } else if (event.type === 'games.synced') {
         void live.syncGamesQuietly();
@@ -2778,10 +2798,13 @@ export default function App() {
     }));
   };
 
-  /** `preferredRole` is the half named in the URL — `/form/<game>/2sr`. An
-   *  explicit ask, so it beats the coachee-based guess below; ignored only when
-   *  the game has no second referee to observe. */
-  const handleSelectGame = (game: EligibleGame | CoacheeGame, preferredRef?: string, preferredRole?: '1. SR' | '2. SR') => {
+  /** `preferredRef` is the coachee the coach came from — a row on the
+   *  Coachees tab, a Home appointment — as a record id, or as a name from a
+   *  row an older server sent without one. `preferredRole` is the half named
+   *  in the URL — `/form/<game>/2sr`. An explicit ask, so it beats the
+   *  coachee-based guess below; ignored only when the game has no second
+   *  referee to observe. */
+  const handleSelectGame = (game: EligibleGame | CoacheeGame, preferredRef?: { id?: string; name?: string }, preferredRole?: '1. SR' | '2. SR') => {
     // First statement, before any setter: the outgoing game's last keystrokes
     // are still only in the render being left behind.
     void flushDraftNowRef.current();
@@ -2815,8 +2838,10 @@ export default function App() {
     const g = game as EligibleGame;
     const r1 = g.firstReferee || '';
     const r2 = g.secondReferee || '';
-    const r1IsC = coacheeNames.has(normName(r1));
-    const r2IsC = !!(r2 && coacheeNames.has(normName(r2)));
+    // Whether each slot is a coachee comes off the ids the server resolved
+    // for the game, not off the names.
+    const r1IsC = !!roster.onSlot(g, '1. SR');
+    const r2IsC = !!r2 && !!roster.onSlot(g, '2. SR');
     const has2 = !!r2;
 
     let target: '1SR' | '2SR' | 'both' = '1SR';
@@ -2827,9 +2852,13 @@ export default function App() {
       target = '2SR';
       role = '2. SR';
     }
-    // Coming from the RC view we know whom the coach plans to observe — start there.
-    if (preferredRef && has2 && normName(preferredRef) === normName(r2)) role = '2. SR';
-    else if (preferredRef && normName(preferredRef) === normName(r1)) role = '1. SR';
+    // Coming from the RC view we know whom the coach plans to observe — start
+    // there. Compared as record ids: the slot's, as the server resolved it,
+    // against the coachee's — a name only ever reaches this as a row the
+    // lookup resolves first.
+    const preferredId = preferredRef ? (preferredRef.id ?? roster.resolve({ name: preferredRef.name })?.id ?? '') : '';
+    if (preferredId && has2 && roster.idOnSlot(g, '2. SR') === preferredId) role = '2. SR';
+    else if (preferredId && roster.idOnSlot(g, '1. SR') === preferredId) role = '1. SR';
     if (preferredRole && (preferredRole === '1. SR' || has2)) role = preferredRole;
     setObservationTarget(target);
     setFormData(prev => {
@@ -2980,14 +3009,13 @@ export default function App() {
     // its goals and nothing else. It is read in the picker, not opened.
     if (record.redacted) return;
     setOpenFeedbackId(record.id || null);
-    // Id OR name, mirroring the server's rcRefMatches. Name alone was stricter
-    // than the rule the server actually enforces: correct an RC's spelling in
-    // the roster and their own filed observations stopped offering them the
-    // president-note box, even though a write would still have been accepted.
-    setOpenFeedbackMine(
-      (!!record.rc_id && record.rc_id === rcAuth.rcId)
-      || (!!rcAuth.rcName && normName(record.rc_name || '') === normName(rcAuth.rcName))
-    );
+    // The server's rcRefMatches, verbatim (isMyRecord): the id when the record
+    // has one, a known other id is a no, the folded name for the rest. Name
+    // alone was stricter than the rule the server actually enforces: correct
+    // an RC's spelling in the roster and their own filed observations stopped
+    // offering them the president-note box, even though a write would still
+    // have been accepted.
+    setOpenFeedbackMine(isMyRecord(record, rcAuth, rcKnownIds));
     const payload = record.feedback_json;
     const expandedGame = record.expand?.game;
     if (payload) {
@@ -3361,6 +3389,15 @@ export default function App() {
       setManualUploadNotice(t.manualUploadFieldsMissing); return;
     }
 
+    // The referee is picked off the coachee list by record id; the name on
+    // the report is the row's own, and the row's SV number goes along as the
+    // claim when it is the slot's (svClaimOnSlot — see buildSubmitPayload in
+    // submitSingleFeedback).
+    const srCoachee = coachees.find((c) => c.id === (fd.get('srCoacheeId') as string));
+    // The coach the same way: an admin picks them off the roster by id, and
+    // the name the report shows is that row's own. A coach's session has no
+    // picker — the server files under the session's id whatever meta.rc says.
+    const pickedRc = rcPeople.find((p) => p.id === (fd.get('rcId') as string));
     const feedbackData: FeedbackFormData = {
       role,
       lang: 'DE',
@@ -3371,9 +3408,9 @@ export default function App() {
         ort: (fd.get('ort') as string) || '',
         mannschaften: (fd.get('mannschaften') as string) || '',
         ergebnis: [fd.get('ergebnisSets') as string, fd.get('ergebnisPoints') as string].filter(Boolean).join(' | ') || (fd.get('ergebnis') as string) || '',
-        srName: (fd.get('srName') as string) || '',
+        srName: srCoachee?.full_name || '',
         srNiveau: (fd.get('srNiveau') as string) || '',
-        rc: (fd.get('rc') as string) || '',
+        rc: pickedRc?.fullName || (fd.get('rc') as string) || '',
         gruppe: (fd.get('gruppe') as string) || '',
       },
       sections,
@@ -3415,6 +3452,8 @@ export default function App() {
       const result = await saveFeedbackToPocketBase({
         gameId,
         role,
+        refereeId: svClaimOnSlot(matchingGame, role, srCoachee),
+        rcId: pickedRc?.id || '',
         formData: feedbackData,
         pdfBase64: fileBase64,
         pdfFilename: file.name || 'manual-feedback.pdf',
@@ -3477,9 +3516,21 @@ export default function App() {
     let payload: Awaited<ReturnType<typeof buildSubmitPayload>> | null = null;
     async function buildSubmitPayload() {
       const { feedbackPdfBase64 } = await loadPdfBuilder();
+      // The coachee this half is about: for the role on screen, what the
+      // meta-fill resolved (the slot's row, else the navigated-from coachee);
+      // for the other half of a dual send, the slot's row. Their SV number
+      // travels as the claim when it is the slot's own, so the server's guard
+      // can settle "Kevin Peña" against "Kevin León Peña de los Santos" on
+      // the number rather than refusing on the spelling. '' when the row is
+      // not linked, and '' when the slot carries no number or another one —
+      // the guard reads any other number as another person (svClaimOnSlot).
+      const about = fd.role === formData.role
+        ? coachees.find((c) => c.id === observedCoacheeId)
+        : roster.onSlot(selectedGame!, fd.role);
       return {
         gameId: selectedGame!.id,
         role: fd.role,
+        refereeId: svClaimOnSlot(selectedGame!, fd.role, about),
         formData: deFormData,
         pdfBase64: feedbackPdfBase64(deFormData),
         pdfFilename: pdfFilename(deFormData),
@@ -4632,14 +4683,19 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [workUnsaved]);
 
-  const selectedCoacheeInfo = useMemo(() => {
-    const c = coachees.find(c => c.id === selectedCoacheeId);
+  // Whom the single-mode confirm dialog says the report goes to: the coachee
+  // the OPEN FORM is about (the slot's row, as the meta-fill resolved it), not
+  // the coachee whose row the coach navigated from. Those two part company the
+  // moment the role is flipped on a game with two coachees on the whistle —
+  // and the dialog then named one referee over a report about the other.
+  const observedCoacheeInfo = useMemo(() => {
+    const c = coachees.find(c => c.id === observedCoacheeId);
     return {
       email: c?.email || '',
       fullName: c?.full_name || [c?.first_name, c?.last_name].filter(Boolean).join(' ') || '',
     };
-  }, [coachees, selectedCoacheeId]);
-  const selectedCoacheeEmail = selectedCoacheeInfo.email;
+  }, [coachees, observedCoacheeId]);
+  const observedCoacheeEmail = observedCoacheeInfo.email;
 
   const doResetForm = () => {
     setFormData((prev) => ({
@@ -4819,25 +4875,6 @@ export default function App() {
   };
 
   // Memoize expensive list computations to avoid recomputing on every render
-  const coacheeNames = useMemo(
-    () => {
-      const names = new Set<string>();
-      for (const c of coachees) {
-        if (!isInSeason(c, seasonStartYear)) continue;
-        const fn = normName(c.full_name || '');
-        if (fn) names.add(fn);
-        // Also add reversed name order (server stores both variants)
-        const first = (c.first_name || '').trim();
-        const last = (c.last_name || '').trim();
-        if (first && last) {
-          names.add(normName(`${first} ${last}`));
-          names.add(normName(`${last} ${first}`));
-        }
-      }
-      return names;
-    },
-    [coachees, seasonStartYear],
-  );
   const coacheeLevels = useMemo(
     () => [...new Set(coachees.filter((c) => isInSeason(c, seasonStartYear))
       .map((c) => levelDisplay(c.referee_level, c.stage).text))].sort(),
@@ -4863,15 +4900,16 @@ export default function App() {
   );
   // The games behind the "1SR: n · 2SR: n" line on a coachee row, kept as the
   // games themselves rather than a tally so the row can also LIST them once its
-  // chevron is open. Keyed by the referee's normalized name — the key every
-  // other coachee lookup uses, so a name written with accents on the game and
-  // without them on the coachee row still counts once. Season-scoped like the
-  // games tab: a fixture outside the season on screen belongs to neither.
+  // chevron is open. Keyed by the coachee's record id, off the slot ids the
+  // server resolved — so a game whose convocation spells the licence name
+  // still counts under the row the sheet wrote under the everyday one.
+  // Season-scoped like the games tab: a fixture outside the season on screen
+  // belongs to neither.
   const upcomingGamesByReferee = useMemo(() => {
     const now = new Date();
     const map = new Map<string, Array<{ game: EligibleGame; role: '1. SR' | '2. SR' }>>();
-    const add = (name: string, game: EligibleGame, role: '1. SR' | '2. SR') => {
-      const key = normName(name || '');
+    const add = (game: EligibleGame, role: '1. SR' | '2. SR') => {
+      const key = roster.idOnSlot(game, role);
       if (!key) return;
       const list = map.get(key);
       if (list) list.push({ game, role });
@@ -4881,11 +4919,11 @@ export default function App() {
       .filter((g) => inSeasonOrManual(g) && new Date(g.date) >= now)
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     for (const g of upcoming) {
-      add(g.firstReferee || '', g, '1. SR');
-      add(g.secondReferee || '', g, '2. SR');
+      add(g, '1. SR');
+      add(g, '2. SR');
     }
     return map;
-  }, [eligibleGames, inSeasonOrManual]);
+  }, [eligibleGames, inSeasonOrManual, roster]);
 
   /** Is this game inside the coachee's focus (the Niveau they are watched at)?
    *  Shared by the per-coachee games list and the row's inline list, so the same
@@ -4938,7 +4976,7 @@ export default function App() {
       // against the games the row actually lists — the focus rule included, an
       // RC-Spiel left out — so the switch cannot leave a coachee on the list
       // with nothing under them.
-      const flagged = (upcomingGamesByReferee.get(normName(c.full_name || '')) ?? [])
+      const flagged = (upcomingGamesByReferee.get(c.id) ?? [])
         .some(({ game, role }) => game.starred && !game.isRcGame && inCoacheeFocus(c, game.league || '', [role === '1. SR' ? '1SR' : '2SR']));
       // ...and it keeps them on the "Beobachtung nötig" list whatever their
       // status says, the way the Games tab keeps the flagged game itself: a
@@ -4964,30 +5002,20 @@ export default function App() {
     });
     return filtered;
   }, [coachees, listSearch, listFilterLevels, listFilterGroups, listFilterShowInactive, listFilterNeedsObs, coacheeFilterStarred, upcomingGamesByReferee, inCoacheeFocus, listSortBy, listSortAsc, seasonStartYear]);
-  // Lookup coachee by normalized name for game filtering
-  const coacheeByName = useMemo(
-    () => coacheeIndex(coachees, seasonStartYear),
-    [coachees, seasonStartYear],
-  );
-
   /** The same rule asked of one game in the Games tab, where the two referees
    *  are weighed together: true when the focus filter would drop it. Lifted out
    *  of `filteredGames` so the switch that turns the rule off can ask the same
    *  question the list does.
    *
-   *  `about` narrows the question to those referees (folded names): with the
+   *  `about` narrows the question to those coachees (record ids): with the
    *  coachee filter set to one person, "their games" must mean games in THEIR
    *  focus. Without it, an N2-2 candidate's 3. Liga evening beside a junior
    *  2. SR — in focus for the junior, nothing for the candidate — came back as
    *  one of the candidate's games, wearing his chip. */
-  const outOfNiveauFocus = useCallback((g: { league?: string; firstReferee?: string; secondReferee?: string }, about?: Set<string>) => {
-    const refRoles: Array<{ name: string; role: TargetRole }> = [];
-    if (g.firstReferee) refRoles.push({ name: g.firstReferee, role: '1SR' });
-    if (g.secondReferee) refRoles.push({ name: g.secondReferee, role: '2SR' });
-    const coacheeRefs = refRoles
-      .filter((r) => !about || about.has(normName(r.name)))
-      .map((r) => ({ ...r, c: coacheeByName.get(normName(r.name)) }))
-      .filter((r): r is { name: string; role: TargetRole; c: Coachee } => Boolean(r.c));
+  const outOfNiveauFocus = useCallback((g: EligibleGame, about?: Set<string>) => {
+    const coacheeRefs = ([['1. SR', '1SR'], ['2. SR', '2SR']] as Array<[SlotRole, TargetRole]>)
+      .map(([slot, role]) => ({ role, c: roster.onSlot(g, slot) }))
+      .filter((r): r is { role: TargetRole; c: Coachee } => Boolean(r.c) && (!about || about.has(r.c!.id)));
     if (coacheeRefs.length === 0) return false;
     const anyTargeted = coacheeRefs.some((r) => isTargetActive(coacheeTargets[r.c.id], levelKey(r.c.referee_level, r.c.stage), niveauTable));
     if (!anyTargeted) return false;
@@ -5000,31 +5028,33 @@ export default function App() {
         levelKey: levelKey(r.c.referee_level, r.c.stage), table: niveauTable,
         strict: isPromotionGroup(r.c.groups),
       }));
-  }, [coacheeByName, coacheeTargets, niveauTable]);
+  }, [roster, coacheeTargets, niveauTable]);
 
-  // The coachee filter on the games tab. Its VALUES stay the raw name the game
-  // carries — that is what the filter matches on — while its order and its
-  // labels follow the coachee lists: surname first. Sorted on the string alone
-  // it filed everyone under their first name, the one thing the lists had
-  // already been fixed not to do. Resolved through coacheeByName so a compound
-  // surname comes from the record's own column rather than from guessing at
-  // the last word: "Matthias von Ah" is von Ah, not Ah.
+  // The coachee filter on the games tab. Its VALUES are coachee record ids —
+  // the slot ids the server resolved are what the filter matches on — while
+  // its order and its labels follow the coachee lists: surname first. Sorted
+  // on the string alone it filed everyone under their first name, the one
+  // thing the lists had already been fixed not to do; the record's own
+  // surname column keeps "Matthias von Ah" under von Ah, not Ah.
   const gameCoacheeOptions = useMemo(() => {
-    const resolve = (name: string) => coacheeByName.get(normName(name)) ?? { full_name: name };
-    return Array.from(new Set<string>(
-      eligibleGames.flatMap((g) => [g.firstReferee, g.secondReferee].filter(Boolean) as string[])
-        .filter((name) => coacheeNames.has(normName(name)))
-    )).sort((a, b) => bySurname(resolve(a), resolve(b)));
-  }, [eligibleGames, coacheeNames, coacheeByName]);
+    const seen = new Map<string, Coachee>();
+    for (const g of eligibleGames) {
+      for (const role of ['1. SR', '2. SR'] as const) {
+        const c = roster.onSlot(g, role);
+        if (c) seen.set(c.id, c);
+      }
+    }
+    return [...seen.values()].sort(bySurname).map((c) => c.id);
+  }, [eligibleGames, roster]);
   // Listed by surname, with the group after it: picking whom to go and watch
   // starts with the cohort at least as often as with the person.
   const coacheeOptionLabel = useCallback(
-    (name: string) => {
-      const c = coacheeByName.get(normName(name));
+    (id: string) => {
+      const c = coacheesById.get(id);
       const group = c ? groupLabel(c.groups, formData.lang) : '';
-      return `${surnameFirstLabel(c ?? { full_name: name })}${group ? ` · ${group}` : ''}`;
+      return `${surnameFirstLabel(c ?? { full_name: id })}${group ? ` · ${group}` : ''}`;
     },
-    [coacheeByName, formData.lang],
+    [coacheesById, formData.lang],
   );
 
   // Which of the filter toggles have anything to act on. Computed over every
@@ -5041,8 +5071,8 @@ export default function App() {
       if (g.isRcGame) found.rcGame = true;
       if (g.assignedRc) found.assigned = true;
       if (!found.inactive) {
-        for (const name of [g.firstReferee, g.secondReferee]) {
-          const c = name ? coacheeByName.get(normName(name)) : undefined;
+        for (const role of ['1. SR', '2. SR'] as const) {
+          const c = roster.onSlot(g, role);
           if (c && (c.stage || 'active') === 'inactive') { found.inactive = true; break; }
         }
       }
@@ -5056,7 +5086,7 @@ export default function App() {
       if (!found.focus && outOfNiveauFocus(g)) found.focus = true;
     }
     return found;
-  }, [eligibleGames, coacheeByName, inSeasonOrManual, outOfNiveauFocus]);
+  }, [eligibleGames, roster, inSeasonOrManual, outOfNiveauFocus]);
 
   // The same question for the Coachees tab, asked of each coachee's own
   // upcoming games: is anything of theirs flagged, and does their Niveau hold
@@ -5069,7 +5099,7 @@ export default function App() {
       // season's Niveau; measured through it, the switch was offered for a
       // list it could not change.
       if (!isInSeason(c, seasonStartYear)) continue;
-      for (const { game, role } of upcomingGamesByReferee.get(normName(c.full_name || '')) ?? []) {
+      for (const { game, role } of upcomingGamesByReferee.get(c.id) ?? []) {
         const roles: TargetRole[] = [role === '1. SR' ? '1SR' : '2SR'];
         if (!found.focus && !inNiveauFocus(c, game.league || '', roles)) found.focus = true;
         if (!found.starred && game.starred && inCoacheeFocus(c, game.league || '', roles)) found.starred = true;
@@ -5079,20 +5109,15 @@ export default function App() {
     return found;
   }, [coachees, seasonStartYear, upcomingGamesByReferee, inNiveauFocus, inCoacheeFocus]);
 
-  // Niveau and group for the amber Coachee badge in the games list.
-  const coacheeLevelOf = (name: string) => {
-    const c = coacheeByName.get(normName(name || ''));
-    return c ? levelDisplay(c.referee_level, c.stage).text : undefined;
-  };
-  const coacheeGroupOf = (name: string) => {
-    const c = coacheeByName.get(normName(name || ''));
-    return c ? groupLabel(c.groups, formData.lang) || undefined : undefined;
-  };
+  // Niveau and group for the amber Coachee badge in the games list — of the
+  // row the slot resolved to, never looked up by name here.
+  const coacheeLevelOf = (c: Coachee | undefined) => (c ? levelDisplay(c.referee_level, c.stage).text : undefined);
+  const coacheeGroupOf = (c: Coachee | undefined) => (c ? groupLabel(c.groups, formData.lang) || undefined : undefined);
 
   // Observations already booked: an RC took one of the coachee's games and the
-  // feedback for that role is still open. Keyed by the coachee's canonical full
-  // name, and it keeps the game itself so the Coachees tab can say which one,
-  // when and by whom instead of labelling the referee "no observation".
+  // feedback for that role is still open. Keyed by the coachee's record id,
+  // and it keeps the game itself so the Coachees tab can say which one, when
+  // and by whom instead of labelling the referee "no observation".
   const plannedObsByCoachee = useMemo(() => {
     const map = new Map<string, PlannedObs>();
     // The ZÜRICH day: an ISO slice is the UTC day, so between 00:00 and 02:00
@@ -5110,12 +5135,12 @@ export default function App() {
       if (!g.assignedRc) continue;
       if (!inSeasonOrManual(g)) continue;
       const closed = g.feedbackClosedRoles || [];
-      for (const [r, role] of [[g.firstReferee, '1. SR'], [g.secondReferee, '2. SR']] as Array<[string | undefined, string]>) {
-        if (!r || closed.includes(role)) continue;
-        // Resolve through the name map (handles "First Last" vs "Last First")
-        // so coverage is keyed by the coachee's canonical full name.
-        const cc = coacheeByName.get(normName(r));
-        const key = normName(cc?.full_name || r);
+      for (const role of ['1. SR', '2. SR'] as const) {
+        if (closed.includes(role)) continue;
+        // The slot's coachee, by the id the server resolved — a referee who
+        // is nobody's coachee books nothing.
+        const key = roster.idOnSlot(g, role);
+        if (!key) continue;
         const prev = map.get(key);
         // With several taken games, name the next one to come. A taken game
         // that is already past is still worth showing (its feedback is open),
@@ -5124,7 +5149,7 @@ export default function App() {
       }
     }
     return map;
-  }, [eligibleGames, coacheeByName, inSeasonOrManual]);
+  }, [eligibleGames, roster, inSeasonOrManual]);
 
   const filteredGames = useMemo(() => {
     const gameTime = (d: string) => {
@@ -5137,7 +5162,10 @@ export default function App() {
     // of their games need to stay on the open list. Once the feedback is filed,
     // coverage lifts and needsObservation (latest "further visit" answer) governs.
     const coveredRefs = plannedObsByCoachee;
-    const pickedCoachees = gameFilterCoachees.length > 0 ? new Set(gameFilterCoachees.map(normName)) : undefined;
+    const pickedCoachees = gameFilterCoachees.length > 0 ? new Set(gameFilterCoachees) : undefined;
+    /** The coachees on the whistle, as the slot ids say. */
+    const slotCoachees = (game: EligibleGame) =>
+      (['1. SR', '2. SR'] as const).map((role) => roster.onSlot(game, role)).filter(Boolean) as Coachee[];
     return eligibleGames.filter((g) => {
       if (q && !(
         normName(g.matchNo || '').includes(q) ||
@@ -5147,14 +5175,12 @@ export default function App() {
         normName(g.firstReferee || '').includes(q) ||
         normName(g.secondReferee || '').includes(q)
       )) return false;
-      if (gameFilterCoachees.length > 0) {
-        const refs = [normName(g.firstReferee || ''), normName(g.secondReferee || '')];
-        if (!gameFilterCoachees.some((c) => refs.includes(normName(c)))) return false;
+      if (pickedCoachees) {
+        const ids = [roster.idOnSlot(g, '1. SR'), roster.idOnSlot(g, '2. SR')];
+        if (!ids.some((id) => id && pickedCoachees.has(id))) return false;
       }
       if (gameFilterLevels.length > 0) {
-        const refs = [g.firstReferee, g.secondReferee].filter(Boolean).map((r) => normName(r!));
-        const refCoachees = refs.map((r) => coacheeByName.get(r)).filter(Boolean) as Coachee[];
-        const hasMatchingLevel = refCoachees.some((c) => gameFilterLevels.includes(levelDisplay(c.referee_level, c.stage).text));
+        const hasMatchingLevel = slotCoachees(g).some((c) => gameFilterLevels.includes(levelDisplay(c.referee_level, c.stage).text));
         if (!hasMatchingLevel) return false;
       }
       if (gameFilterBoerse.length > 0) {
@@ -5168,8 +5194,8 @@ export default function App() {
         if (!match) return false;
       }
       if (gameFilterFunction.length > 0) {
-        const r1IsCoachee = coacheeNames.has(normName(g.firstReferee || ''));
-        const r2IsCoachee = coacheeNames.has(normName(g.secondReferee || ''));
+        const r1IsCoachee = !!roster.onSlot(g, '1. SR');
+        const r2IsCoachee = !!roster.onSlot(g, '2. SR');
         // Still a union across what is ticked, so "1SR" + "1SR + 2SR" reads as
         // "a 1SR coachee, or both" rather than cancelling out. BOTH_SR needs a
         // second referee by construction, so single-referee games drop out.
@@ -5210,8 +5236,7 @@ export default function App() {
       if (!inSeasonOrManual(g)) return false;
       // Coachee-aware filters: check if at least one referee passes
       if (gameFilterNeedsObs || !gameFilterShowInactive) {
-        const refs = [g.firstReferee, g.secondReferee].filter(Boolean).map((r) => normName(r!));
-        const refCoachees = refs.map((r) => coacheeByName.get(r)).filter(Boolean) as Coachee[];
+        const refCoachees = slotCoachees(g);
         // If no referees are coachees at all, keep the game visible
         if (refCoachees.length > 0) {
           // The two "does this person still need a visit?" rules below are
@@ -5231,7 +5256,7 @@ export default function App() {
             // Covered by a planned observation → all their games leave the open list.
             // Skipped when the user explicitly picked coachees in the filter
             // (explicit intent beats the coverage default).
-            if (askNeedsObs && gameFilterCoachees.length === 0 && coveredRefs.has(normName(c.full_name || ''))) return false;
+            if (askNeedsObs && gameFilterCoachees.length === 0 && coveredRefs.has(c.id)) return false;
             return true;
           });
           if (!hasEligibleRef) return false;
@@ -5250,7 +5275,7 @@ export default function App() {
       // timestamps rather than strings so a stray offset cannot reorder a day,
       // and anything undated sinks to the bottom instead of leading.
       .sort((a, b) => gameTime(a.date) - gameTime(b.date));
-  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterBoerse, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, coacheeByName, coacheeNames, inSeasonOrManual, showAllLevels, outOfNiveauFocus]);
+  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterBoerse, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, roster, inSeasonOrManual, showAllLevels, outOfNiveauFocus]);
 
   // Any filter can shrink a list below the page currently shown, and the pager
   // itself disappears under one page of rows — leaving a blank list with no
@@ -5382,15 +5407,19 @@ export default function App() {
      *  ("which level is this one?", "are they up for promotion?") used to mean
      *  a trip to the Coachees tab and back. */
     const refChip = (name: string, role: string, boerse?: EligibleGame['boerse']) => {
-      const isCoachee = coacheeNames.has(normName(name));
-      const level = isCoachee ? coacheeLevelOf(name) : undefined;
-      const group = isCoachee ? coacheeGroupOf(name) : undefined;
+      // The slot's coachee, by the id the server resolved for this game —
+      // the name on the chip is what VolleyManager printed, the badge is
+      // whose row that is.
+      const slotCoachee = roster.onSlot(game, role === t.role2Short ? '2. SR' : '1. SR');
+      const isCoachee = !!slotCoachee;
+      const level = coacheeLevelOf(slotCoachee);
+      const group = coacheeGroupOf(slotCoachee);
       // A game can be on the list for the OTHER coachee on the whistle, or
       // because the focus is switched off. Either way this chip must not read
       // as "come and watch this one here": an N2-2 up for promotion on a
       // 3. Liga evening is a referee helping out, not a visit.
       const outOfFocus = isCoachee && !inNiveauFocus(
-        coacheeByName.get(normName(name)), game.league || '', [role === t.role2Short ? '2SR' : '1SR'],
+        slotCoachee, game.league || '', [role === t.role2Short ? '2SR' : '1SR'],
       );
       // The Games tab is where an UNASSIGNED game lives, and an unassigned game
       // is where most börse offers sit — nobody has taken it yet. So this is the
@@ -5684,7 +5713,7 @@ export default function App() {
             >
               {(['1SR', '2SR', 'both'] as const).map((tg) => {
                 const refName = tg === 'both' || !selectedGame ? '' : getRefereeForRole(selectedGame, tg === '1SR' ? '1. SR' : '2. SR');
-                const isCoachee = !!refName && coacheeNames.has(normName(refName));
+                const isCoachee = !!refName && !!selectedGame && !!roster.onSlot(selectedGame, tg === '1SR' ? '1. SR' : '2. SR');
                 const active = observationTarget === tg;
                 return (
                   <button
@@ -5779,7 +5808,8 @@ export default function App() {
             {(['1. SR', '2. SR'] as const).map((role) => {
               const name = getRefereeForRole(selectedGame, role);
               if (!name) return null;
-              const isCoachee = coacheeNames.has(normName(name));
+              const slotCoachee = roster.onSlot(selectedGame, role);
+              const isCoachee = !!slotCoachee;
               const isObserved = dualMode || formData.role === role;
               return (
                 <div
@@ -5797,7 +5827,7 @@ export default function App() {
                       Coachee
                     </span>
                   )}
-                  <GroupChip group={coacheeGroupOf(name)} />
+                  <GroupChip group={coacheeGroupOf(slotCoachee)} />
                 </div>
               );
             })}
@@ -6174,7 +6204,7 @@ export default function App() {
               const fmtDate = (d: string) => shortDayLabel(d, de ? 'DE' : 'EN') || d;
               const startFromSummary = (g: rcCoachSummaryGame) => {
                 const eg = eligibleGames.find((e) => e.id === g.gameId);
-                if (eg) handleSelectGame(eg, g.refereeName);
+                if (eg) handleSelectGame(eg, { id: g.coacheeId, name: g.refereeName });
                 else { setListTab('games'); setListSearch(g.teams); }
               };
               /** Everyone refereeing the game, each marked for whether they are
@@ -6188,14 +6218,17 @@ export default function App() {
                *  what says why the evening is worth driving to, so it rides
                *  along on every coachee's chip. */
               const crewChips = (g: HomeGame) => {
-                const crew = g.crew?.length
+                type Chip = { name: string; role: string; coachee: boolean; coacheeId?: string };
+                const crew: Chip[] = g.crew?.length
                   ? g.crew
                   : (g.refs?.length ? g.refs : [{ name: g.refereeName, role: g.refereeRole || '' }])
                       .filter((r) => r.name)
                       .map((r) => ({ ...r, coachee: !g.noCoachee }));
                 const mixed = crew.some((r) => r.coachee) && crew.some((r) => !r.coachee);
                 return crew.filter((r) => r.name).map((r) => {
-                  const group = r.coachee ? coacheeGroupOf(r.name) : undefined;
+                  // The row the server matched the slot to; the name only for
+                  // a crew from a server older than the id.
+                  const group = r.coachee ? coacheeGroupOf(roster.resolve({ id: r.coacheeId, name: r.name })) : undefined;
                   const offered = inBoerse(g.boerse, r.role);
                   // `marked` opens the MarkRow, and it used to need `mixed` — a
                   // crew holding a coachee AND a non-coachee. In the case this
@@ -6531,7 +6564,7 @@ export default function App() {
                               // nothing rendered it.
                               const mineOffered = inBoerse(g.boerse, g.rcRole);
                               const coacheeOffered = inBoerse(g.boerse, g.coacheeRole);
-                              const group = coacheeGroupOf(g.coacheeName);
+                              const group = coacheeGroupOf(roster.resolve({ id: g.coacheeId, name: g.coacheeName }));
                               return (<>
                                 <MetaChip
                                   wrap
@@ -6658,7 +6691,11 @@ export default function App() {
                           <p className="py-3 text-sm text-stone-400">{de ? 'Noch keine Beobachtung erfasst.' : 'No observations filed yet.'}</p>
                         ) : (
                           <GameList className="mt-1">
-                            {homeData.doneList.map((f, i) => (
+                            {homeData.doneList.map((f, i) => {
+                              // Whose row the observation is on, by the id the
+                              // summary carries beside the name.
+                              const group = coacheeGroupOf(roster.resolve({ id: f.coacheeId, name: f.coacheeName }));
+                              return (
                               <GameRow
                                 key={`done-${f.coacheeId}-${f.gameDate}-${i}`}
                                 lang={formData.lang}
@@ -6670,20 +6707,21 @@ export default function App() {
                                 title={de ? 'Feedback öffnen' : 'Open feedback'}
                                 status={<Eye size={15} className="text-stone-400" />}
                                 chips={(
-                                  <MetaChip wrap stack={!!coacheeGroupOf(f.coacheeName)} tone="amber">
+                                  <MetaChip wrap stack={!!group} tone="amber">
                                     <span>
                                       {f.role && <span className="font-bold opacity-70">{f.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
                                       {f.coacheeName}
                                     </span>
-                                    {coacheeGroupOf(f.coacheeName) && (
-                                      <MarkRow><GroupChip group={coacheeGroupOf(f.coacheeName)} /></MarkRow>
+                                    {group && (
+                                      <MarkRow><GroupChip group={group} /></MarkRow>
                                     )}
                                   </MetaChip>
                                 )}
                               >
                                 <MatchResult result={f.result} className="mt-1" />
                               </GameRow>
-                            ))}
+                              );
+                            })}
                           </GameList>
                         )}
                       </div>
@@ -7083,10 +7121,10 @@ export default function App() {
                     </div>
                     <div className="divide-y divide-stone-200">
                       {filteredCoachees.slice(coacheesPage * LIST_PAGE_SIZE, (coacheesPage + 1) * LIST_PAGE_SIZE).map((coachee) => {
-                        const plannedObs = plannedObsByCoachee.get(normName(coachee.full_name || ''));
+                        const plannedObs = plannedObsByCoachee.get(coachee.id);
                         const balls = coacheeBalls(coachee, plannedObs);
                         const groupStr = groupLabel(coachee.groups, formData.lang);
-                        const ownGames = upcomingGamesByReferee.get(normName(coachee.full_name || '')) ?? [];
+                        const ownGames = upcomingGamesByReferee.get(coachee.id) ?? [];
                         const sr1 = ownGames.filter((e) => e.role === '1. SR').length;
                         const sr2 = ownGames.filter((e) => e.role === '2. SR').length;
                         // The row offers the games worth watching, by the same
@@ -7229,7 +7267,7 @@ export default function App() {
                                     {inlineGames.map(({ game, role }) => {
                                       const de = formData.lang === 'DE';
                                       const holder = game.assignedRc || '';
-                                      const mine = !!holder && normName(holder) === normName(rcAuth.rcName || '');
+                                      const mine = !!holder && isMyGame(game, rcAuth, rcKnownIds);
                                       return (
                                         <GameRow
                                           key={game.id}
@@ -7239,7 +7277,7 @@ export default function App() {
                                           league={game.league}
                                           home={game.homeTeam}
                                           away={game.awayTeam}
-                                          onOpen={() => handleSelectGame(game, coachee.full_name)}
+                                          onOpen={() => handleSelectGame(game, { id: coachee.id })}
                                           chips={<>
                                             <MetaChip tone="stone">{role}</MetaChip>
                                             {/* The same marks the Games tab
@@ -7261,7 +7299,7 @@ export default function App() {
                                           ) : mine ? (
                                             <div className="flex items-center gap-1">
                                               <button
-                                                onClick={() => handleSelectGame(game, coachee.full_name)}
+                                                onClick={() => handleSelectGame(game, { id: coachee.id })}
                                                 className="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-md bg-slate-900 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-slate-800 sm:flex-none"
                                               >
                                                 <PenLine size={12} />{de ? 'Beobachten' : 'Observe'}
@@ -7475,7 +7513,7 @@ export default function App() {
                                         the admin console now. Here a coach takes or releases their own
                                         game and nothing else — which is all the server ever allowed
                                         without an admin session anyway. */}
-                                    {game.assignedRc && game.assignedRc === rcAuth.rcName ? (
+                                    {game.assignedRc && isMyGame(game, rcAuth, rcKnownIds) ? (
                                       <button
                                         onClick={(e) => { e.stopPropagation(); void giveBackGame(game.id, `${game.homeTeam} vs ${game.awayTeam}`, formData.lang === 'DE'); }}
                                         className="h-9 px-3 text-sm font-medium rounded-md border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 transition-colors"
@@ -7506,7 +7544,7 @@ export default function App() {
                                       // You observe the games you hold. There used to be an admin
                                       // exception here; admin work moved to the console, and this app
                                       // is now the same app whoever is looking at it.
-                                      const canObserve = !!game.assignedRc && game.assignedRc === rcAuth.rcName;
+                                      const canObserve = !!game.assignedRc && isMyGame(game, rcAuth, rcKnownIds);
                                       return (
                                     <button
                                       onClick={() => handleSelectGame(game)}
@@ -7919,8 +7957,9 @@ export default function App() {
                         // the holder from there too keeps the buttons right the
                         // moment the game changes hands, without a reload.
                         const eg = eligibleGames.find((e) => e.id === game.id);
-                        const holder = eg ? eg.assignedRc || '' : game.assignedRc || '';
-                        const mine = !!holder && normName(holder) === normName(rcAuth.rcName || '');
+                        const holderGame = eg ?? game;
+                        const holder = holderGame.assignedRc || '';
+                        const mine = !!holder && isMyGame(holderGame, rcAuth, rcKnownIds);
                         const de = formData.lang === 'DE';
                         return (
                           <React.Fragment key={game.id}>
@@ -7936,7 +7975,7 @@ export default function App() {
                                 read-only until they were added; the game had to
                                 be found again in the open games list before it
                                 could be taken. */}
-                            {gameCard({ ...game, assignedRc: holder }, {
+                            {gameCard({ ...game, assignedRc: holder, assignedRcId: holderGame.assignedRcId }, {
                               roles: game.assignedRoles,
                               onOpen: () => handleSelectGame(game),
                               className: 'px-2.5',
@@ -7959,7 +7998,7 @@ export default function App() {
                                   ) : mine ? (
                                     <>
                                       <button
-                                        onClick={() => handleSelectGame(eg, selectedCoacheeName)}
+                                        onClick={() => handleSelectGame(eg, { id: selectedCoacheeId })}
                                         className="inline-flex h-8 items-center gap-1.5 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
                                       >
                                         <PenLine size={13} />
@@ -8801,7 +8840,7 @@ export default function App() {
                   <div className="bg-stone-50 rounded-lg p-3 text-xs space-y-2">
                     {(['1. SR', '2. SR'] as const).map(role => {
                       const refName = selectedGame ? getRefereeForRole(selectedGame, role) : '';
-                      const coachee = refName ? coacheeByName.get(normName(refName)) : undefined;
+                      const coachee = selectedGame ? roster.onSlot(selectedGame, role) : undefined;
                       const email = coachee?.email || '';
                       const alreadyClosed = selectedGame?.feedbackClosedRoles?.includes(role);
                       return (
@@ -8820,8 +8859,8 @@ export default function App() {
                 ) : (
                   <div className="bg-stone-50 rounded-lg p-3 text-xs space-y-1">
                     <p><span className="font-semibold text-stone-700">{formData.lang === 'DE' ? 'An' : 'To'}:</span>{' '}
-                      {selectedCoacheeInfo.fullName || formData.meta.srName}{' '}
-                      <span className="text-stone-500">{selectedCoacheeEmail ? `<${selectedCoacheeEmail}>` : (formData.lang === 'DE' ? '(keine E-Mail)' : '(no email)')}</span>
+                      {observedCoacheeInfo.fullName || formData.meta.srName}{' '}
+                      <span className="text-stone-500">{observedCoacheeEmail ? `<${observedCoacheeEmail}>` : (formData.lang === 'DE' ? '(keine E-Mail)' : '(no email)')}</span>
                     </p>
                     {formData.meta.rc && (
                       <p><span className="font-semibold text-stone-700">CC:</span> {formData.meta.rc}</p>
@@ -9269,7 +9308,7 @@ export default function App() {
           and that is said before it happens. Both can be true of one game. */}
       {takeNotice && (() => {
         const de = formData.lang === 'DE';
-        const self = !!rcAuth.rcName && normName(takeNotice.rcName) === normName(rcAuth.rcName);
+        const self = samePerson({ id: takeNotice.rcId, name: takeNotice.rcName }, { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' }, rcKnownIds);
         const onlyLate = takeNotice.late && takeNotice.observed.length === 0;
         // Written as whole sentences per case: a coachee can be here for a
         // filed observation, for one somebody else has booked, or for both.
@@ -9692,8 +9731,10 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs font-semibold text-stone-500 uppercase">{t.muRefName}</span>
-              <select name="srName" defaultValue={coachee.full_name} className="h-9 rounded border border-stone-300 px-2 text-sm">
-                {coachees.map(c => <option key={c.id} value={c.full_name}>{c.full_name}</option>)}
+              {/* By record id, not by name: two rows can spell one name, and
+                  the id is what carries the SV number to the server's guard. */}
+              <select name="srCoacheeId" defaultValue={coachee.id} className="h-9 rounded border border-stone-300 px-2 text-sm">
+                {coachees.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
               </select>
             </label>
             <label className="flex flex-col gap-1">
@@ -9715,12 +9756,15 @@ function ManualUploadModal({ coachee, coachees, rcPeople, fixedRcName, lang, not
                   <span className="h-9 flex items-center rounded border border-stone-200 bg-stone-50 px-2 text-sm text-stone-700">{fixedRcName}</span>
                 </>
               ) : (
-                <select name="rc" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
+                <select name="rcId" defaultValue="" className="h-9 rounded border border-stone-300 px-2 text-sm">
                   <option value="">—</option>
+                  {/* The option is the coach's id; the name on the report is
+                      read back off the roster row, so it is always that
+                      coach's own spelling and never a namesake's. */}
                   {[...rcPeople]
                     .sort((a, b) => bySurname({ full_name: a.fullName }, { full_name: b.fullName }))
                     .map(p => (
-                      <option key={p.id} value={p.fullName}>{surnameFirstLabel({ full_name: p.fullName })}</option>
+                      <option key={p.id} value={p.id}>{surnameFirstLabel({ full_name: p.fullName })}</option>
                     ))}
                 </select>
               )}

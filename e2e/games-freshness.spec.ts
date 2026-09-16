@@ -10,8 +10,11 @@ import { stubSignedInApp, GAME } from './support/app';
 test('a game taken elsewhere leaves the open list when the window is looked at again', async ({ page }) => {
   let takenBySomeoneElse = false;
   await stubSignedInApp(page);
+  // Held by another coach: their name AND their roster id, as the server
+  // sends it — a clone that renames the holder but keeps GAME's id would
+  // still read as mine.
   await page.route('**/api/eligible-games*', (r) => r.fulfill({
-    json: [{ ...GAME, assignedRc: takenBySomeoneElse ? 'Bea Beispiel' : '' }],
+    json: [{ ...GAME, assignedRc: takenBySomeoneElse ? 'Bea Beispiel' : '', assignedRcId: takenBySomeoneElse ? 'rc2' : '' }],
   }));
 
   await page.goto('/games');
@@ -29,7 +32,7 @@ test('a game taken elsewhere leaves the open list when the window is looked at a
 test('a refused take says so and repairs the row it was refused on', async ({ page }) => {
   let assignedRc = '';
   await stubSignedInApp(page);
-  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [{ ...GAME, assignedRc }] }));
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [{ ...GAME, assignedRc, assignedRcId: assignedRc ? 'rc2' : '' }] }));
   await page.route('**/api/games/*/assign-rc', async (r) => {
     // What the server answers when the game is already held: 409, never a
     // silent overwrite of the other coach's claim.

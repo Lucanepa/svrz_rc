@@ -90,8 +90,10 @@ test('confirming hands the game back and the toast says so', async ({ page }) =>
   // games list makes, on the game the row was showing.
   await expect.poll(() => assigned.length).toBe(1);
   expect(assigned[0].url).toContain('/api/games/g1/assign-rc');
-  // Empty name = release. The server only ever let a coach clear their own.
-  expect(JSON.parse(assigned[0].body)).toEqual({ assignedRc: '' });
+  // Empty name AND empty id = release; both halves travel on every call, the
+  // name for an API older than the id. The server only ever let a coach clear
+  // their own.
+  expect(JSON.parse(assigned[0].body)).toEqual({ assignedRc: '', assignedRcId: '' });
 
   // The row vanishing is not enough of an answer on a list of near-identical
   // rows — something has to confirm which game left.

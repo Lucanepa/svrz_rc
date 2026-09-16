@@ -165,6 +165,254 @@ export function indexPeople<T>(rows: PersonRow<T>[]): PeopleIndex<T> {
   return { find, has: (season, query) => find(season, query) !== null };
 }
 
+// ── The client's side of the rule ────────────────────────────────────────────
+// The server resolves who is on a game (buildCoacheeIndex) and sends the
+// answer along: `firstCoacheeId` / `secondCoacheeId` on every game row, the
+// coachee record id of the game's season, '' when the referee is nobody's
+// coachee. The client reads that answer and never re-derives it from the
+// name. What follows is the reading — and, behind it, the one legacy path
+// for a row the server did not answer: an API older than the field, or a
+// list the PWA cached for up to 30 days before it existed.
+
+/** A coachee row as the client holds it — the columns the legacy name index
+ *  reads, and the id everything else reads. */
+export type CoacheeLike = {
+  id: string;
+  full_name?: string;
+  first_name?: string;
+  last_name?: string;
+  season?: number;
+  /** The SV number the row is linked to, '' or absent when it is not. */
+  referee_id?: string;
+};
+
+/** Every name a game's referee line can be written as, pointing at the coachee
+ *  it belongs to. THE LEGACY PATH — consulted only for a game row that carries
+ *  no `firstCoacheeId` / `secondCoacheeId` at all (see coacheeIdOnSlot).
+ *
+ *  Coachees are per-season rows: the same person has one per season, and
+ *  everything derived from the row — Niveau, group, whether this referee is a
+ *  coachee at all — has to read the season on screen, or last season's people
+ *  leak onto this season's games wearing last season's badge. Rows from other
+ *  seasons are left out entirely; among what remains (this season's rows plus
+ *  the seasonless ones that predate the field) the selected season's row is
+ *  inserted last so it wins the key.
+ *
+ *  Both name orders are keyed. VolleyManager writes "Vorname Nachname" on some
+ *  fixtures and "Nachname Vorname" on others, and a lookup that knew only one
+ *  of them silently treated half the roster as strangers.
+ */
+export function coacheeIndex<T extends CoacheeLike>(coachees: T[], season: number): Map<string, T> {
+  const map = new Map<string, T>();
+  const ordered = coachees
+    .filter((c) => typeof c.season !== 'number' || c.season === season)
+    .sort((a, b) => Number(a.season === season) - Number(b.season === season));
+  for (const c of ordered) {
+    const fn = foldName(c.full_name || '');
+    if (fn) map.set(fn, c);
+    const first = (c.first_name || '').trim();
+    const last = (c.last_name || '').trim();
+    if (first && last) {
+      map.set(foldName(`${first} ${last}`), c);
+      map.set(foldName(`${last} ${first}`), c);
+    }
+  }
+  return map;
+}
+
+export type SlotRole = '1. SR' | '2. SR';
+
+/** A game row as far as its two whistle slots go: the printed names, and
+ *  the coachee ids the server resolved for them (absent from an older API). */
+export type SlotGame = {
+  firstReferee?: string;
+  secondReferee?: string;
+  /** The SV numbers on the slots, as the convocation carried them: '' for
+   *  most stored games, absent from an older API. */
+  firstRefereeId?: string;
+  secondRefereeId?: string;
+  firstCoacheeId?: string;
+  secondCoacheeId?: string;
+};
+
+/** The SV number a submit claims for the referee the report is about.
+ *
+ *  The server's guard (claimNamesSlot in server/coacheeIndex.ts) accepts a
+ *  claim carrying the SLOT's number whatever the name field says — the coach
+ *  may have typed the everyday name where VolleyManager prints the licence
+ *  one. A claim carrying any OTHER number is read as a claim about another
+ *  person and refused without a second look, and two thirds of stored games
+ *  carry no number on the slot at all: the row's number sent against such a
+ *  slot turned the manual upload for a linked coachee into a 422. So the
+ *  row's number travels only when it is the slot's own; otherwise the claim
+ *  is nameless and the guard settles the two spellings through the index,
+ *  the way it did before the client knew any number. */
+export function svClaimOnSlot(game: SlotGame, role: SlotRole, row: { referee_id?: string } | undefined): string {
+  const rowSv = (row?.referee_id ?? '').trim();
+  const slotSv = ((role === '1. SR' ? game.firstRefereeId : game.secondRefereeId) ?? '').trim();
+  return rowSv && rowSv === slotSv ? rowSv : '';
+}
+
+/** The coachee record id on a game's slot: what the server said, or nothing.
+ *
+ *  `''` is an answer — "not a coachee", exactly the server's verdict — and is
+ *  never second-guessed by the name, or the client would badge a referee the
+ *  server refused (a namesake, a row of another season) and the two screens
+ *  would disagree again. Only a row with NO such field at all, from an API
+ *  that predates it or a cached list that does, falls to the folded name
+ *  through `legacy` — the index the whole app used to match on. Without a
+ *  legacy index the answer is then nobody.
+ */
+export function coacheeIdOnSlot(game: SlotGame, role: SlotRole, legacy?: Map<string, { id: string }>): string {
+  const served = role === '1. SR' ? game.firstCoacheeId : game.secondCoacheeId;
+  if (served != null) return served.trim();
+  const name = role === '1. SR' ? game.firstReferee : game.secondReferee;
+  return legacy?.get(foldName(name ?? ''))?.id ?? '';
+}
+
+/** A reference to a coachee as a server row carries it: the record id when
+ *  the API sent one (`''` for nobody), the name it printed beside it. */
+export type CoacheeRef = { id?: string; name?: string };
+
+export type CoacheeLookup<T extends CoacheeLike> = {
+  /** This season's rows (a seasonless row belongs to every season), by id. */
+  byId: Map<string, T>;
+  /** The row a server reference names — by id when the field is present,
+   *  by the folded name only when it is not. */
+  resolve: (ref: CoacheeRef) => T | undefined;
+  /** The coachee on a game's slot, or undefined. */
+  onSlot: (game: SlotGame, role: SlotRole) => T | undefined;
+  /** The record id on a game's slot, '' for nobody. */
+  idOnSlot: (game: SlotGame, role: SlotRole) => string;
+};
+
+/** The one lookup the client's lists share, built once per roster and season.
+ *
+ *  Seasons are read here and nowhere else on the client: `byId` holds the rows
+ *  of the season on screen. An id the server resolved for a game of some
+ *  OTHER season — a past-games list reaches back, a test game made in July
+ *  belongs to the season just ended, an observation group keeps the row its
+ *  first report was filed on — names the same person's row of that season,
+ *  which is on the roster the client holds (every season's rows come down)
+ *  but not in `byId`. That person is carried over to this season's row by
+ *  their SV number when both rows are linked, and by the folded name when
+ *  they are not — what the name index answered for such a game before the
+ *  ids existed; a person with no row this season is nobody, as then. Only a
+ *  served '' is never second-guessed: it is the server's own "not a coachee". */
+export function coacheeLookup<T extends CoacheeLike>(coachees: T[], season: number): CoacheeLookup<T> {
+  const byId = new Map<string, T>();
+  const bySv = new Map<string, T>();
+  for (const c of coachees) {
+    if (typeof c.season === 'number' && c.season !== season) continue;
+    byId.set(c.id, c);
+    const sv = (c.referee_id ?? '').trim();
+    if (sv && !bySv.has(sv)) bySv.set(sv, c);
+  }
+  const anySeason = new Map(coachees.map((c) => [c.id, c]));
+  // Built lazily: a current API answers every row, and then the name index
+  // is never asked for. The one name-tier site of this lookup.
+  let legacy: Map<string, T> | undefined;
+  const byName = (name: string): T | undefined => (legacy ??= coacheeIndex(coachees, season)).get(foldName(name));
+  /** This season's row for a served id: the row itself when it is this
+   *  season's, else the same person's through the number, else the name. */
+  const thisSeason = (id: string, name: string): T | undefined => {
+    if (!id) return undefined;
+    const hit = byId.get(id);
+    if (hit) return hit;
+    const sv = (anySeason.get(id)?.referee_id ?? '').trim();
+    return (sv ? bySv.get(sv) : undefined) ?? byName(name);
+  };
+  const resolve = (ref: CoacheeRef): T | undefined => {
+    if (ref.id != null) return thisSeason(ref.id.trim(), ref.name ?? '');
+    return byName(ref.name ?? '');
+  };
+  const idOnSlot = (game: SlotGame, role: SlotRole): string => {
+    const served = role === '1. SR' ? game.firstCoacheeId : game.secondCoacheeId;
+    const name = (role === '1. SR' ? game.firstReferee : game.secondReferee) ?? '';
+    if (served == null) return byName(name)?.id ?? '';
+    return thisSeason(served.trim(), name)?.id ?? '';
+  };
+  return {
+    byId,
+    resolve,
+    idOnSlot,
+    onSlot: (game, role) => byId.get(idOnSlot(game, role)),
+  };
+}
+
+/** The session, as the client knows it. */
+export type MeRef = { rcId: string | null; rcName: string | null };
+
+/** Does the signed-in coach hold this game?
+ *
+ *  `samePerson` on the game's `assignedRcId` / `assignedRc`, with the roster
+ *  as the known ids: the id decides when the row carries one, a known other
+ *  id is a no however the name reads, and an id nobody knows — or none at all,
+ *  from an older API or a cached list — falls to the folded name, which is
+ *  the rule the server enforces on the same row (`rcRefMatches`). Whether the
+ *  game is held AT ALL is the caller's question, asked of `assignedRc` as it
+ *  always has been; this answers only whose it is. */
+export function isMyGame(
+  game: { assignedRc?: string; assignedRcId?: string },
+  me: MeRef,
+  knownIds?: Set<string>,
+): boolean {
+  return samePerson({ id: game.assignedRcId ?? '', name: game.assignedRc ?? '' }, { id: me.rcId ?? '', name: me.rcName ?? '' }, knownIds);
+}
+
+/** Did the signed-in coach file this record? The same rule on a feedback
+ *  row's `rc_id` / `rc_name`. */
+export function isMyRecord(record: { rc_id?: string; rc_name?: string }, me: MeRef, knownIds?: Set<string>): boolean {
+  return samePerson({ id: record.rc_id ?? '', name: record.rc_name ?? '' }, { id: me.rcId ?? '', name: me.rcName ?? '' }, knownIds);
+}
+
+/** A coach as a roster hands them out: the record id, the display name, and
+ *  the other spellings an admin listed for them (`name_aliases` — the maiden
+ *  name, the everyday short form, the order VolleyManager prints). */
+export type RcPersonLike = { id: string; fullName: string; aliases?: string[] };
+
+/** The roster id a typed or stored coach NAME resolves to — or '', when
+ *  nobody answers to it and, just as firmly, when more than one does.
+ *
+ *  Both orders of the name (nameKeys) against the coach's own name and every
+ *  alias, folded. Two coaches answering is exactly the ambiguity the id exists
+ *  to remove, and taking the first would hand one of them the other's game or
+ *  file an observation under the wrong name; so an ambiguous name is nobody,
+ *  and the caller refuses with the name rather than guess. Two hits on the
+ *  SAME coach — an alias that repeats the name the other way round — are one.
+ *  This is where every server-side name→id lookup for a coach ends up
+ *  (`rcIdForName`, the admin submit, the raw feedback routes, the migration),
+ *  so that they agree on what a name means.
+ */
+export function resolveRcName(name: string, people: RcPersonLike[]): string {
+  const wanted = new Set(nameKeys(name ?? ''));
+  if (!wanted.size) return '';
+  let found = '';
+  for (const p of people) {
+    if (![p.fullName, ...(p.aliases ?? [])].some((spelling) => wanted.has(foldName(spelling ?? '')))) continue;
+    if (found && found !== p.id) return '';
+    found = p.id;
+  }
+  return found;
+}
+
+/** The coach a reference names — the roster id when it is one, else a name
+ *  through resolveRcName. What a URL segment or a stored reference to a
+ *  coach means when the caller cannot tell which shape it holds: the
+ *  console asks `/api/rc-overview/<name>/coachees?rcId=<id>` (the name in
+ *  the path for an API that predates the id), older clients and typed
+ *  addresses ask with the name alone, and all must land on the same coach. The
+ *  id is tried first because it is exact; two coaches folding to one name
+ *  resolve separately by id and to nobody by name. */
+export function resolveRcRef<T extends RcPersonLike>(ref: string, people: T[]): T | undefined {
+  const wanted = (ref ?? '').trim();
+  if (!wanted) return undefined;
+  const byId = people.find((p) => p.id === wanted);
+  if (byId) return byId;
+  const id = resolveRcName(wanted, people);
+  return id ? people.find((p) => p.id === id) : undefined;
+}
+
 // ── URL tokens ───────────────────────────────────────────────────────────────
 // A token is an opaque string compared trimmed. No shape test: a 15-character
 // PocketBase id can be all digits, and nothing in the repo states how long an

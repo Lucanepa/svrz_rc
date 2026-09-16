@@ -37,8 +37,13 @@ const HER_GAME = {
   awayTeam: 'Audax SSC 1',
   firstReferee: LAST_SEASON_ROW.full_name,
   secondReferee: '',
+  // The server names this season's row for a game of this season (a row of
+  // another season never answers, see buildCoacheeIndex); whether that row
+  // is on the client's roster is what each test below varies.
+  firstCoacheeId: THIS_SEASON_ROW.id,
   // Unheld, so it sits on the open list rather than behind the "RC assigned" filter.
   assignedRc: '',
+  assignedRcId: '',
 };
 
 /** The amber pill next to a referee's name: "Coachee · N3-1 · Beförderung?". */
@@ -84,7 +89,7 @@ test('both rows exist: the badge reads the current season, never the older row',
 // last season and not this one had last season's Niveau and group ride into
 // this season's PDF. Now the form is left blank for the coach to fill.
 test.describe('the form prefill', () => {
-  const HELD = { ...HER_GAME, assignedRc: RC.name };
+  const HELD = { ...HER_GAME, assignedRc: RC.name, assignedRcId: RC.id };
   const openHerForm = async (page: import('@playwright/test').Page, coachees: unknown[]) => {
     await stubSignedInApp(page);
     await page.route('**/api/coachees*', (r) => r.fulfill({ json: coachees }));

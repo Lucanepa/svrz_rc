@@ -97,6 +97,10 @@ export type CalendarGameStatus = {
   status: 'outstanding' | 'completed' | 'none';
   hasOutstanding: boolean;
   hasCompleted: boolean;
+  /** The coachee row on each whistle slot, resolved on the server the way
+   *  the games list resolves it ('' for nobody). Absent from an older API. */
+  firstCoacheeId?: string;
+  secondCoacheeId?: string;
 };
 
 export type AdminAuthStatus = {
@@ -135,6 +139,19 @@ export async function saveFeedbackToPocketBase(params: {
   submissionKey?: string;
   gameId: string;
   role: FeedbackFormData['role'];
+  /** The SV number of the coachee the report is about, when their row is
+   *  linked to one AND it is the number on the game's slot (svClaimOnSlot in
+   *  identity.ts). The server's guard accepts a claim carrying the slot's
+   *  number whatever the name field says — the coach may have typed the
+   *  everyday name where VolleyManager prints the licence one — and refuses
+   *  a claim carrying any other number outright. '' or absent leaves the
+   *  guard to the folded names and the index, as before. */
+  refereeId?: string;
+  /** The roster id of the coach the report is filed under, when an ADMIN
+   *  picked them off the list (an RC session files under its own id and the
+   *  server ignores this). The name still travels in `meta.rc`; the id keeps
+   *  the server from resolving that name onto a namesake. */
+  rcId?: string;
   formData: FeedbackFormData;
   pdfBase64: string;
   pdfFilename: string;
@@ -149,6 +166,8 @@ export async function saveFeedbackToPocketBase(params: {
       submissionKey: params.submissionKey,
       gameId: params.gameId,
       role: params.role,
+      refereeId: params.refereeId || undefined,
+      rcId: params.rcId || undefined,
       formData: params.formData,
       pdfBase64: params.pdfBase64,
       pdfFilename: params.pdfFilename,
@@ -726,13 +745,19 @@ export async function sendGameReminder(gameId: string): Promise<{ sent: number; 
   return r.json();
 }
 
-export async function assignRcToGame(gameId: string, assignedRc: string): Promise<void> {
-  if (isDemoMode()) return demo.assignRcToGame(gameId, assignedRc);
+/** Who a game is handed to: the roster id, and the name beside it. Both
+ *  halves travel, both empty for a give-back. The name is not redundant — an
+ *  API older than the id reads `assignedRc ''` as the give-back and the name
+ *  as the take, so a new client against it still takes the game. */
+export type RcAssignment = { assignedRc: string; assignedRcId: string };
+
+export async function assignRcToGame(gameId: string, assignment: RcAssignment): Promise<void> {
+  if (isDemoMode()) return demo.assignRcToGame(gameId, assignment);
   const response = await fetch(apiUrl(`/api/games/${gameId}/assign-rc`), {
     credentials: 'include',
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ assignedRc }),
+    body: JSON.stringify({ assignedRc: assignment.assignedRc, assignedRcId: assignment.assignedRcId }),
   });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -790,9 +815,24 @@ export async function loadRcOverview(season: number): Promise<RcOverviewEntry[]>
   return response.json() as Promise<RcOverviewEntry[]>;
 }
 
-export async function loadrcCoachSummary(rcName: string, season: number): Promise<rcCoachSummary[]> {
-  if (isDemoMode()) return demo.loadrcCoachSummary(rcName);
-  const response = await fetch(apiUrl(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees?season=${season}`), { credentials: 'include' });
+/** A coach's three lists — done, outstanding, planned — per coachee. `rcRef`
+ *  is the coach's roster id; the API also still answers a name in the same
+ *  place, the shape older clients send, but two coaches can fold to one name
+ *  and only the id tells them apart. */
+/** A coach's detail: the three lists behind their counters.
+ *
+ *  The path carries the coach's NAME, the query their roster id. The name
+ *  is the shape the route has always read, so an API one version behind the
+ *  client (Pages ships on push, the API is copied by hand) still answers,
+ *  and the coach's own Home keeps the PWA cache entry it had; the id is what
+ *  a current API reads first, so two coaches folding to one string get each
+ *  their own detail. Left out for a coach's own Home: the server pins that
+ *  request to the session whatever the URL says, and a query that changed
+ *  would only change the cache key. */
+export async function loadrcCoachSummary(rcName: string, season: number, rcId = ''): Promise<rcCoachSummary[]> {
+  if (isDemoMode()) return demo.loadrcCoachSummary(rcId || rcName);
+  const query = `season=${season}${rcId ? `&rcId=${encodeURIComponent(rcId)}` : ''}`;
+  const response = await fetch(apiUrl(`/api/rc-overview/${encodeURIComponent(rcName)}/coachees?${query}`), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -965,6 +1005,9 @@ export type NewGame = {
   first_referee_id?: string;
   second_referee_id?: string;
   assigned_rc?: string;
+  /** The coach's roster id behind `assigned_rc`, when picked off the list;
+   *  the server takes it first and resolves the name only without it. */
+  assigned_rc_id?: string;
 };
 
 // ── The referee roster ────────────────────────────────────────────────
@@ -1069,6 +1112,87 @@ export async function backfillGameRefereeIds(): Promise<BackfillReport> {
   const r = await fetch(apiUrl('/api/admin/games/backfill-referee-ids'), { method: 'POST', credentials: 'include' });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not backfill referee numbers');
   return r.json();
+}
+
+// The coach ids stamped onto rows written before they were stored: games
+// (assigned_rc_id), feedbacks and Rückmeldungen (rc_id) and the chair's
+// notes (rcId), each from the name through the roster's aliases. One count
+// per table; `unresolved` are the names no coach answers to, or two do.
+// `rcNotes` is missing when the DB has no Rückmeldungen collection yet,
+// `presidentNotes` from an API older than the walk over the notes.
+export type RcIdBackfillCount = { total: number; filled: number; already: number; unresolved: number; blank: number };
+export type MigrateRcIdsReport = { ok: boolean; games: RcIdBackfillCount; feedbacks: RcIdBackfillCount; rcNotes?: RcIdBackfillCount; presidentNotes?: RcIdBackfillCount };
+
+export async function migrateRcIds(): Promise<MigrateRcIdsReport> {
+  const r = await fetch(apiUrl('/api/admin/migrate-rc-ids'), { method: 'POST', credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not backfill the coach ids');
+  return r.json();
+}
+
+// ── The identity audit ────────────────────────────────────────────────
+// Everything a name still decides, listed by the server (server/identityAudit.ts
+// has the rules): the coachee rows without a number and who the register
+// would link them to, two rows of one season on one number, a slot whose
+// number contradicts the row it was matched to by name, the slots the
+// number did not settle, match numbers reused or blank, and the coach
+// references without a roster id. The console's "Datenqualität" card draws
+// it; every list is what the admin drives to zero by hand.
+export type AuditUnlinkedReason = 'unmatched' | 'ambiguous' | 'never-linked';
+export type AuditUnlinkedCoachee = {
+  id: string; name: string; season: number | null;
+  reason: AuditUnlinkedReason;
+  candidates: { sv: string; name: string }[];
+};
+// `label` is the game as a human reads it (the number, else teams and day);
+// absent from an API one version behind, when the card falls to the number.
+// `registerHits` rides on a `none` slot: 0 (not in the register), 2+ (two
+// licences under one name) — a name the register spells once is never listed.
+export type AuditSlotByName = { gameId: string; matchNo: string; label?: string; slot: '1. SR' | '2. SR'; name: string; via: string; coacheeId: string; registerHits?: number };
+export type AuditRcRefUnresolved = {
+  source: 'games' | 'feedbacks' | 'rc_game_notes' | 'president_notes';
+  id: string; label: string; rcName: string; rcId: string;
+  reason: 'blank' | 'unknown'; resolvable: boolean;
+};
+export type IdentityAudit = {
+  season: number;
+  coacheesUnlinked: AuditUnlinkedCoachee[];
+  duplicateSvPerSeason: { sv: string; season: number | null; rowIds: string[]; names: string[] }[];
+  svDisagreesWithGame: { coacheeId: string; coacheeName: string; rowSv: string; gameId: string; matchNo: string; label?: string; slot: string; slotSv: string; name: string }[];
+  gameSlotsByName: AuditSlotByName[];
+  gameSlotsNoSv: number;
+  /** Of gameSlotsNoSv, the slots the register would number (the backfill's
+   *  share). Absent from an API one version behind. */
+  gameSlotsNoSvInRegister?: number;
+  duplicateMatchNos: { matchNo: string; gameIds: string[]; seasons: number[] }[];
+  blankMatchNo: { gameId: string; teams: string; date: string }[];
+  rcRefsUnresolved: AuditRcRefUnresolved[];
+  rcsWithoutSv: { id: string; name: string }[];
+  // Takes the name decided because the client sent no id — off the API's
+  // in-memory log ring, so the window starts at `since` (the API's last
+  // start, at most thirty days back). Absent from an API one version behind.
+  assignByNameLast30d?: { count: number; since: string };
+};
+
+export async function getIdentityAudit(season: number): Promise<IdentityAudit> {
+  const r = await fetch(apiUrl(`/api/admin/identity-audit?season=${encodeURIComponent(String(season))}`), { credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not load the identity audit');
+  const d = (await r.json()) as Partial<IdentityAudit>;
+  // Every list defaults to empty: the card counts them, and a field an
+  // older API does not send must read as "nothing found", not crash.
+  return {
+    season: d.season ?? season,
+    coacheesUnlinked: d.coacheesUnlinked ?? [],
+    duplicateSvPerSeason: d.duplicateSvPerSeason ?? [],
+    svDisagreesWithGame: d.svDisagreesWithGame ?? [],
+    gameSlotsByName: d.gameSlotsByName ?? [],
+    gameSlotsNoSv: d.gameSlotsNoSv ?? 0,
+    gameSlotsNoSvInRegister: d.gameSlotsNoSvInRegister,
+    duplicateMatchNos: d.duplicateMatchNos ?? [],
+    blankMatchNo: d.blankMatchNo ?? [],
+    rcRefsUnresolved: d.rcRefsUnresolved ?? [],
+    rcsWithoutSv: d.rcsWithoutSv ?? [],
+    assignByNameLast30d: d.assignByNameLast30d,
+  };
 }
 
 export async function createGame(game: NewGame): Promise<{ id: string; match_no?: string }> {

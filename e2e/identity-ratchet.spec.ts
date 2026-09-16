@@ -112,8 +112,15 @@ const list = (dir: string, ext: string) =>
 /** Where the name matching lives on purpose. These carry their own pins:
  *  the name tier has to be written somewhere, and this is where. */
 const ALLOWED: Record<string, Counts> = {
-  // samePerson's own name fallback — the rule every other site defers to.
-  'src/lib/identity.ts': { ...ZERO, A: 1 },
+  // samePerson's own name fallback — the rule every other site defers to —
+  // the client's legacy path (coacheeIdOnSlot, coacheeLookup.resolve): the
+  // folded-name lookup for a game row the server did not resolve at all, an
+  // API older than the slot ids or a list the PWA cached before they
+  // existed, two sites both behind "the field is absent" — and resolveRcName,
+  // the one place a coach's NAME is turned back into a roster id (aliases,
+  // both orders, nobody on ambiguity), which every server-side name lookup
+  // for a coach now goes through.
+  'src/lib/identity.ts': { ...ZERO, A: 1, B: 3 },
   // The register tier: a folded slot name looked up among the licence
   // spellings; and the submit guard's folded compare of the claimed name
   // with the printed one. The sv and name tiers go through indexPeople and
@@ -154,17 +161,32 @@ const FILES = [
  *  inside the fold (seven sites it had not been counting, all RC-side or
  *  the register contact lookup); B when `.includes(` joined it and the
  *  coachee link moved to dataHygiene.ts. */
+/*  server/index.ts after step 5: the RC side is gone too — rcRefMatches is
+ *  the samePerson wrapper, rcIdForName / the admin submit / the raw feedback
+ *  routes / the manual-game create / the rc-overview detail / migrate-rc-ids
+ *  resolve a name through resolveRcName, the Börse alert and the reminder
+ *  take the holder from gameHolder (server/boerse.ts), and a rename finds
+ *  its rows through rcRefMatches. What is left of A: the rename's own
+ *  "did the name change at all" check, the register contact lookup and the
+ *  manual-game referee lookup (both "keep" in the plan's audit table), and
+ *  the assign-rc route's legacy compare for a client that sends no id. */
 const PINS: Record<string, Partial<Counts>> = {
-  'server/index.ts': { A: 17, B: 5, C: 5 },
+  'server/index.ts': { A: 8, B: 5, C: 5 },
   'server/statistics.ts': { C: 2 },
-  'src/App.tsx': { A: 11, B: 25, D: 3 },
+  // Step 4 emptied App.tsx: every slot is read off the ids the server
+  // resolves (firstCoacheeId / secondCoacheeId), every holder off
+  // assignedRcId through isMyGame, the roster through coacheeLookup — and
+  // the one name index left is the legacy path inside identity.ts.
   // Step 3 took the manual-game form's svNumberFor (a folded-name compare
   // to read a number back off the option list) — the picker now hands the
-  // number over with the pick. What is left of A is the picker's own
-  // exact-match line under the field.
-  'src/components/AdminConsole.tsx': { A: 1, B: 2 },
+  // number over with the pick; step 4 the games tab's coacheeFor, which now
+  // reads the slot ids. What is left of A is the picker's own exact-match
+  // line under the field, of B the contact sync's name lookup.
+  'src/components/AdminConsole.tsx': { A: 1, B: 1 },
   'src/components/PdfReader.tsx': { C: 1 },
-  'src/lib/demo.ts': { C: 2 },
+  // Step 5 took the demo's summary lookup by lowercased name: the demo is
+  // asked by roster id like the API and answers either shape through
+  // samePerson, so demo.ts is at zero.
   'src/lib/routes.ts': { C: 1 },
 };
 

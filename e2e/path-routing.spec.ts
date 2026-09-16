@@ -23,8 +23,8 @@ import { stubSignedInApp, openFeedbackForm, COACHEE, COACHEE_LISTED, GAME } from
 
 /** GAME with a second referee who is ALSO a coachee, so the app pre-selects
  *  "both" and offers the swap between halves. */
-const COACHEE_2 = { ...COACHEE, id: 'c2', full_name: 'Ref Two', email: 'ref.two@example.ch' };
-const GAME_2SR = { ...GAME, secondReferee: COACHEE_2.full_name };
+const COACHEE_2 = { ...COACHEE, id: 'c2', full_name: 'Ref Two', email: 'ref.two@example.ch', referee_id: '90004' };
+const GAME_2SR = { ...GAME, secondReferee: COACHEE_2.full_name, secondRefereeId: COACHEE_2.referee_id, secondCoacheeId: COACHEE_2.id };
 async function useDualGame(page: Page): Promise<void> {
   await page.route('**/api/coachees*', (r) => r.fulfill({ json: [COACHEE, COACHEE_2] }));
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [GAME_2SR] }));

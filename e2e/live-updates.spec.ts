@@ -18,14 +18,17 @@ test('a game taken elsewhere leaves the list on a pushed event, with no refetch'
   await stubSignedInApp(page);
   await page.route('**/api/eligible-games*', (r) => {
     listFetches += 1;
-    return r.fulfill({ json: [{ ...GAME, id: 'g1', assignedRc: '' }] });
+    return r.fulfill({ json: [{ ...GAME, id: 'g1', assignedRc: '', assignedRcId: '' }] });
   });
   // Held back a moment: without it the push can land before the first render,
   // and the test would be asserting on a row that never appeared.
   await page.route('**/api/events', async (r) => {
     await new Promise((resolve) => setTimeout(resolve, 800));
+    // The holder's id rides beside the name, the way the API sends it now;
+    // the client reads whose the game is off the id (identity-client.spec.ts
+    // pins that) and the row leaves the list either way.
     await r.fulfill(sse([
-      JSON.stringify({ type: 'game.assignment', gameId: 'g1', matchNo: '402430', assignedRc: 'Bea Beispiel' }),
+      JSON.stringify({ type: 'game.assignment', gameId: 'g1', matchNo: '402430', assignedRc: 'Bea Beispiel', assignedRcId: 'rc2' }),
     ]));
   });
 
@@ -41,7 +44,7 @@ test('a game taken elsewhere leaves the list on a pushed event, with no refetch'
 
 test('a refused stream costs nothing — the list still works', async ({ page }) => {
   await stubSignedInApp(page);
-  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [{ ...GAME, id: 'g1', assignedRc: '' }] }));
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [{ ...GAME, id: 'g1', assignedRc: '', assignedRcId: '' }] }));
   await page.route('**/api/events', (r) => r.abort('failed'));
 
   await page.goto('/games');

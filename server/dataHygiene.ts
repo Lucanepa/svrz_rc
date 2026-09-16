@@ -156,7 +156,40 @@ export function planCoacheeLinks(referees: AnyRecord[], coachees: AnyRecord[]): 
   const report = (list: string[], name: string) => {
     if (list.length < REPORT_CAP && !list.includes(name)) list.push(name);
   };
+  const candidatesFor = registerCandidates(referees);
 
+  // Copies, so a number planned for one row is on the list the check for
+  // the next row reads — the caller's rows stay as they were read.
+  const rows = coachees.map((c) => ({ ...c }));
+  for (const row of rows) {
+    const name = coacheeDisplayName(row);
+    if (!name) continue;
+    if (text(row.referee_id)) { plan.alreadyLinked++; continue; }
+    const candidates = candidatesFor(row);
+    if (candidates.length === 0) { report(plan.unmatched, name); continue; }
+    if (candidates.length > 1) { report(plan.ambiguousNames, name); continue; }
+    const sv = text(candidates[0].sv_number);
+    if (!sv) { report(plan.unmatched, name); continue; }
+    if (refereeLinkProblem({ sv, season: coacheeRowSeason(row.season), rowId: String(row.id) }, referees, rows)) {
+      report(plan.ambiguousNames, name);
+      continue;
+    }
+    row.referee_id = sv;
+    plan.writes.push({ id: String(row.id), sv, name });
+  }
+  return plan;
+}
+
+/**
+ * The register rows a coachee row's name answers to — the lookup
+ * planCoacheeLinks decides with, on its own, so the audit can list a row's
+ * candidates without matching a name to a number anywhere else: one row is
+ * the link the plan would write, two or more the ambiguity it refuses, none
+ * the name the register does not hold. The spellings first, both orders,
+ * then the words (see planCoacheeLinks for why each). Rows without a number
+ * are still returned — the caller says what a candidate without one means.
+ */
+export function registerCandidates(referees: AnyRecord[]): (row: AnyRecord) => AnyRecord[] {
   const byName = new Map<string, AnyRecord[]>();
   const indexUnder = (key: string, row: AnyRecord) => {
     if (!key) return;
@@ -181,27 +214,11 @@ export function planCoacheeLinks(referees: AnyRecord[], coachees: AnyRecord[]): 
       return full ? [...parts].every((part) => full.has(part)) : false;
     });
   };
-
-  // Copies, so a number planned for one row is on the list the check for
-  // the next row reads — the caller's rows stay as they were read.
-  const rows = coachees.map((c) => ({ ...c }));
-  for (const row of rows) {
+  return (row) => {
     const name = coacheeDisplayName(row);
-    if (!name) continue;
-    if (text(row.referee_id)) { plan.alreadyLinked++; continue; }
-    const candidates = spelled(name) ?? spelled(`${text(row.last_name)} ${text(row.first_name)}`) ?? byWords(name);
-    if (candidates.length === 0) { report(plan.unmatched, name); continue; }
-    if (candidates.length > 1) { report(plan.ambiguousNames, name); continue; }
-    const sv = text(candidates[0].sv_number);
-    if (!sv) { report(plan.unmatched, name); continue; }
-    if (refereeLinkProblem({ sv, season: coacheeRowSeason(row.season), rowId: String(row.id) }, referees, rows)) {
-      report(plan.ambiguousNames, name);
-      continue;
-    }
-    row.referee_id = sv;
-    plan.writes.push({ id: String(row.id), sv, name });
-  }
-  return plan;
+    if (!name) return [];
+    return spelled(name) ?? spelled(`${text(row.last_name)} ${text(row.first_name)}`) ?? byWords(name);
+  };
 }
 
 /** The two whistle slots of a game record, name column beside id column. */

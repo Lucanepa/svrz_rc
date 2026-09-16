@@ -13,7 +13,7 @@ import { stubSignedInApp, COACHEE, COACHEE_LISTED, GAME } from './support/app';
 // Like the rest of the suite these dates are read against the real clock: the
 // fixtures below are the 2026/27 season the stub opens on.
 
-const FREE = { ...GAME, id: 'g-free', assignedRc: '', starred: false };
+const FREE = { ...GAME, id: 'g-free', assignedRc: '', assignedRcId: '', starred: false };
 const STARRED = {
   ...FREE, id: 'g-star', matchNo: '2400111',
   homeTeam: 'VBC Volketswil', awayTeam: 'DTV Bülach', starred: true,
@@ -29,7 +29,7 @@ const COACHEE_TWO = {
 const TWOS_GAME = {
   ...FREE, id: 'g-two', matchNo: '2400222',
   homeTeam: 'Volley Oerlikon', awayTeam: 'KSC Wiedikon',
-  firstReferee: COACHEE_TWO.full_name,
+  firstReferee: COACHEE_TWO.full_name, firstCoacheeId: COACHEE_TWO.id,
 };
 
 /** Signed off: the latest visit said no further one is needed, so the default
@@ -42,12 +42,12 @@ const COACHEE_DONE = {
 const DONES_STARRED = {
   ...FREE, id: 'g-done-star', matchNo: '2400333',
   homeTeam: 'TV Dietikon', awayTeam: 'VBC Kanti Baden',
-  firstReferee: COACHEE_DONE.full_name, starred: true,
+  firstReferee: COACHEE_DONE.full_name, firstCoacheeId: COACHEE_DONE.id, starred: true,
 };
 const DONES_PLAIN = {
   ...FREE, id: 'g-done-plain', matchNo: '2400334',
   homeTeam: 'VBC Glattal', awayTeam: 'SV Volley Wetzikon',
-  firstReferee: COACHEE_DONE.full_name,
+  firstReferee: COACHEE_DONE.full_name, firstCoacheeId: COACHEE_DONE.id,
 };
 
 const flagPill = (page: Page) => page.getByRole('button', { name: /^(Flagged|Vorgemerkt)$/ });

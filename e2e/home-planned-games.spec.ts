@@ -93,6 +93,8 @@ test('a game can be given back from the row that shows it', async ({ page }) => 
   await page.getByTestId('confirm-accept').click();
   await expect.poll(() => assigned.length).toBe(1);
   expect(assigned[0].url).toContain('/api/games/g1/assign-rc');
-  // Empty name = release. The server only ever let a coach clear their own.
-  expect(JSON.parse(assigned[0].body)).toEqual({ assignedRc: '' });
+  // Empty name AND empty id = release; both halves travel on every call, the
+  // name for an API older than the id. The server only ever let a coach clear
+  // their own.
+  expect(JSON.parse(assigned[0].body)).toEqual({ assignedRc: '', assignedRcId: '' });
 });

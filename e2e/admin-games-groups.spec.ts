@@ -10,10 +10,11 @@ const status = { needsObservation: true, count: 0 };
 const coachee = (id: string, full_name: string, groups: string, season?: number) =>
   ({ id, full_name, groups, season, referee_level: 'N3', stage: '2', observation_status: status });
 
+// The slot ids as the server resolves them: Sven Fremd is nobody's coachee.
 const GAMES = [
-  { ...GAME, id: 'g1', firstReferee: 'Nina Adler', secondReferee: 'Sven Fremd' },
+  { ...GAME, id: 'g1', firstReferee: 'Nina Adler', secondReferee: 'Sven Fremd', firstCoacheeId: 'c1', secondCoacheeId: '' },
   { ...GAME, id: 'g2', matchNo: '2345679', homeTeam: 'VBC Limmattal H1', awayTeam: 'Volley Uster H3',
-    firstReferee: 'Tim Berger', secondReferee: 'Urs Custer' },
+    firstReferee: 'Tim Berger', secondReferee: 'Urs Custer', firstCoacheeId: 'c2', secondCoacheeId: 'c3' },
 ];
 
 test('the console says which group each referee on a game is in', async ({ page }) => {

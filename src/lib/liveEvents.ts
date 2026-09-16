@@ -12,7 +12,9 @@ import { clientLog } from './logger';
 // working if it never connects at all.
 
 export type LiveEvent =
-  | { type: 'game.assignment'; gameId: string; matchNo: string; assignedRc: string }
+  // `assignedRcId` decides whose the game is now; the name rides beside it
+  // for the screen. Absent from an older API, when the name is all there is.
+  | { type: 'game.assignment'; gameId: string; matchNo: string; assignedRc: string; assignedRcId?: string }
   | { type: 'games.synced'; imported: number; refreshed: number }
   | { type: 'settings.changed'; keys: string[] };
 

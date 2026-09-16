@@ -64,7 +64,24 @@ export interface EligibleGame {
   awayTeam: string;
   firstReferee: string;
   secondReferee: string;
+  /** The referees' SV numbers, as the convocation carried them. About a third
+   *  of stored games have one; '' otherwise. Absent from an older API. */
+  firstRefereeId?: string;
+  secondRefereeId?: string;
   assignedRc?: string;
+  /** The holder's roster id, written beside the name since ids were stored.
+   *  What decides whose the game is (isMyGame); the name is the fallback for
+   *  a row without one. Absent from an older API. */
+  assignedRcId?: string;
+  /** Which coachee row each whistle slot is — resolved on the server, for
+   *  the game's season, SV number first (buildCoacheeIndex). '' says "not a
+   *  coachee" and is never second-guessed by the name here; only a row with
+   *  the field ABSENT (an older API, a cached list) falls to the folded name.
+   *  `*Via` says which tier answered: 'sv' | 'register' | 'name' | 'none'. */
+  firstCoacheeId?: string;
+  secondCoacheeId?: string;
+  firstCoacheeVia?: string;
+  secondCoacheeVia?: string;
   feedbackClosedRoles?: string[];
   isRdGame?: boolean;
   isLdGame?: boolean;
@@ -337,6 +354,12 @@ export interface rcCoachSummaryFeedback {
   teams: string;
   role: string;
   submittedAt: string;
+  /** The filed record and its game, so the row can open the one record it
+   *  stands for rather than the coachee's observation of that day. Optional
+   *  because an older server answers without them. */
+  feedbackId?: string;
+  gameId?: string;
+  matchNo?: string;
   /** The match result string, in either of the two shapes parseResult reads.
    *  Empty for a game the sync has no score for yet. */
   result?: string;
@@ -359,8 +382,15 @@ export interface rcCoachSummaryGame {
   refereeRole?: string;
   /** Everyone refereeing this game, each marked for whether they are one of
    *  THIS coach's coachees. A row listing only coachees could not say whether
-   *  the other slot was empty or held by somebody the coach does not follow. */
-  crew?: Array<{ name: string; role: string; coachee: boolean }>;
+   *  the other slot was empty or held by somebody the coach does not follow.
+   *  `coacheeId` is the row the server matched the slot to ('' for nobody)
+   *  and `svNumber` the referee's number, from the slot or the row; both
+   *  absent from an older server. */
+  crew?: Array<{ name: string; role: string; coachee: boolean; svNumber?: string; coacheeId?: string }>;
+  /** The coachee row this entry lists the game under — the same id as the
+   *  group's `coacheeId`, carried on the row so a merged Home row still knows
+   *  which referee is whose. Absent from an older server. */
+  coacheeId?: string;
   /** The match result string, in either of the two shapes parseResult reads.
    *  Empty for a game not played yet — which is most of `plannedGames`. */
   result?: string;

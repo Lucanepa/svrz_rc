@@ -1,4 +1,4 @@
-import { foldName } from './identity';
+import { foldName, coacheeIndex } from './identity';
 
 /** Sorting key for a coachee's name.
  *
@@ -54,40 +54,7 @@ export function surnameFirstLabel(c: { first_name?: string; last_name?: string; 
 
 // The fold itself now lives in identity.ts, next to the id-first rules it
 // serves, and is re-exported here so the three importers of this module keep
-// their import line. Same function, one definition.
-export { foldName };
-
-/** Every name a game's referee line can be written as, pointing at the coachee
- *  it belongs to.
- *
- *  Coachees are per-season rows: the same person has one per season, and
- *  everything derived from the row — Niveau, group, whether this referee is a
- *  coachee at all — has to read the season on screen, or last season's people
- *  leak onto this season's games wearing last season's badge. Rows from other
- *  seasons are left out entirely; among what remains (this season's rows plus
- *  the seasonless ones that predate the field) the selected season's row is
- *  inserted last so it wins the key.
- *
- *  Both name orders are keyed. VolleyManager writes "Vorname Nachname" on some
- *  fixtures and "Nachname Vorname" on others, and a lookup that knew only one
- *  of them silently treated half the roster as strangers.
- */
-export function coacheeIndex<T extends {
-  full_name?: string; first_name?: string; last_name?: string; season?: number;
-}>(coachees: T[], season: number): Map<string, T> {
-  const map = new Map<string, T>();
-  const ordered = coachees
-    .filter((c) => typeof c.season !== 'number' || c.season === season)
-    .sort((a, b) => Number(a.season === season) - Number(b.season === season));
-  for (const c of ordered) {
-    const fn = foldName(c.full_name || '');
-    if (fn) map.set(fn, c);
-    const first = (c.first_name || '').trim();
-    const last = (c.last_name || '').trim();
-    if (first && last) {
-      map.set(foldName(`${first} ${last}`), c);
-      map.set(foldName(`${last} ${first}`), c);
-    }
-  }
-  return map;
-}
+// their import line. Same function, one definition. The name index went the
+// same way: it is the legacy path behind coacheeIdOnSlot — a game row the
+// server did not resolve — and lives beside the rule it backs.
+export { foldName, coacheeIndex };

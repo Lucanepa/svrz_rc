@@ -8,12 +8,14 @@ import { stubSignedInApp, GAME } from './support/app';
 // the list treats "no coachee on the row" as a pass, and the star chip says
 // where the flag came from.
 
-const COACHEE_GAME = { ...GAME, id: 'g-coachee', assignedRc: '', starred: false };
+const COACHEE_GAME = { ...GAME, id: 'g-coachee', assignedRc: '', assignedRcId: '', starred: false };
 const MARKED_NO_COACHEE = {
   ...COACHEE_GAME,
   id: 'g-marked', matchNo: '406282',
   homeTeam: 'VC Tornado Adliswil H1', awayTeam: 'OTA VOLLEY H1',
   firstReferee: 'Christian Wolf', secondReferee: 'Mateja Gligorijevic',
+  // Neither is anybody's coachee — the server resolves both slots to nobody.
+  firstCoacheeId: '', secondCoacheeId: '',
   isRdGame: true, vmFlagged: true, starred: true,
 };
 

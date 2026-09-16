@@ -13,6 +13,7 @@
 
 import { SECTIONS_1SR_DE } from '../types';
 import { dayLabel } from './appTime';
+import { samePerson } from './identity';
 import { attachableDoc, type UsefulDoc } from './usefulDocs';
 import type {
   EligibleGame,
@@ -35,6 +36,7 @@ import type {
   CalendarGameStatus,
   RefereeCoachPerson,
   MyRcGame,
+  RcAssignment,
   RcGameNote,
 } from './pocketbase';
 
@@ -120,6 +122,10 @@ function seasonDate(monthIdx: number, day: number): string {
   return `${yr}-${mm}-${dd}`;
 }
 
+// The ids the real API sends ride on every demo game too (firstRefereeId,
+// firstCoacheeId, assignedRcId — see EligibleGame): the app matches on them
+// and never on the name, so a demo without them would be the one place a
+// coachee badge or "Abgeben" silently failed to appear.
 type DemoGame = EligibleGame & {
   coacheeId: string;
   role: '1. SR' | '2. SR';
@@ -197,6 +203,8 @@ function buildStore(): DemoStore {
     {
       id: 'demo-c-anna', full_name: 'Anna Bühler', first_name: 'Anna', last_name: 'Bühler',
       email: 'anna.buehler@example.com', referee_level: 'N3', stage: '2', groups: 'RD',
+      // Linked to the register, like most of the real roster.
+      referee_id: '90101',
       season: seasonStartYear(),
       observations_count: 1,
       last_feedback_at: `${seasonDate(9, 12)}T18:30:00Z`,
@@ -205,6 +213,7 @@ function buildStore(): DemoStore {
     {
       id: 'demo-c-luca', full_name: 'Luca Ferrari', first_name: 'Luca', last_name: 'Ferrari',
       email: 'luca.ferrari@example.com', referee_level: 'N3', stage: '3', groups: 'LD',
+      referee_id: '90102',
       season: seasonStartYear(),
       observations_count: 0,
       observation_status: obs({ count: 0, hasNoObservation: true, needsObservation: true }),
@@ -212,6 +221,7 @@ function buildStore(): DemoStore {
     {
       id: 'demo-c-sofia', full_name: 'Sofia Meier', first_name: 'Sofia', last_name: 'Meier',
       email: 'sofia.meier@example.com', referee_level: 'N4', stage: '2', groups: 'RD',
+      referee_id: '90103',
       season: seasonStartYear(),
       observations_count: 0,
       observation_status: obs({ count: 0, hasNoObservation: true, needsObservation: true }),
@@ -219,6 +229,7 @@ function buildStore(): DemoStore {
     {
       id: 'demo-c-jan', full_name: 'Jan Keller', first_name: 'Jan', last_name: 'Keller',
       email: 'jan.keller@example.com', referee_level: 'N2', stage: '1', groups: 'RD',
+      referee_id: '90104',
       season: seasonStartYear(),
       observations_count: 1,
       last_feedback_at: `${seasonDate(9, 26)}T20:00:00Z`,
@@ -227,6 +238,7 @@ function buildStore(): DemoStore {
     {
       id: 'demo-c-elena', full_name: 'Elena Graf', first_name: 'Elena', last_name: 'Graf',
       email: 'elena.graf@example.com', referee_level: 'N4', stage: '3', groups: 'RD',
+      referee_id: '90105',
       season: seasonStartYear(),
       observations_count: 0,
       observation_status: obs({ count: 0, hasNoObservation: true, needsObservation: true }),
@@ -289,6 +301,20 @@ function buildStore(): DemoStore {
     },
   ];
 
+  // The ids beside the names, as the API sends them: the coachee stands in
+  // the 1. SR slot on every demo game, the other referee is nobody's coachee,
+  // and a taken game carries the holder's id next to the holder's name.
+  const svOf = new Map(coachees.map((c) => [c.id, c.referee_id ?? '']));
+  for (const g of games) {
+    g.firstRefereeId = svOf.get(g.coacheeId) ?? '';
+    g.secondRefereeId = '';
+    g.firstCoacheeId = g.coacheeId;
+    g.secondCoacheeId = '';
+    g.firstCoacheeVia = 'sv';
+    g.secondCoacheeVia = 'none';
+    g.assignedRcId = g.assignedRc ? RC.id : '';
+  }
+
   const gameById = new Map(games.map((g) => [g.id, g]));
   const mkRecord = (id: string, coacheeId: string, refereeName: string, niveau: string): FeedbackRecord => {
     const g = gameById.get(id)!;
@@ -296,6 +322,7 @@ function buildStore(): DemoStore {
       id: `demo-fb-${id}`,
       role_assessed: '1. SR',
       rc_name: RC.name,
+      rc_id: RC.id,
       submitted_at: `${g.date}T21:00:00Z`,
       feedback_json: makeFeedbackJson(g, refereeName, niveau),
       game: g.id,
@@ -595,15 +622,19 @@ function buildSummary(): rcCoachSummary[] {
     // place the row looked different from production.
     const toGame = (g: DemoGame): rcCoachSummaryGame => ({
       gameId: g.id, gameDate: g.date, league: g.league, teams: teams(g),
-      refereeName: c.full_name, refereeRole: g.role,
+      refereeName: c.full_name, refereeRole: g.role, coacheeId: c.id,
       // The demo's games carry both referees, so the crew is real here too —
       // otherwise the demo would be the one place a shared game looked like a
-      // game with a single referee.
+      // game with a single referee. Each slot says whose it is by id, the
+      // way the API does; the coachee is the one on the game's own slot.
       crew: [
         { name: g.firstReferee || '', role: '1. SR' },
         { name: g.secondReferee || '', role: '2. SR' },
       ].filter((r) => r.name)
-       .map((r) => ({ ...r, coachee: r.name.trim().toLowerCase() === c.full_name.trim().toLowerCase() })),
+       .map((r) => {
+         const coachee = r.role === g.role && g.coacheeId === c.id;
+         return { ...r, coachee, coacheeId: coachee ? c.id : '', svNumber: coachee ? (c.referee_id ?? '') : '' };
+       }),
       // Built field by field, so anything new has to be added BY HAND here or
       // the demo is the one place the feature silently does not exist —
       // exactly how `noCoachee` went missing once. Two of the demo's games
@@ -616,6 +647,7 @@ function buildSummary(): rcCoachSummary[] {
       coacheeName: c.full_name,
       coacheeId: c.id,
       doneFeedbacks: (s.feedbacks[c.id] ?? []).map((r) => ({
+        feedbackId: r.id, gameId: r.game ?? '', matchNo: r.expand?.game?.match_no ?? '',
         gameDate: r.expand?.game?.match_date ?? '', league: r.expand?.game?.league ?? '',
         teams: `${r.expand?.game?.home_team ?? ''} vs ${r.expand?.game?.away_team ?? ''}`,
         role: r.role_assessed ?? '1. SR', submittedAt: r.submitted_at ?? '',
@@ -637,9 +669,11 @@ export function loadRcOverview(): Promise<RcOverviewEntry[]> {
   return ok([mine, ...store().siblings]);
 }
 
-export function loadrcCoachSummary(rcName: string): Promise<rcCoachSummary[]> {
-  // Only the demo coach has detail; siblings are context-only.
-  if (rcName.trim().toLowerCase() !== RC.name.toLowerCase()) return ok([]);
+export function loadrcCoachSummary(rcRef: string): Promise<rcCoachSummary[]> {
+  // Only the demo coach has detail; siblings are context-only. The console
+  // asks by roster id, Home by name — the one rule tries the ref as either,
+  // id first, so whichever the caller holds finds the same demo.
+  if (!samePerson({ id: rcRef, name: rcRef }, { id: RC.id, name: RC.name })) return ok([]);
   return ok(buildSummary());
 }
 
@@ -664,7 +698,7 @@ export function saveFeedbackToPocketBase(params: {
     const submittedAt = new Date().toISOString();
     const record: FeedbackRecord = {
       id: `demo-fb-new-${s.feedbackSeq++}`,
-      role_assessed: params.role, rc_name: RC.name, submitted_at: submittedAt,
+      role_assessed: params.role, rc_name: RC.name, rc_id: RC.id, submitted_at: submittedAt,
       feedback_json: params.formData, game: g.id, coachee: g.coacheeId,
       expand: { game: { id: g.id, match_no: g.matchNo, league: g.league, match_date: g.date, location: g.location, home_team: g.homeTeam, away_team: g.awayTeam, first_referee: g.firstReferee, second_referee: g.secondReferee } },
     };
@@ -690,10 +724,12 @@ export function setGameStarred(gameId: string, starred: boolean): Promise<void> 
   return ok(undefined);
 }
 
-export function assignRcToGame(gameId: string, assignedRc: string): Promise<void> {
+export function assignRcToGame(gameId: string, assignment: RcAssignment): Promise<void> {
   const g = store().games.find((x) => x.id === gameId);
   if (!g) return ok(undefined);
-  g.assignedRc = assignedRc || undefined;
+  // Both halves, like the API: the id is what the lists read "mine" off.
+  g.assignedRc = assignment.assignedRc || undefined;
+  g.assignedRcId = assignment.assignedRc ? assignment.assignedRcId : '';
   // Every counter and list in the demo is derived from `kind`, so leaving it
   // alone made "Spiel übernehmen" look broken: the game showed as taken while
   // the Home planned counter and the upcoming list never mentioned it. A game

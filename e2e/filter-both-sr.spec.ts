@@ -10,8 +10,12 @@ const coachee = (id: string, full_name: string) =>
 
 const COACHEES = [coachee('c1', 'Ref One'), coachee('c2', 'Ref Two')];
 
+/** The row the server resolves a slot to — '' for somebody who is nobody's
+ *  coachee. The client reads these, not the names. */
+const coacheeIdOf = (name: string) => COACHEES.find((c) => c.full_name === name)?.id ?? '';
 const game = (id: string, homeTeam: string, first: string, second: string) => ({
-  ...GAME, id, matchNo: id, homeTeam, firstReferee: first, secondReferee: second, assignedRc: '',
+  ...GAME, id, matchNo: id, homeTeam, firstReferee: first, secondReferee: second, assignedRc: '', assignedRcId: '',
+  firstCoacheeId: coacheeIdOf(first), secondCoacheeId: coacheeIdOf(second),
 });
 
 const GAMES = [
@@ -91,8 +95,10 @@ test('picking a coachee by their listed name still filters the games', async ({ 
 test('a long coachee name is not cut off in the dropdown', async ({ page }) => {
   await stubSignedInApp(page);
   await page.route('**/api/coachees*', (r) => r.fulfill({ json: [coachee('c9', 'Dario Stefano Quattrini')] }));
+  // Not one of COACHEES, so the slot id is named here: the option list is
+  // built from the ids the server resolved, not from the names.
   await page.route('**/api/eligible-games*', (r) => r.fulfill({
-    json: [game('g9', 'Some Game', 'Dario Stefano Quattrini', '')],
+    json: [{ ...game('g9', 'Some Game', 'Dario Stefano Quattrini', ''), firstCoacheeId: 'c9' }],
   }));
   await page.goto('/');
   await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();

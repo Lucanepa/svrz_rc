@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { boerseLevel, type BoerseSlotOffer, type BoerseView } from '../src/lib/boerseRules';
+import { gameHolder } from '../server/boerse';
 
 /**
  * The truth table for the SR-Börse row colours.
@@ -136,5 +137,47 @@ test.describe('the warning sign is independent of the colour', () => {
     const v = boerseLevel(view({ offers: [open('1'), open('2')], coacheeSlots: ['1'] }));
     expect(v.markedSlots.sort()).toEqual(['1', '2']);
     expect(v.level).toBe('red');
+  });
+});
+
+// ── Who the alert goes to ─────────────────────────────────────────────
+// The mail about a coachee in the börse goes to whoever holds the game, and
+// so does the day-before reminder. Both used to decide that on their own —
+// the alert took `id || name` with no known-id veto — so a game whose id
+// said one coach and whose name folded to another could mail the wrong one.
+// One rule now, the same `samePerson` the ownership checks use.
+test.describe('the holder rule', () => {
+  const anna = { id: 'rc1', fullName: 'Anna Muster', email: 'anna@example.ch' };
+  const namesake = { id: 'rc2', fullName: 'Anna  MUSTER', email: 'other@example.ch' };
+  const beat = { id: 'rc3', fullName: 'Beat Zimmermann', email: 'beat@example.ch' };
+  const roster = [anna, namesake, beat];
+
+  test('the id decides, however the name reads', () => {
+    expect(gameHolder({ assigned_rc_id: 'rc3', assigned_rc: 'Anna Muster' }, roster)).toBe(beat);
+  });
+
+  test('a stored id that names another coach on the roster is a no for the namesake', () => {
+    // rc2's game; Anna's name on it does not make it hers — even with Anna
+    // listed first, where a name-first rule would have stopped.
+    expect(gameHolder({ assigned_rc_id: 'rc2', assigned_rc: 'Anna Muster' }, roster)).toBe(namesake);
+  });
+
+  test('an id nobody on the roster carries falls to the folded name', () => {
+    // A deactivated coach's id, or one from before the ids were written: the
+    // row would be stranded forever if the id were a veto here.
+    expect(gameHolder({ assigned_rc_id: 'rc-gone', assigned_rc: 'anna muster' }, roster)).toBe(anna);
+  });
+
+  test('no id at all — the name, folded, first on the roster', () => {
+    expect(gameHolder({ assigned_rc: 'ANNA  Muster' }, [{ id: 'x', fullName: 'Anna Müster' }])?.id).toBe('x');
+    expect(gameHolder({ assigned_rc: 'Anna Muster' }, roster)).toBe(anna);
+    // The fallback is the exact folded string, the same order the roster
+    // writes — reversal is the referee index's business, not the coach's.
+    expect(gameHolder({ assigned_rc: 'Muster Anna' }, roster)).toBeUndefined();
+  });
+
+  test('nobody holds it — no holder, and no name match on an empty string', () => {
+    expect(gameHolder({}, roster)).toBeUndefined();
+    expect(gameHolder({ assigned_rc: '', assigned_rc_id: '' }, [{ id: 'y', fullName: '' }])).toBeUndefined();
   });
 });

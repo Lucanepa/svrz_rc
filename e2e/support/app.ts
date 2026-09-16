@@ -23,10 +23,31 @@ export const COACHEE = {
   email: 'ref.one@example.ch',
   referee_level: 'N3',
   stage: '2',
+  /** Linked to the register, like most of the real roster: the SV number is
+   *  what the server matches a game's slot on first, and what the coachee's
+   *  URL will carry. */
+  referee_id: '90003',
   observation_status: { needsObservation: true, count: 0 },
 };
 
-/** Held by the signed-in coach: only its holder may observe it. */
+/** A coachee the register import could not link — no SV number, so every
+ *  match on them is by name, and their URL stays the record id. */
+export const COACHEE_UNLINKED = {
+  ...COACHEE,
+  id: 'c2',
+  full_name: 'Ref Two',
+  email: 'ref.two@example.ch',
+  referee_id: '',
+};
+
+/** Held by the signed-in coach: only its holder may observe it.
+ *
+ *  Carries the ids the API sends beside the names — the slot's SV number,
+ *  the coachee row the server resolved for it, the holder's roster id — so
+ *  a spec that clones it with OTHER referees must set `firstCoacheeId` /
+ *  `secondCoacheeId` to match (or to '' for a stranger): the client reads
+ *  those, never the names, and a clone that renames the referee but keeps
+ *  `firstCoacheeId: 'c1'` describes a game the server would never send. */
 export const GAME = {
   id: 'g1',
   matchNo: '2345678',
@@ -37,7 +58,12 @@ export const GAME = {
   awayTeam: 'Volley Näfels II',
   firstReferee: COACHEE.full_name,
   secondReferee: '',
+  firstRefereeId: COACHEE.referee_id,
+  secondRefereeId: '',
+  firstCoacheeId: COACHEE.id,
+  secondCoacheeId: '',
   assignedRc: RC.name,
+  assignedRcId: RC.id,
   feedbackClosedRoles: [] as string[],
   // Deliberately unscored. A game that carries a result renders its score box
   // read-only (correctable only via "unlock"), so putting one here silently
@@ -45,6 +71,19 @@ export const GAME = {
   // type into a locked field. Specs that need a score bring their own; see
   // e2e/match-result.spec.ts.
   game_result: '',
+};
+
+/** GAME as an API older than the ids answers it — or as the PWA cached it
+ *  before they existed: no SV numbers, no resolved coachee, no holder id. The
+ *  client must then fall back to the names, which is what these keys being
+ *  ABSENT (not '') asks for; JSON drops an `undefined` value. */
+export const GAME_NOSV = {
+  ...GAME,
+  firstRefereeId: undefined,
+  secondRefereeId: undefined,
+  firstCoacheeId: undefined,
+  secondCoacheeId: undefined,
+  assignedRcId: undefined,
 };
 
 const EMAIL_TEMPLATE = { subject: 's', heading: 'h', intro: 'i', outro: 'o' };

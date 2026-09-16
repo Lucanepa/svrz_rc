@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { RC, stubSignedInApp } from './support/app';
+import { presidentNoteEntry } from '../server/presidentNotes';
 
 /**
  * The private note a coach leaves for the RC chair on an observation they have
@@ -106,4 +107,38 @@ test('a note that cannot be read is never silently overwritten', async ({ page }
   await expect(noteBox(page)).toBeDisabled();
   await expect(page.getByRole('button', { name: /Notiz speichern|Save note/ })).toBeDisabled();
   expect(puts).toHaveLength(0);
+});
+
+// What the store keeps beside the words. The chair's list reads its labels
+// off the entry (one settings read, no join per row), and beside them the
+// ids: the match number a human reads, the coach's roster id a rename finds
+// the entry by however the name was spelled, the coachee's SV number.
+test.describe('what an entry carries', () => {
+  test('the match number and the ids, beside the labels', () => {
+    const entry = presidentNoteEntry({
+      note: 'escalate please',
+      record: { id: 'fb1', game: 'g1', rc_name: RC.name, rc_id: RC.id },
+      game: RECORD.expand.game,
+      coachee: { full_name: 'Ref One', referee_id: '90003' },
+      authorName: RC.name,
+      now: new Date('2026-03-15T10:00:00Z'),
+    });
+    expect(entry).toEqual({
+      note: 'escalate please',
+      gameId: 'g1', matchNo: '1', teams: 'A vs B', league: '3L', gameDate: '2026-03-14',
+      coacheeName: 'Ref One', refereeId: '90003',
+      rcName: RC.name, rcId: RC.id,
+      authorName: RC.name, updatedAt: '2026-03-15T10:00:00.000Z',
+    });
+  });
+
+  test('a feedback whose game and coachee rows are gone still keeps its note', () => {
+    // A row written before the ids, on a game since deleted: every label is
+    // blank rather than the write failing, and the note survives.
+    const entry = presidentNoteEntry({
+      note: 'still here', record: { id: 'fb2', rc_name: 'Bea Beispiel' },
+      game: null, coachee: undefined, authorName: 'Admin', now: new Date(0),
+    });
+    expect(entry).toMatchObject({ note: 'still here', gameId: '', matchNo: '', teams: '', refereeId: '', rcName: 'Bea Beispiel', rcId: '' });
+  });
 });

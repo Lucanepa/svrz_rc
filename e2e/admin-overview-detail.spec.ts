@@ -59,7 +59,12 @@ test('a coach\'s row opens into the games behind the counters', async ({ page })
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-  expect(asked.some((p) => p.includes('/Thanh Ut Nguyen/') && p.endsWith('?season=2026'))).toBe(true);
+  // Asked with the coach's roster id beside the name: two coaches can fold
+  // to one string, and the detail under a row must be that row's coach. The
+  // name stays in the path, where an API one version behind the client (the
+  // API is copied by hand, Pages ships on push) still reads it.
+  expect(asked.some((p) => p.includes('/Thanh Ut Nguyen/') && p.includes('season=2026') && p.includes('rcId=rc2'))).toBe(true);
+  expect(asked.some((p) => p.includes('/rc2/'))).toBe(false);
 
   // The outstanding game, under a heading that says what "outstanding" means.
   await expect(page.getByText('VBC Altdorf')).toBeVisible();

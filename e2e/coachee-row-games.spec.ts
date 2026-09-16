@@ -14,6 +14,7 @@ const FREE = {
   awayTeam: 'DTV Bülach',
   date: '2026-11-20T19:30:00Z',
   assignedRc: '',
+  assignedRcId: '',
 };
 
 /** Last season's fixture: the same referee, a season that has been and gone. */

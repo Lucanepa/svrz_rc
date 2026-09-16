@@ -14,6 +14,7 @@ import {
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
   listReferees, importReferees, linkCoacheeReferees, backfillGameRefereeIds, type RefereeRoster, type RosterReferee, type RefereeImportRow, type LinkReport, type BackfillReport, type SvConflict,
+  getIdentityAudit, migrateRcIds, type IdentityAudit, type AuditUnlinkedCoachee, type MigrateRcIdsReport,
   getSurveyConfig, putSurveyConfig,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
   getErrorLogs, getErrorLogDates, annotateLogEntries,
@@ -42,7 +43,8 @@ import {
 } from '../lib/survey';
 import { subscribeLive } from '../lib/liveEvents';
 import { groupLabel } from '../lib/coacheeGroup';
-import { bySurname, surnameFirstLabel, foldName, coacheeIndex } from '../lib/coacheeName';
+import { bySurname, surnameFirstLabel, foldName } from '../lib/coacheeName';
+import { coacheeLookup, samePerson } from '../lib/identity';
 import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame, type rcCoachSummary, type rcCoachSummaryGame } from '../types';
 import LevelText from './LevelText';
@@ -248,6 +250,44 @@ const STR = {
     svMissing: (n: number) => `${n} ${n === 1 ? 'Coachee' : 'Coachees'} ohne SV-Nr.`,
     svNone: 'ohne SV-Nr.',
     svMissingHint: 'Ohne Nummer wird nach dem Namen gesucht — die Schreibweise entscheidet dann.',
+    // The "Datenqualität" card: everything a name still decides, counted
+    // and listed, with the three buttons that write the ids.
+    dqTitle: 'Datenqualität',
+    dqHint: 'Was noch über den Namen statt über die Nummer läuft — SV-Nr. für Schiedsrichter, ID für Referee Coaches, Spielnummer für Spiele. Ziel: überall 0.',
+    dqRefresh: 'Neu prüfen',
+    dqFail: (e: string) => `Prüfung fehlgeschlagen: ${e}`,
+    dqAllGood: 'Alles verknüpft — nichts zu tun.',
+    dqUnlinked: 'Coachees nicht verknüpft',
+    dqDupSv: 'SV-Nr. doppelt in der Saison',
+    dqSvMismatch: 'SV-Nr. widerspricht Spiel',
+    dqSlotsByName: 'SR nur über den Namen',
+    dqSlotsNoSv: 'SR-Einträge ohne SV-Nr.',
+    dqSlotsNoSvInRegister: (n: number) => `${n} davon trägt „SV-Nr. auf Spielen nachtragen" ein`,
+    dqSlotsNobody: 'SR ohne SV-Nr. und ohne Coachee',
+    dqDupMatchNo: 'Spielnummer doppelt',
+    dqBlankMatchNo: 'Spiele ohne Nummer',
+    dqRcRefs: 'RC-Einträge ohne ID',
+    dqRcsNoSv: 'RCs ohne SV-Nr.',
+    dqAssignByName: 'Übernahmen ohne ID',
+    dqSince: (day: string) => `seit ${day}`,
+    dqReasonUnmatched: 'nicht im Register',
+    dqReasonAmbiguous: 'mehrdeutig — bitte entscheiden',
+    dqReasonNeverLinked: 'ein Treffer im Register — noch nicht verknüpft',
+    dqLink: 'Verknüpfen',
+    dqLinkOk: (name: string, sv: string) => `${name} mit der SV-Nr. ${sv} verknüpft.`,
+    dqByName: 'nur Name',
+    dqByNameHint: 'Dieser SR wurde nur über die Schreibweise erkannt — die SV-Nr. auf dem Spiel oder beim Coachee fehlt.',
+    dqNobody: 'niemand — keine SV-Nr., nicht im Register',
+    dqNobodyAmbiguous: (n: number) => `niemand — keine SV-Nr., im Register ${n}-mal (mehrdeutig)`,
+    dqMismatchRow: (game: string, coachee: string) => `Spiel ${game} · Coachee ${coachee}`,
+    dqRefBlank: 'keine ID',
+    dqRefUnknown: 'unbekannte ID',
+    dqRefResolvable: '„RC-IDs nachtragen" behebt das',
+    dqSrcGames: 'Spiel', dqSrcFeedbacks: 'Feedback', dqSrcNotes: 'Rückmeldung', dqSrcPresident: 'Notiz',
+    dqSeasons: (seasons: string) => `Saisons ${seasons}`,
+    migrateNow: 'RC-IDs nachtragen',
+    migrateResult: (games: number, feedbacks: number, notes: number, president: number, unresolved: number) => `RC-ID ergänzt auf ${games} Spielen, ${feedbacks} Feedbacks, ${notes} Rückmeldungen, ${president} Notizen · ${unresolved} Namen nicht auflösbar.`,
+    migrateFail: (e: string) => `Nachtragen fehlgeschlagen: ${e}`,
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
@@ -509,6 +549,42 @@ const STR = {
     svMissing: (n: number) => `${n} ${n === 1 ? 'coachee' : 'coachees'} without an SV number`,
     svNone: 'no SV number',
     svMissingHint: 'Without a number the match is by name — the spelling then decides.',
+    dqTitle: 'Data quality',
+    dqHint: 'What still runs on a name instead of a number — the SV number for referees, the id for referee coaches, the match number for games. The goal is 0 everywhere.',
+    dqRefresh: 'Check again',
+    dqFail: (e: string) => `Check failed: ${e}`,
+    dqAllGood: 'Everything linked — nothing to do.',
+    dqUnlinked: 'Coachees not linked',
+    dqDupSv: 'SV number twice in the season',
+    dqSvMismatch: 'SV number contradicts game',
+    dqSlotsByName: 'Referees by name only',
+    dqSlotsNoSv: 'Referee slots without SV number',
+    dqSlotsNoSvInRegister: (n: number) => `${n} of them "Add SV numbers to games" fills in`,
+    dqSlotsNobody: 'Referees without SV number, nobody\'s coachee',
+    dqDupMatchNo: 'Match number twice',
+    dqBlankMatchNo: 'Games without a number',
+    dqRcRefs: 'RC entries without id',
+    dqRcsNoSv: 'RCs without SV number',
+    dqAssignByName: 'Takes without id',
+    dqSince: (day: string) => `since ${day}`,
+    dqReasonUnmatched: 'not in the register',
+    dqReasonAmbiguous: 'ambiguous — please decide',
+    dqReasonNeverLinked: 'one register hit — not linked yet',
+    dqLink: 'Link',
+    dqLinkOk: (name: string, sv: string) => `${name} linked to SV number ${sv}.`,
+    dqByName: 'name only',
+    dqByNameHint: 'This referee was recognised by spelling alone — the SV number is missing on the game or on the coachee.',
+    dqNobody: 'nobody — no SV number, not in the register',
+    dqNobodyAmbiguous: (n: number) => `nobody — no SV number, ${n} times in the register (ambiguous)`,
+    dqMismatchRow: (game: string, coachee: string) => `game ${game} · coachee ${coachee}`,
+    dqRefBlank: 'no id',
+    dqRefUnknown: 'unknown id',
+    dqRefResolvable: '"Add RC ids" fixes this',
+    dqSrcGames: 'Game', dqSrcFeedbacks: 'Feedback', dqSrcNotes: 'Rückmeldung', dqSrcPresident: 'Note',
+    dqSeasons: (seasons: string) => `seasons ${seasons}`,
+    migrateNow: 'Add RC ids',
+    migrateResult: (games: number, feedbacks: number, notes: number, president: number, unresolved: number) => `RC id added on ${games} games, ${feedbacks} feedbacks, ${notes} Rückmeldungen, ${president} notes · ${unresolved} names unresolvable.`,
+    migrateFail: (e: string) => `Backfill failed: ${e}`,
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
@@ -1116,7 +1192,7 @@ export default function AdminConsole() {
             tab owns. */}
         {!isPresident && <>
         <div hidden={tab !== 'coachees'}>
-          <CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} settingsLoading={settingsLoading} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} />
+          <CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} settingsLoading={settingsLoading} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} active={tab === 'coachees'} />
           <GroupsCard t={t} lang={lang} groups={groups} onGroups={setGroups} loading={settingsLoading} />
         </div>
         <div hidden={tab !== 'rcs'}>
@@ -1538,28 +1614,10 @@ function RefereeRosterAdmin({ t, roster, onRoster, onLinked }: {
     finally { setBusy(false); }
   };
 
-  // The link on its own: for coachees typed in after the last import, and
-  // for a register imported before the coachee import learned to link.
-  const linkNow = async () => {
-    setBusy(true); reset();
-    try {
-      const res = await linkCoacheeReferees();
-      setNote(t.linkResult(res.linked, res.alreadyLinked));
-      setAmbiguous(res.ambiguousNames ?? []);
-      setUnmatched(res.unmatched ?? []);
-      onLinked();
-    } catch (e) { setErr(t.linkFail(e instanceof Error ? e.message : String(e))); }
-    finally { setBusy(false); }
-  };
-
-  // The games on their own: two thirds of the stored games predate the
-  // number on the whistle slot and were matched by name on every list.
-  const backfillNow = async () => {
-    setBusy(true); reset();
-    try { setNote(showBackfill(await backfillGameRefereeIds())); }
-    catch (e) { setErr(t.backfillFail(e instanceof Error ? e.message : String(e))); }
-    finally { setBusy(false); }
-  };
+  // The link and the games backfill on their own — for coachees typed in
+  // after the last import, and for the two thirds of stored games that
+  // predate the number on the whistle slot — run from the Datenqualität
+  // card below, beside the lists that say what is left to link.
 
   const count = roster?.people.length ?? 0;
   const hasRegister = roster?.source === 'roster' && count > 0;
@@ -1579,16 +1637,6 @@ function RefereeRosterAdmin({ t, roster, onRoster, onLinked }: {
       </div>
       <p className="text-xs text-stone-400">{t.rosterHint}</p>
       {status && <p className="mt-2 text-xs text-stone-500">{status}</p>}
-      {/* Both need a register to read from; without one they would only
-          report that nothing could be linked. */}
-      <div className="mt-2 flex flex-wrap gap-2">
-        <button onClick={() => void linkNow()} disabled={busy || !hasRegister} className={btnGhost}>
-          <Users size={13} /> {t.linkNow}
-        </button>
-        <button onClick={() => void backfillNow()} disabled={busy || !hasRegister} className={btnGhost}>
-          <CalendarDays size={13} /> {t.backfillNow}
-        </button>
-      </div>
       {note && <p className="mt-2 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{note}</p>}
       {err && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{err}</p>}
       {/* Ambiguous first, and in amber: it is the one outcome that needs a
@@ -1651,7 +1699,354 @@ function SvField({ id, text, sv, onChange, people, t }: {
   );
 }
 
-function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, targets, onTargets, leagueOptions, niveauTable }: { t: T; lang: Lang; groups: string[]; defaultSeason: number; settingsLoading: boolean; targets: CoacheeTargetMap; onTargets: (next: CoacheeTargetMap) => void; leagueOptions: string[]; niveauTable: NiveauMatrix }) {
+/** The grey mark on a referee the number did not settle: the slot resolved
+ *  to a coachee on its spelling alone (`firstCoacheeVia === 'name'`), because
+ *  the game carries no SV number or the row is not linked. Grey, not amber:
+ *  it is not a warning about the game but a note about the data behind it,
+ *  and the Datenqualität card on the Coachees tab lists the same slot. */
+function ByNameChip({ t }: { t: T }) {
+  return (
+    <span
+      title={t.dqByNameHint}
+      className="ml-1.5 inline-block align-middle whitespace-nowrap rounded px-1 py-px text-[9px] font-bold uppercase tracking-wide text-stone-500 border border-stone-200 bg-stone-50"
+    >{t.dqByName}</span>
+  );
+}
+
+/** One count on the Datenqualität card: green at zero, amber above it. The
+ *  colour IS the verdict — the admin reads the row of tiles for the one that
+ *  is not green. */
+function AuditCount({ label, n, note }: { label: string; n: number; note?: string }) {
+  return (
+    <div
+      data-testid="audit-count"
+      data-label={label}
+      className={cn('rounded-lg border px-3 py-2 min-w-[9rem]', n === 0 ? 'border-green-100 bg-green-50' : 'border-amber-200 bg-amber-50')}
+    >
+      <p className={cn('text-lg font-semibold leading-tight', n === 0 ? 'text-green-700' : 'text-amber-800')}>{n}</p>
+      <p className="text-[11px] text-stone-600 leading-tight">{label}</p>
+      {note && <p className="text-[10px] text-stone-400 leading-tight mt-0.5">{note}</p>}
+    </div>
+  );
+}
+
+/** A list on the card, folded shut with its count in the summary: nine
+ *  lists open at once are a wall, and the one that matters is the one whose
+ *  tile is amber. Nothing is drawn for an empty list. */
+function AuditList({ label, count, children }: { label: string; count: number; children: React.ReactNode }) {
+  if (count === 0) return null;
+  return (
+    <details className="mt-2 rounded-lg border border-stone-100 px-3 py-2">
+      <summary className="cursor-pointer text-xs font-medium text-stone-700">{label} <span className="text-amber-700">({count})</span></summary>
+      <div className="mt-2 divide-y divide-stone-100">{children}</div>
+    </details>
+  );
+}
+
+/**
+ * "Datenqualität": everything the app still decides by a name rather than a
+ * number, as the server lists it (GET /api/admin/identity-audit), with the
+ * three writes that put the ids where they are missing — the register link
+ * for coachees, the SV numbers onto stored games, the roster ids onto games,
+ * feedbacks and Rückmeldungen — and a picker per unlinked coachee for the
+ * rows those cannot decide. The report re-reads after every write, so the
+ * counts say what is left, not what was.
+ */
+function DataQualityCard({ t, lang, season, active, registerPeople, hasRegister, onLinked }: {
+  t: T;
+  lang: Lang;
+  season: number;
+  /** Whether the tab is on screen. The report is six reads on the server
+   *  and every tab is mounted at once, so it is not asked for until the tab
+   *  is looked at — the same deal GamesAdmin makes with the coachee list. */
+  active: boolean;
+  /** The register as the SV-Nr. pickers offer it — rows with a number. */
+  registerPeople: PickPerson[];
+  /** Whether a register has been imported at all: the two register writes
+   *  need one to read from, and without one would only report that nothing
+   *  could be linked. */
+  hasRegister: boolean;
+  /** The coachee rows changed under the list (a link was written). */
+  onLinked: () => void;
+}) {
+  const [audit, setAudit] = useState<IdentityAudit | null>(null);
+  const [loading, setLoading] = useState(true);
+  // Which button is running — every write disables all three, the label
+  // tells which one is at work.
+  const [busy, setBusy] = useState('');
+  const [note, setNote] = useState('');
+  const [err, setErr] = useState('');
+  // The last run's lists: the names the link would not decide, the printed
+  // names the backfill could not number. Kept until the next run.
+  const [linkReport, setLinkReport] = useState<LinkReport | null>(null);
+  const [backfillReport, setBackfillReport] = useState<BackfillReport | null>(null);
+  // What stands in each unlinked coachee's picker, by row id: the one free
+  // register hit pre-filled, else whatever the admin picked.
+  const [picks, setPicks] = useState<Record<string, PersonPick>>({});
+  const [linking, setLinking] = useState('');
+
+  const fresh = useFreshest();
+  const load = useCallback(async () => {
+    const ticket = fresh.take();
+    setLoading(true); setErr('');
+    try {
+      const report = await getIdentityAudit(season);
+      if (!fresh.isCurrent(ticket)) return;
+      setAudit(report);
+      // Pre-selected only where the register answers with exactly one free
+      // licence — an ambiguous row is a decision, and a pre-filled field
+      // would make it look decided. A pick the admin already made on a row
+      // that is still listed survives the re-read: every write and the
+      // language toggle re-read the report, and a decision on the ambiguous
+      // row below must not be undone by linking the row above.
+      const listed = new Set(report.coacheesUnlinked.map((c) => c.id));
+      const prefills = Object.fromEntries(report.coacheesUnlinked
+        .filter((c) => c.reason === 'never-linked' && c.candidates.length === 1)
+        .map((c) => [c.id, { name: c.candidates[0].name, id: `sv:${c.candidates[0].sv}`, svNumber: c.candidates[0].sv }]));
+      setPicks((cur) => ({ ...prefills, ...Object.fromEntries(Object.entries(cur).filter(([id]) => listed.has(id))) }));
+    } catch (e) { if (fresh.isCurrent(ticket)) setErr(t.dqFail(e instanceof Error ? e.message : String(e))); }
+    finally { if (fresh.isCurrent(ticket)) setLoading(false); }
+  }, [season, fresh, t]);
+  useEffect(() => { if (active) void load(); }, [active, load]);
+
+  const run = async (which: string, action: () => Promise<string>) => {
+    setBusy(which); setNote(''); setErr('');
+    try {
+      setNote(await action());
+      onLinked();
+      await load();
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(''); }
+  };
+  // The register link on its own: for coachees typed in after the last
+  // import, and for a register imported before the coachee import learned
+  // to link.
+  const linkNow = () => run('link', async () => {
+    try {
+      const res = await linkCoacheeReferees();
+      setLinkReport({ linked: res.linked, alreadyLinked: res.alreadyLinked ?? 0, unmatched: res.unmatched ?? [], ambiguousNames: res.ambiguousNames ?? [] });
+      return t.linkResult(res.linked, res.alreadyLinked);
+    } catch (e) { throw new Error(t.linkFail(e instanceof Error ? e.message : String(e))); }
+  });
+  // The stored games: two thirds of them predate the number on the whistle
+  // slot and were matched by name on every list.
+  const backfillNow = () => run('backfill', async () => {
+    try {
+      const res = await backfillGameRefereeIds();
+      setBackfillReport(res);
+      return t.backfillResult(res.filled, res.games, (res.unresolved ?? []).length, (res.ambiguous ?? []).length);
+    } catch (e) { throw new Error(t.backfillFail(e instanceof Error ? e.message : String(e))); }
+  });
+  // The coach ids onto rows written before they were stored — from the
+  // name, through the roster's aliases; a name two coaches answer to stays
+  // unresolved and is listed under "RC-Einträge ohne ID".
+  const migrateNow = () => run('migrate', async () => {
+    try {
+      const res: MigrateRcIdsReport = await migrateRcIds();
+      const none = { total: 0, filled: 0, already: 0, unresolved: 0, blank: 0 };
+      const notes = res.rcNotes ?? none;
+      const president = res.presidentNotes ?? none;
+      return t.migrateResult(res.games.filled, res.feedbacks.filled, notes.filled, president.filled,
+        res.games.unresolved + res.feedbacks.unresolved + notes.unresolved + president.unresolved);
+    } catch (e) { throw new Error(t.migrateFail(e instanceof Error ? e.message : String(e))); }
+  });
+
+  // The hand-link for one row: the number the picker holds, written the
+  // way the edit form writes it (PUT referee_id), and refused by the
+  // server with its own sentence when the licence is another row's.
+  const link = async (row: AuditUnlinkedCoachee) => {
+    const pick = picks[row.id];
+    if (!pick?.svNumber) return;
+    setLinking(row.id); setErr(''); setNote('');
+    try {
+      await updateCoachee(row.id, { referee_id: pick.svNumber });
+      toast.success(t.dqLinkOk(row.name, pick.svNumber), { lang });
+      onLinked();
+      await load();
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setLinking(''); }
+  };
+
+  const reasonLabel = (reason: AuditUnlinkedCoachee['reason']) =>
+    reason === 'unmatched' ? t.dqReasonUnmatched : reason === 'ambiguous' ? t.dqReasonAmbiguous : t.dqReasonNeverLinked;
+  const sourceLabel = (source: string) =>
+    source === 'games' ? t.dqSrcGames : source === 'feedbacks' ? t.dqSrcFeedbacks : source === 'rc_game_notes' ? t.dqSrcNotes : t.dqSrcPresident;
+  // The game as a human reads it: the server's label (the number, else
+  // teams and day), or the number alone from an API that predates the
+  // label — never the record id, which nobody can look up.
+  const gameRef = (row: { label?: string; matchNo: string }) => row.label || (row.matchNo ? `#${row.matchNo}` : '');
+
+  const a = audit;
+  const byNameSlots = a ? a.gameSlotsByName.filter((s) => s.via === 'name') : [];
+  const nobodySlots = a ? a.gameSlotsByName.filter((s) => s.via !== 'name') : [];
+  // Everything an amber tile counts, so "nothing to do" can only stand
+  // beside green ones: the slots without a number are the backfill's to
+  // do, the takes without an id say a client is still sending names.
+  const total = a
+    ? a.coacheesUnlinked.length + a.duplicateSvPerSeason.length + a.svDisagreesWithGame.length + byNameSlots.length
+      + a.gameSlotsNoSv + a.duplicateMatchNos.length + a.blankMatchNo.length + a.rcRefsUnresolved.length + a.rcsWithoutSv.length
+      + (a.assignByNameLast30d?.count ?? 0)
+    : 0;
+
+  return (
+    <Card testId="data-quality">
+      <div className="flex flex-wrap items-center gap-2 mb-1">
+        <h2 className="text-sm font-semibold text-stone-700">{t.dqTitle}</h2>
+        <span className="text-xs text-stone-400">{seasonLabel(season)}</span>
+        <button onClick={() => void load()} disabled={loading || busy !== ''} className={cn(btnGhost, 'ml-auto')} title={t.dqRefresh}>
+          {loading ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />} {t.dqRefresh}
+        </button>
+      </div>
+      <p className="text-xs text-stone-400">{t.dqHint}</p>
+      {err && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{err}</p>}
+      {a && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <AuditCount label={t.dqUnlinked} n={a.coacheesUnlinked.length} />
+          <AuditCount label={t.dqDupSv} n={a.duplicateSvPerSeason.length} />
+          <AuditCount label={t.dqSvMismatch} n={a.svDisagreesWithGame.length} />
+          <AuditCount label={t.dqSlotsByName} n={byNameSlots.length} />
+          <AuditCount label={t.dqSlotsNoSv} n={a.gameSlotsNoSv} note={a.gameSlotsNoSvInRegister != null && a.gameSlotsNoSv > 0 ? t.dqSlotsNoSvInRegister(a.gameSlotsNoSvInRegister) : undefined} />
+          <AuditCount label={t.dqDupMatchNo} n={a.duplicateMatchNos.length} />
+          <AuditCount label={t.dqBlankMatchNo} n={a.blankMatchNo.length} />
+          <AuditCount label={t.dqRcRefs} n={a.rcRefsUnresolved.length} />
+          <AuditCount label={t.dqRcsNoSv} n={a.rcsWithoutSv.length} />
+          {a.assignByNameLast30d && (
+            <AuditCount label={t.dqAssignByName} n={a.assignByNameLast30d.count} note={t.dqSince(a.assignByNameLast30d.since.slice(0, 10))} />
+          )}
+        </div>
+      )}
+      {a && total === 0 && !loading && <p className="mt-2 text-xs text-green-700">{t.dqAllGood}</p>}
+      {/* The three writes. The register ones need a register to read
+          from; the roster one always has the roster. */}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button onClick={() => void linkNow()} disabled={busy !== '' || !hasRegister} className={btnGhost}>
+          {busy === 'link' ? <Loader2 size={13} className="animate-spin" /> : <Users size={13} />} {t.linkNow}
+        </button>
+        <button onClick={() => void backfillNow()} disabled={busy !== '' || !hasRegister} className={btnGhost}>
+          {busy === 'backfill' ? <Loader2 size={13} className="animate-spin" /> : <CalendarDays size={13} />} {t.backfillNow}
+        </button>
+        <button onClick={() => void migrateNow()} disabled={busy !== ''} className={btnGhost}>
+          {busy === 'migrate' ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />} {t.migrateNow}
+        </button>
+      </div>
+      {note && <p className="mt-2 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{note}</p>}
+      {/* Ambiguous first, and in amber: it is the one outcome that needs a
+          person to decide, where "not in the register" is merely a gap. */}
+      {linkReport && linkReport.ambiguousNames.length > 0 && (
+        <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+          {t.rosterAmbiguous}: {linkReport.ambiguousNames.join(', ')}
+        </p>
+      )}
+      {linkReport && linkReport.unmatched.length > 0 && (
+        <p className="mt-2 text-xs text-stone-500">{t.rosterUnmatched}: {linkReport.unmatched.join(', ')}</p>
+      )}
+      {backfillReport && (backfillReport.ambiguous ?? []).length > 0 && (
+        <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+          {t.backfillAmbiguous}: {backfillReport.ambiguous.join(', ')}
+        </p>
+      )}
+      {backfillReport && (backfillReport.unresolved ?? []).length > 0 && (
+        <p className="mt-2 text-xs text-stone-500">{t.backfillUnresolved}: {backfillReport.unresolved.join(', ')}</p>
+      )}
+
+      {a && (
+        <>
+          {/* One row per unlinked coachee: why, the candidates as a click
+              each, the picker (the whole register) and the write. */}
+          <AuditList label={t.dqUnlinked} count={a.coacheesUnlinked.length}>
+            {a.coacheesUnlinked.map((c) => {
+              const pick = picks[c.id];
+              return (
+                <div key={c.id} data-testid="audit-unlinked" className="py-2 flex flex-wrap items-center gap-2">
+                  <div className="min-w-[12rem] flex-1">
+                    <p className="text-sm font-medium text-stone-800">{c.name}{c.season == null ? '' : ` · ${seasonLabel(c.season)}`}</p>
+                    <p className={cn('text-xs', c.reason === 'ambiguous' ? 'text-amber-700' : 'text-stone-500')}>{reasonLabel(c.reason)}</p>
+                    {c.candidates.length > 1 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {c.candidates.map((cand) => (
+                          <button
+                            key={cand.sv}
+                            type="button"
+                            onClick={() => setPicks((cur) => ({ ...cur, [c.id]: { name: cand.name, id: `sv:${cand.sv}`, svNumber: cand.sv } }))}
+                            className={cn('h-6 px-2 rounded-full border text-[11px] font-medium', pick?.svNumber === cand.sv ? 'bg-amber-600 border-amber-600 text-white' : 'bg-white border-stone-200 text-stone-600 hover:bg-stone-50')}
+                          >{cand.name} · {t.svLinked(cand.sv)}</button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-[14rem] flex-1" aria-label={t.svNumber}>
+                    <SvField id={`audit-sv-${c.id}`} text={pick?.name ?? ''} sv={pick?.svNumber ?? ''} people={registerPeople} t={t}
+                      onChange={(next) => setPicks((cur) => ({ ...cur, [c.id]: next }))} />
+                  </div>
+                  <button onClick={() => void link(c)} disabled={!pick?.svNumber || linking !== ''} className={btnPrimary} aria-label={`${t.dqLink} ${c.name}`}>
+                    {linking === c.id ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} {t.dqLink}
+                  </button>
+                </div>
+              );
+            })}
+          </AuditList>
+          <AuditList label={t.dqDupSv} count={a.duplicateSvPerSeason.length}>
+            {a.duplicateSvPerSeason.map((d) => (
+              <p key={`${d.season ?? '*'}|${d.sv}`} className="py-1.5 text-xs text-stone-700">
+                <span className="font-medium">{t.svLinked(d.sv)}</span>{d.season == null ? '' : ` · ${seasonLabel(d.season)}`}: {d.names.join(', ')}
+              </p>
+            ))}
+          </AuditList>
+          <AuditList label={t.dqSvMismatch} count={a.svDisagreesWithGame.length}>
+            {a.svDisagreesWithGame.map((m) => (
+              <p key={`${m.gameId}|${m.slot}`} className="py-1.5 text-xs text-stone-700">
+                <span className="font-medium">{gameRef(m)}</span> · {m.slot} {m.name} → {m.coacheeName}: {t.dqMismatchRow(m.slotSv, m.rowSv)}
+              </p>
+            ))}
+          </AuditList>
+          <AuditList label={t.dqSlotsByName} count={byNameSlots.length}>
+            {byNameSlots.map((s) => (
+              <p key={`${s.gameId}|${s.slot}`} className="py-1.5 text-xs text-stone-700">
+                <span className="font-medium">{gameRef(s)}</span> · {s.slot} {s.name}<ByNameChip t={t} />
+              </p>
+            ))}
+          </AuditList>
+          {/* Its own heading, not the tile's: the tile counts every slot
+              without a number, this lists only the names the register
+              cannot settle — the rest is the backfill button's. */}
+          <AuditList label={t.dqSlotsNobody} count={nobodySlots.length}>
+            {nobodySlots.map((s) => (
+              <p key={`${s.gameId}|${s.slot}`} className="py-1.5 text-xs text-stone-500">
+                <span className="font-medium">{gameRef(s)}</span> · {s.slot} {s.name} — {(s.registerHits ?? 0) > 1 ? t.dqNobodyAmbiguous(s.registerHits ?? 0) : t.dqNobody}
+              </p>
+            ))}
+          </AuditList>
+          <AuditList label={t.dqDupMatchNo} count={a.duplicateMatchNos.length}>
+            {a.duplicateMatchNos.map((d) => (
+              <p key={d.matchNo} className="py-1.5 text-xs text-stone-700">
+                <span className="font-medium">#{d.matchNo}</span> · {d.gameIds.length} × · {t.dqSeasons(d.seasons.map(seasonLabel).join(', '))}
+              </p>
+            ))}
+          </AuditList>
+          <AuditList label={t.dqBlankMatchNo} count={a.blankMatchNo.length}>
+            {a.blankMatchNo.map((b) => (
+              <p key={b.gameId} className="py-1.5 text-xs text-stone-700">{b.teams}{b.date ? ` · ${dayLabel(b.date, { year: true })}` : ''}</p>
+            ))}
+          </AuditList>
+          <AuditList label={t.dqRcRefs} count={a.rcRefsUnresolved.length}>
+            {a.rcRefsUnresolved.map((r) => (
+              <p key={`${r.source}|${r.id}`} className="py-1.5 text-xs text-stone-700">
+                <span className="text-stone-400">{sourceLabel(r.source)}</span> {r.label} · <span className="font-medium">{r.rcName || r.rcId}</span>
+                {' — '}{r.reason === 'blank' ? t.dqRefBlank : t.dqRefUnknown}
+                {r.resolvable && <span className="text-green-700"> · {t.dqRefResolvable}</span>}
+              </p>
+            ))}
+          </AuditList>
+          <AuditList label={t.dqRcsNoSv} count={a.rcsWithoutSv.length}>
+            {a.rcsWithoutSv.map((r) => <p key={r.id} className="py-1.5 text-xs text-stone-700">{r.name}</p>)}
+          </AuditList>
+        </>
+      )}
+    </Card>
+  );
+}
+
+function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, targets, onTargets, leagueOptions, niveauTable, active }: { t: T; lang: Lang; groups: string[]; defaultSeason: number; settingsLoading: boolean; targets: CoacheeTargetMap; onTargets: (next: CoacheeTargetMap) => void; leagueOptions: string[]; niveauTable: NiveauMatrix; active: boolean }) {
   const [targetEditId, setTargetEditId] = useState<string | null>(null);
   const [season, setSeason] = useState(defaultSeason);
   const seasonTouched = useRef(false);
@@ -1848,6 +2243,19 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
           then who is being coached this season out of it — and because the
           import's second half writes into the coachees above. */}
       <RefereeRosterAdmin t={t} roster={roster} onRoster={reloadRoster} onLinked={() => void reload()} />
+      {/* What the register import and the link left undecided, and the
+          three writes — after the register, because that is what they
+          read from, and before the list, because the list's amber rows
+          are what they drive to zero. */}
+      <DataQualityCard
+        t={t}
+        lang={lang}
+        season={season}
+        active={active}
+        registerPeople={registerPeople}
+        hasRegister={roster?.source === 'roster' && (roster?.people.length ?? 0) > 0}
+        onLinked={() => void reload()}
+      />
       <Card>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
           <input className={cn(input, 'sm:col-span-3')} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
@@ -3904,7 +4312,7 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
   // 20:00 is the ordinary evening kick-off; it is a field rather than a fixture
   // because a test of "the game is tomorrow" mail, or of a Saturday afternoon
   // fixture, needs its own time.
-  const empty = { match_no: '', league: '', match_date: today, match_time: '20:00', location: '', home_team: '', away_team: '', first_referee: '', first_referee_id: '', second_referee: '', second_referee_id: '', assigned_rc: '' };
+  const empty = { match_no: '', league: '', match_date: today, match_time: '20:00', location: '', home_team: '', away_team: '', first_referee: '', first_referee_id: '', second_referee: '', second_referee_id: '', assigned_rc: '', assigned_rc_id: '' };
   const [f, setF] = useState(empty);
   const [busy, setBusy] = useState(false);
   const [made, setMade] = useState<{ id: string; match_no?: string } | null>(null);
@@ -3917,13 +4325,16 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
   // coachees alone, which is a smaller list than the label promises.
   const [dirErr, setDirErr] = useState('');
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
-  const setName = (k: keyof typeof empty) => (pick: PersonPick) => setF({ ...f, [k]: pick.name });
   // A referee's number rides with the name it was picked with, and leaves
   // with it: the picker hands back an empty number for anything typed, so a
   // name edited after the pick cannot keep the number of whoever was picked
   // before it. Nobody in the register means no number — and none invented.
   const setReferee = (nameKey: 'first_referee' | 'second_referee', idKey: 'first_referee_id' | 'second_referee_id') =>
     (pick: PersonPick) => setF({ ...f, [nameKey]: pick.name, [idKey]: pick.svNumber });
+  // The coach the same way, with the roster id: the server takes the id
+  // first and writes the game under that coach's own spelling, so a typed
+  // name — empty id — is the only case it still has to resolve.
+  const setRc = (pick: PersonPick) => setF({ ...f, assigned_rc: pick.name, assigned_rc_id: pick.id });
   // The league is one string ("3L ♂"), because that is what a game carries and
   // what every reader of a league parses. The form splits it in two only to
   // offer the symbol as a choice rather than as something to be typed.
@@ -4046,7 +4457,7 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
         <div className="flex flex-col gap-1"><label htmlFor="mg-ref2" className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRef2}</label>
           <PersonPicker id="mg-ref2" value={f.second_referee} onChange={setReferee('second_referee', 'second_referee_id')} people={refs} t={t} /></div>
         <div className="flex flex-col gap-1"><label htmlFor="mg-rc" className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRc}</label>
-          <PersonPicker id="mg-rc" value={f.assigned_rc} onChange={setName('assigned_rc')} people={rcs} t={t} /></div>
+          <PersonPicker id="mg-rc" value={f.assigned_rc} onChange={setRc} people={rcs} t={t} /></div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button onClick={create} disabled={busy || !f.match_date} className={btnPrimary}>
@@ -4402,18 +4813,22 @@ function foldOverviewGames(rows: rcCoachSummary[], pick: (r: rcCoachSummary) => 
  *  a "1" under Ausstehend and asked what it meant and where to find the game —
  *  the number was the whole answer the table had. This is the same detail the
  *  coach sees on their own Home, drawn the same way. */
-function OverviewDetail({ t, lang, rcName, season }: { t: T; lang: Lang; rcName: string; season: number }) {
+function OverviewDetail({ t, lang, rcId, rcName, season }: { t: T; lang: Lang; rcId: string; rcName: string; season: number }) {
   const [rows, setRows] = useState<rcCoachSummary[] | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
     let cancelled = false;
     setRows(null);
     setError('');
-    loadrcCoachSummary(rcName, season)
+    // The coach's roster id rides beside the name — two coaches can fold to
+    // one name, and the detail under a row must be that row's coach and
+    // nobody else's. The name stays in the path so an API that predates the
+    // id still answers (see loadrcCoachSummary).
+    loadrcCoachSummary(rcName, season, rcId)
       .then((r) => { if (!cancelled) setRows(Array.isArray(r) ? r : []); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
     return () => { cancelled = true; };
-  }, [rcName, season]);
+  }, [rcId, rcName, season]);
 
   if (error) return <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>;
   if (!rows) return <div className="flex items-center gap-2 py-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /></div>;
@@ -4688,7 +5103,7 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate 
                                   {t.ovMeeting(meetingDate ? dayLabel(meetingDate, { year: true }) : '')}
                                 </label>
                               </div>
-                              <OverviewDetail t={t} lang={lang} rcName={r.fullName} season={season} />
+                              <OverviewDetail t={t} lang={lang} rcId={r.id} rcName={r.fullName} season={season} />
                             </div>
                           </div>
                         </td>
@@ -4744,16 +5159,33 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
     setCoacheesAsked(true);
     void listCoachees().then(setCoachees).catch(() => setCoachees([]));
   }, [active, coacheesAsked]);
-  const byName = useMemo(() => coacheeIndex(coachees, season), [coachees, season]);
-  const coacheeFor = (name?: string) => (name ? byName.get(foldName(name)) : undefined);
+  // Who stands on a slot, by the id the server resolved for the game
+  // (firstCoacheeId / secondCoacheeId) — the same answer the coach app's
+  // lists draw their amber chips from, so the two cannot disagree on a
+  // licence spelling. The name index inside is the fallback for a row an
+  // older API did not resolve.
+  const roster = useMemo(() => coacheeLookup(coachees, season), [coachees, season]);
+  const coacheeFor = (game: EligibleGame, role: '1. SR' | '2. SR') => roster.onSlot(game, role);
+  const peopleIds = useMemo(() => new Set(people.map((p) => p.id)), [people]);
+  /** The coach a game's row names, off the roster: by id when the row
+   *  carries one, by the folded name for a row written before ids were
+   *  stored — the server's own rule (samePerson). Undefined when the stored
+   *  name is nobody on the roster any more. */
+  const holderOf = (g: EligibleGame) => (g.assignedRc
+    ? people.find((p) => samePerson({ id: g.assignedRcId ?? '', name: g.assignedRc ?? '' }, { id: p.id, name: p.fullName }, peopleIds))
+    : undefined);
 
-  const assign = async (game: EligibleGame, rcName: string) => {
+  const assign = async (game: EligibleGame, rcId: string) => {
     setError(''); setBusy(game.id);
     const previous = games;
+    // Both halves go to the server: the id is what decides whose the game
+    // is, the name is what an API older than the id reads. '' on both is the
+    // give-back.
+    const rcName = people.find((p) => p.id === rcId)?.fullName ?? '';
     // Optimistic, then reconciled by the reload. A rejected assign rolls the
     // row back and says why rather than leaving a name that never landed.
-    setGames((cur) => cur.map((x) => (x.id === game.id ? { ...x, assignedRc: rcName } : x)));
-    try { await assignRcToGame(game.id, rcName); await reload(); }
+    setGames((cur) => cur.map((x) => (x.id === game.id ? { ...x, assignedRc: rcName, assignedRcId: rcId } : x)));
+    try { await assignRcToGame(game.id, { assignedRc: rcName, assignedRcId: rcId }); await reload(); }
     catch (e) { setGames(previous); setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(''); }
   };
@@ -4861,15 +5293,21 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
                     out from — could not say which cohort the game was worth
                     handing out FOR. Which is the whole question the coach app's
                     own lists answer with the same amber chips. */}
-                {([['1SR', g.firstReferee], ['2SR', g.secondReferee]] as const)
+                {([['1SR', g.firstReferee, '1. SR'], ['2SR', g.secondReferee, '2. SR']] as const)
                   .filter(([, name]) => name)
-                  .map(([slot, name]) => {
-                    const c = coacheeFor(name);
+                  .map(([slot, name, role]) => {
+                    const c = coacheeFor(g, role);
                     const group = c ? groupLabel(c.groups, lang) : '';
+                    // Which tier resolved the slot, from the server: a coachee
+                    // the name alone found gets the grey "nur Name" mark — the
+                    // number on the game or on the row is missing, and the
+                    // Datenqualität card lists the same slot.
+                    const via = role === '1. SR' ? g.firstCoacheeVia : g.secondCoacheeVia;
                     return (
                       <MetaChip key={slot} wrap tone={c ? 'amber' : 'stone'}>
                         <span><span className="font-bold opacity-70">{slot}&nbsp;</span>{name}</span>
                         {c && <CoacheeChip />}
+                        {c && via === 'name' && <ByNameChip t={t} />}
                         <GroupChip group={group} />
                       </MetaChip>
                     );
@@ -4882,15 +5320,27 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
                   so nothing interactive is nested inside anything clickable. */}
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <label className="text-xs font-medium text-stone-500">RC:</label>
+                {/* Bound to the coach's id. A row whose stored name resolves to
+                    nobody on the roster (a coach since removed, a spelling
+                    from before ids were stored) shows that name as a disabled
+                    option rather than "–": the game IS held, and the picker
+                    must not read as free. */}
+                {(() => {
+                  const holder = holderOf(g);
+                  const stored = !holder && g.assignedRc ? `stored:${g.assignedRc}` : '';
+                  return (
                 <select
                   className={cn(input, 'flex-1 min-w-[12rem] max-w-sm cursor-pointer')}
-                  value={g.assignedRc || ''}
+                  value={holder?.id ?? stored}
                   disabled={busy === g.id}
                   onChange={(e) => void assign(g, e.target.value)}
                 >
                   <option value="">–</option>
-                  {people.map((p) => <option key={p.id} value={p.fullName}>{p.fullName}</option>)}
+                  {stored && <option value={stored} disabled>{g.assignedRc}</option>}
+                  {people.map((p) => <option key={p.id} value={p.id}>{p.fullName}</option>)}
                 </select>
+                  );
+                })()}
                 {busy === g.id && <Loader2 size={14} className="animate-spin text-stone-400" />}
                 <button
                   // Flags coming from VolleyManager are read-only here — the

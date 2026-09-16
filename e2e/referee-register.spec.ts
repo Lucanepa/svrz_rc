@@ -218,7 +218,10 @@ test.describe('the SV-Nr. field on a coachee', () => {
   });
 });
 
-test.describe('the register card\'s two buttons', () => {
+// The two register writes on their own. They moved from the register card
+// to the Datenqualität card beside it (admin-identity-audit.spec.ts) — same
+// buttons, same sentences, one card for everything that is left to link.
+test.describe('the two register buttons', () => {
   test('"Coachees jetzt verknüpfen" runs the link on its own and reports', async ({ page }) => {
     await openCoacheeTab(page);
     let calls = 0;

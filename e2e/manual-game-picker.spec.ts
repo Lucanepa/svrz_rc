@@ -182,6 +182,32 @@ test.describe('Manual game name pickers', () => {
     expect(sent.match_time).toBe('14:30');
   });
 
+  test('a coach picked off the roster puts their id on the game; a typed name sends none', async ({ page }) => {
+    await openManualGameForm(page);
+
+    const posted: Record<string, unknown>[] = [];
+    await page.route('**/api/admin/games', (r) => {
+      posted.push(r.request().postDataJSON());
+      return r.fulfill({ status: 201, json: { id: `g-new-${posted.length}`, match_no: `TEST-${posted.length}` } });
+    });
+
+    // Picked: the id rides with the name, so the server files the game under
+    // that coach and never resolves the spelling onto a namesake.
+    await page.locator('#mg-rc').fill('zimmer');
+    await page.getByRole('button', { name: /Beat Zimmermann/ }).click();
+    await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
+    await expect(page.getByText(/(Angelegt|Created): TEST-1/)).toBeVisible();
+    expect(posted[0]).toMatchObject({ assigned_rc: 'Beat Zimmermann', assigned_rc_id: 'rc2' });
+
+    // Typed over: the name that leaves is not the picked coach's, so neither
+    // is the id — the server resolves what it can from the name alone.
+    await page.locator('#mg-rc').fill('Beat Zimmermann-Keller');
+    await page.locator('#mg-rc').press('Escape');
+    await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
+    await expect(page.getByText(/(Angelegt|Created): TEST-2/)).toBeVisible();
+    expect(posted[1]).toMatchObject({ assigned_rc: 'Beat Zimmermann-Keller', assigned_rc_id: '' });
+  });
+
   test('a name edited after the pick leaves without its number', async ({ page }) => {
     await openManualGameForm(page);
 

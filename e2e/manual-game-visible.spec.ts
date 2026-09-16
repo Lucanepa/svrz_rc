@@ -12,9 +12,11 @@ test('a test game is listed even with nobody coachable on it, and says what it i
   await stubSignedInApp(page);
   await page.route('**/api/eligible-games*', (r) => r.fulfill({
     json: [
-      // Referees nobody is coaching — exactly the shape a throwaway has.
-      { ...GAME, id: 'g-test', matchNo: 'TEST-1', homeTeam: 'VBC Test 1', awayTeam: 'VBC Test 2', firstReferee: 'Niemand Bekannt', secondReferee: '', assignedRc: '', isManual: true },
-      { ...GAME, id: 'g-real', matchNo: '402431', homeTeam: 'Volley Obfelden', assignedRc: '' },
+      // Referees nobody is coaching — exactly the shape a throwaway has: the
+      // server resolves the slot to nobody (firstCoacheeId ''), and the
+      // client reads that, not the name.
+      { ...GAME, id: 'g-test', matchNo: 'TEST-1', homeTeam: 'VBC Test 1', awayTeam: 'VBC Test 2', firstReferee: 'Niemand Bekannt', firstRefereeId: '', firstCoacheeId: '', secondReferee: '', assignedRc: '', assignedRcId: '', isManual: true },
+      { ...GAME, id: 'g-real', matchNo: '402431', homeTeam: 'Volley Obfelden', assignedRc: '', assignedRcId: '' },
     ],
   }));
 
@@ -37,8 +39,8 @@ test('a test game dated out of season is still shown, an ordinary game is not', 
   await page.clock.setFixedTime(new Date('2026-08-28T12:00:00Z'));
   await page.route('**/api/eligible-games*', (r) => r.fulfill({
     json: [
-      { ...GAME, id: 'g-aug-test', matchNo: 'TEST-2', date: '2026-08-28T18:00:00.000Z', homeTeam: 'VBC August Test', assignedRc: '', isManual: true },
-      { ...GAME, id: 'g-aug-real', matchNo: '402432', date: '2026-08-28T18:00:00.000Z', homeTeam: 'VBC August Real', assignedRc: '' },
+      { ...GAME, id: 'g-aug-test', matchNo: 'TEST-2', date: '2026-08-28T18:00:00.000Z', homeTeam: 'VBC August Test', assignedRc: '', assignedRcId: '', isManual: true },
+      { ...GAME, id: 'g-aug-real', matchNo: '402432', date: '2026-08-28T18:00:00.000Z', homeTeam: 'VBC August Real', assignedRc: '', assignedRcId: '' },
     ],
   }));
 

@@ -1304,7 +1304,7 @@ export async function getSurveySession(token: string): Promise<{ referee: string
 // answered. Distinguish that from a real failure instead of telling them to
 // "try again" at something that will never succeed.
 export class SurveyAlreadySubmitted extends Error {}
-export async function submitSurvey(token: string, payload: { lang: string; anonymous: boolean; answers: Record<string, string> }): Promise<void> {
+export async function submitSurvey(token: string, payload: { lang: string; answers: Record<string, string> }): Promise<void> {
   const res = await fetch(apiUrl(`/api/survey/${encodeURIComponent(token)}`), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   if (res.status === 409) throw new SurveyAlreadySubmitted('Survey already submitted');
   if (!res.ok) throw new Error('Could not save survey');

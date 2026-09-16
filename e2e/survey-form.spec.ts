@@ -128,3 +128,27 @@ test.describe('the questionnaire editor', () => {
     expect((saved as SurveyConfig).questions.map((q) => q.id)).toEqual(['was_neu', 'punctual']);
   });
 });
+
+test.describe('the answer travels with the name', () => {
+  test('the page offers no anonymous option and says who reads the answers', async ({ page }) => {
+    await stubSurveySession(page, undefined);
+    let posted: Record<string, unknown> | null = null;
+    await page.route('**/api/survey/*', async (r) => {
+      if (r.request().method() !== 'POST') { await r.fallback(); return; }
+      posted = JSON.parse(r.request().postData() || '{}');
+      await r.fulfill({ json: { ok: true } });
+    });
+    await page.goto('/#/survey/tok123');
+    await expect(page.getByText('Anna Beispiel')).toBeVisible();
+    // The box is gone — it blanked the name while match, date and RC stayed,
+    // which identified the referee anyway — and the page says plainly where
+    // the answers go instead.
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    await expect(page.getByText(/Anonym absenden|Submit anonymously/)).toHaveCount(0);
+    await expect(page.getByText(/gehen mit Name und Spiel an die RC-Vorsitzende/)).toBeVisible();
+    await page.getByRole('button', { name: /Absenden/ }).click();
+    await expect(page.getByText(/Danke für deine Rückmeldung/)).toBeVisible();
+    expect(posted).not.toBeNull();
+    expect(posted).not.toHaveProperty('anonymous');
+  });
+});

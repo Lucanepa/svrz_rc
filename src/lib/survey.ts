@@ -136,12 +136,16 @@ export const SURVEY_UI = {
   fieldMatchNo: { DE: 'Spiel-Nr.', EN: 'Match no.' },
   // "Referee Coach" in both languages — it is what SVRZ calls the role.
   fieldRc: { DE: 'Referee Coach', EN: 'Referee Coach' },
-  anonTitle: { DE: 'Anonym absenden', EN: 'Submit anonymously' },
-  anonHelp: {
-    DE: 'Dein Name wird nicht mitgeschickt. Spiel, Datum und RC bleiben sichtbar — sonst liesse sich die Rückmeldung nicht zuordnen.',
-    EN: 'Your name is not sent. Match, date and RC stay visible — otherwise the response could not be placed at all.',
+  // Who reads it, said plainly. There used to be an "Anonym absenden" box
+  // that dropped the name — while match number, date and RC stayed, and with
+  // one referee per role per match the name was one lookup away. A promise
+  // the form could not keep; the commission asked for the name outright
+  // (16.09.2026). Removed rather than made real: a response without its match
+  // is one nobody can act on.
+  whoReads: {
+    DE: 'Deine Antworten gehen mit Name und Spiel an die RC-Vorsitzende — nicht an den Referee Coach.',
+    EN: 'Your answers go to the RC chair with your name and match — not to the referee coach.',
   },
-  anonOn: { DE: 'Wird anonym gesendet', EN: 'Will be sent anonymously' },
   submit: { DE: 'Absenden', EN: 'Submit' },
   thanksTitle: { DE: 'Danke für deine Rückmeldung!', EN: 'Thank you for your feedback!' },
   thanksBody: { DE: 'Du kannst diese Seite jetzt schliessen.', EN: 'You can close this page now.' },

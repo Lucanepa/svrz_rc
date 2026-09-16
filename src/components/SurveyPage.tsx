@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Check, ShieldCheck } from 'lucide-react';
+import { Loader2, Check } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { getSurveySession, submitSurvey, SurveyAlreadySubmitted } from '../lib/pocketbase';
 import { cn } from '../lib/utils';
@@ -29,7 +29,6 @@ export default function SurveyPage() {
   // The questions the commission has configured. Ships with the session, so the
   // shipped defaults are only ever the fallback for an old server.
   const [form, setForm] = useState<SurveyConfig>(DEFAULT_SURVEY_CONFIG);
-  const [anonymous, setAnonymous] = useState(false);
   const [state, setState] = useState<'loading' | 'ready' | 'saving' | 'done' | 'already' | 'error'>('loading');
   const [saveError, setSaveError] = useState(false);
 
@@ -52,7 +51,7 @@ export default function SurveyPage() {
     setState('saving');
     setSaveError(false);
     try {
-      await submitSurvey(token, { lang, anonymous, answers });
+      await submitSurvey(token, { lang, answers });
       setState('done');
     } catch (e) {
       if (e instanceof SurveyAlreadySubmitted) { setState('already'); return; }
@@ -137,7 +136,7 @@ export default function SurveyPage() {
               <p className="text-[11px] font-semibold uppercase tracking-wider text-stone-400 mb-3"><Both entry={SURVEY_UI.visitHeading} /></p>
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
                 <dt className="text-stone-500"><Both entry={SURVEY_UI.fieldReferee} enClassName="text-stone-500" /></dt>
-                <dd className={anonymous ? 'text-stone-300 line-through' : 'text-stone-800 font-medium'}>{visit.referee}</dd>
+                <dd className="text-stone-800 font-medium">{visit.referee}</dd>
                 <dt className="text-stone-500"><Both entry={SURVEY_UI.fieldDate} enClassName="text-stone-500" /></dt>
                 <dd className="text-stone-800">{visit.date}</dd>
                 <dt className="text-stone-500"><Both entry={SURVEY_UI.fieldMatchNo} enClassName="text-stone-500" /></dt>
@@ -146,21 +145,10 @@ export default function SurveyPage() {
                 <dd className="text-stone-800">{visit.rc}</dd>
               </dl>
 
-              <label className="flex items-start gap-3 mt-4 pt-4 border-t border-stone-100 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={anonymous}
-                  onChange={(e) => setAnonymous(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 rounded border-stone-300 text-red-600 focus:ring-red-500"
-                />
-                <span>
-                  <span className="flex items-center gap-1.5 text-sm font-medium text-stone-700">
-                    {anonymous && <ShieldCheck size={14} className="text-green-600" />}
-                    <Both entry={anonymous ? SURVEY_UI.anonOn : SURVEY_UI.anonTitle} />
-                  </span>
-                  <span className="block text-xs text-stone-500 mt-0.5 leading-snug"><Both entry={SURVEY_UI.anonHelp} block enClassName="block text-stone-500 mt-0.5" /></span>
-                </span>
-              </label>
+              {/* No "Anonym absenden" any more — see SURVEY_UI.whoReads. */}
+              <p className="mt-4 pt-4 border-t border-stone-100 text-xs text-stone-500 leading-snug">
+                <Both entry={SURVEY_UI.whoReads} block enClassName="block text-stone-500 mt-0.5" />
+              </p>
             </div>
 
             <p className="text-[11px] text-stone-400 text-center -mb-1"><Both entry={SURVEY_UI.optional} /></p>
@@ -173,8 +161,7 @@ export default function SurveyPage() {
                 // and an option here is a <label> whose text IS the referee's
                 // answer. The admin console already redacts the tab that
                 // DISPLAYS these answers (and refuses admins outright); the page
-                // that collects them must not leak them on the way in — least of
-                // all for someone who ticked "Anonym".
+                // that collects them must not leak them on the way in.
                 <div key={q.id} data-log-redact className={`${card} p-5`}>
                   <p className="text-sm font-medium text-stone-800 leading-snug">{bothLangs(q).de}</p>
                   {bothLangs(q).en && <p className="text-sm text-stone-500 leading-snug">{bothLangs(q).en}</p>}

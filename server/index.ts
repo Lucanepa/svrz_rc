@@ -5843,10 +5843,11 @@ app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
 // app user — needs no login, and no name or match number travels in the URL:
 // the token resolves all of it here.
 //
-// Identity keeps the original form's bargain. The name is prefilled for
-// convenience, but "anonym absenden" drops it before it is ever stored, and no
-// coachee relation is written either way. Match, date and RC always stay — a
-// response nobody can place is a response nobody can act on.
+// Identity travels with the answer: name, match, date and RC, all from the
+// token, none typed. The original form's "anonym absenden" was ported and then
+// retired (16.09.2026) — it blanked the name while match, date and RC stayed,
+// and with one referee per role per match that is no anonymity at all. No
+// coachee relation is written either way, and only the chair reads it.
 const SURVEY_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 d — a season's worth of slack
 const SURVEY_COLLECTION = 'rc_visit_feedback';
 
@@ -6055,7 +6056,6 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
     if (Boolean(rec.submitted)) { res.status(409).json({ error: 'Survey already submitted' }); return; }
 
     const body = (req.body ?? {}) as AnyRecord;
-    const anonymous = Boolean(body.anonymous);
     const lang = asText(body.lang) === 'EN' ? 'EN' : 'DE';
     // Only the question ids we ship, capped in count and length — the answers
     // blob is written by an unauthenticated caller.
@@ -6071,16 +6071,19 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
     }
 
     await ensureAdminAuth();
+    // Always named. The page's "Anonym absenden" box is gone (16.09.2026): it
+    // blanked the name while match, date and RC stayed, which with one
+    // referee per role per match identified them anyway — a promise the form
+    // could not keep, and the commission asked for the name outright. A stale
+    // cached page may still send `anonymous`; it is ignored, the page it came
+    // from no longer makes the promise. Rows from before keep their blank
+    // name and their flag, and the chair's list still shows them as (anonym).
     await pb.collection(SURVEY_COLLECTION).update(rec.id, {
-      // Anonymous means the name is gone from the record, not merely hidden in
-      // the UI — the row must not be able to betray them later.
-      referee_name: anonymous ? '' : asText(rec.referee_name),
-      anonymous, lang, answers,
+      referee_name: asText(rec.referee_name),
+      anonymous: false, lang, answers,
       submitted: true, submitted_at: new Date().toISOString(),
     });
-    // Built from what was STORED, not from the request, so an anonymous
-    // submission cannot leak a name into the mail.
-    await sendSurveyNotification({ ...rec, anonymous, referee_name: anonymous ? '' : asText(rec.referee_name) }, answers, lang);
+    await sendSurveyNotification({ ...rec, anonymous: false }, answers, lang);
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -9576,9 +9579,9 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         tips: String(tipsAndTricks || ''),
         enclosures: enclosures.map((e) => [e.doc.DE.title, e.doc.EN.title] as [string, string]),
         surveyUrl: linkForThisCopy,
-        footerNote: enclosures.length > 0
-          ? 'Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt, zusammen mit den oben genannten Beilagen.|The full coaching report is attached as a PDF, together with the enclosures listed above.'
-          : 'Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt.|The full coaching report is attached as a PDF.',
+        // No footer line about the attachment: the intro names it ("Im Anhang
+        // findest du …"), the enclosures have their own block above, and the
+        // mail said "als PDF angehängt" twice in three lines.
       });
       const built = renderFeedbackMail(surveyUrl);
       // The copy for everyone who is not the referee. Identical but for the link.

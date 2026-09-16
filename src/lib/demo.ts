@@ -373,8 +373,7 @@ function buildDemoEmail(game: DemoGame, coachee: Coachee | undefined, form: Feed
   // The URL itself stays out of the body: the real mail renders it as a button
   // in the HTML part, and a bare token URL is unreadable in a preview.
   body += `\nWir freuen uns über Ihr Feedback zum Coaching-Erlebnis:\n`;
-  body += `\nDer vollständige Coaching-Feedback-Bericht ist als PDF angehängt.\n`;
-  body += `Diese E-Mail wurde automatisch vom SR-Coaching-System versendet.\n`;
+  body += `\nDiese E-Mail wurde automatisch vom SR-Coaching-System versendet.\n`;
   return {
     label: 'Feedback-E-Mail (nach dem Spiel)',
     from: MAIL_FROM,

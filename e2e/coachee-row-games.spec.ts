@@ -159,19 +159,38 @@ test('a game somebody else holds says so instead of offering itself', async ({ p
   expect(RC.name).not.toBe('Jasmin Zimmermann');
 });
 
-test('a game under the row carries the same marks as on the Games tab — RC-Spiel, Gewünscht — and says it is in focus', async ({ page }) => {
-  // An RC game (a coach whistles it next to the coachee) that the admin also
-  // starred. Under the row it read like any other fixture: only the star was
-  // drawn there, and "why is the 02.02 game not shown as an RC game?" followed.
+test('a game under the row carries the same marks as on the Games tab — LD, Gewünscht — and says it is in focus', async ({ page }) => {
+  // An LD game that the admin also starred. Under the row it read like any
+  // other fixture: only the star was drawn there.
   await page.route('**/api/eligible-games*', (r) => r.fulfill({
-    json: [{ ...FREE, isRcGame: true, starred: true, secondReferee: RC.name }],
+    json: [{ ...FREE, isLdGame: true, starred: true }],
   }));
   await page.goto('/');
   await page.getByRole('button', { name: /^Coachees$/ }).click();
   await openChevron(page).click();
   await expect(page.getByText(FREE.homeTeam, { exact: true })).toBeVisible();
-  const row = page.locator('[data-testid="game-row"], li, div', { hasText: FREE.homeTeam }).filter({ hasText: /RC-Spiel|RC Game/ }).first();
+  const row = page.locator('[data-testid="game-row"], li, div', { hasText: FREE.homeTeam }).filter({ hasText: /LD Spiel|LD Game/ }).first();
   await expect(row).toBeVisible();
   await expect(row).toContainText(/Gewünscht|Priority/);
   await expect(row).toContainText(/Fokus|Focus/);
+});
+
+test('an RC-Spiel stays out of the row: it is not on offer, and is counted into "+ n more"', async ({ page }) => {
+  // A coach already whistles it next to the coachee (4.4.10), so nobody can
+  // take it. It was drawn under the row with a greyed button and a tooltip —
+  // "just filter it out, not available" (Luca, 2026-09-16). The full list
+  // behind "+ n more" is every game the coachee stands on and keeps it.
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({
+    json: [
+      { ...FREE, isRcGame: true, secondReferee: RC.name },
+      { ...FREE, id: 'g-plain', matchNo: '2400002', homeTeam: 'Volley Obfelden', awayTeam: 'VBC Kanti Baden', date: '2026-12-04T19:30:00Z' },
+    ],
+  }));
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Coachees$/ }).click();
+  await openChevron(page).click();
+  await expect(page.getByText('Volley Obfelden', { exact: true })).toBeVisible();
+  await expect(page.getByText(FREE.homeTeam, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/RC-Spiel|RC Game/)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /\+ 1 (more games|weitere Spiele)/ })).toBeVisible();
 });

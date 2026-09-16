@@ -35,20 +35,24 @@ test('an RC game is labelled, and only listed when its filter is on', async ({ p
   await expect(page.getByText('RC Game', { exact: true })).toHaveCount(1);
 });
 
-test('an RC game is not offered: the button is greyed and says why, on every list', async ({ page }) => {
+test('an RC game is not offered: the button is greyed and says why, on every list that shows it', async ({ page }) => {
   // 4.4.10: the coach on the whistle files a Rückmeldung; a second coach does
   // not observe the game, so nobody can take it. The button stays — greyed
   // and still clickable — so it can explain itself, like a taken game's.
+  // (The row under a coachee on the Coachees tab does not show the game at
+  // all — see coachee-row-games.spec.ts.)
   await stubSignedInApp(page);
   const assigned: string[] = [];
   await page.route('**/api/games/*/assign-rc', (r) => { assigned.push(r.request().url()); r.fulfill({ json: { ok: true } }); });
-  await page.route('**/api/eligible-games*', (r) => r.fulfill({
-    json: [{ ...GAME, id: 'g-rc', matchNo: '402430', assignedRc: '', isRcGame: true }],
-  }));
+  const rcGame = { ...GAME, id: 'g-rc', matchNo: '402430', assignedRc: '', isRcGame: true };
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [rcGame] }));
+  await page.route('**/api/coachees/*/games', (r) => r.fulfill({ json: [{ ...rcGame, assignedRoles: ['1. SR'] }] }));
 
-  // Under the coachee's row.
+  // On the coachee's full games list.
   await page.goto('/coachees');
   await page.getByRole('button', { name: /Show details|Details anzeigen/ }).first().click();
+  await page.getByRole('button', { name: /^(Games|Spiele)$/ }).last().click();
+  await expect(page.getByText(/Upcoming Games|Bevorstehende Spiele/)).toBeVisible();
   const take = page.getByRole('button', { name: /Take game|Spiel übernehmen/ }).first();
   await expect(take).toHaveAttribute('aria-disabled', 'true');
   await take.click({ force: true });

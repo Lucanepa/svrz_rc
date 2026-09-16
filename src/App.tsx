@@ -4935,10 +4935,11 @@ export default function App() {
       const isActive = (c.stage || 'active') !== 'inactive';
       if (!listFilterShowInactive && !isActive) return false;
       // Somebody asked for one of their upcoming games to be watched. Matched
-      // against the games the row actually lists — the focus rule included — so
-      // the switch cannot leave a coachee on the list with nothing under them.
+      // against the games the row actually lists — the focus rule included, an
+      // RC-Spiel left out — so the switch cannot leave a coachee on the list
+      // with nothing under them.
       const flagged = (upcomingGamesByReferee.get(normName(c.full_name || '')) ?? [])
-        .some(({ game, role }) => game.starred && inCoacheeFocus(c, game.league || '', [role === '1. SR' ? '1SR' : '2SR']));
+        .some(({ game, role }) => game.starred && !game.isRcGame && inCoacheeFocus(c, game.league || '', [role === '1. SR' ? '1SR' : '2SR']));
       // ...and it keeps them on the "Beobachtung nötig" list whatever their
       // status says, the way the Games tab keeps the flagged game itself: a
       // referee already signed off can still have a game somebody wants seen.
@@ -7091,8 +7092,15 @@ export default function App() {
                         // The row offers the games worth watching, by the same
                         // focus rule the per-coachee list uses; the rest are
                         // counted into the "+ n more" that opens that list.
+                        // An RC-Spiel is not on offer at all — a coach already
+                        // whistles it next to the coachee (4.4.10) — so it is
+                        // left out here rather than shown with a greyed button
+                        // (Luca, 2026-09-16: "just filter it out, not
+                        // available"). The full list behind "+ n more" still
+                        // carries it, greyed, as that list is every game the
+                        // coachee stands on.
                         const focusGames = ownGames.filter(({ game, role }) =>
-                          inCoacheeFocus(coachee, game.league || '', [role === '1. SR' ? '1SR' : '2SR']));
+                          !game.isRcGame && inCoacheeFocus(coachee, game.league || '', [role === '1. SR' ? '1SR' : '2SR']));
                         // With the flagged switch on, the row shows the games
                         // that put it on the list and nothing else.
                         const shownGames = coacheeFilterStarred ? focusGames.filter(({ game }) => game.starred) : focusGames;
@@ -7244,14 +7252,12 @@ export default function App() {
                                             {flagChips(game, { focus: true })}
                                           </>}
                                           action={!holder ? (
-                                            game.isRcGame ? rcGameButton('h-8 w-full rounded-md px-2.5 text-[11px] font-medium transition-colors sm:w-auto') : (
                                             <button
                                               onClick={() => { if (rcAuth.rcName) requestRcAssignment(game, rcAuth.rcName); }}
                                               className="h-8 w-full rounded-md bg-slate-900 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-slate-800 sm:w-auto"
                                             >
                                               {de ? 'Spiel übernehmen' : 'Take game'}
                                             </button>
-                                            )
                                           ) : mine ? (
                                             <div className="flex items-center gap-1">
                                               <button

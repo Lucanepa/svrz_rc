@@ -32,6 +32,9 @@ test('a test game dated out of season is still shown, an ordinary game is not', 
   // which in May, June, July or August is in no season at all. It then vanished
   // from every list in the app while sitting in the console that made it.
   await stubSignedInApp(page);
+  // "Made today": the Games list keeps played games behind a button, so the
+  // fixture below is today's, not a played one — this spec is about the season.
+  await page.clock.setFixedTime(new Date('2026-08-28T12:00:00Z'));
   await page.route('**/api/eligible-games*', (r) => r.fulfill({
     json: [
       { ...GAME, id: 'g-aug-test', matchNo: 'TEST-2', date: '2026-08-28T18:00:00.000Z', homeTeam: 'VBC August Test', assignedRc: '', isManual: true },

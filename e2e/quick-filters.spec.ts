@@ -52,6 +52,9 @@ const DONES_PLAIN = {
 
 const flagPill = (page: Page) => page.getByRole('button', { name: /^(Flagged|Vorgemerkt)$/ });
 const focusPill = (page: Page) => page.getByRole('button', { name: /In focus only|Nur im Fokus|All games|Alle Spiele/ });
+const focusOn = (page: Page) => page.getByRole('button', { name: /In focus only|Nur im Fokus/ });
+const focusOff = (page: Page) => page.getByRole('button', { name: /All games|Alle Spiele/ });
+const pastGames = (page: Page) => page.getByRole('button', { name: /Show past games|Vergangene Spiele anzeigen/ });
 
 /** Both coachees watched at every level, so only the test that is about the
  *  Niveau rule has to think about it. */
@@ -82,8 +85,53 @@ test.describe('games', () => {
     await stubSignedInApp(page);
     await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE, PLAYED] }));
     await page.goto('/games');
+    await expect(page.getByText(FREE.homeTeam).first()).toBeVisible();
+    await expect(flagPill(page)).toHaveCount(0);
+    // Played games sit behind the button at the top; revealing them still
+    // does not make the star a filter worth offering.
+    await pastGames(page).click();
     await expect(page.getByText(PLAYED.homeTeam)).toBeVisible();
     await expect(flagPill(page)).toHaveCount(0);
+  });
+
+  // A star is somebody asking for THIS game; the focus rule is a guess about
+  // the referee, and the guess was hiding the request: "Vorgemerkt" lit up
+  // over a list that still did not show the flagged game outside the focus.
+  test('the flag switches the focus rule off, so every flagged game shows — and both can run together', async ({ page }) => {
+    await stubSignedInApp(page);
+    // Watched as a 2. SR only; both fixtures have them on the 1. SR line.
+    await targets(page, { [COACHEE.id]: { mode: 'custom', roles: ['2SR'] } });
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE, STARRED] }));
+    await page.goto('/games');
+    await expect(focusOn(page)).toBeVisible();
+    await expect(page.getByText(STARRED.homeTeam)).toHaveCount(0);
+
+    await flagPill(page).click();
+    await expect(page.getByText(STARRED.homeTeam)).toBeVisible();
+    await expect(page.getByText(FREE.homeTeam)).toHaveCount(0);
+    await expect(focusOff(page)).toBeVisible();
+
+    // The rule can be put back by hand, and then both hold at once.
+    await focusOff(page).click();
+    await expect(focusOn(page)).toBeVisible();
+    await expect(page.getByText(STARRED.homeTeam)).toHaveCount(0);
+    await expect(flagPill(page)).toHaveAttribute('aria-pressed', 'true');
+
+    // The coach chose the rule themselves, so the flag going off leaves it.
+    await flagPill(page).click();
+    await expect(focusOn(page)).toBeVisible();
+  });
+
+  test('switching the flag off puts the focus rule back when the flag was what dropped it', async ({ page }) => {
+    await stubSignedInApp(page);
+    await targets(page, { [COACHEE.id]: { mode: 'custom', roles: ['2SR'] } });
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [FREE, STARRED] }));
+    await page.goto('/games');
+    await flagPill(page).click();
+    await expect(focusOff(page)).toBeVisible();
+    await flagPill(page).click();
+    await expect(focusOn(page)).toBeVisible();
+    await expect(page.getByText(STARRED.homeTeam)).toHaveCount(0);
   });
 
   test('the focus pill goes away when the Niveau prunes nothing', async ({ page }) => {

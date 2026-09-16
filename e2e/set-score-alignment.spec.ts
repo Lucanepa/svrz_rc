@@ -35,6 +35,9 @@ async function gamesTab(page: Page, over: Record<string, unknown> = {}) {
   await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [listGame(over)] }));
   await page.goto('/');
   await page.getByRole('button', { name: /^(Spiele|Games)$/ }).first().click();
+  // A game with a result is a played one, and the list keeps those behind a
+  // button at the top.
+  await page.getByRole('button', { name: /Show past games|Vergangene Spiele anzeigen/ }).click();
 }
 
 /**

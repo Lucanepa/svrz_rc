@@ -1342,6 +1342,32 @@ export default function App() {
   const [gameFilterRcAssigned, setGameFilterRcAssigned] = useState(false);
   // Show only games an admin flagged as "we'd like this one observed".
   const [gameFilterStarred, setGameFilterStarred] = useState(false);
+  // The two pills above a list, tied together: a star is somebody asking for
+  // THIS game — the RD, an admin — while the focus rule is a guess about the
+  // referee, and the guess was hiding the request. A flagged 3. Liga evening
+  // of an N2 candidate is outside their focus, so "Vorgemerkt" lit up over a
+  // list that still did not show the game. Switching the flag on therefore
+  // switches the focus rule off, and the list is EVERY flagged game; the coach
+  // can put the rule back and run both. Switching the flag off restores the
+  // rule only when it was the flag that dropped it — a coach who chose "Alle
+  // Spiele" by hand keeps that choice. Both tabs' flags share the one focus
+  // rule, so they share this too.
+  const focusDroppedByFlag = useRef(false);
+  const setFlagFilter = (on: boolean, set: (v: boolean) => void) => {
+    set(on);
+    if (on) {
+      if (!showAllLevels) { setShowAllLevels(true); focusDroppedByFlag.current = true; }
+    } else if (focusDroppedByFlag.current) {
+      focusDroppedByFlag.current = false;
+      setShowAllLevels(false);
+    }
+  };
+  const toggleFocusRule = () => { focusDroppedByFlag.current = false; setShowAllLevels((v) => !v); };
+  // The Games list is for planning: what is still to be refereed. Played games
+  // stay in the season behind one button at the top, not on the list — by
+  // mid-season the first screen was September, and the next fixture two pages
+  // down.
+  const [showPastGames, setShowPastGames] = useState(false);
   const [formData, setFormData] = useState<FeedbackFormData>(() => {
     const lang = detectInitialLang();
     return {
@@ -5195,7 +5221,22 @@ export default function App() {
   // once, including the ones that forget to reset the page.
   const clampPage = (total: number) => Math.min(listPage, Math.max(0, Math.ceil(total / LIST_PAGE_SIZE) - 1));
   const coacheesPage = clampPage(filteredCoachees.length);
-  const gamesPage = clampPage(filteredGames.length);
+
+  /** The Games LIST, which is `filteredGames` less the played ones unless the
+   *  coach asked for them. Kept out of `filteredGames` itself because the
+   *  calendar view reads that too, and a month view with its past days blank
+   *  would be a broken calendar. By Zürich DAY, like the switches' availability
+   *  above: a game earlier tonight is still tonight's game, and the coach
+   *  filing after the whistle should find it without unhiding the season. A
+   *  date filter is an explicit ask for those days — "Gestern" must show
+   *  yesterday — so it lifts the rule on its own. */
+  const { listGames, pastHidden } = useMemo(() => {
+    if (showPastGames || gameFilterDateFrom || gameFilterDateTo) return { listGames: filteredGames, pastHidden: 0 };
+    const today = todayKey();
+    const kept = filteredGames.filter((g) => { const key = dayKey(g.date); return !key || key >= today; });
+    return { listGames: kept, pastHidden: filteredGames.length - kept.length };
+  }, [filteredGames, showPastGames, gameFilterDateFrom, gameFilterDateTo]);
+  const gamesPage = clampPage(listGames.length);
 
   /** One game, drawn the same way wherever a game is listed.
    *
@@ -6150,7 +6191,19 @@ export default function App() {
                   location={g.location}
                   mapsUrl={g.mapsUrl}
                   onOpen={() => startFromSummary(g)}
-                  chips={crewChips(g)}
+                  // The star first, on a line of its own above the crew: the
+                  // games list said "Gewünscht" on this fixture, and taking it
+                  // must not make the request disappear from the coach's own
+                  // list. Same chip, same words, same tooltip as over there.
+                  chips={<>
+                    {g.starred && (
+                      <MetaChip tone="amber" title={starredTitle(g, de)}>
+                        <Star size={10} className="fill-amber-500 text-amber-500" />
+                        {de ? 'Gewünscht' : 'Priority'}
+                      </MetaChip>
+                    )}
+                    {crewChips(g)}
+                  </>}
                   // The wash + ring. Not the row TONE, which already says which
                   // list this row belongs to — a second meaning on that channel
                   // would be unreadable.
@@ -6696,7 +6749,7 @@ export default function App() {
                     {(coacheeQuickFilters.starred || coacheeFilterStarred) && (
                       <QuickToggle
                         on={coacheeFilterStarred}
-                        onToggle={() => { setCoacheeFilterStarred((v) => !v); setListPage(0); }}
+                        onToggle={() => { setFlagFilter(!coacheeFilterStarred, setCoacheeFilterStarred); setListPage(0); }}
                         tone="amber"
                         icon={<Star size={14} className={cn(coacheeFilterStarred && 'fill-amber-500 text-amber-500')} />}
                         label={formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged'}
@@ -6708,7 +6761,7 @@ export default function App() {
                     {(coacheeQuickFilters.focus || showAllLevels) && (
                       <QuickToggle
                         on={!showAllLevels}
-                        onToggle={() => { setShowAllLevels((v) => !v); setListPage(0); }}
+                        onToggle={() => { toggleFocusRule(); setListPage(0); }}
                         tone="emerald"
                         icon={<Target size={14} />}
                         label={showAllLevels
@@ -7271,7 +7324,7 @@ export default function App() {
                     {(filterAvailability.starred || gameFilterStarred) && (
                       <QuickToggle
                         on={gameFilterStarred}
-                        onToggle={() => setGameFilterStarred((v) => !v)}
+                        onToggle={() => setFlagFilter(!gameFilterStarred, setGameFilterStarred)}
                         tone="amber"
                         icon={<Star size={14} className={cn(gameFilterStarred && 'fill-amber-500 text-amber-500')} />}
                         label={formData.lang === 'DE' ? 'Vorgemerkt' : 'Flagged'}
@@ -7283,7 +7336,7 @@ export default function App() {
                     {(filterAvailability.focus || showAllLevels) && (
                       <QuickToggle
                         on={!showAllLevels}
-                        onToggle={() => setShowAllLevels((v) => !v)}
+                        onToggle={toggleFocusRule}
                         tone="emerald"
                         icon={<Target size={14} />}
                         label={showAllLevels
@@ -7299,6 +7352,20 @@ export default function App() {
 
                 {/* Games list view */}
                 {gameViewMode === 'list' && (<>
+                  {/* Played games, behind one button at the top. Shown while
+                      there is something to reveal, and while it is revealed —
+                      it has to be reachable to be closed again. */}
+                  {(pastHidden > 0 || showPastGames) && (
+                    <button
+                      onClick={() => { setShowPastGames((v) => !v); setListPage(0); }}
+                      className="mb-2 inline-flex items-center gap-1.5 text-xs font-medium text-stone-500 transition-colors hover:text-stone-800"
+                    >
+                      <ChevronDown size={13} className={cn('transition-transform', showPastGames && 'rotate-180')} />
+                      {showPastGames
+                        ? (formData.lang === 'DE' ? 'Vergangene Spiele ausblenden' : 'Hide past games')
+                        : (formData.lang === 'DE' ? `Vergangene Spiele anzeigen (${pastHidden})` : `Show past games (${pastHidden})`)}
+                    </button>
+                  )}
                   {!gameFilterRcAssigned && (() => {
                     const takenCount = eligibleGames.filter((g) => {
                       if (!g.assignedRc) return false;
@@ -7315,7 +7382,7 @@ export default function App() {
                   <div className="border border-stone-200 rounded">
                     {eligibleGames.length === 0 && (booting || loadingGames) ? (
                       <ListLoading label={t.loading} first={booting} rows={8} />
-                    ) : filteredGames.length === 0 ? (
+                    ) : listGames.length === 0 ? (
                       <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><CalendarDays size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noGames}</p></div>
                     ) : (
                       <>
@@ -7324,7 +7391,7 @@ export default function App() {
                           <span>{formData.lang === 'DE' ? 'Status' : 'Status'}</span>
                         </div>
                         <div className="divide-y divide-stone-200 px-1.5">
-                        {filteredGames.slice(gamesPage * LIST_PAGE_SIZE, (gamesPage + 1) * LIST_PAGE_SIZE).map((game) => {
+                        {listGames.slice(gamesPage * LIST_PAGE_SIZE, (gamesPage + 1) * LIST_PAGE_SIZE).map((game) => {
                           const isExpanded = expandedGameId === game.id;
                           return (
                             <div key={game.id}>
@@ -7400,13 +7467,13 @@ export default function App() {
                         </div>
                       </>
                     )}
-                    {filteredGames.length > LIST_PAGE_SIZE && (
+                    {listGames.length > LIST_PAGE_SIZE && (
                       <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
-                        <span>{filteredGames.length} {formData.lang === 'DE' ? 'Spiele' : 'games'}</span>
+                        <span>{listGames.length} {formData.lang === 'DE' ? 'Spiele' : 'games'}</span>
                         <div className="flex items-center gap-2">
                           <button disabled={gamesPage === 0} onClick={() => setListPage(gamesPage - 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&laquo;</button>
-                          <span>{gamesPage + 1} / {Math.ceil(filteredGames.length / LIST_PAGE_SIZE)}</span>
-                          <button disabled={(gamesPage + 1) * LIST_PAGE_SIZE >= filteredGames.length} onClick={() => setListPage(gamesPage + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
+                          <span>{gamesPage + 1} / {Math.ceil(listGames.length / LIST_PAGE_SIZE)}</span>
+                          <button disabled={(gamesPage + 1) * LIST_PAGE_SIZE >= listGames.length} onClick={() => setListPage(gamesPage + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
                         </div>
                       </div>
                     )}
@@ -7761,7 +7828,7 @@ export default function App() {
                             : `${hiddenByTarget} game(s) outside the focus hidden.`)}
                       </span>
                       <button
-                        onClick={() => setShowAllLevels((v) => !v)}
+                        onClick={toggleFocusRule}
                         className="shrink-0 normal-case font-medium px-2 py-0.5 border rounded border-emerald-300 hover:bg-emerald-100"
                       >
                         {showAllLevels

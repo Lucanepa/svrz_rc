@@ -371,6 +371,12 @@ export interface rcCoachSummaryGame {
   boerse?: {
     level: string; reason: string; markedSlots: string[]; asOf: string;
   };
+  /** The same star the games list shows — VolleyManager's RD/RSV mark or the
+   *  admin's hand — so a taken game keeps it on Home. Optional because an
+   *  older server answers without them. */
+  starred?: boolean;
+  vmFlagged?: boolean;
+  isRdGame?: boolean;
 }
 
 export interface rcCoachSummary {

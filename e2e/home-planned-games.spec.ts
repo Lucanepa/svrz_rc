@@ -33,6 +33,24 @@ test.beforeEach(async ({ page }) => {
   }));
 });
 
+// The games list says "Gewünscht" on a flagged fixture, and taking it must not
+// make the request disappear from the coach's own list.
+test('a flagged game keeps its star on Home', async ({ page }) => {
+  await page.route(/\/api\/rc-overview\/[^/]+\/coachees/, (r) => r.fulfill({
+    json: [{
+      coacheeId: 'c1', coacheeName: 'Coachee Eins',
+      doneFeedbacks: [], outstandingGames: [],
+      plannedGames: [{ ...game(1), starred: true, vmFlagged: true, isRdGame: true }, game(2)],
+    }],
+  }));
+  await page.goto('/home');
+  const star = page.getByText(/^(Priority|Gewünscht)$/);
+  await expect(star).toHaveCount(1);
+  await expect(star).toHaveAttribute('title', /RD/);
+  const flagged = page.getByRole('button', { name: /Heim 1\s+Gast 1/ });
+  await expect(flagged.getByText(/^(Priority|Gewünscht)$/)).toBeVisible();
+});
+
 test('every planned game the counter promises is listed', async ({ page }) => {
   await page.goto('/home');
   // The dashboard's summary strip, which replaced the three counter tiles:

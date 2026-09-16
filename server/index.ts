@@ -7330,12 +7330,21 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date',
-        fields: 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,game_result',
+        fields: 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_rsv_game,is_ld_game,game_result',
       }),
     );
     const rcGames = allGames.filter((g) =>
       isSubject(g.assigned_rc_id, g.assigned_rc) && inSeason(g));
     const boerseFor = await makeBoerseVerdict(await boerseViewerFor(subject));
+    // The star rides along so Home can say which of the coach's own games
+    // somebody asked for: the games list showed "Gewünscht" on a fixture, and
+    // the same fixture, once taken, lost it on the dashboard. Same rule as
+    // /api/eligible-games — VolleyManager's mark or the admin's list.
+    const starredIds = await getStarredGameIds();
+    const starOf = (game: AnyRecord) => {
+      const vmFlagged = isVmMarkedRow(game);
+      return { starred: vmFlagged || starredIds.has(String(game.id)), vmFlagged, isRdGame: Boolean(game.is_rd_game) };
+    };
 
     // Fetch feedbacks for this RC
     const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -7357,8 +7366,8 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       coacheeName: string;
       coacheeId: string;
       doneFeedbacks: { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result: string }[];
-      outstandingGames: { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string }[];
-      plannedGames: { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string }[];
+      outstandingGames: { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string; starred: boolean; vmFlagged: boolean; isRdGame: boolean }[];
+      plannedGames: { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string; starred: boolean; vmFlagged: boolean; isRdGame: boolean }[];
     }>();
 
     const getOrCreate = (name: string, id: string) => {
@@ -7421,7 +7430,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
         if (!coachee) continue;
         matched = true;
         const entry = getOrCreate(refName, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: refName, refereeRole: role, crew, result, boerse: boerseFor(game) };
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: refName, refereeRole: role, crew, result, boerse: boerseFor(game), ...starOf(game) };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {
@@ -7437,7 +7446,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
         const refNames = [game.first_referee, game.second_referee].map(asText).filter(Boolean);
         const label = refNames.join(' / ') || '?';
         const entry = getOrCreate(label, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: label, crew, noCoachee: true, result, boerse: boerseFor(game) };
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: label, crew, noCoachee: true, result, boerse: boerseFor(game), ...starOf(game) };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {

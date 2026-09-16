@@ -2891,7 +2891,10 @@ function FormsAdmin({ t, active }: { t: T; active: boolean }) {
                             <span className="text-stone-700 min-w-0">
                               {[e.league, e.matchNo ? `#${e.matchNo}` : ''].filter(Boolean).join(' · ') || '–'}
                               {(e.homeTeam || e.awayTeam) && (
-                                <span className="block sm:inline sm:before:content-['_·_']">{`${e.homeTeam || '?'} – ${e.awayTeam || '?'}`}</span>
+                                <>
+                                  <span className="hidden sm:inline"> · </span>
+                                  <span className="block sm:inline">{`${e.homeTeam || '?'} – ${e.awayTeam || '?'}`}</span>
+                                </>
                               )}
                             </span>
                             <span className={FORMS_LABEL}>{t.formsRc}</span>

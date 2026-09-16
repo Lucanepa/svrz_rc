@@ -158,3 +158,20 @@ test('a game somebody else holds says so instead of offering itself', async ({ p
   await expect(page.getByText(/Jasmin Zimmermann (hat dieses Spiel bereits übernommen|already took this game)/)).toBeVisible();
   expect(RC.name).not.toBe('Jasmin Zimmermann');
 });
+
+test('a game under the row carries the same marks as on the Games tab — RC-Spiel, Gewünscht — and says it is in focus', async ({ page }) => {
+  // An RC game (a coach whistles it next to the coachee) that the admin also
+  // starred. Under the row it read like any other fixture: only the star was
+  // drawn there, and "why is the 02.02 game not shown as an RC game?" followed.
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({
+    json: [{ ...FREE, isRcGame: true, starred: true, secondReferee: RC.name }],
+  }));
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Coachees$/ }).click();
+  await openChevron(page).click();
+  await expect(page.getByText(FREE.homeTeam, { exact: true })).toBeVisible();
+  const row = page.locator('[data-testid="game-row"], li, div', { hasText: FREE.homeTeam }).filter({ hasText: /RC-Spiel|RC Game/ }).first();
+  await expect(row).toBeVisible();
+  await expect(row).toContainText(/Gewünscht|Priority/);
+  await expect(row).toContainText(/Fokus|Focus/);
+});

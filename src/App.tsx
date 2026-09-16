@@ -5248,6 +5248,40 @@ export default function App() {
    *  is particular to it, through `status` (whatever closes the first line) and
    *  `roles` (the slot this coachee stands in, which the game itself cannot say).
    */
+  // What a game IS, whichever list it is on: LD, RC-Spiel, Testspiel,
+  // Gewünscht — and, where the list is about one coachee, whether it lies in
+  // their focus. The Games tab always drew these; the row under a coachee drew
+  // the star alone, so an RC-Spiel there looked like any other fixture
+  // (Luca, 2026-09-16: "the 02.02 game is an rc game no? why is it not shown?").
+  const flagChips = (game: EligibleGame, opts?: { focus?: boolean }) => {
+    const de = formData.lang === 'DE';
+    return (
+      <>
+        {game.isLdGame && <MetaChip tone="dark">{de ? 'LD Spiel' : 'LD Game'}</MetaChip>}
+        {game.isRcGame && (
+          <MetaChip tone="sky" title={de ? 'Ein Referee Coach pfeift hier neben einem Coachee.' : 'A referee coach is whistling next to a coachee here.'}>
+            {de ? 'RC-Spiel' : 'RC Game'}
+          </MetaChip>
+        )}
+        {game.isManual && (
+          <MetaChip tone="violet" title={de ? 'Von Hand angelegt — kein Spiel aus VolleyManager.' : 'Created by hand — not a VolleyManager fixture.'}>
+            {de ? 'Testspiel' : 'Test game'}
+          </MetaChip>
+        )}
+        {game.starred && (
+          <MetaChip tone="amber" title={starredTitle(game, de)}>
+            <Star size={10} className="fill-amber-500 text-amber-500" />{de ? 'Gewünscht' : 'Priority'}
+          </MetaChip>
+        )}
+        {opts?.focus && (
+          <MetaChip tone="emerald" title={de ? 'Liegt im Fokus dieses Coachees (Niveau-Tabelle).' : "In this coachee's focus (level table)."}>
+            <Target size={10} />{de ? 'Fokus' : 'Focus'}
+          </MetaChip>
+        )}
+      </>
+    );
+  };
+
   const gameCard = (game: EligibleGame, opts?: {
     status?: React.ReactNode;
     roles?: string[];
@@ -5256,6 +5290,9 @@ export default function App() {
     action?: React.ReactNode;
     className?: string;
     key?: string;
+    /** Say so when the game lies in the coachee's focus — only worth a chip
+     *  on a list that also shows the ones outside it. */
+    focus?: boolean;
   }) => {
     const r1 = game.firstReferee || '';
     const r2 = game.secondReferee || '';
@@ -5388,19 +5425,7 @@ export default function App() {
           {opts?.status}
         </>}
         chips={<>
-          {game.isLdGame && badge('ld', 'dark', '', formData.lang === 'DE' ? 'LD Spiel' : 'LD Game')}
-          {game.isRcGame && badge('rc', 'sky',
-            formData.lang === 'DE'
-              ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
-              : 'A referee coach is whistling next to a coachee here.',
-            formData.lang === 'DE' ? 'RC-Spiel' : 'RC Game')}
-          {game.isManual && badge('manual', 'violet',
-            formData.lang === 'DE'
-              ? 'Von Hand angelegt — kein Spiel aus VolleyManager.'
-              : 'Created by hand — not a VolleyManager fixture.',
-            formData.lang === 'DE' ? 'Testspiel' : 'Test game')}
-          {game.starred && badge('star', 'amber', starredTitle(game, formData.lang === 'DE'),
-            <><Star size={10} className="fill-amber-500 text-amber-500" />{formData.lang === 'DE' ? 'Gewünscht' : 'Priority'}</>)}
+          {flagChips(game, { focus: opts?.focus })}
           {hasEditingDraft(game.id) && badge('draft', draftIsOverdue(game.id) ? 'me' : 'stone',
             draftIsOverdue(game.id) ? t.draftUnsentHeading : t.draftHeading,
             draftIsOverdue(game.id) ? t.draftUnsentBadge : t.draftBadge)}
@@ -7173,18 +7198,14 @@ export default function App() {
                                           onOpen={() => handleSelectGame(game, coachee.full_name)}
                                           chips={<>
                                             <MetaChip tone="stone">{role}</MetaChip>
-                                            {/* Why this game is on a filtered
-                                                list — and worth seeing on an
-                                                unfiltered one too. */}
-                                            {game.starred && (
-                                              <MetaChip
-                                                tone="amber"
-                                                title={starredTitle(game, de)}
-                                              >
-                                                <Star size={10} className="fill-amber-500 text-amber-500" />
-                                                {de ? 'Gewünscht' : 'Priority'}
-                                              </MetaChip>
-                                            )}
+                                            {/* The same marks the Games tab
+                                                draws, so a game reads the same
+                                                on both lists. Every game here
+                                                is in focus by construction
+                                                (see focusGames), and the chip
+                                                says so rather than leaving the
+                                                coach to know the rule. */}
+                                            {flagChips(game, { focus: true })}
                                           </>}
                                           action={!holder ? (
                                             <button
@@ -7873,6 +7894,11 @@ export default function App() {
                               roles: game.assignedRoles,
                               onOpen: () => handleSelectGame(game),
                               className: 'px-2.5',
+                              // With the rule switched off the list mixes both
+                              // kinds; the chip tells them apart. With it on,
+                              // everything shown is in focus and a chip on
+                              // every row would say nothing.
+                              focus: showAllLevels && inCoacheeFocus(viewCoachee, game.league || '', srRoles(game)),
                               action: eg ? (
                                 <div className="flex flex-wrap items-center gap-2">
                                   {!holder ? (

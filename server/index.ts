@@ -18,6 +18,7 @@ import { installErrorAlerts } from './erroralerts.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter, indexBySeason } from './season.ts';
 import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, type ExpenseVisit } from './expenses.ts';
 import { computeStatistics, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
+import { archiveSlug, formsRowOf, formsEntryName, groupForms, type FormsRow } from './forms.ts';
 import type { StatFilters, StatRole } from '../src/lib/statistics.ts';
 import { goalForMandate, OBSERVATION_GOAL } from '../src/types.ts';
 import { splitCoacheeGroups } from '../src/lib/coacheeGroup.ts';
@@ -6270,15 +6271,6 @@ function zipStore(entries: ZipEntry[]): Buffer {
   return Buffer.concat([...chunks, dirBuf, end]);
 }
 
-/** Safe inside a ZIP and readable in a folder listing. */
-function archiveSlug(value: string): string {
-  return asText(value)
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^A-Za-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 60) || 'unbenannt';
-}
-
 // The chair archives, per 4.4 — and an admin may too, so a lost console password
 // never strands two years of records nobody can export.
 async function requireArchiveReader(req: Request, res: ExpressResponse, next: () => void) {
@@ -6301,23 +6293,11 @@ app.get('/api/feedback-archive', requireArchiveReader, async (req: Request, res:
     const entries: ZipEntry[] = [];
     const skipped: string[] = [];
     for (const rec of records) {
-      const expand = (rec.expand ?? {}) as Record<string, AnyRecord | undefined>;
-      const date = asText(expand.game?.match_date);
-      if (seasonOfDate(date) !== season) continue;
-      const file = asText(rec.pdf_file);
-      if (!file) { skipped.push(String(rec.id)); continue; }
-      try {
-        const url = pb.files.getURL(rec as never, file, { token });
-        const response = await fetch(url);
-        if (!response.ok) { skipped.push(String(rec.id)); continue; }
-        const who = archiveSlug(asText(expand.coachee?.full_name) || asText(expand.coachee?.name));
-        const role = asText(rec.role_assessed).replace(/[^0-9]/g, '') === '2' ? '2SR' : '1SR';
-        const matchNo = archiveSlug(asText(expand.game?.match_no));
-        entries.push({
-          name: `${date.slice(0, 10) || 'ohne-datum'}_${who}_${role}_${matchNo}.pdf`,
-          data: Buffer.from(await response.arrayBuffer()),
-        });
-      } catch { skipped.push(String(rec.id)); }
+      const row = formsRowOf(rec);
+      if (seasonOfDate(asText(row.game?.match_date)) !== season) continue;
+      const fetched = await fetchStoredForm(row, token);
+      if (!fetched) { skipped.push(String(rec.id)); continue; }
+      entries.push({ name: formsEntryName(row), data: fetched.data });
     }
 
     if (skipped.length) {
@@ -6333,6 +6313,119 @@ app.get('/api/feedback-archive', requireArchiveReader, async (req: Request, res:
     res.setHeader('Content-Length', String(zip.length));
     res.setHeader('X-Archive-Count', String(entries.length));
     res.send(zip);
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// ── The forms database (Admin → Formulare) ───────────────────────────
+// The season ZIP above answers "everything filed this season". The chair's
+// other question — "everything ever filed about THIS referee" — has no season,
+// so it is answered per person: one folder per referee across every season,
+// each filed form openable on its own and the whole folder as a ZIP. The
+// sorting rules are pure and live in server/forms.ts; this is the I/O.
+
+/** The stored file behind a filed form, fetched from PocketBase with a file
+ *  token — the collection is not public. null when nothing is stored or the
+ *  fetch fails; the caller decides whether that is a skip or a 404. */
+async function fetchStoredForm(row: FormsRow, token: string): Promise<{ data: Buffer; type: string } | null> {
+  const file = asText(row.rec.pdf_file);
+  if (!file) return null;
+  try {
+    const url = pb.files.getURL(row.rec as never, file, { token });
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const data = Buffer.from(await response.arrayBuffer());
+    // Typed from the bytes, like the submit route did on the way in: the
+    // upstream header is PocketBase's guess from the extension, and a browser
+    // told "octet-stream" downloads instead of showing the page.
+    const sniffed = sniffAttachmentType(data);
+    return { data, type: sniffed in ATTACHMENT_EXTENSIONS ? sniffed : 'application/octet-stream' };
+  } catch {
+    return null;
+  }
+}
+
+async function loadFormsRows(): Promise<FormsRow[]> {
+  const records = await withCollection(collectionCandidates.refereeCoaches, (c) =>
+    c.getFullList<AnyRecord>({ sort: '-submitted_at', expand: 'game,coachee' }));
+  return records.map((rec) => formsRowOf(rec));
+}
+
+app.get('/api/forms/index', requireArchiveReader, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    res.json({ referees: groupForms(await loadFormsRows()) });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// One referee's folder as a ZIP — the "Ordner" the chair asked for, named after
+// the person so it can be dropped into her filing as it is.
+app.get('/api/forms/archive', requireArchiveReader, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const key = asText(req.query.referee);
+    if (!key) { res.status(400).json({ error: 'referee fehlt.' }); return; }
+    const all = await loadFormsRows();
+    const folder = groupForms(all).find((f) => f.key === key);
+    if (!folder) { res.status(404).json({ error: 'Keine Formulare für diese Person.' }); return; }
+
+    const wanted = new Set(folder.forms.map((f) => f.id));
+    const rows = all.filter((r) => wanted.has(r.rec.id));
+    const token = await pb.files.getToken();
+    const entries: ZipEntry[] = [];
+    const skipped: string[] = [];
+    for (const row of rows) {
+      const fetched = await fetchStoredForm(row, token);
+      if (!fetched) { skipped.push(row.rec.id); continue; }
+      entries.push({ name: formsEntryName(row), data: fetched.data });
+    }
+    if (skipped.length) {
+      log.warn('forms.skipped', 'forms without a readable file were left out of the folder', { referee: folder.name, count: skipped.length, ids: skipped.slice(0, 20) });
+    }
+    if (entries.length === 0) { res.status(404).json({ error: 'Keine Formulare für diese Person.' }); return; }
+
+    const zip = zipStore(entries);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="formulare-${archiveSlug(folder.name)}.zip"`);
+    res.setHeader('Content-Length', String(zip.length));
+    res.setHeader('X-Archive-Count', String(entries.length));
+    res.send(zip);
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// The document itself — the PDF as it was mailed, or the scan a coach uploaded
+// in its place. Shown inline, so the folder opens it like a folder would.
+//
+// Two kinds of reader: the console (admin or chair — the archive gate), and the
+// coach who filed it, reading their own back from the Feedback-Verlauf. The
+// coach's list already shows only their own, but the route checks again: a
+// record id is guessable, and the written assessment inside is not theirs to
+// read for the asking.
+app.get('/api/feedback/:id/file', async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    // Who is asking, before what they are asking for: a stranger gets the same
+    // 401 whether or not the id exists, so the route cannot be used to probe.
+    const fromConsole = verifyAdminSession(req).ok || isSurveyReader(req);
+    const me = fromConsole ? null : await sessionRcIdentity(req);
+    if (!fromConsole && !me) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    let record: AnyRecord;
+    try { record = await getFeedbackForNote(String(req.params.id)); }
+    catch { res.status(404).json({ error: 'Feedback not found' }); return; }
+    if (me && !rcRefMatches(record.rc_id, record.rc_name, me)) { res.status(403).json({ error: 'Forbidden' }); return; }
+    const row = formsRowOf(record);
+    const fetched = await fetchStoredForm(row, await pb.files.getToken());
+    if (!fetched) {
+      // Worth a line: a filed feedback without its document is the half-write
+      // the submit route's rollback exists to prevent.
+      log.warn('forms.missing', 'a filed feedback has no readable file', { feedbackId: record.id }, reqCtx(req));
+      res.status(404).json({ error: 'Zu diesem Feedback ist keine Datei gespeichert.' });
+      return;
+    }
+    res.setHeader('Content-Type', fetched.type);
+    res.setHeader('Content-Disposition', `inline; filename="${formsEntryName(row)}"`);
+    res.setHeader('Content-Length', String(fetched.data.length));
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(fetched.data);
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 

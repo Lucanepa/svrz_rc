@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle, Coins, BarChart3 } from 'lucide-react';
+import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle, Coins, BarChart3, FolderOpen, ExternalLink, Search } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import { adminTabFromPath, adminLogModeFromPath } from '../lib/routes';
@@ -19,6 +19,7 @@ import {
   getErrorLogs, getErrorLogDates, annotateLogEntries,
   getLogMuteRules, createLogMuteRule, setLogMuteRuleEnabled, deleteLogMuteRule,
   loadRcGameNotes, downloadFeedbackArchive,
+  loadFormsIndex, downloadRefereeForms, feedbackFileUrl, type FormsFolder,
   syncGames, type GamesSyncStatus,
   getBoerseStatus, runBoerseSync, type BoerseSyncStatus,
   type PresidentNote,
@@ -92,7 +93,21 @@ const STR = {
     srNotes: 'Rückmeldungen aus SR-Spielen (4.4.10)',
     srNotesHint: 'Hat ein Referee Coach neben einem Coachee gepfiffen, wird kein Feedbackformular ausgefüllt — stattdessen diese kurze Rückmeldung. Sie geht nur ans RC-Präsidium und zählt nicht ans Saisonziel.',
     srNotesEmpty: 'Noch keine Rückmeldungen.',
-    archive: 'Archiv',
+    forms: 'Formulare',
+    formsHint: 'Jedes abgeschickte Feedbackformular, pro Schiedsrichter:in abgelegt — über alle Saisons und alle Referee Coaches. «Öffnen» zeigt das PDF so, wie es verschickt wurde; «Ordner als ZIP» lädt alle Formulare einer Person auf einmal.',
+    formsSearch: 'Schiedsrichter:in suchen (Name oder SV-Nr.) …',
+    formsEmpty: 'Noch keine Formulare abgeschickt.',
+    formsNoMatch: 'Niemand passt zur Suche.',
+    formsCount: (n: number) => `${n} Formular${n === 1 ? '' : 'e'}`,
+    formsPeople: (n: number) => `${n} Schiedsrichter:in${n === 1 ? '' : 'nen'}`,
+    formsOpen: 'Öffnen',
+    formsNoFile: 'keine Datei',
+    formsScan: 'Scan',
+    formsFolderZip: 'Ordner als ZIP',
+    formsFolderDone: (n: number) => `${n} Formular${n === 1 ? '' : 'e'} heruntergeladen.`,
+    formsDate: 'Datum', formsRole: 'Rolle', formsGame: 'Spiel', formsRc: 'RC',
+    formsUnnamed: 'Ohne Namen',
+    archive: 'Saison-Archiv',
     archiveHint: 'Alle abgeschickten Feedbackformulare einer Saison als ZIP — für die Ablage, die zwei Jahre aufbewahrt wird (Infoschreiben 4.4). Eine PDF-Datei pro Formular, benannt nach Datum, Schiedsrichter:in und Rolle.',
     archiveDownload: 'Saison herunterladen',
     archiveBusy: 'Wird zusammengestellt…',
@@ -273,7 +288,7 @@ const STR = {
     credentials: 'Passwörter', credentialsHint: 'Diese Passwörter öffnen die App und diese Seite. Sie werden nur als Hash gespeichert — ein gesetztes Passwort kann nicht wieder angezeigt, sondern nur ersetzt werden. Notiere es dir jetzt.',
     credShared: 'Team-Login (App)', credSharedHint: 'Das Passwort, das alle Referee Coaches für die App benutzen.',
     credAdmin: 'Admin (diese Seite)', credAdminHint: 'Öffnet diese Konsole.',
-    credPresident: 'RC-Präsidium', credPresidentHint: 'Öffnet nur die Umfrage- und Notiz-Tabs. Admin-Rechte öffnen diese nicht.',
+    credPresident: 'RC-Präsidium', credPresidentHint: 'Öffnet die Tabs Umfrage, RC-Notizen und Formulare. Umfrage und Notizen bleiben Admin-Rechten verschlossen.',
     credUser: 'Benutzername', credNew: 'Neues Passwort', credSave: 'Passwort setzen',
     credSendCode: 'Bestätigungscode senden', credCode: '6-stelliger Code',
     credCodeSent: (to: string) => `Code an ${to} gesendet. 10 Minuten gültig.`,
@@ -323,7 +338,21 @@ const STR = {
     srNotes: 'Notes from games a coach refereed (4.4.10)',
     srNotesHint: 'When a referee coach whistled next to a coachee no feedback form is filled in — this short note takes its place. It reaches the RC chair only and never counts toward a season target.',
     srNotesEmpty: 'No notes yet.',
-    archive: 'Archive',
+    forms: 'Forms',
+    formsHint: 'Every submitted feedback form, filed per referee — across all seasons and all referee coaches. "Open" shows the PDF as it was sent; "Folder as ZIP" downloads everything about one person at once.',
+    formsSearch: 'Find a referee (name or SV no.) …',
+    formsEmpty: 'No forms submitted yet.',
+    formsNoMatch: 'Nobody matches the search.',
+    formsCount: (n: number) => `${n} form${n === 1 ? '' : 's'}`,
+    formsPeople: (n: number) => `${n} referee${n === 1 ? '' : 's'}`,
+    formsOpen: 'Open',
+    formsNoFile: 'no file',
+    formsScan: 'Scan',
+    formsFolderZip: 'Folder as ZIP',
+    formsFolderDone: (n: number) => `${n} form${n === 1 ? '' : 's'} downloaded.`,
+    formsDate: 'Date', formsRole: 'Role', formsGame: 'Game', formsRc: 'RC',
+    formsUnnamed: 'Unnamed',
+    archive: 'Season archive',
     archiveHint: 'Every submitted feedback form of one season as a ZIP — for the records kept for two years (RC information sheet 4.4). One PDF per form, named by date, referee and role.',
     archiveDownload: 'Download season',
     archiveBusy: 'Collecting…',
@@ -498,7 +527,7 @@ const STR = {
     credentials: 'Passwords', credentialsHint: 'These passwords open the app and this page. Only a hash is stored — a password that has been set cannot be shown again, only replaced. Write it down now.',
     credShared: 'Team login (app)', credSharedHint: 'The password every referee coach uses for the app.',
     credAdmin: 'Admin (this page)', credAdminHint: 'Opens this console.',
-    credPresident: 'RC chair', credPresidentHint: 'Opens the survey and notes tabs only. Admin rights do not open those.',
+    credPresident: 'RC chair', credPresidentHint: 'Opens the Survey, RC notes and Forms tabs. Survey and notes stay closed to admin rights.',
     credUser: 'Username', credNew: 'New password', credSave: 'Set password',
     credSendCode: 'Send confirmation code', credCode: '6-digit code',
     credCodeSent: (to: string) => `Code sent to ${to}. Valid for 10 minutes.`,
@@ -684,9 +713,14 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 // Console tabs live in the URL as /admin/<tab>, so each one is linkable and
 // the Back button steps between them. The Protokoll tab's own two views are
 // one level down: /admin/logs and /admin/logs/history.
-const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'stats', 'niveau', 'emails', 'form', 'survey', 'notes', 'archive', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'forms', 'stats', 'niveau', 'emails', 'form', 'survey', 'notes', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
-const adminTabFromUrl = (): AdminTab => adminTabFromPath(window.location.pathname, ADMIN_TABS) as AdminTab;
+// /admin/archive was the chair's season-ZIP tab before the forms database
+// absorbed it; a bookmark of it still lands where the ZIP now lives.
+const adminTabFromUrl = (): AdminTab => {
+  if (/^\/admin\/archive\b/i.test(window.location.pathname)) return 'forms';
+  return adminTabFromPath(window.location.pathname, ADMIN_TABS) as AdminTab;
+};
 
 export default function AdminConsole() {
   const [checking, setChecking] = useState(true);
@@ -737,7 +771,7 @@ export default function AdminConsole() {
   // into the other half lands on that role's own first tab rather than on a
   // page whose every request would 401.
   useEffect(() => {
-    if (role === 'president' && tab !== 'survey' && tab !== 'notes' && tab !== 'archive') setTab('survey');
+    if (role === 'president' && tab !== 'survey' && tab !== 'notes' && tab !== 'forms') setTab('survey');
     if (role === 'admin' && (tab === 'survey' || tab === 'notes')) setTab('coachees');
     // 'form' edits the questionnaire and is admin-only, even though its
     // subject — the survey — belongs to the chair's half of the console.
@@ -947,19 +981,23 @@ export default function AdminConsole() {
     );
   }
 
-  // The chair gets her two tabs and nothing else. She is not a lesser admin —
+  // The chair gets her tabs and nothing else. She is not a lesser admin —
   // she is a different person with a different password, and the admin half of
   // this console is closed to her exactly as her half is closed to the admin.
+  // The one shared door is Formulare: the filed forms are the commission's
+  // records, and the server opens them to either password on purpose, so a
+  // lost console password never strands two years of them.
   const isPresident = role === 'president';
   const tabs: { id: typeof tab; label: string; icon: React.ReactNode }[] = isPresident ? [
     { id: 'survey', label: t.survey, icon: <MessageSquare size={15} /> },
     { id: 'notes', label: t.notes, icon: <Lock size={15} /> },
-    { id: 'archive', label: t.archive, icon: <Download size={15} /> },
+    { id: 'forms', label: t.forms, icon: <FolderOpen size={15} /> },
   ] : [
     { id: 'coachees', label: t.coachees, icon: <Users size={15} /> },
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
     { id: 'games', label: t.games, icon: <CalendarDays size={15} /> },
     { id: 'overview', label: t.overview, icon: <Target size={15} /> },
+    { id: 'forms', label: t.forms, icon: <FolderOpen size={15} /> },
     { id: 'stats', label: t.stats, icon: <BarChart3 size={15} /> },
     { id: 'niveau', label: t.niveau, icon: <Gauge size={15} /> },
     { id: 'emails', label: t.emails, icon: <Mail size={15} /> },
@@ -1056,7 +1094,10 @@ export default function AdminConsole() {
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
-        {isPresident && <div hidden={tab !== 'archive'}><ArchiveAdmin t={t} defaultSeason={defaultSeason} /></div>}
+        <div hidden={tab !== 'forms'}>
+          <FormsAdmin t={t} active={tab === 'forms'} />
+          <ArchiveAdmin t={t} defaultSeason={defaultSeason} />
+        </div>
         {!isPresident && <>
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} lang={lang} active={tab === 'logs'} mode={logMode} onMode={setLogMode} /></div>
         <div hidden={tab !== 'settings'}>
@@ -2725,6 +2766,156 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// ── The forms database ────────────────────────────────────────────────
+// One folder per referee, every season, every coach. Loaded the first time the
+// tab is opened rather than with the console: it reads every filed feedback,
+// and most sessions never come here.
+function FormsAdmin({ t, active }: { t: T; active: boolean }) {
+  const [folders, setFolders] = useState<FormsFolder[] | null>(null);
+  const [err, setErr] = useState('');
+  const [q, setQ] = useState('');
+  const [open, setOpen] = useState<string>('');
+  const [zipBusy, setZipBusy] = useState('');
+  const [zipDone, setZipDone] = useState<{ key: string; n: number } | null>(null);
+  const [zipErr, setZipErr] = useState('');
+  const asked = useRef(false);
+
+  useEffect(() => {
+    if (!active || asked.current) return;
+    asked.current = true;
+    loadFormsIndex()
+      .then(setFolders)
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  }, [active]);
+
+  // Accent-blind, like every other name lookup in the app: "Muller" finds Müller.
+  const shown = useMemo(() => {
+    if (!folders) return [];
+    const needle = foldName(q);
+    if (!needle) return folders;
+    return folders.filter((f) => foldName(f.name).includes(needle) || (f.refereeId && f.refereeId.includes(needle)));
+  }, [folders, q]);
+  const total = useMemo(() => (folders ?? []).reduce((n, f) => n + f.forms.length, 0), [folders]);
+
+  const zip = async (f: FormsFolder) => {
+    setZipBusy(f.key); setZipErr(''); setZipDone(null);
+    try {
+      setZipDone({ key: f.key, n: await downloadRefereeForms(f.key) });
+    } catch (e) {
+      setZipErr(e instanceof Error ? e.message : String(e));
+    } finally { setZipBusy(''); }
+  };
+
+  const gameLabel = (e: FormsFolder['forms'][number]) => {
+    const teams = e.homeTeam || e.awayTeam ? `${e.homeTeam || '?'} – ${e.awayTeam || '?'}` : '';
+    return [e.league, e.matchNo ? `#${e.matchNo}` : '', teams].filter(Boolean).join(' · ');
+  };
+
+  return (
+    <Card testId="forms-body">
+      <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.forms}</h2>
+      <p className="text-xs text-stone-500 mb-3 leading-snug">{t.formsHint}</p>
+      {err && <p className="mb-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{err}</p>}
+      {folders === null && !err && <SkeletonRows rows={4} />}
+      {folders !== null && folders.length === 0 && <p className="text-sm text-stone-500">{t.formsEmpty}</p>}
+      {folders !== null && folders.length > 0 && (
+        <>
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <div className="relative flex-1 min-w-[220px]">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 pointer-events-none" />
+              <input
+                data-testid="forms-search"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={t.formsSearch}
+                className={cn(input, 'pl-8')}
+              />
+            </div>
+            <span className="text-xs text-stone-500 tabular-nums">{t.formsPeople(folders.length)} · {t.formsCount(total)}</span>
+          </div>
+          {shown.length === 0 && <p className="text-sm text-stone-500">{t.formsNoMatch}</p>}
+          <div className="divide-y divide-stone-100 border border-stone-200 rounded-xl overflow-hidden">
+            {shown.map((f) => {
+              const isOpen = open === f.key;
+              return (
+                <div key={f.key} data-testid="forms-folder">
+                  <button
+                    type="button"
+                    onClick={() => setOpen(isOpen ? '' : f.key)}
+                    aria-expanded={isOpen}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-stone-50 transition-colors"
+                  >
+                    <FolderOpen size={16} className={cn('shrink-0', isOpen ? 'text-red-600' : 'text-stone-400')} />
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-semibold text-stone-900 truncate">{f.name || t.formsUnnamed}</span>
+                      <span className="block text-xs text-stone-500 tabular-nums">
+                        {t.formsCount(f.forms.length)}
+                        {f.seasons.length > 0 && <> · {f.seasons.map(seasonLabel).join(', ')}</>}
+                        {f.refereeId && <> · SV-Nr. {f.refereeId}</>}
+                      </span>
+                    </span>
+                    {isOpen ? <ChevronUp size={16} className="text-stone-400 shrink-0" /> : <ChevronDown size={16} className="text-stone-400 shrink-0" />}
+                  </button>
+                  {isOpen && (
+                    <div className="px-3 pb-3 bg-stone-50/60" data-testid="forms-folder-open">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-left text-stone-500">
+                            <th className="py-1.5 pr-2 font-medium">{t.formsDate}</th>
+                            <th className="py-1.5 pr-2 font-medium">{t.formsRole}</th>
+                            <th className="py-1.5 pr-2 font-medium">{t.formsGame}</th>
+                            <th className="py-1.5 pr-2 font-medium hidden sm:table-cell">{t.formsRc}</th>
+                            <th className="py-1.5 font-medium text-right" />
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-stone-200/70">
+                          {f.forms.map((e) => (
+                            <tr key={e.id} className="align-top">
+                              <td className="py-1.5 pr-2 whitespace-nowrap tabular-nums text-stone-800">{e.date ? dayLabel(e.date, { year: true }) : '–'}</td>
+                              <td className="py-1.5 pr-2 whitespace-nowrap text-stone-800">{e.role}</td>
+                              <td className="py-1.5 pr-2 text-stone-700">
+                                {gameLabel(e) || '–'}
+                                <span className="sm:hidden block text-stone-500">{e.rc}</span>
+                              </td>
+                              <td className="py-1.5 pr-2 text-stone-700 hidden sm:table-cell">{e.rc || '–'}</td>
+                              <td className="py-1 text-right whitespace-nowrap">
+                                {e.file ? (
+                                  <a
+                                    href={feedbackFileUrl(e.id)}
+                                    target="_blank"
+                                    rel="noopener"
+                                    className={btnGhost}
+                                    data-testid="forms-open"
+                                  >
+                                    <ExternalLink size={13} />{e.file === 'image' ? t.formsScan : t.formsOpen}
+                                  </a>
+                                ) : (
+                                  <span className="text-stone-400">{t.formsNoFile}</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <button type="button" onClick={() => void zip(f)} disabled={zipBusy === f.key} className={btnPrimary} data-testid="forms-zip">
+                          {zipBusy === f.key ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} {zipBusy === f.key ? t.archiveBusy : t.formsFolderZip}
+                        </button>
+                        {zipDone?.key === f.key && <span className="text-xs text-green-700 font-medium">{t.formsFolderDone(zipDone.n)}</span>}
+                        {zipErr && zipBusy === '' && <span className="text-xs text-red-700">{zipErr}</span>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </Card>
   );
 }
 

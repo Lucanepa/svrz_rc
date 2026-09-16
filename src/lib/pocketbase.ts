@@ -480,6 +480,85 @@ export async function downloadFeedbackArchive(season: number): Promise<number> {
   return Number(r.headers.get('X-Archive-Count')) || 0;
 }
 
+// ---- The forms database (Admin → Formulare) ----
+// Every filed form sorted into one folder per referee, across every season —
+// the light index only; the PDF is fetched when a form is opened.
+
+export type FormsEntry = {
+  id: string;
+  /** The game's date, YYYY-MM-DD; '' when the game has none. */
+  date: string;
+  season: number | null;
+  role: '1. SR' | '2. SR';
+  matchNo: string;
+  league: string;
+  homeTeam: string;
+  awayTeam: string;
+  rc: string;
+  submittedAt: string;
+  /** The drawn PDF, a scanned paper form, or nothing stored at all. */
+  file: '' | 'pdf' | 'image';
+  filename: string;
+};
+
+export type FormsFolder = {
+  key: string;
+  name: string;
+  refereeId: string;
+  seasons: number[];
+  forms: FormsEntry[];
+};
+
+export async function loadFormsIndex(): Promise<FormsFolder[]> {
+  const r = await fetch(apiUrl('/api/forms/index'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return ((await r.json()) as { referees?: FormsFolder[] }).referees ?? [];
+}
+
+/** Where a filed form's document is read back from — the PDF as mailed, or the
+ *  scan a coach uploaded in its place. A plain link, so the console can open it
+ *  in a tab the way a folder opens a file; the API is same-site, so the
+ *  session cookie travels with the navigation. */
+export function feedbackFileUrl(feedbackId: string): string {
+  return apiUrl(`/api/feedback/${encodeURIComponent(feedbackId)}/file`);
+}
+
+/** The coach's own filed form, handed to the share sheet on a phone and saved
+ *  as a download elsewhere — the same two exits the form's PDF button uses. */
+export async function shareFeedbackFile(feedbackId: string, title: string): Promise<void> {
+  const r = await fetch(feedbackFileUrl(feedbackId), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  const named = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '');
+  const blob = await r.blob();
+  const name = named ? named[1] : 'feedback.pdf';
+  const file = new File([blob], name, { type: blob.type || 'application/pdf' });
+  if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
+    await navigator.share({ title, files: [file] });
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** One referee's whole folder as a ZIP. Returns how many forms were in it. */
+export async function downloadRefereeForms(key: string): Promise<number> {
+  const r = await fetch(apiUrl(`/api/forms/archive?referee=${encodeURIComponent(key)}`), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  const named = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '');
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = named ? named[1] : 'formulare.zip';
+  a.click();
+  URL.revokeObjectURL(url);
+  return Number(r.headers.get('X-Archive-Count')) || 0;
+}
+
 /** Save a file the API hands back with a Content-Disposition name. */
 async function downloadFrom(path: string, fallbackName: string): Promise<void> {
   const r = await fetch(apiUrl(path), { credentials: 'include' });

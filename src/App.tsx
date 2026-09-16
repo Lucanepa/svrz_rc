@@ -14,6 +14,7 @@ import {
   FeedbackRecord,
   hasPocketBaseConfig,
   listCoacheeFeedbacks,
+  shareFeedbackFile,
   listCoacheeGames,
   listCoachees,
   loadCalendarGames,
@@ -178,6 +179,8 @@ const UI_STRINGS = {
     coacheeGames: "Spiele für Coachee",
     calendar: "Kalender",
     feedbackHistory: "Feedback-Verlauf",
+    sentPdf: "Gesendetes PDF",
+    sentPdfFailed: "Das gesendete PDF konnte nicht geladen werden.",
     noFeedbacks: "Keine Feedbacks gefunden.",
     noCoacheeGames: "Keine Spiele für diesen Coachee gefunden.",
     closeMenu: "Schliessen",
@@ -347,6 +350,8 @@ const UI_STRINGS = {
     coacheeGames: "Coachee Games",
     calendar: "Calendar",
     feedbackHistory: "Feedback History",
+    sentPdf: "Sent PDF",
+    sentPdfFailed: "The sent PDF could not be loaded.",
     noFeedbacks: "No feedbacks found.",
     noCoacheeGames: "No games found for this coachee.",
     closeMenu: "Close",
@@ -2819,17 +2824,27 @@ export default function App() {
     }
   };
 
-  const normalizeLoadedFeedback = (raw: FeedbackFormData): FeedbackFormData => {
+  /**
+   * A filed record, as the form shows it — in the VIEWER's language.
+   *
+   * `formData.lang` is the language of the whole app, not just of this form,
+   * and every report is filed in German whatever the coach worked in
+   * (toGermanFormData). Taking the record's own `lang` therefore flipped the
+   * entire app to German the moment a coach opened a finished observation,
+   * and left it there until the next reload — the "randomly switches to
+   * German" of 16.09. The record's ratings ride on item ids, so its wording
+   * can be looked up in the catalogue of whichever language is on screen; the
+   * structure that was actually filed (its sections and items, in its order)
+   * is kept, and an item the catalogue no longer knows keeps its stored label.
+   * `has2SR` is the RECORD's game, not the game that happened to be selected.
+   */
+  const normalizeLoadedFeedback = (raw: FeedbackFormData, lang: FeedbackFormData['lang'], has2SR: boolean): FeedbackFormData => {
     const role = raw.role === '2. SR' ? '2. SR' : '1. SR';
-    const lang = raw.lang === 'EN' ? 'EN' : 'DE';
-    const rawDefaultSections =
-      role === '1. SR'
-        ? (lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN)
-        : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
-    const defaultSections = role === '1. SR'
-      ? adjustSectionsFor2SR(rawDefaultSections, gameHas2SR)
-      : rawDefaultSections;
-    const sections = Array.isArray(raw.sections) ? raw.sections : defaultSections;
+    const catalogue = role === '1. SR'
+      ? adjustSectionsFor2SR(lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, has2SR)
+      : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
+    const labelById = new Map(catalogue.flatMap((section) => section.items.map((item) => [item.id, item.label] as const)));
+    const sections = Array.isArray(raw.sections) && raw.sections.length > 0 ? raw.sections : catalogue;
 
     return {
       ...INITIAL_DATA,
@@ -2839,11 +2854,12 @@ export default function App() {
       meta: { ...INITIAL_DATA.meta, ...(raw.meta ?? {}) },
       results: { ...INITIAL_DATA.results, ...(raw.results ?? {}) },
       sections: sections.map((section, sIdx) => ({
-        ...defaultSections[sIdx],
         ...section,
-        items: (section.items ?? defaultSections[sIdx]?.items ?? []).map((item, iIdx) => ({
-          ...(defaultSections[sIdx]?.items?.[iIdx] ?? {}),
+        // Section order is fixed per role, so the title translates by position.
+        title: catalogue[sIdx]?.title ?? section.title,
+        items: (section.items ?? catalogue[sIdx]?.items ?? []).map((item) => ({
           ...item,
+          label: (item.id && labelById.get(item.id)) || item.label,
           rating: item.rating || '',
         })),
       })),
@@ -2861,11 +2877,13 @@ export default function App() {
       || (!!rcAuth.rcName && normName(record.rc_name || '') === normName(rcAuth.rcName))
     );
     const payload = record.feedback_json;
+    const expandedGame = record.expand?.game;
     if (payload) {
-      setFormData(normalizeLoadedFeedback(payload));
+      // Shown in the language the app is in; the record's game says whether
+      // the 1. SR criteria are the two-referee wording.
+      setFormData((prev) => normalizeLoadedFeedback(payload, prev.lang, expandedGame ? !!expandedGame.second_referee : gameHas2SR));
       setObservationTarget(payload.role === '2. SR' ? '2SR' : '1SR');
     }
-    const expandedGame = record.expand?.game;
     // This record existing IS the proof that its role was filed, so the game it
     // reopens against carries that role as closed. The rebuilt game used to omit
     // it and so looked untouched — offering "confirm and send" for an
@@ -3112,6 +3130,24 @@ export default function App() {
       return 'bg-emerald-500';
     }
     return 'bg-stone-300';
+  };
+
+  // The document as it was FILED — read back from the server, not redrawn
+  // from the form. Redrawing would do for a form the app drew itself, but a
+  // manual upload is a photo of a paper sheet with next to nothing in its
+  // feedback_json, and even for a drawn one the stored copy is the one the
+  // referee holds.
+  const [sentPdfBusy, setSentPdfBusy] = useState('');
+  const openSentPdf = async (feedbackId: string) => {
+    setSentPdfBusy(feedbackId);
+    try {
+      await shareFeedbackFile(feedbackId, t.title);
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return;
+      toast.error(t.sentPdfFailed, { lang: formData.lang });
+    } finally {
+      setSentPdfBusy('');
+    }
   };
 
   const handleDownloadPdf = async () => {
@@ -3971,10 +4007,13 @@ export default function App() {
 
   const formDataFromDraft = (d: DraftRecord, has2SR: boolean): FeedbackFormData => {
     const role: FeedbackFormData['role'] = d.role === '2. SR' ? '2. SR' : '1. SR';
-    const lang: FeedbackFormData['lang'] = d.lang === 'EN' ? 'EN' : 'DE';
-    // Rebuilt from the catalogue in the DRAFT's own language and projected by
-    // item id — the inverse of toGermanFormData, and unlike normalizeLoadedFeedback
-    // it neither overlays by array index nor reads a previous game's 2-referee flag.
+    // The language on screen, not the draft's: `lang` is the whole app's
+    // language, and a draft written in German — on this device before the
+    // toggle, or parked from another — used to switch the app to German on
+    // resume. Ratings ride on item ids, so the draft reads the same either way.
+    const lang: FeedbackFormData['lang'] = formData.lang;
+    // Rebuilt from the catalogue in that language and projected by item id —
+    // the inverse of toGermanFormData.
     const catalogue = role === '1. SR'
       ? adjustSectionsFor2SR(lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, has2SR)
       : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
@@ -5442,6 +5481,17 @@ export default function App() {
           <Download size={18} />
           <span className="hidden sm:inline">{t.downloadPdf}</span>
         </button>
+        {openFeedbackId && !isDemoMode() && (
+          <button
+            onClick={() => void openSentPdf(openFeedbackId)}
+            disabled={sentPdfBusy === openFeedbackId}
+            data-testid="sent-pdf"
+            className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 disabled:opacity-60 transition-colors"
+          >
+            {sentPdfBusy === openFeedbackId ? <Loader2 size={18} className="animate-spin" /> : <ExternalLink size={18} />}
+            <span className="hidden sm:inline">{t.sentPdf}</span>
+          </button>
+        )}
         {/* The PDF is the document; this is the work. A PDF can be read but not
             loaded back, so a coach who wants to carry an unfinished observation
             to another device needs a file the app can re-open. */}
@@ -8967,18 +9017,33 @@ export default function App() {
               ) : (
                 <div className="divide-y divide-stone-100">
                   {coacheeFeedbacks.map((record) => (
-                    <button
-                      key={record.id}
-                      onClick={() => openFeedbackRecord(record)}
-                      className="w-full text-left px-4 py-3 hover:bg-stone-50 transition-colors"
-                    >
-                      <div className="text-sm font-semibold text-stone-900">
-                        {record.expand?.game?.match_no || '-'} | {record.expand?.game?.home_team || '-'} vs {record.expand?.game?.away_team || '-'}
-                      </div>
-                      <div className="text-xs text-stone-500 mt-1">
-                        {record.submitted_at || '-'} | {t.rcShort}: {record.rc_name || '-'} | {record.role_assessed || '-'}
-                      </div>
-                    </button>
+                    <div key={record.id} className="flex items-stretch hover:bg-stone-50 transition-colors">
+                      <button
+                        onClick={() => openFeedbackRecord(record)}
+                        className="flex-1 min-w-0 text-left px-4 py-3"
+                      >
+                        <div className="text-sm font-semibold text-stone-900">
+                          {record.expand?.game?.match_no || '-'} | {record.expand?.game?.home_team || '-'} vs {record.expand?.game?.away_team || '-'}
+                        </div>
+                        <div className="text-xs text-stone-500 mt-1">
+                          {record.submitted_at || '-'} | {t.rcShort}: {record.rc_name || '-'} | {record.role_assessed || '-'}
+                        </div>
+                      </button>
+                      {/* The filed document itself, without opening the record. */}
+                      {!isDemoMode() && (
+                        <button
+                          onClick={() => void openSentPdf(record.id)}
+                          disabled={sentPdfBusy === record.id}
+                          aria-label={t.sentPdf}
+                          title={t.sentPdf}
+                          data-testid="history-sent-pdf"
+                          className="shrink-0 px-3 my-2 mr-2 rounded-lg border border-stone-200 bg-white text-stone-600 hover:bg-stone-100 disabled:opacity-60 transition-colors inline-flex items-center gap-1.5 text-xs font-medium"
+                        >
+                          {sentPdfBusy === record.id ? <Loader2 size={14} className="animate-spin" /> : <ExternalLink size={14} />}
+                          <span className="hidden sm:inline">PDF</span>
+                        </button>
+                      )}
+                    </div>
                   ))}
                 </div>
               )}

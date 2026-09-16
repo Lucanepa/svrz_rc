@@ -13,7 +13,7 @@ import {
   downloadRcExpenses, downloadAllRcExpenses, DEFAULT_EXPENSE_RATES, type ExpenseRates,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
-  listReferees, importReferees, type RefereeRoster, type RosterReferee, type RefereeImportRow,
+  listReferees, importReferees, linkCoacheeReferees, backfillGameRefereeIds, type RefereeRoster, type RosterReferee, type RefereeImportRow, type LinkReport, type BackfillReport, type SvConflict,
   getSurveyConfig, putSurveyConfig,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
   getErrorLogs, getErrorLogDates, annotateLogEntries,
@@ -232,6 +232,22 @@ const STR = {
     rosterAmbiguous: 'Mehrdeutiger Name — keine Nummer gesetzt, bitte von Hand prüfen',
     rosterUnmatched: 'Coachees ohne Eintrag im Register',
     rosterFail: (e: string) => `Import fehlgeschlagen: ${e}`,
+    linkNow: 'Coachees jetzt verknüpfen',
+    linkResult: (linked: number, already: number) => `${linked} Coachees neu mit ihrer SV-Nr. verknüpft, ${already} waren es schon.`,
+    linkToast: (linked: number, unmatched: number, ambiguous: number) => `SV-Nr.: ${linked} neu verknüpft · ${unmatched} nicht im Register · ${ambiguous} mehrdeutig.`,
+    linkFail: (e: string) => `Verknüpfen fehlgeschlagen: ${e}`,
+    backfillNow: 'SV-Nr. auf Spielen nachtragen',
+    backfillResult: (filled: number, games: number, unresolved: number, ambiguous: number) => `${filled} SR-Einträge mit der SV-Nr. ergänzt (${games} Spiele geprüft) · ${unresolved} Namen nicht im Register · ${ambiguous} mehrdeutig.`,
+    backfillFail: (e: string) => `Nachtragen fehlgeschlagen: ${e}`,
+    backfillAmbiguous: 'Auf Spielen mehrdeutig — keine Nummer gesetzt',
+    backfillUnresolved: 'Auf Spielen, aber nicht im Register',
+    svPick: 'Aus dem Register wählen …',
+    svPickOnly: 'Nur aus dem Register — bitte einen Eintrag wählen.',
+    svLinked: (sv: string) => `SV-Nr. ${sv}`,
+    svNoRegister: 'Register noch leer — zuerst importieren.',
+    svMissing: (n: number) => `${n} ${n === 1 ? 'Coachee' : 'Coachees'} ohne SV-Nr.`,
+    svNone: 'ohne SV-Nr.',
+    svMissingHint: 'Ohne Nummer wird nach dem Namen gesucht — die Schreibweise entscheidet dann.',
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
@@ -312,6 +328,7 @@ const STR = {
     noRows: 'Keine Zeilen in der Datei gefunden.',
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} neu, ${u} aktualisiert (von ${t}).`,
     importFail: (e: string) => `Import fehlgeschlagen: ${e}`,
+    importSvConflicts: 'SV-Nr. im Sheet weicht von der verknüpften ab — die verknüpfte bleibt',
     groups: 'Gruppen', groupsHint: 'Gruppen für Coachees. Mehrfachauswahl wird mit „/" verbunden.', newGroup: 'Neue Gruppe', chooseGroups: 'Gruppe(n)', toApp: 'Zur App',
     target: 'Fokus-Spiele', targetHint: 'Auf welche Spiele dieser SR im Fokus steht. Standard: automatisch aus dem Niveau (offizielle SVRZ-Tabelle, Tab „Niveau").',
     targetAuto: 'Auto (Niveau)', targetAll: 'Alle Spiele', targetCustom: 'Eigen', targetRoles: 'Rolle(n)', targetLeagues: 'Ligen', chooseLeagues: 'Ligen wählen', edit: 'Bearbeiten', deleteLabel: 'Löschen', resetLabel: 'Zurücksetzen', renameLabel: 'Umbenennen', done: 'Fertig',
@@ -476,6 +493,22 @@ const STR = {
     rosterAmbiguous: 'Ambiguous name — no number written, please check by hand',
     rosterUnmatched: 'Coachees with no entry in the register',
     rosterFail: (e: string) => `Import failed: ${e}`,
+    linkNow: 'Link coachees now',
+    linkResult: (linked: number, already: number) => `${linked} coachees newly linked to their SV number, ${already} already were.`,
+    linkToast: (linked: number, unmatched: number, ambiguous: number) => `SV numbers: ${linked} newly linked · ${unmatched} not in the register · ${ambiguous} ambiguous.`,
+    linkFail: (e: string) => `Linking failed: ${e}`,
+    backfillNow: 'Add SV numbers to games',
+    backfillResult: (filled: number, games: number, unresolved: number, ambiguous: number) => `${filled} referee slots given their SV number (${games} games checked) · ${unresolved} names not in the register · ${ambiguous} ambiguous.`,
+    backfillFail: (e: string) => `Backfill failed: ${e}`,
+    backfillAmbiguous: 'Ambiguous on games — no number written',
+    backfillUnresolved: 'On games, but not in the register',
+    svPick: 'Pick from the register …',
+    svPickOnly: 'Register entries only — please pick one.',
+    svLinked: (sv: string) => `SV no. ${sv}`,
+    svNoRegister: 'Register still empty — import it first.',
+    svMissing: (n: number) => `${n} ${n === 1 ? 'coachee' : 'coachees'} without an SV number`,
+    svNone: 'no SV number',
+    svMissingHint: 'Without a number the match is by name — the spelling then decides.',
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
@@ -556,6 +589,7 @@ const STR = {
     noRows: 'No rows found in the file.',
     importResult: (s: string, c: number, u: number, t: number) => `Import ${s}: ${c} new, ${u} updated (of ${t}).`,
     importFail: (e: string) => `Import failed: ${e}`,
+    importSvConflicts: 'SV number in the sheet differs from the linked one — the linked one stays',
     groups: 'Groups', groupsHint: 'Groups for coachees. Multiple selections are joined with "/".', newGroup: 'New group', chooseGroups: 'Group(s)', toApp: 'To app',
     target: 'Focused games', targetHint: 'Which games this referee is focused on. Default: automatic from the level (official SVRZ table, "Levels" tab).',
     targetAuto: 'Auto (level)', targetAll: 'All games', targetCustom: 'Custom', targetRoles: 'Role(s)', targetLeagues: 'Leagues', chooseLeagues: 'Choose leagues', edit: 'Edit', deleteLabel: 'Delete', resetLabel: 'Reset', renameLabel: 'Rename', done: 'Done',
@@ -645,6 +679,12 @@ const cellText = (row: unknown[], i: number) => (i < 0 ? '' : String(row[i] ?? '
 // "Ja"/"Nein" is how the export writes a boolean.
 const cellYes = (row: unknown[], i: number) => /^(ja|yes|true|1)$/i.test(cellText(row, i));
 
+/** How the exports head the SV-Nr. column. The register's is required; the
+ *  coaching sheet's is optional and read under the same names, so the one
+ *  column the commission could add to its sheet is spelled like the one it
+ *  already gets from VolleyManager. */
+const SV_COLS = ['sv-nr.', 'sv-nr', 'sv nr.', 'sv nr', 'svnr', 'sv-nummer', 'lizenznummer', 'lizenz-nr.'];
+
 /** The SVRZ "Schiedsrichter verwalten" export, read for the roster: the SV-Nr.
  *  first of all, since a list of referees keyed by name is the problem the
  *  roster exists to end. Birthdate, address and Pensum are in the file and are
@@ -654,7 +694,7 @@ async function parseRefereeXlsx(file: File): Promise<RefereeImportRow[]> {
   if (!sheet) return [];
   const { rows, headerRow, col } = sheet;
   const ci = {
-    sv: col(['sv-nr.', 'sv-nr', 'sv nr.', 'sv nr', 'svnr', 'sv-nummer', 'lizenznummer', 'lizenz-nr.']),
+    sv: col(SV_COLS),
     last: col(NAME_COLS),
     first: col(['vorname', 'first', 'firstname']),
     email: col(['e-mail-adresse', 'email', 'e-mail', 'mail', 'emailadresse', 'e mail']),
@@ -706,7 +746,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
   const sheet = await readSheet(file);
   if (!sheet) return [];
   const { rows, headerRow, col, header } = sheet;
-  const ci = { last: col(NAME_COLS), first: col(['vorname', 'first', 'firstname']), email: col(['email', 'e-mail', 'mail', 'e-mail-adresse', 'emailadresse', 'e mail']), phone: col(['telefon', 'telefon-nr.', 'telefon-nr', 'telefonnummer', 'phone', 'mobile', 'natel', 'handy', 'tel', 'tel.']), level: col(['niveau', 'level']), stage: col(['niveaustufe', 'stufe', 'stage']), group: col(['gruppe', 'group', 'groups']), notes: col(['bemerkung', 'bemerkungen', 'notizen', 'notes', 'note', 'kommentar']) };
+  const ci = { last: col(NAME_COLS), first: col(['vorname', 'first', 'firstname']), email: col(['email', 'e-mail', 'mail', 'e-mail-adresse', 'emailadresse', 'e mail']), phone: col(['telefon', 'telefon-nr.', 'telefon-nr', 'telefonnummer', 'phone', 'mobile', 'natel', 'handy', 'tel', 'tel.']), level: col(['niveau', 'level']), stage: col(['niveaustufe', 'stufe', 'stage']), group: col(['gruppe', 'group', 'groups']), notes: col(['bemerkung', 'bemerkungen', 'notizen', 'notes', 'note', 'kommentar']), sv: col(SV_COLS) };
   // Notes often live in an unnamed column right after Gruppe.
   if (ci.notes < 0 && ci.group >= 0 && !header[ci.group + 1]) ci.notes = ci.group + 1;
   const out: ImportRow[] = [];
@@ -715,7 +755,11 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
     const last = String(r[ci.last] ?? '').trim();
     const first = String(r[ci.first] ?? '').trim();
     if (!first && !last) continue;
-    out.push({ first_name: first, last_name: last, full_name: `${first} ${last}`.trim(), email: String(r[ci.email] ?? '').trim(), phone: String(r[ci.phone] ?? '').trim(), referee_level: String(r[ci.level] ?? '').trim(), stage: String(r[ci.stage] ?? '').trim().replace(/\.0$/, ''), groups: mapGroups(String(r[ci.group] ?? '').trim()), notes: String(r[ci.notes] ?? '').trim() });
+    // The SV-Nr., when the sheet carries the column: the one addition that
+    // lets a season start linked without a register re-import. A numeric
+    // cell arrives as "34536.0"; a sheet without the column sends '', which
+    // the server reads as "nothing said", never as "unlink".
+    out.push({ first_name: first, last_name: last, full_name: `${first} ${last}`.trim(), email: String(r[ci.email] ?? '').trim(), phone: String(r[ci.phone] ?? '').trim(), referee_level: String(r[ci.level] ?? '').trim(), stage: String(r[ci.stage] ?? '').trim().replace(/\.0$/, ''), groups: mapGroups(String(r[ci.group] ?? '').trim()), notes: String(r[ci.notes] ?? '').trim(), referee_id: cellText(r, ci.sv).replace(/\.0$/, '') });
   }
   return out;
 }
@@ -1444,36 +1488,76 @@ function sameCell(a: string[], b: string[]): boolean {
  *  and a name is spelled two ways in two exports, changes on marriage, and is
  *  shared by two people often enough that the contact sync has to refuse those
  *  cases outright. */
-function RefereeRosterAdmin({ t, onLinked }: { t: T; onLinked: () => void }) {
-  const [roster, setRoster] = useState<RefereeRoster | null>(null);
+function RefereeRosterAdmin({ t, roster, onRoster, onLinked }: {
+  t: T;
+  /** The register as the coachee tab holds it — null until the first read. */
+  roster: RefereeRoster | null;
+  /** Re-read the register (after an import wrote to it). */
+  onRoster: () => Promise<void>;
+  /** The coachee rows changed under the list above (a link was written). */
+  onLinked: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
   const [ambiguous, setAmbiguous] = useState<string[]>([]);
   const [unmatched, setUnmatched] = useState<string[]>([]);
+  // The games backfill's two lists: printed names the register does not
+  // hold, and names it holds twice. Kept apart from the coachee lists above
+  // because the fix is different — a coachee is linked by hand in the list,
+  // a game's name is VolleyManager's and only the register can settle it.
+  const [gamesAmbiguous, setGamesAmbiguous] = useState<string[]>([]);
+  const [gamesUnresolved, setGamesUnresolved] = useState<string[]>([]);
 
-  const reload = useCallback(async () => {
-    try { setRoster(await listReferees()); } catch { setRoster({ people: [] }); }
-  }, []);
-  useEffect(() => { void reload(); }, [reload]);
+  const reset = () => { setNote(''); setErr(''); setAmbiguous([]); setUnmatched([]); setGamesAmbiguous([]); setGamesUnresolved([]); };
+  const showBackfill = (r: BackfillReport) => {
+    setGamesAmbiguous(r.ambiguous ?? []);
+    setGamesUnresolved(r.unresolved ?? []);
+    return t.backfillResult(r.filled, r.games, (r.unresolved ?? []).length, (r.ambiguous ?? []).length);
+  };
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    setBusy(true); setNote(''); setErr(''); setAmbiguous([]); setUnmatched([]);
+    setBusy(true); reset();
     try {
       const rows = await parseRefereeXlsx(file);
       if (!rows.length) { setErr(t.noRows); return; }
       const res = await importReferees(rows);
-      setNote(t.rosterResult(res.created, res.updated, res.linked));
+      // Three steps, one sentence each: the rows, the coachees they linked,
+      // the games they numbered (absent from an API one version behind).
+      setNote([t.rosterResult(res.created, res.updated, res.linked), res.backfill ? showBackfill(res.backfill) : ''].filter(Boolean).join(' '));
       setAmbiguous(res.ambiguousNames ?? []);
       setUnmatched(res.unmatched ?? []);
-      await reload();
+      await onRoster();
       // The import wrote referee_id onto coachee rows; the list above is now
       // one version behind what it is showing.
       onLinked();
     } catch (e) { setErr(t.rosterFail(e instanceof Error ? e.message : String(e))); }
+    finally { setBusy(false); }
+  };
+
+  // The link on its own: for coachees typed in after the last import, and
+  // for a register imported before the coachee import learned to link.
+  const linkNow = async () => {
+    setBusy(true); reset();
+    try {
+      const res = await linkCoacheeReferees();
+      setNote(t.linkResult(res.linked, res.alreadyLinked));
+      setAmbiguous(res.ambiguousNames ?? []);
+      setUnmatched(res.unmatched ?? []);
+      onLinked();
+    } catch (e) { setErr(t.linkFail(e instanceof Error ? e.message : String(e))); }
+    finally { setBusy(false); }
+  };
+
+  // The games on their own: two thirds of the stored games predate the
+  // number on the whistle slot and were matched by name on every list.
+  const backfillNow = async () => {
+    setBusy(true); reset();
+    try { setNote(showBackfill(await backfillGameRefereeIds())); }
+    catch (e) { setErr(t.backfillFail(e instanceof Error ? e.message : String(e))); }
     finally { setBusy(false); }
   };
 
@@ -1495,6 +1579,16 @@ function RefereeRosterAdmin({ t, onLinked }: { t: T; onLinked: () => void }) {
       </div>
       <p className="text-xs text-stone-400">{t.rosterHint}</p>
       {status && <p className="mt-2 text-xs text-stone-500">{status}</p>}
+      {/* Both need a register to read from; without one they would only
+          report that nothing could be linked. */}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button onClick={() => void linkNow()} disabled={busy || !hasRegister} className={btnGhost}>
+          <Users size={13} /> {t.linkNow}
+        </button>
+        <button onClick={() => void backfillNow()} disabled={busy || !hasRegister} className={btnGhost}>
+          <CalendarDays size={13} /> {t.backfillNow}
+        </button>
+      </div>
       {note && <p className="mt-2 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{note}</p>}
       {err && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{err}</p>}
       {/* Ambiguous first, and in amber: it is the one outcome that needs a
@@ -1507,7 +1601,53 @@ function RefereeRosterAdmin({ t, onLinked }: { t: T; onLinked: () => void }) {
       {unmatched.length > 0 && (
         <p className="mt-2 text-xs text-stone-500">{t.rosterUnmatched}: {unmatched.join(', ')}</p>
       )}
+      {gamesAmbiguous.length > 0 && (
+        <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+          {t.backfillAmbiguous}: {gamesAmbiguous.join(', ')}
+        </p>
+      )}
+      {gamesUnresolved.length > 0 && (
+        <p className="mt-2 text-xs text-stone-500">{t.backfillUnresolved}: {gamesUnresolved.join(', ')}</p>
+      )}
     </Card>
+  );
+}
+
+/** The SV-Nr. on a coachee: a pick off the register, never a typed number.
+ *  A typo would create a phantom identity every game then fails to match,
+ *  so the field offers the register's rows and hands back a number only for
+ *  one of them (the server refuses anything else). Typing searches by name
+ *  or by number; clearing the field unlinks. Under it, what the row is
+ *  linked to — or that what stands in the field is not a link yet. */
+function SvField({ id, text, sv, onChange, people, t }: {
+  id: string;
+  /** What stands in the field — the register's name after a pick. */
+  text: string;
+  /** The number the form will send. */
+  sv: string;
+  onChange: (pick: PersonPick) => void;
+  people: PickPerson[];
+  t: T;
+}) {
+  // Before the register has been imported there is nothing to pick from and
+  // nothing a link could mean — said in the field rather than offering a
+  // search that finds nobody.
+  if (people.length === 0) {
+    return <input id={id} className={cn(input, 'text-stone-400')} value={sv} placeholder={t.svNoRegister} disabled title={t.svNoRegister} />;
+  }
+  return (
+    <PersonPicker
+      id={id}
+      value={text}
+      onChange={onChange}
+      people={people}
+      t={t}
+      placeholder={t.svPick}
+      describe={(p) => ({ text: t.svLinked(p.svNumber || ''), ok: true })}
+      // By the number the form holds, not by the name in the field: a name
+      // typed out in full is still no link until a row has been picked.
+      footer={() => (sv ? { text: t.svLinked(sv), ok: true } : { text: t.svPickOnly, ok: false })}
+    />
   );
 }
 
@@ -1525,9 +1665,41 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
   const [syncMissing, setSyncMissing] = useState<string[]>([]);
   const [syncAmbiguous, setSyncAmbiguous] = useState<string[]>([]);
   const [overwriteContacts, setOverwriteContacts] = useState(false);
-  const [form, setForm] = useState({ first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '' });
+  const EMPTY_FORM = { first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '', referee_id: '' };
+  const [form, setForm] = useState(EMPTY_FORM);
   const [editId, setEditId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '' });
+  const [editForm, setEditForm] = useState(EMPTY_FORM);
+  // What stands in the two SV-Nr. fields — the register's name after a
+  // pick, whatever was typed before one. Beside the forms rather than in
+  // them so the text never travels to the server with the row.
+  const [svText, setSvText] = useState('');
+  const [editSvText, setEditSvText] = useState('');
+  // The register link's report from the last import or sync — the names it
+  // would not decide, listed once under the sync card whichever button ran.
+  const [linkReport, setLinkReport] = useState<LinkReport | null>(null);
+  // Rows whose stored SV-Nr. the last import's sheet contradicted — kept as
+  // stored, and said here, because a typo in the sheet's column must not
+  // undo a hand link in silence.
+  const [svConflicts, setSvConflicts] = useState<SvConflict[]>([]);
+  // Only the rows still matched by name, when the badge is pressed.
+  const [onlyUnlinked, setOnlyUnlinked] = useState(false);
+
+  // The register, read once for the tab: the SV-Nr. pickers offer its rows,
+  // and the register card below imports into it. Held here rather than in
+  // that card so the pickers and the card cannot show two different
+  // registers, and so one import re-reads it for both.
+  const [roster, setRoster] = useState<RefereeRoster | null>(null);
+  const reloadRoster = useCallback(async () => {
+    try { setRoster(await listReferees()); } catch { setRoster({ people: [] }); }
+  }, []);
+  useEffect(() => { void reloadRoster(); }, [reloadRoster]);
+  // Only rows with a number: the VolleyManager fallback the server serves
+  // before the first import knows names and addresses but no numbers, and
+  // a pick without a number would be no link.
+  const registerPeople = useMemo<PickPerson[]>(() => (roster?.people ?? [])
+    .filter((p) => p.id)
+    .map((p) => ({ id: `sv:${p.id}`, name: p.name, email: p.email, svNumber: p.id })), [roster]);
+  const registerNameOf = (sv: string | undefined) => (sv ? registerPeople.find((p) => p.svNumber === sv)?.name ?? sv : '');
 
   // Reloaded after every write, so two quick edits can have their answers cross
   // — and the older list would then put a deleted coachee back on screen.
@@ -1547,7 +1719,12 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
   // list under this season's heading for as long as that took — the local
   // fallback (`CUR_SEASON`) is August's guess, not the stored answer.
   const settling = loading || (settingsLoading && !seasonTouched.current);
-  const rows = all.filter((c) => (typeof c.season === 'number' ? c.season === season : false)).sort(bySurname);
+  const seasonRows = all.filter((c) => (typeof c.season === 'number' ? c.season === season : false)).sort(bySurname);
+  // Without a number a coachee is matched to their games by name, and the
+  // spelling then decides — the badge counts them, and pressed, shows only
+  // them, so the chair can link them by hand one after the other.
+  const unlinked = seasonRows.filter((c) => !c.referee_id);
+  const rows = onlyUnlinked ? unlinked : seasonRows;
 
   // Same reason as RcsAdmin: a failed write left the console looking like it
   // had worked.
@@ -1556,8 +1733,22 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
     try { await action(); }
     catch (e) { setNotice(e instanceof Error ? e.message : String(e)); }
   };
-  const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await guard(async () => { await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm({ first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '' }); await reload(); }); };
+  const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await guard(async () => { await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm(EMPTY_FORM); setSvText(''); await reload(); }); };
   const saveEdit = async (id: string) => { const full_name = `${editForm.first_name} ${editForm.last_name}`.trim(); await guard(async () => { await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>); setEditId(null); await reload(); }); };
+  const startEdit = (c: Coachee) => {
+    setEditId(c.id);
+    setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', email: c.email || '', phone: c.phone || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '', referee_id: c.referee_id || '' });
+    setEditSvText(registerNameOf(c.referee_id));
+  };
+  // The link's counts, said in a toast where the button was pressed, and
+  // its lists kept on the card: a name the register holds twice needs a
+  // person to decide, and that is worth more than a number in a sentence.
+  const showLink = (r: Partial<LinkReport>) => {
+    if (typeof r.linked !== 'number') return; // an API one version behind
+    const report = { linked: r.linked, alreadyLinked: r.alreadyLinked ?? 0, unmatched: r.unmatched ?? [], ambiguousNames: r.ambiguousNames ?? [] };
+    setLinkReport(report);
+    toast.success(t.linkToast(report.linked, report.unmatched.length, report.ambiguousNames.length), { lang });
+  };
   const remove = async (c: Coachee) => {
     // What goes with the row, said before the question: a coachee with filed
     // forms is a very different deletion from a row typed in by mistake.
@@ -1575,7 +1766,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     setImporting(true); setNotice('');
-    try { const parsed = await parseXlsx(file); if (!parsed.length) { setNotice(t.noRows); return; } const res = await importCoachees(parsed, season); setNotice(t.importResult(seasonLabel(season), res.created, res.updated, res.total)); await reload(); }
+    try { const parsed = await parseXlsx(file); if (!parsed.length) { setNotice(t.noRows); return; } const res = await importCoachees(parsed, season); setNotice(t.importResult(seasonLabel(season), res.created, res.updated, res.total)); setSvConflicts(res.svConflicts ?? []); showLink(res); await reload(); }
     catch (err) { setNotice(t.importFail(String(err))); } finally { setImporting(false); e.target.value = ''; }
   };
   const syncContacts = async () => {
@@ -1587,6 +1778,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
       ].filter(Boolean).join(' '));
       setSyncMissing(r.missing);
       setSyncAmbiguous(r.ambiguous ?? []);
+      showLink(r);
       await reload();
     // The message, not String(err): that prefixed every failure with a bare
     // "Error:" in front of the sentence the server took care to write.
@@ -1605,6 +1797,11 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
         </div>
         <p className="text-xs text-stone-400">{t.importHint(seasonLabel(season))}</p>
         {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}
+        {svConflicts.length > 0 && (
+          <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+            {t.importSvConflicts}: {svConflicts.map((c) => `${c.name} (${c.stored} ≠ ${c.sheet})`).join(', ')}
+          </p>
+        )}
 
         {/* Step 2 of the import: the XLSX has no email column, and without an
             address the feedback submit fails at the very end. */}
@@ -1635,13 +1832,22 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
           {syncMissing.length > 0 && (
             <p className="mt-2 text-xs text-stone-500">{t.syncNotFoundList}: {syncMissing.join(', ')}</p>
           )}
+          {/* The register link that ran after the import or the sync. */}
+          {linkReport && linkReport.ambiguousNames.length > 0 && (
+            <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+              {t.rosterAmbiguous}: {linkReport.ambiguousNames.join(', ')}
+            </p>
+          )}
+          {linkReport && linkReport.unmatched.length > 0 && (
+            <p className="mt-2 text-xs text-stone-500">{t.rosterUnmatched}: {linkReport.unmatched.join(', ')}</p>
+          )}
         </div>
       </Card>
       {/* The roster the coachee list is a subset of. It sits under the coachee
           import because that is the order the work happens in — register first,
           then who is being coached this season out of it — and because the
           import's second half writes into the coachees above. */}
-      <RefereeRosterAdmin t={t} onLinked={() => void reload()} />
+      <RefereeRosterAdmin t={t} roster={roster} onRoster={reloadRoster} onLinked={() => void reload()} />
       <Card>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
           <input className={cn(input, 'sm:col-span-3')} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
@@ -1661,11 +1867,35 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
             {STUFEN.map((v) => <option key={v} value={v} className="text-stone-900">{v}</option>)}
           </select>
           <div className="sm:col-span-4"><GroupMultiSelect groups={groups} value={form.groups} onChange={(v) => setForm({ ...form, groups: v })} placeholder={t.chooseGroups} /></div>
-          <button onClick={add} disabled={!form.first_name && !form.last_name} className={cn(btnPrimary, 'justify-center sm:col-span-5 sm:justify-self-end')}><Plus size={15} /> {t.add}</button>
+          {/* The number, picked off the register: what every game match asks
+              first, so a coachee typed in by hand is not left to the spelling. */}
+          <div className="col-span-2 sm:col-span-5" aria-label={t.svNumber}>
+            <SvField id="coachee-sv" text={svText} sv={form.referee_id} people={registerPeople} t={t}
+              onChange={(pick) => { setSvText(pick.name); setForm({ ...form, referee_id: pick.svNumber }); }} />
+          </div>
+          {/* Beside the SV-Nr. field, not under it: its list opens downward
+              over whatever sits there, and a click meant for this button
+              would pick a referee instead. */}
+          <button onClick={add} disabled={!form.first_name && !form.last_name} className={cn(btnPrimary, 'justify-center col-span-2 sm:col-span-7 sm:justify-self-end')}><Plus size={15} /> {t.add}</button>
         </div>
       </Card>
       <Card>
-        <p className="text-xs text-stone-400 mb-2">{settling ? t.loading : t.count(rows.length, seasonLabel(season))}</p>
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <p className="text-xs text-stone-400">{settling ? t.loading : t.count(seasonRows.length, seasonLabel(season))}</p>
+          {/* Pressed, the list shows only these; pressed again, everyone. */}
+          {!settling && unlinked.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setOnlyUnlinked((v) => !v)}
+              aria-pressed={onlyUnlinked}
+              title={t.svMissingHint}
+              className={cn('inline-flex items-center gap-1 h-6 px-2 rounded-full border text-[11px] font-medium transition-colors',
+                onlyUnlinked ? 'bg-amber-600 border-amber-600 text-white' : 'bg-amber-50 border-amber-100 text-amber-700 hover:bg-amber-100')}
+            >
+              <AlertTriangle size={11} /> {t.svMissing(unlinked.length)}
+            </button>
+          )}
+        </div>
         <div className="divide-y divide-stone-100">
           {/* Held whole: a row list filtered by a season that is still being
               read is last season's people under this season's heading. */}
@@ -1684,14 +1914,20 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
                 {STUFEN.map((v) => <option key={v} value={v} className="text-stone-900">{v}</option>)}
               </select>
               <div className="sm:col-span-4"><GroupMultiSelect groups={groups} value={editForm.groups} onChange={(v) => setEditForm({ ...editForm, groups: v })} placeholder={t.chooseGroups} /></div>
-              <div className="flex gap-1.5 sm:col-span-5 sm:justify-self-end"><button onClick={() => saveEdit(c.id)} className={btnPrimary}><Check size={15} /></button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
+              <div className="col-span-2 sm:col-span-5" aria-label={t.svNumber}>
+                <SvField id={`coachee-sv-${c.id}`} text={editSvText} sv={editForm.referee_id} people={registerPeople} t={t}
+                  onChange={(pick) => { setEditSvText(pick.name); setEditForm({ ...editForm, referee_id: pick.svNumber }); }} />
+              </div>
+              <div className="flex gap-1.5 col-span-2 sm:col-span-7 sm:justify-self-end"><button onClick={() => saveEdit(c.id)} className={btnPrimary} aria-label={t.save} title={t.save}><Check size={15} /></button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
             </div>
           ) : (
             <div key={c.id} className="py-2">
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-stone-800 truncate">{surnameFirstLabel(c)}</p>
-                  <p className="text-xs text-stone-400 truncate"><LevelText level={c.referee_level} stage={c.stage} />{c.groups ? ` · ${c.groups}` : ''}</p>
+                  {/* The number beside the level, or its absence in amber:
+                      the badge above counts these, the row says which. */}
+                  <p className="text-xs text-stone-400 truncate"><LevelText level={c.referee_level} stage={c.stage} />{c.groups ? ` · ${c.groups}` : ''} · {c.referee_id ? t.svLinked(c.referee_id) : <span className="text-amber-600 font-medium">{t.svNone}</span>}</p>
                   {/* Without an address the feedback submit fails at the very
                       end, after the whole form is filled in — flag it early. */}
                   <p className={cn('text-xs truncate', c.email ? 'text-stone-400' : 'text-amber-600 font-medium')}>
@@ -1704,7 +1940,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
                   </p>
                 </div>
                 <button onClick={() => setTargetEditId(targetEditId === c.id ? null : c.id)} className={cn(btnGhost, targetEditId === c.id && 'bg-stone-100')} title={t.target}><Target size={13} /></button>
-                <button onClick={() => { setEditId(c.id); setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', email: c.email || '', phone: c.phone || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '' }); }} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
+                <button onClick={() => startEdit(c)} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
                 <button onClick={() => remove(c)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
               </div>
               <div className="flex items-center gap-1.5 mt-1 pl-0.5">
@@ -3448,18 +3684,32 @@ function LogHistory({ t, lang, active }: { t: T; lang: Lang; active: boolean }) 
 // as a 422 at the end of a filled-in feedback form.
 type PickPerson = { id: string; name: string; email?: string; warn?: string; svNumber?: string };
 
+/** What the picker hands back: the name in the field, and — only for a row
+ *  picked off the list — who that is. Typing yields an empty id and number,
+ *  so a name edited after a pick never keeps the identity of whoever was
+ *  picked before it. */
+type PersonPick = { name: string; id: string; svNumber: string };
+
+const typedPick = (name: string): PersonPick => ({ name, id: '', svNumber: '' });
+
 /** A name field backed by the list of people the app knows. Typing filters it
- *  accent-blind ("Muller" finds "Müller") and every row carries the e-mail
- *  beside the name — aiming a test game at an inbox you can open is the whole
- *  reason to pick from a list instead of typing. Free text still goes through:
- *  a game may carry a referee who is nobody's coachee, and the old form could
- *  write one. */
-function PersonPicker({ id, value, onChange, people, t }: {
+ *  accent-blind ("Muller" finds "Müller"), by number too, and every row
+ *  carries the e-mail beside the name — aiming a test game at an inbox you
+ *  can open is the whole reason to pick from a list instead of typing. Free
+ *  text still goes through: a game may carry a referee who is nobody's
+ *  coachee, and the old form could write one. `describe` is the line under
+ *  each row and `footer` the one under the field — the address by default,
+ *  grey when the pick would reach somebody; the SV-Nr. field says the
+ *  number instead, and whether the field holds a link at all. */
+function PersonPicker({ id, value, onChange, people, t, describe, footer, placeholder }: {
   id: string;
   value: string;
-  onChange: (name: string) => void;
+  onChange: (pick: PersonPick) => void;
   people: PickPerson[];
   t: T;
+  describe?: (p: PickPerson) => { text: string; ok: boolean };
+  footer?: (exact: PickPerson | undefined) => { text: string; ok: boolean };
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
@@ -3481,7 +3731,7 @@ function PersonPicker({ id, value, onChange, people, t }: {
   const hasList = people.length > 0;
   const terms = foldName(value).split(' ').filter(Boolean);
   const matches = people.filter((p) => {
-    const hay = `${foldName(p.name)} ${foldName(p.email || '')}`;
+    const hay = `${foldName(p.name)} ${foldName(p.email || '')} ${p.svNumber || ''}`;
     return terms.every((term) => hay.includes(term));
   });
   const shown = matches.slice(0, 50);
@@ -3491,8 +3741,10 @@ function PersonPicker({ id, value, onChange, people, t }: {
   // row. Grey only when this pick would actually reach somebody.
   const line = (p: PickPerson) => [p.email || t.noEmail, p.warn].filter(Boolean).join(' · ');
   const reaches = (p: PickPerson) => Boolean(p.email) && !p.warn;
+  const detail = describe ?? ((p: PickPerson) => ({ text: line(p), ok: reaches(p) }));
+  const under = footer ?? ((p: PickPerson | undefined) => (p ? detail(p) : { text: t.mgPickUnknown, ok: false }));
 
-  const pick = (p: PickPerson) => { onChange(p.name); setOpen(false); };
+  const pick = (p: PickPerson) => { onChange({ name: p.name, id: p.id, svNumber: p.svNumber || '' }); setOpen(false); };
   const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Escape') { setOpen(false); return; }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -3510,9 +3762,9 @@ function PersonPicker({ id, value, onChange, people, t }: {
         id={id}
         className={input}
         value={value}
-        placeholder={t.mgPickSearch}
+        placeholder={placeholder ?? t.mgPickSearch}
         autoComplete="off"
-        onChange={(e) => { onChange(e.target.value); setOpen(true); setHi(0); }}
+        onChange={(e) => { onChange(typedPick(e.target.value)); setOpen(true); setHi(0); }}
         onFocus={() => setOpen(true)}
         // Tab moves focus without a click, so the pointerdown guard above never
         // fires; this is what closes the list behind a field being left.
@@ -3543,8 +3795,8 @@ function PersonPicker({ id, value, onChange, people, t }: {
               className={cn('w-full text-left px-3 py-1.5', i === hi && 'bg-stone-50')}
             >
               <span className="block text-sm text-stone-800 truncate">{p.name}</span>
-              <span className={cn('block text-[11px] truncate', reaches(p) ? 'text-stone-400' : 'text-amber-600')}>
-                {line(p)}
+              <span className={cn('block text-[11px] truncate', detail(p).ok ? 'text-stone-400' : 'text-amber-600')}>
+                {detail(p).text}
               </span>
             </button>
           ))}
@@ -3558,8 +3810,8 @@ function PersonPicker({ id, value, onChange, people, t }: {
       {/* Under the field, the consequence of what stands in it: which address
           the feedback would reach, or that this name is nobody the app knows. */}
       {hasList && value.trim() !== '' && (
-        <span className={cn('mt-0.5 block text-[11px] truncate', exact && reaches(exact) ? 'text-stone-400' : 'text-amber-600')}>
-          {exact ? line(exact) : t.mgPickUnknown}
+        <span className={cn('mt-0.5 block text-[11px] truncate', under(exact).ok ? 'text-stone-400' : 'text-amber-600')}>
+          {under(exact).text}
         </span>
       )}
     </div>
@@ -3652,7 +3904,7 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
   // 20:00 is the ordinary evening kick-off; it is a field rather than a fixture
   // because a test of "the game is tomorrow" mail, or of a Saturday afternoon
   // fixture, needs its own time.
-  const empty = { match_no: '', league: '', match_date: today, match_time: '20:00', location: '', home_team: '', away_team: '', first_referee: '', second_referee: '', assigned_rc: '' };
+  const empty = { match_no: '', league: '', match_date: today, match_time: '20:00', location: '', home_team: '', away_team: '', first_referee: '', first_referee_id: '', second_referee: '', second_referee_id: '', assigned_rc: '' };
   const [f, setF] = useState(empty);
   const [busy, setBusy] = useState(false);
   const [made, setMade] = useState<{ id: string; match_no?: string } | null>(null);
@@ -3665,7 +3917,13 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
   // coachees alone, which is a smaller list than the label promises.
   const [dirErr, setDirErr] = useState('');
   const set = (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
-  const setName = (k: keyof typeof empty) => (v: string) => setF({ ...f, [k]: v });
+  const setName = (k: keyof typeof empty) => (pick: PersonPick) => setF({ ...f, [k]: pick.name });
+  // A referee's number rides with the name it was picked with, and leaves
+  // with it: the picker hands back an empty number for anything typed, so a
+  // name edited after the pick cannot keep the number of whoever was picked
+  // before it. Nobody in the register means no number — and none invented.
+  const setReferee = (nameKey: 'first_referee' | 'second_referee', idKey: 'first_referee_id' | 'second_referee_id') =>
+    (pick: PersonPick) => setF({ ...f, [nameKey]: pick.name, [idKey]: pick.svNumber });
   // The league is one string ("3L ♂"), because that is what a game carries and
   // what every reader of a league parses. The form splits it in two only to
   // offer the symbol as a choice rather than as something to be typed.
@@ -3716,12 +3974,6 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
     })();
   }, [active, listsAsked, t]);
 
-  // Which SV-Nr. stands behind the name in a field, if the name came off the
-  // register. Read back from the option list rather than tracked in state: the
-  // field is still free text, and a name edited after being picked must not
-  // keep the number of whoever was picked before it.
-  const svNumberFor = (name: string) => refs.find((p) => foldName(p.name) === foldName(name))?.svNumber || '';
-
   const create = async () => {
     setBusy(true); setErr('');
     try {
@@ -3731,8 +3983,6 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
       const created = await createGame({
         ...f,
         match_time: f.match_time || '20:00',
-        first_referee_id: svNumberFor(f.first_referee),
-        second_referee_id: svNumberFor(f.second_referee),
       });
       setMade({ id: created.id, match_no: created.match_no });
       setF(empty);
@@ -3792,9 +4042,9 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
             knows, and the only way to see which address that is, is to have
             the list say so. */}
         <div className="flex flex-col gap-1"><label htmlFor="mg-ref1" className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRef1}</label>
-          <PersonPicker id="mg-ref1" value={f.first_referee} onChange={setName('first_referee')} people={refs} t={t} /></div>
+          <PersonPicker id="mg-ref1" value={f.first_referee} onChange={setReferee('first_referee', 'first_referee_id')} people={refs} t={t} /></div>
         <div className="flex flex-col gap-1"><label htmlFor="mg-ref2" className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRef2}</label>
-          <PersonPicker id="mg-ref2" value={f.second_referee} onChange={setName('second_referee')} people={refs} t={t} /></div>
+          <PersonPicker id="mg-ref2" value={f.second_referee} onChange={setReferee('second_referee', 'second_referee_id')} people={refs} t={t} /></div>
         <div className="flex flex-col gap-1"><label htmlFor="mg-rc" className="text-[11px] font-semibold uppercase text-stone-500">{t.mgRc}</label>
           <PersonPicker id="mg-rc" value={f.assigned_rc} onChange={setName('assigned_rc')} people={rcs} t={t} /></div>
       </div>

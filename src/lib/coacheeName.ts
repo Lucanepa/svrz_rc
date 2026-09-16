@@ -1,3 +1,5 @@
+import { foldName } from './identity';
+
 /** Sorting key for a coachee's name.
  *
  *  The lists SHOW "Vorname Nachname" — that is how a coach reads a name off a
@@ -50,18 +52,10 @@ export function surnameFirstLabel(c: { first_name?: string; last_name?: string; 
   return `${parts[parts.length - 1]}, ${parts.slice(0, -1).join(' ')}`;
 }
 
-/** Fold a name for COMPARISON — case-blind, accent-blind, spaces squeezed.
- *
- *  "Müller" off a game sheet and "Muller" in the coachee list are the same
- *  referee, and which of the two a record carries is not something the app gets
- *  to choose. Lived in App.tsx and again in the admin console, which is one copy
- *  too many for a rule both sides have to agree on to the letter: a game whose
- *  referee folds differently in the two places is a coachee in one list and a
- *  stranger in the other.
- */
-export function foldName(value: string): string {
-  return value.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\s+/g, ' ');
-}
+// The fold itself now lives in identity.ts, next to the id-first rules it
+// serves, and is re-exported here so the three importers of this module keep
+// their import line. Same function, one definition.
+export { foldName };
 
 /** Every name a game's referee line can be written as, pointing at the coachee
  *  it belongs to.

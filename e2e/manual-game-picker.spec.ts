@@ -1,5 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
+import { randomInt } from 'node:crypto';
 import { stubSignedInApp } from './support/app';
+import { manualMatchNo } from '../server/dataHygiene';
 
 // The manual-game form used to take three free-text names. Nothing on screen
 // said whether "Luca Canepa" was a person the app knows, and a test game whose
@@ -178,5 +180,60 @@ test.describe('Manual game name pickers', () => {
     // A bare date and a wall clock — the region is the server's to apply.
     expect(sent.match_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(sent.match_time).toBe('14:30');
+  });
+
+  test('a name edited after the pick leaves without its number', async ({ page }) => {
+    await openManualGameForm(page);
+
+    let posted: Record<string, unknown> | null = null;
+    await page.route('**/api/admin/games', (r) => {
+      posted = r.request().postDataJSON();
+      return r.fulfill({ status: 201, json: { id: 'g-new', match_no: 'TEST-3' } });
+    });
+
+    // Picked, then typed over: the number rode in with the pick and must not
+    // stay behind for a name that is no longer the picked person's.
+    await page.locator('#mg-ref1').fill('canepa');
+    await page.getByRole('button', { name: /Luca Canepa/ }).click();
+    await page.locator('#mg-ref1').fill('Luca Canepa-Meier');
+    await page.locator('#mg-ref1').press('Escape');
+
+    await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
+    await expect(page.getByText(/(Angelegt|Created): TEST-3/)).toBeVisible();
+    const sent = posted as unknown as { first_referee: string; first_referee_id: string };
+    expect(sent.first_referee).toBe('Luca Canepa-Meier');
+    expect(sent.first_referee_id).toBe('');
+  });
+});
+
+// ── One number, one game ──────────────────────────────────────────────
+// The number is what the reminder, the survey and the Börse look a game up
+// by; a typed duplicate would make every one of those mean whichever row
+// sorts newest. The server refuses it naming the game, and the default it
+// hands a game without one is the day and four random characters — the old
+// six clock digits wrapped every 16.7 minutes and were never checked.
+
+test.describe('the match number of a manual game', () => {
+  test('a typed number another game holds is refused, and the refusal names that game', async ({ page }) => {
+    await openManualGameForm(page);
+    await page.route('**/api/admin/games', (r) => r.fulfill({
+      status: 409,
+      json: { error: 'Die Spiel-Nr. 2345678 gibt es schon: VBC Züri Unterland – Volley Näfels II, 15.11.2026.' },
+    }));
+
+    await page.getByLabel(/Spiel-Nr\.|Match no\./).fill('2345678');
+    await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
+    // The server's sentence, with the game in it — not "Could not create game".
+    await expect(page.getByText(/gibt es schon: VBC Züri Unterland – Volley Näfels II, 15\.11\.2026/)).toBeVisible();
+    await expect(page.getByText(/(Angelegt|Created):/)).toHaveCount(0);
+  });
+
+  test('the generated number is TEST-<day>-<four base-36 characters>', () => {
+    // The shape, with node's own random source — what the server passes.
+    expect(manualMatchNo('2026-09-16', randomInt)).toMatch(/^TEST-\d{8}-[a-z0-9]{4}$/);
+    expect(manualMatchNo('2026-09-16', randomInt)).toMatch(/^TEST-20260916-/);
+    // Every value in [0, 36) is a character; the ends of the alphabet both print.
+    expect(manualMatchNo('2026-01-02', () => 0)).toBe('TEST-20260102-0000');
+    expect(manualMatchNo('2026-01-02', () => 35)).toBe('TEST-20260102-zzzz');
   });
 });

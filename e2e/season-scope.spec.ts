@@ -5,7 +5,7 @@ import { stubSignedInApp, GAME, RC } from './support/app';
 // imported for 26/27 is not a coachee now — but the games list matched referees
 // against every name ever imported, so she kept turning up on this season's
 // fixtures wearing last season's Niveau and a group ("Referee Coaching") that
-// 26/27 does not even have. Server side: getCoacheeNameIndex keys the names by
+// 26/27 does not even have. Server side: buildCoacheeIndex keys the rows by
 // season and matches a game against the season its own date falls in. Client
 // side: isInSeason() scopes the badge, the filters and the name lookup.
 //

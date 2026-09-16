@@ -387,6 +387,19 @@ export async function listCoachees(): Promise<Coachee[]> {
   return response.json() as Promise<Coachee[]>;
 }
 
+// A refused write — a number that is not in the register, or one another
+// row of the season already holds — comes back as a sentence in `error`.
+// It used to be thrown as the raw response text, which put the JSON
+// envelope on screen around the sentence the server took care to write.
+async function writeError(response: Response, fallback: string): Promise<Error> {
+  const text = await response.text();
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown };
+    if (typeof parsed.error === 'string' && parsed.error) return new Error(parsed.error);
+  } catch { /* not JSON — the text itself is the message */ }
+  return new Error(text || fallback);
+}
+
 export async function createCoachee(payload: Partial<Coachee>) {
   const response = await fetch(apiUrl('/api/coachees'), {
     credentials: 'include',
@@ -395,7 +408,7 @@ export async function createCoachee(payload: Partial<Coachee>) {
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    throw await writeError(response, 'Could not create coachee');
   }
   return response.json();
 }
@@ -409,7 +422,7 @@ export async function updateCoachee(id: string, payload: Partial<Coachee>) {
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    throw await writeError(response, 'Could not update coachee');
   }
   return response.json();
 }
@@ -1006,15 +1019,33 @@ export type RefereeImportRow = {
   dispensed?: boolean;
   language?: string;
 };
-export type RefereeImportResult = {
-  created: number; updated: number; skipped: number; total: number;
-  // The second half of the import: coachee rows that now carry their SV-Nr.
+// The register link's report: coachee rows that now carry their SV-Nr.,
+// rows that already did, and the names it would not decide. It rides on
+// every import and on the contact sync, and answers the button on its own.
+export type LinkReport = {
   linked: number; alreadyLinked: number;
+  // Coachees the register does not hold under any spelling.
   unmatched: string[];
   // Coachees whose name answers to more than one referee. Nothing is written
   // for them — guessing puts one person's report in another's inbox.
   ambiguousNames: string[];
 };
+
+// The games backfill's report: whistle slots that gained their referee's
+// number because the register spells the printed name under one licence.
+// Slots, not games — a game has two. The two lists are printed names.
+export type BackfillReport = {
+  games: number; filled: number; already: number; blank: number;
+  unresolved: string[];
+  ambiguous: string[];
+};
+
+export type RefereeImportResult = {
+  created: number; updated: number; skipped: number; total: number;
+  // The third step of the import: the stored games, given their numbers.
+  // Optional on the wire — an API one version behind does not send it.
+  backfill?: BackfillReport;
+} & LinkReport;
 
 export async function importReferees(referees: RefereeImportRow[]): Promise<RefereeImportResult> {
   const r = await fetch(apiUrl('/api/admin/referees/import'), {
@@ -1022,6 +1053,21 @@ export async function importReferees(referees: RefereeImportRow[]): Promise<Refe
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ referees }),
   });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Import failed');
+  return r.json();
+}
+
+/** The register link on its own: whoever is still matched by name gets
+ *  their number if the register spells them once. */
+export async function linkCoacheeReferees(): Promise<LinkReport> {
+  const r = await fetch(apiUrl('/api/admin/coachees/link-referees'), { method: 'POST', credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not link coachees');
+  return r.json();
+}
+
+/** The stored games, given their referees' numbers from the register. */
+export async function backfillGameRefereeIds(): Promise<BackfillReport> {
+  const r = await fetch(apiUrl('/api/admin/games/backfill-referee-ids'), { method: 'POST', credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not backfill referee numbers');
   return r.json();
 }
 
@@ -1045,7 +1091,9 @@ export type ContactSyncResult = {
   // Names VolleyManager holds for more than one referee. Nothing is written for
   // these — guessing would put one person's report in another's inbox.
   ambiguous?: string[];
-};
+  // The register link runs after the sync; every field optional because an
+  // API one version behind sends none of them.
+} & Partial<LinkReport>;
 
 export async function syncCoacheeContacts(season: number, overwrite = false): Promise<ContactSyncResult> {
   const r = await fetch(apiUrl('/api/admin/coachees/sync-contacts'), {
@@ -1240,8 +1288,14 @@ export async function deleteLogMuteRule(id: string): Promise<void> {
   if (!r.ok) throw new Error(await r.text());
 }
 
-export type ImportRow = { full_name?: string; first_name?: string; last_name?: string; email?: string; phone?: string; referee_level?: string; stage?: string; groups?: string; notes?: string };
-export async function importCoachees(coachees: ImportRow[], season: number): Promise<{ created: number; updated: number; total: number }> {
+// `referee_id` is the sheet's optional SV-Nr. column; the server writes it
+// only when the register holds the number.
+export type ImportRow = { full_name?: string; first_name?: string; last_name?: string; email?: string; phone?: string; referee_level?: string; stage?: string; groups?: string; notes?: string; referee_id?: string };
+// A row whose stored number the sheet contradicts: the stored one stays
+// (a hand link is not the sheet's to undo), and the row is named here.
+export type SvConflict = { name: string; stored: string; sheet: string };
+export type CoacheeImportResult = { created: number; updated: number; total: number; svConflicts?: SvConflict[] } & Partial<LinkReport>;
+export async function importCoachees(coachees: ImportRow[], season: number): Promise<CoacheeImportResult> {
   const r = await fetch(apiUrl('/api/coachees/import'), {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ coachees, season }),

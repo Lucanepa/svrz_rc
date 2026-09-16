@@ -15,7 +15,7 @@ import {
   type AnnotationStatus,
 } from './logquery.ts';
 import { installErrorAlerts } from './erroralerts.ts';
-import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter, indexBySeason } from './season.ts';
+import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
 import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, type ExpenseVisit } from './expenses.ts';
 import { computeStatistics, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
 import { archiveSlug, formsRowOf, formsEntryName, groupForms, folderKeys, type FormsRow } from './forms.ts';
@@ -38,7 +38,9 @@ import {
 import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
 import { fetchBoerseOffers, planReconcile, type BoerseOfferRow } from './boerse.ts';
-import { isVmMarkedRow, isRowWanted, vmFactsPatch } from './gamesSync.ts';
+import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame } from './gamesSync.ts';
+import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
+import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan } from './dataHygiene.ts';
 import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
 import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
 
@@ -1846,41 +1848,71 @@ function mapIncomingGame(raw: Record<string, unknown>) {
   };
 }
 
-async function upsertGame(gameData: ReturnType<typeof mapIncomingGame>) {
+/** The stored game a match number names — ONE answer, the same for every
+ *  lookup that asks by number.
+ *
+ *  Newest first: VolleyManager has reused a number across seasons, and an
+ *  unsorted fetch answered whichever row PocketBase felt like, so the sync
+ *  refresh, the börse and the reminder could each mean a different game by
+ *  the same number. Sorted by date the newest wins — the rule the survey
+ *  already applied. `excludeIds` is for the sync: the ids in manual_games,
+ *  so a number typed onto a test game never has the real fixture written
+ *  over it (a manual game carries no external_id, so it is only ever reached
+ *  through this key). Missing column, missing row, missing collection: null. */
+async function findGameByMatchNo(matchNo: string, opts: { excludeIds?: Set<string> } = {}): Promise<AnyRecord | null> {
+  const no = asText(matchNo);
+  if (!no) return null;
+  try {
+    const rows = await withCollection(collectionCandidates.games, (games) =>
+      games.getFullList<AnyRecord>({ filter: `match_no = "${escapeFilterValue(no)}"`, sort: '-match_date' }));
+    return rows.find((g) => !opts.excludeIds?.has(String(g.id))) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function upsertGame(gameData: ReturnType<typeof mapIncomingGame>, manualIds: Set<string>) {
   await ensureAdminAuth();
   return withCollection(collectionCandidates.games, async (games) => {
-    // Try every key in turn instead of committing to the first one. Filtering on
-    // a column the collection doesn't declare *throws*, and `external_id` has
-    // never existed in this schema — so that branch used to swallow the error
-    // and fall through to create(), duplicating every game a sync re-touched.
-    // match_no (VM's game number) is the real identity; match_date must stay out
-    // of the key because a postponed game changes date and would duplicate.
-    const filters = [
-      gameData.external_id ? `external_id = "${escapeFilterValue(gameData.external_id)}"` : '',
-      gameData.match_no ? `match_no = "${escapeFilterValue(gameData.match_no)}"` : '',
-    ].filter(Boolean);
-
+    // external_id first, then the match number. Filtering on a column the
+    // collection doesn't declare *throws*, and `external_id` once did not exist
+    // in this schema — so that branch used to swallow the error and fall
+    // through to create(), duplicating every game a sync re-touched. match_no
+    // (VM's game number) is the real identity; match_date must stay out of the
+    // key because a postponed game changes date and would duplicate. The
+    // number lookup skips the manual games: a hand-typed fixture is never the
+    // sync's to adopt, whatever number the admin gave it.
     let existing: AnyRecord | null = null;
-    for (const filter of filters) {
+    if (gameData.external_id) {
       try {
-        existing = await games.getFirstListItem<AnyRecord>(filter);
-        break;
+        existing = await games.getFirstListItem<AnyRecord>(`external_id = "${escapeFilterValue(gameData.external_id)}"`);
       } catch {
-        existing = null; // no match, or the column doesn't exist — try the next key
+        existing = null; // no match, or the column doesn't exist — try the number
       }
     }
+    if (!existing) existing = await findGameByMatchNo(gameData.match_no, { excludeIds: manualIds });
 
     // PocketBase drops keys the collection doesn't declare instead of erroring,
     // so a column added here only lands once it exists in the schema too
     // (deploy/hetzner/seed/setup-schema.mjs).
     if (existing) {
-      // VolleyManager publishes the score days after the match, so a sync that
-      // runs before it does carries an empty one. That absence is not news —
-      // blanking the record would throw away a score already on it, whether an
-      // earlier sync or a coach typing it into the feedback form put it there.
-      return games.update(existing.id, gameData.game_result
-        ? gameData
-        : { ...gameData, game_result: asText(existing.game_result) });
+      // Not the payload whole: the stored SV number of a referee the incoming
+      // row names without one, and a score the row does not carry yet, both
+      // survive — the rules are gamesSync.ts's, where they are tested.
+      return games.update(existing.id, mergeIncomingGame(existing, gameData));
+    }
+    // A manual game typed with the real fixture's number — an admin handing
+    // a coach tomorrow's game before the nightly run — is the one holder the
+    // lookup above skipped. The fixture is still stored (it is the one
+    // VolleyManager keeps current; the typed one is the admin's to delete),
+    // but two rows on one number is what every lookup by number then has to
+    // resolve by date, so it is said once, here, where it happens, instead
+    // of waiting for the audit to list it.
+    const manualHolder = await findGameByMatchNo(gameData.match_no);
+    if (manualHolder) {
+      log.warn('games.sync.manual-collision', 'a manual game carries the number of the VolleyManager fixture being stored; both rows now exist', {
+        matchNo: gameData.match_no, manualGameId: String(manualHolder.id),
+      });
     }
     return games.create(gameData);
   });
@@ -2197,17 +2229,6 @@ async function fetchVmRefereeContactsUnlocked(username: string, password: string
     }
   }
   return out;
-}
-
-// Both name orders, because the XLSX and VolleyManager disagree on which comes
-// first and nothing downstream knows which one it is holding.
-function nameKeyVariants(name: string): string[] {
-  const norm = normalizeName(name);
-  if (!norm) return [];
-  const parts = norm.split(' ').filter(Boolean);
-  if (parts.length < 2) return [norm];
-  const reversed = [...parts].reverse().join(' ');
-  return reversed === norm ? [norm] : [norm, reversed];
 }
 
 type VmContact = { email: string; phone: string; level?: string };
@@ -2724,62 +2745,98 @@ function transformVmGame(item: Record<string, unknown>): Record<string, unknown>
 // for 26/27 is NOT a coachee this season. Matching games against one flat set of
 // every name ever imported put last season's people back on this season's game
 // list, wearing last season's Niveau and groups on the badge — a group that no
-// longer exists at all. So names are indexed BY season, and a game is matched
+// longer exists at all. So rows are indexed BY season, and a game is matched
 // against the season its OWN date falls in, not against whichever season the
 // reader happens to have open.
 //
 // Rows with no season (imports predating the field) stay season-agnostic and
 // match everywhere — the same rule the coachee list applies.
-type CoacheeNameIndex = {
-  /** Names that are coachees in `season`; null matches every season. */
-  forSeason: (season: number | null) => Set<string>;
-  /** Distinct names across all seasons — for diagnostics, not for matching. */
-  size: number;
-};
+//
+// The matching itself — SV number, then the register, then the folded name —
+// is buildCoacheeIndex's (server/coacheeIndex.ts); this reads the two lists
+// it needs and hands a name-tier disagreement to the log.
 
-async function getCoacheeNameIndex(prefetchedCoachees?: AnyRecord[]): Promise<CoacheeNameIndex> {
-  const coachees = prefetchedCoachees ?? await listCoacheesWithFallbackSort();
-  const bySeason = new Map<number, Set<string>>();
-  const seasonless = new Set<string>();
-  const everyone = new Set<string>();
+// The register, cached the way the RC roster is: every list asks the index
+// about two slots per game, and the register changes only when an admin
+// imports the XLSX — which drops this cache, so the new links count at once.
+let refereeRegisterCache: { data: AnyRecord[]; expiresAt: number } | null = null;
 
-  for (const coachee of coachees) {
-    const firstName = asText(coachee.first_name ?? coachee.vorname);
-    const lastName = asText(coachee.last_name ?? coachee.nachname);
-    const season = coacheeRowSeason(coachee.season);
-    let target = seasonless;
-    if (season != null) {
-      target = bySeason.get(season) ?? new Set<string>();
-      bySeason.set(season, target);
+async function getRefereeRegister(): Promise<AnyRecord[]> {
+  if (refereeRegisterCache && Date.now() < refereeRegisterCache.expiresAt) return refereeRegisterCache.data;
+  // Read directly, not through listRefereeRecords: that answers an empty
+  // register to ANY failure — a 429 that survived the one retry, a 5xx,
+  // PocketBase restarting under a deploy — and an empty register cached for
+  // ten minutes is ten minutes in which every list, the sync, the submit and
+  // the reminder lose the register tier, the import ignores the sheet's
+  // SV-Nr. column and every coachee save with a number is refused as "not in
+  // the register". Only a successful read is cached. A collection that does
+  // not exist yet (setup-schema not re-run after this deploy) IS an empty
+  // register and may be; anything else keeps serving the last good read when
+  // there is one — the register only changes at an import, which drops the
+  // cache — and otherwise propagates, the way getActiveRcPeople's does.
+  await ensureAdminAuth();
+  let data: AnyRecord[];
+  try {
+    data = await withCollection(collectionCandidates.referees, (c) =>
+      c.getFullList<AnyRecord>({ sort: 'last_name,first_name' }));
+  } catch (error) {
+    if (!isMissingCollectionError(error)) {
+      recordLog({ lvl: 'warn', src: 'server', evt: 'referees.unavailable', msg: safeError(error) });
+      if (refereeRegisterCache) return refereeRegisterCache.data;
+      throw error;
     }
-
-    for (const variant of [
-      coachee.full_name,
-      coachee.name,
-      coachee.coachee_name,
-      coachee.referee_name,
-      `${firstName} ${lastName}`.trim(),
-      `${lastName} ${firstName}`.trim(),
-    ]) {
-      const normalized = normalizeName(variant);
-      if (!normalized) continue;
-      target.add(normalized);
-      everyone.add(normalized);
-    }
+    data = [];
   }
+  refereeRegisterCache = { data, expiresAt: Date.now() + 10 * 60 * 1000 };
+  return data;
+}
 
-  const merged = new Map<number, Set<string>>();
-  return {
-    size: everyone.size,
-    forSeason: (season) => {
-      if (season == null || !Number.isFinite(season)) return everyone;
-      const cached = merged.get(season);
-      if (cached) return cached;
-      const set = new Set<string>([...(bySeason.get(season) ?? []), ...seasonless]);
-      merged.set(season, set);
-      return set;
-    },
-  };
+// A name-tier hit whose row is linked to another number than the slot
+// carries: accepted, because the register links are not yet trusted enough
+// to veto a name, and said once per game and pair of numbers rather than on
+// every list load — the games list asks the same question for every coach on
+// every visit, and a warning that repeats a hundred times a day is one nobody
+// reads. The audit lists these durably; this is the early signal.
+const svMismatchesWarned = new Set<string>();
+
+function warnSvMismatch(m: SvMismatch): void {
+  const key = `${m.matchNo}|${m.gameSv}|${m.rowSv}`;
+  if (svMismatchesWarned.has(key)) return;
+  svMismatchesWarned.add(key);
+  log.warn('identity.sv-mismatch', `"${m.name}" matched a coachee row by name whose SV-Nr. differs from the game's`, {
+    matchNo: m.matchNo, name: m.name, gameSv: m.gameSv, rowSv: m.rowSv,
+  });
+}
+
+async function getCoacheeIndex(prefetchedCoachees?: AnyRecord[]): Promise<CoacheeIndex> {
+  const [coachees, register] = await Promise.all([
+    prefetchedCoachees ?? listCoacheesWithFallbackSort(),
+    getRefereeRegister(),
+  ]);
+  return buildCoacheeIndex(coachees, register, warnSvMismatch);
+}
+
+/** The two whistle slots of a game record, as the index asks about them:
+ *  the number the convocation carried beside the printed name. Works on a
+ *  stored game and on a VolleyManager row after the transform alike — both
+ *  carry the same four columns. */
+function refereeSlotQueries(game: Record<string, unknown>): [CoacheeQuery, CoacheeQuery] {
+  const matchNo = asText(game.match_no);
+  return [
+    { sv: game.first_referee_id, name: game.first_referee, matchNo },
+    { sv: game.second_referee_id, name: game.second_referee, matchNo },
+  ];
+}
+
+/** The four people on a game — the referees with their numbers, the line
+ *  judges by name alone (a convocation carries no number for them). */
+function assignedQueries(game: Record<string, unknown>): CoacheeQuery[] {
+  const matchNo = asText(game.match_no);
+  return [
+    ...refereeSlotQueries(game),
+    { name: game.first_line_judge, matchNo },
+    { name: game.second_line_judge, matchNo },
+  ];
 }
 
 async function listCoacheesWithFallbackSort(): Promise<AnyRecord[]> {
@@ -2859,18 +2916,14 @@ export type BoerseOnGame = BoerseVerdict & { asOf: string };
  * fire in the failure it exists to catch.
  */
 async function makeBoerseVerdict(viewer: { mySv: string; myNames: Set<string> }) {
-  const [index, coacheeNames, manual] = await Promise.all([
-    getBoerseIndex(), getCoacheeNameIndex(), getManualGameIds(),
+  const [index, coachees, manual] = await Promise.all([
+    getBoerseIndex(), getCoacheeIndex(), getManualGameIds(),
   ]);
   const now = Date.now();
 
   return (game: AnyRecord): BoerseOnGame => {
     const offers = index.byMatch.get(asText(game.match_no)) ?? [];
-    const names = coacheeNames.forSeason(seasonOfGame(game.match_date));
-    const isCoachee = (value: unknown) => {
-      const text = normalizeName(value);
-      return text ? names.has(text) : false;
-    };
+    const season = seasonOfGame(game.match_date);
     // Same shape as makeRcGameTest's isRc: the SV number first, because it
     // survives a change of surname, and the recorded spellings after it.
     const isMe = (value: unknown, svNumber: unknown) => {
@@ -2880,9 +2933,10 @@ async function makeBoerseVerdict(viewer: { mySv: string; myNames: Set<string> })
       return text ? viewer.myNames.has(text) : false;
     };
 
+    const [first, second] = refereeSlotQueries(game);
     const coacheeSlots: string[] = [];
-    if (isCoachee(game.first_referee)) coacheeSlots.push('1');
-    if (isCoachee(game.second_referee)) coacheeSlots.push('2');
+    if (coachees.has(season, first)) coacheeSlots.push('1');
+    if (coachees.has(season, second)) coacheeSlots.push('2');
 
     let mySlot = '';
     if (isMe(game.first_referee, game.first_referee_id)) mySlot = '1';
@@ -2912,7 +2966,7 @@ async function boerseViewerFor(subject: RcAuthInfo | null): Promise<{ mySv: stri
 }
 
 async function makeRcGameTest(): Promise<(game: AnyRecord) => boolean> {
-  const coacheeNames = await getCoacheeNameIndex();
+  const coachees = await getCoacheeIndex();
   const people = await getActiveRcPeople();
   const rcNames = new Set(people.flatMap((p) => [p.fullName, ...p.aliases].map(normalizeName)).filter(Boolean));
   // A number does not change when somebody marries. Roughly a third of games
@@ -2920,35 +2974,27 @@ async function makeRcGameTest(): Promise<(game: AnyRecord) => boolean> {
   // is what this did exclusively and what a rename silently broke.
   const rcNumbers = new Set(people.map((p) => p.svNumber).filter(Boolean));
   return (game: AnyRecord) => {
-    const names = coacheeNames.forSeason(seasonOfGame(game.match_date));
-    const isCoachee = (value: unknown) => {
-      const text = normalizeName(value);
-      return text ? names.has(text) : false;
-    };
+    const season = seasonOfGame(game.match_date);
+    const [first, second] = refereeSlotQueries(game);
     const isRc = (value: unknown, svNumber: unknown) => {
       const num = asText(svNumber);
       if (num && rcNumbers.has(num)) return true;
       const text = normalizeName(value);
       return text ? rcNames.has(text) : false;
     };
-    return (isRc(game.first_referee, game.first_referee_id) && isCoachee(game.second_referee))
-      || (isRc(game.second_referee, game.second_referee_id) && isCoachee(game.first_referee));
+    return (isRc(game.first_referee, game.first_referee_id) && coachees.has(season, second))
+      || (isRc(game.second_referee, game.second_referee_id) && coachees.has(season, first));
   };
 }
 
 async function getEligibleGames(subject: RcAuthInfo | null = null) {
   await ensureAdminAuth();
-  const coacheeNames = await getCoacheeNameIndex();
+  const coachees = await getCoacheeIndex();
   // A test game exists to be walked through, so it is on the list whatever its
   // referees are. Filtered out with everything else, it could only be reached
   // from the admin console that made it — which is not where the flow it is
   // testing lives.
   const manual = await getManualGameIds();
-
-  const matchesCoachee = (season: number | null, value: unknown) => {
-    const text = normalizeName(value);
-    return text ? coacheeNames.forSeason(season).has(text) : false;
-  };
 
   const isRcGame = await makeRcGameTest();
   // Per viewer: R4 turns on whether THIS coach is the one whistling.
@@ -2985,7 +3031,7 @@ async function getEligibleGames(subject: RcAuthInfo | null = null) {
     // the whistle is still a game somebody asked to have watched.
     if (isVmMarkedRow(game)) return true;
     const season = seasonOfGame(game.match_date);
-    return matchesCoachee(season, game.first_referee) || matchesCoachee(season, game.second_referee);
+    return refereeSlotQueries(game).some((slot) => coachees.has(season, slot));
   });
 
   return games.map((game) => ({
@@ -3184,13 +3230,17 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
   const { from, to } = resolveSyncWindow(windowInput);
   const { jar, csrfToken, windowUniqueId } = await vmLogin(vmUsername, vmPassword);
   const { items } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
-  const coacheeNames = await getCoacheeNameIndex();
+  const coachees = await getCoacheeIndex();
   // Per row, because a sync window can straddle a season boundary and last
   // season's coachees must not pull this season's games in (or vice versa).
+  // The referees by their SV number first, so a linked coachee's games come
+  // in however VolleyManager spells the licence name that day — the same
+  // question every list asks, so a game the lists would show is a game the
+  // sync keeps. The line judges by name, as before: a convocation carries no
+  // number for them.
   const hasCoacheeOnRow = (row: Record<string, unknown>) => {
-    const names = coacheeNames.forSeason(seasonOfGame(row.match_date));
-    const assignedPeople = Array.isArray(row._assigned_people) ? row._assigned_people : [];
-    return assignedPeople.map((name) => normalizeName(name)).some((name) => names.has(name));
+    const season = seasonOfGame(row.match_date);
+    return assignedQueries(row).some((slot) => coachees.has(season, slot));
   };
 
   const transformed = items
@@ -3202,26 +3252,30 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
   const wanted = (row: Record<string, unknown>) => isRowWanted(row, hasCoacheeOnRow(row));
   const matchedRows = transformed.filter(wanted);
 
+  // Read once per run: the number lookup in upsertGame must never adopt a
+  // hand-typed test game, and the refresh below must not rewrite one either.
+  const manualIds = await getManualGameIds();
+
   let imported = 0;
   for (const row of matchedRows) {
     const { _assigned_people: _unused, ...persistable } = row;
-    await upsertGame(mapIncomingGame(persistable));
+    await upsertGame(mapIncomingGame(persistable), manualIds);
     imported += 1;
   }
 
   // Games we ALREADY have keep their VolleyManager-owned facts current even
-  // when this sync has no reason to keep them: the league text, and the
+  // when this sync has no reason to keep them: the league text, the
   // observation marks — which is how a game that came in on its RD mark alone
-  // loses its star again once the RD takes the mark off. vmFactsPatch says
-  // exactly what is touched; nothing is created here.
+  // loses its star again once the RD takes the mark off — and a referee's SV
+  // number the stored row lacks. vmFactsPatch says exactly what is touched;
+  // nothing is created here.
   let refreshed = 0;
   for (const row of transformed) {
     if (wanted(row)) continue;
     const matchNo = asText(row.match_no);
     if (!matchNo) continue;
     try {
-      const existing = await withCollection(collectionCandidates.games, (games) =>
-        games.getFirstListItem<AnyRecord>(`match_no = "${escapeFilterValue(matchNo)}"`));
+      const existing = await findGameByMatchNo(matchNo, { excludeIds: manualIds });
       if (!existing) continue;
       const patch = vmFactsPatch(existing, row);
       if (Object.keys(patch).length === 0) continue;
@@ -3425,11 +3479,7 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
   }
   let matchedGames = 0; let refereesCorrected = 0;
   for (const [matchNo, offers] of byMatch) {
-    let game: AnyRecord | null = null;
-    try {
-      game = await withCollection(collectionCandidates.games, (c) =>
-        c.getFirstListItem<AnyRecord>(`match_no = "${escapeFilterValue(matchNo)}"`));
-    } catch { game = null; }
+    const game = await findGameByMatchNo(matchNo);
     if (!game) continue;
     matchedGames += 1;
 
@@ -3505,11 +3555,7 @@ async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRo
   for (const { id, row } of created) {
     try {
       if (row.status !== 'open' || !row.match_no) continue;
-      let game: AnyRecord | null = null;
-      try {
-        game = await withCollection(collectionCandidates.games, (c) =>
-          c.getFirstListItem<AnyRecord>(`match_no = "${escapeFilterValue(row.match_no)}"`));
-      } catch { game = null; }
+      const game = await findGameByMatchNo(row.match_no);
       if (!game) continue;
 
       const rcId = asText(game.assigned_rc_id);
@@ -3690,13 +3736,13 @@ async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: u
   const { from, to } = resolveSyncWindow(windowInput);
   const { jar, csrfToken, windowUniqueId } = await vmLogin(vmUsername, vmPassword);
   const { items } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
-  const coacheeNames = await getCoacheeNameIndex();
-  // Per row, because a sync window can straddle a season boundary and last
-  // season's coachees must not pull this season's games in (or vice versa).
+  const coachees = await getCoacheeIndex();
+  // The mirror of runGamesSync's test, so the diagnostic answers the same
+  // question the import does: per row, the referees by number first, the
+  // line judges by name.
   const hasCoacheeOnRow = (row: Record<string, unknown>) => {
-    const names = coacheeNames.forSeason(seasonOfGame(row.match_date));
-    const assignedPeople = Array.isArray(row._assigned_people) ? row._assigned_people : [];
-    return assignedPeople.map((name) => normalizeName(name)).some((name) => names.has(name));
+    const season = seasonOfGame(row.match_date);
+    return assignedQueries(row).some((slot) => coachees.has(season, slot));
   };
 
   const transformed = items
@@ -3709,12 +3755,10 @@ async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: u
 
   const unmatchedNameCounts = new Map<string, number>();
   for (const row of unmatchedRows) {
-    const names = coacheeNames.forSeason(seasonOfGame(row.match_date));
-    const assignedPeople = Array.isArray(row._assigned_people) ? row._assigned_people : [];
-    for (const name of assignedPeople) {
-      const displayName = asText(name);
-      const normalized = normalizeName(displayName);
-      if (!normalized || names.has(normalized)) {
+    const season = seasonOfGame(row.match_date);
+    for (const slot of assignedQueries(row)) {
+      const displayName = asText(slot.name);
+      if (!displayName || coachees.has(season, slot)) {
         continue;
       }
       unmatchedNameCounts.set(displayName, (unmatchedNameCounts.get(displayName) ?? 0) + 1);
@@ -3742,16 +3786,21 @@ async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: u
     ? (() => {
         const assignedPeople = Array.isArray(matchNoLookup._assigned_people) ? matchNoLookup._assigned_people : [];
         const normalizedAssigned = assignedPeople.map((name) => normalizeName(name));
-        const seasonNames = coacheeNames.forSeason(seasonOfGame(matchNoLookup.match_date));
-        const matchedNames = assignedPeople.filter((name) => seasonNames.has(normalizeName(name)));
+        const season = seasonOfGame(matchNoLookup.match_date);
+        // Which slot matched, and through which tier — the whole point of
+        // asking about one game is to see WHY it did or did not come in.
+        const slots = assignedQueries(matchNoLookup).map((slot) => ({
+          name: asText(slot.name), sv: asText(slot.sv), via: coachees.find(season, slot).via,
+        }));
         return {
           match_no: asText(matchNoLookup.match_no),
           league: asText(matchNoLookup.league),
           match_date: asText(matchNoLookup.match_date),
           assigned_people: assignedPeople,
           normalized_assigned_people: normalizedAssigned,
-          has_coachee_match: normalizedAssigned.some((name) => seasonNames.has(name)),
-          matched_people: matchedNames,
+          has_coachee_match: hasCoacheeOnRow(matchNoLookup),
+          matched_people: slots.filter((slot) => slot.via !== 'none').map((slot) => slot.name),
+          slots,
           raw: rawMatchItem ?? null,
         };
       })()
@@ -3766,7 +3815,7 @@ async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: u
     // Rows the sync keeps on VolleyManager's mark alone — no coachee on them,
     // so they are in `withoutMatch` above, which is about names.
     markedWithoutCoachee: unmatchedRows.filter((row) => isVmMarkedRow(row)).length,
-    coacheeCount: coacheeNames.size,
+    coacheeCount: coachees.size,
     matchedSample: matchedRows.slice(0, 20).map((row) => ({
       match_no: asText(row.match_no),
       league: asText(row.league),
@@ -5091,10 +5140,27 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
     const body = req.body ?? {};
     const season = body.season == null || body.season === '' ? null : Number(body.season);
     const rows = Array.isArray(body.coachees) ? body.coachees : [];
+    // The id columns too: a new season's row inherits its person's number
+    // from the rows of earlier seasons, and a number the sheet names is only
+    // written where no other row of this season already holds it.
     const existing = await withCollection(collectionCandidates.coachees, (c) =>
-      c.getFullList<AnyRecord>({ fields: 'id,full_name,season' }));
+      c.getFullList<AnyRecord>({ fields: 'id,full_name,first_name,last_name,season,referee_id' }));
     const byKey = new Map<string, AnyRecord>();
     for (const e of existing) byKey.set(`${normalizeName(e.full_name)}|${e.season ?? ''}`, e);
+    // The register, for the optional SV-Nr. column: a number the sheet names
+    // is written only when it is a licence — before the register has been
+    // imported once nothing can be checked, and nothing is written.
+    const register = await getRefereeRegister();
+    const licences = new Set(register.map((r) => asText(r.sv_number)));
+    const numbersFor = registerNumbers(register);
+    // Which number is already on a row of this season, so neither the sheet
+    // nor the inheritance can put two same-season rows on one licence — the
+    // state the hand-link refuses with a 409 and the index cannot resolve.
+    const numberTaken = (sv: string, ownId: string) =>
+      existing.some((e) => e.id !== ownId && asText(e.referee_id) === sv && coacheeRowSeason(e.season) === season);
+    // Rows whose stored number the sheet contradicts: kept as stored,
+    // reported, never overwritten (below).
+    const svConflicts: { name: string; stored: string; sheet: string }[] = [];
     let created = 0, updated = 0;
     for (const r of rows) {
       const full_name = asText(r.full_name) || `${asText(r.first_name)} ${asText(r.last_name)}`.trim();
@@ -5125,13 +5191,50 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
       }
       const key = `${normalizeName(full_name)}|${season ?? ''}`;
       const ex = byKey.get(key);
+      // The sheet's number, when the commission's XLSX carries the column:
+      // the one change that lets a season start fully linked without a
+      // register re-import. Same guard as every other field — only when the
+      // cell holds a value — plus the two the number needs.
+      const sheetSv = asText(r.referee_id);
+      const storedSv = ex ? asText(ex.referee_id) : '';
+      if (sheetSv && licences.has(sheetSv) && !numberTaken(sheetSv, ex ? String(ex.id) : '')) {
+        if (storedSv && storedSv !== sheetSv) {
+          // A number the admin linked by hand — after the register had refused
+          // the name as ambiguous, say — is not the sheet's to undo: a
+          // one-digit typo in the SV column is another valid licence, and
+          // written silently it would hang a stranger's fixtures under this
+          // coachee until the audit noticed. The stored number stays; the
+          // disagreement rides on the response, for the admin to settle.
+          svConflicts.push({ name: full_name, stored: storedSv, sheet: sheetSv });
+          log.warn('import.sv-conflict', 'the sheet names another SV-Nr. than the one linked; the linked one stays', {
+            name: full_name, stored: storedSv, sheet: sheetSv, season,
+          }, reqCtx(req));
+        } else payload.referee_id = sheetSv;
+      }
       if (ex) { await withCollection(collectionCandidates.coachees, (c) => c.update(ex.id, payload)); updated++; }
       else {
+        // A new row for a referee coached before starts with a number — the
+        // sheet names none, and without this every season began with
+        // everyone unlinked until the register was imported again. The
+        // register's own answer first, the earlier rows' number after it
+        // (startingRefereeId says why in that order).
+        if (!payload.referee_id) {
+          const starting = startingRefereeId(full_name, season, existing, numbersFor);
+          if (starting && !numberTaken(starting, '')) payload.referee_id = starting;
+        }
         const rec = await withCollection(collectionCandidates.coachees, (c) => c.create({ notes: '', phone: '', referee_level: '', stage: '', groups: '', ...payload, feedback_entries: [] }));
         byKey.set(key, rec as AnyRecord); // duplicate rows in one file update instead of duplicating
+        // On the list the next rows check against, with the number it got.
+        existing.push(rec as AnyRecord);
         created++;
       }
+      if (ex && payload.referee_id) ex.referee_id = payload.referee_id;
     }
+    // The rows just written meet the register: whoever the sheet, the
+    // inheritance and the earlier link left without a number gets one now if
+    // the register spells their name once. Its counts ride on the response,
+    // so the console can say who is still unlinked right after the import.
+    const link = await linkCoacheesToReferees();
     // Importing a newer season makes it the app-wide default ("latest season with
     // data"). Guarded so a historical backfill or typo season can't move it.
     if (created > 0 && season != null && Number.isFinite(season)) {
@@ -5142,8 +5245,11 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
       const plausible = season >= curSeasonYear && season <= curSeasonYear + 2;
       if (newerThanCurrent && plausible) await setSetting('default_season', String(season));
     }
-    res.json({ created, updated, total: rows.length });
-  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+    res.json({ created, updated, total: rows.length, svConflicts, ...link });
+  } catch (error) {
+    if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
 });
 
 // Fills in coachee email/phone from the VolleyManager referee list. Meant to
@@ -5289,6 +5395,14 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
       if (missing.length < 50) missing.push(coacheeName(coachee));
     }
 
+    // The sync is the second step of a season's import and used to be the
+    // last; the register link is the third, and running it here means the
+    // admin who pressed the two buttons is not left with a list that still
+    // matches by name. Its own counts are reported beside the sync's — an
+    // ambiguous VolleyManager name and an ambiguous register name are
+    // different problems with different fixes.
+    const link = await linkCoacheesToReferees();
+
     res.json({
       refereesFetched: contacts.length,
       coachees: scoped.length,
@@ -5297,8 +5411,10 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
       notFound,
       missing,
       ambiguous,
+      ...link,
     });
   } catch (error) {
+    if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
     // What fails here is a VolleyManager login, the role switch or the referee
     // list itself, and the admin who pressed the button is the one who can fix
     // it — so name the step instead of sending them to the container log.
@@ -5491,8 +5607,61 @@ app.post('/api/admin/referees/import', requireAdminSession, async (req: Request,
       }
     }
 
+    // The index reads the register through a ten-minute cache; the rows just
+    // written have to reach it now, not after the next coach's page load.
+    refereeRegisterCache = null;
     const linked = await linkCoacheesToReferees();
-    res.json({ created, updated, skipped, total: rows.length, ...linked });
+    // And the stored games: a register that has just learned a name can put
+    // its number on every slot that carried the name alone, so the games
+    // stop depending on the register tier resolving it again on every list.
+    const backfill = await backfillGameRefereeIds();
+    res.json({ created, updated, skipped, total: rows.length, ...linked, backfill });
+  } catch (error) {
+    if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+/** The SV number onto every stored slot whose printed name the register
+ *  spells under exactly one licence — the plan is dataHygiene.ts's, this is
+ *  the read, the writes and the column check. Two thirds of the stored games
+ *  predate the number and were matched by name alone on every list; after
+ *  this they carry it, and a register edit or a rename cannot unmatch them.
+ *  Runs at the end of every register import and from its own button. */
+async function backfillGameRefereeIds(): Promise<Omit<BackfillPlan, 'patches'> & { games: number }> {
+  const register = await getRefereeRegister();
+  const games = await withCollection(collectionCandidates.games, (c) =>
+    c.getFullList<AnyRecord>({ fields: 'id,match_no,first_referee,second_referee,first_referee_id,second_referee_id' }));
+  const plan = planRefereeIdBackfill(games, registerNumbers(register));
+  let columnVerified = false;
+  for (const { id, patch } of plan.patches) {
+    await withCollection(collectionCandidates.games, (c) => c.update(id, patch));
+    // PocketBase silently drops a write to a column the collection has not
+    // declared, so "filled" would be a lie if setup-schema.mjs had not run.
+    // Read the first write back; if it did not stick, stop and say so rather
+    // than report a number of fills that do not exist.
+    if (!columnVerified) {
+      const check = await withCollection(collectionCandidates.games, (c) =>
+        c.getOne<AnyRecord>(id, { fields: 'id,first_referee_id,second_referee_id' }));
+      const stuck = Object.entries(patch).every(([column, value]) => asText(check[column]) === value);
+      if (!stuck) {
+        throw new SchemaOutOfDateError('Die Spalten „first_referee_id"/„second_referee_id" fehlen auf den Spielen — bitte setup-schema.mjs neu ausführen.');
+      }
+      columnVerified = true;
+    }
+  }
+  const { patches, ...report } = plan;
+  log.info('admin.backfill_referee_ids', `filled ${report.filled} slot(s) on ${patches.length} game(s)`, {
+    games: games.length, filled: report.filled, already: report.already, blank: report.blank,
+    unresolved: report.unresolved.length, ambiguous: report.ambiguous.length,
+  });
+  return { games: games.length, ...report };
+}
+
+app.post('/api/admin/games/backfill-referee-ids', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    res.json(await backfillGameRefereeIds());
   } catch (error) {
     if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
     res.status(500).json({ error: safeError(error) });
@@ -5547,84 +5716,51 @@ async function refereeRegisterContact(
 }
 
 /** Writes the SV-Nr. onto every coachee whose name resolves to exactly one
- *  referee. This is the one place a name is still matched to a number — after
- *  it, the number is what everything else uses.
- *
- *  Ambiguity is reported, never resolved: two referees answering to one name is
- *  precisely how a coaching report ends up in a stranger's inbox, and the
- *  contact sync already refuses that same coin flip. */
+ *  referee. The decision is planCoacheeLinks' (dataHygiene.ts, where it is
+ *  tested): the register under both name orders, the word-subset fallback
+ *  for the licence name against the everyday one, and the refusals — a name
+ *  the register holds twice, and a licence another row of the same season
+ *  already holds, the state the hand-link answers 409 to and the index can
+ *  only resolve by roster order. This is the read, the writes and the
+ *  column check. */
 async function linkCoacheesToReferees(): Promise<{ linked: number; alreadyLinked: number; unmatched: string[]; ambiguousNames: string[] }> {
-  const referees = await listRefereeRecords();
-  if (referees.length === 0) return { linked: 0, alreadyLinked: 0, unmatched: [], ambiguousNames: [] };
-
-  // Indexed under both name orders, because the exports disagree about which
-  // half of a name comes first — the same reason the contact sync does it.
-  const byName = new Map<string, AnyRecord[]>();
-  const indexUnder = (key: string, row: AnyRecord) => {
-    if (!key) return;
-    const bucket = byName.get(key);
-    if (bucket) { if (!bucket.some((x) => x.id === row.id)) bucket.push(row); } else byName.set(key, [row]);
-  };
-  // Every word of a referee's registered name, for the fallback below.
-  const words = new Map<string, Set<string>>();
-  for (const r of referees) {
-    const first = asText(r.first_name), last = asText(r.last_name);
-    indexUnder(normalizeName(`${first} ${last}`), r);
-    indexUnder(normalizeName(`${last} ${first}`), r);
-    indexUnder(normalizeName(asText(r.full_name)), r);
-    words.set(r.id, new Set(normalizeName(`${first} ${last}`).split(' ').filter(Boolean)));
-  }
-
-  /** The coaching sheet writes the name a coach uses; the register writes the
-   *  name on the licence, middle names and all — "Kevin Peña" against "Kevin
-   *  León Peña de los Santos". Eleven of the 135 coachee rows were exactly
-   *  that on 2026-08-27.
-   *
-   *  So: every word of the shorter name must appear in the longer one, and
-   *  exactly one referee may qualify. Two words minimum, because a lone
-   *  surname is not a claim about a person — it is a claim about a family. */
-  const byWords = (name: string): AnyRecord | null => {
-    const parts = new Set(normalizeName(name).split(' ').filter(Boolean));
-    if (parts.size < 2) return null;
-    const hits = referees.filter((r) => {
-      const full = words.get(r.id);
-      return full ? [...parts].every((part) => full.has(part)) : false;
-    });
-    return hits.length === 1 ? hits[0] : null;
-  };
-
-  const coachees = await listCoacheesWithFallbackSort();
-  let linked = 0, alreadyLinked = 0;
+  const [referees, coachees] = await Promise.all([getRefereeRegister(), listCoacheesWithFallbackSort()]);
+  const plan = planCoacheeLinks(referees, coachees);
+  let linked = 0;
   let columnVerified = false;
-  const unmatched: string[] = [];
-  const ambiguousNames: string[] = [];
-  for (const coachee of coachees) {
-    const name = asText(coachee.full_name) || `${asText(coachee.first_name)} ${asText(coachee.last_name)}`.trim();
-    if (!name) continue;
-    if (asText(coachee.referee_id)) { alreadyLinked++; continue; }
-    const hit = byName.get(normalizeName(name))
-      ?? byName.get(normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`));
-    if (hit && hit.length > 1) { if (ambiguousNames.length < 50) ambiguousNames.push(name); continue; }
-    const referee = hit?.[0] ?? byWords(name);
-    if (!referee) { if (unmatched.length < 50) unmatched.push(name); continue; }
-    const svNumber = asText(referee.sv_number);
-    await withCollection(collectionCandidates.coachees, (c) => c.update(coachee.id, { referee_id: svNumber }));
+  for (const { id, sv } of plan.writes) {
+    await withCollection(collectionCandidates.coachees, (c) => c.update(id, { referee_id: sv }));
     // PocketBase silently drops a write to a column the collection has not
     // declared, so "linked" would be a lie if setup-schema.mjs had not run.
     // Read the first one back; if it did not stick, say so rather than report a
     // number of links that do not exist.
     if (!columnVerified) {
       const check = await withCollection(collectionCandidates.coachees, (c) =>
-        c.getOne<AnyRecord>(coachee.id, { fields: 'id,referee_id' }));
-      if (asText(check.referee_id) !== svNumber) {
+        c.getOne<AnyRecord>(id, { fields: 'id,referee_id' }));
+      if (asText(check.referee_id) !== sv) {
         throw new SchemaOutOfDateError('Die Spalte „referee_id" fehlt auf den Coachees — bitte setup-schema.mjs neu ausführen.');
       }
       columnVerified = true;
     }
     linked++;
   }
-  return { linked, alreadyLinked, unmatched, ambiguousNames };
+  return { linked, alreadyLinked: plan.alreadyLinked, unmatched: plan.unmatched, ambiguousNames: plan.ambiguousNames };
 }
+
+// The link on its own. It runs at the end of the register import, the
+// coachee import and the contact sync, but a coachee typed in by hand, or a
+// register that was imported before those calls existed, is reached by none
+// of them — and the console needs a button that answers "who is still
+// matched by name?" without re-importing anything.
+app.post('/api/admin/coachees/link-referees', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    res.json(await linkCoacheesToReferees());
+  } catch (error) {
+    if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+});
 
 // ── Auth endpoints (team session + console session) ──────────────────
 app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
@@ -6645,9 +6781,35 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
       });
       return hits.length === 1 ? asText(hits[0].sv_number) : '';
     };
+    // One number, one game. The number is what the reminder, the survey and
+    // the Börse look a game up by, and — once the URL carries it — what a
+    // coach's link opens; a typed duplicate would make every one of those
+    // mean whichever row sorts newest. Refused, naming the game that holds
+    // it, so the admin can tell a typo from a fixture already synced.
+    const typedNo = asText(d.match_no);
+    if (typedNo) {
+      const holder = await findGameByMatchNo(typedNo);
+      if (holder) {
+        const teams = [asText(holder.home_team), asText(holder.away_team)].filter(Boolean).join(' – ');
+        const when = fmtDateDe(asText(holder.match_date));
+        const label = [teams, when].filter(Boolean).join(', ');
+        res.status(409).json({ error: `Die Spiel-Nr. ${typedNo} gibt es schon${label ? `: ${label}` : ''}.` });
+        return;
+      }
+    }
+    // A recognisable default so a manual game is obvious in any list: the
+    // day it was made and four random characters, re-rolled on the rare
+    // collision rather than trusted — the old six clock digits wrapped
+    // every 16.7 minutes and were never checked.
+    let matchNo = typedNo;
+    for (let attempt = 0; !matchNo && attempt < 8; attempt++) {
+      const today = zonedParts(Date.now());
+      const candidate = manualMatchNo(`${today.year}-${today.month}-${today.day}`, randomInt);
+      if (!(await findGameByMatchNo(candidate))) matchNo = candidate;
+    }
+    if (!matchNo) { res.status(500).json({ error: 'Keine freie Spiel-Nr. gefunden — bitte eine eingeben.' }); return; }
     const created = await withCollection(collectionCandidates.games, (c) => c.create<AnyRecord>({
-      // A recognisable default so a manual game is obvious in any list.
-      match_no: asText(d.match_no) || `TEST-${Date.now().toString().slice(-6)}`,
+      match_no: matchNo,
       league: asText(d.league),
       match_date: matchDate,
       location: asText(d.location),
@@ -7369,8 +7531,8 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
     // Build feedback game IDs set
     const feedbackGameIds = new Set(rcFeedbacks.map((fb) => String(fb.game || '')));
 
-    // Get coachee name set for referee matching
-    const coacheeNames = await getCoacheeNameIndex();
+    // The coachee rows, for the referee matching below.
+    const coachees = await getCoacheeIndex();
 
     // Group by coachee
     const coacheeMap = new Map<string, {
@@ -7381,12 +7543,22 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       plannedGames: { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: { name: string; role: string; coachee: boolean }[]; noCoachee?: boolean; result: string; starred: boolean; vmFlagged: boolean; isRdGame: boolean }[];
     }>();
 
-    const getOrCreate = (name: string, id: string) => {
-      const key = normalizeName(name);
+    // One group per PERSON. Keyed by the SV number where the row is linked,
+    // so a filed feedback (which names the coachee row) and a planned game
+    // (which names whoever VolleyManager printed on the slot) land in the same
+    // group however the two spell the name; by the folded name only where
+    // there is no number to key on. The name shown is the first one seen —
+    // the feedbacks come first and carry the row's own spelling.
+    const groupKey = (name: string, svNumber: string) => (svNumber ? `sv:${svNumber}` : `name:${normalizeName(name)}`);
+    const getOrCreate = (name: string, id: string, svNumber = '') => {
+      const key = groupKey(name, svNumber);
       if (!coacheeMap.has(key)) {
         coacheeMap.set(key, { coacheeName: name, coacheeId: id, doneFeedbacks: [], outstandingGames: [], plannedGames: [] });
       }
-      return coacheeMap.get(key)!;
+      const entry = coacheeMap.get(key)!;
+      // A game-only group learns its row's id the moment a feedback names it.
+      if (!entry.coacheeId && id) entry.coacheeId = id;
+      return entry;
     };
 
     // Done feedbacks
@@ -7398,7 +7570,7 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
       const coacheeId = String(coacheeRec?.id || '');
       if (!coacheeName) continue;
       if (gameRec && !inSeason(gameRec)) continue;
-      const entry = getOrCreate(coacheeName, coacheeId);
+      const entry = getOrCreate(coacheeName, coacheeId, asText(coacheeRec?.referee_id));
       entry.doneFeedbacks.push({
         gameDate: asText(gameRec?.match_date),
         league: asText(gameRec?.league),
@@ -7426,22 +7598,28 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
 
       // Match referees to coachees
       let matched = false;
-      const season = coacheeNames.forSeason(seasonOfGame(game.match_date));
+      const season = seasonOfGame(game.match_date);
       // BOTH referees, each marked for whether they are one of this coach's.
       // Sending only the coachees made a one-name row ambiguous: the other slot
       // could be empty, or held by somebody the coach simply does not follow,
       // and those are different situations at the hall. Which slot a referee
       // stands in is free here — this list is first-then-second by construction
       // — and cannot be recovered later, since the client only sees names.
-      const crew = [game.first_referee, game.second_referee]
-        .map((ref, slot) => ({ name: asText(ref), role: slot === 0 ? '1. SR' : '2. SR' }))
+      const crew = refereeSlotQueries(game)
+        .map((slot, i) => ({ slot, name: asText(slot.name), role: i === 0 ? '1. SR' : '2. SR' }))
         .filter((r) => r.name)
-        .map((r) => ({ ...r, coachee: season.has(normalizeName(r.name)) }));
-      for (const { name: refName, role, coachee } of crew) {
+        .map(({ slot, name, role }) => {
+          const row = coachees.find(season, slot).row;
+          return { name, role, coachee: row !== null, row };
+        });
+      for (const { name: refName, role, coachee, row } of crew) {
         if (!coachee) continue;
         matched = true;
-        const entry = getOrCreate(refName, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: refName, refereeRole: role, crew, result, boerse: boerseFor(game), ...starOf(game) };
+        // Under the row's own spelling and id, so the group is the same one
+        // the coach's filed feedbacks on this person went into.
+        const entry = getOrCreate(asText(row?.full_name || row?.name) || refName, String(row?.id ?? ''), asText(row?.referee_id));
+        const crewOut = crew.map(({ name, role, coachee }) => ({ name, role, coachee }));
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: refName, refereeRole: role, crew: crewOut, result, boerse: boerseFor(game), ...starOf(game) };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {
@@ -7457,7 +7635,8 @@ app.get('/api/rc-overview/:rcName/coachees', requireRcSession, async (req: Reque
         const refNames = [game.first_referee, game.second_referee].map(asText).filter(Boolean);
         const label = refNames.join(' / ') || '?';
         const entry = getOrCreate(label, '');
-        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: label, crew, noCoachee: true, result, boerse: boerseFor(game), ...starOf(game) };
+        const crewOut = crew.map(({ name, role, coachee }) => ({ name, role, coachee }));
+        const gameEntry = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: label, crew: crewOut, noCoachee: true, result, boerse: boerseFor(game), ...starOf(game) };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {
@@ -7555,26 +7734,14 @@ type MyRcGame = {
 };
 
 // Every game this season where the SUBJECT coach held one whistle and a coachee
-// held the other. Name matching, like makeRcGameTest: a game record carries the
-// referees' names (and, since 2026-08-27, their SV numbers) while a coach is a
-// row in referee_coaches with no SV number of their own to match on.
+// held the other. The same pair test as makeRcGameTest: the coachee half
+// through the index (SV number, register, folded name — and the row of the
+// GAME's season, not the first row of any season), the coach half by their
+// own SV number where the fixture carries one and by name or alias otherwise.
 async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<MyRcGame[]> {
   await ensureAdminAuth();
   const inSeason = await seasonFilterExceptManual(seasonRaw);
-  const coachees = await listCoacheesWithFallbackSort();
-  const coacheeNames = await getCoacheeNameIndex(coachees);
-  // Name -> row, so a note can carry the coachee's id and not only a spelling.
-  // Same variants getCoacheeNameIndex folds, so anything it matches resolves here.
-  const coacheeByName = new Map<string, { id: string; name: string }>();
-  for (const coachee of coachees) {
-    const first = asText(coachee.first_name ?? coachee.vorname);
-    const last = asText(coachee.last_name ?? coachee.nachname);
-    const printed = asText(coachee.full_name ?? coachee.name) || `${first} ${last}`.trim();
-    for (const variant of [coachee.full_name, coachee.name, `${first} ${last}`.trim(), `${last} ${first}`.trim()]) {
-      const key = normalizeName(variant);
-      if (key && !coacheeByName.has(key)) coacheeByName.set(key, { id: String(coachee.id), name: printed });
-    }
-  }
+  const coachees = await getCoacheeIndex();
 
   // A game names its referees as text, so a coach who changes their surname
   // stops matching every fixture the sync wrote before the change. Two things
@@ -7601,18 +7768,24 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
   const out: MyRcGame[] = [];
   for (const game of games) {
     if (!inSeason(game)) continue;
-    const season = coacheeNames.forSeason(seasonOfGame(game.match_date));
+    const season = seasonOfGame(game.match_date);
+    const [first, second] = refereeSlotQueries(game);
     const slots = [
-      { mine: game.first_referee, mineId: game.first_referee_id, other: game.second_referee, myRole: '1. SR', otherRole: '2. SR' },
-      { mine: game.second_referee, mineId: game.second_referee_id, other: game.first_referee, myRole: '2. SR', otherRole: '1. SR' },
+      { mine: game.first_referee, mineId: game.first_referee_id, other: second, myRole: '1. SR', otherRole: '2. SR' },
+      { mine: game.second_referee, mineId: game.second_referee_id, other: first, myRole: '2. SR', otherRole: '1. SR' },
     ];
     for (const slot of slots) {
       const mineIsMe = (mySvNumber && asText(slot.mineId) === mySvNumber)
         || myNames.has(normalizeName(slot.mine));
       if (!mineIsMe) continue;
-      const otherKey = normalizeName(slot.other);
-      if (!otherKey || !season.has(otherKey)) continue;
-      const coachee = coacheeByName.get(otherKey);
+      const row = coachees.find(season, slot.other).row;
+      if (!row) continue;
+      // The row's own spelling and id, so a note can carry the coachee's id
+      // and not only whatever VolleyManager printed on the slot.
+      const coachee = {
+        id: String(row.id),
+        name: asText(row.full_name ?? row.name) || coacheeRowNames(row)[0] || '',
+      };
       out.push({
         gameId: String(game.id),
         matchNo: asText(game.match_no),
@@ -7623,8 +7796,8 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
         teams: `${asText(game.home_team)} vs ${asText(game.away_team)}`,
         result: asText(game.game_result),
         rcRole: slot.myRole,
-        coacheeName: coachee?.name || asText(slot.other),
-        coacheeId: coachee?.id || '',
+        coacheeName: coachee.name || asText(slot.other.name),
+        coacheeId: coachee.id,
         coacheeRole: slot.otherRole,
         boerse: boerseFor(game),
       });
@@ -7981,10 +8154,27 @@ app.get('/api/coachees', requireRcSession, async (_req: Request, res: ExpressRes
   }
 });
 
+/** The hand-link: may this number go onto this row? The rule is
+ *  dataHygiene.ts's (a licence in the register, no other row of the season
+ *  on it); this reads the two lists it is checked against. '' is always
+ *  allowed — it unlinks — and costs no read. */
+async function refereeLinkCheck(sv: string, season: number | null, rowId: string): Promise<{ status: 400 | 409; error: string } | null> {
+  if (!sv) return null;
+  const [register, coachees] = await Promise.all([getRefereeRegister(), listCoacheesWithFallbackSort()]);
+  return refereeLinkProblem({ sv, season, rowId }, register, coachees);
+}
+
 app.post('/api/coachees', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const data = req.body ?? {};
+    const season = data.season == null || data.season === '' ? null : Number(data.season);
+    // The number the console picked off the register, checked here because
+    // the console is not the only client of this route and a typo must not
+    // become an identity.
+    const refereeId = asText(data.referee_id);
+    const problem = await refereeLinkCheck(refereeId, season, '');
+    if (problem) { res.status(problem.status).json({ error: problem.error }); return; }
     const created = await withCollection(collectionCandidates.coachees, (collection) =>
       collection.create({
         full_name: asText(data.full_name),
@@ -7996,7 +8186,8 @@ app.post('/api/coachees', requireAdminSession, async (req: Request, res: Express
         stage: asText(data.stage) || 'active',
         groups: asText(data.groups),
         notes: asText(data.notes),
-        season: data.season == null || data.season === '' ? null : Number(data.season),
+        season,
+        referee_id: refereeId,
         feedback_entries: Array.isArray(data.feedback_entries) ? data.feedback_entries : [],
       }),
     );
@@ -8009,6 +8200,7 @@ app.post('/api/coachees', requireAdminSession, async (req: Request, res: Express
 app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
+    const id = String(req.params.id);
     const raw = (req.body ?? {}) as Record<string, unknown>;
     const payload: Record<string, unknown> = {};
     if ('full_name' in raw) payload.full_name = asText(raw.full_name);
@@ -8022,8 +8214,32 @@ app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: Expr
     if ('notes' in raw) payload.notes = asText(raw.notes);
     if ('season' in raw) payload.season = raw.season == null || raw.season === '' ? null : Number(raw.season);
     if ('feedback_entries' in raw) payload.feedback_entries = raw.feedback_entries;
+    if ('referee_id' in raw) {
+      const refereeId = asText(raw.referee_id);
+      payload.referee_id = refereeId;
+      // Checked against the season the row will be in after this write —
+      // the request may move it — and against every other row of that
+      // season; the row's own current number is not a conflict with itself.
+      // And only when the link actually changes: the console sends the row
+      // whole on every save, number included, so an edit of the phone or
+      // the Niveau must not be refused because the number the row already
+      // carries has since become contestable — a twin row the auto-link
+      // wrote before it learned to refuse one, a register that could not be
+      // read. What is stored stays storable; it is a NEW number, or the same
+      // number in another season, that has to pass.
+      if (refereeId) {
+        const current = await withCollection(collectionCandidates.coachees, (c) =>
+          c.getOne<AnyRecord>(id, { fields: 'id,season,referee_id' }));
+        const season = 'season' in payload ? payload.season as number | null : coacheeRowSeason(current.season);
+        const changed = refereeId !== asText(current.referee_id) || season !== coacheeRowSeason(current.season);
+        if (changed) {
+          const problem = await refereeLinkCheck(refereeId, season, id);
+          if (problem) { res.status(problem.status).json({ error: problem.error }); return; }
+        }
+      }
+    }
     const updated = await withCollection(collectionCandidates.coachees, (collection) =>
-      collection.update(String(req.params.id), payload),
+      collection.update(id, payload),
     );
     res.json(updated);
   } catch (error) {
@@ -8074,32 +8290,11 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
     const coachee = await withCollection(collectionCandidates.coachees, (collection) =>
       collection.getOne<AnyRecord>(coacheeId),
     );
-    const firstName = asText(coachee.first_name ?? coachee.vorname);
-    const lastName = asText(coachee.last_name ?? coachee.nachname);
-    const variants = new Set<string>([
-      normalizeName(coachee.full_name),
-      normalizeName(coachee.name),
-      normalizeName(coachee.coachee_name),
-      normalizeName(coachee.referee_name),
-      normalizeName(`${firstName} ${lastName}`.trim()),
-      normalizeName(`${lastName} ${firstName}`.trim()),
-    ].filter(Boolean));
-
-    const rawNames = [
-      asText(coachee.full_name),
-      asText(coachee.name),
-      asText(coachee.coachee_name),
-      asText(coachee.referee_name),
-      `${firstName} ${lastName}`.trim(),
-      `${lastName} ${firstName}`.trim(),
-    ].filter(Boolean);
-    const uniqueNames = [...new Set(rawNames)];
-
-    // A coachee with no usable name anywhere leaves no filter at all, and
-    // PocketBase reads an empty filter as "no filter" — so the endpoint answered
-    // a nameless record with every game in the collection. Nothing to match on
-    // means nothing matches.
-    if (uniqueNames.length === 0) { res.json([]); return; }
+    // A coachee with no usable name and no SV number anywhere has nothing a
+    // game could name them by. Nothing to match on means nothing matches —
+    // not, as an empty PocketBase filter once did, every game in the
+    // collection.
+    if (coacheeRowNames(coachee).length === 0 && !asText(coachee.referee_id)) { res.json([]); return; }
 
     // Matched in memory, with accents folded — the comparison every other list
     // uses. An exact `first_referee = "<name>"` in the query missed every game
@@ -8109,8 +8304,14 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
     // in memory, listed eight (16.09.2026). SQLite cannot fold accents, and no
     // word of the name is safe to search for — the accent can sit on either
     // side. So the games are read whole, as the overview reads them on every
-    // Home load anyway, and the fold decides.
-    const gameFields = 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge,assigned_rc,assigned_rc_id,feedback_closed_roles,game_result,maps_url';
+    // Home load anyway, and the index decides: this ONE row, asked about with
+    // a null season so a game of any season may name it, the slot's SV number
+    // first and the folded name after — so "Kevin León Peña de los Santos" on
+    // the convocation reaches the "Kevin Peña" row the moment either carries
+    // the number.
+    const gameFields = 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,first_line_judge,second_line_judge,assigned_rc,assigned_rc_id,feedback_closed_roles,game_result,maps_url';
+    const thisCoachee = buildCoacheeIndex([coachee], await getRefereeRegister(), warnSvMismatch);
+    const namesThisCoachee = (slot: CoacheeQuery) => thisCoachee.has(null, slot);
 
     // Same rule the open games list uses, so a game cannot be an RC game in one
     // list and an ordinary one in the other.
@@ -8119,24 +8320,15 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
     const candidates = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({ sort: '-match_date,-created', fields: gameFields }),
     );
-    const games = candidates.filter((game) => {
-      const assigned = getAssignedPeopleFromGameRecord(game);
-      return [assigned.firstReferee, assigned.secondReferee, assigned.firstLineJudge, assigned.secondLineJudge]
-        .some((person) => variants.has(normalizeName(person)));
-    });
+    const games = candidates.filter((game) => assignedQueries(game).some(namesThisCoachee));
 
     const [starredIds, manualIds] = await Promise.all([getStarredGameIds(), getManualGameIds()]);
     const result = games.map((game) => {
       const assigned = getAssignedPeopleFromGameRecord(game);
-      const roleMap: Array<[string, string]> = [
-        ['1. SR', assigned.firstReferee],
-        ['2. SR', assigned.secondReferee],
-        ['LJ1', assigned.firstLineJudge],
-        ['LJ2', assigned.secondLineJudge],
-      ];
-      const assignedRoles = roleMap
-        .filter((entry) => variants.has(normalizeName(entry[1])))
-        .map((entry) => entry[0]);
+      const roles = ['1. SR', '2. SR', 'LJ1', 'LJ2'];
+      const assignedRoles = assignedQueries(game)
+        .map((slot, i) => (namesThisCoachee(slot) ? roles[i] : ''))
+        .filter(Boolean);
       return {
         id: game.id,
         matchNo: asText(game.match_no),
@@ -8412,7 +8604,7 @@ app.get('/api/games/calendar-status', requireRcSession, async (req: Request, res
         return await withCollection(collectionCandidates.games, (collection) =>
           collection.getFullList<AnyRecord>({
             sort: '-match_date',
-            fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_line_judge,second_line_judge',
+            fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,first_line_judge,second_line_judge',
           }),
         );
       } catch (error) {
@@ -8460,43 +8652,23 @@ app.get('/api/games/calendar-status', requireRcSession, async (req: Request, res
     }
 
     // Coachees are per-season rows: a game is matched against the row of ITS
-    // season (see indexBySeason). One flat map kept the first row per name —
-    // the oldest season's, by row order — so this season's game took its dot
-    // from last season's observations.
-    const activeCoacheeByName = indexBySeason(coachees
-      .filter((coachee) => (asText(coachee.stage) || 'active') !== 'inactive')
-      .map((coachee) => {
-        const firstName = asText(coachee.first_name ?? coachee.vorname);
-        const lastName = asText(coachee.last_name ?? coachee.nachname);
-        return {
-          season: coacheeRowSeason(coachee.season),
-          names: [
-            normalizeName(coachee.full_name),
-            normalizeName(coachee.name),
-            normalizeName(coachee.coachee_name),
-            normalizeName(coachee.referee_name),
-            normalizeName(`${firstName} ${lastName}`.trim()),
-            normalizeName(`${lastName} ${firstName}`.trim()),
-          ].filter(Boolean),
-          value: { id: String(coachee.id), full_name: asText(coachee.full_name) },
-        };
-      }));
+    // season. One flat map kept the first row per name — the oldest season's,
+    // by row order — so this season's game took its dot from last season's
+    // observations. The active rows only, through the same index every other
+    // list uses: the referees by SV number first, the line judges by name.
+    const activeCoachees = buildCoacheeIndex(
+      coachees.filter((coachee) => (asText(coachee.stage) || 'active') !== 'inactive'),
+      await getRefereeRegister(),
+      warnSvMismatch,
+    );
 
     const result = games.map((game) => {
-      const assigned = getAssignedPeopleFromGameRecord(game);
-      const assignedPeople = [
-        assigned.firstReferee,
-        assigned.secondReferee,
-        assigned.firstLineJudge,
-        assigned.secondLineJudge,
-      ].filter(Boolean);
-
       const gameSeason = seasonOfGame(game.match_date);
-      const matchedCoachees = assignedPeople
-        .map((name) => activeCoacheeByName.find(gameSeason, normalizeName(name)))
-        .filter(Boolean) as Array<{ id: string; full_name: string }>;
+      const matchedCoachees = assignedQueries(game)
+        .map((slot) => activeCoachees.find(gameSeason, slot).row)
+        .filter(Boolean) as AnyRecord[];
 
-      const statuses = matchedCoachees.map((coachee) => summaryById.get(coachee.id)).filter(Boolean) as CoacheeObservationSummary[];
+      const statuses = matchedCoachees.map((coachee) => summaryById.get(String(coachee.id))).filter(Boolean) as CoacheeObservationSummary[];
       const hasOutstanding = statuses.some((status) => status.needsObservation);
       const hasCompleted = statuses.some((status) => status.hasCompletedObservation);
 
@@ -8851,7 +9023,7 @@ function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLa
  *  feed: a calendar shows what is in the calendar. */
 async function getOwnSrGames(person: ActiveRcPerson): Promise<CalendarFeedGame[]> {
   await ensureAdminAuth();
-  const coacheeNames = await getCoacheeNameIndex();
+  const coachees = await getCoacheeIndex();
   const myNames = new Set([person.fullName, ...person.aliases].map(normalizeName).filter(Boolean));
   const mySvNumber = asText(person.svNumber);
   if (myNames.size === 0 && !mySvNumber) return [];
@@ -8865,16 +9037,15 @@ async function getOwnSrGames(person: ActiveRcPerson): Promise<CalendarFeedGame[]
 
   const out: CalendarFeedGame[] = [];
   for (const game of allGames) {
-    const season = coacheeNames.forSeason(seasonOfGame(game.match_date));
+    const season = seasonOfGame(game.match_date);
+    const [first, second] = refereeSlotQueries(game);
     const slots = [
-      { mine: game.first_referee, mineId: game.first_referee_id, other: game.second_referee },
-      { mine: game.second_referee, mineId: game.second_referee_id, other: game.first_referee },
+      { mine: game.first_referee, mineId: game.first_referee_id, other: second },
+      { mine: game.second_referee, mineId: game.second_referee_id, other: first },
     ];
     const hit = slots.some((slot) => {
       const isMe = (mySvNumber && asText(slot.mineId) === mySvNumber) || myNames.has(normalizeName(slot.mine));
-      if (!isMe) return false;
-      const otherKey = normalizeName(slot.other);
-      return Boolean(otherKey) && season.has(otherKey);
+      return isMe && coachees.has(season, slot.other);
     });
     if (!hit) continue;
     out.push({
@@ -9451,10 +9622,23 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     // already protected on both sides (readOnly in the UI, overridden above);
     // the person being assessed had neither guard.
     //
-    // Compared both name orders, because the XLSX and VolleyManager disagree on
-    // which comes first and nothing downstream knows which one it is holding.
+    // The SV number settles it when the client sends one: a body `refereeId`
+    // equal to the number on the game's slot names that referee whatever the
+    // form's name field says. Without it, the two names are compared folded
+    // and in both orders — claimNamesSlot, where the rule is tested — and
+    // when they still disagree, the index is asked whether they are one row
+    // all the same (claimNamesRow): the manual upload dialog names the
+    // coachee as the sheet spells them, the slot as the licence does, and
+    // "Kevin Peña" against "Kevin León Peña de los Santos" is no fold's to
+    // settle. The same index resolves the recipient two steps down, so the
+    // guard cannot refuse a report the lookup would have filed.
     const claimedName = asText((formData.meta as AnyRecord | undefined)?.srName);
-    if (refereeName && claimedName && !nameKeyVariants(claimedName).includes(normalizeName(refereeName))) {
+    const slotRefereeId = asText(game[role === '1. SR' ? 'first_referee_id' : 'second_referee_id']);
+    const claim = { name: claimedName, sv: asText((req.body ?? {}).refereeId) };
+    const gameSeason = seasonOfDate(asText(game.match_date));
+    const coacheeIndex = await getCoacheeIndex();
+    if (!claimNamesSlot(claim, { name: refereeName, sv: slotRefereeId })
+      && !claimNamesRow(coacheeIndex, gameSeason, claim, { name: refereeName, sv: slotRefereeId, matchNo: asText(game.match_no) })) {
       res.status(422).json({
         error: `Das Feedback ist auf "${claimedName}" ausgestellt, aber für die Rolle "${role}" ist in diesem Spiel "${refereeName}" eingetragen. Bitte Rolle oder Schiedsrichter korrigieren.`,
       });
@@ -9485,8 +9669,10 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       // Season comes from the GAME, not from whatever the console has selected.
       const found = await findCoacheeRecord(
         refereeName,
-        seasonOfDate(asText(game.match_date)),
-        asText(game[role === '1. SR' ? 'first_referee_id' : 'second_referee_id']),
+        gameSeason,
+        slotRefereeId,
+        asText(game.match_no),
+        coacheeIndex,
       );
       coachee = found.coachee;
       coacheeCollection = found.collection;
@@ -9508,10 +9694,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       const isTestGame = manualIds.has(String(game.id));
       const viaRegister = registerMayStandIn(game, manualIds);
       const fromRegister = viaRegister
-        ? await refereeRegisterContact(
-          refereeName,
-          asText(game[role === '1. SR' ? 'first_referee_id' : 'second_referee_id']),
-        )
+        ? await refereeRegisterContact(refereeName, slotRefereeId)
         : { email: '', name: '', ambiguous: false };
       if (!fromRegister.email) {
         // Named by what the game IS, so the coach knows which list to fix.
@@ -10165,111 +10348,61 @@ function zonedDateOf(matchDate: string): string {
   return `${p.year}-${p.month}-${p.day}`;
 }
 
-// Resolve a game's referee name to a coachee record (handles "First Last" vs
-// "Last First"), mirroring the lookup the feedback submit uses.
-// A referee is matched to a coachee by name, forwards and reversed. The filter
-// used to name four columns — full_name plus the legacy aliases name,
-// coachee_name and referee_name — but setup-schema.mjs, which IS the schema
-// contract, declares only full_name, and so does the live database. PocketBase
-// rejects a filter mentioning an undeclared column with a 400 for the WHOLE
-// expression, matching clause included: so feedback submit answered 500 (which
-// the outbox then replays forever) and the day-before reminder, whose lookup
-// swallows errors, silently mailed nobody. Ask the collection what it actually
-// has and build the filter from that, so either schema works.
-const COACHEE_NAME_COLUMNS = ['full_name', 'name', 'coachee_name', 'referee_name'];
-let coacheeNameColumnsCache: { cols: string[]; expiresAt: number } | null = null;
-
-async function coacheeNameColumns(): Promise<string[]> {
-  if (coacheeNameColumnsCache && Date.now() < coacheeNameColumnsCache.expiresAt) return coacheeNameColumnsCache.cols;
-  let cols = ['full_name'];
-  try {
-    const meta = await withCollection(collectionCandidates.coachees, (c) => pb.collections.getOne(c.collectionIdOrName));
-    const declared = new Set(((meta as AnyRecord).fields as AnyRecord[] ?? []).map((f) => asText(f.name)));
-    const found = COACHEE_NAME_COLUMNS.filter((n) => declared.has(n));
-    if (found.length) cols = found;
-  } catch {
-    // Can't read the collection meta — full_name alone is the one column every
-    // schema in this repo declares, so it is the safe floor.
-  }
-  coacheeNameColumnsCache = { cols, expiresAt: Date.now() + 10 * 60 * 1000 };
-  return cols;
-}
-
-function buildCoacheeNameFilter(refereeName: string, cols: string[]): string {
-  const variants = [refereeName.trim()];
-  const parts = refereeName.trim().split(/\s+/);
-  if (parts.length >= 2) variants.push([...parts].reverse().join(' '));
-  const clauses: string[] = [];
-  for (const v of variants) {
-    if (!v) continue;
-    const esc = escapeFilterValue(v);
-    for (const col of cols) clauses.push(`${col} = "${esc}"`);
-  }
-  return clauses.join(' || ');
-}
-
-async function coacheeNameFilterAsync(refereeName: string): Promise<string> {
-  return buildCoacheeNameFilter(refereeName, await coacheeNameColumns());
-}
-
-// WHICH row, not just which name. Coachees are per-season records: importing
+// Resolve a game's referee to a coachee record — the lookup the feedback
+// submit and the day-before reminder share.
+//
+// WHICH row, not just which person. Coachees are per-season records: importing
 // 26/27 creates a SECOND row for a referee who was already there in 25/26, and
 // the admin console only ever shows and edits the selected season's copy. A
-// name-only lookup has no index to order it, so PocketBase answers in rowid
-// order — the OLDEST row, last season's. That row may carry a stale address,
-// and every feedback_entry, last_feedback_at and observations.coachee written
-// against it attaches to the wrong season, so the current season's "needs
-// observation" list never clears. The client already compensates for the
-// duplicates (see the comment in App.tsx, "Insert the selected season's records
-// last so they win"); the server never did.
+// lookup with no season to order it answered the OLDEST row, last season's.
+// That row may carry a stale address, and every feedback_entry,
+// last_feedback_at and observations.coachee written against it attaches to
+// the wrong season, so the current season's "needs observation" list never
+// clears. The client already compensates for the duplicates (see the comment
+// in App.tsx, "Insert the selected season's records last so they win"); the
+// server never did.
 //
 // The game's own date decides the season, so a match played in the 26/27 window
 // resolves the 26/27 coachee even if someone runs it with another season open.
+//
+// The lookup is the index every list uses (buildCoacheeIndex.findOrNewest):
+// the game's season asked completely — SV number, register, folded name in
+// both orders — and only then the other seasons, newest first. It used to be
+// two PocketBase filters, the number first and an exact `full_name = "…"`
+// second, each tried in the season and then across all of them; SQLite
+// cannot fold an accent, so "Kevin León …" on the game never found the
+// "Kevin Leon …" row the import wrote — submit answered 422 and the reminder
+// mailed nobody, for a referee every list showed as a coachee. And the
+// number's cross-season fallback ran BEFORE the season's own name tier, so a
+// number linked on last season's row only outranked this season's row that
+// every list had matched by name: the report was filed on the wrong season's
+// row, the very thing the paragraph above describes. One index, one order,
+// and submit, reminder and lists name the same row.
 async function findCoacheeRecord(
   refereeName: string,
   season: number | null,
   // The SV-Nr. the game carries for this slot, when it carries one. Tried
-  // first: it is the same person tomorrow whatever the sheet calls them, and
-  // resolving it costs the same single query the name does.
+  // first: it is the same person tomorrow whatever the sheet calls them.
   refereeId = '',
+  // The game, for the log line a name-tier disagreement writes.
+  matchNo = '',
+  // The index, when the caller already holds one: the daily reminder asks
+  // for every slot of every game due, and the roster is the same for all of
+  // them — without this each slot re-read the whole coachee collection.
+  index?: CoacheeIndex,
 ): Promise<{ collection: ReturnType<typeof pb.collection>; coachee: AnyRecord }> {
-  const nameFilter = await coacheeNameFilterAsync(refereeName);
   return withCollection(collectionCandidates.coachees, async (collection) => {
-    const seasonThenNewest = async (filter: string): Promise<AnyRecord | null> => {
-      if (season != null && Number.isFinite(season)) {
-        try {
-          return await collection.getFirstListItem<AnyRecord>(`(${filter}) && season = ${Math.trunc(season)}`);
-        } catch (error) {
-          // No row for THIS season: a referee carried over without being
-          // re-imported, or a game outside the season window. Fall through
-          // rather than refuse — a slightly stale row still beats no recipient
-          // at all.
-          if (!isRecordNotFound(error)) throw error;
-        }
-      }
-      try {
-        // Newest season first, so a referee matching several rows resolves to
-        // the most recent one deterministically instead of by rowid.
-        return await collection.getFirstListItem<AnyRecord>(filter, { sort: '-season' });
-      } catch (error) {
-        if (isRecordNotFound(error)) return null;
-        throw error;
-      }
-    };
+    const coachees = index ?? await getCoacheeIndex();
+    const hit = coachees.findOrNewest(season, { sv: refereeId, name: refereeName, matchNo }).row;
+    if (hit) return { collection, coachee: hit };
 
-    if (refereeId) {
-      const byId = await seasonThenNewest(`referee_id = "${escapeFilterValue(refereeId)}"`);
-      // An id that matches nothing is a coachee list that has not been linked
-      // yet, not a wrong game — so fall through to the name rather than refuse.
-      if (byId) return { collection, coachee: byId };
-    }
-    const byName = await seasonThenNewest(nameFilter);
-    if (byName) return { collection, coachee: byName };
     // Kept as a throw: every caller reads "no such coachee" off this error, and
-    // returning null here would make each of them invent the same check.
+    // returning null here would make each of them invent the same check. The
+    // filter is the exact name — it finds nothing (the index just looked
+    // wider) and PocketBase answers the 404 isRecordNotFound recognises.
     return {
       collection,
-      coachee: await collection.getFirstListItem<AnyRecord>(nameFilter, { sort: '-season' }),
+      coachee: await collection.getFirstListItem<AnyRecord>(`full_name = "${escapeFilterValue(refereeName)}"`, { sort: '-season' }),
     };
   });
 }
@@ -10283,10 +10416,10 @@ async function findCoacheeRecord(
 async function findCoacheeByRefereeName(
   refereeName: string,
   season: number | null,
-  opts: { strictSeason?: boolean; refereeId?: string } = {},
+  opts: { strictSeason?: boolean; refereeId?: string; matchNo?: string; index?: CoacheeIndex } = {},
 ): Promise<AnyRecord | null> {
   try {
-    const coachee = (await findCoacheeRecord(refereeName, season, opts.refereeId ?? '')).coachee;
+    const coachee = (await findCoacheeRecord(refereeName, season, opts.refereeId ?? '', opts.matchNo ?? '', opts.index)).coachee;
     if (opts.strictSeason && season != null && Number.isFinite(season)) {
       const raw = coachee.season;
       const rowSeason = raw == null || raw === '' ? null : Number(raw);
@@ -10332,6 +10465,8 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
   const tpl = await getEmailTemplate('reminder');
   const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
   const manualIds = await getManualGameIds();
+  // Once for the run: every slot of every game due asks the same roster.
+  const coacheeIndex = await getCoacheeIndex();
   const plans: ReminderPlan[] = [];
   for (const game of games) {
     if (!rcRefPresent(game.assigned_rc_id, game.assigned_rc)) continue; // only games an RC has taken
@@ -10365,6 +10500,8 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
       const coachee = await findCoacheeByRefereeName(refereeName, gameSeason, {
         strictSeason: !isTest,
         refereeId,
+        matchNo: asText(game.match_no),
+        index: coacheeIndex,
       });
       let email = coachee ? singleAddress(coachee.email) : '';
       let recipientName = coachee ? asText(coachee.full_name) || refereeName : refereeName;

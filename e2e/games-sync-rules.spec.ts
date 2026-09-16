@@ -1,10 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { isRowWanted, isVmMarkedRow, vmFactsPatch } from '../server/gamesSync';
+import { isRowWanted, isVmMarkedRow, vmFactsPatch, mergeIncomingGame } from '../server/gamesSync';
 
-// The two decisions the games import makes per VolleyManager row, tested on
-// their own: whether the row is kept at all, and what a stored row the sync is
-// NOT keeping gets refreshed with. The sync around them needs PocketBase and a
-// VolleyManager session and cannot be run here.
+// The three decisions the games import makes per VolleyManager row, tested on
+// their own: whether the row is kept at all, what a stored row the sync is NOT
+// keeping gets refreshed with, and what a kept row is written with. The sync
+// around them needs PocketBase and a VolleyManager session and cannot be run
+// here.
 
 test.describe('what the sync keeps', () => {
   test('a coachee on the row keeps it, mark or no mark', () => {
@@ -63,5 +64,91 @@ test.describe('what a stored, unkept row is refreshed with', () => {
       { league: 'HU23 n. Liga', is_rd_game: true, first_referee: 'New Person' },
     );
     expect(patch).toEqual({});
+  });
+
+  test('a blank SV number is filled from the incoming row when the names fold equal', () => {
+    // Two thirds of the stored games predate the number and only ever pass
+    // through this patch; without this they would stay name-matched forever.
+    const patch = vmFactsPatch(
+      { ...stored, first_referee: 'Kevin Leon', first_referee_id: '', second_referee: 'Bea Beispiel', second_referee_id: '' },
+      { league: 'HU23 n. Liga', is_rd_game: true, first_referee: 'Kevin León', first_referee_id: '90003', second_referee: 'Bea Beispiel', second_referee_id: '90004' },
+    );
+    expect(patch).toEqual({ first_referee_id: '90003', second_referee_id: '90004' });
+  });
+
+  test('a number is never written onto a slot whose name changed', () => {
+    // A different name is a different referee; the number of one must not
+    // travel with the slot to the other.
+    const patch = vmFactsPatch(
+      { ...stored, first_referee: 'Old Coachee', first_referee_id: '' },
+      { league: 'HU23 n. Liga', is_rd_game: true, first_referee: 'New Person', first_referee_id: '90003' },
+    );
+    expect(patch).toEqual({});
+  });
+
+  test('a stored number is never blanked or replaced by the refresh', () => {
+    const withId = { ...stored, first_referee: 'Kevin León', first_referee_id: '90003' };
+    expect(vmFactsPatch(withId, { league: 'HU23 n. Liga', is_rd_game: true, first_referee: 'Kevin León', first_referee_id: '' })).toEqual({});
+    expect(vmFactsPatch(withId, { league: 'HU23 n. Liga', is_rd_game: true, first_referee: 'Kevin León', first_referee_id: '90009' })).toEqual({});
+  });
+
+  test('an empty stored name earns no number', () => {
+    expect(vmFactsPatch({ ...stored, first_referee: '', first_referee_id: '' }, { league: 'HU23 n. Liga', is_rd_game: true, first_referee: '', first_referee_id: '90003' })).toEqual({});
+  });
+});
+
+test.describe('what a kept row is written with (mergeIncomingGame)', () => {
+  const existing = {
+    id: 'g1', match_no: '2345678', league: 'NLA ♂',
+    first_referee: 'Kevin León', first_referee_id: '90003',
+    second_referee: 'Bea Beispiel', second_referee_id: '90004',
+    game_result: '3:1 (25:20 / 25:22 / 20:25 / 25:18)',
+  };
+  const incoming = {
+    match_no: '2345678', league: 'NLA ♂',
+    first_referee: 'Kevin Leon', first_referee_id: '',
+    second_referee: 'Bea Beispiel', second_referee_id: '90004',
+    game_result: '',
+  };
+
+  test('a blank incoming number with the same folded name keeps the stored one', () => {
+    // A convocation that is only a name carries no number; dropping the one
+    // an earlier sync stored would send the game back to name matching.
+    expect(mergeIncomingGame(existing, incoming).first_referee_id).toBe('90003');
+  });
+
+  test('a blank incoming number with a changed name replaces it — with the blank', () => {
+    // A replaced referee never inherits the previous number: that is how the
+    // wrong coachee gets a report.
+    const merged = mergeIncomingGame(existing, { ...incoming, first_referee: 'New Person' });
+    expect(merged.first_referee).toBe('New Person');
+    expect(merged.first_referee_id).toBe('');
+  });
+
+  test('a non-blank incoming number wins, equal or not', () => {
+    expect(mergeIncomingGame(existing, { ...incoming, first_referee_id: '90003' }).first_referee_id).toBe('90003');
+    expect(mergeIncomingGame(existing, { ...incoming, first_referee_id: '90009' }).first_referee_id).toBe('90009');
+    expect(mergeIncomingGame(existing, incoming).second_referee_id).toBe('90004');
+  });
+
+  test('a missing score keeps the stored one; a published score replaces it', () => {
+    expect(mergeIncomingGame(existing, incoming).game_result).toBe(existing.game_result);
+    expect(mergeIncomingGame(existing, { ...incoming, game_result: '3:0 (25:1 / 25:2 / 25:3)' }).game_result).toBe('3:0 (25:1 / 25:2 / 25:3)');
+    expect(mergeIncomingGame({ ...existing, game_result: '' }, incoming).game_result).toBe('');
+  });
+
+  test('everything else is the incoming row, and the stored row is not touched', () => {
+    const before = { ...existing };
+    const merged = mergeIncomingGame(existing, { ...incoming, league: 'NLB ♂', location: 'Halle 3' });
+    expect(merged.league).toBe('NLB ♂');
+    expect(merged.location).toBe('Halle 3');
+    expect(merged).not.toHaveProperty('id');
+    expect(existing).toEqual(before);
+  });
+
+  test('a stored number on an empty stored name is not kept', () => {
+    // Nothing to say the person is the same; two empty names are nobody.
+    const merged = mergeIncomingGame({ ...existing, first_referee: '' }, { ...incoming, first_referee: '' });
+    expect(merged.first_referee_id).toBe('');
   });
 });

@@ -106,6 +106,9 @@ test('a failure does not carry a capability token into the log', async ({ page }
 // teams and the role only; a coach with two reports in the failed list had
 // nothing to tell the commission but "the one from Saturday".
 test.describe('the outbox row', () => {
+  // Fills the whole form and signs twice before the send it is about — past
+  // the default 30 s on a GitHub runner, like every other whole-form test.
+  test.slow();
   test('names the game by its match number', async ({ page }) => {
     // No server behind the submit: the send from a gym with no signal, which
     // goes to the outbox. The park on every signature still answers.
@@ -117,7 +120,9 @@ test.describe('the outbox row', () => {
     await fillWholeForm(page);
     await page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ }).click();
     await page.getByRole('dialog').getByRole('button', { name: /^(Save|Speichern)$/ }).click();
-    await expect(page.getByText(/Being sent — waiting in the queue|Wird gesendet — wartet in der Warteschlange/).first()).toBeVisible();
+    // The PDF is built on the main thread before the send is even attempted;
+    // on the runner that alone can take longer than the default expect budget.
+    await expect(page.getByText(/Being sent — waiting in the queue|Wird gesendet — wartet in der Warteschlange/).first()).toBeVisible({ timeout: 15000 });
 
     // Back online, the server now answers — and refuses: a 422 is a permanent
     // failure, which is what puts the item on the failed list with its label.

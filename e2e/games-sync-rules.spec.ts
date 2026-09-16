@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { isRowWanted, isVmMarkedRow, vmFactsPatch, mergeIncomingGame } from '../server/gamesSync';
+import { isRowWanted, isVmMarkedRow, vmFactsPatch, mergeIncomingGame, boerseCrewPatch } from '../server/gamesSync';
 
 // The three decisions the games import makes per VolleyManager row, tested on
 // their own: whether the row is kept at all, what a stored row the sync is NOT
@@ -150,5 +150,53 @@ test.describe('what a kept row is written with (mergeIncomingGame)', () => {
     // Nothing to say the person is the same; two empty names are nobody.
     const merged = mergeIncomingGame({ ...existing, first_referee: '' }, { ...incoming, first_referee: '' });
     expect(merged.first_referee_id).toBe('');
+  });
+});
+
+test.describe('what the börse poll writes onto a whistle slot (boerseCrewPatch)', () => {
+  // A coach (SV 90001) whistles slot 2 next to a coachee. The game is an
+  // RC-Spiel — hidden under the coachee's row — for exactly as long as the
+  // coach is on that slot.
+  const game = {
+    id: 'g1', match_no: '2345678',
+    first_referee: 'Bea Beispiel', first_referee_id: '90004',
+    second_referee: 'Coach Person', second_referee_id: '90001',
+  };
+
+  test('a row already right costs no write', () => {
+    expect(boerseCrewPatch(game, [{ slot: '2', name: 'Coach Person', sv: '90001' }])).toEqual({});
+  });
+
+  test('the slot changing hands replaces the name and the number', () => {
+    expect(boerseCrewPatch(game, [{ slot: '2', name: 'New Referee', sv: '90009' }]))
+      .toEqual({ second_referee: 'New Referee', second_referee_id: '90009' });
+  });
+
+  test('the slot changing hands to a convocation WITHOUT a number blanks the number', () => {
+    // The old rule left the number alone whenever the börse had none, so the
+    // coach's number stayed on a slot they had given away — and the RC-Spiel
+    // test reads the number before the name, so the game stayed hidden from
+    // the coachee's row until the nightly sync.
+    expect(boerseCrewPatch(game, [{ slot: '2', name: 'New Referee', sv: '' }]))
+      .toEqual({ second_referee: 'New Referee', second_referee_id: '' });
+  });
+
+  test('the same person spelled differently, without a number, keeps the stored number', () => {
+    // Only the spelling is corrected: the person did not change, and a
+    // dropped number sends the game back to name matching.
+    expect(boerseCrewPatch(game, [{ slot: '1', name: 'Béa Beispiel', sv: '' }]))
+      .toEqual({ first_referee: 'Béa Beispiel' });
+  });
+
+  test('a number on the convocation always wins, equal name or not', () => {
+    expect(boerseCrewPatch(game, [{ slot: '1', name: 'Bea Beispiel', sv: '90014' }])).toEqual({ first_referee_id: '90014' });
+  });
+
+  test('both slots in one pass; a convocation with no name, or on no slot, is skipped', () => {
+    expect(boerseCrewPatch(game, [
+      { slot: '1', name: 'Other One', sv: '90011' },
+      { slot: '2', name: '', sv: '90099' },
+      { slot: 'LJ', name: 'Line Judge', sv: '90098' },
+    ])).toEqual({ first_referee: 'Other One', first_referee_id: '90011' });
   });
 });

@@ -102,3 +102,37 @@ export function mergeIncomingGame(
   if (!text(incoming.game_result)) merged.game_result = text(existing.game_result);
   return merged;
 }
+
+/** What the börse poll writes onto a stored game's whistle slots, from the
+ *  convocations its offers carry — only what changed, so a row already right
+ *  costs no write. The name is the börse's spelling whenever it differs. The
+ *  SV number follows the same rule as a kept row (mergeIncomingGame): a
+ *  number on the convocation always wins; a convocation without one keeps
+ *  the stored number only while the name still folds to the same person,
+ *  and BLANKS it when the name is somebody else's. The poll used to leave a
+ *  stored number alone whenever the börse had none, so a slot a coach gave
+ *  away kept the coach's number on it until the nightly sync — and because
+ *  the RC-Spiel test reads the number before the name, the game stayed an
+ *  RC-Spiel, hidden from every coachee row, for a day after it stopped being
+ *  one. */
+export function boerseCrewPatch(
+  existing: Record<string, unknown>,
+  convocations: Array<{ slot: string; name: string; sv: string }>,
+): Record<string, string> {
+  const patch: Record<string, string> = {};
+  for (const c of convocations) {
+    const name = text(c.name);
+    if (!name) continue;
+    const [nameKey, idKey] = c.slot === '1' ? REFEREE_SLOTS[0] : c.slot === '2' ? REFEREE_SLOTS[1] : [];
+    if (!nameKey || !idKey) continue;
+    if (text(existing[nameKey]) !== name) patch[nameKey] = name;
+    const sv = text(c.sv);
+    const stored = text(existing[idKey]);
+    if (sv) {
+      if (stored !== sv) patch[idKey] = sv;
+    } else if (stored && !sameNameOnSlot(existing, { [nameKey]: name }, nameKey)) {
+      patch[idKey] = '';
+    }
+  }
+  return patch;
+}

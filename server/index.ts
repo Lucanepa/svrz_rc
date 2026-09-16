@@ -38,7 +38,7 @@ import {
 import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
 import { fetchBoerseOffers, planReconcile, type BoerseOfferRow } from './boerse.ts';
-import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame } from './gamesSync.ts';
+import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch } from './gamesSync.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
 import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan } from './dataHygiene.ts';
 import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
@@ -3483,14 +3483,10 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
     if (!game) continue;
     matchedGames += 1;
 
-    const patch: Record<string, string> = {};
-    for (const o of offers) {
-      if (!o.slot_person_name) continue;
-      const nameField = o.slot === '1' ? 'first_referee' : 'second_referee';
-      const idField = o.slot === '1' ? 'first_referee_id' : 'second_referee_id';
-      if (asText(game[nameField]) !== o.slot_person_name) patch[nameField] = o.slot_person_name;
-      if (o.slot_person_sv && asText(game[idField]) !== o.slot_person_sv) patch[idField] = o.slot_person_sv;
-    }
+    // The rule is gamesSync.ts's, where it is tested: the number follows the
+    // name, so a slot a coach gave away does not keep the coach's number —
+    // which is what kept the game an RC-Spiel until the nightly sync.
+    const patch = boerseCrewPatch(game, offers.map((o) => ({ slot: o.slot, name: o.slot_person_name, sv: o.slot_person_sv })));
     if (Object.keys(patch).length > 0) {
       await withCollection(collectionCandidates.games, (c) => c.update(String(game!.id), patch));
       refereesCorrected += 1;

@@ -84,7 +84,7 @@ test('a folder opens to its forms; each opens the sent document, the folder down
   const open = hans.getByTestId('forms-folder-open');
   await expect(open).toBeVisible();
 
-  const rows = open.locator('tbody tr');
+  const rows = open.getByTestId('forms-entry');
   await expect(rows).toHaveCount(3);
   // Newest first, with date, role, game and coach.
   await expect(rows.nth(0)).toContainText('20.11.2026');

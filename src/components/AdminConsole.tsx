@@ -2773,6 +2773,13 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
 // One folder per referee, every season, every coach. Loaded the first time the
 // tab is opened rather than with the console: it reads every filed feedback,
 // and most sessions never come here.
+// The desk layout of a filed form: date, role, game, coach, button.
+// Every column fixed but the game's: each form is its own grid, so an `auto`
+// button column would size per row and nudge the coach column out of line.
+const FORMS_GRID = 'sm:grid-cols-[5.5rem_3rem_minmax(0,1fr)_8rem_5.5rem] sm:gap-x-4 sm:items-center';
+// Field labels exist only on the phone; the desk has a header row instead.
+const FORMS_LABEL = 'sm:hidden text-stone-500';
+
 function FormsAdmin({ t, active }: { t: T; active: boolean }) {
   const [folders, setFolders] = useState<FormsFolder[] | null>(null);
   const [err, setErr] = useState('');
@@ -2807,11 +2814,6 @@ function FormsAdmin({ t, active }: { t: T; active: boolean }) {
     } catch (e) {
       setZipErr(e instanceof Error ? e.message : String(e));
     } finally { setZipBusy(''); }
-  };
-
-  const gameLabel = (e: FormsFolder['forms'][number]) => {
-    const teams = e.homeTeam || e.awayTeam ? `${e.homeTeam || '?'} – ${e.awayTeam || '?'}` : '';
-    return [e.league, e.matchNo ? `#${e.matchNo}` : '', teams].filter(Boolean).join(' · ');
   };
 
   return (
@@ -2861,45 +2863,57 @@ function FormsAdmin({ t, active }: { t: T; active: boolean }) {
                   </button>
                   {isOpen && (
                     <div className="px-3 pb-3 bg-stone-50/60" data-testid="forms-folder-open">
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="text-left text-stone-500">
-                            <th className="py-1.5 pr-2 font-medium">{t.formsDate}</th>
-                            <th className="py-1.5 pr-2 font-medium">{t.formsRole}</th>
-                            <th className="py-1.5 pr-2 font-medium">{t.formsGame}</th>
-                            <th className="py-1.5 pr-2 font-medium hidden sm:table-cell">{t.formsRc}</th>
-                            <th className="py-1.5 font-medium text-right" />
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-stone-200/70">
-                          {f.forms.map((e) => (
-                            <tr key={e.id} className="align-top">
-                              <td className="py-1.5 pr-2 whitespace-nowrap tabular-nums text-stone-800">{e.date ? dayLabel(e.date, { year: true }) : '–'}</td>
-                              <td className="py-1.5 pr-2 whitespace-nowrap text-stone-800">{e.role}</td>
-                              <td className="py-1.5 pr-2 text-stone-700">
-                                {gameLabel(e) || '–'}
-                                <span className="sm:hidden block text-stone-500">{e.rc}</span>
-                              </td>
-                              <td className="py-1.5 pr-2 text-stone-700 hidden sm:table-cell">{e.rc || '–'}</td>
-                              <td className="py-1 text-right whitespace-nowrap">
-                                {e.file ? (
-                                  <a
-                                    href={feedbackFileUrl(e.id)}
-                                    target="_blank"
-                                    rel="noopener"
-                                    className={btnGhost}
-                                    data-testid="forms-open"
-                                  >
-                                    <ExternalLink size={13} />{e.file === 'image' ? t.formsScan : t.formsOpen}
-                                  </a>
-                                ) : (
-                                  <span className="text-stone-400">{t.formsNoFile}</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                      {/* One grid, two shapes. On a desk each form is a row and
+                          the header names the columns; on a phone every field
+                          gets a line of its own with its label beside it, and
+                          the button closes the card — the row version crammed
+                          the game into a two-word column and put the button
+                          somewhere off to the right of it. */}
+                      <div className={cn('hidden sm:grid text-xs text-stone-500 py-1.5', FORMS_GRID)}>
+                        <span className="font-medium">{t.formsDate}</span>
+                        <span className="font-medium">{t.formsRole}</span>
+                        <span className="font-medium">{t.formsGame}</span>
+                        <span className="font-medium">{t.formsRc}</span>
+                        <span />
+                      </div>
+                      <div className="divide-y divide-stone-200/70">
+                        {f.forms.map((e) => (
+                          <div
+                            key={e.id}
+                            data-testid="forms-entry"
+                            className={cn('grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 py-2.5 sm:py-2 text-xs items-baseline', FORMS_GRID)}
+                          >
+                            <span className={FORMS_LABEL}>{t.formsDate}</span>
+                            <span className="whitespace-nowrap tabular-nums text-stone-800">{e.date ? dayLabel(e.date, { year: true }) : '–'}</span>
+                            <span className={FORMS_LABEL}>{t.formsRole}</span>
+                            <span className="whitespace-nowrap text-stone-800">{e.role}</span>
+                            <span className={FORMS_LABEL}>{t.formsGame}</span>
+                            <span className="text-stone-700 min-w-0">
+                              {[e.league, e.matchNo ? `#${e.matchNo}` : ''].filter(Boolean).join(' · ') || '–'}
+                              {(e.homeTeam || e.awayTeam) && (
+                                <span className="block sm:inline sm:before:content-['_·_']">{`${e.homeTeam || '?'} – ${e.awayTeam || '?'}`}</span>
+                              )}
+                            </span>
+                            <span className={FORMS_LABEL}>{t.formsRc}</span>
+                            <span className="text-stone-700 min-w-0 truncate">{e.rc || '–'}</span>
+                            <span className="col-span-2 mt-1.5 sm:col-span-1 sm:mt-0 sm:text-right">
+                              {e.file ? (
+                                <a
+                                  href={feedbackFileUrl(e.id)}
+                                  target="_blank"
+                                  rel="noopener"
+                                  className={cn(btnGhost, 'w-full justify-center sm:w-auto')}
+                                  data-testid="forms-open"
+                                >
+                                  <ExternalLink size={13} />{e.file === 'image' ? t.formsScan : t.formsOpen}
+                                </a>
+                              ) : (
+                                <span className="text-stone-400">{t.formsNoFile}</span>
+                              )}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <button type="button" onClick={() => void zip(f)} disabled={zipBusy === f.key} className={btnPrimary} data-testid="forms-zip">
                           {zipBusy === f.key ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} {zipBusy === f.key ? t.archiveBusy : t.formsFolderZip}

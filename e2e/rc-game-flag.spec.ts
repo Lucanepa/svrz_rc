@@ -34,3 +34,35 @@ test('an RC game is labelled, and only listed when its filter is on', async ({ p
   await page.getByRole('button', { name: /Filter/i }).first().click();
   await expect(page.getByText('RC Game', { exact: true })).toHaveCount(1);
 });
+
+test('an RC game is not offered: the button is greyed and says why, on every list', async ({ page }) => {
+  // 4.4.10: the coach on the whistle files a Rückmeldung; a second coach does
+  // not observe the game, so nobody can take it. The button stays — greyed
+  // and still clickable — so it can explain itself, like a taken game's.
+  await stubSignedInApp(page);
+  const assigned: string[] = [];
+  await page.route('**/api/games/*/assign-rc', (r) => { assigned.push(r.request().url()); r.fulfill({ json: { ok: true } }); });
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({
+    json: [{ ...GAME, id: 'g-rc', matchNo: '402430', assignedRc: '', isRcGame: true }],
+  }));
+
+  // Under the coachee's row.
+  await page.goto('/coachees');
+  await page.getByRole('button', { name: /Show details|Details anzeigen/ }).first().click();
+  const take = page.getByRole('button', { name: /Take game|Spiel übernehmen/ }).first();
+  await expect(take).toHaveAttribute('aria-disabled', 'true');
+  await take.click({ force: true });
+  await expect(page.getByText(/RC game: a referee coach is whistling|RC-Spiel: Hier pfeift ein Referee Coach/).first()).toBeVisible();
+  expect(assigned).toEqual([]);
+
+  // On the Games tab, with the RC filter on.
+  await page.goto('/games');
+  await page.getByRole('button', { name: /Filter/i }).first().click();
+  await page.getByRole('button', { name: 'RC Game' }).click();
+  await page.getByRole('button', { name: /Filter/i }).first().click();
+  await page.getByText(GAME.homeTeam).first().click();
+  const take2 = page.getByRole('button', { name: /Take game|Spiel übernehmen/ }).first();
+  await expect(take2).toHaveAttribute('aria-disabled', 'true');
+  await take2.click({ force: true });
+  expect(assigned).toEqual([]);
+});

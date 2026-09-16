@@ -2525,6 +2525,30 @@ export default function App() {
     </button>
   );
 
+  /**
+   * "Take game", greyed out, for an RC game: a referee coach is on the whistle
+   * next to the coachee, and 4.4.10 says that game gets a Rückmeldung from
+   * them, not an observation from a second coach. Same shape as the
+   * taken-by button — greyed and still clickable, so it explains itself —
+   * and the server refuses the take too, for the one who bypasses the row.
+   */
+  const rcGameButton = (className: string) => {
+    const why = formData.lang === 'DE'
+      ? 'RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung, sondern eine Rückmeldung des RC (4.4.10).'
+      : 'RC game: a referee coach is whistling next to the coachee — no observation here, the coach gives a Rückmeldung instead (4.4.10).';
+    return (
+      <button
+        type="button"
+        aria-disabled="true"
+        title={why}
+        onClick={(e) => { e.stopPropagation(); toast.info(why); }}
+        className={cn(className, 'cursor-not-allowed border border-stone-200 bg-stone-100 text-stone-400 hover:bg-stone-100')}
+      >
+        {formData.lang === 'DE' ? 'Spiel übernehmen' : 'Take game'}
+      </button>
+    );
+  };
+
   const requestRcAssignment = (game: EligibleGame, rcName: string) => {
     // Clearing an assignment needs no warning — nobody is being observed twice,
     // and nobody is mailed about a coach who is no longer coming.
@@ -7208,12 +7232,14 @@ export default function App() {
                                             {flagChips(game, { focus: true })}
                                           </>}
                                           action={!holder ? (
+                                            game.isRcGame ? rcGameButton('h-8 w-full rounded-md px-2.5 text-[11px] font-medium transition-colors sm:w-auto') : (
                                             <button
                                               onClick={() => { if (rcAuth.rcName) requestRcAssignment(game, rcAuth.rcName); }}
                                               className="h-8 w-full rounded-md bg-slate-900 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-slate-800 sm:w-auto"
                                             >
                                               {de ? 'Spiel übernehmen' : 'Take game'}
                                             </button>
+                                            )
                                           ) : mine ? (
                                             <div className="flex items-center gap-1">
                                               <button
@@ -7441,6 +7467,8 @@ export default function App() {
                                       </button>
                                     ) : game.assignedRc ? (
                                       takenByButton(game.assignedRc, 'h-9 px-3 text-sm font-medium rounded-md transition-colors')
+                                    ) : game.isRcGame ? (
+                                      rcGameButton('h-9 px-3 text-sm font-medium rounded-md transition-colors')
                                     ) : (
                                       <button
                                         onClick={(e) => {
@@ -7902,12 +7930,14 @@ export default function App() {
                               action: eg ? (
                                 <div className="flex flex-wrap items-center gap-2">
                                   {!holder ? (
+                                    eg.isRcGame ? rcGameButton('h-8 px-3 text-xs font-medium rounded-md transition-colors') : (
                                     <button
                                       onClick={() => { if (rcAuth.rcName) requestRcAssignment(eg, rcAuth.rcName); }}
                                       className="h-8 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"
                                     >
                                       {de ? 'Spiel übernehmen' : 'Take game'}
                                     </button>
+                                    )
                                   ) : mine ? (
                                     <>
                                       <button

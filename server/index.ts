@@ -6803,6 +6803,13 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
           if (held && !heldByMe) {
             return { status: 409, body: { error: 'Dieses Spiel wurde bereits von einem anderen RC übernommen.' } };
           }
+          // 4.4.10: a referee coach on the whistle next to the coachee files a
+          // Rückmeldung, not a form — so the game is not observed by a second
+          // coach and cannot be taken. The lists grey the button out; this is
+          // for the tap that gets past them.
+          if ((await makeRcGameTest())(current)) {
+            return { status: 422, body: { error: 'RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung, sondern eine Rückmeldung des RC (4.4.10).' } };
+          }
           rcName = rcAuth.name; // write the canonical name from the RC record
           rcId = rcAuth.rcId;
         }

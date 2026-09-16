@@ -22,6 +22,7 @@ import { archiveSlug, formsRowOf, formsEntryName, groupForms, type FormsRow } fr
 import type { StatFilters, StatRole } from '../src/lib/statistics.ts';
 import { goalForMandate, OBSERVATION_GOAL } from '../src/types.ts';
 import { splitCoacheeGroups } from '../src/lib/coacheeGroup.ts';
+import { ATTACH_BUDGET_BYTES, attachableDoc, normalizeAttachedDocs, type UsefulDoc } from '../src/lib/usefulDocs.ts';
 
 // Shared with the survey page so the mailed copy can never drift from the form
 // the coachee actually filled in. Pure data — no browser dependencies.
@@ -1637,6 +1638,8 @@ function buildTemplatedEmail(opts: {
   rows: Array<[string, string]>;
   qa?: Array<[string, string]>;
   tips?: string;
+  /** Documents attached beside the report, as [German title, English title]. */
+  enclosures?: Array<[string, string]>;
   surveyUrl?: string;
   footerNote?: string;
 }): { subject: string; html: string; text: string } {
@@ -1653,6 +1656,13 @@ function buildTemplatedEmail(opts: {
   // a colour that appears nowhere in the app.)
   const tipsHtml = tips
     ? `<div style="margin:18px 0;padding:14px 18px;border-left:3px solid ${MAIL_BRAND};background:${MAIL_PANEL};border-radius:0 12px 12px 0;"><h2 style="margin:0 0 6px;${mailText(11, MAIL_MUTED, 'font-weight:700;letter-spacing:1.2px;text-transform:uppercase;')}">Tipps &amp; Tricks</h2><p style="margin:0;${mailText(14, MAIL_INK, 'white-space:pre-wrap;')}">${escapeHtml(tips)}</p></div>`
+    : '';
+  // Named in the body as well as attached: a mail client folds four PDFs into
+  // one paperclip, and the referee should know the protocol is among them
+  // before they open anything. Same panel idiom as the tips, one line each.
+  const enclosures = opts.enclosures ?? [];
+  const enclosuresHtml = enclosures.length > 0
+    ? `<div style="margin:18px 0;padding:14px 18px;border-left:3px solid ${MAIL_BRAND};background:${MAIL_PANEL};border-radius:0 12px 12px 0;"><h2 style="margin:0 0 6px;${mailText(11, MAIL_MUTED, 'font-weight:700;letter-spacing:1.2px;text-transform:uppercase;')}">Beilagen · Enclosures</h2>${enclosures.map(([de, en]) => `<p style="margin:0;${mailText(14, MAIL_INK)}">${escapeHtml(de)}${en && en !== de ? ` <span style="color:${MAIL_MUTED};">· ${escapeHtml(en)}</span>` : ''}</p>`).join('')}</div>`
     : '';
   const surveyHtml = opts.surveyUrl
     ? `<div style="margin-top:20px;"><a href="${escapeHtml(opts.surveyUrl)}" style="display:inline-block;padding:11px 24px;background:${MAIL_BRAND};color:#ffffff;text-decoration:none;border-radius:10px;${mailText(14, '#ffffff', 'font-weight:600;line-height:1;')}">Feedback geben · Give feedback</a></div>`
@@ -1672,6 +1682,7 @@ function buildTemplatedEmail(opts: {
     + detailRowsHtml(opts.rows)
     + qaBlocksHtml(opts.qa ?? [])
     + tipsHtml
+    + enclosuresHtml
     + bilingualBlockHtml(outro, outroEn)
     + surveyHtml
     + footerHtml,
@@ -1681,6 +1692,7 @@ function buildTemplatedEmail(opts: {
   for (const [k, v] of opts.rows) if (v) text += `${k.replace('|', ' · ')}: ${v}\n`;
   for (const [q, a] of opts.qa ?? []) if (a) text += `\n${q}\n${a}\n`;
   if (tips) text += `\n--- Tipps & Tricks ---\n${tips}\n`;
+  if (enclosures.length > 0) text += `\n--- Beilagen · Enclosures ---\n${enclosures.map(([de, en]) => (en && en !== de ? `${de} · ${en}` : de)).join('\n')}\n`;
   text += `\n${bilingualText(outro, outroEn)}`;
   if (opts.surveyUrl) text += `\n${opts.surveyUrl}\n`;
   if (footNote) text += `\n${footNote}${footNoteEn ? `\n${footNoteEn}` : ''}\n`;
@@ -4044,6 +4056,62 @@ app.get('/api/docs/:id', async (req: Request, res: ExpressResponse) => {
     res.status(502).json({ error: 'Document unavailable' });
   }
 });
+
+// ── Enclosures ────────────────────────────────────────────────────────
+// The documents a coach ticks under the observation form travel with the
+// report as further PDF attachments. They are the PDF half of the "Nützliche
+// Infos & Dokumente" catalogue, resolved here from the same two sources the
+// reader uses: a file of ours under public/docs — in the container by way of
+// the Dockerfile's `COPY . .` — or a proxied upstream through loadProxiedDoc,
+// cached and prefaced exactly as the reader gets it, so the GBO arrives with
+// its summary page in front.
+
+type Enclosure = { doc: UsefulDoc; filename: string; content: Buffer };
+
+/**
+ * The name the attachment shows in the referee's mail client: the German
+ * title, which is what the coach saw when ticking it. Only what a filesystem
+ * or a mail header cannot carry is replaced — umlauts, dashes and brackets
+ * stay, because "Geb_hrenordnung.pdf" is not a name anybody chose.
+ */
+function enclosureFilename(doc: UsefulDoc): string {
+  const base = doc.DE.title
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100) || doc.id;
+  return `${base}.pdf`;
+}
+
+/** Bytes for one catalogue entry, from wherever the reader would get them. */
+async function loadEnclosure(doc: UsefulDoc): Promise<Enclosure> {
+  const filename = enclosureFilename(doc);
+  if (doc.path) {
+    // `path` is catalogue data, never client input, so the path is safe. The
+    // one way this fails is a catalogue entry naming a file the build no
+    // longer ships — said so, rather than as a bare ENOENT in the Protokoll.
+    try {
+      return { doc, filename, content: readFileSync(`public/${doc.path}`) };
+    } catch {
+      throw new Error(`${doc.id}: public/${doc.path} is not in this build`);
+    }
+  }
+  if (doc.proxyId) {
+    const cached = await loadProxiedDoc(doc.proxyId);
+    return { doc, filename, content: cached.body };
+  }
+  throw new Error(`document ${doc.id} has no source`);
+}
+
+async function loadEnclosures(ids: string[]): Promise<Enclosure[]> {
+  // Side by side: two upstream fetches take as long as the slower one, and
+  // the coach is sitting in front of the "Abschliessen" spinner meanwhile.
+  return Promise.all(ids.map((id) => {
+    const doc = attachableDoc(id);
+    if (!doc) throw new Error(`unknown document ${id}`);
+    return loadEnclosure(doc);
+  }));
+}
 
 app.get('/api/admin/auth/status', (req: Request, res: ExpressResponse) => {
   // The console asks this on load to decide between the login form and the
@@ -9041,6 +9109,50 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     return;
   }
 
+  // The enclosures — documents from the catalogue the coach ticked under the
+  // form. Ids only: the bytes come from our own sources below, so the client
+  // can choose WHAT goes out but never what it contains. An id this build
+  // does not know is refused rather than dropped: the coach chose it, and a
+  // report that quietly arrives without it would have them wondering whether
+  // the referee got the protocol they talked about. What is stored on the
+  // record is the cleaned list, so a reopened report still says what went.
+  const requestedDocs: unknown[] = Array.isArray(formData.attachedDocs) ? formData.attachedDocs : [];
+  const attachedDocs = normalizeAttachedDocs(requestedDocs);
+  const unknownDocs = requestedDocs.filter((id) => typeof id !== 'string' || !attachedDocs.includes(id));
+  if (unknownDocs.length > 0) {
+    res.status(422).json({ error: `Unbekannte Beilage: ${unknownDocs.map(String).join(', ')}. Bitte die Beilagen prüfen und erneut senden.` });
+    return;
+  }
+  if (attachedDocs.length > 0) formData.attachedDocs = attachedDocs;
+  else delete formData.attachedDocs;
+
+  // Fetched BEFORE the lock and the writes: an upstream that is down costs
+  // nothing but this request, and the game is not held while volleyball.ch
+  // thinks about a 7 MB rulebook. A document that cannot be had fails the
+  // submit as a 422 naming it — the coach unticks it or tries later — because
+  // the alternative, filing and mailing the report without it, is the silent
+  // omission described above.
+  let enclosures: Enclosure[] = [];
+  if (attachedDocs.length > 0) {
+    try {
+      enclosures = await loadEnclosures(attachedDocs);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.warn('feedback.enclosure', 'a ticked document could not be loaded', { docs: attachedDocs, error: message });
+      res.status(422).json({ error: 'Eine Beilage konnte gerade nicht geladen werden. Bitte die Beilagen abwählen oder später erneut senden.' });
+      return;
+    }
+    // Measured on the real bytes, not the catalogue's — a proxied document is
+    // whatever upstream serves today, plus our preface.
+    const enclosedBytes = enclosures.reduce((total, e) => total + e.content.byteLength, 0);
+    if (enclosedBytes > ATTACH_BUDGET_BYTES) {
+      res.status(422).json({
+        error: `Die Beilagen sind zu gross (${(enclosedBytes / 1e6).toFixed(1)} MB, höchstens ${Math.round(ATTACH_BUDGET_BYTES / 1e6)} MB). Bitte eine Beilage abwählen.`,
+      });
+      return;
+    }
+  }
+
   // Everything below reads the game, decides, and writes the decision back.
   // Without the lock two submits for the same game — one per role, or an
   // outbox replay racing the original — each check the same stale snapshot and
@@ -9403,8 +9515,11 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           ['Referee Coach', asText(formData.meta?.rc)],
         ],
         tips: String(tipsAndTricks || ''),
+        enclosures: enclosures.map((e) => [e.doc.DE.title, e.doc.EN.title] as [string, string]),
         surveyUrl: linkForThisCopy,
-        footerNote: 'Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt.|The full coaching report is attached as a PDF.',
+        footerNote: enclosures.length > 0
+          ? 'Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt, zusammen mit den oben genannten Beilagen.|The full coaching report is attached as a PDF, together with the enclosures listed above.'
+          : 'Der vollständige Coaching-Feedback-Bericht ist als PDF angehängt.|The full coaching report is attached as a PDF.',
       });
       const built = renderFeedbackMail(surveyUrl);
       // The copy for everyone who is not the referee. Identical but for the link.
@@ -9464,11 +9579,20 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         emailSent = false;
       } else {
         if (isTestMode) console.log(`[feedback-email] TEST MODE — sending to ${mailTo} instead of the referee`);
-        const attachments = emailAttachments([{
-          filename: attachmentName,
-          content: pdfBuffer,
-          contentType: attachmentType,
-        }]);
+        const attachments = emailAttachments([
+          {
+            filename: attachmentName,
+            content: pdfBuffer,
+            contentType: attachmentType,
+          },
+          // The report first, then the enclosures in catalogue order — the
+          // order the mail's Beilagen block lists them in.
+          ...enclosures.map((e) => ({
+            filename: e.filename,
+            content: e.content,
+            contentType: 'application/pdf',
+          })),
+        ]);
         // TWO messages, not one with Cc. The survey link is a one-shot
         // capability to answer AS the referee, and the RC in Cc is by
         // construction the very person that survey assesses — the button sat in
@@ -9542,6 +9666,8 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           role: String(role),
           ms: Date.now() - mailStarted,
           attachmentBytes: pdfBuffer.length,
+          enclosures: enclosures.map((e) => e.doc.id),
+          enclosedBytes: enclosures.reduce((total, e) => total + e.content.byteLength, 0),
           messageId: mainInfo?.messageId || '',
           accepted: Array.isArray(mainInfo?.accepted) ? mainInfo.accepted.length : undefined,
           copies: copyRecipients.length,

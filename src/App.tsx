@@ -1,10 +1,10 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy } from 'react';
-import { Maximize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2 } from 'lucide-react';
+import { Maximize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 // About a megabyte of renderer, fetched the first time a coach opens a
 // document and never for anyone who does not.
 const PdfReader = lazy(() => import('./components/PdfReader'));
-import { USEFUL_DOCS, USEFUL_DOC_GROUPS, type UsefulDoc } from './lib/usefulDocs';
+import { USEFUL_DOCS, USEFUL_DOC_GROUPS, ATTACHABLE_DOCS, ATTACH_BUDGET_BYTES, attachedBytes, normalizeAttachedDocs, type UsefulDoc } from './lib/usefulDocs';
 import { docLinkUrl, docSourceUrl, prefetchSmallDocs, storeAllDocs, storedState } from './lib/docCache';
 import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, PAID_CAP, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
 import {
@@ -640,7 +640,10 @@ function draftHasWork(fd: FeedbackFormData, tips: string): boolean {
     || fd.sections.some((s) => s.items.some((i) => !!i.rating))
     || Object.values(fd.results).some((v) => typeof v === 'string' && v.trim() !== '')
     || !!(fd.meta.ergebnis || '').trim()
-    || !!tips.trim();
+    || !!tips.trim()
+    // A document picked to go with the report is a decision about what the
+    // referee gets, and it is mailed like the tips are.
+    || (fd.attachedDocs?.length ?? 0) > 0;
 }
 
 // Ratings leave the form keyed by criterion id, never by position, so a
@@ -2741,6 +2744,8 @@ export default function App() {
         // ink and their signature ends up on someone else's report.
         signature: '',
         rcSignature: undefined,
+        // What went with the last report was chosen for the last referee.
+        attachedDocs: [],
         // Every game-derived meta field is cleared too: the fill effect below
         // keeps `prev` whenever the new game leaves a field empty, so a game
         // with no published score used to inherit the previous game's.
@@ -3606,6 +3611,11 @@ export default function App() {
   // Pre-filled in the demo so the section — and the part of the feedback mail
   // that carries it — is visible without typing; empty in the real app.
   const [tipsAndTricks, setTipsAndTricks] = useState(demoTips);
+  // Whether the enclosure picker under the form shows the whole catalogue or
+  // only what is ticked. Closed by default: twenty-one rows on a phone are a
+  // long way to scroll past on the way to Senden, for something most reports
+  // do not need.
+  const [docPickerOpen, setDocPickerOpen] = useState(false);
   const [feedbackLocked, setFeedbackLocked] = useState(false);
   // Only the coach who filed an observation (or an admin) may write its note.
   // Anyone else opening the same record would get a box that 403s on save.
@@ -3814,6 +3824,7 @@ export default function App() {
         results: { ...fd.results } as Record<string, string>,
         signature: fd.signature || '', rcSignature: fd.rcSignature || '',
         tipsAndTricks: tips,
+        attachedDocs: [...(fd.attachedDocs || [])],
         // Carried, not dropped: a field a NEWER build wrote survives a round
         // trip through this one instead of being silently stripped.
         extra: prev?.extra,
@@ -4028,6 +4039,7 @@ export default function App() {
       // INITIAL_DATA leaves this undefined rather than '', and the difference is
       // load-bearing for the mandatory-signature gate.
       rcSignature: d.rcSignature || undefined,
+      attachedDocs: normalizeAttachedDocs(d.attachedDocs),
     };
   };
 
@@ -4438,6 +4450,7 @@ export default function App() {
       signature: foreign ? '' : (p.signature || ''),
       rcSignature: foreign ? '' : (p.rcSignature || ''),
       tipsAndTricks: p.tipsAndTricks || '',
+      attachedDocs: normalizeAttachedDocs(p.attachedDocs),
       extra: p.extra,
     };
   };
@@ -4530,6 +4543,7 @@ export default function App() {
       // too — they are the one field a stale value could smuggle past validation.
       signature: '',
       rcSignature: undefined,
+      attachedDocs: [],
     }));
     setFeedbackLocked(false);
     setOpenFeedbackId(null);
@@ -5439,8 +5453,11 @@ export default function App() {
                     </div>
                   )}
                   {m.attachment && (
-                    <div className="px-3 py-2 border-t border-stone-200 flex items-center gap-2 text-[12px] text-stone-500">
-                      <Download size={13} className="shrink-0" /> {m.attachment}
+                    <div className="px-3 py-2 border-t border-stone-200 flex flex-col gap-1 text-[12px] text-stone-500">
+                      <span className="flex items-center gap-2"><Download size={13} className="shrink-0" /> {m.attachment}</span>
+                      {(m.enclosures || []).map((name) => (
+                        <span key={name} className="flex items-center gap-2"><Paperclip size={13} className="shrink-0" /> {name}</span>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -8340,6 +8357,121 @@ export default function App() {
           onChange={e => setTipsAndTricks(e.target.value)}
         />
       </div>
+
+      {/* Enclosures. "You should read the official protocol" is a sentence
+          from the debrief that lands better with the protocol in the same
+          mail, so the coach ticks it here and the server attaches the PDF
+          beside the report. The list is the PDF half of "Nützliche Infos &
+          Dokumente" on Home, same groups, same titles; the sizes matter
+          because a mailbox that refuses 10 MB refuses the report with it,
+          which is what the running total at the foot is guarding.
+          Folded by default to what is ticked — the whole catalogue only on
+          request, and never on a filed record, which shows what WAS sent and
+          nothing at all when nothing was. */}
+      {(() => {
+        const chosen = formData.attachedDocs || [];
+        const expanded = docPickerOpen && !formDisabled;
+        if (formDisabled && chosen.length === 0) return null;
+        const used = attachedBytes(chosen);
+        const mb = (bytes: number) => `${(bytes / 1e6).toFixed(1).replace(/\.0$/, '')} MB`;
+        const size = (bytes: number) => (bytes >= 1e6 ? mb(bytes) : `${Math.max(1, Math.round(bytes / 1e3))} KB`);
+        const toggle = (id: string, on: boolean) => setFormData((prev) => {
+          const current = prev.attachedDocs || [];
+          const next = on ? [...current, id] : current.filter((x) => x !== id);
+          return { ...prev, attachedDocs: normalizeAttachedDocs(next) };
+        });
+        const groups = (Object.keys(USEFUL_DOC_GROUPS) as (keyof typeof USEFUL_DOC_GROUPS)[])
+          .map((group) => ({
+            group,
+            docs: ATTACHABLE_DOCS.filter((doc) => doc.group === group && (expanded || chosen.includes(doc.id))),
+          }))
+          .filter((g) => g.docs.length > 0);
+        return (
+          <div className="max-w-4xl mx-auto mt-6 bg-white p-6 shadow-xl border border-stone-200 no-print" data-testid="attach-docs">
+            <h3 className="font-bold text-stone-800 mb-3 flex items-center gap-2">
+              <Paperclip size={16} />
+              {formData.lang === 'DE' ? 'Dokumente beilegen' : 'Attach documents'}
+            </h3>
+            {!formDisabled && (
+              <p className="text-xs text-stone-500 mb-3">
+                {formData.lang === 'DE'
+                  ? 'Die angekreuzten PDFs aus «Nützliche Infos & Dokumente» gehen als Anhang zusammen mit dem Bericht an den Schiedsrichter — etwa das Spielprotokoll, wenn es im Gespräch darum ging.'
+                  : 'The ticked PDFs from “Useful info & documents” go to the referee as attachments alongside the report — the match protocol, say, when that is what the debrief was about.'}
+              </p>
+            )}
+            {groups.map(({ group, docs }) => (
+              <div key={group} className="mt-3 first:mt-0">
+                <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1.5">{USEFUL_DOC_GROUPS[group][formData.lang]}</h4>
+                <div className="grid gap-1.5 sm:grid-cols-2">
+                  {docs.map((doc) => {
+                    const on = chosen.includes(doc.id);
+                    // Ticking this one would push the mail past what a strict
+                    // mailbox accepts: greyed, with the reason on hover, rather
+                    // than accepted here and refused by the server.
+                    const tooBig = !on && used + (doc.bytes ?? 0) > ATTACH_BUDGET_BYTES;
+                    const text = doc[formData.lang];
+                    // min-w-0 on the grid item: without it a long title's nowrap
+                    // widened the column past the phone and pushed the eye off
+                    // the edge.
+                    return (
+                      <div key={doc.id} className={cn('min-w-0 flex items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors', on ? 'border-red-300 bg-red-50/40' : 'border-stone-200', tooBig && 'opacity-50')}>
+                        <label className="flex-1 min-w-0 flex items-center gap-2.5 cursor-pointer" title={tooBig ? (formData.lang === 'DE' ? `Zu gross: höchstens ${mb(ATTACH_BUDGET_BYTES)} pro E-Mail` : `Too large: at most ${mb(ATTACH_BUDGET_BYTES)} per e-mail`) : text.note}>
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 shrink-0 accent-red-600"
+                            checked={on}
+                            disabled={formDisabled || tooBig}
+                            onChange={(e) => toggle(doc.id, e.target.checked)}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[13px] font-medium text-stone-800 leading-snug">{text.title}</span>
+                            <span className="block text-[10px] font-semibold uppercase tracking-wide text-stone-400">PDF · {size(doc.bytes ?? 0)}</span>
+                          </span>
+                        </label>
+                        {/* The same reader Home opens, so a coach unsure which
+                            of the two protocols they mean can look before
+                            sending. Not in the demo, whose proxied documents
+                            have no API to come from. */}
+                        {docSourceUrl(doc) && (
+                          <button
+                            type="button"
+                            onClick={() => setReaderDoc(doc)}
+                            className="shrink-0 grid place-items-center h-7 w-7 rounded-md text-stone-400 hover:text-red-700 hover:bg-red-50"
+                            aria-label={formData.lang === 'DE' ? `${text.title} ansehen` : `View ${text.title}`}
+                          >
+                            <Eye size={14} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+            <div className={cn('flex flex-wrap items-center justify-between gap-2', groups.length > 0 && 'mt-3')}>
+              <p className="text-[11px] text-stone-500" data-testid="attach-docs-total">
+                {chosen.length === 0
+                  ? (formData.lang === 'DE' ? 'Keine Beilagen — der Bericht geht allein.' : 'No enclosures — the report goes on its own.')
+                  : (formData.lang === 'DE'
+                    ? `${chosen.length} ${chosen.length === 1 ? 'Beilage' : 'Beilagen'} · ${size(used)} von ${mb(ATTACH_BUDGET_BYTES)}`
+                    : `${chosen.length} ${chosen.length === 1 ? 'enclosure' : 'enclosures'} · ${size(used)} of ${mb(ATTACH_BUDGET_BYTES)}`)}
+              </p>
+              {!formDisabled && (
+                <button
+                  type="button"
+                  onClick={() => setDocPickerOpen((open) => !open)}
+                  aria-expanded={expanded}
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-700 hover:bg-stone-50"
+                >
+                  {expanded
+                    ? <><ChevronDown size={14} className="rotate-180" /> {formData.lang === 'DE' ? 'Liste einklappen' : 'Fold the list'}</>
+                    : <><Paperclip size={14} /> {formData.lang === 'DE' ? (chosen.length ? 'Weitere Dokumente…' : 'Dokumente auswählen…') : (chosen.length ? 'More documents…' : 'Choose documents…')}</>}
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
       </div>{/* end formDisabled wrapper */}
 
       {/* Private note to the RC president. Deliberately outside the disabled
@@ -8463,6 +8595,29 @@ export default function App() {
                     )}
                   </div>
                 )}
+                {/* What rides along, named — the one moment to notice that the
+                    7 MB rulebook is still ticked from a debrief about a
+                    double contact. In dual mode each role has its own list;
+                    the one on screen is what this dialog can see, and the
+                    stashed role's travels with its stashed form. */}
+                {(() => {
+                  const enclosed = (formData.attachedDocs || [])
+                    .map((id) => ATTACHABLE_DOCS.find((doc) => doc.id === id))
+                    .filter((doc): doc is UsefulDoc => !!doc);
+                  if (enclosed.length === 0) return null;
+                  return (
+                    <div className="bg-stone-50 rounded-lg p-3 text-xs" data-testid="confirm-enclosures">
+                      <p className="font-semibold text-stone-700 mb-1 flex items-center gap-1.5">
+                        <Paperclip size={12} />
+                        {formData.lang === 'DE' ? 'Beilagen' : 'Enclosures'}
+                        {dualMode && <span className="font-normal text-stone-400">({formData.role})</span>}
+                      </p>
+                      <ul className="space-y-0.5 text-stone-600">
+                        {enclosed.map((doc) => <li key={doc.id}>· {doc[formData.lang].title}</li>)}
+                      </ul>
+                    </div>
+                  );
+                })()}
               </div>
             ) : (
               <p className="text-sm text-stone-600 mb-6">

@@ -44,6 +44,14 @@ export interface FeedbackFormData {
   // feedback was discussed, and the coach standing behind what it says.
   signature?: string;
   rcSignature?: string;
+  /**
+   * Documents from the "Nützliche Infos & Dokumente" list the coach sends
+   * along with the report — ids into ATTACHABLE_DOCS (src/lib/usefulDocs.ts).
+   * The server attaches the PDFs themselves to the mail; what is stored here
+   * is only WHICH ones, so a reopened record still says what the referee was
+   * handed. Absent or empty: the report goes alone.
+   */
+  attachedDocs?: string[];
 }
 
 export interface EligibleGame {

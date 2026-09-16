@@ -4,6 +4,7 @@ import type { StatFilters, StatisticsResponse } from './statistics';
 import { normalizeSurveyConfig, type SurveyConfig } from './survey';
 import { draftKey, type DraftRecord } from './formDraft';
 import { sanitizeRich } from './richText';
+import { normalizeAttachedDocs } from './usefulDocs';
 import * as demo from './demo';
 import { isDemoMode } from './demo';
 import type { PageAck, PageWire, ServerPage } from './notebook';
@@ -1469,6 +1470,7 @@ function parkedWireFrom(record: DraftRecord): ParkedDraftWire {
     signature: record.signature || '',
     rcSignature: record.rcSignature || '',
     tipsAndTricks: record.tipsAndTricks || '',
+    attachedDocs: normalizeAttachedDocs(record.attachedDocs),
     extra: record.extra,
   };
 }
@@ -1545,6 +1547,7 @@ function draftFromParked(ownerId: string, row: ParkedDraftRow): DraftRecord | nu
     signature: parkedText(d.signature),
     rcSignature: parkedText(d.rcSignature),
     tipsAndTricks: parkedText(d.tipsAndTricks),
+    attachedDocs: normalizeAttachedDocs(d.attachedDocs),
     extra: d.extra && typeof d.extra === 'object' && !Array.isArray(d.extra)
       ? d.extra as Record<string, unknown>
       : undefined,

@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { stubSignedInApp, openFeedbackForm, ratingControl, RC, COACHEE, GAME } from './support/app';
+import { stubSignedInApp, openFeedbackForm, ratingControl, fillWholeForm, signOpenPad, RC, COACHEE, GAME } from './support/app';
 
 /**
  * An unfinished observation, and the three ways it is allowed to survive: the
@@ -449,18 +449,6 @@ async function openGameFromList(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
 }
 
-/** Draw a stroke on the open signature pad and keep it — as in e2e/feedback-email.spec.ts. */
-async function signOpenPad(page: Page): Promise<void> {
-  const pad = page.locator('canvas');
-  await expect(pad).toBeVisible();
-  const box = (await pad.boundingBox())!;
-  await page.mouse.move(box.x + 20, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width - 20, box.y + box.height / 3, { steps: 8 });
-  await page.mouse.up();
-  await page.getByRole('button', { name: /Save signature|Unterschrift speichern/ }).click();
-}
-
 test.describe('Discard means gone', () => {
   test('the copy on screen goes with the copy on disk', async ({ page }) => {
     await stubSignedInApp(page);
@@ -697,42 +685,6 @@ const closedRoleBox = (page: Page) =>
 /** The list screen, whichever tab: the one heading the form never shows. */
 const listHeading = (page: Page) =>
   page.getByRole('heading', { name: /^(Referee Coaching Feedback|SR-Coaching Feedback)$/ });
-
-/**
- * Everything the send path insists on — every criterion, the results strip, a
- * legal 3:0 and both signatures. Condensed from `fillFeedbackForm` in
- * e2e/feedback-email.spec.ts, which stops at the confirmation dialog; this file
- * has to go through it.
- */
-async function fillWholeForm(page: Page): Promise<void> {
-  const cells = page.locator('td.rating-cell');
-  if (await cells.count() > 0 && await cells.first().isVisible()) {
-    const rows = page.locator('tr', { has: page.locator('td.rating-cell') });
-    for (let r = 0; r < await rows.count(); r++) {
-      const row = rows.nth(r).locator('td.rating-cell');
-      // A criterion marked N/A collapses its five cells into one, which would
-      // shift every later row's C — so row by row, and only a full row.
-      if (await row.count() === 5) await row.nth(2).click();
-    }
-  } else {
-    const cs = page.locator('button', { hasText: /^C$/ });
-    for (let i = 0; i < await cs.count(); i++) await cs.nth(i).click();
-  }
-  const group = (heading: RegExp) => page.getByRole('heading', { name: heading }).locator('xpath=..');
-  await group(/Match Level|Spielniveau/).getByRole('button', { name: /^(Normal)$/ }).click();
-  await group(/^(Motivation)$/).getByRole('button', { name: '✓' }).click();
-  await group(/Outlook|Ausblick/).getByRole('button', { name: '✓' }).click();
-  await group(/Further visit|Weiterer Besuch/).getByRole('button', { name: 'N', exact: true }).click();
-  await group(/Referee Goal|SR-Ziel/).locator('input').fill('2L');
-  for (const set of [1, 2, 3]) {
-    await page.getByLabel(new RegExp(`(Set|Satz) ${set} (home|Heim)`)).fill('25');
-    await page.getByLabel(new RegExp(`(Set|Satz) ${set} (away|Gast)`)).fill('20');
-  }
-  for (const index of [0, 1]) {
-    await page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).nth(index).click();
-    await signOpenPad(page);
-  }
-}
 
 test.describe('A report that has just gone leaves the banner', () => {
   test('the send itself takes the row off the list, not the next tap', async ({ page }) => {

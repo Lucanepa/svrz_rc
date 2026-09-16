@@ -12,6 +12,7 @@
 
 import { APP_VERSION } from './buildInfo';
 import { dayKey, todayKey } from './appTime';
+import { normalizeAttachedDocs } from './usefulDocs';
 import type { EligibleGame } from '../types';
 
 export type DraftStatus = 'editing' | 'queued' | 'filed';
@@ -67,6 +68,9 @@ export type DraftRecord = {
   signature: string;                // '' when not captured
   rcSignature: string;
   tipsAndTricks: string;            // not part of FeedbackFormData, but it is mailed — losing it loses real work
+  /** FeedbackFormData.attachedDocs. Optional because records written before
+   *  there were enclosures have no such key; read it as "none". */
+  attachedDocs?: string[];
 
   /** Top-level keys written by a NEWER build that this one does not understand.
    *  Carried through a restore and re-emitted on export so a round trip through
@@ -95,6 +99,7 @@ export type DraftFilePart = {
   signature: string;
   rcSignature: string;
   tipsAndTricks: string;
+  attachedDocs?: string[];
   extra?: Record<string, unknown>;
 };
 
@@ -333,6 +338,7 @@ export async function setDraftStatus(
         next.signature = '';
         next.rcSignature = '';
         next.tipsAndTricks = '';
+        next.attachedDocs = [];
       }
       s.put(next);
     };
@@ -483,7 +489,7 @@ const FILE_KEYS = new Set([
 ]);
 const PART_KEYS = new Set([
   'role', 'lang', 'observationTarget', 'resultUnlocked', 'coacheeName', 'coacheeLevel',
-  'meta', 'ratings', 'results', 'signature', 'rcSignature', 'tipsAndTricks', 'extra',
+  'meta', 'ratings', 'results', 'signature', 'rcSignature', 'tipsAndTricks', 'attachedDocs', 'extra',
 ]);
 
 // A file picked off a disk is input from outside the app, so nothing it claims
@@ -571,6 +577,7 @@ export function encodeDraftFile(records: DraftRecord[], ctx: DraftFileCtx): stri
       signature: str(record.signature),
       rcSignature: str(record.rcSignature),
       tipsAndTricks: str(record.tipsAndTricks),
+      attachedDocs: normalizeAttachedDocs(record.attachedDocs),
     }, record.extra));
   });
   const file: DraftFile = withExtra<DraftFile>({
@@ -689,6 +696,10 @@ export function decodeDraftFile(text: string, sizeBytes: number, knownRatingIds?
       signature: str(rawPart.signature),
       rcSignature: str(rawPart.rcSignature),
       tipsAndTricks: str(rawPart.tipsAndTricks),
+      // Reduced to the documents THIS build can enclose, like the ratings to
+      // the criteria it knows: a file naming a document that has since left
+      // the list restores without it rather than failing.
+      attachedDocs: normalizeAttachedDocs(rawPart.attachedDocs),
       // Collected INTO the field on the way in, spread back out at the level
       // they were written at on the way out (see `withExtra` in the encoder).
       // The record that carries them between the two has one place to put them.

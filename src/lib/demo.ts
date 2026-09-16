@@ -13,6 +13,7 @@
 
 import { SECTIONS_1SR_DE } from '../types';
 import { dayLabel } from './appTime';
+import { attachableDoc, type UsefulDoc } from './usefulDocs';
 import type {
   EligibleGame,
   FeedbackFormData,
@@ -94,6 +95,7 @@ export type DemoEmail = {
   body: string;        // plain-text body, verbatim to the real mail
   surveyUrl: string;   // rendered as the mail's button, not as body text ('' = none)
   attachment: string;  // PDF filename ('' = no attachment)
+  enclosures: string[]; // the documents the coach ticked, as the mail would name them
   sentAt: string;
 };
 
@@ -362,6 +364,12 @@ function buildDemoEmail(game: DemoGame, coachee: Coachee | undefined, form: Feed
   body += `Beurteilte Rolle: ${form.role}\n`;
   body += `Referee Coach: ${rcName}\n`;
   if (tips.trim()) body += `\n--- Tipps & Tricks ---\n${tips}\n`;
+  // The documents the coach ticked under the form, named the way the server
+  // names them in the mail and attached beside the report.
+  const enclosures = (form.attachedDocs || [])
+    .map((id) => attachableDoc(id))
+    .filter((doc): doc is UsefulDoc => !!doc);
+  if (enclosures.length > 0) body += `\n--- Beilagen ---\n${enclosures.map((doc) => doc.DE.title).join('\n')}\n`;
   // The URL itself stays out of the body: the real mail renders it as a button
   // in the HTML part, and a bare token URL is unreadable in a preview.
   body += `\nWir freuen uns über Ihr Feedback zum Coaching-Erlebnis:\n`;
@@ -378,6 +386,7 @@ function buildDemoEmail(game: DemoGame, coachee: Coachee | undefined, form: Feed
     body,
     surveyUrl: SURVEY_URL,
     attachment: `SR-Coaching_${game.matchNo}_${(coachee?.full_name || 'SR').replace(/\s+/g, '-')}.pdf`,
+    enclosures: enclosures.map((doc) => `${doc.DE.title}.pdf`),
     sentAt: new Date().toISOString(),
   };
 }
@@ -417,6 +426,7 @@ ${RC.name}
     body,
     surveyUrl: '', // the reminder goes out before the game — nothing to review yet
     attachment: '',
+    enclosures: [],
     sentAt: new Date().toISOString(),
   };
 }

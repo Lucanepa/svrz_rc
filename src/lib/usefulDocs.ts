@@ -442,3 +442,52 @@ export const USEFUL_DOCS: UsefulDoc[] = [
     EN: { title: 'Scorers', note: 'Christine Pulver — scorer training.' },
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Enclosures
+// ---------------------------------------------------------------------------
+//
+// A coach can send any of these along with the report: "you should read the
+// official protocol" is a sentence that lands better with the protocol in the
+// same mail. What qualifies is every PDF we can lay hands on ourselves — a file
+// of ours under public/docs, or one the API proxies. The blank form is built in
+// the browser, the web links and the contacts are not files, and a video is not
+// something anybody wants in their inbox.
+
+/** The documents a report can carry as enclosures, in catalogue order. */
+export const ATTACHABLE_DOCS: UsefulDoc[] = USEFUL_DOCS.filter(
+  (doc) => doc.kind === 'pdf' && !!(doc.path || doc.proxyId),
+);
+
+export function attachableDoc(id: string): UsefulDoc | undefined {
+  return ATTACHABLE_DOCS.find((doc) => doc.id === id);
+}
+
+/**
+ * How much may ride along, in bytes of PDF. The two rulebooks together are
+ * 12.5 MB, and a mailbox that refuses anything over 10 MB — still common with
+ * club and employer hosts — would bounce the whole report, grades and all,
+ * over a document the referee can also open from the app. Ten megabytes lets
+ * one rulebook through, or every sheet on the list at once; not both books.
+ * The server measures the real bytes against the same number.
+ */
+export const ATTACH_BUDGET_BYTES = 10_000_000; // decimal, like the badges' "7 MB"
+
+/** The catalogue's size for these ids — what the picker shows and adds up. */
+export function attachedBytes(ids: readonly string[]): number {
+  return ids.reduce((total, id) => total + (attachableDoc(id)?.bytes ?? 0), 0);
+}
+
+/**
+ * A list of ids as anything may have stored it — a draft from an older build,
+ * a file off a disk, a request body — reduced to the ids this build can
+ * enclose, each once, in catalogue order. Anything else is dropped without a
+ * word, the way an unknown criterion id is: the coach's choice among the
+ * documents that still exist is preserved, and the ones that do not can no
+ * longer be sent anyway.
+ */
+export function normalizeAttachedDocs(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const wanted = new Set(value.filter((v): v is string => typeof v === 'string'));
+  return ATTACHABLE_DOCS.filter((doc) => wanted.has(doc.id)).map((doc) => doc.id);
+}

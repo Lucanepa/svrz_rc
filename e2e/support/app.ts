@@ -162,3 +162,59 @@ export async function ratingControl(
   }
   return page.locator('div.sm\\:hidden.divide-y > div').nth(criterionIndex).locator('button').nth(column);
 }
+
+/** Draw a stroke on the open signature pad and keep it. */
+export async function signOpenPad(page: Page): Promise<void> {
+  const pad = page.locator('canvas');
+  await expect(pad).toBeVisible();
+  const box = (await pad.boundingBox())!;
+  await page.mouse.move(box.x + 20, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 20, box.y + box.height / 3, { steps: 8 });
+  await page.mouse.up();
+  await page.getByRole('button', { name: /Save signature|Unterschrift speichern/ }).click();
+}
+
+/**
+ * Everything the send path insists on — every criterion, the results strip, a
+ * legal 3:0 and both signatures. The confirmation dialog only opens once the
+ * form validates, so a spec cannot reach the send with an empty form.
+ *
+ * Every criterion gets a C. The desktop grid is five table cells per row in
+ * A–E order; a phone gets the same choice as labelled buttons instead. Both
+ * layouts are in the DOM at once — only one of them is on screen, so ask
+ * whether the grid is visible rather than whether it exists. Work row by row
+ * rather than striding a flat list of cells: a criterion marked N/A collapses
+ * its five cells into one, which would shift every later row's C.
+ */
+export async function fillWholeForm(page: Page): Promise<void> {
+  const cells = page.locator('td.rating-cell');
+  if (await cells.count() > 0 && await cells.first().isVisible()) {
+    const rows = page.locator('tr', { has: page.locator('td.rating-cell') });
+    for (let r = 0; r < await rows.count(); r++) {
+      const row = rows.nth(r).locator('td.rating-cell');
+      // A–E in order, so C is the third — skip a row that has collapsed.
+      if (await row.count() === 5) await row.nth(2).click();
+    }
+  } else {
+    // The phone lays each criterion out as its own card of A–E buttons.
+    const cs = page.locator('button', { hasText: /^C$/ });
+    for (let i = 0; i < await cs.count(); i++) await cs.nth(i).click();
+  }
+  const group = (heading: RegExp) => page.getByRole('heading', { name: heading }).locator('xpath=..');
+  await group(/Match Level|Spielniveau/).getByRole('button', { name: /^(Normal)$/ }).click();
+  await group(/^(Motivation)$/).getByRole('button', { name: '✓' }).click();
+  await group(/Outlook|Ausblick/).getByRole('button', { name: '✓' }).click();
+  await group(/Further visit|Weiterer Besuch/).getByRole('button', { name: 'N', exact: true }).click();
+  await group(/Referee Goal|SR-Ziel/).locator('input').fill('2L');
+  // A 3:0 built from three legal sets — the match score is derived, not typed.
+  for (const set of [1, 2, 3]) {
+    await page.getByLabel(new RegExp(`(Set|Satz) ${set} (home|Heim)`)).fill('25');
+    await page.getByLabel(new RegExp(`(Set|Satz) ${set} (away|Gast)`)).fill('20');
+  }
+  // Both parties sign; neither is optional.
+  for (const index of [0, 1]) {
+    await page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).nth(index).click();
+    await signOpenPad(page);
+  }
+}

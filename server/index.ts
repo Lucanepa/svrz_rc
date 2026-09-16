@@ -6671,12 +6671,26 @@ app.get('/api/admin/games/manual', requireAdminSession, async (req: Request, res
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-// Deleting a game leaves any feedback that referenced it dangling, so this is
-// meant for cleaning up a throwaway fixture, not for pruning real history.
+// Deleting a game takes what was filed on it along: the feedbacks (each with
+// its observation, coachee entry and chair's note — deleteFeedbackCascade),
+// any observation left without a feedback, the parked drafts and the 4.4.10
+// notes about it. Meant for a throwaway fixture: a test game with a test
+// observation on it used to leave that observation counting toward somebody's
+// season, filed under a game that no longer existed.
 app.delete('/api/admin/games/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const id = String(req.params.id);
+    const q = escapeFilterValue(id);
+    const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (c) =>
+      c.getFullList<AnyRecord>({ filter: `game = "${q}"`, fields: 'id' }));
+    for (const fb of feedbacks) await deleteFeedbackCascade(fb.id);
+    const swept = {
+      feedbacks: feedbacks.length,
+      observations: await deleteWhere(collectionCandidates.observations, `game = "${q}"`, 'observation'),
+      drafts: await deleteWhere([PARKED_DRAFTS_COLLECTION], `game_id = "${q}"`, 'parked draft'),
+      notes: await deleteWhere(collectionCandidates.rcGameNotes, `game = "${q}" || game_id = "${q}"`, 'rc game note'),
+    };
     await withSettingLock('starred_games', async () => {
       const set = await getStarredGameIds();
       if (set.delete(id)) await setSetting('starred_games', JSON.stringify([...set]));
@@ -6686,7 +6700,8 @@ app.delete('/api/admin/games/:id', requireAdminSession, async (req: Request, res
       if (manual.delete(id)) await setSetting('manual_games', JSON.stringify([...manual]));
     });
     await withCollection(collectionCandidates.games, (c) => c.delete(id));
-    res.json({ ok: true });
+    log.info('game.delete', 'game deleted by the console, with what was filed on it', { gameId: id, ...swept }, reqCtx(req));
+    res.json({ ok: true, ...swept });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -7961,16 +7976,40 @@ app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: Expr
   }
 });
 
+// Deleting a coachee takes their filed forms and observations along — each
+// feedback through deleteFeedbackCascade, so the game's role reopens and the
+// chair's note goes too — and any observation left without a feedback. The
+// console says how many before asking; the ZIP under Formulare is the way to
+// keep a real person's forms before removing the row.
 app.delete('/api/coachees/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    await withCollection(collectionCandidates.coachees, (collection) =>
-      collection.delete(String(req.params.id)),
-    );
+    const id = String(req.params.id);
+    const q = escapeFilterValue(id);
+    const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (c) =>
+      c.getFullList<AnyRecord>({ filter: `coachee = "${q}"`, fields: 'id' }));
+    for (const fb of feedbacks) await deleteFeedbackCascade(fb.id);
+    const observations = await deleteWhere(collectionCandidates.observations, `coachee = "${q}"`, 'observation');
+    await withCollection(collectionCandidates.coachees, (collection) => collection.delete(id));
+    log.info('coachee.delete', 'coachee deleted by the console, with what was filed on them', { coacheeId: id, feedbacks: feedbacks.length, observations }, reqCtx(req));
     res.status(204).send();
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
+});
+
+// What deleting this coachee would take along — asked before the confirm, so
+// the dialog can say "and 3 filed forms" instead of "this cannot be undone".
+app.get('/api/coachees/:id/footprint', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const q = escapeFilterValue(String(req.params.id));
+    const [feedbacks, observations] = await Promise.all([
+      withCollection(collectionCandidates.refereeCoaches, (c) => c.getFullList<AnyRecord>({ filter: `coachee = "${q}"`, fields: 'id' })),
+      withCollection(collectionCandidates.observations, (c) => c.getFullList<AnyRecord>({ filter: `coachee = "${q}"`, fields: 'id' })),
+    ]);
+    res.json({ feedbacks: feedbacks.length, observations: observations.length });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
 app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: ExpressResponse) => {
@@ -8961,72 +9000,106 @@ app.put('/api/referee-coaches/:id', requireAdminSession, async (req: Request, re
   }
 });
 
-app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
-  const feedbackId = String(req.params.id);
+// Everything a submit writes goes together when a feedback is deleted: the
+// row itself (and its stored PDF with it), the role reopened on the game, the
+// entry on the coachee, the observation filed alongside, the chair's note.
+// Deleting only the row left the other four behind: the game showed the role
+// as filed with nothing to open, and the coachee's history counted a feedback
+// that was gone. `false` when there was no such feedback.
+async function deleteFeedbackCascade(feedbackId: string): Promise<boolean> {
+  let record: AnyRecord | null = null;
   try {
-    await ensureAdminAuth();
-    // Read the record first: a submit writes four things together — the feedback
-    // row, the game's closed-role flag, an observation, and an entry on the
-    // coachee — and deleting only the row left the other three behind. The game
-    // then showed the role as filed with nothing to open, and the coachee's
-    // history counted a feedback that was gone.
-    let record: AnyRecord | null = null;
+    record = await withCollection(collectionCandidates.refereeCoaches, (c) =>
+      c.getOne<AnyRecord>(feedbackId));
+  } catch (readErr) {
+    if (!isRecordNotFound(readErr)) throw readErr;
+  }
+  if (!record) return false;
+
+  const gameId = asText(record.game);
+  const coacheeId = asText(record.coachee);
+  const role = asText(record.role_assessed);
+
+  await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+    collection.delete(feedbackId),
+  );
+
+  // Reopen the role — under the game lock, so it can't race a concurrent
+  // submit for the same game. A game already gone (a cascade from its own
+  // deletion) has nothing to reopen.
+  if (gameId && role) {
     try {
-      record = await withCollection(collectionCandidates.refereeCoaches, (c) =>
-        c.getOne<AnyRecord>(feedbackId));
-    } catch (readErr) {
-      if (!isRecordNotFound(readErr)) throw readErr;
-    }
-    if (!record) { res.status(404).json({ error: 'Feedback not found' }); return; }
+      await withGameLock(gameId, async () => {
+        let game: AnyRecord;
+        try { game = await withCollection(collectionCandidates.games, (c) => c.getOne<AnyRecord>(gameId)); }
+        catch (e) { if (isRecordNotFound(e)) return; throw e; }
+        const closed: string[] = Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [];
+        if (closed.includes(role)) {
+          await withCollection(collectionCandidates.games, (c) =>
+            c.update(gameId, { feedback_closed_roles: closed.filter((r) => r !== role) }));
+        }
+      });
+    } catch (e) { log.error('feedback.delete', 'reopen role failed', { feedbackId, gameId, role, error: String(e) }); }
+  }
 
-    const gameId = asText(record.game);
-    const coacheeId = asText(record.coachee);
-    const role = asText(record.role_assessed);
-
-    await withCollection(collectionCandidates.refereeCoaches, (collection) =>
-      collection.delete(feedbackId),
-    );
-
-    // Reopen the role — under the game lock, so it can't race a concurrent
-    // submit for the same game.
-    if (gameId && role) {
-      try {
-        await withGameLock(gameId, async () => {
-          const game = await withCollection(collectionCandidates.games, (c) => c.getOne<AnyRecord>(gameId));
-          const closed: string[] = Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [];
-          if (closed.includes(role)) {
-            await withCollection(collectionCandidates.games, (c) =>
-              c.update(gameId, { feedback_closed_roles: closed.filter((r) => r !== role) }));
-          }
-        });
-      } catch (e) { log.error('feedback.delete', 'reopen role failed', { feedbackId, gameId, role, error: String(e) }); }
-    }
-
-    // Drop the coachee's history entry that pointed at this feedback.
-    if (coacheeId) {
-      try {
-        const coachee = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(coacheeId));
+  // Drop the coachee's history entry that pointed at this feedback.
+  if (coacheeId) {
+    try {
+      let coachee: AnyRecord | null = null;
+      try { coachee = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(coacheeId)); }
+      catch (e) { if (!isRecordNotFound(e)) throw e; }
+      if (coachee) {
         const entries = Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries as AnyRecord[] : [];
         const kept = entries.filter((e) => asText((e as AnyRecord).referee_coaches_id) !== feedbackId);
         if (kept.length !== entries.length) {
           await withCollection(collectionCandidates.coachees, (c) => c.update(coacheeId, { feedback_entries: kept }));
         }
-      } catch (e) { log.error('feedback.delete', 'coachee entry cleanup failed', { feedbackId, coacheeId, error: String(e) }); }
-    }
+      }
+    } catch (e) { log.error('feedback.delete', 'coachee entry cleanup failed', { feedbackId, coacheeId, error: String(e) }); }
+  }
 
-    // Delete the observation filed alongside — matched on the same game+coachee.
-    if (gameId && coacheeId) {
-      try {
-        const obs = await withCollection(collectionCandidates.observations, (c) =>
-          c.getFullList<AnyRecord>({ filter: `game = "${escapeFilterValue(gameId)}" && coachee = "${escapeFilterValue(coacheeId)}"` }));
-        for (const o of obs) await withCollection(collectionCandidates.observations, (c) => c.delete(o.id));
-      } catch (e) { log.error('feedback.delete', 'observation cleanup failed', { feedbackId, gameId, coacheeId, error: String(e) }); }
-    }
+  // Delete the observation filed alongside — matched on the same game+coachee.
+  if (gameId && coacheeId) {
+    try {
+      const obs = await withCollection(collectionCandidates.observations, (c) =>
+        c.getFullList<AnyRecord>({ filter: `game = "${escapeFilterValue(gameId)}" && coachee = "${escapeFilterValue(coacheeId)}"` }));
+      for (const o of obs) await withCollection(collectionCandidates.observations, (c) => c.delete(o.id));
+    } catch (e) { log.error('feedback.delete', 'observation cleanup failed', { feedbackId, gameId, coacheeId, error: String(e) }); }
+  }
 
-    // The private note hangs off this feedback by id; left behind it would show
-    // the president a note about a game that no longer exists, forever.
-    try { await deletePresidentNote(feedbackId); }
-    catch (noteErr) { log.error('feedback.delete', 'president-note cleanup failed', { feedbackId, error: String(noteErr) }); }
+  // The private note hangs off this feedback by id; left behind it would show
+  // the president a note about a game that no longer exists, forever.
+  try { await deletePresidentNote(feedbackId); }
+  catch (noteErr) { log.error('feedback.delete', 'president-note cleanup failed', { feedbackId, error: String(noteErr) }); }
+  return true;
+}
+
+/** Every record of `collection` matching `filter`, deleted one by one; the
+ *  count, and a log line per failure rather than one abort for all. */
+async function deleteWhere(collection: string[], filter: string, what: string): Promise<number> {
+  let rows: AnyRecord[];
+  try {
+    rows = await withCollection(collection, (c) => c.getFullList<AnyRecord>({ filter, fields: 'id' }));
+  } catch (e) {
+    // A collection a schema has not been given yet holds nothing to sweep;
+    // that must not turn the deletion it rides on into a 500.
+    if (/Missing collection context/.test(String(e))) { log.warn('cascade.delete', `${what} collection missing — nothing swept`, { collection: collection[0] }); return 0; }
+    throw e;
+  }
+  let n = 0;
+  for (const row of rows) {
+    try { await withCollection(collection, (c) => c.delete(row.id)); n += 1; }
+    catch (e) { log.error('cascade.delete', `${what} cleanup failed`, { id: row.id, filter, error: String(e) }); }
+  }
+  return n;
+}
+
+app.delete('/api/referee-coaches/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  const feedbackId = String(req.params.id);
+  try {
+    await ensureAdminAuth();
+    if (!(await deleteFeedbackCascade(feedbackId))) { res.status(404).json({ error: 'Feedback not found' }); return; }
+    log.info('feedback.delete', 'feedback deleted by the console', { feedbackId }, reqCtx(req));
     res.status(204).send();
   } catch (error) {
     res.status(500).json({ error: safeError(error) });

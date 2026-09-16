@@ -207,3 +207,35 @@ test('a coach gets the sent PDF back from the Feedback-Verlauf, without redrawin
   await second;
   expect(served).toEqual(['/api/feedback/fb1/file', '/api/feedback/fb2/file']);
 });
+
+test('the admin can delete a form from its folder; the chair only reads', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  await stubForms(page);
+  const deleted: string[] = [];
+  await page.route('**/api/referee-coaches/*', (r) => {
+    if (r.request().method() !== 'DELETE') { r.fallback(); return; }
+    deleted.push(new URL(r.request().url()).pathname);
+    r.fulfill({ status: 204, body: '' });
+  });
+  await page.goto('/admin/forms');
+  const hans = page.getByTestId('forms-folder').nth(0);
+  await hans.getByRole('button', { name: /Hans Muster/ }).click();
+  const rows = hans.getByTestId('forms-entry');
+  await expect(rows.first().getByTestId('forms-delete')).toBeVisible();
+
+  await rows.first().getByTestId('forms-delete').click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('Formular für „Hans Muster" vom 20.11.2026 löschen?');
+  await expect(dialog).toContainText('Beobachtung');
+  await dialog.getByRole('button', { name: /^Löschen$/ }).click();
+  await expect.poll(() => deleted).toEqual(['/api/referee-coaches/fb3']);
+  await expect(page.getByText('Formular gelöscht.')).toBeVisible();
+
+  // The chair's half has no bin.
+  await stubSignedInApp(page, { admin: true, surveyReader: true });
+  await stubForms(page);
+  await page.goto('/admin/forms');
+  await page.getByTestId('forms-folder').nth(0).getByRole('button', { name: /Hans Muster/ }).click();
+  await expect(page.getByTestId('forms-open').first()).toBeVisible();
+  await expect(page.getByTestId('forms-delete')).toHaveCount(0);
+});

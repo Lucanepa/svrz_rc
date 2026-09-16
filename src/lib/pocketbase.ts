@@ -559,6 +559,21 @@ export async function shareFeedbackFile(feedbackId: string, title: string): Prom
   URL.revokeObjectURL(url);
 }
 
+/** Admin-only: a filed form and everything the submit wrote with it — the
+ *  observation, the coachee's history entry, the game's closed role, the
+ *  chair's note. Nothing of it comes back. */
+export async function deleteFeedbackRecord(feedbackId: string): Promise<void> {
+  const r = await fetch(apiUrl(`/api/referee-coaches/${encodeURIComponent(feedbackId)}`), { method: 'DELETE', credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not delete feedback');
+}
+
+/** What deleting a coachee takes along, for the confirm. */
+export async function getCoacheeFootprint(id: string): Promise<{ feedbacks: number; observations: number }> {
+  const r = await fetch(apiUrl(`/api/coachees/${encodeURIComponent(id)}/footprint`), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 /** One referee's whole folder as a ZIP. Returns how many forms were in it. */
 export async function downloadRefereeForms(key: string): Promise<number> {
   const r = await fetch(apiUrl(`/api/forms/archive?referee=${encodeURIComponent(key)}`), { credentials: 'include' });

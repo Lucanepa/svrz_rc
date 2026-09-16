@@ -19,7 +19,7 @@ import {
   getErrorLogs, getErrorLogDates, annotateLogEntries,
   getLogMuteRules, createLogMuteRule, setLogMuteRuleEnabled, deleteLogMuteRule,
   loadRcGameNotes, downloadFeedbackArchive,
-  loadFormsIndex, downloadRefereeForms, feedbackFileUrl, type FormsFolder,
+  loadFormsIndex, downloadRefereeForms, feedbackFileUrl, deleteFeedbackRecord, getCoacheeFootprint, type FormsFolder,
   syncGames, type GamesSyncStatus,
   getBoerseStatus, runBoerseSync, type BoerseSyncStatus,
   type PresidentNote,
@@ -107,6 +107,10 @@ const STR = {
     formsFolderDone: (n: number) => `${n} Formular${n === 1 ? '' : 'e'} heruntergeladen.`,
     formsDate: 'Datum', formsRole: 'Rolle', formsGame: 'Spiel', formsRc: 'RC',
     formsUnnamed: 'Ohne Namen',
+    formsDelete: 'Formular löschen',
+    formsDeleteConfirm: (who: string, when: string) => `Formular für „${who}" vom ${when} löschen?`,
+    formsDeleteWarn: 'Mit dem Formular gehen die Beobachtung, der Eintrag beim Coachee und die Notiz ans Präsidium; die Rolle im Spiel wird wieder frei. Das kann nicht rückgängig gemacht werden.',
+    formsDeleteOk: 'Formular gelöscht.',
     archive: 'Saison-Archiv',
     archiveHint: 'Alle abgeschickten Feedbackformulare einer Saison als ZIP — für die Ablage, die zwei Jahre aufbewahrt wird (Infoschreiben 4.4). Eine PDF-Datei pro Formular, benannt nach Datum, Schiedsrichter:in und Rolle.',
     archiveDownload: 'Saison herunterladen',
@@ -186,7 +190,7 @@ const STR = {
     firstName: 'Vorname', lastName: 'Nachname', svNumber: 'SV-Nummer', aliases: 'Frühere Namen', level: 'Niveau', stage: 'Niveau', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
     noCoachees: (s: string) => `Keine Coachees für ${s} — importiere eine xlsx.`,
-    delCoachee: (n: string) => `Coachee „${n}" löschen?`, delCoacheeOk: (n: string) => `Coachee „${n}" gelöscht.`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
+    delCoachee: (n: string) => `Coachee „${n}" löschen?`, delCoacheeTakes: (f: number, o: number) => `Mit dem Coachee gehen ${f} Formular${f === 1 ? '' : 'e'} und ${o} Beobachtung${o === 1 ? '' : 'en'} — vorher unter Formulare als ZIP sichern, wenn sie bleiben sollen.`, delCoacheeOk: (n: string) => `Coachee „${n}" gelöscht.`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
     noRcs: 'Keine Referee Coaches.', loadFailed: 'Laden fehlgeschlagen.',
     delGroup: (n: string) => `Gruppe „${n}" löschen?`,
     delGroupNote: 'Coachees behalten den Eintrag, bis er dort geändert wird.',
@@ -352,6 +356,10 @@ const STR = {
     formsFolderDone: (n: number) => `${n} form${n === 1 ? '' : 's'} downloaded.`,
     formsDate: 'Date', formsRole: 'Role', formsGame: 'Game', formsRc: 'RC',
     formsUnnamed: 'Unnamed',
+    formsDelete: 'Delete form',
+    formsDeleteConfirm: (who: string, when: string) => `Delete the form for "${who}" of ${when}?`,
+    formsDeleteWarn: 'The observation, the entry on the coachee and the note to the chair go with it; the role on the game is reopened. This cannot be undone.',
+    formsDeleteOk: 'Form deleted.',
     archive: 'Season archive',
     archiveHint: 'Every submitted feedback form of one season as a ZIP — for the records kept for two years (RC information sheet 4.4). One PDF per form, named by date, referee and role.',
     archiveDownload: 'Download season',
@@ -425,7 +433,7 @@ const STR = {
     firstName: 'First name', lastName: 'Last name', svNumber: 'SV number', aliases: 'Former names', level: 'Level', stage: 'Niveau', group: 'Group', email: 'Email', phone: 'Phone',
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
     noCoachees: (s: string) => `No coachees for ${s} — import an xlsx.`,
-    delCoachee: (n: string) => `Delete coachee "${n}"?`, delCoacheeOk: (n: string) => `Coachee "${n}" deleted.`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
+    delCoachee: (n: string) => `Delete coachee "${n}"?`, delCoacheeTakes: (f: number, o: number) => `${f} filed form${f === 1 ? '' : 's'} and ${o} observation${o === 1 ? '' : 's'} go with the coachee — save them as a ZIP under Forms first if they should stay.`, delCoacheeOk: (n: string) => `Coachee "${n}" deleted.`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
     noRcs: 'No referee coaches.', loadFailed: 'Could not load.',
     delGroup: (n: string) => `Delete group "${n}"?`,
     delGroupNote: 'Coachees keep the value until it is changed on them.',
@@ -1095,7 +1103,7 @@ export default function AdminConsole() {
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
         <div hidden={tab !== 'forms'}>
-          <FormsAdmin t={t} active={tab === 'forms'} />
+          <FormsAdmin t={t} lang={lang} active={tab === 'forms'} canDelete={!isPresident} />
           <ArchiveAdmin t={t} defaultSeason={defaultSeason} />
         </div>
         {!isPresident && <>
@@ -1548,7 +1556,13 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
   const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await guard(async () => { await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm({ first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '' }); await reload(); }); };
   const saveEdit = async (id: string) => { const full_name = `${editForm.first_name} ${editForm.last_name}`.trim(); await guard(async () => { await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>); setEditId(null); await reload(); }); };
   const remove = async (c: Coachee) => {
-    if (!(await confirmDialog({ title: t.delCoachee(c.full_name), message: t.undoWarn, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
+    // What goes with the row, said before the question: a coachee with filed
+    // forms is a very different deletion from a row typed in by mistake.
+    const footprint = await getCoacheeFootprint(c.id).catch(() => null);
+    const takes = footprint && (footprint.feedbacks > 0 || footprint.observations > 0)
+      ? `${t.delCoacheeTakes(footprint.feedbacks, footprint.observations)} ${t.undoWarn}`
+      : t.undoWarn;
+    if (!(await confirmDialog({ title: t.delCoachee(c.full_name), message: takes, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
     // guard() puts a failure in `notice`, which is on screen right below the
     // list — only a clean run gets a toast, so nothing is reported twice.
     let done = false;
@@ -2776,12 +2790,13 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
 // The desk layout of a filed form: date, role, game, coach, button.
 // Every column fixed but the game's: each form is its own grid, so an `auto`
 // button column would size per row and nudge the coach column out of line.
-const FORMS_GRID = 'sm:grid-cols-[5.5rem_3rem_minmax(0,1fr)_8rem_5.5rem] sm:gap-x-4 sm:items-center';
+const FORMS_GRID = 'sm:grid-cols-[5.5rem_3rem_minmax(0,1fr)_8rem_8rem] sm:gap-x-4 sm:items-center';
 // Field labels exist only on the phone; the desk has a header row instead.
 const FORMS_LABEL = 'sm:hidden text-stone-500';
 
-function FormsAdmin({ t, active }: { t: T; active: boolean }) {
+function FormsAdmin({ t, lang, active, canDelete }: { t: T; lang: Lang; active: boolean; canDelete: boolean }) {
   const [folders, setFolders] = useState<FormsFolder[] | null>(null);
+  const [deleting, setDeleting] = useState('');
   const [err, setErr] = useState('');
   const [q, setQ] = useState('');
   const [open, setOpen] = useState<string>('');
@@ -2790,13 +2805,30 @@ function FormsAdmin({ t, active }: { t: T; active: boolean }) {
   const [zipErr, setZipErr] = useState('');
   const asked = useRef(false);
 
+  const load = () => loadFormsIndex()
+    .then(setFolders)
+    .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
   useEffect(() => {
     if (!active || asked.current) return;
     asked.current = true;
-    loadFormsIndex()
-      .then(setFolders)
-      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
+
+  // Admin only: the chair reads and archives, the admin curates. Everything
+  // the submit wrote goes with the form (see deleteFeedbackRecord).
+  const remove = async (f: FormsFolder, e: FormsFolder['forms'][number]) => {
+    const when = e.date ? dayLabel(e.date, { year: true }) : '–';
+    if (!(await confirmDialog({ title: t.formsDeleteConfirm(f.name || t.formsUnnamed, when), message: t.formsDeleteWarn, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
+    setDeleting(e.id); setErr('');
+    try {
+      await deleteFeedbackRecord(e.id);
+      await load();
+      toast.success(t.formsDeleteOk, { lang });
+    } catch (err) {
+      setErr(err instanceof Error ? err.message : String(err));
+    } finally { setDeleting(''); }
+  };
 
   // Accent-blind, like every other name lookup in the app: "Muller" finds Müller.
   const shown = useMemo(() => {
@@ -2899,19 +2931,32 @@ function FormsAdmin({ t, active }: { t: T; active: boolean }) {
                             </span>
                             <span className={FORMS_LABEL}>{t.formsRc}</span>
                             <span className="text-stone-700 min-w-0 truncate">{e.rc || '–'}</span>
-                            <span className="col-span-2 mt-1.5 sm:col-span-1 sm:mt-0 sm:text-right">
+                            <span className="col-span-2 mt-1.5 sm:col-span-1 sm:mt-0 flex items-center gap-1.5 sm:justify-end">
                               {e.file ? (
                                 <a
                                   href={feedbackFileUrl(e.id)}
                                   target="_blank"
                                   rel="noopener"
-                                  className={cn(btnGhost, 'w-full justify-center sm:w-auto')}
+                                  className={cn(btnGhost, 'flex-1 justify-center sm:flex-none')}
                                   data-testid="forms-open"
                                 >
                                   <ExternalLink size={13} />{e.file === 'image' ? t.formsScan : t.formsOpen}
                                 </a>
                               ) : (
-                                <span className="text-stone-400">{t.formsNoFile}</span>
+                                <span className="text-stone-400 flex-1 sm:flex-none">{t.formsNoFile}</span>
+                              )}
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  onClick={() => void remove(f, e)}
+                                  disabled={deleting === e.id}
+                                  aria-label={t.formsDelete}
+                                  title={t.formsDelete}
+                                  data-testid="forms-delete"
+                                  className={cn(btnGhost, 'px-2 text-red-700 hover:bg-red-50 hover:border-red-200 disabled:opacity-50')}
+                                >
+                                  {deleting === e.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                                </button>
                               )}
                             </span>
                           </div>

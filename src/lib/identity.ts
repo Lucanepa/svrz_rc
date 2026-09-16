@@ -5,21 +5,72 @@
 // roster record id) and a game (the VolleyManager match number). Each has an
 // identity that survives a spelling correction, and each used to be matched by
 // its folded display name alone in a dozen places that did not quite agree.
-// The rule is now written once: the id first, the folded name only when a side
-// has no id to offer, and never the record id where a human reads it.
+// The rule is now written once (docs/identity-plan-2026-09-16.md §2):
+//
+//   referee   the SV number first — the slot's number against a row of the
+//             game's season, then a seasonless row; the register second, for
+//             a slot without a number whose printed name the register spells
+//             under exactly one licence (server/coacheeIndex.ts); the folded
+//             name last, either order, and only then. A name hit whose row
+//             carries a DIFFERENT number is accepted and warned about
+//             (`identity.sv-mismatch`, listed by the audit) — not vetoed,
+//             because the register links behind the rows were made partly by
+//             a word-subset heuristic and have not yet been read once.
+//   coach     the roster id first (samePerson): equal is a yes; an id the
+//             roster KNOWS and that is somebody else's is a no however the
+//             names read — a name is not permission to give away a
+//             colleague's game or read their feedback; an id nobody knows
+//             (deleted, pre-backfill, no roster loaded) falls to the folded
+//             name so the row is not stranded. A coach's NAME turns back into
+//             an id through resolveRcName only — aliases, both orders, and
+//             nobody on ambiguity, never the first hit.
+//   game      the match number, unique by code (409 on a typed duplicate,
+//             TEST-<yyyymmdd>-<4> re-rolled) and by the audit; lookups by
+//             number sort newest first. Storage, relations, drafts, the
+//             outbox, the notebook and iCal UIDs keep the record id; a human
+//             reads the number, or the teams and the day (gameLabel), never
+//             the record id.
+//
+// The folded name is the FALLBACK, never the first question, and no
+// name-only COMPARE — a folded name against ===, in a .has/.get/.includes,
+// a lowercased string against ===, a raw coach name against === — stands
+// outside this file, server/coacheeIndex.ts, server/dataHygiene.ts and
+// server/forms.ts: e2e/identity-ratchet.spec.ts reads the repo for those
+// idioms and fails the build on a new one anywhere else. That is what is
+// measured, and two name-KEYED sites it does not see remain by design, both
+// in server/index.ts and both tagged `identity:display` with their reason:
+// the coachee import's upsert key (the sheet names people by name and
+// nothing else) and sync-contacts' lookupContact (VolleyManager sends no SV
+// number for a contact until step 11 of the plan adds the column). A reader
+// auditing the name-only sites greps the tag; those two are on the list.
 //
 // Pure on purpose: the server imports this file the way it imports
 // `appTime.ts` and `statistics.ts`, and the e2e specs pin it without a
 // browser (identity-rules.spec.ts). Nothing here reads a clock, a store or
 // the DOM.
 //
-// The URL helpers at the bottom describe the address-bar scheme
-// (/games/<sv>, /form/<matchNo>/<half>) before the app emits it. They are the
-// resolvers steps 8 and 9 of the identity plan wire in; until then the app
-// still emits and resolves record ids, which stay a first-class shape forever
-// (an unlinked coachee, a manual game and a duplicated number have nothing
-// better to be addressed by).
+// The URL helpers at the bottom are the address-bar scheme (plan §3, the
+// full table in routes.ts): what App.tsx emits (currentRoute) and resolves
+// (openDeepLink for a coachee; openGameRoute, openUrlGame and the draft boot
+// for a game). Two shapes per token, both forever:
+//
+//   /games/<sv> · /feedbacks/<sv>/<fb>     a linked coachee, by SV number
+//   /games/<recordId> · /feedbacks/<recordId>/<fb>
+//                                           an unlinked one — still emitted,
+//                                           still resolved
+//   /form/<matchNo>/<half>                  a synced game whose number is
+//                                           unique on the eligible list
+//   /form/<recordId>/<half>                 a manual game, a blank or a
+//                                           shared number — still emitted
+//
+// Number first, record id second, opaque tokens compared trimmed. An
+// old-shape link that resolves is rewritten to the canonical shape in place
+// (replaceState, no Back step). The record id is a first-class shape, not a
+// transition: an unlinked coachee, a manual game and a duplicated number have
+// nothing better to be addressed by, and every link that ever carried one
+// keeps resolving.
 import { inSeasonOrManual } from './season';
+import { dayLabel } from './appTime';
 
 /** Fold a name for COMPARISON — case-blind, accent-blind, spaces squeezed.
  *
@@ -366,6 +417,50 @@ export function isMyRecord(record: { rc_id?: string; rc_name?: string }, me: MeR
   return samePerson({ id: record.rc_id ?? '', name: record.rc_name ?? '' }, { id: me.rcId ?? '', name: me.rcName ?? '' }, knownIds);
 }
 
+/** People to test a game's whistle slot against, as a coach who also
+ *  referees is known: every SV number and every folded spelling among them.
+ *  One coach — their roster name and the aliases their record lists — when
+ *  the question is "is this slot me?", the whole active roster when it is
+ *  "is a coach whistling this game?". Folded once, here, because the games
+ *  list asks the question of both slots of every game. */
+export type RefereeSet = { svs: Set<string>; names: Set<string> };
+
+export function refereeSet(people: { svNumber?: string; names: string[] }[]): RefereeSet {
+  const svs = new Set<string>();
+  const names = new Set<string>();
+  for (const p of people) {
+    const sv = (p.svNumber ?? '').trim();
+    if (sv) svs.add(sv);
+    for (const n of p.names ?? []) {
+      const key = foldName(n ?? '');
+      if (key) names.add(key);
+    }
+  }
+  return { svs, names };
+}
+
+/** Is the referee printed on a game's slot one of these people?
+ *
+ *  The number first, when the convocation carried one and the set knows it:
+ *  a number does not change when somebody marries, which is exactly what
+ *  broke the name-only version of this test for every fixture the sync had
+ *  written before the wedding. The folded name after that, against every
+ *  spelling in the set — the roster's own and the aliases a coach's record
+ *  lists as also theirs. A number the set does NOT know is no veto: two
+ *  thirds of stored games carry none at all, and where one is there the
+ *  register link behind the row is not yet trusted to overrule a name
+ *  (identity plan §2, open question 4), so the name keeps the game attached
+ *  until it is. The coach-as-referee test of every server list — the
+ *  RC-Spiel flag, the Börse verdict's "my slot", Home's own SR-Spiele and
+ *  the calendar feed — so that the four cannot drift apart. The slot's
+ *  fields are `unknown` because that is how a PocketBase row hands them
+ *  over (the server's CoacheeQuery); a non-string is nobody. */
+export function refereeAmong(slot: { name?: unknown; sv?: unknown }, people: RefereeSet): boolean {
+  const sv = typeof slot.sv === 'string' || typeof slot.sv === 'number' ? String(slot.sv).trim() : '';
+  if (sv && people.svs.has(sv)) return true;
+  return typeof slot.name === 'string' && people.names.has(foldName(slot.name));
+}
+
 /** A coach as a roster hands them out: the record id, the display name, and
  *  the other spellings an admin listed for them (`name_aliases` — the maiden
  *  name, the everyday short form, the order VolleyManager prints). */
@@ -413,16 +508,59 @@ export function resolveRcRef<T extends RcPersonLike>(ref: string, people: T[]): 
   return id ? people.find((p) => p.id === id) : undefined;
 }
 
+// ── A game, as a human reads it ──────────────────────────────────────────────
+
+/** What `gameLabel` reads: the number, the two teams (or the API's "Home vs
+ *  Away" string, whichever the caller holds) and the date. Every field is
+ *  optional — a draft record carries its teams as one string, a manual game
+ *  may carry no number, an older server no date. */
+export type GameLabelInput = {
+  matchNo?: string;
+  homeTeam?: string;
+  awayTeam?: string;
+  /** The API's "Home vs Away" string, for a caller that holds no halves. */
+  teams?: string;
+  date?: string;
+};
+
+/** The one way a game is named where a person reads it: the draft banner,
+ *  the outbox row, the notebook's "übernommen" line, the take dialog, the
+ *  console's "Angelegt" line.
+ *
+ *  "#<matchNo> · <teams>" — the number VolleyManager printed on the sheet is
+ *  what the coach, the referee and the commission all call the game by, and
+ *  the teams beside it say which one that is without a lookup. A game with
+ *  no number (a manual fixture made before numbers were generated for them)
+ *  reads "<teams> · <date>" instead; the date is the next thing two people
+ *  can agree on. The PocketBase record id is never part of it: it means
+ *  nothing to anyone reading a screen, and where it used to stand in for a
+ *  missing number it was mistaken for one. Empty when nothing is known,
+ *  so the caller decides what an unknown game is called.
+ *
+ *  Not the audit's `gameLabel` (server/identityAudit.ts): that one is the
+ *  compact form its lists send over the wire — the number alone, since the
+ *  row it sits on already names the slot — and is pinned separately.
+ */
+export function gameLabel(g: GameLabelInput): string {
+  const no = (g.matchNo ?? '').trim();
+  const teams = (g.teams ?? '').trim()
+    || [g.homeTeam, g.awayTeam].map((team) => (team ?? '').trim()).filter(Boolean).join(' vs ');
+  if (no) return teams ? `#${no} · ${teams}` : `#${no}`;
+  return [teams, dayLabel(g.date ?? '', { year: true })].filter(Boolean).join(' · ');
+}
+
 // ── URL tokens ───────────────────────────────────────────────────────────────
 // A token is an opaque string compared trimmed. No shape test: a 15-character
 // PocketBase id can be all digits, and nothing in the repo states how long an
 // SV number is. What a token means is decided by looking it up, id column
 // first, record id second.
 
-/** A coachee row's season, as the app reads it: a row with no season at all
- *  predates the field and belongs to every season (App.tsx `isInSeason`). */
-function rowInSeason(row: { season?: number }, season: number): boolean {
-  return typeof row.season !== 'number' || row.season === season;
+/** The coachee rows a season's lookup may answer with, in the order they
+ *  are asked: the rows OF that season, then the rows with no season at all —
+ *  those predate the field and belong to every season (App.tsx `isInSeason`).
+ *  The same two tiers, in the same order, as indexPeople's candidates. */
+function rowsForSeason<T extends { season?: number }>(rows: T[], season: number): T[] {
+  return [...rows.filter((r) => r.season === season), ...rows.filter((r) => typeof r.season !== 'number')];
 }
 
 /** The token `/games/<coachee>` and `/feedbacks/<coachee>[/<fb>]` carry: the
@@ -450,6 +588,15 @@ export type CoacheeTokenHit<T> = {
  *  for last season only. That is a different answer from "no such coachee",
  *  so it is reported as one instead of being silently opened with last
  *  season's badge. With the SV in two seasons' rows the season on screen wins.
+ *
+ *  Within the season the candidates are ordered the way indexPeople orders
+ *  them — the rows OF the season first, the seasonless ones after — rather
+ *  than as the roster lists them. The roster is sorted by name, so a person's
+ *  two rows sit side by side in no particular order, and a legacy row from
+ *  before the season field, linked to the same number, could otherwise open
+ *  ahead of this season's with last year's Niveau in the header — the very
+ *  row the Coachees tab, the games list and the audit call current would
+ *  then not be the one the app's own link opens.
  */
 export function resolveCoacheeToken<T extends { id: string; referee_id?: string; season?: number }>(
   token: string,
@@ -459,7 +606,7 @@ export function resolveCoacheeToken<T extends { id: string; referee_id?: string;
   const t = (token ?? '').trim();
   if (!t) return null;
   const sv = (c: T) => (c.referee_id ?? '').trim();
-  const inSeason = coachees.filter((c) => rowInSeason(c, season));
+  const inSeason = rowsForSeason(coachees, season);
   const hit = inSeason.find((c) => sv(c) === t) ?? inSeason.find((c) => c.id === t);
   if (hit) return { row: hit, otherSeason: false };
   const elsewhere = coachees.find((c) => sv(c) === t) ?? coachees.find((c) => c.id === t);

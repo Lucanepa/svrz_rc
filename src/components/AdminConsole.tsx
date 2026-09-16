@@ -44,7 +44,7 @@ import {
 import { subscribeLive } from '../lib/liveEvents';
 import { groupLabel } from '../lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName } from '../lib/coacheeName';
-import { coacheeLookup, samePerson } from '../lib/identity';
+import { coacheeLookup, gameLabel, indexPeople, samePerson } from '../lib/identity';
 import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame, type rcCoachSummary, type rcCoachSummaryGame } from '../types';
 import LevelText from './LevelText';
@@ -3394,6 +3394,8 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
             <span className="text-sm font-semibold text-stone-800">{r.coacheeName || '—'}</span>
             {r.gameDate && <span className="text-xs text-stone-400">{fmtDate(r.gameDate)}</span>}
             {r.league && <span className="text-xs text-stone-400">{r.league}</span>}
+            {/* The number the chair finds the game by in VolleyManager. */}
+            {r.matchNo && <span className="text-xs tabular-nums text-stone-400">#{r.matchNo}</span>}
             {r.teams && <span className="text-xs text-stone-500 truncate">{r.teams}</span>}
             {/* Usually the same person; when they differ an admin wrote on a
                 coach's observation, and reading it as the coach's would mislead. */}
@@ -4143,7 +4145,10 @@ function PersonPicker({ id, value, onChange, people, t, describe, footer, placeh
     return terms.every((term) => hay.includes(term));
   });
   const shown = matches.slice(0, 50);
-  const exact = people.find((p) => foldName(p.name) === foldName(value));
+  // The line under the field only — which address the typed text would reach.
+  // The pick itself hands the id and the SV number over (`pick` below); nothing
+  // is matched on this.
+  const exact = people.find((p) => foldName(p.name) === foldName(value)); // identity:display — the footer under the field
 
   // The address line, in both places it appears: under the field and on every
   // row. Grey only when this pick would actually reach somebody.
@@ -4256,32 +4261,24 @@ function refereeOptions(coachees: Coachee[], roster: RosterReferee[], notACoache
   }
 
   // Two ways in, because the link is not always there: by number when the
-  // import could set one, by either name order when it could not. The exports
-  // disagree about which half of a name comes first — the same reason the
-  // contact sync indexes both.
-  const byNumber = new Map<string, Coachee>();
-  const byName = new Map<string, Coachee>();
+  // import could set one, by either name order when it could not — the
+  // exports disagree about which half of a name comes first. indexPeople is
+  // the one rule for that (the id first, the folded name in both orders after
+  // it, the query supplying the orders); every row is seasonless here because
+  // `best` has already picked the one row per person the picker shows.
+  const people = indexPeople([...best.values()].map((c) => ({
+    id: String(c.referee_id || ''),
+    names: [nameOf(c), c.first_name && c.last_name ? `${c.last_name} ${c.first_name}` : ''],
+    season: null,
+    value: c,
+  })));
   const claimed = new Set<string>();
-  for (const c of best.values()) {
-    const id = c.referee_id;
-    if (id) byNumber.set(String(id), c);
-    const name = nameOf(c);
-    byName.set(foldName(name), c);
-    if (c.first_name && c.last_name) byName.set(foldName(`${c.last_name} ${c.first_name}`), c);
-    else {
-      const parts = foldName(name).split(' ');
-      if (parts.length === 2) byName.set(`${parts[1]} ${parts[0]}`, c);
-    }
-  }
 
   const options: PickPerson[] = [];
   for (const r of roster) {
     const name = (r.name || '').trim();
     if (!name) continue;
-    const parts = foldName(name).split(' ');
-    const coachee = (r.id ? byNumber.get(r.id) : undefined)
-      ?? byName.get(foldName(name))
-      ?? (parts.length === 2 ? byName.get(`${parts[1]} ${parts[0]}`) : undefined);
+    const coachee = people.find(null, { id: r.id, name })?.value;
     if (coachee) claimed.add(coachee.id);
     options.push({
       id: r.id ? `sv:${r.id}` : `vm:${foldName(name)}`,
@@ -4315,7 +4312,10 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
   const empty = { match_no: '', league: '', match_date: today, match_time: '20:00', location: '', home_team: '', away_team: '', first_referee: '', first_referee_id: '', second_referee: '', second_referee_id: '', assigned_rc: '', assigned_rc_id: '' };
   const [f, setF] = useState(empty);
   const [busy, setBusy] = useState(false);
-  const [made, setMade] = useState<{ id: string; match_no?: string } | null>(null);
+  // What the "Angelegt" line names the new game by: its number, else the
+  // teams and the day — never the record id, which the admin cannot type into
+  // anything. The server echoes the whole row; the typed form fills any gap.
+  const [made, setMade] = useState<{ id: string; label: string } | null>(null);
   const [err, setErr] = useState('');
   const [list, setList] = useState<ManualGame[]>([]);
   const [q, setQ] = useState('');
@@ -4395,7 +4395,13 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
         ...f,
         match_time: f.match_time || '20:00',
       });
-      setMade({ id: created.id, match_no: created.match_no });
+      setMade({
+        id: created.id,
+        label: gameLabel({
+          matchNo: created.match_no, date: created.match_date || f.match_date,
+          homeTeam: created.home_team ?? f.home_team, awayTeam: created.away_team ?? f.away_team,
+        }),
+      });
       setF(empty);
       await reload(q);
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
@@ -4463,7 +4469,7 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
         <button onClick={create} disabled={busy || !f.match_date} className={btnPrimary}>
           {busy ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />} {t.mgCreate}
         </button>
-        {made && <span className="text-sm text-green-600 font-medium">{t.mgCreated(made.match_no || made.id)}</span>}
+        {made && <span className="text-sm text-green-600 font-medium">{t.mgCreated(made.label)}</span>}
         {err && <span className="text-sm text-red-600">{err}</span>}
       </div>
 
@@ -4485,26 +4491,34 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
           <p className="text-xs text-stone-400">{t.mgNone}</p>
         ) : (
           <div className="divide-y divide-stone-100">
-            {list.map((g) => (
+            {list.map((g) => {
+              // The same name the "Angelegt" line gives a game — its number
+              // and the teams, or the teams and the day when the number is
+              // blank (a manual game from before numbers were generated). It
+              // is what the row reads and what the delete asks about: the
+              // record id used to stand in for a blank number there, and
+              // "Spiel „abcdefghijklmno" wirklich löschen?" names nothing an
+              // admin can check against the list.
+              const label = gameLabel({ matchNo: g.match_no, homeTeam: g.home_team, awayTeam: g.away_team, date: g.match_date });
+              return (
               <div key={g.id} className="py-2 flex items-center gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-stone-800 truncate">
-                    {g.match_no}{g.home_team || g.away_team ? ` · ${g.home_team} vs ${g.away_team}` : ''}
-                  </p>
+                  <p className="text-sm font-medium text-stone-800 truncate">{label}</p>
                   <p className="text-xs text-stone-400 truncate">
                     {g.match_date ? dayLabel(g.match_date, { year: true }) : ''}
                     {g.league ? ` · ${g.league}` : ''}{g.assigned_rc ? ` · ${g.assigned_rc}` : ''}
                   </p>
                 </div>
                 <button
-                  onClick={() => void remove(g.id, g.match_no || g.id)}
+                  onClick={() => void remove(g.id, label)}
                   disabled={busy}
                   className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
                 >
                   <Trash2 size={13} /> {t.mgDelete}
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -4835,9 +4849,12 @@ function OverviewDetail({ t, lang, rcId, rcName, season }: { t: T; lang: Lang; r
 
   const outstanding = foldOverviewGames(rows, (r) => r.outstandingGames);
   const planned = foldOverviewGames(rows, (r) => r.plannedGames);
-  // A filed feedback names no game id; the date and the teams are the game.
+  // A filed feedback names its game by id and number since the server sends
+  // them along — two coachees observed on one game fold to one row by the id,
+  // and the number is drawn in the rail. An older server names neither, and
+  // the date and the teams are then the game, as they were before.
   const done = foldOverviewGames(rows, (r) => r.doneFeedbacks.map((fb) => ({
-    gameId: '', gameDate: fb.gameDate, league: fb.league, teams: fb.teams,
+    gameId: fb.gameId || '', matchNo: fb.matchNo, gameDate: fb.gameDate, league: fb.league, teams: fb.teams,
     refereeName: r.coacheeName, refereeRole: fb.role, result: fb.result,
   })));
 

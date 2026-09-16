@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy } from 'react';
+import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy, type MutableRefObject } from 'react';
 import { Maximize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 // About a megabyte of renderer, fetched the first time a coach opens a
@@ -88,7 +88,7 @@ import { importBlock } from './lib/notebookImport';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, isPromotionGroup, newSrGroupOptions, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName as normName } from './lib/coacheeName';
-import { coacheeLookup, isMyGame, isMyRecord, samePerson, svClaimOnSlot, type SlotRole } from './lib/identity';
+import { coacheeLookup, coacheeUrlToken, gameLabel, gameUrlToken, isMyGame, isMyRecord, resolveCoacheeToken, resolveGameToken, samePerson, svClaimOnSlot, type SlotRole } from './lib/identity';
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
@@ -1201,8 +1201,10 @@ export default function App() {
   const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>(initialRoute.subView);
   const [listTab, setListTab] = useState<'home' | 'coachees' | 'games'>(() => landingTab(initialRoute.listTab));
   // `doneList` powers the "already observed" list at the bottom of Home; each
-  // entry keeps its coachee id so the row can open the filed feedback.
-  type HomeDone = { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result?: string; coacheeName: string; coacheeId: string };
+  // entry keeps its coachee id so the row can open the filed feedback, and the
+  // record's own id and match number when the server sent them (an older one
+  // answers without; the row then opens by its day).
+  type HomeDone = { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result?: string; coacheeName: string; coacheeId: string; feedbackId?: string; matchNo?: string };
   // The coach summary is per coachee, so a game with two coachees on the
   // whistle arrives twice. Home lists appointments — one row per game — and
   // carries the other referee(s) along for the subtitle. The per-coachee split
@@ -1275,6 +1277,17 @@ export default function App() {
     } catch { /* ignore */ }
     return curSeasonYear;
   });
+  // Whether the value above is the admin's default or still the local guess.
+  // The guess is a calendar rule (September starts the season) that the
+  // default routinely disagrees with — every summer between the admin moving
+  // it forward and 1 September, and on any device holding a stale stored
+  // preference — and it is what a coachee deep link would resolve its token
+  // against if it ran the moment the roster arrived: the same SV number in
+  // two seasons' rows would open LAST season's row, silently, and a person
+  // with this season's row only would be told they belong to another season.
+  // The link waits for this instead; the game route needs no flag, its boot
+  // already waits for the whole bootstrap (`booting`), the season included.
+  const [seasonSettled, setSeasonSettled] = useState(false);
   /** "2026/27" — the season as it is spoken and written on every list. */
   const seasonLabel = seasonLabelOf(seasonStartYear);
   /** Inside the season on screen — or a test game, which is exempt.
@@ -1311,6 +1324,9 @@ export default function App() {
   // visible until the next render and the bootstrap has to fire its
   // season-scoped requests now — see the mount effect.
   const loadSettings = async (opts: { claimSeason?: boolean } = {}): Promise<number> => {
+    // Answered either way, in the `finally`: a settings call that fails
+    // still settles the season — on the guess — and the coachee deep link
+    // waiting on it is then answered rather than never.
     try {
       const s = await getSettings();
       setFreshness(s.freshness ?? null);
@@ -1338,6 +1354,7 @@ export default function App() {
       } catch { /* storage unavailable */ }
       return s.default_season;
     } catch { /* keep the local season pref and defaults */ }
+    finally { if (opts.claimSeason) setSeasonSettled(true); }
     return seasonStartYear;
   };
   const [gameViewMode, setGameViewMode] = useState<'list' | 'calendar'>(initialRoute.gamesView);
@@ -1873,14 +1890,62 @@ export default function App() {
   // 2. SR → 1. SR → previous screen would first re-enter the other half's
   // form, and re-entering is what re-initialises it: with IndexedDB blocked
   // the stash in dualFormData is all there is, and that step wiped it.
+  //
+  // The token a selection is written as is remembered while its row is on
+  // the list, and reused once the row is gone. The list moves under an open
+  // screen: a poll answers without the game (the Börse swapped the coachee
+  // off it, the nightly sync dropped it, an admin edited it) while the form
+  // and the work in it stay on screen; a roster refresh after an outbox
+  // flush can drop the coachee whose games are open. Read off the list at
+  // that moment the token would flip from the number to the record id — the
+  // bar holding one shape, the state emitting the other, and neither
+  // resolvable any more — and the sync effect below would PUSH the new shape
+  // as a junk Back entry, one that Back then lands on, cannot resolve,
+  // answers with "nicht gefunden" and closes the form over. So the emitted
+  // token does not change while the selection stands; a selection that was
+  // never on the list keeps the record id, as before.
+  const rememberedCoacheeTokenRef = useRef<{ id: string; token: string } | null>(null);
+  const rememberedGameTokenRef = useRef<{ id: string; token: string } | null>(null);
+  /** The token for `id`: `fresh` when its row is on the list (and remembered
+   *  for later), the remembered one when the row has left, the id itself
+   *  when there is nothing to remember. */
+  const stickyToken = (ref: MutableRefObject<{ id: string; token: string } | null>, id: string, fresh: string | null): string => {
+    if (fresh !== null) { ref.current = { id, token: fresh }; return fresh; }
+    return ref.current?.id === id ? ref.current.token : id;
+  };
+  /** The record id a URL token stands for when the list cannot say: the
+   *  remembered token (or the id) of the selection whose row has left the
+   *  list — so `/form/2345678/1sr` in the bar is still the form on screen
+   *  after the game is gone. `undefined` for a token nobody remembers. */
+  const rememberedIdOf = (ref: MutableRefObject<{ id: string; token: string } | null>, token: string): string | undefined => {
+    const t = token.trim();
+    const kept = ref.current;
+    return kept && t && (t === kept.token || t === kept.id) ? kept.id : undefined;
+  };
+  const selectedCoacheeRow = selectedCoacheeId ? coachees.find((c) => c.id === selectedCoacheeId) : undefined;
   const currentRoute: AppRoute = {
     subView: feedbackSubView,
     listTab,
-    coacheeId: selectedCoacheeId || null,
+    // The coachee is addressed by their SV number once the row is linked to
+    // the register, by the record id until then (coacheeUrlToken): a licence
+    // number outlives the season's row, so the link a coach mails in April
+    // still names the same person in September. A selection whose row is not
+    // on the roster keeps the token it was last written as (above).
+    coacheeId: selectedCoacheeId
+      ? stickyToken(rememberedCoacheeTokenRef, selectedCoacheeId, selectedCoacheeRow ? coacheeUrlToken(selectedCoacheeRow) : null)
+      : null,
     feedbackId: openFeedbackId,
     // A form still being written names its game and half. A FILED one is
     // addressed by its record instead — routeToPath prefers the feedback id.
-    gameId: feedbackSubView === 'feedbackForm' && !openFeedbackId ? selectedGameId || null : null,
+    // The game is addressed by its match number (gameUrlToken): the number
+    // on the sheet is what the coach, the referee and the commission call the
+    // game by, and it is what a link in a mail should read. The record id
+    // stays for a manual game, a blank number and a number two games share;
+    // a selection whose game is not on the list keeps the token it was last
+    // written as (above).
+    gameId: feedbackSubView === 'feedbackForm' && !openFeedbackId && selectedGameId
+      ? stickyToken(rememberedGameTokenRef, selectedGameId, selectedGame ? gameUrlToken(selectedGame, eligibleGames) : null)
+      : null,
     role: formData.role,
     gamesView: gameViewMode,
     // The month rides along only when it is not the one the grid opens on
@@ -1888,8 +1953,35 @@ export default function App() {
     month: monthKey(calendarMonth) === monthKey(thisMonth()) ? null : monthKey(calendarMonth),
   };
   const currentPath = routeToPath(currentRoute);
-  /** The part of a route that IS a view. Same key, different URL → replace. */
-  const historyKeyOf = (r: AppRoute) => routeToPath({ ...r, role: null, month: null });
+  /** The part of a route that IS a view. Same key, different URL → replace.
+   *
+   *  A coachee token is resolved to its record id before the compare: the
+   *  address bar may hold `/games/c1` (an old link, a bookmark from before
+   *  the SV number was written there) while the state emits `/games/90003`
+   *  for the very same list. Read as strings those are two views, and the
+   *  sync effect below would PUSH the new shape on top of the old — a junk
+   *  Back entry that lands on the same screen. Read through the roster they
+   *  are one view, so the effect replaces, and the bar simply shows the
+   *  current shape (canonicalised, no Back step). The first sync and a
+   *  popstate already replace on their own; this is the backstop for a
+   *  render that settles after the popstate flag's tick has passed. A token
+   *  nobody answers to is the selection when it is the one the selection
+   *  was written as before its row left the list (rememberedIdOf); any
+   *  other stays as it is, and two such are compared as written.
+   *
+   *  The game token the same way, through the eligible list: `/form/g1/1sr`
+   *  in the bar and `/form/2345678/1sr` from the state are one form. */
+  const historyKeyOf = (r: AppRoute) => routeToPath({
+    ...r,
+    coacheeId: r.coacheeId
+      ? (resolveCoacheeToken(r.coacheeId, coachees, seasonStartYear)?.row.id ?? rememberedIdOf(rememberedCoacheeTokenRef, r.coacheeId) ?? r.coacheeId)
+      : null,
+    gameId: r.gameId
+      ? (resolveGameToken(r.gameId, eligibleGames, seasonStartYear)?.id ?? rememberedIdOf(rememberedGameTokenRef, r.gameId) ?? r.gameId)
+      : null,
+    role: null,
+    month: null,
+  });
   const didSyncPathRef = useRef(false);
   /** Set by popstate: whatever the state settles on after Back/Forward must
    *  REPLACE the entry just landed on, never push. A push there is how Back
@@ -1948,20 +2040,23 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  // A landing URL that names a coachee — `/games/<id>`, `/feedbacks/<id>/…`.
+  // A landing URL that names a coachee — `/games/<sv|id>`, `/feedbacks/<sv|id>/…`.
   // Nothing is on screen yet and the roster has not arrived, so the open waits
-  // for it, once. If the bootstrap finishes with an empty roster the link is
-  // answered anyway, with "not found", rather than waiting for a list that is
-  // never coming.
+  // for it, once: the token is only a token until the roster says whose it
+  // is — and until the season is the admin's rather than the local guess
+  // (seasonSettled), because the token is resolved against the season's
+  // rows and nothing orders /api/coachees before /api/settings. If the
+  // bootstrap finishes with an empty roster the link is answered anyway,
+  // with "not found", rather than waiting for a list that is never coming.
   const deepLinkOpenedRef = useRef(false);
   useEffect(() => {
     if (deepLinkOpenedRef.current || !initialRoute.coacheeId) return;
-    if (coachees.length === 0 && booting) return;
+    if ((coachees.length === 0 || !seasonSettled) && booting) return;
     deepLinkOpenedRef.current = true;
     void openDeepLink(initialRoute).finally(() => setLandingSettled(true));
     // openDeepLink is rebuilt every render; the ref above is what guards it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coachees, booting]);
+  }, [coachees, booting, seasonSettled]);
 
   // First-run bootstrap. Every screen's data is requested in ONE parallel batch
   // on mount — not chained, and not deferred until its tab is opened — so no
@@ -2159,7 +2254,11 @@ export default function App() {
   /** Read synchronously so the games-list auto-select cannot claim the
    *  selection before a resume lands on top of it. A game named in the URL
    *  wins over the session hint: `/form/<game>/…` is the coach's explicit ask,
-   *  the hint only says what this tab happened to be on. */
+   *  the hint only says what this tab happened to be on. The URL's half is a
+   *  TOKEN — the match number, or a record id from an older link — and the
+   *  drafts are keyed by record id; the boot below resolves it against the
+   *  eligible list once that has arrived (urlGameRecordId). Until then only
+   *  its truthiness is read. */
   const autoResumeRef = useRef<string>(initialRoute.gameId || resumeHint());
   /** Set once the URL's game has been opened (or answered with "not found"),
    *  so neither of the two paths that can open it does so twice. */
@@ -2344,6 +2443,7 @@ export default function App() {
           gameDate: fb.gameDate, league: fb.league, teams: fb.teams,
           role: fb.role, submittedAt: fb.submittedAt, result: fb.result,
           coacheeName: cs.coacheeName, coacheeId: cs.coacheeId,
+          feedbackId: fb.feedbackId, matchNo: fb.matchNo,
         })))
         .sort((a, b) => (b.submittedAt || b.gameDate).localeCompare(a.submittedAt || a.gameDate));
       setHomeData({
@@ -2584,7 +2684,7 @@ export default function App() {
     if (observed.length > 0 || late) {
       setTakeNotice({
         gameId: game.id, rcName, rcId: rcAuth.rcId ?? '', previousRc: game.assignedRc, previousRcId: game.assignedRcId,
-        label: `${game.homeTeam} vs ${game.awayTeam}`, observed, late,
+        label: gameLabel(game), observed, late,
       });
       return;
     }
@@ -3065,26 +3165,56 @@ export default function App() {
     setFeedbackSubView('feedbackForm');
   };
 
-  // Open an already-filed observation from a summary row. The summary carries no
-  // feedback id, so we fetch that coachee's records and match on the game date
-  // (plus role when the row names one) — then reuse the normal record viewer.
-  const openDoneObservation = async (row: { coacheeId: string; gameDate: string; role?: string }) => {
+  // Open an already-filed observation from a summary row. The row carries the
+  // record's id when the server is recent enough to send one, and that id is
+  // the record: two observations of one coachee on one day — a tournament
+  // afternoon, the same role twice — are two rows, and each opens its own. A
+  // row from an older server names no record, so we fetch that coachee's
+  // records and match on the game date (plus role when the row names one) —
+  // then reuse the normal record viewer either way.
+  const openDoneObservation = async (row: { coacheeId: string; gameDate: string; role?: string; feedbackId?: string }) => {
     if (!row.coacheeId) return;
     setBackendNotice('');
     try {
       const records = await listCoacheeFeedbacks(row.coacheeId);
+      const byId = (row.feedbackId || '').trim();
       const day = (s: string) => (s || '').slice(0, 10);
       const sameDay = records.filter((r) => day(r.expand?.game?.match_date || '') === day(row.gameDate));
-      // Only ever a record from the day that was clicked. Falling back to
+      // Only ever the record the row stands for: by its id when the row has
+      // one — and then never a neighbour of the same day when that record is
+      // gone — else a record from the day that was clicked. Falling back to
       // "whatever this coachee has" opened an unrelated observation and
       // presented it as the one on that row.
-      const match = (row.role && sameDay.find((r) => r.role_assessed === row.role)) || sameDay[0];
-      if (match) openFeedbackRecord(match);
-      else setBackendNotice(formData.lang === 'DE' ? 'Beobachtung nicht gefunden.' : 'Observation not found.');
+      const match = byId
+        ? records.find((r) => r.id === byId)
+        : (row.role && sameDay.find((r) => r.role_assessed === row.role)) || sameDay[0];
+      if (match) {
+        // The record's coachee becomes the selected one before it opens —
+        // as the Coachees tab and a deep link select them — because the
+        // record's address is written from the selection
+        // (`/feedbacks/<coachee>/<record>`, currentRoute): left alone, the
+        // bar named whichever coachee was last looked at, or nobody
+        // (`/form`), and a reload or a shared link of that address found no
+        // such record under that person. A row whose coachee is not on the
+        // roster (a register-only report) keeps its id as the token, which
+        // is at least the record's own address.
+        const coachee = coachees.find((c) => c.id === row.coacheeId);
+        if (coachee) selectCoachee(coachee);
+        else { setSelectedCoacheeId(row.coacheeId); setSelectedCoacheeName(''); setSelectedCoacheeLevel(''); }
+        openFeedbackRecord(match);
+      } else setBackendNotice(formData.lang === 'DE' ? 'Beobachtung nicht gefunden.' : 'Observation not found.');
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(localizeRuntimeError(reason, formData.lang));
     }
+  };
+
+  /** The game a filed record hangs on, the way the picker names it — "#<Nr.>
+   *  · teams", or the teams and the day for a game without a number; '' when
+   *  the record came without its game. */
+  const recordGameLabel = (record: FeedbackRecord): string => {
+    const game = record.expand?.game;
+    return gameLabel({ matchNo: game?.match_no, homeTeam: game?.home_team, awayTeam: game?.away_team, date: game?.match_date });
   };
 
   const openFeedbackPicker = async (coachee: Coachee) => {
@@ -3123,19 +3253,30 @@ export default function App() {
    *  carried over from the screen you would otherwise have come from. */
   const openDeepLink = async (r: AppRoute) => {
     if (!r.coacheeId) return;
-    // This season's row only, like the game routes: last season's row of the
-    // same person would open with last season's Niveau in the header.
-    const coachee = coachees.find((c) => c.id === r.coacheeId && isInSeason(c, seasonStartYear));
-    if (!coachee) {
-      // Deleted, or on a season this coach is not looking at. Say so; landing
-      // silently on the coachee list looks like the link simply did nothing.
-      setBackendNotice(formData.lang === 'DE'
-        ? 'Coachee nicht gefunden — vielleicht eine andere Saison.'
-        : 'Coachee not found — possibly a different season.');
+    // The token is the SV number of a linked coachee or a record id, in
+    // either the shape the app writes today or one a link from before still
+    // carries; resolveCoacheeToken reads both. This season's row only, like
+    // the game routes: last season's row of the same person would open with
+    // last season's Niveau in the header. A token that only a row of ANOTHER
+    // season answers to is the roll-over — a link sent in April, opened in
+    // September — and is told apart from a link to nobody, because "nicht
+    // gefunden" sends the coach looking for a typo that is not there.
+    // (`<Coachee>` spelled out: the roster state is untyped in this file —
+    // React's hooks carry no types here — and inference from `any` lands on
+    // the helper's constraint, which selectCoachee will not take.)
+    const hit = resolveCoacheeToken<Coachee>(r.coacheeId, coachees, seasonStartYear);
+    if (!hit || hit.otherSeason) {
+      // Say so; landing silently on the coachee list looks like the link
+      // simply did nothing.
+      const de = formData.lang === 'DE';
+      setBackendNotice(hit
+        ? (de ? 'Coachee gehört zu einer anderen Saison.' : 'Coachee belongs to another season.')
+        : (de ? 'Coachee nicht gefunden — vielleicht eine andere Saison.' : 'Coachee not found — possibly a different season.'));
       setFeedbackSubView('coachees');
       setListTab('coachees');
       return;
     }
+    const coachee = hit.row;
     selectCoachee(coachee);
     if (r.subView === 'coacheeGames') {
       await loadCoacheeGames(coachee);
@@ -3152,7 +3293,14 @@ export default function App() {
       if (!isCurrentLoad('coacheeFeedbacks', gen)) return;
       const record = records.find((x) => x.id === r.feedbackId);
       if (!record) {
+        // The picker over the coachee list, where `/feedbacks/<coachee>`
+        // without a record lands too — not over the route's own subView,
+        // which is the form: with no record open that form is a blank one
+        // for whatever game was auto-selected, and the sync effect writes
+        // ITS address (`/form/<game>/1sr`) over the dead link.
         setBackendNotice(formData.lang === 'DE' ? 'Beobachtung nicht gefunden.' : 'Observation not found.');
+        setFeedbackSubView('coachees');
+        setListTab('coachees');
         setCoacheeFeedbacks(records);
         setFeedbackPickerCoachee(coachee);
         return;
@@ -3584,7 +3732,9 @@ export default function App() {
     } catch (err) {
       const e = err as Error & { status?: number; reachedServer?: boolean };
       const de = fd.lang === 'DE';
-      const label = `${selectedGame.homeTeam} vs ${selectedGame.awayTeam} · ${fd.role}`;
+      // What the outbox row reads: the match number, the teams, the role. The
+      // key stays the record id (payload.gameId); this is only the wording.
+      const label = `${gameLabel(selectedGame)} · ${fd.role}`;
       // The PDF chunk never loaded, so there is nothing to queue and retrying
       // this session would hit the same missing chunk. Ask for a reload, which
       // fetches the current build — the work is still on screen, unlost.
@@ -4319,13 +4469,25 @@ export default function App() {
    *  game's form — or, when it is the game already selected and not a filed
    *  record, only swaps the half. The form's memory is left alone on purpose:
    *  re-selecting the game would flush, reset and re-read the draft, and
-   *  with IndexedDB blocked the re-read comes back empty. */
-  const openGameRoute = (gameId: string, role: AppRoute['role']) => {
-    if (gameId === selectedGameId && !openFeedbackId) {
+   *  with IndexedDB blocked the re-read comes back empty.
+   *
+   *  The token is the match number or a record id (resolveGameToken), and it
+   *  is the RESOLVED id that is held against the selection: a Back onto
+   *  `/form/g1/1sr` while `/form/2345678/1sr` is on screen is the same form,
+   *  and re-selecting it would flush the draft it is showing. A token nobody
+   *  answers to is the selection when it is what the selection was written
+   *  as before its game left the list (rememberedIdOf) — the entry under a
+   *  notebook opened over such a form still names that form — and is
+   *  compared as written otherwise. (`<EligibleGame>` spelled out for the
+   *  same reason as openDeepLink's `<Coachee>`: the list state is untyped
+   *  here, and inference from `any` lands on the helper's constraint, which
+   *  handleSelectGame will not take.) */
+  const openGameRoute = (token: string, role: AppRoute['role']) => {
+    const game = resolveGameToken<EligibleGame>(token, eligibleGames, seasonStartYear);
+    if ((game?.id ?? rememberedIdOf(rememberedGameTokenRef, token) ?? token.trim()) === selectedGameId && !openFeedbackId) {
       if (role && role !== formData.role) toggleRole();
       return;
     }
-    const game = eligibleGames.find((g) => g.id === gameId);
     // Outside the season on screen counts as not found: the list hides such a
     // game, and a link from last March must not open a blank form on it.
     if (!game || !inSeasonOrManual(game)) {
@@ -4343,6 +4505,14 @@ export default function App() {
   const openGameRouteRef = useRef(openGameRoute);
   openGameRouteRef.current = openGameRoute;
 
+  /** The record id the URL's game token names, once the eligible list is in
+   *  hand — '' when the URL names no game. A token nobody answers to is kept
+   *  as written: it can still be the record id of a draft whose game has
+   *  left the list, and the boot below then says so. */
+  const urlGameRecordId = (): string => initialRoute.gameId
+    ? (resolveGameToken(initialRoute.gameId, eligibleGames, seasonStartYear)?.id ?? initialRoute.gameId)
+    : '';
+
   /** The game the URL named on arrival, opened once the roster is here — a
    *  blank form, or its draft if this coach has one. Returns false when there
    *  was nothing to open, so the caller falls back to the ordinary auto-select. */
@@ -4350,7 +4520,7 @@ export default function App() {
     if (!initialRoute.gameId || urlGameOpenedRef.current) return false;
     urlGameOpenedRef.current = true;
     setLandingSettled(true);
-    const game = eligibleGames.find((g) => g.id === initialRoute.gameId);
+    const game = resolveGameToken<EligibleGame>(initialRoute.gameId, eligibleGames, seasonStartYear);
     if (!game || !inSeasonOrManual(game)) {
       // Deleted, on another season, or somebody else's link. Say so; landing
       // silently on the games list looks like the link simply did nothing.
@@ -4396,7 +4566,12 @@ export default function App() {
         } catch { /* keep the local list */ }
       }
       setDrafts(mine);
-      const wanted = autoResumeRef.current;
+      // The URL's game as a record id: `/form/2345678/2sr` names its draft
+      // by the match number, the draft store keys by the record id, and the
+      // two meet here — through the eligible list, which the boot waited
+      // for. The session hint is a record id already.
+      const urlGame = urlGameRecordId();
+      const wanted = initialRoute.gameId && autoResumeRef.current === initialRoute.gameId ? urlGame : autoResumeRef.current;
       const forGame = wanted
         ? mine.filter((d) => d.gameId === wanted && d.status === 'editing' && (d.schema ?? 1) <= DRAFT_SCHEMA)
         : [];
@@ -4407,8 +4582,8 @@ export default function App() {
         draftOwnerRef.current = outboxOwnerId;
         // The URL's game, when it is the one: the draft IS the open, and the
         // half it names is the half to show.
-        if (wanted === initialRoute.gameId) { urlGameOpenedRef.current = true; setLandingSettled(true); }
-        resumeDraft(mine.filter((d) => d.gameId === wanted), wanted === initialRoute.gameId ? initialRoute.role : null);
+        if (urlGame && wanted === urlGame) { urlGameOpenedRef.current = true; setLandingSettled(true); }
+        resumeDraft(mine.filter((d) => d.gameId === wanted), urlGame && wanted === urlGame ? initialRoute.role : null);
         toast.success(t.draftRestored, { lang: formData.lang });
       } else if (!openUrlGame()) {
         releaseAutoSelect();
@@ -4463,7 +4638,16 @@ export default function App() {
       return {
         gameId,
         list,
-        label: list[0].label || game?.matchNo || gameId,
+        // Named the way a person names a game — "#<Nr.> · teams" — off what
+        // the draft itself remembers, so a game that has left the list (the
+        // sync dropped it, the season rolled over) still reads as that game
+        // and not as a record id nobody can look up. The game row fills in
+        // whatever the draft did not store.
+        label: gameLabel({
+          matchNo: list[0].matchNo || game?.matchNo,
+          teams: list[0].label, homeTeam: game?.homeTeam, awayTeam: game?.awayTeam,
+          date: game?.date,
+        }),
         updatedAt: list.reduce((max, d) => Math.max(max, d.updatedAt || 0), 0),
         roles: list.map((d) => d.role).join(' · '),
         queued: list.some((d) => d.status === 'queued'),
@@ -4634,14 +4818,16 @@ export default function App() {
       const key = field as 'bemerkungen' | 'highlights' | 'improvements' | 'goals';
       setFormData((prev) => ({ ...prev, results: { ...prev.results, [key]: appendToRich(prev.results[key] || '', block) } }));
     }
-    const label = `${selectedGame.homeTeam} vs ${selectedGame.awayTeam}`;
+    // `g` stays the record id — it is what the sheet matches "used here" on;
+    // the label beside it is what the "übernommen" line reads.
+    const label = gameLabel(selectedGame);
     notebookSync.markUsed(pages.map((p) => p.pageId), { f: field, r: formData.role, g: selectedGame.id, label, t: Date.now() });
     const tp = PAD_STRINGS[formData.lang] || PAD_STRINGS.DE;
     const fieldLabel = { bemerkungen: tp.padInsertRemarks, highlights: tp.padInsertHighlights, improvements: tp.padInsertImprovements, goals: tp.padInsertGoals, tips: tp.padInsertTips }[field];
     toast.success(padFill(pages.length === 1 ? tp.padInserted1 : tp.padInsertedN, { n: pages.length, field: fieldLabel }), { lang: formData.lang });
   };
   const padInsert: InsertContext | null = padCanInsert && selectedGame
-    ? { role: formData.role, gameId: selectedGame.id, label: `${selectedGame.homeTeam} vs ${selectedGame.awayTeam}`, name: getRefereeForRole(selectedGame, formData.role) || '', onInsert: importPagesIntoForm }
+    ? { role: formData.role, gameId: selectedGame.id, label: gameLabel(selectedGame), name: getRefereeForRole(selectedGame, formData.role) || '', onInsert: importPagesIntoForm }
     : null;
   // Hidden for the console (the server refuses it anyway), for a session with no
   // identity, in the demo ("nothing is stored" must stay literally true) and for
@@ -5875,7 +6061,10 @@ export default function App() {
                   {draftGroups.map((g) => (
                     <div key={g.gameId} className="flex items-center gap-2">
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-stone-800">{g.label}</p>
+                        {/* A draft that remembers nothing of its game — no
+                            number, no teams, and the game gone from the list —
+                            is still a game, never its record id. */}
+                        <p className="truncate text-stone-800">{g.label || (formData.lang === 'DE' ? 'Spiel' : 'Game')}</p>
                         <p className="truncate text-stone-500">
                           {g.queued ? t.draftQueued
                             : g.missing ? t.draftGameMissing
@@ -6702,6 +6891,7 @@ export default function App() {
                                 tone="emerald"
                                 date={f.gameDate}
                                 league={f.league}
+                                matchNo={f.matchNo}
                                 teams={f.teams}
                                 onOpen={() => void openDoneObservation(f)}
                                 title={de ? 'Feedback öffnen' : 'Open feedback'}
@@ -9448,7 +9638,7 @@ export default function App() {
                     // it set. Not a button — there is nothing to open.
                     <div key={record.id} className="px-4 py-3 bg-sky-50/40" data-testid="history-redacted">
                       <div className="text-sm font-semibold text-stone-900">
-                        {record.expand?.game?.match_no || '-'} | {record.expand?.game?.home_team || '-'} vs {record.expand?.game?.away_team || '-'}
+                        {recordGameLabel(record) || '-'}
                       </div>
                       <div className="text-xs text-stone-500 mt-1">
                         {record.submitted_at || '-'} | {t.rcShort}: {record.rc_name || '-'} | {record.role_assessed || '-'}
@@ -9466,7 +9656,7 @@ export default function App() {
                         className="flex-1 min-w-0 text-left px-4 py-3"
                       >
                         <div className="text-sm font-semibold text-stone-900">
-                          {record.expand?.game?.match_no || '-'} | {record.expand?.game?.home_team || '-'} vs {record.expand?.game?.away_team || '-'}
+                          {recordGameLabel(record) || '-'}
                         </div>
                         <div className="text-xs text-stone-500 mt-1">
                           {record.submitted_at || '-'} | {t.rcShort}: {record.rc_name || '-'} | {record.role_assessed || '-'}

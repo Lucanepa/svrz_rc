@@ -8,7 +8,9 @@ import { stubSignedInApp, GAME } from './support/app';
 // the list treats "no coachee on the row" as a pass, and the star chip says
 // where the flag came from.
 
-const COACHEE_GAME = { ...GAME, id: 'g-coachee', assignedRc: '', assignedRcId: '', starred: false };
+/** Another game than GAME, so another match number — the form URL is the
+ *  number, and two games under one would fall back to the record id. */
+const COACHEE_GAME = { ...GAME, id: 'g-coachee', matchNo: '2400500', assignedRc: '', assignedRcId: '', starred: false };
 const MARKED_NO_COACHEE = {
   ...COACHEE_GAME,
   id: 'g-marked', matchNo: '406282',

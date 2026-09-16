@@ -264,7 +264,7 @@ export default function PdfReader({ url, title, originalHref, lang, onClose }: P
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { onClose(); return; }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') { // identity:display — a keyboard shortcut, not a name
         e.preventDefault();
         searchRef.current?.focus();
         searchRef.current?.select();

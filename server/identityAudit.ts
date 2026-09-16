@@ -135,7 +135,9 @@ export type IdentityAuditReport = {
   rcsWithoutSv: { id: string; name: string }[];
 };
 
-/** What a human reads for a game: the number, else teams and date. */
+/** What a human reads for a game: the number, else teams and date. The
+ *  compact form for the audit's lists, off a PocketBase row; the screens
+ *  name a game through `gameLabel` in src/lib/identity.ts ("#<Nr.> · teams"). */
 export function gameLabel(game: AnyRecord | undefined): string {
   if (!game) return '';
   const no = text(game.match_no);

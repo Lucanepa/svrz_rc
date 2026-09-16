@@ -241,12 +241,14 @@ test.describe('From anywhere', () => {
     await stubSignedInApp(page);
     await page.goto('/');
     await openFeedbackForm(page);
-    await expect(page).toHaveURL(/\/form\/g1\/1sr$/);
+    // The form's address names the game by its match number; the sheet on
+    // top of it must not touch that.
+    await expect(page).toHaveURL(new RegExp(`/form/${GAME.matchNo}/1sr$`));
     await openPad(page);
     await page.keyboard.press('Escape');
     await expect(sheet(page)).toHaveCount(0);
     await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
-    await expect(page).toHaveURL(/\/form\/g1\/1sr$/);
+    await expect(page).toHaveURL(new RegExp(`/form/${GAME.matchNo}/1sr$`));
     await openPad(page);
     await page.goBack();
     await expect(sheet(page)).toHaveCount(0);
@@ -324,6 +326,12 @@ test.describe('Into the form', () => {
     await expect.poll(async () => (await storedPages(page))[0]?.usedIn?.[0]?.f).toBe('bemerkungen');
     expect((await storedPages(page))[0].usedIn[0].r).toBe('1. SR');
     expect((await storedPages(page))[0].usedIn[0].g).toBe(GAME.id);
+    // The mark's label names the game the way the coach does — by the match
+    // number, with the teams beside it — while `g` stays the record id the
+    // sheet matches "used here" on. And that label is what the page's own
+    // line reads back once the sheet is reopened.
+    expect((await storedPages(page))[0].usedIn[0].label).toBe(`#${GAME.matchNo} · ${GAME.homeTeam} vs ${GAME.awayTeam}`);
+    await expect(sheet(page).getByText(new RegExp(`(übernommen|inserted) → (Bemerkungen|Remarks) \\(1\\. SR\\) · #${GAME.matchNo} · ${GAME.homeTeam}`))).toBeVisible();
     // The notebook itself is untouched — it is a copy, not a move.
     await expect(pageBox(page)).toHaveText(/Pfiff klar, Handzeichen sauber\s*Aufschlag zu früh gepfiffen/);
   });

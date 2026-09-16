@@ -123,7 +123,8 @@ test("the Feedback-Verlauf lists a colleague's observation with its goals only; 
   // The colleague's entry: goals rendered, no button to open, no PDF.
   const theirs = dialog.getByTestId('history-redacted');
   await expect(theirs).toHaveCount(1);
-  await expect(theirs).toContainText('77 | C vs D');
+  // Named by the match number, the way every game on screen is.
+  await expect(theirs).toContainText('#77 · C vs D');
   await expect(theirs).toContainText('Beat Brunner');
   await expect(theirs).toContainText(/nur die Ziele|only the goals/);
   await expect(theirs.locator('b')).toHaveText('deutlicher');

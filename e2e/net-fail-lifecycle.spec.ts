@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp } from './support/app';
+import { stubSignedInApp, openFeedbackForm, fillWholeForm, GAME } from './support/app';
 import { LEAVE_GRACE_MS } from '../src/lib/logger';
 
 /**
@@ -99,4 +99,37 @@ test('a failure does not carry a capability token into the log', async ({ page }
   const entry = await lastFailure(page);
   expect(JSON.stringify(entry)).not.toContain('tok-abcdef123456');
   expect(entry?.msg).toContain('/api/survey/<token>');
+});
+
+// What a send that the network lost is called once it is back on screen. The
+// outbox keeps the game's record id as its key, and the row used to read the
+// teams and the role only; a coach with two reports in the failed list had
+// nothing to tell the commission but "the one from Saturday".
+test.describe('the outbox row', () => {
+  test('names the game by its match number', async ({ page }) => {
+    // No server behind the submit: the send from a gym with no signal, which
+    // goes to the outbox. The park on every signature still answers.
+    await page.route('**/api/feedback/submit', (r) => r.abort('failed'));
+    await page.route(/\/api\/drafts\/parked\//, (r) => r.fulfill({
+      json: r.request().method() === 'DELETE' ? { removed: 1 } : { parked: 1 },
+    }));
+    await openFeedbackForm(page);
+    await fillWholeForm(page);
+    await page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ }).click();
+    await page.getByRole('dialog').getByRole('button', { name: /^(Save|Speichern)$/ }).click();
+    await expect(page.getByText(/Being sent — waiting in the queue|Wird gesendet — wartet in der Warteschlange/).first()).toBeVisible();
+
+    // Back online, the server now answers — and refuses: a 422 is a permanent
+    // failure, which is what puts the item on the failed list with its label.
+    await page.route('**/api/feedback/submit', (r) => r.fulfill({ status: 422, json: { error: 'Coachee hat keine E-Mail-Adresse.' } }));
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+
+    await page.getByRole('button', { name: /^(Back|Zurück)$/ }).click();
+    await page.getByRole('button', { name: /^(Home|Start)$/ }).click();
+    await expect(page.getByText(/submission failed|Übermittlung fehlgeschlagen/)).toBeVisible({ timeout: 15000 });
+    // The failed row, with the role — the draft banner above it names the
+    // same game the same way, without the role.
+    await expect(page.getByText(`#${GAME.matchNo} · ${GAME.homeTeam} vs ${GAME.awayTeam} · 1. SR`, { exact: true })).toBeVisible();
+    await expect(page.getByText(GAME.id, { exact: true })).toHaveCount(0);
+  });
 });

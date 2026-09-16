@@ -145,7 +145,7 @@ test.describe('Manual game name pickers', () => {
     await expect(fieldNote(page, 'mg-ref1')).toHaveText(/Nicht in der Liste|Not in the list/);
 
     await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
-    await expect(page.getByText(/(Angelegt|Created): TEST-1/)).toBeVisible();
+    await expect(page.getByText(/(Angelegt|Created): #TEST-1/)).toBeVisible();
     expect(posted).not.toBeNull();
     const sent = posted as unknown as { first_referee: string; first_referee_id: string };
     expect(sent.first_referee).toBe('Gastspieler Ohne Akte');
@@ -172,7 +172,7 @@ test.describe('Manual game name pickers', () => {
     await page.locator('#mg-time').fill('14:30');
 
     await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
-    await expect(page.getByText(/(Angelegt|Created): TEST-2/)).toBeVisible();
+    await expect(page.getByText(/(Angelegt|Created): #TEST-2/)).toBeVisible();
     const sent = posted as unknown as { first_referee_id: string; second_referee_id: string; match_date: string; match_time: string };
     // The name is what prints; this is what the feedback will match on.
     expect(sent.first_referee_id).toBe('90002');
@@ -196,7 +196,7 @@ test.describe('Manual game name pickers', () => {
     await page.locator('#mg-rc').fill('zimmer');
     await page.getByRole('button', { name: /Beat Zimmermann/ }).click();
     await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
-    await expect(page.getByText(/(Angelegt|Created): TEST-1/)).toBeVisible();
+    await expect(page.getByText(/(Angelegt|Created): #TEST-1/)).toBeVisible();
     expect(posted[0]).toMatchObject({ assigned_rc: 'Beat Zimmermann', assigned_rc_id: 'rc2' });
 
     // Typed over: the name that leaves is not the picked coach's, so neither
@@ -204,7 +204,7 @@ test.describe('Manual game name pickers', () => {
     await page.locator('#mg-rc').fill('Beat Zimmermann-Keller');
     await page.locator('#mg-rc').press('Escape');
     await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
-    await expect(page.getByText(/(Angelegt|Created): TEST-2/)).toBeVisible();
+    await expect(page.getByText(/(Angelegt|Created): #TEST-2/)).toBeVisible();
     expect(posted[1]).toMatchObject({ assigned_rc: 'Beat Zimmermann-Keller', assigned_rc_id: '' });
   });
 
@@ -225,7 +225,7 @@ test.describe('Manual game name pickers', () => {
     await page.locator('#mg-ref1').press('Escape');
 
     await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
-    await expect(page.getByText(/(Angelegt|Created): TEST-3/)).toBeVisible();
+    await expect(page.getByText(/(Angelegt|Created): #TEST-3/)).toBeVisible();
     const sent = posted as unknown as { first_referee: string; first_referee_id: string };
     expect(sent.first_referee).toBe('Luca Canepa-Meier');
     expect(sent.first_referee_id).toBe('');
@@ -252,6 +252,62 @@ test.describe('the match number of a manual game', () => {
     // The server's sentence, with the game in it — not "Could not create game".
     await expect(page.getByText(/gibt es schon: VBC Züri Unterland – Volley Näfels II, 15\.11\.2026/)).toBeVisible();
     await expect(page.getByText(/(Angelegt|Created):/)).toHaveCount(0);
+  });
+
+  test('the created line names the game by its number, or by the teams and the day — never by its record id', async ({ page }) => {
+    await openManualGameForm(page);
+    // The row as PocketBase answers it: a 15-character id beside the number.
+    const RECORD_ID = 'abcdefghijklmno';
+    let matchNo = 'TEST-20260916-a1b2';
+    await page.route('**/api/admin/games', (r) => r.fulfill({
+      status: 201,
+      json: { id: RECORD_ID, match_no: matchNo, home_team: 'VBC Heim', away_team: 'TV Gast', match_date: '2026-09-16' },
+    }));
+    await page.getByLabel(/^(Heim|Home)$/).fill('VBC Heim');
+    await page.getByLabel(/^(Gast|Away)$/).fill('TV Gast');
+
+    await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
+    const created = page.getByText(/(Angelegt|Created):/);
+    await expect(created).toHaveText(/(Angelegt|Created): #TEST-20260916-a1b2 · VBC Heim vs TV Gast$/);
+    expect(await created.textContent()).not.toContain(RECORD_ID);
+
+    // A game the server gave no number (a row from before numbers were
+    // generated) is the teams and the day — the id used to stand in here,
+    // and it reads like a number that can be looked up nowhere.
+    matchNo = '';
+    await page.getByLabel(/^(Heim|Home)$/).fill('VBC Heim');
+    await page.getByLabel(/^(Gast|Away)$/).fill('TV Gast');
+    await page.getByRole('button', { name: /Spiel anlegen|Create game/ }).click();
+    await expect(created).toHaveText(/(Angelegt|Created): VBC Heim vs TV Gast · 16\.09\.2026$/);
+    expect(await created.textContent()).not.toContain(RECORD_ID);
+  });
+
+  test('the list row and the delete question name a game the same way, and never by its record id', async ({ page }) => {
+    // The same card's cleanup list: a row with a blank number read
+    // " · Heim vs Gast" and its delete asked about the 15-character record
+    // id — nothing an admin can check against the list before answering.
+    // Both read the way the "Angelegt" line does.
+    const RECORD_ID = 'abcdefghijklmno';
+    await stubSignedInApp(page, { admin: true });
+    await page.route('**/api/coachees*', (r) => r.fulfill({ json: COACHEES }));
+    await page.route('**/api/admin/referees*', (r) => r.fulfill({ json: DIRECTORY }));
+    await page.route('**/api/referee-coach-people', (r) => r.fulfill({ json: RC_PEOPLE }));
+    await page.route('**/api/admin/games/manual*', (r) => r.fulfill({ json: [
+      { id: RECORD_ID, match_no: '', league: '3L', match_date: '2026-11-15', home_team: 'VBC Heim', away_team: 'TV Gast', assigned_rc: '' },
+      { id: 'numbered0000000', match_no: 'TEST-20260916-a1b2', league: '3L', match_date: '2026-11-16', home_team: 'VBC Nummer', away_team: 'TV Zahl', assigned_rc: '' },
+    ] }));
+    await page.goto('/admin');
+    await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
+
+    await expect(page.getByText('VBC Heim vs TV Gast · 15.11.2026', { exact: true })).toBeVisible();
+    await expect(page.getByText('#TEST-20260916-a1b2 · VBC Nummer vs TV Zahl', { exact: true })).toBeVisible();
+    await expect(page.getByText(RECORD_ID)).toHaveCount(0);
+
+    await page.getByRole('button', { name: /^(Löschen|Delete)$/ }).first().click();
+    const question = page.getByTestId('confirm-title');
+    await expect(question).toContainText('VBC Heim vs TV Gast · 15.11.2026');
+    expect(await question.textContent()).not.toContain(RECORD_ID);
+    await page.getByTestId('confirm-cancel').click();
   });
 
   test('the generated number is TEST-<day>-<four base-36 characters>', () => {

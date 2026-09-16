@@ -304,7 +304,7 @@ function applyFilters(observations: StatObservation[], filters: StatFilters): St
   return observations.filter((o) => {
     if (filters.rc && o.rcId !== filters.rc) return false;
     if (filters.role && o.role !== filters.role) return false;
-    if (group && !o.groups.some((g) => g.toLowerCase() === group)) return false;
+    if (group && !o.groups.some((g) => g.toLowerCase() === group)) return false; // identity:display — a group label filter, not a name
     if (level) {
       if (level.includes('-') ? o.level !== level : niveauOf(o.level) !== level) return false;
     }
@@ -317,7 +317,7 @@ function rosterFilter(roster: StatCoacheeInput[], filters: StatFilters): StatCoa
   const level = normalizeLevel(text(filters.level));
   return roster.filter((c) => {
     if (!c.active) return false;
-    if (group && !c.groups.some((g) => g.toLowerCase() === group)) return false;
+    if (group && !c.groups.some((g) => g.toLowerCase() === group)) return false; // identity:display — a group label filter, not a name
     if (level) {
       const own = normalizeLevel(c.level);
       if (level.includes('-') ? own !== level : niveauOf(own) !== level) return false;

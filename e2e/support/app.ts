@@ -25,13 +25,15 @@ export const COACHEE = {
   stage: '2',
   /** Linked to the register, like most of the real roster: the SV number is
    *  what the server matches a game's slot on first, and what the coachee's
-   *  URL will carry. */
+   *  URL carries (`/games/90003`; the record-id form stays a valid address
+   *  for every link sent before — deep-links.spec.ts pins both). */
   referee_id: '90003',
   observation_status: { needsObservation: true, count: 0 },
 };
 
 /** A coachee the register import could not link — no SV number, so every
- *  match on them is by name, and their URL stays the record id. */
+ *  match on them is by name, and their URL stays the record id
+ *  (`/games/c2`, legacy-links.spec.ts). */
 export const COACHEE_UNLINKED = {
   ...COACHEE,
   id: 'c2',
@@ -50,6 +52,11 @@ export const COACHEE_UNLINKED = {
  *  `firstCoacheeId: 'c1'` describes a game the server would never send. */
 export const GAME = {
   id: 'g1',
+  /** The VolleyManager match number — what the form's URL carries
+   *  (`/form/2345678/1sr`; the record-id form `/form/g1/1sr` stays a valid
+   *  address, path-routing.spec.ts pins both). A spec that clones GAME as
+   *  ANOTHER game gives the clone its own number: two games under one
+   *  number make the URL fall back to the record id. */
   matchNo: '2345678',
   league: '3L',
   date: '2026-11-15T19:30:00Z',
@@ -71,6 +78,20 @@ export const GAME = {
   // type into a locked field. Specs that need a score bring their own; see
   // e2e/match-result.spec.ts.
   game_result: '',
+};
+
+/** A game the console made by hand, held by the signed-in coach. Its number
+ *  is the generated `TEST-<yyyymmdd>-<4 base36>` shape (a typed one would do
+ *  too). A manual game keeps its RECORD id in the form URL whatever its
+ *  number reads (`/form/g-manual/1sr`, manual-game-visible.spec.ts): a typed
+ *  number is the one that can collide with a real fixture's. */
+export const GAME_MANUAL = {
+  ...GAME,
+  id: 'g-manual',
+  matchNo: 'TEST-20260916-a1b2',
+  homeTeam: 'VBC Test Heim',
+  awayTeam: 'VBC Test Gast',
+  isManual: true,
 };
 
 /** GAME as an API older than the ids answers it — or as the PWA cached it

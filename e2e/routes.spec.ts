@@ -33,9 +33,12 @@ test.describe('the legacy # redirect', () => {
     ['#/guide', '/guide'],
     ['#/guide/de', '/guide/de'],
     ['#/demo', '/demo'],
-    // ids ride along untouched
+    // ids ride along untouched — and so does an SV number, which is what the
+    // app writes for a linked coachee today; the rewrite tells neither apart
     ['#/games/kx82hd93jf0a1qp', '/games/kx82hd93jf0a1qp'],
+    ['#/games/90003', '/games/90003'],
     ['#/feedbacks/abc123/def456', '/feedbacks/abc123/def456'],
+    ['#/feedbacks/90003/def456', '/feedbacks/90003/def456'],
     // the leading slash is optional in the old form
     ['#admin', '/admin'],
   ];
@@ -128,6 +131,22 @@ test.describe('URL → state', () => {
     expect(r.coacheeId).toBe('kx82hd93jf0a1qp');
   });
 
+  test('the coachee token is opaque — an SV number reads back exactly like a record id', () => {
+    // No shape test in here: what a token means is decided against the
+    // roster, by the app, and a 15-character record id can be all digits.
+    const r = parsePath('/games/90003', '', false);
+    expect(r.subView).toBe('coacheeGames');
+    expect(r.coacheeId).toBe('90003');
+    expect(parsePath('/feedbacks/90003/f2', '', false)).toMatchObject({ coacheeId: '90003', feedbackId: 'f2' });
+  });
+
+  test('a token is percent-decoded, one segment at a time', () => {
+    // routeToPath encodes on the way out; an encoded slash stays inside its
+    // segment instead of splitting the route in two.
+    expect(parsePath('/games/c%201', '', false).coacheeId).toBe('c 1');
+    expect(parsePath('/feedbacks/a%2Fb/f2', '', false)).toMatchObject({ coacheeId: 'a/b', feedbackId: 'f2' });
+  });
+
   test('a filed observation carries both ids', () => {
     const r = parsePath('/feedbacks/c1/f2', '', false);
     expect(r.subView).toBe('feedbackForm');
@@ -187,6 +206,17 @@ test.describe('the form identity', () => {
   test('a role slug nobody emits is ignored rather than guessed', () => {
     expect(parsePath('/form/g1/3sr', '', false).role).toBeNull();
   });
+
+  test('the game token is opaque — a match number reads back exactly like a record id', () => {
+    // What the app writes today: the VolleyManager number for a fixture, the
+    // generated TEST-… number a typed `/form/TEST-…` carries, the record id
+    // for a manual game. Which one a token is gets decided against the
+    // eligible list, by the app, never in here.
+    expect(parsePath('/form/2345678/1sr', '', false)).toMatchObject({ subView: 'feedbackForm', gameId: '2345678', role: '1. SR' });
+    expect(parsePath('/form/TEST-20260916-a1b2/2sr', '', false)).toMatchObject({ gameId: 'TEST-20260916-a1b2', role: '2. SR' });
+    // Never lowercased: the base36 tail and a record id are case-sensitive.
+    expect(parsePath('/form/TEST-20260916-A1B2/2sr', '', false).gameId).toBe('TEST-20260916-A1B2');
+  });
 });
 
 /**
@@ -208,9 +238,23 @@ test.describe('every URL the app writes reads back to the same state', () => {
     { ...DEFAULT_ROUTE, subView: 'calendar' },
     { ...DEFAULT_ROUTE, subView: 'coacheeGames', coacheeId: 'c1' },
     { ...DEFAULT_ROUTE, subView: 'feedbackForm', coacheeId: 'c1', feedbackId: 'f2' },
+    // The two shapes the coachee half takes today: the SV number of a linked
+    // row, the record id of one that is not.
+    { ...DEFAULT_ROUTE, subView: 'coacheeGames', coacheeId: '90003' },
+    { ...DEFAULT_ROUTE, subView: 'feedbackForm', coacheeId: '90003', feedbackId: 'fb1' },
+    // A token nobody emits today, so that the encoding is a property of the
+    // builder and not of the ids that happen to be in use.
+    { ...DEFAULT_ROUTE, subView: 'coacheeGames', coacheeId: 'c 1' },
     { ...DEFAULT_ROUTE, subView: 'feedbackForm', gameId: 'g1', role: '1. SR' },
     { ...DEFAULT_ROUTE, subView: 'feedbackForm', gameId: 'g1', role: '2. SR' },
     { ...DEFAULT_ROUTE, subView: 'feedbackForm', gameId: 'g1', role: null },
+    // The shapes the game half takes today: the match number of a fixture,
+    // the generated number of a manual game (emitted only when typed — a
+    // manual game's own URL is its record id, above).
+    { ...DEFAULT_ROUTE, subView: 'feedbackForm', gameId: '2345678', role: '1. SR' },
+    { ...DEFAULT_ROUTE, subView: 'feedbackForm', gameId: '2345678', role: '2. SR' },
+    { ...DEFAULT_ROUTE, subView: 'feedbackForm', gameId: 'TEST-20260916-a1b2', role: '2. SR' },
+    { ...DEFAULT_ROUTE, subView: 'feedbackForm', gameId: 'g 1', role: '1. SR' },
   ];
   for (const route of ROUTES) {
     const url = routeToPath(route);
@@ -220,6 +264,19 @@ test.describe('every URL the app writes reads back to the same state', () => {
       expect(parsePath(pathname, search ? `?${search}` : '', true)).toEqual(route);
     });
   }
+
+  test('a token is percent-encoded on the way out', () => {
+    // A space or a slash in a token must not split the route or leak into
+    // the query; the segment is encoded whole and parsePath decodes it back.
+    expect(routeToPath({ ...DEFAULT_ROUTE, subView: 'coacheeGames', coacheeId: 'c 1' })).toBe('/games/c%201');
+    expect(routeToPath({ ...DEFAULT_ROUTE, subView: 'feedbackForm', coacheeId: 'a/b', feedbackId: 'f?2' })).toBe('/feedbacks/a%2Fb/f%3F2');
+    expect(routeToPath({ ...DEFAULT_ROUTE, subView: 'feedbackForm', gameId: 'g 1', role: '1. SR' })).toBe('/form/g%201/1sr');
+    // And the shapes in use come out as typed — nothing in them needs it.
+    expect(routeToPath({ ...DEFAULT_ROUTE, subView: 'coacheeGames', coacheeId: '90003' })).toBe('/games/90003');
+    expect(routeToPath({ ...DEFAULT_ROUTE, subView: 'feedbackForm', coacheeId: '90003', feedbackId: 'fb1' })).toBe('/feedbacks/90003/fb1');
+    expect(routeToPath({ ...DEFAULT_ROUTE, subView: 'feedbackForm', gameId: '2345678', role: '1. SR' })).toBe('/form/2345678/1sr');
+    expect(routeToPath({ ...DEFAULT_ROUTE, subView: 'feedbackForm', gameId: 'TEST-20260916-a1b2', role: '2. SR' })).toBe('/form/TEST-20260916-a1b2/2sr');
+  });
 });
 
 test.describe('the admin console', () => {

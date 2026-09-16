@@ -11,7 +11,7 @@ import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { UiHost } from './components/ui';
 import { enableDemo, isDemoMode } from './lib/demo';
 import { canonicalizeLegacyHash, routeRoot } from './lib/routes';
-import { installLogging, clientLog, noteReloadingPage } from './lib/logger';
+import { installLogging, clientLog, noteReloadingPage, scrubTokens } from './lib/logger';
 import {
   decideSwReload, recentSwReloads, noteSwReload, retryDelayMs, SW_RELOAD_STATE_KEY,
 } from './lib/swReload';
@@ -193,9 +193,12 @@ window.addEventListener('hashchange', reloadOnRootChange);
 window.addEventListener('popstate', reloadOnRootChange);
 
 const kind = routeKind();
+// Scrubbed like every URL the logger writes itself: the hash is the survey /
+// signature capability on those two roots, and the path carries a coachee's
+// SV number on `/games/<sv>` — neither belongs in a Protokoll every admin reads.
 clientLog.info('app.route', `mounting "${kind}"`, {
-  path: window.location.pathname + window.location.search,
-  hash: window.location.hash || undefined,
+  path: scrubTokens(window.location.pathname + window.location.search),
+  hash: window.location.hash ? scrubTokens(window.location.hash) : undefined,
   demo: isDemoMode(),
 });
 createRoot(document.getElementById('root')!).render(

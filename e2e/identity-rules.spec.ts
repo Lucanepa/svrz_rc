@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
 import {
   foldName, nameKeys, samePerson, indexPeople, resolveRcName, resolveRcRef,
-  coacheeIndex, coacheeIdOnSlot, coacheeLookup, svClaimOnSlot, isMyGame, isMyRecord,
+  coacheeIndex, coacheeIdOnSlot, coacheeLookup, svClaimOnSlot, isMyGame, isMyRecord, refereeSet, refereeAmong,
   coacheeUrlToken, resolveCoacheeToken, gameUrlToken, resolveGameToken,
+  gameLabel as screenGameLabel,
 } from '../src/lib/identity';
 import { foldName as reExportedFoldName, coacheeIndex as reExportedCoacheeIndex } from '../src/lib/coacheeName';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, type SvMismatch } from '../server/coacheeIndex';
@@ -390,6 +391,61 @@ test.describe('isMyGame / isMyRecord', () => {
   });
 });
 
+test.describe('refereeAmong — a coach on a whistle slot', () => {
+  // One coach, as the server builds them: the roster name, an alias in the
+  // order VolleyManager prints, and the register's number.
+  const me = refereeSet([{ svNumber: '77001', names: ['Anna Muster', 'Muster Anna'] }]);
+
+  test('the SV number decides when the slot carries one the set knows, whatever the name says', () => {
+    expect(refereeAmong({ name: 'Somebody Else', sv: '77001' }, me)).toBe(true);
+    expect(refereeAmong({ name: 'Zzz Nobody', sv: ' 77001 ' }, me)).toBe(true);
+  });
+
+  test('a number the set does not know is no veto: the name still answers', () => {
+    // Two thirds of stored games carry no number and the register links are
+    // not yet trusted to overrule a name (identity plan §2, open question 4).
+    expect(refereeAmong({ name: 'anna  MÜSTER', sv: '99999' }, me)).toBe(true);
+    expect(refereeAmong({ name: 'Anna Muster', sv: '' }, me)).toBe(true);
+    expect(refereeAmong({ name: 'Anna Muster' }, me)).toBe(true);
+  });
+
+  test('an alias answers, in the order it was listed', () => {
+    expect(refereeAmong({ name: 'Muster Anna' }, me)).toBe(true);
+    // The set holds spellings as listed; it is the coach's record that lists
+    // the other order, not the test that guesses it.
+    expect(refereeAmong({ name: 'Muster Anna-Lena' }, me)).toBe(false);
+  });
+
+  test('nobody: another name, an empty slot, a non-string', () => {
+    expect(refereeAmong({ name: 'Bea Beispiel', sv: '' }, me)).toBe(false);
+    expect(refereeAmong({ name: '', sv: '' }, me)).toBe(false);
+    expect(refereeAmong({}, me)).toBe(false);
+    expect(refereeAmong({ name: 42, sv: null }, me)).toBe(false);
+  });
+
+  test('the whole roster at once — the RC-Spiel flag\'s question', () => {
+    const coaches = refereeSet([
+      { svNumber: '77001', names: ['Anna Muster'] },
+      { svNumber: '', names: ['Bea Beispiel', 'Beispiel Bea'] },
+    ]);
+    expect(refereeAmong({ name: 'X', sv: '77001' }, coaches)).toBe(true);
+    expect(refereeAmong({ name: 'Beispiel Bea' }, coaches)).toBe(true);
+    expect(refereeAmong({ name: 'Carla Coach' }, coaches)).toBe(false);
+    // A number typed as a number on a PocketBase row still counts.
+    expect(refereeAmong({ name: 'X', sv: 77001 }, coaches)).toBe(true);
+  });
+
+  test('an empty set knows nobody, and a blank number or spelling is not listed', () => {
+    const none = refereeSet([]);
+    expect(none.svs.size).toBe(0);
+    expect(none.names.size).toBe(0);
+    expect(refereeAmong({ name: '', sv: '' }, none)).toBe(false);
+    const blanks = refereeSet([{ svNumber: '  ', names: ['', '  '] }]);
+    expect(blanks.svs.size).toBe(0);
+    expect(blanks.names.size).toBe(0);
+  });
+});
+
 test.describe('coachee URL token', () => {
   const linked = { id: 'c1', referee_id: '90003', season: 2026 };
   const unlinked = { id: 'c2', referee_id: '', season: 2026 };
@@ -424,6 +480,21 @@ test.describe('coachee URL token', () => {
     const then = { id: 'c6', referee_id: '90005', season: 2025 };
     expect(resolveCoacheeToken('90005', [then, now], 2026)?.row).toBe(now);
     expect(resolveCoacheeToken('90005', [then, now], 2025)?.row).toBe(then);
+  });
+
+  test('a seasonless row sharing the number yields to the row of the season, whichever the roster lists first', () => {
+    // A row from before the season field, linked to the same licence by the
+    // register import: the roster sorts by name, so it can sit ahead of this
+    // season's row. The season's row is the current one — indexPeople, the
+    // server and the audit all rank it first — and the app's own link
+    // (`/games/90006`) must open it, not last year's Niveau. Seasonless rows
+    // still answer a number no season row carries.
+    const legacy = { id: 'c-old', referee_id: '90006', referee_level: 'N2' };
+    const now = { id: 'c7', referee_id: '90006', season: 2026, referee_level: 'N3' };
+    expect(resolveCoacheeToken('90006', [legacy, now], 2026)?.row).toBe(now);
+    expect(resolveCoacheeToken('90006', [now, legacy], 2026)?.row).toBe(now);
+    expect(resolveCoacheeToken('c-old', [legacy, now], 2026)?.row).toBe(legacy);
+    expect(resolveCoacheeToken('90006', [legacy], 2026)).toEqual({ row: legacy, otherSeason: false });
   });
 
   test('tokens are compared trimmed, never by shape', () => {
@@ -498,6 +569,34 @@ test.describe('game URL token', () => {
     // tier is asked first so both phones agree on what the address means.
     const oddId = { id: '2345678', matchNo: '7654321', date: '2026-10-03T18:00:00Z' };
     expect(resolveGameToken('2345678', [oddId, g1], season)).toBe(g1);
+  });
+});
+
+test.describe('gameLabel — a game as a person reads it', () => {
+  // Every screen that names a game goes through this one string: the draft
+  // banner, the outbox row, the notebook's "übernommen" line, the take
+  // dialog, the picker rows, the console's "Angelegt" line.
+  const game = { id: 'k7x2m9p4q1w8e5r', matchNo: '2345678', homeTeam: 'VBC Heim', awayTeam: 'TV Gast', date: '2026-11-15T19:30:00Z' };
+
+  test('the number and the teams', () => {
+    expect(screenGameLabel(game)).toBe('#2345678 · VBC Heim vs TV Gast');
+    // The API's own "Home vs Away" string does as well as the two halves —
+    // a draft record stores the teams that way.
+    expect(screenGameLabel({ matchNo: '2345678', teams: 'VBC Heim vs TV Gast' })).toBe('#2345678 · VBC Heim vs TV Gast');
+    expect(screenGameLabel({ matchNo: ' 2345678 ' })).toBe('#2345678');
+  });
+
+  test('no number: the teams and the day, Swiss order', () => {
+    expect(screenGameLabel({ ...game, matchNo: '' })).toBe('VBC Heim vs TV Gast · 15.11.2026');
+    expect(screenGameLabel({ homeTeam: 'VBC Heim', awayTeam: '', date: '2026-11-15' })).toBe('VBC Heim · 15.11.2026');
+    expect(screenGameLabel({ teams: 'VBC Heim vs TV Gast' })).toBe('VBC Heim vs TV Gast');
+  });
+
+  test('never the record id, and empty when nothing is known', () => {
+    expect(screenGameLabel(game)).not.toContain(game.id);
+    expect(screenGameLabel({ ...game, matchNo: '' })).not.toContain(game.id);
+    expect(screenGameLabel({})).toBe('');
+    expect(screenGameLabel({ date: 'not a date' })).toBe('');
   });
 });
 

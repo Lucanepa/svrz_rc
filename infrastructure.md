@@ -360,6 +360,58 @@ then `docker exec … node deploy/hetzner/seed/setup-schema.mjs`): reads on a
 missing collection answer an empty notebook, writes say
 `Die Sammlung „rc_notebook" fehlt in PocketBase`.
 
+## Identity: SV number, RC id, match number (since 2026-09-16)
+
+Who a row is about is decided by a number, and the folded name is only the
+fallback. The rule is written once — `src/lib/identity.ts` (client and server
+import it), `server/coacheeIndex.ts` for the referee tiers — and
+`e2e/identity-ratchet.spec.ts` reads the repo and **fails the build on any new
+name-only compare** outside those files (the plan: `docs/identity-plan-2026-09-16.md`).
+
+| who | identity | column | fallback |
+|---|---|---|---|
+| referee / coachee | Swiss Volley SV number | `coachees.referee_id`, `games.first/second_referee_id`, `referees.sv_number` | the register (a slot name the register spells under exactly one licence), then the folded name in either order |
+| referee coach | roster record id | `games.assigned_rc_id`, `*_feedbacks.rc_id`, `rc_game_notes.rc_id`, president notes `rcId` | folded name; a **known, different** id is a no however the name reads |
+| game | VolleyManager match number | `games.match_no` | the record id everywhere a program reads (relations, drafts, outbox, notebook, iCal UID); a human reads `#<match_no>`, else teams + day |
+
+Four things follow from this:
+
+- **Link after every import.** `POST /api/coachees/import` and
+  `sync-contacts` run `linkCoacheesToReferees` themselves; the register
+  import (`POST /api/admin/referees/import`) runs it AND
+  `backfill-referee-ids`. The admin sequence after a register import, in
+  this order (all on the Coachees tab, "Datenqualität" card):
+  **Coachees jetzt verknüpfen** (`POST /api/admin/coachees/link-referees`) →
+  **SV-Nr. auf Spielen nachtragen** (`POST /api/admin/games/backfill-referee-ids`)
+  → hand-link the rows the card still lists as "nicht verknüpft" (the picker
+  offers register rows only — a typo cannot create a phantom identity) →
+  **RC-IDs nachtragen** (`POST /api/admin/migrate-rc-ids`, aliases honoured,
+  both orders). `GET /api/admin/identity-audit?season=` is the card's data and
+  the number to drive to zero.
+- **The `SV-Nr.` field.** Coachee add/edit carries it (backed by the register
+  picker); the XLSX may carry an optional `SV-Nr.` column, written only when
+  the number exists in the register; `POST/PUT /api/coachees` accept
+  `referee_id` (`''` unlinks, 400 for a number the register does not hold,
+  409 naming the other row when it is already linked in the same season). A
+  season+1 import inherits the number from the previous season's row of the
+  same person. Rows that stay unlinked are matched on the name and keep
+  record-id URLs — nothing is required.
+- **Two URL shapes, both kept forever** (the table under "URL routing"):
+  `/games/<sv>` and `/games/<recordId>`, `/feedbacks/<sv|recordId>/<fb>`,
+  `/form/<matchNo>/<half>` and `/form/<recordId>/<half>`. Number first,
+  record id second, against the loaded roster / eligible list; the record-id
+  shape is still emitted (an unlinked coachee, a manual game, a shared
+  number) and an old-shape link is rewritten in place with `replaceState`.
+  API paths stay `/api/coachees/<recordId>/*`. The SV number is a person
+  identifier in the path: the client log masks it (`scrubTokens`), Pages
+  request logs and Referers cannot be.
+- **Schema before code.** Every new column or collection goes through
+  `deploy/hetzner/seed/setup-schema.mjs` on **lenovoserver** BEFORE the API
+  build — PocketBase silently drops writes to undeclared columns, so a build
+  that ships first writes nothing and reports nothing. Every wire field the
+  identity work added is optional: Pages ahead of the API, or the API ahead
+  of Pages, both work, and the client falls to the name for any missing id.
+
 ## API Authentication Model
 
 Three layers, plus capability tokens:
@@ -981,9 +1033,9 @@ reads or writes them (pure functions; `e2e/routes.spec.ts` is its table).
 |---|---|
 | `/`, `/home`, `/coachees`, `/games` | the app's tabs |
 | `/games?view=calendar[&month=YYYY-MM]` | the Games tab as a month grid |
-| `/games/<coachee>` | that coachee's own games |
-| `/feedbacks/<coachee>/<observation>` | a filed observation, read-only |
-| `/form/<game>/1sr` · `/form/<game>/2sr` | the observation being written, and which half — the two public thirds of the draft key `(owner, game, role)`; the content stays in IndexedDB |
+| `/games/<coachee>` | that coachee's own games — `<coachee>` is the SV number, or the record id for a row not linked to the register; both resolve forever (see "Identity" above) |
+| `/feedbacks/<coachee>/<observation>` | a filed observation, read-only; the observation half is always a record id |
+| `/form/<game>/1sr` · `/form/<game>/2sr` | the observation being written, and which half — the two public thirds of the draft key `(owner, game, role)`; the content stays in IndexedDB. `<game>` is the match number, or the record id for a manual game, a blank or a shared number; both resolve forever |
 | `/admin/<tab>`, `/admin/logs/history` | the console, and Protokoll on Verlauf |
 | `/guide[/de\|/en]` | the public video guide |
 | `#/sign/<slug>`, `#/survey/<token>` | **still in the fragment, on purpose** — the token is the capability, and a fragment never reaches a request log or a Referer |

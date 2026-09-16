@@ -8,8 +8,10 @@ import { takenAfterReminder, reminderDeadlineOf } from '../src/lib/reminder';
 // referee who would be surprised in the hall. Now the take itself says so, asks,
 // and mails on confirmation, through the same endpoint as Home's "Erinnerung".
 
-/** Free to take; kicks off 15.11.2026 at 20:30 in the gym (19:30Z). */
-const FREE = { ...GAME, id: 'g-free', assignedRc: '' };
+/** Free to take; kicks off 15.11.2026 at 20:30 in the gym (19:30Z). Its own
+ *  number: a clone that kept GAME's would be a second game under one match
+ *  number, and the form URL is that number now. */
+const FREE = { ...GAME, id: 'g-free', matchNo: '2400777', assignedRc: '' };
 
 const LATE_NOW = new Date('2026-11-14T11:00:00Z');   // 12:00 Zürich on the eve — the 10:00 run is over
 const EARLY_NOW = new Date('2026-11-14T08:00:00Z');  // 09:00 Zürich on the eve — the run is still to come

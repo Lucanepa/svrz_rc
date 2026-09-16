@@ -47,7 +47,7 @@ export type DraftRecord = {
    */
   status: DraftStatus;
   submissionKey: string;            // '' unless status === 'queued'; matches OutboxItem.id
-  label: string;                    // `${homeTeam} vs ${awayTeam}` — OutboxItem.label convention
+  label: string;                    // `${homeTeam} vs ${awayTeam}`; the banner reads "#<matchNo> · <label>" (gameLabel)
   matchNo: string;                  // lets an imported file re-key onto the same match elsewhere
 
   // Context a restored form needs to be filed correctly. openFeedbackId,

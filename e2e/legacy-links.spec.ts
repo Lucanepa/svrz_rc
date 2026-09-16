@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp, COACHEE, COACHEE_LISTED, GAME } from './support/app';
+import { stubSignedInApp, COACHEE, COACHEE_LISTED, COACHEE_UNLINKED, GAME } from './support/app';
 
 /**
  * The `#/…` links keep working, forever.
@@ -37,15 +37,39 @@ test('the rewrite leaves no Back step behind — Back leaves the app', async ({ 
   expect(page.url()).not.toContain('#/');
 });
 
-test('a hash link that carries an id keeps the id, case intact', async ({ page }) => {
+test('a hash link that carries a record id opens the coachee, and the bar then shows their SV number', async ({ page }) => {
   await page.route('**/api/coachees/*/games', (r) => r.fulfill({
     json: [{ ...GAME, assignedRoles: ['1. SR'] }],
   }));
   await page.goto(`/#/games/${COACHEE.id}`);
 
-  await expect(page).toHaveURL(new RegExp(`/games/${COACHEE.id}$`));
   await expect(page.getByText(/Upcoming Games|Bevorstehende Spiele/)).toBeVisible();
   await expect(page.getByText(COACHEE.full_name).first()).toBeVisible();
+  // The rewrite itself carries the id over untouched (`/games/c1` for a beat,
+  // and for good on an app that has not loaded the roster); once the row is
+  // known the app writes the address it emits today — the SV number for a
+  // linked coachee — over it, replaceState both times: the hash form and
+  // the record-id form leave no Back entry between them and the screen.
+  await expect(page).toHaveURL(new RegExp(`/games/${COACHEE.referee_id}$`));
+  expect(new URL(page.url()).hash).toBe('');
+  expect(await page.goBack()).toBeNull();
+});
+
+test('a hash link to an unlinked coachee keeps the record id, verbatim and case intact', async ({ page }) => {
+  // No SV number to write instead, so the record id IS the address — the
+  // permanent second shape, not a transition. Mixed case on purpose: the ids
+  // are case-sensitive and lowercasing the path would 404 every one of them.
+  const UNLINKED = { ...COACHEE_UNLINKED, id: 'kX82hD93jf0a1Qp' };
+  await page.route('**/api/coachees*', (r) => r.fulfill({ json: [COACHEE, UNLINKED] }));
+  await page.route('**/api/coachees/*/games', (r) => r.fulfill({
+    json: [{ ...GAME, firstReferee: UNLINKED.full_name, firstRefereeId: '', firstCoacheeId: UNLINKED.id, assignedRoles: ['1. SR'] }],
+  }));
+  await page.goto(`/#/games/${UNLINKED.id}`);
+
+  await expect(page.getByText(/Upcoming Games|Bevorstehende Spiele/)).toBeVisible();
+  await expect(page.getByText(UNLINKED.full_name).first()).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/games/${UNLINKED.id}$`));
+  expect(await page.goBack()).toBeNull();
 });
 
 test('the slashless form the old router also accepted is rewritten too', async ({ page }) => {

@@ -181,10 +181,24 @@ const originalFetch: typeof fetch = typeof window !== 'undefined' ? window.fetch
 // reads it, and re-links a survey answer to the person even when they chose
 // "Anonym" and the stored record dropped their name. Mask them everywhere a URL
 // is logged, rather than trusting each call site to remember.
-function scrubTokens(value: string): string {
+//
+// The coachee routes carry a person identifier too, since a linked coachee's
+// list is addressed by their SV number (`/games/<sv>`, `/feedbacks/<sv>/…`,
+// see routes.ts). It is no capability — the licence number is printed on
+// every score sheet — but it is a person, and the Protokoll is read by every
+// admin, so an all-digit segment under those two nouns is masked as well. A
+// record id there is left alone (it names nobody to a reader) unless it
+// happens to be all digits, which costs nothing. Pages request logs and the
+// Referer of the asset fetches carry the path regardless; this covers what
+// the app itself writes down.
+//
+// Exported for the one URL line written outside this module (main.tsx's
+// `app.route`, which logs the path and the hash it is about to mount).
+export function scrubTokens(value: string): string {
   return value
     .replace(/(#\/(?:survey|sign)\/)[^/?#\s]+/gi, '$1<token>')
-    .replace(/(\/api\/(?:survey|signature|ical)\/)[^/?#\s]+/gi, '$1<token>');
+    .replace(/(\/api\/(?:survey|signature|ical)\/)[^/?#\s]+/gi, '$1<token>')
+    .replace(/(\/(?:games|feedbacks)\/)\d+(?=[/?#\s]|$)/gi, '$1<sv>');
 }
 
 function describeElement(el: Element | null): Record<string, unknown> | undefined {

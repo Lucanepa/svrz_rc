@@ -276,6 +276,29 @@ test.describe('The device keeps the work', () => {
     await expect(await ratingControl(page, 1, 'B')).not.toHaveClass(RATING_CLASS.B);
   });
 
+  test('the form\'s own address resumes its draft silently, on the half it names', async ({ page }) => {
+    // `/form/2345678/2sr` — what the bar showed, reloaded or pasted into a
+    // new tab. The number names the game; the draft store keys by the record
+    // id; the boot resolves the one to the other against the games list
+    // before it looks, so the draft IS the open: no banner, and the 2. SR
+    // half the URL asks for even though the 1. SR's draft is the newer one.
+    await stubSignedInApp(page);
+    await useTwoRefereeGame(page);
+    await seedDrafts(page, [
+      draftRecord({ role: '1. SR', observationTarget: 'both', tipsAndTricks: 'the first half', updatedAt: Date.now() }),
+      draftRecord({ role: '2. SR', observationTarget: 'both', tipsAndTricks: 'the second half', updatedAt: Date.now() - 60_000 }),
+    ]);
+    await page.goto(`/form/${GAME.matchNo}/2sr`);
+
+    await expect(restoredToast(page)).toBeVisible();
+    await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
+    await expect(tipsBox(page)).toHaveValue('the second half');
+    // On the 2. SR: the swap offers the 1. SR.
+    await expect(page.getByRole('button', { name: /^(Switch to|Wechseln zu) 1\. SR$/ })).toBeVisible();
+    await expect(draftsBanner(page)).toHaveCount(0);
+    await expect(page).toHaveURL(new RegExp(`/form/${GAME.matchNo}/2sr$`));
+  });
+
   test('a cold start offers the draft instead of jumping into it', async ({ page }) => {
     await stubSignedInApp(page);
     await seedDraft(page, RC.id);
@@ -312,6 +335,24 @@ test.describe('The device keeps the work', () => {
     await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
     await expect(tipsBox(page)).toHaveValue('');
     await expect(await ratingControl(page, 0, 'D')).not.toHaveClass(RATING_CLASS.D);
+  });
+
+  test('a draft whose game has left the list is named by its match number, never its record id', async ({ page }) => {
+    await stubSignedInApp(page);
+    // The game is gone from /api/eligible-games — the sync dropped it, or the
+    // season rolled over — so the banner has only what the draft remembers.
+    // It used to fall back to the PocketBase id, which reads like a number
+    // and is one nobody can look up.
+    await seedDrafts(page, [draftRecord({ gameId: 'gonefromlist0001' })]);
+    await page.goto('/');
+
+    await expect(draftsBanner(page)).toBeVisible({ timeout: 15000 });
+    const row = page.locator('p', { hasText: `#${GAME.matchNo}` });
+    await expect(row).toBeVisible();
+    await expect(row).toHaveText(`#${GAME.matchNo} · ${DRAFT_LABEL}`);
+    await expect(page.getByText('gonefromlist0001')).toHaveCount(0);
+    // And it says why there is nothing to resume.
+    await expect(page.getByText(/not in your games list right now|steht gerade nicht in deiner Spielliste/)).toBeVisible();
   });
 });
 
@@ -435,16 +476,17 @@ async function useTwoRefereeGame(page: Page): Promise<void> {
  * Games tab -> held games -> expand the fixture's ROW -> open its form.
  *
  * Not `openFeedbackForm`: the moment a draft is on the device the banner above
- * the list carries its label — `${homeTeam} vs ${awayTeam}` — so the helper's
- * `getByText(homeTeam).first()` lands on the banner and the row is never
- * expanded. The match number appears only on the row.
+ * the list carries its label — `#${matchNo} · ${homeTeam} vs ${awayTeam}` — so
+ * the helper's `getByText(homeTeam).first()` lands on the banner and the row
+ * is never expanded. The bare match number, on its own, appears only on the
+ * row; the banner's is followed by the teams, which the exact match excludes.
  */
 async function openGameFromList(page: Page): Promise<void> {
   await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
   await page.getByRole('button', { name: /^(Filters|Filter)$/ }).click();
   await page.getByRole('button', { name: /RC assigned|RC zugewiesen/ }).click();
   const start = page.getByRole('button', { name: /Start observation|Beobachtung starten/ });
-  if (await start.count() === 0) await page.getByText(`#${GAME.matchNo}`).first().click();
+  if (await start.count() === 0) await page.getByText(`#${GAME.matchNo}`, { exact: true }).first().click();
   await start.click();
   await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
 }

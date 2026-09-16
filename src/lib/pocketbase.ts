@@ -495,6 +495,9 @@ export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackR
 export type PresidentNote = {
   id: string; note: string; gameId: string; teams: string; league: string;
   gameDate: string; coacheeName: string; rcName: string;
+  /** VolleyManager's number — what the list names the game by. Absent on an
+   *  entry written before it was stored (server/presidentNotes.ts). */
+  matchNo?: string;
   /** Who wrote the note; differs from rcName when an admin wrote it. */
   authorName?: string;
   updatedAt: string;
@@ -1195,7 +1198,9 @@ export async function getIdentityAudit(season: number): Promise<IdentityAudit> {
   };
 }
 
-export async function createGame(game: NewGame): Promise<{ id: string; match_no?: string }> {
+/** The created row comes back whole; the console names the game by its number
+ *  and, failing one, by the teams and the day — the id is for the delete. */
+export async function createGame(game: NewGame): Promise<{ id: string; match_no?: string; home_team?: string; away_team?: string; match_date?: string }> {
   const r = await fetch(apiUrl('/api/admin/games'), {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(game),

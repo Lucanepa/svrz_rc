@@ -13,7 +13,10 @@ import { stubSignedInApp, COACHEE, COACHEE_LISTED, GAME } from './support/app';
 // Like the rest of the suite these dates are read against the real clock: the
 // fixtures below are the 2026/27 season the stub opens on.
 
-const FREE = { ...GAME, id: 'g-free', assignedRc: '', assignedRcId: '', starred: false };
+/** A clone is another game, so it carries another match number: two
+ *  games under one number would make the form URL fall back to the record
+ *  id, and the tie rule would decide which one Back reopens. */
+const FREE = { ...GAME, id: 'g-free', matchNo: '2400000', assignedRc: '', assignedRcId: '', starred: false };
 const STARRED = {
   ...FREE, id: 'g-star', matchNo: '2400111',
   homeTeam: 'VBC Volketswil', awayTeam: 'DTV Bülach', starred: true,

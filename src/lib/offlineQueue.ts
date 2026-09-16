@@ -35,7 +35,7 @@ export type OutboxItem = {
   id: string;
   ownerId: string;     // RC id (or 'admin') that created it; only this identity may send it
   createdAt: number;
-  label: string;       // human summary shown in the pending/failed list
+  label: string;       // human summary shown in the failed list — "#<matchNo> · teams · role" (gameLabel); the key is payload.gameId
   payload: OutboxPayload;
   terminal?: boolean;  // permanent failure — not auto-retried
   lastError?: string;

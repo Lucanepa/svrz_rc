@@ -45,7 +45,7 @@ import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
 import { presidentNoteEntry, type PresidentNoteEntry } from './presidentNotes.ts';
 import { identityAudit, type AuditRcPerson } from './identityAudit.ts';
 import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
-import { samePerson, resolveRcName, resolveRcRef, type PersonRef, type RcPersonLike } from '../src/lib/identity.ts';
+import { samePerson, resolveRcName, resolveRcRef, refereeSet, refereeAmong, type PersonRef, type RcPersonLike, type RefereeSet } from '../src/lib/identity.ts';
 
 // Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
 import {
@@ -2409,7 +2409,7 @@ function mapSrGoal(value: unknown): string | undefined {
   if (!raw) {
     return undefined;
   }
-  if (raw.toLowerCase() === 'verbleib' || raw.toLowerCase() === 'remain' || raw.toLowerCase() === 'same_level') {
+  if (raw.toLowerCase() === 'verbleib' || raw.toLowerCase() === 'remain' || raw.toLowerCase() === 'same_level') { // identity:display — an enum keyword off the form, not a name
     return 'same_level';
   }
   return raw;
@@ -2961,7 +2961,9 @@ export type BoerseOnGame = BoerseVerdict & { asOf: string };
 // `coacheeIndex`: the index a route already holds, so one request does not
 // read the coachee table once per helper — getEligibleGames and the coachee
 // games route each need it three times over.
-async function makeBoerseVerdict(viewer: { mySv: string; myNames: Set<string> }, coacheeIndex?: CoacheeIndex) {
+// `viewer`: the coach the verdict is computed for, as a referee (refereeSet):
+// their SV number and the spellings their record lists.
+async function makeBoerseVerdict(viewer: RefereeSet, coacheeIndex?: CoacheeIndex) {
   const [index, coachees, manual] = await Promise.all([
     getBoerseIndex(), coacheeIndex ?? getCoacheeIndex(), getManualGameIds(),
   ]);
@@ -2970,23 +2972,18 @@ async function makeBoerseVerdict(viewer: { mySv: string; myNames: Set<string> },
   return (game: AnyRecord): BoerseOnGame => {
     const offers = index.byMatch.get(asText(game.match_no)) ?? [];
     const season = seasonOfGame(game.match_date);
-    // Same shape as makeRcGameTest's isRc: the SV number first, because it
-    // survives a change of surname, and the recorded spellings after it.
-    const isMe = (value: unknown, svNumber: unknown) => {
-      const num = asText(svNumber);
-      if (num && viewer.mySv && num === viewer.mySv) return true;
-      const text = normalizeName(value);
-      return text ? viewer.myNames.has(text) : false;
-    };
 
     const [first, second] = refereeSlotQueries(game);
     const coacheeSlots: string[] = [];
     if (coachees.has(season, first)) coacheeSlots.push('1');
     if (coachees.has(season, second)) coacheeSlots.push('2');
 
+    // The same test as makeRcGameTest's, asked of one coach: the SV number
+    // first, because it survives a change of surname, and the recorded
+    // spellings after it (refereeAmong).
     let mySlot = '';
-    if (isMe(game.first_referee, game.first_referee_id)) mySlot = '1';
-    else if (isMe(game.second_referee, game.second_referee_id)) mySlot = '2';
+    if (refereeAmong(first, viewer)) mySlot = '1';
+    else if (refereeAmong(second, viewer)) mySlot = '2';
 
     const started = new Date(asText(game.match_date)).getTime();
     const verdict = boerseLevel({
@@ -3000,36 +2997,35 @@ async function makeBoerseVerdict(viewer: { mySv: string; myNames: Set<string> },
   };
 }
 
+/** A coach as a referee on a game's slot: their SV number, when the
+ *  register knows one, and their roster name with every alias their record
+ *  lists. `name` may be the session's own spelling rather than the roster's
+ *  (an RC session carries its name), so it is taken beside the record. */
+function coachAsReferee(name: string, self: ActiveRcPerson | undefined): RefereeSet {
+  return refereeSet([{ svNumber: self?.svNumber, names: [name, ...(self?.aliases ?? [])] }]);
+}
+
 /** The viewer's identity for the projection, from an RC session. */
-async function boerseViewerFor(subject: RcAuthInfo | null): Promise<{ mySv: string; myNames: Set<string> }> {
-  if (!subject) return { mySv: '', myNames: new Set() };
+async function boerseViewerFor(subject: RcAuthInfo | null): Promise<RefereeSet> {
+  if (!subject) return refereeSet([]);
   const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
   const self = subject.rcId ? people.find((p) => p.id === subject.rcId) : undefined;
-  return {
-    mySv: asText(self?.svNumber),
-    myNames: new Set([subject.name, ...(self?.aliases ?? [])].map(normalizeName).filter(Boolean)),
-  };
+  return coachAsReferee(subject.name, self);
 }
 
 async function makeRcGameTest(coacheeIndex?: CoacheeIndex): Promise<(game: AnyRecord) => boolean> {
   const coachees = coacheeIndex ?? await getCoacheeIndex();
   const people = await getActiveRcPeople();
-  const rcNames = new Set(people.flatMap((p) => [p.fullName, ...p.aliases].map(normalizeName)).filter(Boolean));
-  // A number does not change when somebody marries. Roughly a third of games
-  // carry their referees' SV numbers; the rest are matched on the name, which
-  // is what this did exclusively and what a rename silently broke.
-  const rcNumbers = new Set(people.map((p) => p.svNumber).filter(Boolean));
+  // Every active coach at once. A number does not change when somebody
+  // marries; roughly a third of games carry their referees' SV numbers, and
+  // the rest are matched on the name, which is what this did exclusively and
+  // what a rename silently broke (refereeAmong).
+  const coaches = refereeSet(people.map((p) => ({ svNumber: p.svNumber, names: [p.fullName, ...p.aliases] })));
   return (game: AnyRecord) => {
     const season = seasonOfGame(game.match_date);
     const [first, second] = refereeSlotQueries(game);
-    const isRc = (value: unknown, svNumber: unknown) => {
-      const num = asText(svNumber);
-      if (num && rcNumbers.has(num)) return true;
-      const text = normalizeName(value);
-      return text ? rcNames.has(text) : false;
-    };
-    return (isRc(game.first_referee, game.first_referee_id) && coachees.has(season, second))
-      || (isRc(game.second_referee, game.second_referee_id) && coachees.has(season, first));
+    return (refereeAmong(first, coaches) && coachees.has(season, second))
+      || (refereeAmong(second, coaches) && coachees.has(season, first));
   };
 }
 
@@ -3610,10 +3606,7 @@ async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRo
 
       // The same verdict the coach's own row shows — computed for THEM, so the
       // mail cannot disagree with the screen it is about.
-      const verdict = (await makeBoerseVerdict({
-        mySv: asText(coach.svNumber),
-        myNames: new Set([coach.fullName, ...(coach.aliases ?? [])].map(normalizeName).filter(Boolean)),
-      }))(game);
+      const verdict = (await makeBoerseVerdict(coachAsReferee(coach.fullName, coach)))(game);
       if (verdict.level !== 'red' && verdict.level !== 'amber') continue;
 
       // Zürich wall time, via the same helper the reminders use — the container
@@ -5087,7 +5080,7 @@ async function emailTakenBy(email: string, exceptId: string): Promise<boolean> {
   if (!wanted) return false;
   const people = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
     c.getFullList<AnyRecord>({ fields: 'id,email' }));
-  return people.some((p) => p.id !== exceptId && asText(p.email).trim().toLowerCase() === wanted);
+  return people.some((p) => p.id !== exceptId && asText(p.email).trim().toLowerCase() === wanted); // identity:display — an e-mail address, not a name
 }
 
 // Games, filed feedbacks, the coach's own SR-Spiel Rückmeldungen and the
@@ -5096,7 +5089,10 @@ async function emailTakenBy(email: string, exceptId: string): Promise<boolean> {
 // there, leave a name on the row that no longer matches the roster.
 async function renameRcReferences(oldName: string, newName: string, rcId: string): Promise<void> {
   const from = normalizeName(oldName);
-  if (!from || from === normalizeName(newName)) return;
+  // A no-op guard, not a match: the same coach's old and new spelling, and a
+  // rename that changes neither case nor accents changes nothing that
+  // rcRefMatches reads.
+  if (!from || from === normalizeName(newName)) return; // identity:display — a no-op guard, nobody is matched
   // Whose row it is. The WRITE rule is stricter than the read rule
   // (rcRefMatches): a row carrying an id belongs to whoever that id names —
   // this person's is theirs whatever it says, and any other id, a same-named
@@ -5221,7 +5217,7 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
     const existing = await withCollection(collectionCandidates.coachees, (c) =>
       c.getFullList<AnyRecord>({ fields: 'id,full_name,first_name,last_name,season,referee_id' }));
     const byKey = new Map<string, AnyRecord>();
-    for (const e of existing) byKey.set(`${normalizeName(e.full_name)}|${e.season ?? ''}`, e);
+    for (const e of existing) byKey.set(`${normalizeName(e.full_name)}|${e.season ?? ''}`, e); // identity:display — the import key: the sheet names people by name and nothing else, once, on the way in (plan §4 row 5097)
     // The register, for the optional SV-Nr. column: a number the sheet names
     // is written only when it is a licence — before the register has been
     // imported once nothing can be checked, and nothing is written.
@@ -5264,7 +5260,7 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
         const value = asText(r[field]);
         if (value) payload[field] = value;
       }
-      const key = `${normalizeName(full_name)}|${season ?? ''}`;
+      const key = `${normalizeName(full_name)}|${season ?? ''}`; // identity:display — the import key, see byKey above
       const ex = byKey.get(key);
       // The sheet's number, when the commission's XLSX carries the column:
       // the one change that lets a season start fully linked without a
@@ -5378,9 +5374,6 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
 
     const coacheeName = (coachee: AnyRecord) =>
       asText(coachee.full_name) || `${asText(coachee.first_name)} ${asText(coachee.last_name)}`.trim();
-    const lookup = <T,>(index: Map<string, T>, coachee: AnyRecord): T | undefined =>
-      index.get(normalizeName(coacheeName(coachee)))
-      ?? index.get(normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`));
 
     // The same person listed twice is not an ambiguity — only genuinely
     // different people are. Compared on the fields we would actually write.
@@ -5393,11 +5386,19 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
       return [...seen.values()];
     };
 
-    /** A referee-list hit, or why there isn't one. Never picks between people. */
+    /** A referee-list hit, or why there isn't one. Never picks between people.
+     *
+     *  By name, and by name only — the one live site left that decides a
+     *  person by their spelling. The addressviewer answers with the columns
+     *  it is asked for and `person.associationId` is not among them (step 11
+     *  of the plan puts it there behind a flag), so there is no number on the
+     *  VolleyManager side to match on yet. Ambiguity is refused, never
+     *  resolved by paging order, and the sync reports what it could not
+     *  place. */
     const lookupContact = (coachee: AnyRecord): { hit?: VmRefereeContact; ambiguous?: boolean } => {
       const keys = [
-        normalizeName(coacheeName(coachee)),
-        normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`),
+        normalizeName(coacheeName(coachee)), // identity:display — name-only by necessity: VolleyManager sends no SV number here until step 11
+        normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`), // identity:display — the other order of the same name-only key
       ];
       for (const index of [byNameForward, byNameReversed]) {
         for (const key of keys) {
@@ -5777,16 +5778,16 @@ async function refereeRegisterContact(
       return { email: singleAddress(person.email), name: person.name || name, ambiguous: false };
     }
   }
-  const wanted = normalizeName(name);
-  if (!wanted) return { email: '', name: '', ambiguous: false };
-  const hits = rows.filter((r) => {
-    const first = asText(r.first_name), last = asText(r.last_name);
-    return wanted === normalizeName(`${first} ${last}`)
-      || wanted === normalizeName(`${last} ${first}`)
-      || wanted === normalizeName(asText(r.full_name));
-  });
-  if (hits.length !== 1) return { email: '', name: '', ambiguous: hits.length > 1 };
-  const person = refereeFromRecord(hits[0]);
+  // No number, or one the register does not hold: the name, through the one
+  // register lookup (coacheeIndex.ts registerNumbers — the licence name as
+  // written and both orders of first + last), and only when it spells
+  // exactly one licence. Two is the ambiguity the caller reports; none is
+  // nobody.
+  const numbers = registerNumbers(rows)(name);
+  if (numbers.length !== 1) return { email: '', name: '', ambiguous: numbers.length > 1 };
+  const hit = rows.find((r) => asText(r.sv_number) === numbers[0]);
+  if (!hit) return { email: '', name: '', ambiguous: false };
+  const person = refereeFromRecord(hit);
   return { email: singleAddress(person.email), name: person.name || name, ambiguous: false };
 }
 
@@ -6891,18 +6892,16 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
     // roster actually holds, so a hand-edited request cannot file a game under
     // a referee who does not exist.
     const roster = await listRefereeRecords();
+    const numbersFor = registerNumbers(roster);
     const refereeId = (claimed: unknown, name: string): string => {
       const wanted = asText(claimed);
       if (wanted && roster.some((r) => asText(r.sv_number) === wanted)) return wanted;
-      // No id offered (or one that matches nothing): resolve the name, but only
-      // when it names exactly one referee.
-      const hits = roster.filter((r) => {
-        const first = asText(r.first_name), last = asText(r.last_name);
-        return normalizeName(name) === normalizeName(`${first} ${last}`)
-          || normalizeName(name) === normalizeName(`${last} ${first}`)
-          || normalizeName(name) === normalizeName(asText(r.full_name));
-      });
-      return hits.length === 1 ? asText(hits[0].sv_number) : '';
+      // No id offered (or one that matches nothing): the name through the one
+      // register lookup (coacheeIndex.ts registerNumbers), and only when it
+      // spells exactly one licence — two is the coin flip the whole form
+      // exists to avoid, and an empty id is what an unknown name writes.
+      const numbers = numbersFor(name);
+      return numbers.length === 1 ? numbers[0] : '';
     };
     // One number, one game. The number is what the reminder, the survey and
     // the Börse look a game up by, and — once the URL carries it — what a
@@ -7090,11 +7089,13 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
           }
         } else {
           // Themselves, by id when the client sends one — a name spelled
-          // differently from the roster is then no longer a refusal — and by
-          // the folded name from a client that has only that.
+          // differently from the roster is then no longer a refusal, and a
+          // different id is one whatever the name says — and by the folded
+          // name from a client that has only that: samePerson's name half,
+          // asked through rcRefMatches with no id on the record.
           const notThemselves = requestedRcId
             ? requestedRcId !== rcAuth.rcId
-            : normalizeName(rcName) !== normalizeName(rcAuth.name);
+            : !rcRefMatches('', rcName, rcAuth);
           if (notThemselves) {
             return { status: 403, body: { error: 'Spiele können nur für dich selbst übernommen werden.' } };
           }
@@ -7422,11 +7423,13 @@ function workloadByRc(
   inSeason: (game: AnyRecord) => boolean,
   now: Date,
 ): Map<string, RcWorkload> {
-  // Game ids that already have feedback, bucketed by whichever identity the
-  // row carries: its rc_id once backfilled, its normalised name before that.
-  // Each RC below reads both buckets, so a half-migrated table still counts
-  // every feedback exactly once.
-  const feedbackGameIdsByRc = new Map<string, Set<string>>();
+  // The filed reports a coachee is on, with whoever filed them — the rc_id
+  // once backfilled, the name written beside it before that. Each coach
+  // below reads them through rcRefMatches, the same rule the games are read
+  // by, so a half-migrated table still counts every feedback exactly once
+  // and a row whose id names a colleague on the roster is never counted for
+  // a namesake.
+  const filed: { gameId: string; rcId: unknown; rcName: unknown }[] = [];
   // A report filed against the referee register — a Testspiel, or a marked
   // game whose referee is nobody's coachee — has no coachee and, by the
   // submit's own contract, counts toward nothing. It must not make its game
@@ -7439,20 +7442,16 @@ function workloadByRc(
     const gameId = String(fb.game || '');
     if (!asText(fb.coachee)) { registerOnlyGames.add(gameId); continue; }
     coacheeFiledGames.add(gameId);
-    const rcKey = asText(fb.rc_id) || normalizeName(fb.rc_name);
-    if (!rcKey) continue;
-    if (!feedbackGameIdsByRc.has(rcKey)) feedbackGameIdsByRc.set(rcKey, new Set());
-    feedbackGameIdsByRc.get(rcKey)!.add(gameId);
+    filed.push({ gameId, rcId: fb.rc_id, rcName: fb.rc_name });
   }
   for (const id of coacheeFiledGames) registerOnlyGames.delete(id);
   const out = new Map<string, RcWorkload>();
   for (const p of people) {
     const fullName = `${asText(p.first_name)} ${asText(p.last_name)}`.trim();
     const self: RcAuthInfo = { rcId: String(p.id), name: fullName };
-    const fbGameIds = new Set<string>([
-      ...(feedbackGameIdsByRc.get(String(p.id)) ?? []),
-      ...(feedbackGameIdsByRc.get(normalizeName(fullName)) ?? []),
-    ]);
+    const fbGameIds = new Set<string>(
+      filed.filter((fb) => rcRefMatches(fb.rcId, fb.rcName, self)).map((fb) => fb.gameId),
+    );
     const load: RcWorkload = { done: 0, outstanding: 0, planned: 0 };
     for (const game of allGames) {
       if (!rcRefMatches(game.assigned_rc_id, game.assigned_rc, self)) continue;
@@ -7470,6 +7469,14 @@ function workloadByRc(
 app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
+    // rcRefMatches reads the known ids synchronously off the roster cache.
+    // A coach's session fills it on the way in (resolveRcSession); the
+    // console's does not, and on a cold process — right after the
+    // copy-then-build restart — an Übersicht opened first would read an
+    // empty set, under which a feedback stamped with a colleague's id falls
+    // to the name and is counted as done for a namesake too. The same read
+    // collectExpenseVisits and loadStatRaw make, for the same reason.
+    await getActiveRcPeople();
     const season = await resolveSeason(req.query.season);
     const inSeason = await seasonFilterExceptManual(season);
     // 1. RC people
@@ -7936,9 +7943,8 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
   const self = subject.rcId
     ? (await getActiveRcPeople().catch(() => [] as ActiveRcPerson[])).find((p) => p.id === subject.rcId)
     : undefined;
-  const mySvNumber = asText(self?.svNumber);
-  const myNames = new Set([subject.name, ...(self?.aliases ?? [])].map(normalizeName).filter(Boolean));
-  if (myNames.size === 0 && !mySvNumber) return [];
+  const me = coachAsReferee(subject.name, self);
+  if (me.names.size === 0 && me.svs.size === 0) return [];
 
   // R4 lives HERE and nowhere else. A game the coach whistles is generally not
   // one they are also assigned to observe — that separation is the whole point
@@ -7946,7 +7952,7 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
   // invisible to both /api/eligible-games and /api/rc-overview. Attaching the
   // verdict only to those two would have left both R4 cases unreachable on the
   // one screen this feature was asked for.
-  const boerseFor = await makeBoerseVerdict({ mySv: mySvNumber, myNames });
+  const boerseFor = await makeBoerseVerdict(me);
   const games = await withCollection(collectionCandidates.games, (collection) =>
     collection.getFullList<AnyRecord>({ sort: '-match_date', fields: GAME_NOTE_FIELDS }),
   );
@@ -7957,13 +7963,11 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
     const season = seasonOfGame(game.match_date);
     const [first, second] = refereeSlotQueries(game);
     const slots = [
-      { mine: game.first_referee, mineId: game.first_referee_id, other: second, myRole: '1. SR', otherRole: '2. SR' },
-      { mine: game.second_referee, mineId: game.second_referee_id, other: first, myRole: '2. SR', otherRole: '1. SR' },
+      { mine: first, other: second, myRole: '1. SR', otherRole: '2. SR' },
+      { mine: second, other: first, myRole: '2. SR', otherRole: '1. SR' },
     ];
     for (const slot of slots) {
-      const mineIsMe = (mySvNumber && asText(slot.mineId) === mySvNumber)
-        || myNames.has(normalizeName(slot.mine));
-      if (!mineIsMe) continue;
+      if (!refereeAmong(slot.mine, me)) continue;
       const row = coachees.find(season, slot.other).row;
       if (!row) continue;
       // The row's own spelling and id, so a note can carry the coachee's id
@@ -9222,9 +9226,8 @@ function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLa
 async function getOwnSrGames(person: ActiveRcPerson): Promise<CalendarFeedGame[]> {
   await ensureAdminAuth();
   const coachees = await getCoacheeIndex();
-  const myNames = new Set([person.fullName, ...person.aliases].map(normalizeName).filter(Boolean));
-  const mySvNumber = asText(person.svNumber);
-  if (myNames.size === 0 && !mySvNumber) return [];
+  const me = coachAsReferee(person.fullName, person);
+  if (me.names.size === 0 && me.svs.size === 0) return [];
 
   const allGames = await withCollection(collectionCandidates.games, (collection) =>
     collection.getFullList<AnyRecord>({
@@ -9238,13 +9241,10 @@ async function getOwnSrGames(person: ActiveRcPerson): Promise<CalendarFeedGame[]
     const season = seasonOfGame(game.match_date);
     const [first, second] = refereeSlotQueries(game);
     const slots = [
-      { mine: game.first_referee, mineId: game.first_referee_id, other: second },
-      { mine: game.second_referee, mineId: game.second_referee_id, other: first },
+      { mine: first, other: second },
+      { mine: second, other: first },
     ];
-    const hit = slots.some((slot) => {
-      const isMe = (mySvNumber && asText(slot.mineId) === mySvNumber) || myNames.has(normalizeName(slot.mine));
-      return isMe && coachees.has(season, slot.other);
-    });
+    const hit = slots.some((slot) => refereeAmong(slot.mine, me) && coachees.has(season, slot.other));
     if (!hit) continue;
     out.push({
       kind: 'sr',
@@ -9667,7 +9667,7 @@ const SINGLE_EMAIL_RE = /^[^\s@,;:<>"]+@[^\s@,;:<>"]+\.[^\s@,;:<>"]+$/;
  *  is how every mail server treats the domain and how every one that matters
  *  here treats the local part too. */
 function sameMailbox(a: string, b: string): boolean {
-  return a.trim().toLowerCase() === b.trim().toLowerCase() && a.trim() !== '';
+  return a.trim().toLowerCase() === b.trim().toLowerCase() && a.trim() !== ''; // identity:display — an e-mail address, not a name
 }
 
 function singleAddress(value: unknown): string {

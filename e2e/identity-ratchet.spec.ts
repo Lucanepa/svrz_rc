@@ -17,12 +17,24 @@ import { fileURLToPath } from 'node:url';
  * So this reads the repo — the same trade redirects-config.spec.ts makes —
  * and counts the idioms a name-only match is written in, per file, against a
  * pinned number. The pin is EXACT, not an upper bound: a site that goes away
- * lowers it, so the count can only ever walk down. Narrowed to comparison
- * idioms rather than every fold call, so search boxes, sort keys and the
- * import key keep moving without touching the pin; a line that folds a name
- * for display or search on purpose carries `// identity:display` and is
- * skipped. Relax to `<=` only if the second session's unrelated commits prove
- * it too noisy.
+ * lowers it, so the count can only ever walk down — and since step 10 of the
+ * plan it is ZERO for every file outside the allow-list below, which is the
+ * contract this spec now holds: no counted compare idiom outside the four
+ * files the name tier is written in. Narrowed to comparison idioms rather
+ * than every fold call, so search boxes, sort keys and the import key keep
+ * moving without touching the pin — which also means a name-KEYED lookup
+ * whose key is built on one line and looked up on another is not a counted
+ * idiom. Two such remain by design, both in server/index.ts, both tagged:
+ * the coachee import's upsert key and sync-contacts' lookupContact (no SV
+ * number from VolleyManager until step 11). A line the idioms WOULD count
+ * but that folds a name for display or search on purpose, or lowercases
+ * something which is no name at all (an enum keyword, an e-mail address, a
+ * group label, a keyboard shortcut, a language code), carries
+ * `// identity:display` WITH its reason on that line and is skipped; the
+ * two name-keyed sites carry it too, so that a reader auditing the
+ * name-only sites finds them by the same grep. A search box or a sort key
+ * the idioms never see needs no tag. Every tagged line says why it is not
+ * a match, or why it is one on purpose.
  *
  * What is counted:
  *   A  a folded name compared with === / !== — on either side of the
@@ -116,11 +128,15 @@ const ALLOWED: Record<string, Counts> = {
   // the client's legacy path (coacheeIdOnSlot, coacheeLookup.resolve): the
   // folded-name lookup for a game row the server did not resolve at all, an
   // API older than the slot ids or a list the PWA cached before they
-  // existed, two sites both behind "the field is absent" — and resolveRcName,
-  // the one place a coach's NAME is turned back into a roster id (aliases,
-  // both orders, nobody on ambiguity), which every server-side name lookup
-  // for a coach now goes through.
-  'src/lib/identity.ts': { ...ZERO, A: 1, B: 3 },
+  // existed, two sites both behind "the field is absent" — refereeAmong, the
+  // coach-as-referee test (the SV number first, the roster name and the
+  // aliases after it) that the RC-Spiel flag, the Börse verdict, Home's own
+  // SR-Spiele and the calendar feed all ask, moved here in step 10 from four
+  // copies in server/index.ts — and resolveRcName, the one place a coach's
+  // NAME is turned back into a roster id (aliases, both orders, nobody on
+  // ambiguity), which every server-side name lookup for a coach now goes
+  // through.
+  'src/lib/identity.ts': { ...ZERO, A: 1, B: 4 },
   // The register tier: a folded slot name looked up among the licence
   // spellings; and the submit guard's folded compare of the claimed name
   // with the printed one. The sv and name tiers go through indexPeople and
@@ -143,61 +159,43 @@ const FILES = [
   ...list('src/lib', '.ts'),
 ].filter((f) => !(f in ALLOWED));
 
-/** Today's numbers, measured at HEAD 417c56c plus step 2 of the plan, per
- *  OCCURRENCE — a line that compares three times is three sites (the enum
- *  check in server/index.ts is one such line), because a second compare
- *  added to an existing line is as much a new match as one on a new line. A file
- *  not listed is pinned at zero. Idiom C also fires on the enum, e-mail, key
- *  and language compares that happen to lowercase — those are counted as
- *  measured rather than tagged, so an unrelated `.toLowerCase() ===` moves
- *  the pin too.
+/** The pins outside the allow-list: none. Every file the ratchet reads is at
+ *  zero for every idiom, per OCCURRENCE — a line that compares three times is
+ *  three sites, because a second compare added to an existing line is as
+ *  much a new match as one on a new line. A file not listed is pinned at
+ *  zero, so this table stays empty on purpose; a name-only match anywhere
+ *  now fails the build with the file and line in the message.
  *
- *  server/index.ts after step 2: every coachee/referee match goes through
- *  the index, so what is left of A and B is the RC side (rcIdForName, the
- *  admin resolvers, the reminder holder, the coach-as-referee `myNames`
- *  checks) and the contact sync's own link, and E is gone — every fetch by
- *  match number is findGameByMatchNo, sorted. A was re-measured when the
- *  idiom learned to read a fold on the right of the operator and a call
- *  inside the fold (seven sites it had not been counting, all RC-side or
- *  the register contact lookup); B when `.includes(` joined it and the
- *  coachee link moved to dataHygiene.ts. */
-/*  server/index.ts after step 5: the RC side is gone too — rcRefMatches is
- *  the samePerson wrapper, rcIdForName / the admin submit / the raw feedback
- *  routes / the manual-game create / the rc-overview detail / migrate-rc-ids
- *  resolve a name through resolveRcName, the Börse alert and the reminder
- *  take the holder from gameHolder (server/boerse.ts), and a rename finds
- *  its rows through rcRefMatches. What is left of A: the rename's own
- *  "did the name change at all" check, the register contact lookup and the
- *  manual-game referee lookup (both "keep" in the plan's audit table), and
- *  the assign-rc route's legacy compare for a client that sends no id. */
-const PINS: Record<string, Partial<Counts>> = {
-  'server/index.ts': { A: 8, B: 5, C: 5 },
-  'server/statistics.ts': { C: 2 },
-  // Step 4 emptied App.tsx: every slot is read off the ids the server
-  // resolves (firstCoacheeId / secondCoacheeId), every holder off
-  // assignedRcId through isMyGame, the roster through coacheeLookup — and
-  // the one name index left is the legacy path inside identity.ts.
-  // Step 3 took the manual-game form's svNumberFor (a folded-name compare
-  // to read a number back off the option list) — the picker now hands the
-  // number over with the pick; step 4 the games tab's coacheeFor, which now
-  // reads the slot ids. What is left of A is the picker's own exact-match
-  // line under the field, of B the contact sync's name lookup.
-  'src/components/AdminConsole.tsx': { A: 1, B: 1 },
-  'src/components/PdfReader.tsx': { C: 1 },
-  // Step 5 took the demo's summary lookup by lowercased name: the demo is
-  // asked by roster id like the API and answers either shape through
-  // samePerson, so demo.ts is at zero.
-  'src/lib/routes.ts': { C: 1 },
-};
+ *  How it got here (docs/identity-plan-2026-09-16.md): step 2 moved every
+ *  coachee/referee match in server/index.ts onto buildCoacheeIndex and every
+ *  fetch by match number onto findGameByMatchNo (idiom E gone); step 3 moved
+ *  the import-time links to dataHygiene.ts; step 4 emptied App.tsx (the
+ *  slots read off the server's coachee ids, the holder off assignedRcId
+ *  through isMyGame, the roster through coacheeLookup) and took the
+ *  console's svNumberFor and coacheeFor; step 5 took the RC side of
+ *  server/index.ts (rcRefMatches is the samePerson wrapper, every name→id
+ *  through resolveRcName, the holder through gameHolder) and the demo's
+ *  summary lookup; step 10 closed what was left — the two register lookups
+ *  (refereeRegisterContact, the manual-game referee) through
+ *  registerNumbers, the assign-rc name half through rcRefMatches, the
+ *  workload's feedback buckets through rcRefMatches, the coach-as-referee
+ *  test through refereeAmong, the console's picker options through
+ *  indexPeople, a dead contact-sync lookup deleted — and tagged what was
+ *  never a match at all (an enum, two e-mail compares, a rename's no-op
+ *  guard, a group filter, a keyboard shortcut, a language code, the picker's
+ *  footer line), each with its reason on the line. */
+const PINS: Record<string, Partial<Counts>> = {};
 
 const pinOf = (file: string): Counts => ({ ...ZERO, ...(PINS[file] ?? {}) });
 
-/** The one message, with every line of the idiom that moved — which of them
- *  is the new one is for the reader; the count says only that there is one. */
+/** The one message, with every line of the idiom that fired. With the pins
+ *  at zero each of them is the new one, and the way out is named: the
+ *  helper, or the tag with its reason for a fold that is no match at all. */
 function explain(file: string, idiom: Idiom, measured: number, pinned: number, hits: Hit[]): string {
   const where = hits.filter((h) => h.idiom === idiom).map((h) => `${file}:${h.line}`).join(', ') || file;
   return `new name-only identity match in ${where} — go through samePerson()/indexPeople() in src/lib/identity.ts, `
-    + `or lower the pin if you removed one (idiom ${idiom}: ${measured} measured, ${pinned} pinned)`;
+    + `or, for a fold that is display, search or sort and matches nobody, tag the line \`// identity:display — <why>\` `
+    + `(idiom ${idiom}: ${measured} measured, ${pinned} pinned)`;
 }
 
 test.describe('the pins', () => {

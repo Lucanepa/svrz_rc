@@ -25,6 +25,38 @@
  *
  * It also costs nothing: nobody ever types or reads these links, they arrive by
  * mail and QR, and the ones already on referees' phones keep working unchanged.
+ *
+ * ── Two shapes per token, both forever ──────────────────────────────────────
+ *
+ * The person and game segments carry the identity the plan of 2026-09-16
+ * settled on (docs/identity-plan-2026-09-16.md §3; the resolvers are in
+ * identity.ts, the tables in routes.spec.ts, deep-links.spec.ts,
+ * legacy-links.spec.ts and path-routing.spec.ts):
+ *
+ *   /games/<coachee>                  the SV number when the coachee row is
+ *   /feedbacks/<coachee>/<feedback>   linked to the referee register — a
+ *                                     licence number outlives the season
+ *                                     roll-over — else the record id; the
+ *                                     feedback half is always a record id
+ *   /form/<game>/1sr · /form/<game>/2sr
+ *                                     the VolleyManager match number when it
+ *                                     names exactly one game on the eligible
+ *                                     list, else the record id (a manual
+ *                                     game, a blank number, a number two
+ *                                     games share)
+ *
+ * Resolution is number first, record id second, against the loaded roster or
+ * the eligible list; a token is an opaque string compared trimmed, never
+ * lowercased, never shape-tested (a 15-character PocketBase id can be all
+ * digits, and nothing in this repo states how long an SV number is). The
+ * record-id shape is not a transition: it is still EMITTED for an unlinked
+ * coachee and a manual game, and every link that ever carried one keeps
+ * resolving. When an old-shape link resolves, the address bar is rewritten
+ * to the canonical shape with replaceState (no Back step is added —
+ * historyKeyOf in App.tsx resolves both shapes to the record id before it
+ * compares). API paths are untouched: /api/coachees/<recordId>/* stays, so
+ * the PWA's cached roster and the offline resolution keep working. The
+ * grammar below did not change for any of this — only what a token means.
  */
 
 /** The app's own sub-screens. Mirrors the union in App.tsx. */
@@ -36,13 +68,32 @@ export type AppRoute = {
   /** Whom the route is about, when it is about somebody. This is what makes a
    *  coachee's own list and a filed observation addressable: with the id in the
    *  URL the app can fetch what it needs instead of relying on a selection that
-   *  only exists if you arrived from the screen before. */
+   *  only exists if you arrived from the screen before.
+   *
+   *  An opaque TOKEN, not necessarily a record id: the app writes the
+   *  coachee's SV number here once the row is linked to the referee register
+   *  (a licence number survives the season roll-over; a record id is one
+   *  season's row), and the record id for a row that is not. Both shapes
+   *  resolve forever — `resolveCoacheeToken` in identity.ts tries the number
+   *  first, the record id second — so this module never tests a token's
+   *  shape and never lowercases one. A record id is case-sensitive, and a
+   *  15-character id can be all digits. */
   coacheeId: string | null;
+  /** Always a record id: a filed observation has no natural key (an unlocked
+   *  game can carry two records per game and half). */
   feedbackId: string | null;
   /** Which game an observation in progress is about, and which referee's half.
    *  A draft is keyed on (owner, game, role) — these are the two thirds of that
    *  key which are not secret, so the URL can name WHICH draft without carrying
-   *  any of its content. */
+   *  any of its content.
+   *
+   *  Like `coacheeId`, an opaque TOKEN: the app writes the VolleyManager match
+   *  number here (`/form/2345678/1sr`) — the number printed on the sheet, the
+   *  one a coach reads off a mail — and the record id for a manual game, a
+   *  blank number, or a number two games on the list share. Both shapes
+   *  resolve forever, number first, record id second (`resolveGameToken` in
+   *  identity.ts, against the eligible list); the draft store underneath
+   *  keeps the record id. Never lowercased, never shape-tested here. */
   gameId: string | null;
   role: '1. SR' | '2. SR' | null;
   /** The Games tab as a month grid, and which month. Neither was addressable
@@ -131,7 +182,11 @@ export function canonicalizeLegacyHash(loc: {
   if (!LEGACY_ROUTE.test(loc.hash)) return null;
   // NO lowercasing anywhere: PocketBase ids are case-sensitive, and an id is
   // the whole point of the routes that carry one. Root matching is
-  // case-insensitive downstream, on the first segment only.
+  // case-insensitive downstream, on the first segment only. And no shape
+  // test on a token: the app has since started writing a coachee's SV number
+  // where the record id stood, an old hash link carries either, and both
+  // read back through the same resolver once the app has the roster (the
+  // app then writes the current shape over this one, with replaceState).
   const path = '/' + loc.hash.replace(/^#\/?/, '').replace(/\/+$/, '');
   return path + loc.search;
 }
@@ -166,9 +221,11 @@ export function parsePath(pathname: string, search: string, restorable: boolean)
       return { ...DEFAULT_ROUTE };
     case 'calendar':
       return { ...DEFAULT_ROUTE, subView: 'calendar' };
-    // `/form/<gameId>/<1sr|2sr>` names WHICH observation is open — the two
+    // `/form/<game>/<1sr|2sr>` names WHICH observation is open — the two
     // public thirds of the draft key. The content stays in IndexedDB on the
-    // device that typed it; the URL only says which drawer to open.
+    // device that typed it; the URL only says which drawer to open. The game
+    // token is the match number or a record id (see AppRoute.gameId), decoded
+    // here and handed on untouched.
     case 'form': {
       const gameId = rest[0] || null;
       const role = ROLE_SLUG[String(rest[1] || '').toLowerCase()] || null;
@@ -182,7 +239,9 @@ export function parsePath(pathname: string, search: string, restorable: boolean)
         : { ...DEFAULT_ROUTE, listTab: 'games' };
     }
     // One noun per surface, narrowed by an id. `/games` is every fixture;
-    // `/games/<coachee>` is that coachee's own list.
+    // `/games/<coachee>` is that coachee's own list — the token is their SV
+    // number or their record id (see AppRoute.coacheeId), decoded here and
+    // handed on untouched.
     case 'games':
       return rest[0]
         ? { ...DEFAULT_ROUTE, subView: 'coacheeGames', coacheeId: rest[0] }
@@ -209,19 +268,25 @@ export function parsePath(pathname: string, search: string, restorable: boolean)
   }
 }
 
-/** state → URL. The exact inverse of parsePath for every route it can emit. */
+/** state → URL. The exact inverse of parsePath for every route it can emit.
+ *
+ *  Every token is percent-encoded on the way out (parsePath decodes each
+ *  segment on the way in). A record id and an SV number never need it, but a
+ *  token is opaque here by design, and the one that someday carries a space
+ *  or a slash must still round-trip rather than split the route in two. */
 export function routeToPath(r: AppRoute): string {
+  const seg = encodeURIComponent;
   if (r.subView === 'feedbackForm') {
     // A FILED observation has a shareable address — the record is on the server.
-    if (r.coacheeId && r.feedbackId) return `/feedbacks/${r.coacheeId}/${r.feedbackId}`;
+    if (r.coacheeId && r.feedbackId) return `/feedbacks/${seg(r.coacheeId)}/${seg(r.feedbackId)}`;
     // One still being written names its game, and its half when one is chosen.
     if (r.gameId) {
       const slug = r.role ? SLUG_FOR_ROLE[r.role] : '';
-      return slug ? `/form/${r.gameId}/${slug}` : `/form/${r.gameId}`;
+      return slug ? `/form/${seg(r.gameId)}/${slug}` : `/form/${seg(r.gameId)}`;
     }
     return '/form';
   }
-  if (r.subView === 'coacheeGames') return r.coacheeId ? `/games/${r.coacheeId}` : '/coachees';
+  if (r.subView === 'coacheeGames') return r.coacheeId ? `/games/${seg(r.coacheeId)}` : '/coachees';
   if (r.subView === 'calendar') return '/calendar';
   if (r.listTab === 'games' && r.gamesView === 'calendar') {
     // The month rides along only when it is not the one the grid opens on
@@ -250,5 +315,5 @@ export function adminLogModeFromPath(pathname: string): 'live' | 'history' {
  *  in each reader's language. */
 export function guideLangFromPath(pathname: string): 'DE' | 'EN' | null {
   const m = /^\/guide\/(de|en)\b/i.exec(pathname || '');
-  return m ? (m[1].toLowerCase() === 'de' ? 'DE' : 'EN') : null;
+  return m ? (m[1].toLowerCase() === 'de' ? 'DE' : 'EN') : null; // identity:display — a language code, not a name
 }

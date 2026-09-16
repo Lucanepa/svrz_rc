@@ -187,6 +187,8 @@ const UI_STRINGS = {
     calendar: "Kalender",
     feedbackHistory: "Feedback-Verlauf",
     sentPdf: "Gesendetes PDF",
+    historyGoalsOnly: "Beobachtung einer Kollegin / eines Kollegen — sichtbar sind nur die Ziele für nächste Spiele.",
+    historyNoGoals: "Keine Ziele notiert.",
     sentPdfFailed: "Das gesendete PDF konnte nicht geladen werden.",
     noFeedbacks: "Keine Feedbacks gefunden.",
     noCoacheeGames: "Keine Spiele für diesen Coachee gefunden.",
@@ -363,6 +365,8 @@ const UI_STRINGS = {
     calendar: "Calendar",
     feedbackHistory: "Feedback History",
     sentPdf: "Sent PDF",
+    historyGoalsOnly: "A colleague's observation — only the goals for next games are shown.",
+    historyNoGoals: "No goals noted.",
     sentPdfFailed: "The sent PDF could not be loaded.",
     noFeedbacks: "No feedbacks found.",
     noCoacheeGames: "No games found for this coachee.",
@@ -2913,6 +2917,9 @@ export default function App() {
   };
 
   const openFeedbackRecord = (record: FeedbackRecord) => {
+    // A colleague's report has no form behind it here — the server handed over
+    // its goals and nothing else. It is read in the picker, not opened.
+    if (record.redacted) return;
     setOpenFeedbackId(record.id || null);
     // Id OR name, mirroring the server's rcRefMatches. Name alone was stricter
     // than the rule the server actually enforces: correct an RC's spelling in
@@ -3000,7 +3007,7 @@ export default function App() {
     try {
       const records = await listCoacheeFeedbacks(coachee.id);
       if (!isCurrentLoad('coacheeFeedbacks', gen)) return;
-      if (records.length === 1) {
+      if (records.length === 1 && !records[0].redacted) {
         openFeedbackRecord(records[0]);
         return;
       }
@@ -3064,6 +3071,8 @@ export default function App() {
         return;
       }
       setCoacheeFeedbacks(records);
+      // A colleague's: the list is where its goals are read.
+      if (record.redacted) { setFeedbackPickerCoachee(coachee); return; }
       openFeedbackRecord(record);
     } catch (error) {
       if (!isCurrentLoad('coacheeFeedbacks', gen)) return;
@@ -9254,7 +9263,23 @@ export default function App() {
                 <p className="text-sm text-stone-500 p-4">{t.noFeedbacks}</p>
               ) : (
                 <div className="divide-y divide-stone-100">
-                  {coacheeFeedbacks.map((record) => (
+                  {coacheeFeedbacks.map((record) => record.redacted ? (
+                    // A colleague's observation: that it happened, and the goals
+                    // it set. Not a button — there is nothing to open.
+                    <div key={record.id} className="px-4 py-3 bg-sky-50/40" data-testid="history-redacted">
+                      <div className="text-sm font-semibold text-stone-900">
+                        {record.expand?.game?.match_no || '-'} | {record.expand?.game?.home_team || '-'} vs {record.expand?.game?.away_team || '-'}
+                      </div>
+                      <div className="text-xs text-stone-500 mt-1">
+                        {record.submitted_at || '-'} | {t.rcShort}: {record.rc_name || '-'} | {record.role_assessed || '-'}
+                      </div>
+                      <div className="text-[11px] text-sky-800 mt-2">{t.historyGoalsOnly}</div>
+                      <div className="text-[11px] uppercase tracking-wider text-sky-800 font-semibold mt-1.5">{t.goalsNext}</div>
+                      {richToPlain(record.goals || '').trim()
+                        ? <RichView value={record.goals || ''} className="text-sm text-stone-800 mt-0.5" />
+                        : <div className="text-sm text-stone-500 mt-0.5">{t.historyNoGoals}</div>}
+                    </div>
+                  ) : (
                     <div key={record.id} className="flex items-stretch hover:bg-stone-50 transition-colors">
                       <button
                         onClick={() => openFeedbackRecord(record)}

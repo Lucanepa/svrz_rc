@@ -8151,23 +8151,55 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
   }
 });
 
+// A colleague's observation as the next coach may see it: that it happened,
+// when, in which role, by whom — and the goals it set. Not the assessment:
+// feedback_json stays with its author, and there is no file to open.
+function redactedFeedback(rec: AnyRecord): AnyRecord {
+  const results = ((rec.feedback_json as AnyRecord | undefined)?.results ?? {}) as AnyRecord;
+  const expand = (rec.expand ?? {}) as Record<string, AnyRecord | undefined>;
+  return {
+    id: rec.id, game: rec.game, coachee: rec.coachee,
+    rc_name: rec.rc_name, rc_id: rec.rc_id, role_assessed: rec.role_assessed, submitted_at: rec.submitted_at,
+    expand: { game: expand.game },
+    redacted: true,
+    goals: asText(results.goals),
+  };
+}
+
+/** Every filed form about the PERSON behind a coachee row — any season, any
+ *  coach — the way the forms database folders them. */
+async function feedbacksAboutCoachee(coachee: AnyRecord): Promise<AnyRecord[]> {
+  const rows = await loadFormsRows();
+  const probe: FormsRow = {
+    rec: { id: `probe-${coachee.id}` }, coachee,
+    refereeId: asText(coachee.referee_id), name: asText(coachee.full_name),
+    role: '1. SR', date: '',
+  };
+  const keys = folderKeys([...rows, probe]);
+  return rows.filter((r) => keys.get(r) === keys.get(probe)).map((r) => r.rec);
+}
+
 app.get('/api/coachees/:id/feedbacks', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    const coacheeId = asText(req.params.id);
-    const rows = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
-      collection.getFullList<AnyRecord>({
-        sort: '-submitted_at,-created',
-        filter: `coachee = "${escapeFilterValue(coacheeId)}"`,
-        expand: 'game,coachee',
-      }),
-    );
-    // Scoped by coachee alone, this handed any RC every colleague's full
-    // feedback_json — the written assessment, not just its existence. The
-    // unfiltered view is the admin-gated /api/referee-coaches below; a plain RC
-    // sees the ones they filed, the same rule /api/observations applies.
+    let coachee: AnyRecord;
+    try {
+      coachee = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(asText(req.params.id)));
+    } catch (error) {
+      if (isRecordNotFound(error)) { res.status(404).json({ error: 'Coachee not found' }); return; }
+      throw error;
+    }
+    // About the person, not the row: coachees are one row per season, and
+    // "what has been written about this referee" has no season.
+    const rows = await feedbacksAboutCoachee(coachee);
+    // Scoped by coachee alone, this once handed any RC every colleague's full
+    // feedback_json — the written assessment, not just its existence. Then it
+    // handed them nothing, and the Feedback button on a colleague's coachee
+    // opened an empty list. Now: the coach's own reports in full, everyone
+    // else's reduced to the goals — the part agreed with the chair as worth
+    // passing on. The unfiltered view stays the admin's.
     const me = await sessionRcIdentity(req);
-    res.json(me ? rows.filter((fb) => rcRefMatches(fb.rc_id, fb.rc_name, me)) : rows);
+    res.json(me ? rows.map((fb) => (rcRefMatches(fb.rc_id, fb.rc_name, me) ? fb : redactedFeedback(fb))) : rows);
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
@@ -8191,17 +8223,10 @@ app.get('/api/coachees/:id/prior-goals', requireRcSession, async (req: Request, 
       if (isRecordNotFound(error)) { res.status(404).json({ error: 'Coachee not found' }); return; }
       throw error;
     }
-    const rows = await loadFormsRows();
     // The coachee stands in as a row of its own, so the same rule that folders
     // the filed forms — the SV-Nr. when either side has one, else the name in
     // either order — decides which of them are about this person.
-    const probe: FormsRow = {
-      rec: { id: `probe-${coachee.id}` }, coachee,
-      refereeId: asText(coachee.referee_id), name: asText(coachee.full_name),
-      role: '1. SR', date: '',
-    };
-    const keys = folderKeys([...rows, probe]);
-    const mine = rows.filter((r) => keys.get(r) === keys.get(probe));
+    const mine = (await feedbacksAboutCoachee(coachee)).map((rec) => formsRowOf(rec));
     mine.sort((a, b) => (b.date || '').localeCompare(a.date || '') || asText(b.rec.submitted_at).localeCompare(asText(a.rec.submitted_at)));
     const prior = mine.flatMap((r) => {
       const results = ((r.rec.feedback_json as AnyRecord | undefined)?.results ?? {}) as AnyRecord;

@@ -94,3 +94,59 @@ test('a reopened filed record is its own document — no panel, no lookup', asyn
   await expect(page.getByTestId('prior-goals')).toHaveCount(0);
   expect(asked).toEqual([]);
 });
+
+// The Feedback button on a coachee: the coach's own reports open in full; a
+// colleague's is listed with its goals and nothing else — no form, no PDF.
+const OWN = {
+  id: 'fb-own', role_assessed: '1. SR', rc_name: RC.name, submitted_at: '2026-03-15T10:00:00Z',
+  feedback_json: {
+    role: '1. SR', lang: 'DE',
+    meta: { spielNr: '1', liga: '3L', datum: '14.03.2026', ort: 'X', mannschaften: 'A vs B', ergebnis: '3:0', srName: COACHEE.full_name, srNiveau: 'N3', rc: RC.name, gruppe: 'B' },
+    sections: [], results: { motivation: 'up', einstufung: 'check', bemerkungen: 'ok', goals: 'Eigene Ziele.', srZiel: '2L', spielniveau: 'normal', secondBesuch: 'N' },
+    signature: '', rcSignature: '',
+  },
+  expand: { game: { id: 'g-own', match_no: '1', league: '3L', match_date: '2026-03-14', location: 'X', home_team: 'A', away_team: 'B', first_referee: COACHEE.full_name, second_referee: '' } },
+};
+const THEIRS = {
+  id: 'fb-theirs', role_assessed: '2. SR', rc_name: 'Beat Brunner', submitted_at: '2025-11-03T10:00:00Z',
+  redacted: true, goals: 'Handzeichen <b>deutlicher</b>.',
+  expand: { game: { id: 'g-theirs', match_no: '77', league: '2L', match_date: '2025-11-02', home_team: 'C', away_team: 'D', first_referee: '', second_referee: COACHEE.full_name } },
+};
+
+test("the Feedback-Verlauf lists a colleague's observation with its goals only; the coach's own opens in full", async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.route('**/api/coachees/*/feedbacks', (r) => r.fulfill({ json: [OWN, THEIRS] }));
+  await page.goto(`/feedbacks/${COACHEE.id}`);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText(/Feedback-Verlauf|Feedback History/);
+
+  // The colleague's entry: goals rendered, no button to open, no PDF.
+  const theirs = dialog.getByTestId('history-redacted');
+  await expect(theirs).toHaveCount(1);
+  await expect(theirs).toContainText('77 | C vs D');
+  await expect(theirs).toContainText('Beat Brunner');
+  await expect(theirs).toContainText(/nur die Ziele|only the goals/);
+  await expect(theirs.locator('b')).toHaveText('deutlicher');
+  await expect(theirs.getByRole('button')).toHaveCount(0);
+  await expect(theirs.getByTestId('history-sent-pdf')).toHaveCount(0);
+
+  // The own one keeps its PDF and opens the record.
+  await expect(dialog.getByTestId('history-sent-pdf')).toHaveCount(1);
+  await dialog.getByRole('button', { name: /A vs B/ }).click();
+  await expect(page.getByText(/bereits beobachtet|already been observed/)).toBeVisible();
+  await expect(page.locator('input[value="1"]').first()).toBeVisible();
+});
+
+test("a single colleague's observation shows the list, never the form", async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.route('**/api/coachees/*/feedbacks', (r) => r.fulfill({ json: [THEIRS] }));
+  await page.goto(`/feedbacks/${COACHEE.id}`);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByTestId('history-redacted')).toHaveCount(1);
+  await expect(page.getByText(/bereits beobachtet|already been observed/)).toHaveCount(0);
+
+  // A link straight to it lands on the list too.
+  await page.goto(`/feedbacks/${COACHEE.id}/${THEIRS.id}`);
+  await expect(page.getByRole('dialog').getByTestId('history-redacted')).toHaveCount(1);
+  await expect(page.getByText(/bereits beobachtet|already been observed/)).toHaveCount(0);
+});

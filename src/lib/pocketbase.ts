@@ -67,6 +67,10 @@ export type FeedbackRecord = {
   feedback_json?: FeedbackFormData;
   game?: string;
   coachee?: string;
+  /** A colleague's observation: the server left the assessment out and
+   *  handed over the goals alone. Nothing to open, nothing to download. */
+  redacted?: boolean;
+  goals?: string;
   expand?: {
     game?: {
       id?: string;

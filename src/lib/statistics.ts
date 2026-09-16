@@ -39,11 +39,13 @@ export function scoreToLetter(score: number): string {
 export type GradeAgg = { obs: number; items: number; sum: number };
 export const emptyGrade = (): GradeAgg => ({ obs: 0, items: 0, sum: 0 });
 
-/** The minimum observations behind an average before it is shown. One visit
- *  is a fact about one evening; three are the start of a pattern. */
+/** Below this many observations an average is THIN: still shown — one visit's
+ *  grades are real grades — but drawn hollow and labelled with its n, so one
+ *  evening is never mistaken for a pattern. */
 export const MIN_OBS_FOR_AVG = 3;
+export const isThin = (n: number): boolean => n < MIN_OBS_FOR_AVG;
 
-export function gradeAvg(g: GradeAgg | undefined, minObs = MIN_OBS_FOR_AVG): number | null {
+export function gradeAvg(g: GradeAgg | undefined, minObs = 1): number | null {
   if (!g || g.obs < minObs || g.items === 0) return null;
   return Math.round((g.sum / g.items) * 10) / 10;
 }

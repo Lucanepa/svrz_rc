@@ -97,17 +97,20 @@ test('filters re-query the server with the slice, and the season picker offers e
   await expect.poll(() => asked.at(-1)).toBe('?season=2025&group=Varia&role=2SR');
 });
 
-test('a level with too few observations shows its n instead of an average', async ({ page }) => {
+test('an average from a single observation is shown, but hollow and with its n', async ({ page }) => {
   await stubSignedInApp(page, { admin: true });
   await openStats(page);
-  // N1 was visited once — fewer than the three an average needs — so its Stufe
-  // row says so instead of pretending one evening is a pattern.
+  // N1 was visited once. The grade is real and stays visible — the coach did
+  // grade — but the row is marked thin so one evening is not read as a pattern.
   const levels = page.getByTestId('stats-levels');
-  await expect(levels).toContainText('N1');
-  await expect(levels).toContainText('1 Beob.');
-  // Eight visits on N3-2: a real average, letter and score.
-  await expect(levels).toContainText('N3-2');
-  await expect(levels).not.toContainText('8 Beob.');
+  const thin = levels.locator('[data-thin="true"]');
+  await expect(thin).toHaveCount(1);
+  await expect(thin).toContainText('N1');
+  await expect(thin).toContainText('n = 1');
+  // Eight visits on N3-2: a full dot, no warning.
+  const solid = levels.locator('div.grid:has-text("N3-2")').first();
+  await expect(solid).not.toHaveAttribute('data-thin', 'true');
+  await expect(solid).toContainText('· 8');
 });
 
 test('the export builds a PowerPoint deck and a PDF from the same numbers', async ({ page }) => {

@@ -3,7 +3,7 @@
 // read. Every mark carries a <title> for the hover, every chart says its n,
 // and the grade charts sit on the 1–15 scale with C marked as the Normalfall.
 import React from 'react';
-import { GRADE_SCALE, NORMAL_SCORE, scoreToLetter } from '../lib/statistics';
+import { GRADE_SCALE, NORMAL_SCORE, isThin, scoreToLetter } from '../lib/statistics';
 
 // Validated (dataviz six checks, light surface): blue / SVRZ red / yellow are
 // CVD-separable as neighbours; the yellow needs its label, which every chart
@@ -48,7 +48,7 @@ export function ColumnChart({ data, series, height = 180, soft = [], slotWidth =
     <div className="overflow-x-auto">
       {/* Scales down to 300px before it scrolls: a chart that has to be
           scrolled to be read is not read. */}
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ minWidth: Math.min(width, 300), maxWidth: width * 1.6 }} role="img" className="block">
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ minWidth: Math.min(width, 300), maxWidth: width * 1.3 }} role="img" className="block">
         {gridSteps.map((g) => (
           <g key={g}>
             <line x1={left} x2={width - right} y1={y(g)} y2={y(g)} stroke={GRID} strokeWidth={1} />
@@ -136,7 +136,7 @@ export function BarList({ rows, color = SERIES[0], format = fmtInt, max: maxIn }
 export type ScaleRow = { key: string; label: string; avg: number | null; n: number; sub?: string };
 
 /** One row per thing graded: a dot on the E-…A+ track, C marked. An average
- *  withheld for want of observations shows its n and no dot. */
+ *  from fewer than three observations is drawn hollow and carries its n. */
 export function GradeScale({ rows, minLabel, maxLabel, nLabel }: { rows: ScaleRow[]; minLabel?: string; maxLabel?: string; nLabel: (n: number) => string }) {
   const pos = (score: number) => ((score - 1) / 14) * 100;
   const ticks = ['E', 'D', 'C', 'B', 'A'].map((l) => ({ l, p: pos(GRADE_SCALE[l]) }));
@@ -151,19 +151,21 @@ export function GradeScale({ rows, minLabel, maxLabel, nLabel }: { rows: ScaleRo
       </div>
       <div className="space-y-1.5">
         {rows.map((r) => (
-          <div key={r.key} className="grid grid-cols-[minmax(0,6.5rem)_1fr_auto] sm:grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-2 text-xs" title={r.avg === null ? `${r.label}: ${nLabel(r.n)}` : `${r.label}: ${scoreToLetter(r.avg)} · ${fmtDec(r.avg)} · ${nLabel(r.n)}`}>
+          <div key={r.key} className="grid grid-cols-[minmax(0,6.5rem)_1fr_auto] sm:grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-2 text-xs" data-thin={r.avg !== null && isThin(r.n) ? 'true' : undefined} title={r.avg === null ? `${r.label}: ${nLabel(r.n)}` : `${r.label}: ${scoreToLetter(r.avg)} · ${fmtDec(r.avg)} · ${nLabel(r.n)}${isThin(r.n) ? ` (n < 3)` : ''}`}>
             <span className="truncate text-stone-700">{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
             <span className="relative h-4">
               <span className="absolute inset-x-0 top-1/2 h-px bg-stone-200" />
               <span className="absolute top-0 bottom-0 w-px bg-stone-400" style={{ left: `${pos(NORMAL_SCORE)}%` }} title="C" />
-              {r.avg !== null && (
-                <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white" style={{ left: `${pos(r.avg)}%`, background: SERIES[0] }} />
-              )}
+              {r.avg !== null && (isThin(r.n)
+                ? <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white border-2" style={{ left: `${pos(r.avg)}%`, borderColor: SERIES[0] }} />
+                : <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white" style={{ left: `${pos(r.avg)}%`, background: SERIES[0] }} />)}
             </span>
-            <span className="tabular-nums min-w-[4.5rem] text-right">
+            <span className="tabular-nums min-w-[4.5rem] text-right whitespace-nowrap">
               {r.avg === null
                 ? <span className="text-stone-400">{nLabel(r.n)}</span>
-                : <><span className="font-semibold text-stone-800">{scoreToLetter(r.avg)}</span> <span className="text-stone-500">{fmtDec(r.avg)}</span> <span className="text-stone-400">· {r.n}</span></>}
+                : isThin(r.n)
+                  ? <><span className="font-semibold text-stone-600">{scoreToLetter(r.avg)}</span> <span className="text-stone-500">{fmtDec(r.avg)}</span> <span className="text-stone-400">· n = {r.n}</span></>
+                  : <><span className="font-semibold text-stone-800">{scoreToLetter(r.avg)}</span> <span className="text-stone-500">{fmtDec(r.avg)}</span> <span className="text-stone-400">· {r.n}</span></>}
             </span>
           </div>
         ))}

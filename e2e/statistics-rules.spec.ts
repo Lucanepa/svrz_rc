@@ -3,7 +3,7 @@ import {
   computeStatistics, observationFromFeedback, gameFacts, filingDelayDays, normalizeLevel, statOptions,
   type StatObservation, type StatRcInput, type StatCoacheeInput,
 } from '../server/statistics';
-import { gradeAvg, scoreToLetter, countWords } from '../src/lib/statistics';
+import { gradeAvg, isThin, scoreToLetter, countWords } from '../src/lib/statistics';
 
 // The counting rules of Admin → Statistik on their own, without a database:
 // what is an observation, how a game with two referees counts, where the
@@ -148,7 +148,7 @@ test('one game with both referees assessed is two observations but one game — 
   expect(stats.totals.longestGame).toEqual({ label: 'A – B', sets: 5, points: 208 });
 });
 
-test('grades: the histogram counts what was given, averages need three observations, sections sum their criteria', () => {
+test('grades: the histogram counts what was given, thin averages are marked, sections sum their criteria', () => {
   const three = [
     obs({ id: 'o1', gameId: 'g1', ratings: [{ id: 'x', section: 0, score: 8 }, { id: 'y', section: 1, score: 11 }] }),
     obs({ id: 'o2', gameId: 'g2', ratings: [{ id: 'x', section: 0, score: 9 }, { id: 'y', section: 1, score: 8 }] }),
@@ -164,12 +164,15 @@ test('grades: the histogram counts what was given, averages need three observati
   const x = stats.criteria.find((c) => c.id === 'x')!;
   expect(x.grade).toEqual({ obs: 3, items: 3, sum: 24 });
   const y = stats.criteria.find((c) => c.id === 'y')!;
-  expect(gradeAvg(y.grade)).toBeNull();      // two observations are not a pattern
-  expect(gradeAvg(y.grade, 1)).toBe(9.5);
+  // Two observations: the average is real but THIN — shown hollow, with its n.
+  expect(gradeAvg(y.grade)).toBe(9.5);
+  expect(isThin(y.grade.obs)).toBe(true);
+  expect(isThin(x.grade.obs)).toBe(false);
+  expect(gradeAvg(y.grade, 3)).toBeNull();
   expect(stats.sections.map((s) => [s.section, s.grade.obs, s.grade.items])).toEqual([[0, 3, 3], [1, 2, 2]]);
-  // Two observations only: the average is withheld.
-  const two = computeStatistics({ season: 2025, filters: {}, now: new Date(), rcs: RCS, roster: ROSTER, observations: three.slice(0, 2) });
-  expect(gradeAvg(two.totals.grade)).toBeNull();
+  // Nothing rated at all: no average to show.
+  const none = computeStatistics({ season: 2025, filters: {}, now: new Date(), rcs: RCS, roster: ROSTER, observations: [obs({ ratings: [] })] });
+  expect(gradeAvg(none.totals.grade)).toBeNull();
 });
 
 test('filters cut the observations, the roster and the coaches together', () => {

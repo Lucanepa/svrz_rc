@@ -6,7 +6,7 @@
 import type PptxGenJS from 'pptxgenjs';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
 import type { Deck, DeckChart, DeckSlide, DeckTile } from './statsDeck';
-import { scoreToLetter } from './statistics';
+import { isThin, scoreToLetter } from './statistics';
 
 // 16:9 — 10" × 5.625".
 const W = 10;
@@ -99,13 +99,13 @@ function addChart(pptx: PptxGenJS, slide: Slide, title: string, chart: DeckChart
       valAxisMinVal: 0, valAxisHidden: true, valGridLine: { style: 'none' },
     });
   } else if (chart.kind === 'grade') {
-    // Averages on the 1–15 scale, the letter beside each; withheld ones are
-    // left off the chart and named in the note below it.
+    // Averages on the 1–15 scale, the letter beside each; a thin one (fewer
+    // than three observations) says so in its label.
     const keep = chart.values.map((v, i) => ({ v, i })).filter((e) => e.v !== null).reverse();
-    const withheld = chart.values.map((v, i) => ({ v, i })).filter((e) => e.v === null).map((e) => `${chart.categories[e.i]} (n = ${chart.ns[e.i]})`);
+    const withheld = chart.values.map((v, i) => ({ v, i })).filter((e) => e.v === null).map((e) => chart.categories[e.i]);
     slide.addChart(pptx.ChartType.bar, [{
       name: title,
-      labels: keep.map((e) => `${chart.categories[e.i]}  ${scoreToLetter(e.v!)} · n ${chart.ns[e.i]}`),
+      labels: keep.map((e) => `${chart.categories[e.i]}  ${scoreToLetter(e.v!)} · ${isThin(chart.ns[e.i]) ? `n = ${chart.ns[e.i]} !` : `n ${chart.ns[e.i]}`}`),
       values: keep.map((e) => e.v!),
     }], {
       ...common, barDir: 'bar', barGapWidthPct: 45, showLegend: false, showValue: true, dataLabelPosition: 'outEnd', dataLabelFormatCode: '0.0',
@@ -113,7 +113,7 @@ function addChart(pptx: PptxGenJS, slide: Slide, title: string, chart: DeckChart
       valAxisTitle: 'E = 2 · D = 5 · C = 8 · B = 11 · A = 14', showValAxisTitle: true, valAxisTitleFontSize: 7, valAxisTitleColor: MUTED,
     });
     if (withheld.length) {
-      slide.addText(`n < 3: ${withheld.join(', ')}`, { x, y: y + h - 0.02, w, h: 0.22, fontFace: FONT, fontSize: 7, color: MUTED, valign: 'top' });
+      slide.addText(`–: ${withheld.join(', ')}`, { x, y: y + h - 0.02, w, h: 0.22, fontFace: FONT, fontSize: 7, color: MUTED, valign: 'top' });
     }
   } else {
     slide.addChart(pptx.ChartType.doughnut, [{ name: title, labels: chart.categories, values: chart.values }], {

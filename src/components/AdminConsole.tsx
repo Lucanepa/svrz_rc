@@ -990,7 +990,9 @@ export default function AdminConsole() {
           no room beside anything, so the same list sits along the bottom, where
           a thumb is, and scrolls sideways rather than stealing three rows of
           height from the page it is navigating. */}
-      <div className="max-w-6xl mx-auto px-4 flex gap-6">
+      {/* The statistics are a dashboard: seven tiles and three-up chart rows
+          want the whole screen, where a list of coachees does not. */}
+      <div className={cn('mx-auto px-4 flex gap-6', tab === 'stats' ? 'max-w-[1800px]' : 'max-w-6xl')}>
         <nav
           aria-label={t.admin}
           className="hidden lg:block w-56 shrink-0 sticky top-[68px] self-start pt-5 pb-8 space-y-1"

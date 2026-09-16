@@ -6,7 +6,7 @@
 import type { Lang } from './appTime';
 import { dayLabel } from './appTime';
 import {
-  a4Pages, estimatedHours, gradeAvg, pct, scoreToLetter, GRADE_ORDER, MIN_OBS_FOR_AVG,
+  a4Pages, estimatedHours, gradeAvg, isThin, pct, scoreToLetter, GRADE_ORDER,
   type SeasonStatistics, type SeasonStatisticsCore, type StatBucket, type StatRole,
 } from './statistics';
 import {
@@ -45,8 +45,9 @@ export type DeckOptions = { lang: Lang; includeRcGrades: boolean; includeLeagues
 const int = (n: number) => new Intl.NumberFormat('de-CH').format(Math.round(n));
 const dec = (n: number, d = 1) => new Intl.NumberFormat('de-CH', { minimumFractionDigits: d, maximumFractionDigits: d }).format(n);
 const pctText = (p: number | null) => (p === null ? '–' : `${dec(p, 0)} %`);
+/** "C+ · 8.6", with "(n = 2)" appended while the average is thin. */
 export const gradeText = (avg: number | null, t: StatStrings, n?: number) =>
-  avg === null ? (n !== undefined ? t.tooFew(n) : '–') : `${scoreToLetter(avg)} · ${dec(avg)}`;
+  avg === null ? '–' : `${scoreToLetter(avg)} · ${dec(avg)}${n !== undefined && isThin(n) ? ` (${t.tooFew(n)})` : ''}`;
 
 export function filtersLine(stats: SeasonStatisticsCore, t: StatStrings, lang: Lang, rcNames: Record<string, string> = {}): string {
   const f = stats.filters;
@@ -161,7 +162,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
       },
     };
   };
-  slides.push({ title: t.sections, figures: [sectionFigure('1SR'), sectionFigure('2SR')], note: t.normalCase });
+  slides.push({ title: t.sections, figures: [sectionFigure('1SR'), sectionFigure('2SR')], note: `${t.normalCase} · ${t.thinNote}` });
 
   // 7 — strongest / weakest criteria
   const ranked = (role: StatRole) => stats.criteria
@@ -318,7 +319,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
         title: t.avgGrade,
         chart: { kind: 'grade', categories: rows.map((r) => r.label), values: rows.map((r) => gradeAvg(r.grade)), ns: rows.map((r) => r.observations) },
       }],
-      note: `${t.normalCase} · n >= ${MIN_OBS_FOR_AVG}`,
+      note: `${t.normalCase} · ${t.thinNote}`,
     });
   }
 

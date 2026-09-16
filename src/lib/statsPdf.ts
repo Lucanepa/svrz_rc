@@ -7,7 +7,7 @@ import logoDataUrl from '../assets/svrz-logo.png?inline';
 import { INTER_BOLD_B64, INTER_REGULAR_B64 } from './pdfFonts';
 import { pdfSafeText } from './feedbackPdf';
 import type { Deck, DeckChart, DeckSlide, DeckTile } from './statsDeck';
-import { scoreToLetter, GRADE_SCALE, NORMAL_SCORE } from './statistics';
+import { isThin, scoreToLetter, GRADE_SCALE, NORMAL_SCORE } from './statistics';
 
 const PAGE_W = 841.89;
 const PAGE_H = 595.28;
@@ -67,10 +67,16 @@ class Sheet {
     this.doc.setLineWidth(width);
     this.doc.line(x1, y1, x2, y2);
   }
-  circle(x: number, y: number, r: number, fill: Rgb) {
-    this.doc.setFillColor(fill[0], fill[1], fill[2]);
-    this.doc.setDrawColor(255, 255, 255);
-    this.doc.setLineWidth(1.2);
+  circle(x: number, y: number, r: number, fill: Rgb, hollow = false) {
+    if (hollow) {
+      this.doc.setFillColor(255, 255, 255);
+      this.doc.setDrawColor(fill[0], fill[1], fill[2]);
+      this.doc.setLineWidth(1.4);
+    } else {
+      this.doc.setFillColor(fill[0], fill[1], fill[2]);
+      this.doc.setDrawColor(255, 255, 255);
+      this.doc.setLineWidth(1.2);
+    }
     this.doc.circle(x, y, r, 'FD');
   }
 }
@@ -204,10 +210,11 @@ function drawChart(s: Sheet, heading: string, chart: DeckChart, x: number, y: nu
       s.line(pos(NORMAL_SCORE), ry - 5, pos(NORMAL_SCORE), ry + 5, MUTED, 0.6);
       const v = chart.values[i];
       if (v === null) {
-        s.text(`n = ${chart.ns[i]}`, x + w, ry + 3, { size: 7, color: MUTED, align: 'right' });
+        s.text('–', x + w, ry + 3, { size: 7, color: MUTED, align: 'right' });
       } else {
-        s.circle(pos(v), ry, 4, SERIES[0]);
-        s.text(`${scoreToLetter(v)} · ${v.toFixed(1)} · ${chart.ns[i]}`, x + w, ry + 3, { size: 7, color: INK_2, align: 'right' });
+        const thin = isThin(chart.ns[i]);
+        s.circle(pos(v), ry, 4, SERIES[0], thin);
+        s.text(`${scoreToLetter(v)} · ${v.toFixed(1)} · ${thin ? `n = ${chart.ns[i]}` : chart.ns[i]}`, x + w, ry + 3, { size: 7, color: thin ? MUTED : INK_2, align: 'right' });
       }
     });
     return;

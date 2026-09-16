@@ -50,6 +50,11 @@ test.describe('Feedback form UI', () => {
   });
 
   test.describe('Send button and confirmation modal', () => {
+    // A filled form — nineteen criteria, the results strip, three sets — plus
+    // one or two pad signatures brushes the default 30 s on a GitHub runner;
+    // the click that follows then times out on the pad. Three times the
+    // budget, Playwright's own knob for exactly this.
+    test.slow();
     test('send button is visible', async ({ page }) => {
       await expect(sendButton(page)).toBeVisible();
     });
@@ -96,6 +101,7 @@ test.describe('Feedback form UI', () => {
   });
 
   test.describe('Signatures', () => {
+    test.slow(); // see the describe above
     test('the form offers both a referee and a coach signature', async ({ page }) => {
       await expect(page.getByText(/Referee signature|Unterschrift Schiedsrichter/)).toBeVisible();
       await expect(page.getByText(/Referee Coach signature|Unterschrift Referee Coach/)).toBeVisible();

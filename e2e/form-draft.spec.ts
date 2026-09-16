@@ -687,6 +687,12 @@ const listHeading = (page: Page) =>
   page.getByRole('heading', { name: /^(Referee Coaching Feedback|SR-Coaching Feedback)$/ });
 
 test.describe('A report that has just gone leaves the banner', () => {
+  // Every test here fills the WHOLE form — nineteen criteria, the results
+  // strip, three sets and two signatures — before it gets to its point. On a
+  // GitHub runner that alone runs to the edge of the default 30 s, and the
+  // send it exists to test then times out on the signature pad. Three times
+  // the budget, as Playwright's own knob for exactly this.
+  test.slow();
   test('the send itself takes the row off the list, not the next tap', async ({ page }) => {
     await stubSignedInApp(page);
     // The server's side of a send: the report is accepted, and from then on

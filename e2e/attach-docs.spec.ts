@@ -176,6 +176,7 @@ test.describe('Attaching documents to a report', () => {
   });
 
   test('the confirmation names the enclosures and the submit carries their ids', async ({ page }) => {
+    test.slow(); // fills the whole form and signs twice — past 30 s on a GitHub runner
     let body: { formData?: { attachedDocs?: string[] } } | null = null;
     await page.route('**/api/feedback/submit', async (r) => {
       body = r.request().postDataJSON();

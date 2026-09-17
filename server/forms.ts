@@ -55,6 +55,12 @@ export type FormsEntry = {
   file: FormsFile;
   /** The name it opens and downloads as. */
   filename: string;
+  /** The game the form is about, so a folder row can lead to it. '' for a
+   *  form whose game was deleted. */
+  gameId: string;
+  /** Filed on a throwaway fixture: the chair's bin exists for exactly these,
+   *  and nothing in the folder said which rows they were. */
+  isManual: boolean;
 };
 
 export type FormsFolder = {
@@ -96,6 +102,9 @@ export type FormsRow = {
   name: string;
   role: '1. SR' | '2. SR';
   date: string;
+  /** The game is a manual (test) fixture — stamped by the caller that read
+   *  the manual set; absent where nobody did. */
+  isManual?: boolean;
 };
 
 export function formsRowOf(rec: Rec & { id: string }): FormsRow {
@@ -139,6 +148,8 @@ export function formsEntryOf(row: FormsRow): FormsEntry {
     submittedAt: text(row.rec.submitted_at),
     file: formsFileKind(text(row.rec.pdf_file)),
     filename: formsEntryName(row),
+    gameId: text(row.game?.id) || text(row.rec.game),
+    isManual: row.isManual === true,
   };
 }
 

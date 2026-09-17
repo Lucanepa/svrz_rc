@@ -66,9 +66,10 @@ test('a planned game says which group its coachees are in', async ({ page }) => 
 
   // Every coachee carries the "Coachee" mark — the mixed pair's Nina, and
   // BOTH referees of the second game (it used to be only the mixed pair; a
-  // grey chip read as "not a coachee") — and the group stands beside it as a
-  // chip of its own.
-  await expect(page.getByText('Coachee', { exact: true })).toHaveCount(4);
+  // grey chip read as "not a coachee") — with the Niveau after it, as the
+  // Games tab's mark has always had, and the group beside it as a chip of
+  // its own.
+  await expect(page.getByText(/^Coachee · N3-2$/)).toHaveCount(4);
   await expect(page.getByText('Misc', { exact: true }).first()).toBeVisible();
   // The referee who is nobody's coachee is still listed, and still unmarked.
   await expect(page.getByText('Sven Fremd', { exact: false })).toBeVisible();

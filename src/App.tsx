@@ -13,7 +13,7 @@ const PdfReader = lazy(() => importFresh(() => import('./components/PdfReader'))
 })));
 import { USEFUL_DOCS, USEFUL_DOC_GROUPS, ATTACHABLE_DOCS, ATTACH_BUDGET_BYTES, attachedBytes, normalizeAttachedDocs, type UsefulDoc } from './lib/usefulDocs';
 import { docLinkUrl, docSourceUrl, prefetchSmallDocs, storeAllDocs, storedState } from './lib/docCache';
-import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, PAID_CAP, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryGame } from './types';
+import { INITIAL_DATA, FeedbackFormData, AssessmentSection, Results, SECTIONS_1SR_DE, SECTIONS_1SR_EN, SECTIONS_2SR_DE, SECTIONS_2SR_EN, LEGEND, SR_ZIEL_OPTIONS, OBSERVATION_GOAL, PAID_CAP, goalForMandate, RcMandateMap, EligibleGame, RcOverviewEntry, rcCoachSummary, rcCoachSummaryFeedback, rcCoachSummaryGame } from './types';
 import {
   CalendarGameStatus,
   Coachee,
@@ -92,7 +92,8 @@ import { coacheeLookup, coacheeUrlToken, gameLabel, gameUrlToken, isMyGame, isMy
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
-import { CoacheeChip, GroupChip } from './components/CoacheeChips';
+import { GroupChip } from './components/CoacheeChips';
+import { CrewChip, GameFlagChips, MatchResult, ObservedChip, roleObserved } from './components/GameMarks';
 import { ChipLine, GameList, GameRow, LeagueLabel, MarkRow, MetaChip, SectionHead, TeamPair, type RowTone } from './components/GameRow';
 import { Skeleton, SkeletonRows } from './components/Skeleton';
 import AppSpinner from './components/AppSpinner';
@@ -788,29 +789,6 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
 const loadPdfBuilder = () => importFresh(() => import('./lib/feedbackPdf'));
 
 /**
- * The match result the way the games list shows it: the set count, then the
- * individual set scores. One component so every list that carries a result
- * reads the same — the games list grew this look first, and copying it by hand
- * into each new list is how three of them end up subtly different.
- *
- * Renders nothing when there is no result yet, so callers can drop it into a
- * row unconditionally: most planned games have no score, and a row that
- * silently stays as it was is the point.
- */
-function MatchResult({ result, className }: { result?: string; className?: string }) {
-  const parsed = result ? parseResult(result) : null;
-  if (!parsed || (parsed.home === '' && parsed.away === '')) return null;
-  // Only completed sets: a half-entered "25:" is a score nobody can read.
-  const sets = parsed.sets.filter(isSetComplete).map((s) => `${s.h}:${s.a}`);
-  return (
-    <span className={cn('inline-flex items-baseline gap-2 tabular-nums whitespace-nowrap', className)}>
-      <span className="text-sm font-bold text-stone-600">{parsed.home}:{parsed.away}</span>
-      {sets.length > 0 && <span className="text-[11px] text-stone-400">{sets.join(' | ')}</span>}
-    </span>
-  );
-}
-
-/**
  * The wait shown in place of a list that has not arrived — in one of two ways.
  *
  * The very first load of a session gets the branded spinner: nothing is on
@@ -1162,16 +1140,6 @@ function MultiSelectDropdown({ options, selected, onChange, placeholder, lang, l
   );
 }
 
-// Why a game carries the star: VolleyManager's RD mark, its RSV mark, or an
-// admin's own hand. All three land in the one "Flagged" filter and the one
-// amber chip — the RD mark used to get a filter and a chip of its own next to
-// them, saying the same thing twice — so the tooltip is where the source lives.
-function starredTitle(game: { isRdGame?: boolean; vmFlagged?: boolean }, de: boolean): string {
-  if (game.isRdGame) return de ? 'Im VolleyManager als RD-Spiel markiert' : 'Marked as an RD game in VolleyManager';
-  if (game.vmFlagged) return de ? 'Im VolleyManager mit RSV-Markierung versehen' : 'RSV-marked in VolleyManager';
-  return de ? 'Für eine Beobachtung vorgemerkt' : 'Flagged for observation';
-}
-
 export default function App() {
   // Deep link the app was opened with — read once, before the first paint, so
   // a shared/bookmarked tab renders directly instead of flashing Home first.
@@ -1204,7 +1172,7 @@ export default function App() {
   // entry keeps its coachee id so the row can open the filed feedback, and the
   // record's own id and match number when the server sent them (an older one
   // answers without; the row then opens by its day).
-  type HomeDone = { gameDate: string; league: string; teams: string; role: string; submittedAt: string; result?: string; coacheeName: string; coacheeId: string; feedbackId?: string; matchNo?: string };
+  type HomeDone = rcCoachSummaryFeedback & { coacheeName: string; coacheeId: string };
   // The coach summary is per coachee, so a game with two coachees on the
   // whistle arrives twice. Home lists appointments — one row per game — and
   // carries the other referee(s) along for the subtitle. The per-coachee split
@@ -2438,12 +2406,11 @@ export default function App() {
       const missingGames = perGame(summary.flatMap((cs) => cs.outstandingGames)).sort(byDate);
       const done = myRow?.done ?? summary.reduce((n, cs) => n + cs.doneFeedbacks.length, 0);
       // Observations already filed, newest first — shown at the bottom of Home.
+      // The whole row as the summary sends it — the marks, the hall, the
+      // record's ids — plus whose it is.
       const doneList: HomeDone[] = summary
         .flatMap((cs) => cs.doneFeedbacks.map((fb) => ({
-          gameDate: fb.gameDate, league: fb.league, teams: fb.teams,
-          role: fb.role, submittedAt: fb.submittedAt, result: fb.result,
-          coacheeName: cs.coacheeName, coacheeId: cs.coacheeId,
-          feedbackId: fb.feedbackId, matchNo: fb.matchNo,
+          ...fb, coacheeName: cs.coacheeName, coacheeId: cs.coacheeId,
         })))
         .sort((a, b) => (b.submittedAt || b.gameDate).localeCompare(a.submittedAt || a.gameDate));
       setHomeData({
@@ -5501,34 +5468,11 @@ export default function App() {
   // their focus. The Games tab always drew these; the row under a coachee drew
   // the star alone, so an RC-Spiel there looked like any other fixture
   // (Luca, 2026-09-16: "the 02.02 game is an rc game no? why is it not shown?").
-  const flagChips = (game: EligibleGame, opts?: { focus?: boolean }) => {
-    const de = formData.lang === 'DE';
-    return (
-      <>
-        {game.isLdGame && <MetaChip tone="dark">{de ? 'LD Spiel' : 'LD Game'}</MetaChip>}
-        {game.isRcGame && (
-          <MetaChip tone="sky" title={de ? 'Ein Referee Coach pfeift hier neben einem Coachee.' : 'A referee coach is whistling next to a coachee here.'}>
-            {de ? 'RC-Spiel' : 'RC Game'}
-          </MetaChip>
-        )}
-        {game.isManual && (
-          <MetaChip tone="violet" title={de ? 'Von Hand angelegt — kein Spiel aus VolleyManager.' : 'Created by hand — not a VolleyManager fixture.'}>
-            {de ? 'Testspiel' : 'Test game'}
-          </MetaChip>
-        )}
-        {game.starred && (
-          <MetaChip tone="amber" title={starredTitle(game, de)}>
-            <Star size={10} className="fill-amber-500 text-amber-500" />{de ? 'Gewünscht' : 'Priority'}
-          </MetaChip>
-        )}
-        {opts?.focus && (
-          <MetaChip tone="emerald" title={de ? 'Liegt im Fokus dieses Coachees (Niveau-Tabelle).' : "In this coachee's focus (level table)."}>
-            <Target size={10} />{de ? 'Fokus' : 'Focus'}
-          </MetaChip>
-        )}
-      </>
-    );
-  };
+  // One component for every list (GameMarks.tsx); this is the games list's
+  // handle on it.
+  const flagChips = (game: EligibleGame, opts?: { focus?: boolean }) => (
+    <GameFlagChips game={game} lang={formData.lang} focus={opts?.focus} />
+  );
 
   const gameCard = (game: EligibleGame, opts?: {
     status?: React.ReactNode;
@@ -5611,11 +5555,14 @@ export default function App() {
       // is where most börse offers sit — nobody has taken it yet. So this is the
       // list where the mark matters most, and it was the last one without it.
       const offered = inBoerse(boerse, role === t.role2Short ? '2. SR' : '1. SR');
+      // A role already filed on: the field gated the form and was drawn
+      // nowhere, so a game observed for the 1. SR looked as open as any.
+      const observed = roleObserved(game, role === t.role2Short ? '2. SR' : '1. SR');
       return (
         <ChipLine key={role}>
           <MetaChip
             wrap
-            stack={isCoachee || offered}
+            stack={isCoachee || offered || observed}
             tone={offered ? 'boerse' : (isCoachee ? 'amber' : 'stone')}
             title={offered ? (formData.lang === 'DE' ? 'Dieser Einsatz steht in der SR-Börse' : 'This slot is in the SR-Börse') : undefined}
           >
@@ -5624,7 +5571,7 @@ export default function App() {
               {offered && <span aria-hidden>⚠&nbsp;</span>}
               {name}
             </span>
-            {(isCoachee || offered) && (
+            {(isCoachee || offered || observed) && (
               <MarkRow>
                 {offered && <BoerseChip lang={formData.lang} />}
                 {isCoachee && (
@@ -5640,6 +5587,7 @@ export default function App() {
                     {outOfFocus && (formData.lang === 'DE' ? ' · nicht im Fokus' : ' · out of focus')}
                   </span>
                 )}
+                {observed && <ObservedChip lang={formData.lang} />}
               </MarkRow>
             )}
           </MetaChip>
@@ -5991,26 +5939,37 @@ export default function App() {
         </button>
         {selectedGame && (
           <div className="w-full flex flex-wrap items-center gap-2">
+            {/* What the game IS, the same chips as on the list it was opened
+                from: a form on a Testspiel was indistinguishable from a real
+                one up here. */}
+            <GameFlagChips game={selectedGame} lang={formData.lang} />
             {(['1. SR', '2. SR'] as const).map((role) => {
               const name = getRefereeForRole(selectedGame, role);
               if (!name) return null;
               const slotCoachee = roster.onSlot(selectedGame, role);
               const isCoachee = !!slotCoachee;
               const isObserved = dualMode || formData.role === role;
+              // A slot in the Börse, said here too: a coach opening the form
+              // the evening before learns the referee may not come.
+              const offered = inBoerse(selectedGame.boerse, role);
               return (
                 <div
                   key={role}
                   className={cn(
                     "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm",
-                    isObserved ? "border-slate-400 bg-white shadow-sm" : "border-stone-200 bg-stone-50 opacity-60"
+                    isObserved ? "border-slate-400 bg-white shadow-sm" : "border-stone-200 bg-stone-50 opacity-60",
+                    offered && "border-red-300 bg-red-50",
                   )}
+                  title={offered ? (formData.lang === 'DE' ? 'Dieser Einsatz steht in der SR-Börse' : 'This slot is in the SR-Börse') : undefined}
                 >
                   {isObserved && <Eye size={14} className="text-slate-700 shrink-0" />}
                   <span className="font-medium text-stone-400">{role === '1. SR' ? '1SR' : '2SR'}</span>
+                  {offered && <span aria-hidden>⚠</span>}
                   <span className={cn("font-semibold", isCoachee ? "text-amber-900" : "text-stone-800")}>{name}</span>
+                  {offered && <BoerseChip lang={formData.lang} />}
                   {isCoachee && (
                     <span className="inline-flex items-center rounded bg-amber-100 border border-amber-300 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
-                      Coachee
+                      Coachee{coacheeLevelOf(slotCoachee) ? ` · ${coacheeLevelOf(slotCoachee)}` : ''}
                     </span>
                   )}
                   <GroupChip group={coacheeGroupOf(slotCoachee)} />
@@ -6410,7 +6369,7 @@ export default function App() {
                *  says why the evening is worth driving to, so it rides along on
                *  every coachee's chip. */
               const crewChips = (g: HomeGame) => {
-                type Chip = { name: string; role: string; coachee: boolean; coacheeId?: string };
+                type Chip = { name: string; role: string; coachee: boolean; coacheeId?: string; groups?: string; refereeLevel?: string; stage?: string };
                 const crew: Chip[] = g.crew?.length
                   ? g.crew
                   : (g.refs?.length ? g.refs : [{ name: g.refereeName, role: g.refereeRole || '' }])
@@ -6418,39 +6377,24 @@ export default function App() {
                       .map((r) => ({ ...r, coachee: !g.noCoachee }));
                 return crew.filter((r) => r.name).map((r) => {
                   // The row the server matched the slot to; the name only for
-                  // a crew from a server older than the id.
-                  const group = r.coachee ? coacheeGroupOf(roster.resolve({ id: r.coacheeId, name: r.name })) : undefined;
-                  const offered = inBoerse(g.boerse, r.role);
-                  // `marked` opens the MarkRow: a coachee, a group, or a slot in
-                  // the börse — the warning needs a row to sit in even when the
-                  // name carries no other mark.
-                  const marked = r.coachee || !!group || offered;
+                  // a crew from a server older than the id. The roster row
+                  // first — it is what the coach's app has — and the group and
+                  // Niveau the summary carries beside the slot after it.
+                  const row = r.coachee ? roster.resolve({ id: r.coacheeId, name: r.name }) : undefined;
+                  const group = r.coachee ? (coacheeGroupOf(row) || groupLabel(r.groups, formData.lang) || undefined) : undefined;
+                  const level = r.coachee ? (coacheeLevelOf(row) || (r.refereeLevel !== undefined ? levelDisplay(r.refereeLevel, r.stage).text : undefined)) : undefined;
                   return (
-                    <ChipLine key={`${r.name}-${r.role}`}>
-                      <MetaChip
-                        wrap
-                        stack={marked}
-                        tone={offered ? 'boerse' : (r.coachee ? 'amber' : 'stone')}
-                        title={offered ? (de ? 'Dieser Einsatz steht in der SR-Börse' : 'This slot is in the SR-Börse') : undefined}
-                      >
-                        {/* Slot and name in ONE inline box, with a real space
-                            between them. As two flex items they run together into
-                            "2SRSven Fremd" in the accessibility tree — the gap is
-                            drawn, not spoken. */}
-                        <span>
-                          {r.role && <span className="font-bold opacity-70">{r.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
-                          {offered && <span aria-hidden>⚠&nbsp;</span>}
-                          {r.name}
-                        </span>
-                        {marked && (
-                          <MarkRow>
-                            {offered && <BoerseChip lang={de ? 'DE' : 'EN'} />}
-                            {r.coachee && <CoacheeChip />}
-                            <GroupChip group={group} />
-                          </MarkRow>
-                        )}
-                      </MetaChip>
-                    </ChipLine>
+                    <CrewChip
+                      key={`${r.name}-${r.role}`}
+                      role={r.role}
+                      name={r.name}
+                      lang={formData.lang}
+                      coachee={r.coachee}
+                      level={level}
+                      group={group}
+                      offered={inBoerse(g.boerse, r.role)}
+                      observed={roleObserved(g, r.role)}
+                    />
                   );
                 });
               };
@@ -6479,23 +6423,21 @@ export default function App() {
                   // list. Same chip, same words, same tooltip as over there.
                   chips={<>
                     {/* What the game IS, before whom it is for: the same
-                        RC-Spiel / LD / Testspiel chips the Games tab draws, so
-                        a taken RC-Spiel does not pass for an ordinary fixture. */}
-                    {g.isLdGame && <MetaChip tone="dark">{de ? 'LD Spiel' : 'LD Game'}</MetaChip>}
-                    {g.isRcGame && (
-                      <MetaChip tone="sky" title={de ? 'Ein Referee Coach pfeift hier neben einem Coachee.' : 'A referee coach is whistling next to a coachee here.'}>
-                        {de ? 'RC-Spiel' : 'RC Game'}
-                      </MetaChip>
-                    )}
-                    {g.isManual && (
-                      <MetaChip tone="violet" title={de ? 'Von Hand angelegt — kein Spiel aus VolleyManager.' : 'Created by hand — not a VolleyManager fixture.'}>
-                        {de ? 'Testspiel' : 'Test game'}
-                      </MetaChip>
-                    )}
-                    {g.starred && (
-                      <MetaChip tone="amber" title={starredTitle(g, de)}>
-                        <Star size={10} className="fill-amber-500 text-amber-500" />
-                        {de ? 'Gewünscht' : 'Priority'}
+                        RC-Spiel / LD / Testspiel / Gewünscht chips the Games
+                        tab draws, so a taken RC-Spiel does not pass for an
+                        ordinary fixture. */}
+                    <GameFlagChips game={g} lang={formData.lang} />
+                    {/* A draft on THIS game — these are the coach's own taken
+                        games, the ones a draft most likely belongs to, and
+                        they are hidden from the Games tab by default, so this
+                        was the one list an overdue draft could not be seen
+                        from. Same badge as over there. */}
+                    {hasEditingDraft(g.gameId) && (
+                      <MetaChip
+                        tone={draftIsOverdue(g.gameId) ? 'me' : 'stone'}
+                        title={draftIsOverdue(g.gameId) ? t.draftUnsentHeading : t.draftHeading}
+                      >
+                        {draftIsOverdue(g.gameId) ? t.draftUnsentBadge : t.draftBadge}
                       </MetaChip>
                     )}
                     {crewChips(g)}
@@ -6767,6 +6709,11 @@ export default function App() {
                               const coacheeOffered = inBoerse(g.boerse, g.coacheeRole);
                               const group = coacheeGroupOf(roster.resolve({ id: g.coacheeId, name: g.coacheeName }));
                               return (<>
+                                {/* LD, Testspiel, Gewünscht — the same chips as
+                                    everywhere else. Not the RC-Spiel one: every
+                                    row of this list is one, and the "Du" chip
+                                    beside it already says so. */}
+                                <GameFlagChips game={{ ...g, isRcGame: false }} lang={formData.lang} />
                                 <MetaChip
                                   wrap
                                   stack={mineOffered}
@@ -6811,6 +6758,13 @@ export default function App() {
                               </button>
                             )}
                           >
+                            {/* The R4 reasons — the coachee's slot offered on a
+                                game the coach whistles, or the coach's own —
+                                reach only this list, and the line under the
+                                row that says them in words was never drawn
+                                here: on a phone the wash was colour without
+                                words, which is what the note exists to avoid. */}
+                            <BoerseNote boerse={g.boerse} lang={formData.lang} />
                             {g.note && (
                               <p className="mt-1 line-clamp-2 text-xs text-stone-500">{g.note.note}</p>
                             )}
@@ -6894,8 +6848,13 @@ export default function App() {
                           <GameList className="mt-1">
                             {homeData.doneList.map((f, i) => {
                               // Whose row the observation is on, by the id the
-                              // summary carries beside the name.
-                              const group = coacheeGroupOf(roster.resolve({ id: f.coacheeId, name: f.coacheeName }));
+                              // summary carries beside the name — the roster
+                              // row first, the group and Niveau the summary
+                              // stamps on the row after it, as on the games
+                              // still to do.
+                              const row = roster.resolve({ id: f.coacheeId, name: f.coacheeName });
+                              const group = coacheeGroupOf(row) || groupLabel(f.groups, formData.lang) || undefined;
+                              const level = coacheeLevelOf(row) || (f.refereeLevel !== undefined ? levelDisplay(f.refereeLevel, f.stage).text : undefined);
                               return (
                               <GameRow
                                 key={`done-${f.coacheeId}-${f.gameDate}-${i}`}
@@ -6905,20 +6864,29 @@ export default function App() {
                                 league={f.league}
                                 matchNo={f.matchNo}
                                 teams={f.teams}
+                                location={f.location}
+                                mapsUrl={f.mapsUrl}
                                 onOpen={() => void openDoneObservation(f)}
                                 title={de ? 'Feedback öffnen' : 'Open feedback'}
                                 status={<Eye size={15} className="text-stone-400" />}
-                                chips={(
-                                  <MetaChip wrap stack={!!group} tone="amber">
-                                    <span>
-                                      {f.role && <span className="font-bold opacity-70">{f.role === '2. SR' ? t.role2Short : t.role1Short}&nbsp;</span>}
-                                      {f.coacheeName}
-                                    </span>
-                                    {group && (
-                                      <MarkRow><GroupChip group={group} /></MarkRow>
-                                    )}
-                                  </MetaChip>
-                                )}
+                                chips={<>
+                                  {/* The same marks as on the games still to
+                                      do: a filed observation on a Testspiel or
+                                      an LD game read like any other here — and
+                                      the observed coachee as the same chip,
+                                      Coachee mark, Niveau and group, so the
+                                      done list reads like the planned one and
+                                      like the chair's Übersicht detail. */}
+                                  <GameFlagChips game={f} lang={formData.lang} />
+                                  <CrewChip
+                                    role={f.role}
+                                    name={f.coacheeName}
+                                    lang={formData.lang}
+                                    coachee
+                                    level={level}
+                                    group={group}
+                                  />
+                                </>}
                               >
                                 <MatchResult result={f.result} className="mt-1" />
                               </GameRow>
@@ -7470,28 +7438,25 @@ export default function App() {
                                       const de = formData.lang === 'DE';
                                       const holder = game.assignedRc || '';
                                       const mine = !!holder && isMyGame(game, rcAuth, rcKnownIds);
-                                      return (
-                                        <GameRow
-                                          key={game.id}
-                                          lang={formData.lang}
-                                          tone="red"
-                                          date={game.date}
-                                          league={game.league}
-                                          home={game.homeTeam}
-                                          away={game.awayTeam}
-                                          onOpen={() => handleSelectGame(game, { id: coachee.id })}
-                                          chips={<>
-                                            <MetaChip tone="stone">{role}</MetaChip>
-                                            {/* The same marks the Games tab
-                                                draws, so a game reads the same
-                                                on both lists. Every game here
-                                                is in focus by construction
-                                                (see focusGames), and the chip
-                                                says so rather than leaving the
-                                                coach to know the rule. */}
-                                            {flagChips(game, { focus: true })}
-                                          </>}
-                                          action={!holder ? (
+                                      // The games list's own row, not a copy of
+                                      // it: the same flag chips, both referees
+                                      // with their marks, the Börse wash and
+                                      // its line, the draft badge, the number
+                                      // in the rail and the hall — a row that
+                                      // drew the role and the flags alone hid a
+                                      // coachee slot in the Börse, the one
+                                      // thing Infoschreiben 4.1 asks to check
+                                      // before taking a game. Every game here
+                                      // is in focus by construction (see
+                                      // focusGames), and the chip says so
+                                      // rather than leaving the coach to know
+                                      // the rule.
+                                      return gameCard(game, {
+                                        key: game.id,
+                                        roles: [role],
+                                        focus: true,
+                                        onOpen: () => handleSelectGame(game, { id: coachee.id }),
+                                        action: !holder ? (
                                             <button
                                               onClick={() => { if (rcAuth.rcName) requestRcAssignment(game, rcAuth.rcName); }}
                                               className="h-8 w-full rounded-md bg-slate-900 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-slate-800 sm:w-auto"
@@ -7517,9 +7482,8 @@ export default function App() {
                                             </div>
                                           ) : (
                                             takenByButton(holder, 'h-8 w-full rounded-md px-2.5 text-[11px] font-medium transition-colors sm:w-auto')
-                                          )}
-                                        />
-                                      );
+                                          ),
+                                      });
                                     })}
                                   </GameList>
                                 )}
@@ -7850,16 +7814,34 @@ export default function App() {
                         <div className={cn("font-medium text-[11px] sm:text-xs", isToday ? "text-red-600" : "text-stone-700")}>{day}</div>
                         {hasGames && (
                           <div className="mt-0.5 sm:mt-1 flex flex-wrap gap-0.5">
-                            {dayGames.slice(0, 3).map((g, i) => (
-                              <span
-                                key={i}
-                                className={cn(
-                                  "w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full",
-                                  g.assignedRc ? "bg-green-500" : "bg-stone-300"
-                                )}
-                                title={`${g.homeTeam} vs ${g.awayTeam}${g.assignedRc ? ` (RC: ${g.assignedRc})` : ''}`}
-                              />
-                            ))}
+                            {dayGames.slice(0, 3).map((g, i) => {
+                              // A dot is all the grid has room for, so the
+                              // marks go into its title in words and the
+                              // Börse level into a ring — the one mark that
+                              // can cost an evening. Clicking the day opens
+                              // the list, where the chips are.
+                              const de = formData.lang === 'DE';
+                              const marks = [
+                                g.isRcGame ? (de ? 'RC-Spiel' : 'RC game') : '',
+                                g.isLdGame ? (de ? 'LD Spiel' : 'LD game') : '',
+                                g.isManual ? (de ? 'Testspiel' : 'Test game') : '',
+                                g.starred ? (de ? 'Gewünscht' : 'Priority') : '',
+                                g.boerse?.level && g.boerse.level !== 'none' ? (de ? 'In Börse' : 'In Börse') : '',
+                              ].filter(Boolean);
+                              return (
+                                <span
+                                  key={i}
+                                  className={cn(
+                                    "w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full",
+                                    g.assignedRc ? "bg-green-500" : "bg-stone-300",
+                                    g.boerse?.level === 'red' && 'ring-2 ring-red-400',
+                                    g.boerse?.level === 'amber' && 'ring-2 ring-amber-400',
+                                    g.boerse?.level === 'blue' && 'ring-2 ring-sky-400',
+                                  )}
+                                  title={`${g.homeTeam} vs ${g.awayTeam}${g.assignedRc ? ` (RC: ${g.assignedRc})` : ''}${marks.length ? ` · ${marks.join(' · ')}` : ''}`}
+                                />
+                              );
+                            })}
                             {dayGames.length > 3 && (
                               <span className="text-[9px] sm:text-[10px] text-stone-400 leading-none">+{dayGames.length - 3}</span>
                             )}
@@ -8177,7 +8159,12 @@ export default function App() {
                                 read-only until they were added; the game had to
                                 be found again in the open games list before it
                                 could be taken. */}
-                            {gameCard({ ...game, assignedRc: holder, assignedRcId: holderGame.assignedRcId }, {
+                            {/* The open list's copy fills in whatever this
+                                row lacks: an API a version behind the client
+                                answers this route without the marks or the
+                                Börse verdict, and the open list carries both
+                                for the same game. */}
+                            {gameCard({ ...game, ...(eg ?? {}), assignedRc: holder, assignedRcId: holderGame.assignedRcId }, {
                               roles: game.assignedRoles,
                               onOpen: () => handleSelectGame(game),
                               className: 'px-2.5',
@@ -8252,7 +8239,10 @@ export default function App() {
                         <GameList className="px-1.5">
                           {pastGames.map((game) => {
                             const hasFeedback = feedbackByGameId.has(game.id);
-                            return gameCard(game, {
+                            // The open list's copy fills in the marks here
+                            // too — same reason as on the upcoming rows.
+                            const eg = eligibleGames.find((e) => e.id === game.id);
+                            return gameCard({ ...game, ...(eg ?? {}) }, {
                               key: game.id,
                               roles: game.assignedRoles,
                               tone: hasFeedback ? 'emerald' : 'stone',
@@ -8307,21 +8297,68 @@ export default function App() {
               sortedCalendarDays.map((day) => (
                 <div key={day} className="border border-stone-200 rounded">
                   <div className="px-3 py-2 border-b bg-stone-50 text-sm font-semibold text-stone-700">{day}</div>
-                  <div className="divide-y divide-stone-100">
-                    {groupedCalendarGames[day].map((game) => (
-                      <div key={game.id} className="px-3 py-2 flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-semibold text-stone-900">
-                            {game.matchNo} - {game.homeTeam} vs {game.awayTeam}
-                          </div>
-                          <div className="text-xs text-stone-500 mt-1">
-                            {game.league} | {game.location}
-                          </div>
-                        </div>
-                        <span className={cn('w-3 h-3 rounded-full mt-1', statusDotClass(game.status))} />
-                      </div>
-                    ))}
-                  </div>
+                  {/* The same row as every other list, marks and all: this was
+                      the one list where a coach could not see who holds a
+                      game, that it is an RC-Spiel or a Testspiel, or that a
+                      slot is in the Börse. The status dot — outstanding /
+                      completed — is what this list adds, so it keeps its
+                      place beside the holder's. */}
+                  <GameList className="px-1.5">
+                    {groupedCalendarGames[day].map((game) => {
+                      const crew = ([['1. SR', game.firstReferee], ['2. SR', game.secondReferee]] as const)
+                        .filter(([, name]) => name);
+                      return (
+                        <GameRow
+                          key={game.id}
+                          lang={formData.lang}
+                          tone={game.status === 'outstanding' ? 'amber' : game.status === 'completed' ? 'emerald' : 'stone'}
+                          date={game.date}
+                          league={game.league}
+                          matchNo={game.matchNo || undefined}
+                          home={game.homeTeam}
+                          away={game.awayTeam}
+                          location={game.location ? shortenLocation(game.location) : undefined}
+                          mapsUrl={game.maps_url}
+                          className={boerseRowClass(game.boerse) || undefined}
+                          status={<>
+                            <span
+                              className={cn('h-2.5 w-2.5 rounded-full', game.assignedRc ? 'bg-green-500' : 'bg-stone-300')}
+                              title={game.assignedRc || 'No RC'}
+                            />
+                            <span className={cn('h-3 w-3 rounded-full', statusDotClass(game.status))} />
+                          </>}
+                          chips={<>
+                            <GameFlagChips game={game} lang={formData.lang} />
+                            {crew.map(([role, name]) => {
+                              const slotCoachee = roster.onSlot(game, role);
+                              return (
+                                <CrewChip
+                                  key={role}
+                                  role={role}
+                                  name={name ?? ''}
+                                  lang={formData.lang}
+                                  coachee={!!slotCoachee}
+                                  level={coacheeLevelOf(slotCoachee)}
+                                  group={coacheeGroupOf(slotCoachee)}
+                                  offered={inBoerse(game.boerse, role)}
+                                  observed={roleObserved(game, role)}
+                                />
+                              );
+                            })}
+                          </>}
+                        >
+                          <BoerseNote boerse={game.boerse} lang={formData.lang} />
+                          {game.assignedRc && (
+                            <p className="mt-0.5 text-xs text-stone-500">
+                              <span className="font-medium text-stone-400">RC</span>{' '}
+                              <span className="font-semibold text-stone-700">{game.assignedRc}</span>
+                            </p>
+                          )}
+                          <MatchResult result={game.game_result} className="mt-1" />
+                        </GameRow>
+                      );
+                    })}
+                  </GameList>
                 </div>
               ))
             )}

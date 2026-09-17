@@ -107,6 +107,125 @@ export const GAME_NOSV = {
   assignedRcId: undefined,
 };
 
+/** The marks — what a game IS — as the API sends them on every list, each on
+ *  a clone of GAME with its own number so two of them can share a stub.
+ *
+ *  GAME_RC: the signed-in coach whistles the other slot next to the coachee
+ *  (4.4.10). The coach's slot resolves to nobody — a coach is not a coachee —
+ *  so its ids are ''. Unassigned: an RC-Spiel is not a game to take. */
+export const GAME_RC = {
+  ...GAME,
+  id: 'g-rc',
+  matchNo: '2345680',
+  homeTeam: 'VBC Voléro Zürich',
+  awayTeam: 'Volley Amriswil',
+  secondReferee: RC.name,
+  secondRefereeId: '',
+  secondCoacheeId: '',
+  assignedRc: '',
+  assignedRcId: '',
+  isRcGame: true,
+};
+
+/** An LD game, held by the signed-in coach. */
+export const GAME_LD = {
+  ...GAME,
+  id: 'g-ld',
+  matchNo: '2345681',
+  homeTeam: 'VBC Limmattal',
+  awayTeam: 'Volley Uster',
+  isLdGame: true,
+};
+
+/** A game VolleyManager marked as an RD-Spiel: the server forces the star,
+ *  and the tooltip on it says where the star came from. */
+export const GAME_VM = {
+  ...GAME,
+  id: 'g-vm',
+  matchNo: '2345682',
+  homeTeam: 'VBC Kanti Baden',
+  awayTeam: 'Volley Smash 05',
+  isRdGame: true,
+  vmFlagged: true,
+  starred: true,
+};
+
+/** Twelve minutes ago — a fresh Börse poll. */
+export const BOERSE_AS_OF = new Date(Date.now() - 12 * 60_000).toISOString();
+
+/** The coachee's own slot (the 1. SR on GAME) is in the SR-Börse: the red
+ *  verdict, and the one Infoschreiben 4.1 asks a coach to check for. */
+export const BOERSE_RED = { level: 'red', reason: 'only-coachee-offered', markedSlots: ['1'], asOf: BOERSE_AS_OF };
+
+/** Nothing offered — the verdict a current API sends on an untouched game.
+ *  Distinct from the field being ABSENT, which means an older API. */
+export const BOERSE_NONE = { level: 'none', reason: 'no-open-offers', markedSlots: [] as string[], asOf: BOERSE_AS_OF };
+
+/** A row of GET /api/rc-overview/:rc/coachees (plannedGames / outstandingGames)
+ *  built from a games-list fixture, so a spec can put the SAME game on Home
+ *  and on the Games tab and pin that both draw the same chips. The crew is
+ *  the two slots with the ids the fixture carries; the marks and the verdict
+ *  ride along as the server sends them. `over` wins over everything. */
+export function summaryGame(game: typeof GAME & Partial<Record<string, unknown>>, over: Record<string, unknown> = {}) {
+  const g = game as Record<string, unknown>;
+  const crew = ([
+    { name: game.firstReferee, role: '1. SR', svNumber: game.firstRefereeId, coacheeId: game.firstCoacheeId },
+    { name: game.secondReferee, role: '2. SR', svNumber: game.secondRefereeId, coacheeId: game.secondCoacheeId },
+  ]).filter((r) => r.name).map((r) => ({ ...r, coachee: !!r.coacheeId }));
+  const mine = crew.find((r) => r.coachee);
+  return {
+    gameId: game.id,
+    gameDate: game.date,
+    league: game.league,
+    matchNo: game.matchNo,
+    location: game.location,
+    mapsUrl: g.maps_url ?? '',
+    teams: `${game.homeTeam} vs ${game.awayTeam}`,
+    refereeName: mine?.name ?? crew.map((r) => r.name).join(' / '),
+    refereeRole: mine?.role,
+    crew,
+    coacheeId: mine?.coacheeId ?? '',
+    noCoachee: !mine,
+    result: game.game_result,
+    firstRefereeId: game.firstRefereeId,
+    secondRefereeId: game.secondRefereeId,
+    assignedRc: game.assignedRc,
+    assignedRcId: game.assignedRcId,
+    feedbackClosedRoles: game.feedbackClosedRoles,
+    starred: g.starred, vmFlagged: g.vmFlagged, isRdGame: g.isRdGame,
+    isRcGame: g.isRcGame, isLdGame: g.isLdGame, isManual: g.isManual,
+    boerse: g.boerse,
+    ...over,
+  };
+}
+
+/** A row of GET /api/coachees/:id/games: the games-list row plus which
+ *  slots the coachee stands on. */
+export function coacheeGame(game: typeof GAME & Partial<Record<string, unknown>>, roles: string[] = ['1. SR']) {
+  return { ...game, assignedRoles: roles };
+}
+
+/** A row of GET /api/rc-games — Home's SR-Spiele: the signed-in coach on
+ *  one whistle, COACHEE on the other, already played and still owing its
+ *  Rückmeldung. The marks ride along the way the API sends them. */
+export const MY_RC_GAME = {
+  gameId: 'g-sr',
+  matchNo: '2400777',
+  league: '3L',
+  gameDate: '2026-10-11T18:00:00Z',
+  location: 'Sporthalle Buchlern',
+  mapsUrl: '',
+  teams: 'VBC Uni Bern vs Volley Top Luzern',
+  result: '3:1',
+  rcRole: '2. SR',
+  coacheeName: COACHEE.full_name,
+  coacheeId: COACHEE.id,
+  coacheeRole: '1. SR',
+  note: null,
+  isRcGame: true, isLdGame: false, isRdGame: false, isRsvGame: false, isManual: false, starred: false, vmFlagged: false,
+  firstRefereeId: COACHEE.referee_id, secondRefereeId: '', assignedRc: '', assignedRcId: '',
+};
+
 const EMAIL_TEMPLATE = { subject: 's', heading: 'h', intro: 'i', outro: 'o' };
 
 export type StubOptions = {

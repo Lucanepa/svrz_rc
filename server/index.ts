@@ -2819,6 +2819,19 @@ function warnSvMismatch(m: SvMismatch): void {
   });
 }
 
+/** A coachee row's Niveau in the KEY shape (the client's levelKey) — "N3-2"
+ *  when the Stufe is a digit, "N3" when it is not, '' when the row has none.
+ *  The shape the expense sheet's SK column and the form's srNiveau carry. Not
+ *  the label a chip prints: levelDisplay says "N3-TBD" for a missing Stufe
+ *  and "N4-TBD" for a missing Niveau, so a screen that draws a chip gets the
+ *  raw level and stage and labels them itself, as it labels a roster row. */
+function levelOfRow(row: AnyRecord | undefined): string {
+  const level = asText(row?.referee_level);
+  if (!level) return '';
+  const stage = asText(row?.stage);
+  return /^\d+$/.test(stage) ? `${level}-${stage}` : level;
+}
+
 async function getCoacheeIndex(prefetchedCoachees?: AnyRecord[]): Promise<CoacheeIndex> {
   const [coachees, register] = await Promise.all([
     prefetchedCoachees ?? listCoacheesWithFallbackSort(),
@@ -6718,9 +6731,17 @@ async function fetchStoredForm(row: FormsRow, token: string): Promise<{ data: Bu
 }
 
 async function loadFormsRows(): Promise<FormsRow[]> {
-  const records = await withCollection(collectionCandidates.refereeCoaches, (c) =>
-    c.getFullList<AnyRecord>({ sort: '-submitted_at', expand: 'game,coachee' }));
-  return records.map((rec) => formsRowOf(rec));
+  const [records, manualIds] = await Promise.all([
+    withCollection(collectionCandidates.refereeCoaches, (c) =>
+      c.getFullList<AnyRecord>({ sort: '-submitted_at', expand: 'game,coachee' })),
+    getManualGameIds(),
+  ]);
+  // Stamped here rather than inside formsRowOf: the set is one read per
+  // request, and the row shape stays what the rules spec builds by hand.
+  return records.map((rec) => {
+    const row = formsRowOf(rec);
+    return { ...row, isManual: manualIds.has(asText(row.game?.id) || asText(rec.game)) };
+  });
 }
 
 app.get('/api/forms/index', requireArchiveReader, async (_req: Request, res: ExpressResponse) => {
@@ -6965,11 +6986,15 @@ app.get('/api/admin/games/manual', requireAdminSession, async (req: Request, res
       sort: '-match_date',
       fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id',
     }));
+    // What this list calls a Testspiel: the tracked id, or — for a game
+    // created before ids were tracked — the TEST- number. One test for the
+    // listing and for the bit on the row, so the two cannot disagree: with
+    // the id alone the bit said "Spiel aus VolleyManager" on a TEST- game the
+    // prefix rule had just listed.
+    const isManualRow = (g: AnyRecord) => manual.has(g.id) || normalizeName(g.match_no).startsWith('test-');
     const hit = (g: AnyRecord) => {
-      if (manual.has(g.id)) return true;
-      // Games created before ids were tracked, plus anything the operator
-      // searches for by hand.
-      if (normalizeName(g.match_no).startsWith('test-')) return true;
+      if (isManualRow(g)) return true;
+      // Anything the operator searches for by hand.
       if (!q) return false;
       return [g.match_no, g.home_team, g.away_team, g.assigned_rc, g.first_referee, g.second_referee, g.match_date, g.league]
         .some((v) => normalizeName(v).includes(q));
@@ -6977,6 +7002,13 @@ app.get('/api/admin/games/manual', requireAdminSession, async (req: Request, res
     res.json(all.filter(hit).slice(0, 50).map((g) => ({
       id: g.id, match_no: asText(g.match_no), league: asText(g.league), match_date: asText(g.match_date),
       home_team: asText(g.home_team), away_team: asText(g.away_team), assigned_rc: asText(g.assigned_rc),
+      assigned_rc_id: asText(g.assigned_rc_id), location: asText(g.location),
+      first_referee: asText(g.first_referee), second_referee: asText(g.second_referee),
+      // Whether the row IS a manual game. A search hit is any fixture the
+      // words match, and this list puts a cascading Delete on every row
+      // under a heading that says Testspiele — the row has to say when it
+      // is a VolleyManager fixture instead.
+      isManual: isManualRow(g),
     })));
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -7249,7 +7281,10 @@ async function collectExpenseVisits(
   // yet on a cold process: without the read, a feedback stamped with a
   // colleague's id fell to the name and could land on a namesake's sheet.
   await getActiveRcPeople();
-  const inSeason = await seasonFilterExceptManual(season);
+  // The manual set is what exempts a test game from the season window, so a
+  // Testspiel observation is on every season's sheet; the same set marks
+  // the row, so the treasurer at least sees which line is one.
+  const [inSeason, manualIds] = await Promise.all([seasonFilterExceptManual(season), getManualGameIds()]);
   const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
     collection.getFullList<AnyRecord>({ sort: 'submitted_at', expand: 'game,coachee' }),
   );
@@ -7268,10 +7303,7 @@ async function collectExpenseVisits(
     const coachee = expanded?.coachee;
     // The level and group AS OBSERVED — the form's own copy — before the
     // coachee row, which may have moved on since (a promotion, a new group).
-    const level = asText(meta.srNiveau).replace(/\s+/g, '')
-      || (asText(coachee?.referee_level) && /^\d+$/.test(asText(coachee?.stage))
-        ? `${asText(coachee?.referee_level)}-${asText(coachee?.stage)}`
-        : asText(coachee?.referee_level));
+    const level = asText(meta.srNiveau).replace(/\s+/g, '') || levelOfRow(coachee);
     const visit: ExpenseVisit = {
       gameId: String(game.id),
       matchNo: asText(game.match_no) || asText(meta.spielNr),
@@ -7280,6 +7312,7 @@ async function collectExpenseVisits(
       group: asText(meta.gruppe) || asText(coachee?.groups),
       role: asText(fb.role_assessed),
       level,
+      isManual: manualIds.has(String(game.id)),
     };
     const list = out.get(owner.id) ?? [];
     list.push(visit);
@@ -7603,7 +7636,7 @@ app.get('/api/admin/statistics', requireAdminSession, async (req: Request, res: 
         const game = expanded?.game;
         if (!game || !inSeason(game)) continue;
         const owner = identities.find((rc) => rcRefMatches(fb.rc_id, fb.rc_name, { rcId: rc.id, name: rc.name })) ?? null;
-        const observation = observationFromFeedback({ feedback: fb, game, coachee: expanded?.coachee, rc: owner });
+        const observation = observationFromFeedback({ feedback: fb, game, coachee: expanded?.coachee, rc: owner, manualIds: raw.manual });
         if (observation) observations.push(observation);
       }
       const roster: StatCoacheeInput[] = raw.coachees
@@ -7691,7 +7724,12 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
     );
     const rcGames = allGames.filter((g) =>
       isSubject(g.assigned_rc_id, g.assigned_rc) && inSeason(g));
-    const boerseFor = await makeBoerseVerdict(await boerseViewerFor(subject));
+    // The coachee rows, read ONCE and handed to every helper that needs them:
+    // the Börse verdict, the RC-game test and the crew matching below each
+    // built their own index, which was three full reads of the coachee table
+    // per Home load.
+    const coachees = await getCoacheeIndex();
+    const boerseFor = await makeBoerseVerdict(await boerseViewerFor(subject), coachees);
     // The star rides along so Home can say which of the coach's own games
     // somebody asked for: the games list showed "Gewünscht" on a fixture, and
     // the same fixture, once taken, lost it on the dashboard. Same rule as
@@ -7701,7 +7739,7 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
     // an RC-Spiel (a coach whistling next to a coachee) looked like any other
     // fixture in the coach's own list (Luca, 17.09.2026: "why is this not an
     // RC game?" — the API said it was; this list never carried the bit).
-    const [isRcGame, manualIds] = await Promise.all([makeRcGameTest(), getManualGameIds()]);
+    const [isRcGame, manualIds] = await Promise.all([makeRcGameTest(coachees), getManualGameIds()]);
     const starOf = (game: AnyRecord) => {
       const vmFlagged = isVmMarkedRow(game);
       return {
@@ -7709,6 +7747,16 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
         isRcGame: isRcGame(game), isLdGame: Boolean(game.is_ld_game), isManual: manualIds.has(String(game.id)),
       };
     };
+    // The identity half of a row, the way /api/eligible-games carries it: the
+    // referees' numbers, the holder, and which roles are already closed. All
+    // projected here since the columns were read; none of it left the route.
+    const identityOf = (game: AnyRecord) => ({
+      firstRefereeId: asText(game.first_referee_id),
+      secondRefereeId: asText(game.second_referee_id),
+      assignedRc: asText(game.assigned_rc),
+      assignedRcId: asText(game.assigned_rc_id),
+      feedbackClosedRoles: Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [],
+    });
 
     // Fetch feedbacks for this RC
     const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -7722,20 +7770,23 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
     // Build feedback game IDs set
     const feedbackGameIds = new Set(rcFeedbacks.map((fb) => String(fb.game || '')));
 
-    // The coachee rows, for the referee matching below.
-    const coachees = await getCoacheeIndex();
-
     // Group by coachee
     // A crew entry says who stands in the slot by id as well as by name: the
     // coachee row the index matched ('' for nobody) and the referee's number,
     // off the slot or off the row. The client draws the group chip from the
-    // id, so a licence spelling on the convocation no longer loses it.
-    type CrewEntry = { name: string; role: string; coachee: boolean; svNumber: string; coacheeId: string };
-    type SummaryGame = { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: CrewEntry[]; coacheeId?: string; noCoachee?: boolean; result: string; boerse: BoerseOnGame; starred: boolean; vmFlagged: boolean; isRdGame: boolean; isRcGame: boolean; isLdGame: boolean; isManual: boolean };
+    // id, so a licence spelling on the convocation no longer loses it. The
+    // row's group and Niveau ride along too, for a reader without a roster
+    // of its own — the admin's Übersicht detail draws the same chips as Home
+    // and has no coachee list to resolve the id against.
+    type CrewEntry = { name: string; role: string; coachee: boolean; svNumber: string; coacheeId: string; groups?: string; refereeLevel?: string; stage?: string };
+    type GameMarks = { starred: boolean; vmFlagged: boolean; isRdGame: boolean; isRcGame: boolean; isLdGame: boolean; isManual: boolean };
+    type GameIdentity = ReturnType<typeof identityOf>;
+    type SummaryGame = { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: CrewEntry[]; coacheeId?: string; noCoachee?: boolean; result: string; boerse: BoerseOnGame } & GameMarks & GameIdentity;
+    type SummaryFeedback = { feedbackId: string; gameId: string; matchNo: string; gameDate: string; league: string; teams: string; location: string; mapsUrl: string; role: string; submittedAt: string; result: string; groups: string; refereeLevel: string; stage: string } & Partial<GameMarks>;
     const coacheeMap = new Map<string, {
       coacheeName: string;
       coacheeId: string;
-      doneFeedbacks: { feedbackId: string; gameId: string; matchNo: string; gameDate: string; league: string; teams: string; role: string; submittedAt: string; result: string }[];
+      doneFeedbacks: SummaryFeedback[];
       outstandingGames: SummaryGame[];
       plannedGames: SummaryGame[];
     }>();
@@ -7777,12 +7828,27 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
         gameDate: asText(gameRec?.match_date),
         league: asText(gameRec?.league),
         teams: `${asText(gameRec?.home_team)} vs ${asText(gameRec?.away_team)}`,
+        location: asText(gameRec?.location),
+        mapsUrl: asText(gameRec?.maps_url),
         role: asText(fb.role_assessed),
         submittedAt: asText(fb.submitted_at),
         // Off the expanded game, not the feedback: the feedback's own copy is
         // whatever the coach typed at the time, while the game record is what
         // the sync keeps corrected.
         result: asText(gameRec?.game_result),
+        // The coachee's raw group, Niveau and Stufe, as a crew entry carries
+        // them on the games still to do, for a reader with no roster (the
+        // admin's Übersicht detail): the group is what says why the visit
+        // mattered, and the chair's done row said "Coachee" and nothing
+        // else where the coach's Home said "Beförderung?".
+        groups: asText(coacheeRec?.groups),
+        refereeLevel: asText(coacheeRec?.referee_level),
+        stage: asText(coacheeRec?.stage),
+        // The same marks as on the games still to do: a filed observation on
+        // a Testspiel or an LD game read like any other on the done list.
+        // The expanded record is the whole game, so the helper takes it as
+        // it is; a feedback whose game was deleted carries none.
+        ...(gameRec ? starOf(gameRec) : {}),
       });
     }
 
@@ -7801,6 +7867,12 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
       // Match referees to coachees
       let matched = false;
       const season = seasonOfGame(game.match_date);
+      // The tier rule slotIdentityFields applies to the ids on this same row:
+      // a manual game is on every season's list whatever its date, and a
+      // July test game with this season's coachee on the whistle has no row
+      // in the season of its date — resolved by the game's season alone it
+      // was a Coachee on the Games tab and "kein Coachee mehr" here.
+      const lookup = manualIds.has(String(game.id)) ? coachees.findOrNewest : coachees.find;
       // BOTH referees, each marked for whether they are one of this coach's.
       // Sending only the coachees made a one-name row ambiguous: the other slot
       // could be empty, or held by somebody the coach simply does not follow,
@@ -7811,17 +7883,25 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
         .map((slot, i) => ({ slot, name: asText(slot.name), role: i === 0 ? '1. SR' : '2. SR' }))
         .filter((r) => r.name)
         .map(({ slot, name, role }) => {
-          const row = coachees.find(season, slot).row;
+          const row = lookup(season, slot).row;
           return { name, role, coachee: row !== null, row, svNumber: asText(slot.sv) || asText(row?.referee_id), coacheeId: String(row?.id ?? '') };
         });
-      const crewOut: CrewEntry[] = crew.map(({ name, role, coachee, svNumber, coacheeId }) => ({ name, role, coachee, svNumber, coacheeId }));
+      const crewOut: CrewEntry[] = crew.map(({ name, role, coachee, svNumber, coacheeId, row }) => ({
+        name, role, coachee, svNumber, coacheeId,
+        // The row's raw group, Niveau and Stufe — the client labels them
+        // (groupLabel, levelDisplay), the same way it labels a roster row —
+        // so a reader with no roster still draws the chips, and the TBD
+        // rules for a coachee without a Stufe live in that one function: a
+        // label built here said "N3" where Home said "N3-TBD".
+        ...(row ? { groups: asText(row.groups), refereeLevel: asText(row.referee_level), stage: asText(row.stage) } : {}),
+      }));
       for (const { name: refName, role, coachee, row } of crew) {
         if (!coachee) continue;
         matched = true;
         // Under the row's own spelling and id, so the group is the same one
         // the coach's filed feedbacks on this person went into.
         const entry = getOrCreate(asText(row?.full_name || row?.name) || refName, String(row?.id ?? ''), asText(row?.referee_id));
-        const gameEntry: SummaryGame = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: refName, refereeRole: role, crew: crewOut, coacheeId: String(row?.id ?? ''), result, boerse: boerseFor(game), ...starOf(game) };
+        const gameEntry: SummaryGame = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: refName, refereeRole: role, crew: crewOut, coacheeId: String(row?.id ?? ''), result, boerse: boerseFor(game), ...starOf(game), ...identityOf(game) };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {
@@ -7837,7 +7917,7 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
         const refNames = [game.first_referee, game.second_referee].map(asText).filter(Boolean);
         const label = refNames.join(' / ') || '?';
         const entry = getOrCreate(label, '');
-        const gameEntry: SummaryGame = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: label, crew: crewOut, coacheeId: '', noCoachee: true, result, boerse: boerseFor(game), ...starOf(game) };
+        const gameEntry: SummaryGame = { gameId: game.id, gameDate: asText(game.match_date), league, matchNo, location, mapsUrl, teams, refereeName: label, crew: crewOut, coacheeId: '', noCoachee: true, result, boerse: boerseFor(game), ...starOf(game), ...identityOf(game) };
         if (gameDate < now) {
           entry.outstandingGames.push(gameEntry);
         } else {
@@ -7880,17 +7960,25 @@ type RcGameNoteRecord = {
   league: string;
   gameDate: string;
   teams: string;
+  /** The hall, its map link and the score, off the expanded game — the
+   *  chair's list names the game and used to stop at the teams. */
+  location: string;
+  mapsUrl: string;
+  result: string;
+  /** A note written on a throwaway fixture, so the chair's list can say so. */
+  isManual?: boolean;
 };
 
-const GAME_NOTE_FIELDS = 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,game_result';
+const GAME_NOTE_FIELDS = 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,is_rd_game,is_ld_game,is_rsv_game,game_result';
 
-function mapRcGameNote(record: AnyRecord): RcGameNoteRecord {
+function mapRcGameNote(record: AnyRecord, manualIds?: Set<string>): RcGameNoteRecord {
   const game = (record.expand as Record<string, AnyRecord> | undefined)?.game;
+  const gameId = asText(record.game) || asText(record.game_id);
   return {
     id: String(record.id),
     // The relation is the truth; game_id is the same value flattened, kept for
     // rows whose game was deleted out from under them.
-    gameId: asText(record.game) || asText(record.game_id),
+    gameId,
     rcId: asText(record.rc_id),
     rcName: asText(record.rc_name),
     rcRole: asText(record.rc_role),
@@ -7907,15 +7995,21 @@ function mapRcGameNote(record: AnyRecord): RcGameNoteRecord {
     league: asText(game?.league),
     gameDate: asText(game?.match_date),
     teams: game ? `${asText(game.home_team)} vs ${asText(game.away_team)}` : '',
+    location: asText(game?.location),
+    mapsUrl: asText(game?.maps_url),
+    result: asText(game?.game_result),
+    ...(manualIds ? { isManual: manualIds.has(gameId) } : {}),
   };
 }
 
 async function listRcGameNotes(): Promise<RcGameNoteRecord[]> {
   await ensureAdminAuth();
-  const records = await withCollection(collectionCandidates.rcGameNotes, (collection) =>
-    collection.getFullList<AnyRecord>({ sort: '-submitted_at', expand: 'game' }),
-  );
-  return records.map(mapRcGameNote);
+  const [records, manualIds] = await Promise.all([
+    withCollection(collectionCandidates.rcGameNotes, (collection) =>
+      collection.getFullList<AnyRecord>({ sort: '-submitted_at', expand: 'game' })),
+    getManualGameIds(),
+  ]);
+  return records.map((record) => mapRcGameNote(record, manualIds));
 }
 
 type MyRcGame = {
@@ -7932,6 +8026,23 @@ type MyRcGame = {
   coacheeId: string;
   coacheeRole: string;
   boerse?: BoerseOnGame;
+  /** What the game IS, the way every other list marks it. An RC-Spiel by
+   *  construction — every row here is one — and said so anyway, so a reader
+   *  that draws the marks off one shape draws them here too. */
+  isRcGame: boolean;
+  isLdGame: boolean;
+  isRdGame: boolean;
+  isRsvGame: boolean;
+  isManual: boolean;
+  starred: boolean;
+  vmFlagged: boolean;
+  /** The referees' numbers and the holder: a coach may hold the game they
+   *  whistle themselves (the calendar feed dedupes that case), and Home
+   *  could not say so. */
+  firstRefereeId: string;
+  secondRefereeId: string;
+  assignedRc: string;
+  assignedRcId: string;
 };
 
 // Every game this season where the SUBJECT coach held one whistle and a coachee
@@ -7960,10 +8071,15 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
   // invisible to both /api/eligible-games and /api/rc-overview. Attaching the
   // verdict only to those two would have left both R4 cases unreachable on the
   // one screen this feature was asked for.
-  const boerseFor = await makeBoerseVerdict(me);
-  const games = await withCollection(collectionCandidates.games, (collection) =>
-    collection.getFullList<AnyRecord>({ sort: '-match_date', fields: GAME_NOTE_FIELDS }),
-  );
+  // The index built above is handed in, so the verdict does not read the
+  // coachee table a second time per Home load.
+  const [boerseFor, games, starredIds, manualIds] = await Promise.all([
+    makeBoerseVerdict(me, coachees),
+    withCollection(collectionCandidates.games, (collection) =>
+      collection.getFullList<AnyRecord>({ sort: '-match_date', fields: GAME_NOTE_FIELDS })),
+    getStarredGameIds(),
+    getManualGameIds(),
+  ]);
 
   const out: MyRcGame[] = [];
   for (const game of games) {
@@ -7984,6 +8100,7 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
         id: String(row.id),
         name: asText(row.full_name ?? row.name) || coacheeRowNames(row)[0] || '',
       };
+      const vmFlagged = isVmMarkedRow(game);
       out.push({
         gameId: String(game.id),
         matchNo: asText(game.match_no),
@@ -7998,6 +8115,19 @@ async function listMyRcGames(subject: RcAuthInfo, seasonRaw: unknown): Promise<M
         coacheeId: coachee.id,
         coacheeRole: slot.otherRole,
         boerse: boerseFor(game),
+        // The marks, the same way /api/eligible-games carries them: a test
+        // SR-Spiel made to try the 4.4.10 flow looked like a real appointment.
+        isRcGame: true,
+        isLdGame: Boolean(game.is_ld_game),
+        isRdGame: Boolean(game.is_rd_game),
+        isRsvGame: Boolean(game.is_rsv_game),
+        isManual: manualIds.has(String(game.id)),
+        vmFlagged,
+        starred: vmFlagged || starredIds.has(String(game.id)),
+        firstRefereeId: asText(game.first_referee_id),
+        secondRefereeId: asText(game.second_referee_id),
+        assignedRc: asText(game.assigned_rc),
+        assignedRcId: asText(game.assigned_rc_id),
       });
       // One person cannot hold both whistles — stop before the mirrored slot
       // files the same game a second time.
@@ -8507,7 +8637,7 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
     // first and the folded name after — so "Kevin León Peña de los Santos" on
     // the convocation reaches the "Kevin Peña" row the moment either carries
     // the number.
-    const gameFields = 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,first_line_judge,second_line_judge,assigned_rc,assigned_rc_id,feedback_closed_roles,game_result,maps_url';
+    const gameFields = 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,first_line_judge,second_line_judge,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result,maps_url';
     const thisCoachee = buildCoacheeIndex([coachee], await getRefereeRegister(), warnSvMismatch);
     const namesThisCoachee = (slot: CoacheeQuery) => thisCoachee.has(null, slot);
 
@@ -8532,6 +8662,10 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
       const assignedRoles = assignedQueries(game)
         .map((slot, i) => (namesThisCoachee(slot) ? roles[i] : ''))
         .filter(Boolean);
+      // VolleyManager's own mark or the admin's list, the rule every other
+      // list applies. The admin list alone lost the star on an RD-marked
+      // game the moment it was read off this page rather than the games tab.
+      const vmFlagged = isVmMarkedRow(game);
       return {
         id: game.id,
         matchNo: asText(game.match_no),
@@ -8550,7 +8684,11 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
         // Badged here too: the same game must not read as a fixture on one
         // list and a throwaway on the other.
         isManual: manualIds.has(String(game.id)),
-        starred: starredIds.has(String(game.id)),
+        isRdGame: Boolean(game.is_rd_game),
+        isLdGame: Boolean(game.is_ld_game),
+        isRsvGame: Boolean(game.is_rsv_game),
+        vmFlagged,
+        starred: vmFlagged || starredIds.has(String(game.id)),
         // The client type has always promised these; without them the "already
         // taken by another RC" badge could never appear against the real API,
         // so two coaches could plan the same visit unaware of each other.
@@ -8558,6 +8696,11 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
         feedbackClosedRoles: Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [],
         game_result: asText(game.game_result),
         maps_url: asText(game.maps_url),
+        // The verdict was computed for every row of this page since the
+        // feature shipped and never put on the wire: the row draws the Börse
+        // wash, the note and the slot marks off this field, so the same game
+        // was red on the games tab and blank one tap later.
+        boerse: boerseFor(game),
       };
     });
 
@@ -8808,7 +8951,7 @@ app.get('/api/games/calendar-status', requireRcSession, async (req: Request, res
         return await withCollection(collectionCandidates.games, (collection) =>
           collection.getFullList<AnyRecord>({
             sort: '-match_date',
-            fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,first_line_judge,second_line_judge',
+            fields: 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,first_line_judge,second_line_judge,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result',
           }),
         );
       } catch (error) {
@@ -8865,17 +9008,35 @@ app.get('/api/games/calendar-status', requireRcSession, async (req: Request, res
       await getRefereeRegister(),
       warnSvMismatch,
     );
+    // The same marks every other list carries: the calendar was the one list
+    // where a coach could not see who holds a game, that it is an RC-Spiel
+    // or a Testspiel, or that a slot is in the Börse. Off the WHOLE table,
+    // as /api/eligible-games and the coachee's own page compute them — the
+    // active-only index above is for the status dot, whose observations are
+    // an active coachee's by design, and handing it to the helpers made a
+    // coach whistling next to a coachee set inactive mid-season an RC-Spiel
+    // on the Games tab and an ordinary fixture here. The rows are already in
+    // hand and the register is cached; the people list and the Börse index
+    // are cached too, so the two settings reads are the whole cost.
+    const allCoachees = await getCoacheeIndex(coachees);
+    const [isRcGame, boerseFor, starredIds, manualIds] = await Promise.all([
+      makeRcGameTest(allCoachees),
+      makeBoerseVerdict(await boerseViewerFor(rcAuthByReq.get(req) ?? null), allCoachees),
+      getStarredGameIds(),
+      getManualGameIds(),
+    ]);
 
     const result = games.map((game) => {
       const gameSeason = seasonOfGame(game.match_date);
       // Slot by slot — the two referees first, then the line judges — so the
       // whistle slots can be named on the row below.
-      const perSlot = assignedQueries(game).map((slot) => activeCoachees.find(gameSeason, slot).row);
-      const matchedCoachees = perSlot.filter(Boolean) as AnyRecord[];
+      const perSlot = assignedQueries(game).map((slot) => activeCoachees.find(gameSeason, slot));
+      const matchedCoachees = perSlot.map((hit) => hit.row).filter(Boolean) as AnyRecord[];
 
       const statuses = matchedCoachees.map((coachee) => summaryById.get(String(coachee.id))).filter(Boolean) as CoacheeObservationSummary[];
       const hasOutstanding = statuses.some((status) => status.needsObservation);
       const hasCompleted = statuses.some((status) => status.hasCompletedObservation);
+      const vmFlagged = isVmMarkedRow(game);
 
       return {
         id: game.id,
@@ -8889,10 +9050,24 @@ app.get('/api/games/calendar-status', requireRcSession, async (req: Request, res
         hasOutstanding,
         hasCompleted,
         // The coachee on each whistle slot, as the games list carries it —
-        // the same index, the same '' for nobody. A line judge cannot be
+        // the same index, the same tier rule for a manual game, the same ''
+        // for nobody, and which tier answered. A line judge cannot be
         // observed, so those two slots stay unnamed.
-        firstCoacheeId: perSlot[0] ? String(perSlot[0].id) : '',
-        secondCoacheeId: perSlot[1] ? String(perSlot[1].id) : '',
+        ...slotIdentityFields(allCoachees, game, manualIds),
+        firstReferee: asText(game.first_referee),
+        secondReferee: asText(game.second_referee),
+        assignedRc: asText(game.assigned_rc),
+        feedbackClosedRoles: Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [],
+        isRdGame: Boolean(game.is_rd_game),
+        isLdGame: Boolean(game.is_ld_game),
+        isRsvGame: Boolean(game.is_rsv_game),
+        isRcGame: isRcGame(game),
+        isManual: manualIds.has(String(game.id)),
+        vmFlagged,
+        starred: vmFlagged || starredIds.has(String(game.id)),
+        game_result: asText(game.game_result),
+        maps_url: asText(game.maps_url),
+        boerse: boerseFor(game),
       };
     });
 
@@ -10731,6 +10906,10 @@ async function findCoacheeByRefereeName(
 type ReminderPlan = {
   gameId: string; role: string; to: string; cc: string[]; replyTo: string;
   subject: string; text: string; html: string; coachee: string; rc: string; match: string;
+  /** How the preview names the game: the number, the day, the league — and
+   *  whether tomorrow's mail is for a Testspiel, which the preview could not
+   *  say although the lookup rule above knew it. */
+  matchNo: string; date: string; league: string; location: string; isManual: boolean;
 };
 
 // Build the reminders due for tomorrow. Sends nothing — so the admin UI can
@@ -10853,6 +11032,8 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
         subject: built.subject, text: built.text, html: built.html,
         coachee: recipientName, rc: rcName,
         match: `${asText(game.home_team)} – ${asText(game.away_team)}`,
+        matchNo: asText(game.match_no), date: asText(game.match_date), league: asText(game.league),
+        location: asText(game.location), isManual: isTest,
       });
     }
   }

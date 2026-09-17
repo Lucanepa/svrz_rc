@@ -49,7 +49,8 @@ import { confirmDialog, toast } from './ui';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame, type rcCoachSummary, type rcCoachSummaryGame } from '../types';
 import LevelText from './LevelText';
 import StatisticsAdmin from './StatisticsAdmin';
-import { CoacheeChip, GroupChip } from './CoacheeChips';
+import { CrewChip, GameFlagChips, MatchResult, roleObserved, type GameMarks } from './GameMarks';
+import { BoerseNote, boerseRowClass, inBoerse } from './BoerseNote';
 import { GameList, GameRow, MetaChip, SectionHead, type RowTone } from './GameRow';
 import { Skeleton, SkeletonRows } from './Skeleton';
 import { dayLabel, dayTimeLabel, clockLabel, dayKey, todayKey, instantOf } from '../lib/appTime';
@@ -290,6 +291,8 @@ const STR = {
     migrateFail: (e: string) => `Nachtragen fehlgeschlagen: ${e}`,
     mgExisting: 'Angelegte Testspiele', mgSearch: 'Spiel suchen …',
     mgNone: 'Keine Testspiele vorhanden.',
+    mgFixture: 'Spiel aus VolleyManager',
+    mgFixtureHint: 'Kein Testspiel — ein Suchtreffer. Löschen entfernt das Spiel samt allen darauf erfassten Feedbacks.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
     mgDeleteOk: (n: string) => `Spiel „${n}" gelöscht.`,
     shortcutToggle: 'Admin-Link in der Toolbar zeigen (nur Anzeige — gibt keine Rechte)',
@@ -335,6 +338,7 @@ const STR = {
     ovPlannedHint: 'Vom RC übernommen, noch nicht gespielt.',
     ovDoneHint: 'Beobachtung erfasst und versendet.',
     ovEmpty: 'Keine.',
+    ovNoCoachee: 'Kein Coachee mehr auf diesem Spiel — vermutlich getauscht. Dafür lässt sich kein Feedback erfassen.',
     ovPaidOn: 'Bezahlt am', ovPaidBy: 'von', ovMarkPaid: 'Als bezahlt markieren', ovUnmarkPaid: 'Bezahlt-Markierung entfernen',
     ovPaidHint: 'Spesen dieser Saison ausbezahlt. Ändert keine Zahl — „Vergütet" bleibt der Anspruch; das hier ist der Haken, wenn er beglichen ist.',
     ovPaidOk: 'Als bezahlt markiert.', ovUnpaidOk: 'Markierung entfernt.', ovPaidCol: 'Bezahlt am',
@@ -587,6 +591,8 @@ const STR = {
     migrateFail: (e: string) => `Backfill failed: ${e}`,
     mgExisting: 'Test games created', mgSearch: 'Search game …',
     mgNone: 'No test games.',
+    mgFixture: 'VolleyManager fixture',
+    mgFixtureHint: 'Not a test game — a search hit. Deleting removes the game with every feedback filed on it.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
     mgDeleteOk: (n: string) => `Game "${n}" deleted.`,
     shortcutToggle: 'Show the admin link in their toolbar (display only — grants nothing)',
@@ -632,6 +638,7 @@ const STR = {
     ovPlannedHint: 'Taken by the coach, not played yet.',
     ovDoneHint: 'Observation filed and sent.',
     ovEmpty: 'None.',
+    ovNoCoachee: 'No coachee on this game any more — probably swapped. No feedback can be filed for it.',
     ovPaidOn: 'Paid on', ovPaidBy: 'by', ovMarkPaid: 'Mark as paid', ovUnmarkPaid: 'Remove the paid mark',
     ovPaidHint: 'This season\'s expenses paid out. Changes no number — "Paid" stays the claim; this is the tick once it is settled.',
     ovPaidOk: 'Marked as paid.', ovUnpaidOk: 'Mark removed.', ovPaidCol: 'Paid on',
@@ -1875,6 +1882,9 @@ function DataQualityCard({ t, lang, season, active, registerPeople, hasRegister,
   // teams and day), or the number alone from an API that predates the
   // label — never the record id, which nobody can look up.
   const gameRef = (row: { label?: string; matchNo: string }) => row.label || (row.matchNo ? `#${row.matchNo}` : '');
+  // A Testspiel typed with a made-up referee sits in these lists like a real
+  // slot nobody linked; the chip says which rows are tests and not data.
+  const testMark = (row: { isManual?: boolean }) => (row.isManual ? <span className="ml-1.5 inline-block align-middle"><GameFlagChips game={{ isManual: true }} lang={lang} /></span> : null);
 
   const a = audit;
   const byNameSlots = a ? a.gameSlotsByName.filter((s) => s.via === 'name') : [];
@@ -1995,14 +2005,14 @@ function DataQualityCard({ t, lang, season, active, registerPeople, hasRegister,
           <AuditList label={t.dqSvMismatch} count={a.svDisagreesWithGame.length}>
             {a.svDisagreesWithGame.map((m) => (
               <p key={`${m.gameId}|${m.slot}`} className="py-1.5 text-xs text-stone-700">
-                <span className="font-medium">{gameRef(m)}</span> · {m.slot} {m.name} → {m.coacheeName}: {t.dqMismatchRow(m.slotSv, m.rowSv)}
+                <span className="font-medium">{gameRef(m)}</span> · {m.slot} {m.name} → {m.coacheeName}: {t.dqMismatchRow(m.slotSv, m.rowSv)}{testMark(m)}
               </p>
             ))}
           </AuditList>
           <AuditList label={t.dqSlotsByName} count={byNameSlots.length}>
             {byNameSlots.map((s) => (
               <p key={`${s.gameId}|${s.slot}`} className="py-1.5 text-xs text-stone-700">
-                <span className="font-medium">{gameRef(s)}</span> · {s.slot} {s.name}<ByNameChip t={t} />
+                <span className="font-medium">{gameRef(s)}</span> · {s.slot} {s.name}<ByNameChip t={t} />{testMark(s)}
               </p>
             ))}
           </AuditList>
@@ -2012,7 +2022,7 @@ function DataQualityCard({ t, lang, season, active, registerPeople, hasRegister,
           <AuditList label={t.dqSlotsNobody} count={nobodySlots.length}>
             {nobodySlots.map((s) => (
               <p key={`${s.gameId}|${s.slot}`} className="py-1.5 text-xs text-stone-500">
-                <span className="font-medium">{gameRef(s)}</span> · {s.slot} {s.name} — {(s.registerHits ?? 0) > 1 ? t.dqNobodyAmbiguous(s.registerHits ?? 0) : t.dqNobody}
+                <span className="font-medium">{gameRef(s)}</span> · {s.slot} {s.name} — {(s.registerHits ?? 0) > 1 ? t.dqNobodyAmbiguous(s.registerHits ?? 0) : t.dqNobody}{testMark(s)}
               </p>
             ))}
           </AuditList>
@@ -2025,7 +2035,7 @@ function DataQualityCard({ t, lang, season, active, registerPeople, hasRegister,
           </AuditList>
           <AuditList label={t.dqBlankMatchNo} count={a.blankMatchNo.length}>
             {a.blankMatchNo.map((b) => (
-              <p key={b.gameId} className="py-1.5 text-xs text-stone-700">{b.teams}{b.date ? ` · ${dayLabel(b.date, { year: true })}` : ''}</p>
+              <p key={b.gameId} className="py-1.5 text-xs text-stone-700">{b.teams}{b.date ? ` · ${dayLabel(b.date, { year: true })}` : ''}{testMark(b)}</p>
             ))}
           </AuditList>
           <AuditList label={t.dqRcRefs} count={a.rcRefsUnresolved.length}>
@@ -3047,7 +3057,13 @@ function EmailsAdmin({ t, lang }: { t: T; lang: Lang }) {
                 <div className="bg-stone-50 px-3 py-2 text-[11px] text-stone-600 border-b border-stone-200">
                   <div><span className="font-semibold">An:</span> {r.to} <span className="font-semibold ml-2">Cc:</span> {r.cc.join(', ') || '—'}</div>
                   <div><span className="font-semibold">Betreff:</span> {r.subject}</div>
-                  <div className="text-stone-400">{r.match} · {r.role} · {r.coachee} · RC {r.rc}</div>
+                  <div className="flex flex-wrap items-center gap-x-1 text-stone-400">
+                    <span>
+                      {[r.matchNo ? `#${r.matchNo}` : '', r.date ? dayLabel(r.date) : '', r.league, r.match].filter(Boolean).join(' · ')}
+                      {' · '}{r.role} · {r.coachee} · RC {r.rc}
+                    </span>
+                    <GameFlagChips game={{ isManual: r.isManual }} lang={lang} />
+                  </div>
                 </div>
                 <pre className="px-3 py-2 text-[11px] text-stone-700 whitespace-pre-wrap font-sans leading-relaxed">{r.text}</pre>
               </div>
@@ -3425,7 +3441,12 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
             {r.coacheeRole && <span className="text-xs text-stone-400">{r.coacheeRole}</span>}
             {r.gameDate && <span className="text-xs text-stone-400">{fmtDate(r.gameDate)}</span>}
             {r.league && <span className="text-xs text-stone-400">{r.league}</span>}
+            {/* The number the chair finds the game by in VolleyManager — the
+                notes above draw it, and this list did not. */}
+            {r.matchNo && <span className="text-xs tabular-nums text-stone-400">#{r.matchNo}</span>}
             {r.teams && <span className="text-xs text-stone-500 truncate">{r.teams}</span>}
+            {r.location && <span className="text-xs text-stone-400 truncate">{r.location}</span>}
+            <GameFlagChips game={{ isManual: r.isManual }} lang={lang} />
             <span className="ml-auto text-xs text-stone-500">{r.rcName}{r.rcRole ? ` (${r.rcRole})` : ''}</span>
           </div>
           {/* 7.3's report, arriving with the note instead of as a WhatsApp
@@ -3589,6 +3610,10 @@ function FormsAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolean }) 
                                   <span className="block sm:inline">{`${e.homeTeam || '?'} – ${e.awayTeam || '?'}`}</span>
                                 </>
                               )}
+                              {/* The chair's bin exists for a form filed on a
+                                  throwaway, and nothing in the folder said
+                                  which rows those were. */}
+                              {e.isManual && <span className="ml-1.5 inline-block align-middle"><GameFlagChips game={{ isManual: true }} lang={lang} /></span>}
                             </span>
                             <span className={FORMS_LABEL}>{t.formsRc}</span>
                             <span className="text-stone-700 min-w-0 truncate">{e.rc || '–'}</span>
@@ -4500,13 +4525,26 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
               // "Spiel „abcdefghijklmno" wirklich löschen?" names nothing an
               // admin can check against the list.
               const label = gameLabel({ matchNo: g.match_no, homeTeam: g.home_team, awayTeam: g.away_team, date: g.match_date });
+              // A search widens the list to any fixture the words match, and
+              // the row has to say which it is: a Testspiel by the same chip
+              // as everywhere else, a VolleyManager fixture by a warning —
+              // the Delete beside it cascades the feedbacks filed on it. An
+              // older server says neither, and the row stays as it was.
+              const fixture = g.isManual === false;
               return (
               <div key={g.id} className="py-2 flex items-center gap-3">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-stone-800 truncate">{label}</p>
+                  <p className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-stone-800">
+                    <span className="truncate">{label}</span>
+                    <GameFlagChips game={{ isManual: g.isManual }} lang={lang} />
+                    {fixture && (
+                      <MetaChip tone="amber" title={t.mgFixtureHint}>{t.mgFixture}</MetaChip>
+                    )}
+                  </p>
                   <p className="text-xs text-stone-400 truncate">
                     {g.match_date ? dayLabel(g.match_date, { year: true }) : ''}
                     {g.league ? ` · ${g.league}` : ''}{g.assigned_rc ? ` · ${g.assigned_rc}` : ''}
+                    {[g.first_referee, g.second_referee].filter(Boolean).length ? ` · ${[g.first_referee, g.second_referee].filter(Boolean).join(' / ')}` : ''}
                   </p>
                 </div>
                 <button
@@ -4797,10 +4835,19 @@ function GameImportCard({ lang }: { lang: Lang }) {
 /** One game behind a coach's counters, with everyone of theirs on it. The
  *  per-coachee summary hands a game over once per coachee, and the counters
  *  above count it once — so a game with two of the coach's coachees on the
- *  whistle is folded to one row naming both. */
-type OverviewGame = {
+ *  whistle is folded to one row naming both.
+ *
+ *  Everything the summary says about the game rides along — the marks, the
+ *  Börse verdict, the crew with its groups — because the row is drawn the
+ *  way the coach's own Home draws it, and a fold that kept the teams alone
+ *  showed the chair a taken RC-Spiel as an ordinary fixture the moment Home
+ *  stopped doing so. The first row of a game speaks for it; the rows after
+ *  add the coachees they name. */
+type OverviewCrew = NonNullable<rcCoachSummaryGame['crew']>[number];
+type OverviewGame = GameMarks & {
   key: string; gameDate: string; league: string; matchNo?: string; teams: string;
-  location?: string; mapsUrl?: string; result?: string; who: string[];
+  location?: string; mapsUrl?: string; result?: string; crew: OverviewCrew[];
+  boerse?: rcCoachSummaryGame['boerse']; noCoachee?: boolean; feedbackClosedRoles?: string[];
 };
 
 function foldOverviewGames(rows: rcCoachSummary[], pick: (r: rcCoachSummary) => rcCoachSummaryGame[]): OverviewGame[] {
@@ -4808,15 +4855,30 @@ function foldOverviewGames(rows: rcCoachSummary[], pick: (r: rcCoachSummary) => 
   for (const r of rows) {
     for (const g of pick(r)) {
       const key = g.gameId || `${g.gameDate}|${g.teams}`;
-      const label = g.noCoachee ? '' : `${r.coacheeName}${g.refereeRole ? ` · ${g.refereeRole}` : ''}`;
+      // The crew as the server sent it, or — from a server older than the
+      // crew — the one referee this row names, marked as the coachee it is
+      // listed under.
+      const crew: OverviewCrew[] = g.crew?.length
+        ? g.crew
+        : (g.noCoachee || !g.refereeName ? [] : [{ name: g.refereeName, role: g.refereeRole || '', coachee: true, coacheeId: r.coacheeId }]);
       const seen = byKey.get(key);
       if (seen) {
-        if (label && !seen.who.includes(label)) seen.who.push(label);
+        // One entry per slot: the row's id where the server resolved one,
+        // the printed name for a slot it did not.
+        const slotKey = (c: OverviewCrew) => `${c.role}|${c.coacheeId || c.name}`;
+        for (const c of crew) {
+          if (!seen.crew.some((k) => slotKey(k) === slotKey(c))) seen.crew.push(c);
+        }
+        // "No coachee on this game" only holds if it holds for every row.
+        if (!g.noCoachee) seen.noCoachee = false;
         continue;
       }
       byKey.set(key, {
         key, gameDate: g.gameDate, league: g.league, matchNo: g.matchNo, teams: g.teams,
-        location: g.location, mapsUrl: g.mapsUrl, result: g.result, who: label ? [label] : [],
+        location: g.location, mapsUrl: g.mapsUrl, result: g.result, crew,
+        boerse: g.boerse, noCoachee: g.noCoachee, feedbackClosedRoles: g.feedbackClosedRoles,
+        starred: g.starred, vmFlagged: g.vmFlagged, isRdGame: g.isRdGame,
+        isRcGame: g.isRcGame, isLdGame: g.isLdGame, isManual: g.isManual,
       });
     }
   }
@@ -4853,9 +4915,15 @@ function OverviewDetail({ t, lang, rcId, rcName, season }: { t: T; lang: Lang; r
   // them along — two coachees observed on one game fold to one row by the id,
   // and the number is drawn in the rail. An older server names neither, and
   // the date and the teams are then the game, as they were before.
+  // A done row is a filed record: the coachee it names is the one it was
+  // filed for, the marks and the hall come off the game, as on Home.
   const done = foldOverviewGames(rows, (r) => r.doneFeedbacks.map((fb) => ({
-    gameId: fb.gameId || '', matchNo: fb.matchNo, gameDate: fb.gameDate, league: fb.league, teams: fb.teams,
-    refereeName: r.coacheeName, refereeRole: fb.role, result: fb.result,
+    ...fb, gameId: fb.gameId || '', refereeName: r.coacheeName, refereeRole: fb.role,
+    // The record names its row directly; the crew entry carries the id, and
+    // the group and Niveau the summary stamps on the row, so the chip reads
+    // as it does on the games still to do — the group is what says why the
+    // visit mattered, and a done row without it said "Coachee" alone.
+    crew: [{ name: r.coacheeName, role: fb.role, coachee: true, coacheeId: r.coacheeId, groups: fb.groups, refereeLevel: fb.refereeLevel, stage: fb.stage }],
   })));
 
   const section = (title: string, hint: string, tone: RowTone, icon: React.ReactNode, games: OverviewGame[]) => (
@@ -4877,8 +4945,40 @@ function OverviewDetail({ t, lang, rcId, rcName, season }: { t: T; lang: Lang; r
               teams={g.teams}
               location={g.location}
               mapsUrl={g.mapsUrl}
-              chips={g.who.map((w) => <MetaChip key={w} tone="amber">{w}</MetaChip>)}
-            />
+              className={boerseRowClass(g.boerse) || undefined}
+              chips={<>
+                <GameFlagChips game={g} lang={lang} />
+                {g.crew.filter((c) => c.name).map((c) => (
+                  <CrewChip
+                    key={`${c.name}-${c.role}`}
+                    role={c.role}
+                    name={c.name}
+                    lang={lang}
+                    coachee={c.coachee}
+                    // Off the crew entry itself, labelled by the one function
+                    // every roster chip goes through: this view has no roster
+                    // of its own to resolve the id against, and the server
+                    // sends the raw Niveau and Stufe rather than a label of
+                    // its own. A crew from an older server carries neither,
+                    // and the mark then names no Niveau rather than a made-up
+                    // "N4-TBD".
+                    level={c.coachee && c.refereeLevel !== undefined ? levelDisplay(c.refereeLevel, c.stage).text : undefined}
+                    group={c.coachee ? groupLabel(c.groups, lang) || undefined : undefined}
+                    offered={inBoerse(g.boerse, c.role)}
+                    observed={roleObserved(g, c.role)}
+                  />
+                ))}
+              </>}
+            >
+              <BoerseNote boerse={g.boerse} lang={lang} />
+              {g.noCoachee && (
+                <p className="mt-1.5 flex items-start gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-800">
+                  <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                  <span>{t.ovNoCoachee}</span>
+                </p>
+              )}
+              <MatchResult result={g.result} className="mt-1" />
+            </GameRow>
           ))}
         </GameList>
       )}
@@ -5287,50 +5387,60 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
               tone={g.assignedRc ? 'emerald' : 'red'}
               date={g.date}
               league={g.league}
+              matchNo={g.matchNo || undefined}
               home={g.homeTeam}
               away={g.awayTeam}
               location={g.location}
+              // The precise link the sync stored; without it the hall fell
+              // back to a free-text search, the ambiguity the link avoids.
+              mapsUrl={g.maps_url}
+              className={boerseRowClass(g.boerse) || undefined}
               status={g.assignedRc
                 ? <span className="h-2.5 w-2.5 rounded-full bg-green-500" title={g.assignedRc} />
                 : <span className="h-2.5 w-2.5 rounded-full bg-stone-300" title="No RC" />}
               chips={<>
-                {g.matchNo && <MetaChip tone="ghost">#{g.matchNo}</MetaChip>}
-                {g.isRcGame && (
-                  <MetaChip
-                    tone="sky"
-                    title={lang === 'DE'
-                      ? 'Ein Referee Coach pfeift hier neben einem Coachee.'
-                      : 'A referee coach is whistling next to a coachee here.'}
-                  >{lang === 'DE' ? 'RC-Spiel' : 'RC Game'}</MetaChip>
-                )}
+                {/* What the game IS — LD, RC-Spiel, Testspiel — with the same
+                    chips as the coach's lists. Not the star: the button below
+                    is the star here, and a chip beside it would say the same
+                    thing twice. */}
+                <GameFlagChips game={g} lang={lang} omitStar />
                 {/* Both referees, and each saying whether this is somebody's
                     coachee and which group they are in. The row used to append
                     "· 1SR Name" to the address and stop there: the 2SR was
                     invisible, and the console — the screen an admin hands a game
                     out from — could not say which cohort the game was worth
                     handing out FOR. Which is the whole question the coach app's
-                    own lists answer with the same amber chips. */}
-                {([['1SR', g.firstReferee, '1. SR'], ['2SR', g.secondReferee, '2. SR']] as const)
+                    own lists answer with the same amber chips — and, since the
+                    marks went everywhere, whether a slot is in the Börse or
+                    already filed for. */}
+                {([['1. SR', g.firstReferee], ['2. SR', g.secondReferee]] as const)
                   .filter(([, name]) => name)
-                  .map(([slot, name, role]) => {
+                  .map(([role, name]) => {
                     const c = coacheeFor(g, role);
-                    const group = c ? groupLabel(c.groups, lang) : '';
                     // Which tier resolved the slot, from the server: a coachee
                     // the name alone found gets the grey "nur Name" mark — the
                     // number on the game or on the row is missing, and the
                     // Datenqualität card lists the same slot.
                     const via = role === '1. SR' ? g.firstCoacheeVia : g.secondCoacheeVia;
                     return (
-                      <MetaChip key={slot} wrap tone={c ? 'amber' : 'stone'}>
-                        <span><span className="font-bold opacity-70">{slot}&nbsp;</span>{name}</span>
-                        {c && <CoacheeChip />}
-                        {c && via === 'name' && <ByNameChip t={t} />}
-                        <GroupChip group={group} />
-                      </MetaChip>
+                      <CrewChip
+                        key={role}
+                        role={role}
+                        name={name}
+                        lang={lang}
+                        coachee={!!c}
+                        level={c ? levelDisplay(c.referee_level, c.stage).text : undefined}
+                        group={c ? groupLabel(c.groups, lang) || undefined : undefined}
+                        offered={inBoerse(g.boerse, role)}
+                        observed={roleObserved(g, role)}
+                        marks={c && via === 'name' ? <ByNameChip t={t} /> : undefined}
+                      />
                     );
                   })}
               </>}
             >
+              <BoerseNote boerse={g.boerse} lang={lang} />
+              <MatchResult result={g.game_result} className="mt-1" />
               {/* Controls under the game rather than beside it: the RC picker is
                   a select, and a select squeezed into a row's right-hand gutter
                   is unusable at every width. The row itself opens nothing here,

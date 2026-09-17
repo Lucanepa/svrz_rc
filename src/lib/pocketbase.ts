@@ -86,7 +86,11 @@ export type FeedbackRecord = {
   };
 };
 
-export type CalendarGameStatus = {
+/** One row of the calendar list: the status dot's inputs, and since the
+ *  marks were carried everywhere, the same game row every other list draws
+ *  — the EligibleGame half is optional because an older API answers this
+ *  route with the dot alone. */
+export type CalendarGameStatus = Partial<EligibleGame> & {
   id: string;
   matchNo: string;
   league: string;
@@ -553,6 +557,10 @@ export type FormsEntry = {
   /** The drawn PDF, a scanned paper form, or nothing stored at all. */
   file: '' | 'pdf' | 'image';
   filename: string;
+  /** The game the form is about, and whether it is a throwaway fixture.
+   *  Absent from an older server. */
+  gameId?: string;
+  isManual?: boolean;
 };
 
 export type FormsFolder = {
@@ -866,6 +874,13 @@ export type RcGameNote = {
   league: string;
   gameDate: string;
   teams: string;
+  /** The hall, its map link and the score, off the game record. Absent
+   *  from an older server. */
+  location?: string;
+  mapsUrl?: string;
+  result?: string;
+  /** Written on a throwaway fixture. Absent from an older server. */
+  isManual?: boolean;
 };
 
 export type MyRcGame = {
@@ -888,6 +903,21 @@ export type MyRcGame = {
   boerse?: {
     level: string; reason: string; markedSlots: string[]; asOf: string;
   };
+  /** What the game IS, the way every other list marks it — LD, Testspiel,
+   *  Gewünscht; an RC-Spiel by construction. Absent from an older server. */
+  isRcGame?: boolean;
+  isLdGame?: boolean;
+  isRdGame?: boolean;
+  isRsvGame?: boolean;
+  isManual?: boolean;
+  starred?: boolean;
+  vmFlagged?: boolean;
+  /** The referees' numbers and the holder — a coach may hold the game they
+   *  whistle themselves. Absent from an older server. */
+  firstRefereeId?: string;
+  secondRefereeId?: string;
+  assignedRc?: string;
+  assignedRcId?: string;
 };
 
 export async function loadMyRcGames(season: number): Promise<MyRcGame[]> {
@@ -1150,7 +1180,9 @@ export type AuditUnlinkedCoachee = {
 // absent from an API one version behind, when the card falls to the number.
 // `registerHits` rides on a `none` slot: 0 (not in the register), 2+ (two
 // licences under one name) — a name the register spells once is never listed.
-export type AuditSlotByName = { gameId: string; matchNo: string; label?: string; slot: '1. SR' | '2. SR'; name: string; via: string; coacheeId: string; registerHits?: number };
+/** A row naming a game says when it is a manual (test) fixture — present only
+ *  when true, absent from an older server. */
+export type AuditSlotByName = { gameId: string; matchNo: string; label?: string; slot: '1. SR' | '2. SR'; name: string; via: string; coacheeId: string; registerHits?: number; isManual?: boolean };
 export type AuditRcRefUnresolved = {
   source: 'games' | 'feedbacks' | 'rc_game_notes' | 'president_notes';
   id: string; label: string; rcName: string; rcId: string;
@@ -1160,14 +1192,14 @@ export type IdentityAudit = {
   season: number;
   coacheesUnlinked: AuditUnlinkedCoachee[];
   duplicateSvPerSeason: { sv: string; season: number | null; rowIds: string[]; names: string[] }[];
-  svDisagreesWithGame: { coacheeId: string; coacheeName: string; rowSv: string; gameId: string; matchNo: string; label?: string; slot: string; slotSv: string; name: string }[];
+  svDisagreesWithGame: { coacheeId: string; coacheeName: string; rowSv: string; gameId: string; matchNo: string; label?: string; slot: string; slotSv: string; name: string; isManual?: boolean }[];
   gameSlotsByName: AuditSlotByName[];
   gameSlotsNoSv: number;
   /** Of gameSlotsNoSv, the slots the register would number (the backfill's
    *  share). Absent from an API one version behind. */
   gameSlotsNoSvInRegister?: number;
   duplicateMatchNos: { matchNo: string; gameIds: string[]; seasons: number[] }[];
-  blankMatchNo: { gameId: string; teams: string; date: string }[];
+  blankMatchNo: { gameId: string; teams: string; date: string; isManual?: boolean }[];
   rcRefsUnresolved: AuditRcRefUnresolved[];
   rcsWithoutSv: { id: string; name: string }[];
   // Takes the name decided because the client sent no id — off the API's
@@ -1233,7 +1265,14 @@ export async function syncCoacheeContacts(season: number, overwrite = false): Pr
   return r.json();
 }
 
-export type ManualGame = { id: string; match_no: string; league: string; match_date: string; home_team: string; away_team: string; assigned_rc: string };
+export type ManualGame = {
+  id: string; match_no: string; league: string; match_date: string; home_team: string; away_team: string; assigned_rc: string;
+  /** Whether the row IS a manual game: a search widens the list to any
+   *  fixture the words match, under a heading that says Testspiele and with
+   *  a cascading Delete on every row. Absent from an older server. */
+  isManual?: boolean;
+  assigned_rc_id?: string; location?: string; first_referee?: string; second_referee?: string;
+};
 
 export async function listManualGames(q = ''): Promise<ManualGame[]> {
   const r = await fetch(apiUrl(`/api/admin/games/manual${q ? `?q=${encodeURIComponent(q)}` : ''}`), { credentials: 'include' });
@@ -1282,7 +1321,12 @@ export function acceptedPlaceholdersFor(t: EmailTemplates, kind: EmailTemplateKi
 export type ReminderPreview = {
   enabled: boolean;
   testMode: boolean;
-  reminders: Array<{ gameId: string; role: string; to: string; cc: string[]; subject: string; text: string; coachee: string; rc: string; match: string }>;
+  reminders: Array<{
+    gameId: string; role: string; to: string; cc: string[]; subject: string; text: string; coachee: string; rc: string; match: string;
+    /** How the preview names the game and whether the mail is for a
+     *  Testspiel. Absent from an older server. */
+    matchNo?: string; date?: string; league?: string; location?: string; isManual?: boolean;
+  }>;
 };
 
 export async function getEmailTemplates(): Promise<EmailTemplates> {

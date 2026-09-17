@@ -977,7 +977,9 @@ test.describe('identityAudit — the classifier', () => {
 
   test('match numbers reused across seasons, and games without one, over every stored game', () => {
     expect(report.duplicateMatchNos).toEqual([{ matchNo: '1000001', gameIds: ['g1', 'g4'], seasons: [2025, 2026] }]);
-    expect(report.blankMatchNo).toEqual([{ gameId: 'g5', teams: 'Heim – Gast', date: '2026-11-11T19:00:00Z' }]);
+    // g5 is in the manual set: the row says so, so the card can mark a blank
+    // number on a Testspiel as the test fixture it is rather than bad data.
+    expect(report.blankMatchNo).toEqual([{ gameId: 'g5', teams: 'Heim – Gast', date: '2026-11-11T19:00:00Z', isManual: true }]);
   });
 
   test('coach references the id does not settle: blank or unknown, and whether the migration would fix them', () => {

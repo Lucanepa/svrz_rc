@@ -293,8 +293,11 @@ test.describe('the match number of a manual game', () => {
     await page.route('**/api/admin/referees*', (r) => r.fulfill({ json: DIRECTORY }));
     await page.route('**/api/referee-coach-people', (r) => r.fulfill({ json: RC_PEOPLE }));
     await page.route('**/api/admin/games/manual*', (r) => r.fulfill({ json: [
-      { id: RECORD_ID, match_no: '', league: '3L', match_date: '2026-11-15', home_team: 'VBC Heim', away_team: 'TV Gast', assigned_rc: '' },
+      { id: RECORD_ID, match_no: '', league: '3L', match_date: '2026-11-15', home_team: 'VBC Heim', away_team: 'TV Gast', assigned_rc: '', isManual: true },
       { id: 'numbered0000000', match_no: 'TEST-20260916-a1b2', league: '3L', match_date: '2026-11-16', home_team: 'VBC Nummer', away_team: 'TV Zahl', assigned_rc: '' },
+      // A search hit that is a real fixture: the list is titled Testspiele
+      // and every row carries a cascading Delete, so the row has to say so.
+      { id: 'vm00000000000000', match_no: '2345678', league: '3L', match_date: '2026-11-17', home_team: 'VBC Echt', away_team: 'TV Fixture', assigned_rc: '', isManual: false },
     ] }));
     await page.goto('/admin');
     await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
@@ -302,6 +305,10 @@ test.describe('the match number of a manual game', () => {
     await expect(page.getByText('VBC Heim vs TV Gast · 15.11.2026', { exact: true })).toBeVisible();
     await expect(page.getByText('#TEST-20260916-a1b2 · VBC Nummer vs TV Zahl', { exact: true })).toBeVisible();
     await expect(page.getByText(RECORD_ID)).toHaveCount(0);
+    // The manual row wears the Testspiel chip, the fixture a warning, and a
+    // row from a server that says neither stays plain.
+    await expect(page.getByText(/^(Testspiel|Test game)$/)).toHaveCount(1);
+    await expect(page.getByText(/Spiel aus VolleyManager|VolleyManager fixture/)).toHaveCount(1);
 
     await page.getByRole('button', { name: /^(Löschen|Delete)$/ }).first().click();
     const question = page.getByTestId('confirm-title');

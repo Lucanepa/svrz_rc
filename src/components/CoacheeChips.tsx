@@ -3,9 +3,11 @@ import { cn } from '../lib/utils';
 const CHIP = 'ml-1.5 inline-block align-middle whitespace-nowrap rounded px-1 py-px text-[9px] font-bold uppercase tracking-wide text-amber-800 border border-amber-200';
 
 /** "This referee is one of yours." The highlight — solid amber — in a crew
- *  where somebody is NOT a coachee and the two need telling apart. */
-export function CoacheeChip() {
-  return <span className={cn(CHIP, 'bg-amber-100')}>Coachee</span>;
+ *  where somebody is NOT a coachee and the two need telling apart. With the
+ *  Niveau after it where the caller knows one ("Coachee · N3-2"): which
+ *  level this one is used to mean a trip to the Coachees tab and back. */
+export function CoacheeChip({ level }: { level?: string } = {}) {
+  return <span className={cn(CHIP, 'bg-amber-100')}>Coachee{level ? ` · ${level}` : ''}</span>;
 }
 
 /** The coachee's group, wherever a referee is named: "Varia", "Beförderung?",

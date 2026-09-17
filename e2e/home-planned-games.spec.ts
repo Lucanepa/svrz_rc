@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp, RC } from './support/app';
+import { stubSignedInApp, summaryGame, BOERSE_RED, GAME, GAME_LD, GAME_MANUAL, GAME_VM, RC } from './support/app';
 
 // Home promises a number of planned games in its counter and then lists them.
 // The list used to stop at eight rows without saying so, so a coach with ten
@@ -49,6 +49,49 @@ test('a flagged game keeps its star on Home', async ({ page }) => {
   await expect(star).toHaveAttribute('title', /RD/);
   const flagged = page.getByRole('button', { name: /Heim 1\s+Gast 1/ });
   await expect(flagged.getByText(/^(Priority|Gewünscht)$/)).toBeVisible();
+});
+
+// The same fixture on the Games tab and on Home draws the same chips: LD
+// Spiel, Testspiel, Gewünscht (with its RD tooltip), the coachee with the
+// Niveau, and the Börse mark on the slot. 1c26a99 pinned the RC-Spiel chip on
+// Home alone; the rest of the set had no spec on this list.
+test('LD, Testspiel and a VM-starred game wear the same chips on Home as on the Games tab', async ({ page }) => {
+  await page.route(/\/api\/rc-overview\/[^/]+\/coachees/, (r) => r.fulfill({
+    json: [{
+      coacheeId: 'c1', coacheeName: 'Ref One',
+      doneFeedbacks: [], outstandingGames: [],
+      plannedGames: [
+        summaryGame(GAME_LD),
+        summaryGame(GAME_MANUAL),
+        summaryGame(GAME_VM, { boerse: BOERSE_RED }),
+        summaryGame(GAME, { feedbackClosedRoles: ['1. SR'] }),
+      ],
+    }],
+  }));
+  await page.goto('/home');
+
+  const row = (home: string) => page.getByRole('button', { name: new RegExp(home) });
+  await expect(row(GAME_LD.homeTeam)).toBeVisible();
+  await expect(row(GAME_LD.homeTeam).getByText(/^(LD Game|LD Spiel)$/)).toBeVisible();
+  await expect(row(GAME_MANUAL.homeTeam).getByText(/^(Test game|Testspiel)$/)).toBeVisible();
+  const star = row(GAME_VM.homeTeam).getByText(/^(Priority|Gewünscht)$/);
+  await expect(star).toBeVisible();
+  await expect(star).toHaveAttribute('title', /RD/);
+  // Each chip on its own row and nowhere else.
+  await expect(page.getByText(/^(LD Game|LD Spiel)$/)).toHaveCount(1);
+  await expect(page.getByText(/^(Test game|Testspiel)$/)).toHaveCount(1);
+  await expect(page.getByText(/^(Priority|Gewünscht)$/)).toHaveCount(1);
+
+  // The coachee's slot in the Börse: the word on the chip and the line under
+  // the row, as on the Games tab.
+  await expect(row(GAME_VM.homeTeam).getByText('In Börse')).toBeVisible();
+  await expect(row(GAME_VM.homeTeam).getByText(/Coachee-Einsatz in der Börse|Coachee's slot is in the Börse/)).toBeVisible();
+  // The coachee mark carries the Niveau, as the Games tab's does.
+  await expect(row(GAME_LD.homeTeam).getByText(/^Coachee · N3-2$/)).toBeVisible();
+  // A role already filed for says so — the field gated the form and was
+  // drawn nowhere.
+  await expect(row(GAME.homeTeam).getByText(/^(observed|beobachtet)$/)).toBeVisible();
+  await expect(page.getByText(/^(observed|beobachtet)$/)).toHaveCount(1);
 });
 
 test('every planned game the counter promises is listed', async ({ page }) => {

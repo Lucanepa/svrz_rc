@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp, RC, COACHEE, COACHEE_UNLINKED } from './support/app';
+import { stubSignedInApp, RC, COACHEE, COACHEE_UNLINKED, GAME_MANUAL } from './support/app';
 
 /**
  * Home's "Erledigte Beobachtungen" rows open the record they stand for.
@@ -139,4 +139,43 @@ test('a row from an older server, without an id, still opens by its day', async 
   await page.getByRole('button', { name: /VBC Morgen/ }).click();
   await expect(page.getByText(/bereits beobachtet|already been observed/)).toBeVisible();
   await expect(openedMatchNo(page, MORNING.expand.game.match_no)).toBeVisible();
+});
+
+// A filed observation carries the same marks as the games still to do: a
+// Testspiel walked through end to end read on the done list like a real one,
+// and the row named no hall while every other Home row did. The coachee is
+// the same chip as on a planned row — the Coachee mark with the Niveau, the
+// group after it (off the roster row, else off the group and raw Niveau the
+// summary stamps on the row) — so the done list reads like the planned one
+// and like the chair's Übersicht detail, which draws the same entry.
+test('a done row on a Testspiel says so, and names the hall', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.route(/\/api\/rc-overview\?/, (r) => r.fulfill({
+    json: [{ id: RC.id, fullName: RC.name, done: 1, outstanding: 0, planned: 0 }],
+  }));
+  await page.route(/\/api\/rc-overview\/[^/]+\/coachees/, (r) => r.fulfill({
+    json: [{
+      coacheeId: COACHEE.id, coacheeName: COACHEE.full_name,
+      doneFeedbacks: [{
+        feedbackId: 'fb-test', gameId: GAME_MANUAL.id, matchNo: GAME_MANUAL.matchNo,
+        gameDate: GAME_MANUAL.date, league: GAME_MANUAL.league,
+        teams: `${GAME_MANUAL.homeTeam} vs ${GAME_MANUAL.awayTeam}`,
+        location: GAME_MANUAL.location, mapsUrl: 'https://maps.example/utogrund',
+        role: '1. SR', submittedAt: '2026-11-15T22:00:00Z', result: '3:0',
+        isManual: true, starred: false, vmFlagged: false, isRdGame: false, isRcGame: false, isLdGame: false,
+        // The roster row (COACHEE, N3-2) carries no group; this is where the
+        // group then comes from.
+        groups: 'Beförderung?', refereeLevel: 'N3', stage: '2',
+      }],
+      outstandingGames: [], plannedGames: [],
+    }],
+  }));
+  await page.goto('/home');
+  const row = page.getByRole('button', { name: new RegExp(GAME_MANUAL.homeTeam) });
+  await expect(row.getByText(/^(Test game|Testspiel)$/)).toBeVisible();
+  await expect(row.getByText(`1SR ${COACHEE.full_name}`)).toBeVisible();
+  await expect(row.getByText('Coachee · N3-2')).toBeVisible();
+  await expect(row.getByText(/^(Beförderung\?|Promotion\?)$/)).toBeVisible();
+  // The hall as a map link, the precise one the sync stored.
+  await expect(page.getByRole('link', { name: /Utogrund/ })).toHaveAttribute('href', 'https://maps.example/utogrund');
 });

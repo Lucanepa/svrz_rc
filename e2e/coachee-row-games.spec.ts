@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp, COACHEE_LISTED, GAME, RC } from './support/app';
+import { stubSignedInApp, coacheeGame, BOERSE_RED, COACHEE_LISTED, GAME, RC } from './support/app';
 
 // Finding a game to watch used to mean leaving the coachee behind: the row said
 // "1SR: 12" and nothing else, and the games were two modals and a second list
@@ -194,4 +194,64 @@ test('an RC-Spiel stays out of the row: it is not on offer, and is counted into 
   await expect(page.getByText(FREE.homeTeam, { exact: true })).toHaveCount(0);
   await expect(page.getByText(/RC-Spiel|RC Game/)).toHaveCount(0);
   await expect(page.getByRole('button', { name: /\+ 1 (more games|weitere Spiele)/ })).toBeVisible();
+});
+
+// The row under a coachee is the games list's own row now, not a copy that
+// drew the role and the flags alone: a coachee slot in the Börse — the one
+// thing Infoschreiben 4.1 asks a coach to check before taking a game — was
+// invisible there, and so were the number and the hall.
+test('a game under the row carries the Börse mark, the number and the hall, as on the Games tab', async ({ page }) => {
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({
+    json: [{ ...FREE, maps_url: 'https://maps.example/utogrund', boerse: BOERSE_RED }],
+  }));
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Coachees$/ }).click();
+  await openChevron(page).click();
+  const row = page.getByRole('button', { name: new RegExp(FREE.homeTeam) });
+  await expect(row.getByText('In Börse')).toBeVisible();
+  await expect(row.getByText(/Coachee-Einsatz in der Börse|Coachee's slot is in the Börse/)).toBeVisible();
+  await expect(row.getByText(`#${FREE.matchNo}`)).toBeVisible();
+  await expect(row.getByRole('link', { name: /Utogrund/ })).toHaveAttribute('href', 'https://maps.example/utogrund');
+  // Both referees, and the Fokus chip, as before.
+  await expect(row.getByText(/^Coachee · N3-2/)).toBeVisible();
+  await expect(row.getByText(/Fokus|Focus/)).toBeVisible();
+});
+
+// The page behind "+ n more" is fed by /api/coachees/:id/games, which carried
+// none of the VM marks and never put its Börse verdict on the wire: the same
+// LD + RD-marked game showed "LD Spiel" + "Gewünscht" + the Börse wash under
+// the coachee's row and none of them one tap later. That was a server bug
+// (the route's row map), and it lives in server/index.ts, which no spec here
+// runs — every spec stubs the API. What THIS test pins is the client's half:
+// the sheet draws every mark the stubbed row carries (LD, Gewünscht with the
+// RD title, In Börse with its note, Testspiel) and the "beobachtet" mark on a
+// closed role, which it did not before. The open list is empty here on
+// purpose, so the marks can only come from the page's own endpoint.
+test('the per-coachee games list draws the same marks off its own endpoint', async ({ page }) => {
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [] }));
+  await page.route('**/api/coachees/*/games', (r) => r.fulfill({
+    json: [
+      coacheeGame({ ...FREE, isLdGame: true, isRdGame: true, vmFlagged: true, starred: true, boerse: BOERSE_RED }),
+      coacheeGame({ ...LAST_SEASON, date: '2026-09-02T19:30:00Z', isManual: true, feedbackClosedRoles: ['1. SR'] }),
+    ],
+  }));
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Coachees$/ }).click();
+  await openChevron(page).click();
+  await page.getByRole('button', { name: /^(Games|Spiele)$/ }).last().click();
+  await expect(page.getByText(/Upcoming Games \(1\)|Bevorstehende Spiele \(1\)/)).toBeVisible();
+
+  const upcoming = page.getByRole('button', { name: new RegExp(FREE.homeTeam) });
+  await expect(upcoming.getByText(/^(LD Game|LD Spiel)$/)).toBeVisible();
+  const star = upcoming.getByText(/^(Priority|Gewünscht)$/);
+  await expect(star).toBeVisible();
+  await expect(star).toHaveAttribute('title', /RD/);
+  await expect(upcoming.getByText('In Börse')).toBeVisible();
+  await expect(upcoming.getByText(/Coachee-Einsatz in der Börse|Coachee's slot is in the Börse/)).toBeVisible();
+
+  // The past game, behind its button: a Testspiel, already filed for.
+  await page.getByRole('button', { name: /Show all games|Alle Spiele|^(Show|Anzeigen)$/ }).first().click();
+  const past = page.getByRole('button', { name: new RegExp(LAST_SEASON.homeTeam) });
+  await expect(past.getByText(/^(Test game|Testspiel)$/)).toBeVisible();
+  await expect(past.getByText(/^(observed|beobachtet)$/)).toBeVisible();
 });

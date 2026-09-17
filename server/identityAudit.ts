@@ -89,7 +89,12 @@ export type DuplicateSv = { sv: string; season: number | null; rowIds: string[];
  *  step 2 warning (`identity.sv-mismatch`), made durable. Either the register
  *  link on the row is wrong or VolleyManager's number on the game is.
  *  `label` is the game as a human reads it (gameLabel), never the record id. */
-export type SvDisagreement = { coacheeId: string; coacheeName: string; rowSv: string; gameId: string; matchNo: string; label: string; slot: SlotName; slotSv: string; name: string };
+/** A row naming a game says when that game is a manual (test) fixture — a
+ *  Testspiel typed with a made-up referee sits in these lists like a real
+ *  slot nobody linked. Present only when true, so the row shapes the specs
+ *  pin stay as they are for every real fixture. */
+type TestMark = { isManual?: true };
+export type SvDisagreement = { coacheeId: string; coacheeName: string; rowSv: string; gameId: string; matchNo: string; label: string; slot: SlotName; slotSv: string; name: string } & TestMark;
 
 export type SlotName = '1. SR' | '2. SR';
 
@@ -102,13 +107,13 @@ export type SlotName = '1. SR' | '2. SR';
  *  not a name match, and is counted in `gameSlotsNoSvInRegister` instead.
  *  A slot resolved to nobody WITH a number is identified and simply not a
  *  coachee's, and is not listed. `label` as on SvDisagreement. */
-export type SlotByName = { gameId: string; matchNo: string; label: string; slot: SlotName; name: string; via: CoacheeVia; coacheeId: string; registerHits?: number };
+export type SlotByName = { gameId: string; matchNo: string; label: string; slot: SlotName; name: string; via: CoacheeVia; coacheeId: string; registerHits?: number } & TestMark;
 
 export type DuplicateMatchNo = { matchNo: string; gameIds: string[]; seasons: number[] };
 
 /** A game without a number, labelled the way a human reads it — teams and
  *  date, never the record id. */
-export type BlankMatchNo = { gameId: string; teams: string; date: string };
+export type BlankMatchNo = { gameId: string; teams: string; date: string } & TestMark;
 
 export type RcRefSource = 'games' | 'feedbacks' | 'rc_game_notes' | 'president_notes';
 
@@ -236,6 +241,7 @@ export function identityAudit(input: AuditInput): IdentityAuditReport {
     const gameId = String(game.id);
     const matchNo = text(game.match_no);
     const label = gameLabel(game);
+    const test: TestMark = manualIds.has(gameId) ? { isManual: true } : {};
     for (const [slot, nameKey, idKey] of SLOTS) {
       const name = text(game[nameKey]);
       const sv = text(game[idKey]);
@@ -248,16 +254,16 @@ export function identityAudit(input: AuditInput): IdentityAuditReport {
       if (hit.via === 'name') {
         const rowSv = text(hit.row?.referee_id);
         if (sv && rowSv && rowSv !== sv) {
-          svDisagreesWithGame.push({ coacheeId, coacheeName: coacheeDisplayName(hit.row ?? {}), rowSv, gameId, matchNo, label, slot, slotSv: sv, name });
+          svDisagreesWithGame.push({ coacheeId, coacheeName: coacheeDisplayName(hit.row ?? {}), rowSv, gameId, matchNo, label, slot, slotSv: sv, name, ...test });
         }
-        gameSlotsByName.push({ gameId, matchNo, label, slot, name, via: 'name', coacheeId });
+        gameSlotsByName.push({ gameId, matchNo, label, slot, name, via: 'name', coacheeId, ...test });
       } else if (hit.via === 'none' && !sv && registerHits !== 1) {
         // A name the register spells once is the backfill's: after it the
         // slot carries a number and is nobody's coachee by identity, which
         // is not listed. Only the names the register cannot settle are —
         // and the card must not call a licensed referee "not in the
         // register" while the register holds them.
-        gameSlotsByName.push({ gameId, matchNo, label, slot, name, via: 'none', coacheeId: '', registerHits });
+        gameSlotsByName.push({ gameId, matchNo, label, slot, name, via: 'none', coacheeId: '', registerHits, ...test });
       }
     }
   }
@@ -271,7 +277,7 @@ export function identityAudit(input: AuditInput): IdentityAuditReport {
   for (const game of games) {
     const no = text(game.match_no);
     if (!no) {
-      blankMatchNo.push({ gameId: String(game.id), teams: `${text(game.home_team)} – ${text(game.away_team)}`, date: text(game.match_date) });
+      blankMatchNo.push({ gameId: String(game.id), teams: `${text(game.home_team)} – ${text(game.away_team)}`, date: text(game.match_date), ...(manualIds.has(String(game.id)) ? { isManual: true as const } : {}) });
       continue;
     }
     const bucket = byNo.get(no);

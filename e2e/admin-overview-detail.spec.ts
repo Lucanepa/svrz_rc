@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp, RC } from './support/app';
+import { stubSignedInApp, summaryGame, BOERSE_RED, GAME, GAME_LD, GAME_RC, RC } from './support/app';
 
 // Admin → Übersicht showed each coach as four numbers, and the chair read a
 // "1" under Ausstehend and asked what it meant and where to find the game.
@@ -70,15 +70,90 @@ test('a coach\'s row opens into the games behind the counters', async ({ page })
   await expect(page.getByText('VBC Altdorf')).toBeVisible();
   await expect(page.getByText(/noch zu erledigen|still to be done/)).toBeVisible();
   // The shared planned game once, naming both coachees; the other one too.
-  // (Nina is on the outstanding game as well, hence two of her chips.)
+  // (Nina is on the outstanding game as well, hence two of her chips.) The
+  // chips are the crew chips Home draws — slot, name, the Coachee mark —
+  // built here from the one referee each row names, as a server older than
+  // the crew sends it.
   await expect(page.getByText('VBC Neuheim')).toHaveCount(1);
-  await expect(page.getByText('Nina Adler · 1. SR')).toHaveCount(2);
-  await expect(page.getByText('Tim Berger · 2. SR')).toHaveCount(1);
+  await expect(page.getByText('1SR Nina Adler')).toHaveCount(2);
+  await expect(page.getByText('2SR Tim Berger')).toHaveCount(1);
   await expect(page.getByText('VBC Zweitheim')).toBeVisible();
 
   // And it closes again.
   await toggle.click();
   await expect(page.getByText('VBC Altdorf')).toHaveCount(0);
+});
+
+// The detail is drawn the way the coach's own Home draws it, marks and all:
+// the console's fold used to keep the teams and the names and throw every
+// mark away, so the chair saw a taken RC-Spiel as an ordinary fixture the
+// moment Home stopped doing so. The crew's group and Niveau come off the
+// summary row itself — this view has no roster to resolve an id against —
+// as the row's RAW level and Stufe, labelled by the same levelDisplay every
+// roster chip goes through: a label built on the server said "N3" for a
+// coachee without a Stufe where Home said "N3-TBD".
+test('the games behind the counters wear the same chips as on Home', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  await page.route(/\/api\/rc-overview\?season=2026$/, (r) => r.fulfill({ json: OVERVIEW }));
+  await page.route('**/api/rc-overview/*/coachees*', (r) => r.fulfill({ json: [{
+    coacheeName: 'Ref One', coacheeId: 'c1',
+    // A filed one: the summary stamps the coachee's group and raw Niveau on
+    // the row itself, and the detail draws them as on the games still to do.
+    doneFeedbacks: [{
+      feedbackId: 'fb-done', gameId: 'g-done', matchNo: '2345690', gameDate: '2026-09-01T18:00:00Z', league: '3L',
+      teams: 'VBC Erledigt vs TV Gast', location: 'Sporthalle Utogrund', role: '2. SR', submittedAt: '2026-09-02T10:00:00Z',
+      result: '3:1', groups: 'Rückstufung?', refereeLevel: 'N4', stage: '1',
+    }],
+    outstandingGames: [],
+    plannedGames: [
+      summaryGame(GAME_RC, { crew: [
+        { name: 'Ref One', role: '1. SR', coachee: true, svNumber: '90003', coacheeId: 'c1', groups: 'Beförderung?', refereeLevel: 'N3', stage: '2' },
+        { name: RC.name, role: '2. SR', coachee: false, svNumber: '', coacheeId: '' },
+      ] }),
+      // The 2. SR here is a coachee the console created without a Stufe:
+      // the row holds the 'active' placeholder where a digit would be.
+      summaryGame({ ...GAME_LD, secondReferee: 'Ref Two', secondRefereeId: '90004', secondCoacheeId: 'c2' }, {
+        boerse: BOERSE_RED, feedbackClosedRoles: ['1. SR'],
+        crew: [
+          { name: 'Ref One', role: '1. SR', coachee: true, svNumber: '90003', coacheeId: 'c1', groups: 'Beförderung?', refereeLevel: 'N3', stage: '2' },
+          { name: 'Ref Two', role: '2. SR', coachee: true, svNumber: '90004', coacheeId: 'c2', groups: 'Varia', refereeLevel: 'N3', stage: 'active' },
+        ],
+      }),
+      summaryGame({ ...GAME, id: 'g-swapped', matchNo: '2345689', homeTeam: 'VBC Getauscht', firstReferee: 'Fremder Sven', firstRefereeId: '', firstCoacheeId: '' }),
+    ],
+  }] }));
+
+  await page.goto('/admin/overview');
+  await page.getByRole('button', { name: 'Thanh Ut Nguyen' }).click();
+
+  // The chip on the RC-Spiel's row and on no other (the rows here open
+  // nothing, so they are not buttons; the row is the chip's nearest GameRow).
+  const rcChip = page.getByText(/^(RC-Spiel|RC Game)$/);
+  await expect(rcChip).toHaveCount(1);
+  await expect(rcChip.locator('xpath=ancestor::div[contains(@class, "py-0.5")][1]')).toContainText('VBC Voléro Zürich');
+  // The coachee with the Niveau and the group off the crew entry (once per
+  // game she is on); the coach on the other whistle unmarked.
+  await expect(page.getByText('Coachee · N3-2')).toHaveCount(2);
+  await expect(page.getByText('Beförderung?', { exact: true })).toHaveCount(2);
+  await expect(page.getByText(`2SR ${RC.name}`)).toBeVisible();
+  // The coachee without a Stufe reads as Home reads her — TBD, not a bare N3.
+  await expect(page.getByText('Coachee · N3-TBD')).toBeVisible();
+  await expect(page.getByText('Varia', { exact: true })).toBeVisible();
+
+  // The LD game: its chip, the Börse mark on the slot with the line in words,
+  // and the role already filed for.
+  await expect(page.getByText(/^(LD Spiel|LD Game)$/)).toHaveCount(1);
+  await expect(page.getByText('In Börse')).toHaveCount(1);
+  await expect(page.getByText(/Coachee-Einsatz in der Börse|Coachee's slot is in the Börse/)).toBeVisible();
+  await expect(page.getByText(/^(beobachtet|observed)$/)).toHaveCount(1);
+
+  // A game whose referees are nobody's coachees any more says so, as Home does.
+  await expect(page.getByText(/Kein Coachee mehr auf diesem Spiel|No coachee on this game any more/)).toBeVisible();
+
+  // The done row: the coachee as the same chip, Niveau and group off the row.
+  await expect(page.getByText('2SR Ref One')).toBeVisible();
+  await expect(page.getByText('Coachee · N4-1')).toBeVisible();
+  await expect(page.getByText('Rückstufung?', { exact: true })).toBeVisible();
 });
 
 // The season's expenses, once paid out, get a mark — set from the opened row,

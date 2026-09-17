@@ -302,18 +302,20 @@ test('the games tab marks a coachee the name alone found', async ({ page }) => {
   await page.goto('/admin');
   await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
 
-  // The marks sit beside the name inside the slot's chip, so the chip is
-  // the name's parent.
+  // The marks sit under the name inside the slot's chip (the shared crew
+  // chip: the name on one line, its marks on the next), so the chip is the
+  // name's parent. getByText answers the innermost element, so the mark row
+  // around a mark is not counted twice. The Coachee mark carries the Niveau.
   const chip = (text: string) => page.getByText(text).locator('xpath=..');
   const byNumber = chip('1SR Rita Zwahlen');
   await expect(byNumber).toBeVisible();
-  await expect(byNumber.locator('span', { hasText: /^Coachee$/ })).toHaveCount(1);
-  await expect(byNumber.locator('span', { hasText: /nur Name|name only/ })).toHaveCount(0);
+  await expect(byNumber.getByText(/^Coachee( · .+)?$/)).toHaveCount(1);
+  await expect(byNumber.getByText(/nur Name|name only/)).toHaveCount(0);
   const byName = chip('2SR Jürg Müller');
   await expect(byName).toBeVisible();
-  await expect(byName.locator('span', { hasText: /^Coachee$/ })).toHaveCount(1);
-  await expect(byName.locator('span', { hasText: /nur Name|name only/ })).toHaveCount(1);
+  await expect(byName.getByText(/^Coachee( · .+)?$/)).toHaveCount(1);
+  await expect(byName.getByText(/nur Name|name only/)).toHaveCount(1);
   const stranger = chip('1SR Gast Ohne Akte');
   await expect(stranger).toBeVisible();
-  await expect(stranger.locator('span', { hasText: /nur Name|name only|^Coachee$/ })).toHaveCount(0);
+  await expect(stranger.getByText(/nur Name|name only|^Coachee/)).toHaveCount(0);
 });

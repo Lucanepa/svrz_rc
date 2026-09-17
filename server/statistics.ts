@@ -31,6 +31,14 @@ import {
 export type StatObservation = {
   id: string;
   gameId: string;
+  /** VolleyManager's number for the game — how a human names it. Optional:
+   *  the fixtures the rules spec builds by hand predate it. */
+  matchNo?: string;
+  /** Filed on a manual (test) fixture. A manual game is exempt from the
+   *  season window, so the observation counts in every season; the mark is
+   *  carried so a reader can tell, and nothing here excludes it — whether a
+   *  Testspiel counts is the commission's call, not the projection's. */
+  isManual?: boolean;
   /** The stored game date — ISO or PocketBase's "YYYY-MM-DD HH:mm:ss.sssZ". */
   gameDate: string;
   league: string;
@@ -100,6 +108,8 @@ export function observationFromFeedback(args: {
   game: Plain | undefined;
   coachee: Plain | undefined;
   rc: { id: string; name: string } | null;
+  /** The manual-game set, when the caller has one. */
+  manualIds?: Set<string>;
 }): StatObservation | null {
   const { feedback, game, coachee, rc } = args;
   if (!game || !coachee) return null;
@@ -143,6 +153,8 @@ export function observationFromFeedback(args: {
   return {
     id: text(feedback.id),
     gameId: text(game.id),
+    matchNo: text(game.match_no) || text(meta.spielNr),
+    isManual: Boolean(args.manualIds?.has(text(game.id))),
     gameDate: text(game.match_date) || text(meta.datum),
     league: text(game.league) || text(meta.liga),
     location: text(game.location) || text(meta.ort),
@@ -354,7 +366,8 @@ export function computeStatistics(input: StatisticsInput): SeasonStatisticsCore 
     if (o.homeTeam) teams.add(o.homeTeam.toLowerCase());
     if (o.awayTeam) teams.add(o.awayTeam.toLowerCase());
     if (!gameLabel.has(o.gameId)) {
-      gameLabel.set(o.gameId, [o.homeTeam, o.awayTeam].filter(Boolean).join(' – ') || o.league);
+      const teams = [o.homeTeam, o.awayTeam].filter(Boolean).join(' – ') || o.league;
+      gameLabel.set(o.gameId, o.matchNo ? `#${o.matchNo} · ${teams}` : teams);
     }
   }
   let deciders = 0;

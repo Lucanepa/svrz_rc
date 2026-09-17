@@ -363,6 +363,27 @@ export interface rcCoachSummaryFeedback {
   /** The match result string, in either of the two shapes parseResult reads.
    *  Empty for a game the sync has no score for yet. */
   result?: string;
+  /** The hall and its map link, off the game record — drawn on every other
+   *  Home row. Absent from an older server. */
+  location?: string;
+  mapsUrl?: string;
+  /** The coachee's raw group, Niveau and Stufe, as a crew entry carries them
+   *  on the games still to do — labelled by the client (groupLabel,
+   *  levelDisplay) for a reader with no roster to resolve the id against.
+   *  Absent from an older server; the roster is asked first where there is
+   *  one. */
+  groups?: string;
+  refereeLevel?: string;
+  stage?: string;
+  /** The same marks the games still to do carry, so a filed observation on
+   *  a Testspiel or an LD game does not read like any other. Absent from an
+   *  older server, and from a feedback whose game was deleted. */
+  starred?: boolean;
+  vmFlagged?: boolean;
+  isRdGame?: boolean;
+  isRcGame?: boolean;
+  isLdGame?: boolean;
+  isManual?: boolean;
 }
 
 export interface rcCoachSummaryGame {
@@ -386,7 +407,13 @@ export interface rcCoachSummaryGame {
    *  `coacheeId` is the row the server matched the slot to ('' for nobody)
    *  and `svNumber` the referee's number, from the slot or the row; both
    *  absent from an older server. */
-  crew?: Array<{ name: string; role: string; coachee: boolean; svNumber?: string; coacheeId?: string }>;
+  crew?: Array<{ name: string; role: string; coachee: boolean; svNumber?: string; coacheeId?: string;
+    /** The row's raw group, Niveau and Stufe, for a reader with no roster to
+     *  resolve the id against (the admin's Übersicht detail). The client
+     *  labels them the way it labels a roster row (groupLabel, levelDisplay),
+     *  so "N3-TBD" is the same word everywhere. Absent from an older server;
+     *  the roster is asked first where there is one. */
+    groups?: string; refereeLevel?: string; stage?: string }>;
   /** The coachee row this entry lists the game under — the same id as the
    *  group's `coacheeId`, carried on the row so a merged Home row still knows
    *  which referee is whose. Absent from an older server. */
@@ -412,6 +439,14 @@ export interface rcCoachSummaryGame {
   isRcGame?: boolean;
   isLdGame?: boolean;
   isManual?: boolean;
+  /** The identity half, as /api/eligible-games carries it: the referees'
+   *  numbers, the holder (the subject of this list, said anyway) and the
+   *  roles already closed on the game. Absent from an older server. */
+  firstRefereeId?: string;
+  secondRefereeId?: string;
+  assignedRc?: string;
+  assignedRcId?: string;
+  feedbackClosedRoles?: string[];
 }
 
 export interface rcCoachSummary {

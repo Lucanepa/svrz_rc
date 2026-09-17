@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp, RC } from './support/app';
+import { stubSignedInApp, BOERSE_AS_OF, MY_RC_GAME, RC } from './support/app';
 
 /**
  * 4.4.10 SR-Spiel. A coach who whistled next to a coachee writes a short
@@ -136,4 +136,37 @@ test('a 7.3 swap corrects the roles on the note and is reported with it', async 
 
   await expect.poll(() => posted.length).toBe(1);
   expect(posted[0].rolesSwapped).toBe(true);
+});
+
+// The SR-Spiele rows carry the same marks as every other list — LD, Testspiel,
+// Gewünscht — and the Börse's two R4 verdicts reach ONLY this list: a game
+// the coach whistles is generally not one they are assigned to observe. The
+// chips were drawn here; the line under the row that says the verdict in
+// words never was, so on a phone the wash was colour without words.
+test('an SR-Spiel wears its marks, and a Börse verdict on it is said in words', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.route('**/api/rc-games*', (r) => r.fulfill({ json: [
+    // The coach's own slot offered (R4b, blue): "Dein Einsatz steht in der Börse".
+    { ...MY_RC_GAME, isLdGame: true, boerse: { level: 'blue', reason: 'my-own-slot-offered', markedSlots: ['2'], asOf: BOERSE_AS_OF } },
+    // A throwaway made to try the flow, with the coachee's slot offered (R4, amber).
+    {
+      ...MY_RC_GAME, gameId: 'g-sr-test', matchNo: 'TEST-20260916-a1b2', teams: 'VBC Test Heim vs VBC Test Gast',
+      isManual: true, boerse: { level: 'amber', reason: 'rc-game-coachee-offered', markedSlots: ['1'], asOf: BOERSE_AS_OF },
+    },
+  ] }));
+  await page.goto('/');
+
+  const own = page.getByRole('button', { name: /VBC Uni Bern/ }).first();
+  await expect(own.getByText(/^(LD Game|LD Spiel)$/)).toBeVisible();
+  await expect(own.getByText(/Dein Einsatz steht in der Börse|Your own slot is in the Börse/)).toBeVisible();
+  // The mark sits on the coach's own chip, not on the coachee's.
+  await expect(own.getByText('In Börse')).toHaveCount(1);
+  await expect(own.locator('span', { hasText: /^⚠\s*(You|Du) · 2\. SR$/ })).toBeVisible();
+
+  const test = page.getByRole('button', { name: /VBC Test Heim/ }).first();
+  await expect(test.getByText(/^(Test game|Testspiel)$/)).toBeVisible();
+  await expect(test.getByText(/Coachee-Einsatz in der Börse|Coachee's slot is in the Börse/)).toBeVisible();
+  // Every row here is an RC-Spiel — the "Du" chip says so; the chip that
+  // says it again is not drawn.
+  await expect(page.getByText(/^(RC Game|RC-Spiel)$/)).toHaveCount(0);
 });

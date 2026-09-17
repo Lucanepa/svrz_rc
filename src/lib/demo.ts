@@ -558,6 +558,9 @@ const DEMO_RC_GAME: Omit<MyRcGame, 'note'> = {
   location: 'Sporthalle Buchlern, Zürich', mapsUrl: '',
   teams: 'VBC Kanti Baden vs Volley Smash 05', result: '3:1 (25:20 / 22:25 / 25:18 / 25:21)',
   rcRole: '2. SR', coacheeName: 'Luca Ferrari', coacheeId: 'demo-c-luca', coacheeRole: '1. SR',
+  // The marks, as the API sends them on every SR-Spiele row.
+  isRcGame: true, isLdGame: false, isRdGame: false, isRsvGame: false, isManual: false, starred: false, vmFlagged: false,
+  firstRefereeId: '', secondRefereeId: '', assignedRc: '', assignedRcId: '',
 };
 
 // One colleague's Rückmeldung is already on file so the chair's list in the demo
@@ -601,9 +604,10 @@ export function loadCalendarGames(): Promise<CalendarGameStatus[]> {
   return ok(store().games.map((g) => {
     const done = (g.feedbackClosedRoles?.length ?? 0) > 0;
     const status: CalendarGameStatus['status'] = done ? 'completed' : g.kind === 'outstanding' ? 'outstanding' : 'none';
+    // The whole game row, the way the API sends it since the marks went
+    // everywhere; the status dot is what this list adds.
     return {
-      id: g.id, matchNo: g.matchNo, league: g.league, date: g.date, location: g.location,
-      homeTeam: g.homeTeam, awayTeam: g.awayTeam,
+      ...toEligible(g),
       status, hasOutstanding: status === 'outstanding', hasCompleted: status === 'completed',
     };
   }));
@@ -620,9 +624,20 @@ function buildSummary(): rcCoachSummary[] {
     // The slot the coachee stands in travels too — Home names the referee AND
     // what they are refereeing as, and a demo that omitted it would be the one
     // place the row looked different from production.
+    // What the game IS, the same six bits the API sends, off the demo game's
+    // own flags — so the demo Home draws Gewünscht on demo-g3 and the RD
+    // star on demo-g1 the way the demo Games tab does.
+    const marks = (g: DemoGame) => ({
+      starred: g.starred, vmFlagged: g.vmFlagged, isRdGame: g.isRdGame,
+      isRcGame: g.isRcGame, isLdGame: g.isLdGame, isManual: g.isManual,
+      feedbackClosedRoles: g.feedbackClosedRoles, assignedRc: g.assignedRc, assignedRcId: g.assignedRcId,
+      firstRefereeId: g.firstRefereeId, secondRefereeId: g.secondRefereeId,
+    });
     const toGame = (g: DemoGame): rcCoachSummaryGame => ({
       gameId: g.id, gameDate: g.date, league: g.league, teams: teams(g),
+      matchNo: g.matchNo, location: g.location, mapsUrl: g.maps_url, result: g.game_result,
       refereeName: c.full_name, refereeRole: g.role, coacheeId: c.id,
+      ...marks(g),
       // The demo's games carry both referees, so the crew is real here too —
       // otherwise the demo would be the one place a shared game looked like a
       // game with a single referee. Each slot says whose it is by id, the
@@ -646,12 +661,22 @@ function buildSummary(): rcCoachSummary[] {
     return {
       coacheeName: c.full_name,
       coacheeId: c.id,
-      doneFeedbacks: (s.feedbacks[c.id] ?? []).map((r) => ({
-        feedbackId: r.id, gameId: r.game ?? '', matchNo: r.expand?.game?.match_no ?? '',
-        gameDate: r.expand?.game?.match_date ?? '', league: r.expand?.game?.league ?? '',
-        teams: `${r.expand?.game?.home_team ?? ''} vs ${r.expand?.game?.away_team ?? ''}`,
-        role: r.role_assessed ?? '1. SR', submittedAt: r.submitted_at ?? '',
-      })),
+      doneFeedbacks: (s.feedbacks[c.id] ?? []).map((r) => {
+        // The game the record names, for the score, the hall and the marks
+        // — the API reads them off the expanded game record the same way.
+        const g = s.games.find((x) => x.id === r.game);
+        return {
+          feedbackId: r.id, gameId: r.game ?? '', matchNo: r.expand?.game?.match_no ?? '',
+          gameDate: r.expand?.game?.match_date ?? '', league: r.expand?.game?.league ?? '',
+          teams: `${r.expand?.game?.home_team ?? ''} vs ${r.expand?.game?.away_team ?? ''}`,
+          role: r.role_assessed ?? '1. SR', submittedAt: r.submitted_at ?? '',
+          ...(g ? {
+            result: g.game_result, location: g.location, mapsUrl: g.maps_url,
+            starred: g.starred, vmFlagged: g.vmFlagged, isRdGame: g.isRdGame,
+            isRcGame: g.isRcGame, isLdGame: g.isLdGame, isManual: g.isManual,
+          } : {}),
+        };
+      }),
       outstandingGames: cg.filter((g) => g.kind === 'outstanding').map(toGame),
       plannedGames: cg.filter((g) => g.kind === 'planned').map(toGame),
     };

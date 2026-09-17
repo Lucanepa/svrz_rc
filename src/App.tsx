@@ -6401,11 +6401,14 @@ export default function App() {
                *
                *  A row listing only coachees could not say whether the other
                *  slot was empty or held by somebody the coach does not follow,
-               *  and those are different situations at the hall. When BOTH are
-               *  coachees nothing is highlighted: highlighting everything
-               *  highlights nothing. The group — "Varia", "Beförderung?" — is
-               *  what says why the evening is worth driving to, so it rides
-               *  along on every coachee's chip. */
+               *  and those are different situations at the hall. Every coachee
+               *  is marked, also when both referees are — it used to be only
+               *  the mixed pair, on the theory that highlighting everything
+               *  highlights nothing, but a grey chip reads as "not a coachee",
+               *  and a coach should not have to know the rule to read the row
+               *  (17.09.2026). The group — "Varia", "Beförderung?" — is what
+               *  says why the evening is worth driving to, so it rides along on
+               *  every coachee's chip. */
               const crewChips = (g: HomeGame) => {
                 type Chip = { name: string; role: string; coachee: boolean; coacheeId?: string };
                 const crew: Chip[] = g.crew?.length
@@ -6413,26 +6416,21 @@ export default function App() {
                   : (g.refs?.length ? g.refs : [{ name: g.refereeName, role: g.refereeRole || '' }])
                       .filter((r) => r.name)
                       .map((r) => ({ ...r, coachee: !g.noCoachee }));
-                const mixed = crew.some((r) => r.coachee) && crew.some((r) => !r.coachee);
                 return crew.filter((r) => r.name).map((r) => {
                   // The row the server matched the slot to; the name only for
                   // a crew from a server older than the id.
                   const group = r.coachee ? coacheeGroupOf(roster.resolve({ id: r.coacheeId, name: r.name })) : undefined;
                   const offered = inBoerse(g.boerse, r.role);
-                  // `marked` opens the MarkRow, and it used to need `mixed` — a
-                  // crew holding a coachee AND a non-coachee. In the case this
-                  // feature exists for that is often false: two coachees, one of
-                  // them in the börse, and neither chip would have had a MarkRow
-                  // for the warning to sit in. The word would have vanished and
-                  // only the aria-hidden ⚠ survived, which is the very failure
-                  // the marks are meant to avoid.
-                  const marked = (mixed && r.coachee) || !!group || offered;
+                  // `marked` opens the MarkRow: a coachee, a group, or a slot in
+                  // the börse — the warning needs a row to sit in even when the
+                  // name carries no other mark.
+                  const marked = r.coachee || !!group || offered;
                   return (
                     <ChipLine key={`${r.name}-${r.role}`}>
                       <MetaChip
                         wrap
                         stack={marked}
-                        tone={offered ? 'boerse' : (mixed && r.coachee ? 'amber' : 'stone')}
+                        tone={offered ? 'boerse' : (r.coachee ? 'amber' : 'stone')}
                         title={offered ? (de ? 'Dieser Einsatz steht in der SR-Börse' : 'This slot is in the SR-Börse') : undefined}
                       >
                         {/* Slot and name in ONE inline box, with a real space
@@ -6447,7 +6445,7 @@ export default function App() {
                         {marked && (
                           <MarkRow>
                             {offered && <BoerseChip lang={de ? 'DE' : 'EN'} />}
-                            {mixed && r.coachee && <CoacheeChip />}
+                            {r.coachee && <CoacheeChip />}
                             <GroupChip group={group} />
                           </MarkRow>
                         )}

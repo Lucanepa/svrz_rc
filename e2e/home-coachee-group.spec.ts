@@ -57,16 +57,16 @@ test('a planned game says which group its coachees are in', async ({ page }) => 
   await page.goto('/home');
   await expect(page.getByText(/\d+ planned|\d+ geplant/)).toBeVisible();
 
-  // A mixed pair keeps the "Coachee" mark that tells the two referees apart,
-  // and the group stands beside it as a chip of its own.
-  await expect(page.getByText('Coachee', { exact: true })).toBeVisible();
+  // Every coachee carries the "Coachee" mark — the mixed pair's Nina, and
+  // BOTH referees of the second game (it used to be only the mixed pair; a
+  // grey chip read as "not a coachee") — and the group stands beside it as a
+  // chip of its own.
+  await expect(page.getByText('Coachee', { exact: true })).toHaveCount(3);
   await expect(page.getByText('Misc', { exact: true })).toBeVisible();
   // The referee who is nobody's coachee is still listed, and still unmarked.
   await expect(page.getByText('Sven Fremd', { exact: false })).toBeVisible();
 
-  // Both referees coachees: nothing is marked "Coachee" — highlighting
-  // everything highlights nothing — but each name carries its own group, which
-  // is the whole point of the line.
+  // Each name carries its own group, which is the whole point of the line.
   await expect(page.getByText('New SR 26/27', { exact: true })).toBeVisible();
   await expect(page.getByText('Promotion?', { exact: true })).toBeVisible();
 });

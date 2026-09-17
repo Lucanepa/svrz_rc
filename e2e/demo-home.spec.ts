@@ -33,9 +33,9 @@ test('Home shows the demo coach\'s summary — the lists behind the counters', a
   await expect(page.getByText(/1 outstanding|1 offen/)).toBeVisible();
   // A planned game, on its row: GameRow prints the two teams on their own
   // lines, so the home team is what to look for.
-  await expect(page.getByRole('button', { name: /DTV Bülach\s+VBC Züri Unterland/ })).toBeVisible();
+  await expect(page.getByTestId('game-row').filter({ hasText: /DTV Bülach/ })).toBeVisible();
   // The outstanding one — a past game still owed an observation.
-  await expect(page.getByRole('button', { name: /TV Wittenbach\s+VBC Kanti Schaffhausen/ })).toBeVisible();
+  await expect(page.getByTestId('game-row').filter({ hasText: /TV Wittenbach/ })).toBeVisible();
 });
 
 test('a game taken in the demo reads as mine', async ({ page }) => {
@@ -58,5 +58,5 @@ test('a game taken in the demo reads as mine', async ({ page }) => {
   // derived from the same store the take wrote to.
   await page.getByRole('button', { name: /^(Home|Start)$/ }).click();
   await expect(page.getByText(/4 planned|4 geplant/)).toBeVisible();
-  await expect(page.getByRole('button', { name: /VBC Volketswil\s+DTV Bülach/ })).toBeVisible();
+  await expect(page.getByTestId('game-row').filter({ hasText: /VBC Volketswil/ })).toBeVisible();
 });

@@ -17,7 +17,7 @@ const COACHEES = [
   coachee('c3', 'Urs Custer', 'Beförderung?'),
 ];
 
-const game = (n: number, crew: Array<{ name: string; role: string; coachee: boolean }>) => ({
+const game = (n: number, crew: Array<{ name: string; role: string; coachee: boolean }>, flags: Record<string, boolean> = {}) => ({
   gameId: `g${n}`,
   gameDate: `2026-10-${String(n).padStart(2, '0')}T19:30:00Z`,
   league: '3L ♂ A',
@@ -26,6 +26,7 @@ const game = (n: number, crew: Array<{ name: string; role: string; coachee: bool
   refereeRole: crew[0].role,
   crew,
   result: '',
+  ...flags,
 });
 
 test.beforeEach(async ({ page }) => {
@@ -33,7 +34,7 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/coachees*', (r) => r.fulfill({ json: COACHEES }));
   // Regexes, not globs — see e2e/home-planned-games.spec.ts.
   await page.route(/\/api\/rc-overview\?/, (r) => r.fulfill({
-    json: [{ id: RC.id, fullName: RC.name, done: 0, outstanding: 0, planned: 2 }],
+    json: [{ id: RC.id, fullName: RC.name, done: 0, outstanding: 0, planned: 3 }],
   }));
   await page.route(/\/api\/rc-overview\/[^/]+\/coachees/, (r) => r.fulfill({
     json: [{
@@ -48,6 +49,12 @@ test.beforeEach(async ({ page }) => {
           { name: 'Tim Berger', role: '1. SR', coachee: true },
           { name: 'Urs Custer', role: '2. SR', coachee: true },
         ]),
+        // A coach whistling next to a coachee: the Games tab has always
+        // flagged it, the coach's own list used to draw it as any fixture.
+        game(3, [
+          { name: 'Nina Adler', role: '1. SR', coachee: true },
+          { name: 'Max Muster', role: '2. SR', coachee: false },
+        ], { isRcGame: true }),
       ],
     }],
   }));
@@ -61,12 +68,23 @@ test('a planned game says which group its coachees are in', async ({ page }) => 
   // BOTH referees of the second game (it used to be only the mixed pair; a
   // grey chip read as "not a coachee") — and the group stands beside it as a
   // chip of its own.
-  await expect(page.getByText('Coachee', { exact: true })).toHaveCount(3);
-  await expect(page.getByText('Misc', { exact: true })).toBeVisible();
+  await expect(page.getByText('Coachee', { exact: true })).toHaveCount(4);
+  await expect(page.getByText('Misc', { exact: true }).first()).toBeVisible();
   // The referee who is nobody's coachee is still listed, and still unmarked.
   await expect(page.getByText('Sven Fremd', { exact: false })).toBeVisible();
 
   // Each name carries its own group, which is the whole point of the line.
   await expect(page.getByText('New SR 26/27', { exact: true })).toBeVisible();
   await expect(page.getByText('Promotion?', { exact: true })).toBeVisible();
+});
+
+test('a taken RC-Spiel wears the same chip on Home as on the Games tab', async ({ page }) => {
+  await page.goto('/home');
+  await expect(page.getByText(/\d+ planned|\d+ geplant/)).toBeVisible();
+  // One RC game among the three planned rows — the flagged one, not the others.
+  await expect(page.getByText(/^(RC Game|RC-Spiel)$/)).toHaveCount(1);
+  // The row is one button whose accessible name reads the whole line; the
+  // teams sit in two paragraphs, so "Heim 3 … RC Game" is the row with the chip.
+  await expect(page.getByRole('button', { name: /Heim 3 Gast 3 (RC Game|RC-Spiel)/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Heim 1 Gast 1 (RC Game|RC-Spiel)/ })).toHaveCount(0);
 });

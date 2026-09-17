@@ -7697,9 +7697,17 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
     // the same fixture, once taken, lost it on the dashboard. Same rule as
     // /api/eligible-games — VolleyManager's mark or the admin's list.
     const starredIds = await getStarredGameIds();
+    // The same marks the Games tab draws, so a taken game keeps them on Home:
+    // an RC-Spiel (a coach whistling next to a coachee) looked like any other
+    // fixture in the coach's own list (Luca, 17.09.2026: "why is this not an
+    // RC game?" — the API said it was; this list never carried the bit).
+    const [isRcGame, manualIds] = await Promise.all([makeRcGameTest(), getManualGameIds()]);
     const starOf = (game: AnyRecord) => {
       const vmFlagged = isVmMarkedRow(game);
-      return { starred: vmFlagged || starredIds.has(String(game.id)), vmFlagged, isRdGame: Boolean(game.is_rd_game) };
+      return {
+        starred: vmFlagged || starredIds.has(String(game.id)), vmFlagged, isRdGame: Boolean(game.is_rd_game),
+        isRcGame: isRcGame(game), isLdGame: Boolean(game.is_ld_game), isManual: manualIds.has(String(game.id)),
+      };
     };
 
     // Fetch feedbacks for this RC
@@ -7723,7 +7731,7 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
     // off the slot or off the row. The client draws the group chip from the
     // id, so a licence spelling on the convocation no longer loses it.
     type CrewEntry = { name: string; role: string; coachee: boolean; svNumber: string; coacheeId: string };
-    type SummaryGame = { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: CrewEntry[]; coacheeId?: string; noCoachee?: boolean; result: string; boerse: BoerseOnGame; starred: boolean; vmFlagged: boolean; isRdGame: boolean };
+    type SummaryGame = { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: CrewEntry[]; coacheeId?: string; noCoachee?: boolean; result: string; boerse: BoerseOnGame; starred: boolean; vmFlagged: boolean; isRdGame: boolean; isRcGame: boolean; isLdGame: boolean; isManual: boolean };
     const coacheeMap = new Map<string, {
       coacheeName: string;
       coacheeId: string;

@@ -407,6 +407,11 @@ export interface rcCoachSummaryGame {
   starred?: boolean;
   vmFlagged?: boolean;
   isRdGame?: boolean;
+  /** What the game IS, as the Games tab flags it — RC-Spiel, LD, Testspiel —
+   *  so the coach's own list draws the same chips. Absent from an older server. */
+  isRcGame?: boolean;
+  isLdGame?: boolean;
+  isManual?: boolean;
 }
 
 export interface rcCoachSummary {

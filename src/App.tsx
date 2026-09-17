@@ -6478,6 +6478,20 @@ export default function App() {
                   // must not make the request disappear from the coach's own
                   // list. Same chip, same words, same tooltip as over there.
                   chips={<>
+                    {/* What the game IS, before whom it is for: the same
+                        RC-Spiel / LD / Testspiel chips the Games tab draws, so
+                        a taken RC-Spiel does not pass for an ordinary fixture. */}
+                    {g.isLdGame && <MetaChip tone="dark">{de ? 'LD Spiel' : 'LD Game'}</MetaChip>}
+                    {g.isRcGame && (
+                      <MetaChip tone="sky" title={de ? 'Ein Referee Coach pfeift hier neben einem Coachee.' : 'A referee coach is whistling next to a coachee here.'}>
+                        {de ? 'RC-Spiel' : 'RC Game'}
+                      </MetaChip>
+                    )}
+                    {g.isManual && (
+                      <MetaChip tone="violet" title={de ? 'Von Hand angelegt — kein Spiel aus VolleyManager.' : 'Created by hand — not a VolleyManager fixture.'}>
+                        {de ? 'Testspiel' : 'Test game'}
+                      </MetaChip>
+                    )}
                     {g.starred && (
                       <MetaChip tone="amber" title={starredTitle(g, de)}>
                         <Star size={10} className="fill-amber-500 text-amber-500" />

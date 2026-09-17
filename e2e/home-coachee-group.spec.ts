@@ -84,8 +84,7 @@ test('a taken RC-Spiel wears the same chip on Home as on the Games tab', async (
   await expect(page.getByText(/\d+ planned|\d+ geplant/)).toBeVisible();
   // One RC game among the three planned rows — the flagged one, not the others.
   await expect(page.getByText(/^(RC Game|RC-Spiel)$/)).toHaveCount(1);
-  // The row is one button whose accessible name reads the whole line; the
-  // teams sit in two paragraphs, so "Heim 3 … RC Game" is the row with the chip.
-  await expect(page.getByRole('button', { name: /Heim 3 Gast 3 (RC Game|RC-Spiel)/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Heim 1 Gast 1 (RC Game|RC-Spiel)/ })).toHaveCount(0);
+  const rowOf = (teams: RegExp) => page.getByTestId('game-row').filter({ hasText: teams });
+  await expect(rowOf(/Heim 3/).getByText(/^(RC Game|RC-Spiel)$/)).toBeVisible();
+  await expect(rowOf(/Heim 1/).getByText(/^(RC Game|RC-Spiel)$/)).toHaveCount(0);
 });

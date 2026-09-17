@@ -47,7 +47,7 @@ test('a flagged game keeps its star on Home', async ({ page }) => {
   const star = page.getByText(/^(Priority|Gewünscht)$/);
   await expect(star).toHaveCount(1);
   await expect(star).toHaveAttribute('title', /RD/);
-  const flagged = page.getByRole('button', { name: /Heim 1\s+Gast 1/ });
+  const flagged = page.getByTestId('game-row').filter({ hasText: /Heim 1/ });
   await expect(flagged.getByText(/^(Priority|Gewünscht)$/)).toBeVisible();
 });
 
@@ -70,7 +70,7 @@ test('LD, Testspiel and a VM-starred game wear the same chips on Home as on the 
   }));
   await page.goto('/home');
 
-  const row = (home: string) => page.getByRole('button', { name: new RegExp(home) });
+  const row = (home: string) => page.getByTestId('game-row').filter({ hasText: home });
   await expect(row(GAME_LD.homeTeam)).toBeVisible();
   await expect(row(GAME_LD.homeTeam).getByText(/^(LD Game|LD Spiel)$/)).toBeVisible();
   await expect(row(GAME_MANUAL.homeTeam).getByText(/^(Test game|Testspiel)$/)).toBeVisible();
@@ -102,12 +102,11 @@ test('every planned game the counter promises is listed', async ({ page }) => {
 
   // All of them, however many there are: the list is the answer to the counter
   // beside it, and a row that is cut off is a game with no way back.
-  // The row renders home and away on their own lines with nothing between them —
-  // the order is what says which is which — so that is what the row's accessible
-  // name reads as. `teams` in the API payload still carries " vs " — that is the
-  // separator the app splits on — which is why the confirm text and the toast
-  // below still match the original string.
-  const rows = page.getByRole('button', { name: /Heim \d+\s+Gast \d+/ });
+  // The card is no longer a button (the row carries its own three), so the
+  // rows are counted by their test id. `teams` in the API payload still
+  // carries " vs " — the separator the app splits on — which is why the
+  // confirm text and the toast below still match the original string.
+  const rows = page.getByTestId('game-row').filter({ hasText: /Heim \d+/ });
   await expect(rows).toHaveCount(10);
 });
 

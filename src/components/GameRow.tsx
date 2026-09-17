@@ -429,7 +429,7 @@ export function GameRow({
     // beside it. Drawing it twice and hiding one with `sm:hidden` put two of
     // every button in the document — which is two of them for a screen reader
     // and for anything looking a control up by its name.
-    <div className={cn('flex flex-wrap items-stretch py-0.5', className)}>
+    <div data-testid="game-row" className={cn('flex flex-wrap items-stretch py-0.5', className)}>
       {onOpen ? (
         // A div with role=button rather than a <button>: the hall inside is an
         // anchor and the row may carry its own controls, and neither is legal

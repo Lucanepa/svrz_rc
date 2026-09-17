@@ -6404,43 +6404,47 @@ export default function App() {
                * Infoschreiben 4.1 asks the coach to check before setting off
                * whether the Börse has swapped the referee; the tool holds every
                * fact that check needs and used to state only one of them
-               * (no coachee). The three that end an observation's point:
+               * (no coachee). Two facts end an observation's point (HARD — the
+               * row warns and "Abgeben" leads):
                *   no-coachee   nobody on the game is one of yours — a swap, or
                *                VolleyManager moved the referee; no feedback can
                *                be filed for it at all;
                *   rc-game      a referee coach is now whistling next to the
                *                coachee (4.4.10): the coaching happens on the
-               *                court, a third coach is not needed;
-               *   out-of-focus every coachee on the game sits outside the
-               *                focus rule for this league — soft, the coach may
-               *                still want the game.
+               *                court, a third coach is not needed.
+               * One is only an indication (SOFT — a grey line, the buttons stay
+               * as they are): every coachee on the game sits outside the focus
+               * rule for this league. The coach took the game knowing that, or
+               * wants it anyway.
                * Never acted on by the tool: a swap often puts ANOTHER coachee
                * on the game, and VolleyManager sometimes publishes a fixture
                * without its referees for a day. The row says it and hands the
                * coach the one button that follows (Luca, 17.09.2026, on his
                * own 401912 that had become an RC-Spiel).
                */
-              const gameScope = (g: HomeGame): { ok: boolean; reasons: string[] } => {
-                const reasons: string[] = [];
+              const gameScope = (g: HomeGame): { hard: string[]; soft: string[] } => {
+                const hard: string[] = [];
+                const soft: string[] = [];
                 const crew = g.crew?.length ? g.crew : [];
                 const coacheesOnGame = crew.filter((r) => r.coachee);
                 if (g.noCoachee || (crew.length > 0 && coacheesOnGame.length === 0)) {
-                  reasons.push(de ? 'kein Coachee mehr auf dem Spiel' : 'no coachee on the game any more');
+                  hard.push(de ? 'Kein Coachee mehr auf dem Spiel — vermutlich getauscht.' : 'No coachee on the game any more — probably swapped.');
                 } else if (g.isRcGame) {
-                  reasons.push(de ? 'jetzt ein RC-Spiel — ein Referee Coach pfeift neben dem Coachee' : 'now an RC game — a referee coach whistles next to the coachee');
+                  hard.push(de ? 'Jetzt ein RC-Spiel — ein Referee Coach pfeift neben dem Coachee.' : 'Now an RC game — a referee coach whistles next to the coachee.');
                 }
-                // Focus is judged per coachee on the game; one in focus keeps
+                // Focus is an indication, never a hard stop (Luca, 17.09.2026):
+                // it is judged per coachee on the game and one in focus keeps
                 // the game in scope. A crew from an older server carries no
                 // ids, and a game whose league the rule cannot read is left
                 // alone — the rule answers "in focus" for those anyway.
-                if (!reasons.length && coacheesOnGame.length > 0 && g.league) {
+                if (!hard.length && coacheesOnGame.length > 0 && g.league) {
                   const anyInFocus = coacheesOnGame.some((r) => {
                     const row = roster.resolve({ id: r.coacheeId, name: r.name });
                     return !row || inCoacheeFocus(row, g.league, [r.role === '2. SR' ? '2SR' : '1SR']);
                   });
-                  if (!anyInFocus) reasons.push(de ? 'nicht mehr im Fokus des Coachees' : 'no longer in the coachee\'s focus');
+                  if (!anyInFocus) soft.push(de ? 'Ausserhalb des Fokus des Coachees.' : 'Outside the coachee\'s focus.');
                 }
-                return { ok: reasons.length === 0, reasons };
+                return { hard, soft };
               };
               /** One row of the coach's own lists. `canRemind` only for games
                *  still to come: reminding somebody about a match they have
@@ -6451,6 +6455,7 @@ export default function App() {
               const HOME_TOOL_BTN = 'inline-flex h-8 flex-1 basis-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-1.5 text-[11px] font-medium transition-colors sm:flex-none sm:basis-auto sm:px-3 sm:text-xs';
               const gameRow = (g: HomeGame, key: string, canRemind = false, tone: RowTone = 'red') => {
                 const scope = gameScope(g);
+                const inScope = scope.hard.length === 0;
                 return (
                 <GameRow
                   key={key}
@@ -6462,7 +6467,9 @@ export default function App() {
                   teams={g.teams}
                   location={g.location}
                   mapsUrl={g.mapsUrl}
-                  onOpen={() => startFromSummary(g)}
+                  // No click on the card itself: the row carries its three
+                  // buttons, and a thumb scrolling a phone through the list
+                  // opened forms it never meant to (Luca, 17.09.2026).
                   // The star first, on a line of its own above the crew: the
                   // games list said "Gewünscht" on this fixture, and taking it
                   // must not make the request disappear from the coach's own
@@ -6508,7 +6515,7 @@ export default function App() {
                       onClick={() => startFromSummary(g)}
                       aria-label={de ? 'Spiel öffnen' : 'Open game'}
                       title={de ? 'Spiel öffnen' : 'Open game'}
-                      className={cn(HOME_TOOL_BTN, scope.ok
+                      className={cn(HOME_TOOL_BTN, inScope
                         ? 'bg-slate-900 text-white hover:bg-slate-800'
                         : 'border border-stone-300 bg-white text-stone-600 hover:bg-stone-50')}
                     >
@@ -6532,7 +6539,7 @@ export default function App() {
                       onClick={() => void giveBackFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
                       aria-label={de ? 'Spiel abgeben' : 'Give game back'}
                       title={de ? 'Spiel abgeben — es wird wieder für alle frei' : 'Give the game back — it becomes free for everyone'}
-                      className={cn(HOME_TOOL_BTN, scope.ok
+                      className={cn(HOME_TOOL_BTN, inScope
                         ? 'border border-stone-300 bg-white text-stone-600 hover:bg-stone-50'
                         : 'bg-slate-900 text-white hover:bg-slate-800')}
                     >
@@ -6556,14 +6563,19 @@ export default function App() {
                       Not a red alarm: a swap is nobody's mistake, and the coach
                       may still want the evening. It names the state and points
                       at the one action that follows. */}
-                  {!scope.ok && (
+                  {scope.hard.length > 0 && (
                     <p data-testid="scope-note" className="mt-1.5 flex items-start gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-800">
                       <AlertTriangle size={12} className="mt-0.5 shrink-0" />
                       <span>
-                        <span className="font-semibold">{de ? 'Nicht mehr im Fokus' : 'Not in scope any more'}</span>
-                        {' — '}{scope.reasons.join(de ? '; ' : '; ')}{'. '}
+                        <span className="font-semibold">{de ? 'Beobachtung nicht mehr nötig.' : 'Observation no longer needed.'}</span>
+                        {' '}{scope.hard.join(' ')}{' '}
                         {de ? 'Du kannst das Spiel abgeben.' : 'You can give the game back.'}
                       </span>
+                    </p>
+                  )}
+                  {scope.soft.length > 0 && (
+                    <p data-testid="scope-hint" className="mt-1.5 text-[11px] leading-snug text-stone-500">
+                      {de ? 'Hinweis: ' : 'Note: '}{scope.soft.join(' ')}
                     </p>
                   )}
                   <MatchResult result={g.result} className="mt-1" />

@@ -7281,9 +7281,10 @@ async function collectExpenseVisits(
   // yet on a cold process: without the read, a feedback stamped with a
   // colleague's id fell to the name and could land on a namesake's sheet.
   await getActiveRcPeople();
-  // The manual set is what exempts a test game from the season window, so a
-  // Testspiel observation is on every season's sheet; the same set marks
-  // the row, so the treasurer at least sees which line is one.
+  // A Testspiel is not on the sheet. It used to be listed and paid like any
+  // visit, with "Testspiel" in the Bemerkung column for the treasurer to
+  // strike by hand; the commission's answer was that a test is reimbursed
+  // nowhere (Luca, 17.09.2026). The manual set is what says which game is one.
   const [inSeason, manualIds] = await Promise.all([seasonFilterExceptManual(season), getManualGameIds()]);
   const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
     collection.getFullList<AnyRecord>({ sort: 'submitted_at', expand: 'game,coachee' }),
@@ -7296,7 +7297,7 @@ async function collectExpenseVisits(
   for (const fb of feedbacks) {
     const expanded = fb.expand as Record<string, AnyRecord> | undefined;
     const game = expanded?.game;
-    if (!game || !inSeason(game)) continue;
+    if (!game || !inSeason(game) || manualIds.has(String(game.id))) continue;
     const owner = identities.find((p) => rcRefMatches(fb.rc_id, fb.rc_name, p.self));
     if (!owner) continue;
     const meta = ((fb.feedback_json as { meta?: Record<string, unknown> } | undefined)?.meta ?? {}) as Record<string, unknown>;
@@ -7312,7 +7313,6 @@ async function collectExpenseVisits(
       group: asText(meta.gruppe) || asText(coachee?.groups),
       role: asText(fb.role_assessed),
       level,
-      isManual: manualIds.has(String(game.id)),
     };
     const list = out.get(owner.id) ?? [];
     list.push(visit);
@@ -7455,6 +7455,7 @@ function workloadByRc(
   allFeedbacks: AnyRecord[],
   inSeason: (game: AnyRecord) => boolean,
   now: Date,
+  manualIds: Set<string> = new Set(),
 ): Map<string, RcWorkload> {
   // The filed reports a coachee is on, with whoever filed them — the rc_id
   // once backfilled, the name written beside it before that. Each coach
@@ -7490,6 +7491,9 @@ function workloadByRc(
       if (!rcRefMatches(game.assigned_rc_id, game.assigned_rc, self)) continue;
       if (!inSeason(game)) continue;
       if (registerOnlyGames.has(String(game.id))) continue;
+      // A Testspiel counts nowhere — not as done, not as outstanding, not as
+      // planned (Luca, 17.09.2026), whoever stands on it.
+      if (manualIds.has(String(game.id))) continue;
       if (fbGameIds.has(game.id)) load.done++;
       else if (new Date(asText(game.match_date)) < now) load.outstanding++;
       else load.planned++;
@@ -7540,7 +7544,7 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
       }),
     );
 
-    const workload = workloadByRc(people, allGames, allFeedbacks, inSeason, new Date());
+    const workload = workloadByRc(people, allGames, allFeedbacks, inSeason, new Date(), await getManualGameIds());
 
     const [paidMap, attended] = await Promise.all([readRcPaid(season), readRcMeeting(season)]);
     const result = people.map((p) => {
@@ -7625,7 +7629,7 @@ app.get('/api/admin/statistics', requireAdminSession, async (req: Request, res: 
 
     const build = (s: number) => {
       const inSeason = seasonWindowFilter(s, raw.manual);
-      const workload = workloadByRc(raw.people, raw.games, raw.feedbacks, inSeason, now);
+      const workload = workloadByRc(raw.people, raw.games, raw.feedbacks, inSeason, now, raw.manual);
       const rcs: StatRcInput[] = identities.map((rc) => {
         const load = workload.get(rc.id);
         return { id: rc.id, name: rc.name, goal: goalOf(rc.id), planned: load?.planned ?? 0, outstanding: load?.outstanding ?? 0 };
@@ -7636,6 +7640,9 @@ app.get('/api/admin/statistics', requireAdminSession, async (req: Request, res: 
         const game = expanded?.game;
         if (!game || !inSeason(game)) continue;
         const owner = identities.find((rc) => rcRefMatches(fb.rc_id, fb.rc_name, { rcId: rc.id, name: rc.name })) ?? null;
+        // A Testspiel counts nowhere — not in the season's numbers either
+        // (Luca, 17.09.2026); it was carried and marked until then.
+        if (raw.manual.has(String(game.id))) continue;
         const observation = observationFromFeedback({ feedback: fb, game, coachee: expanded?.coachee, rc: owner, manualIds: raw.manual });
         if (observation) observations.push(observation);
       }
@@ -10183,12 +10190,18 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     }
     const attachmentName = attachmentFilename(String(pdfFilename || 'feedback.pdf'), attachmentType);
     const priorEntries = coachee && Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries : [];
+    // A Testspiel counts nowhere (Luca, 17.09.2026): even with a real coachee
+    // standing on it, the report and the mail go out and nothing is written
+    // onto the coachee or into the observations — exactly what a register-
+    // filed report on a Testspiel has always done.
+    const onTestGame = (await getManualGameIds()).has(String(game.id));
+    const countsForCoachee = !!coachee && !onTestGame;
     let observationId = '';
     try {
-      // Writes onto a coachee, so it is skipped when there is none: a test game
-      // filed against the register leaves the report and the mail behind it and
+      // Writes onto a coachee, so it is skipped when there is none — or when
+      // the game is a Testspiel: the report and the mail are left behind and
       // nothing else.
-      if (coachee && coacheeCollection) await coacheeCollection.update(coachee.id, {
+      if (countsForCoachee && coacheeCollection) await coacheeCollection.update(coachee.id, {
         feedback_entries: [
           ...priorEntries,
           {
@@ -10226,7 +10239,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       // An observation is what a season's target counts, so a throwaway must
       // not add to it — and one pointing at no coachee would be counted by
       // nobody and readable by no one.
-      if (coachee) {
+      if (countsForCoachee) {
         const observation = await withCollection<AnyRecord>(collectionCandidates.observations, (collection) =>
           collection.create(observationPayload),
         );

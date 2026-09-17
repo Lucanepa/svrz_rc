@@ -34,11 +34,6 @@ export type ExpenseVisit = {
   /** SK — the referee's Niveau-Stufe, "N2-1". */
   level: string;
   note?: string;
-  /** An observation filed on a throwaway fixture. It is on every season's
-   *  sheet (a manual game is exempt from the season window) and paid like
-   *  any other line; the Bemerkung column says so, so the treasurer can
-   *  strike it rather than reimburse a test. */
-  isManual?: boolean;
 };
 
 export type ExpenseStatement = {
@@ -72,7 +67,6 @@ export type ExpensePlan = {
 };
 
 const OVER_CAP_NOTE = 'über der Obergrenze';
-const TEST_GAME_NOTE = 'Testspiel';
 
 /** Number the visits and decide which are paid. Games in date order; the
  *  observations of one game share a number and are lettered. */
@@ -99,14 +93,11 @@ export function planExpenseRows(st: ExpenseStatement): ExpensePlan {
     visits.forEach((v, j) => {
       const letter = visits.length > 1 ? String.fromCharCode(97 + j) : '';
       const first = j === 0;
-      // The Testspiel word first: a test line over the cap is still a test
-      // line, and that is the half the treasurer acts on.
-      const notes = [v.isManual ? TEST_GAME_NOTE : '', v.note || (first && overCap ? OVER_CAP_NOTE : '')].filter(Boolean);
       rows.push({
         ...v,
         no: `${i + 1}${letter}`,
         amount: first && !overCap ? st.visitRate : null,
-        note: notes.join(' · '),
+        note: v.note || (first && overCap ? OVER_CAP_NOTE : ''),
       });
     });
   });

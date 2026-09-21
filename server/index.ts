@@ -1318,6 +1318,16 @@ type EmailTemplateKind = 'feedback' | 'reminder' | 'survey';
 type EmailTemplate = {
   subject: string; heading: string; intro: string; outro: string;
   headingEn?: string; introEn?: string; outroEn?: string;
+  // The subject line's English half, shown after the German with " · "
+  // between — the same convention the heading already uses. '' / absent
+  // means German-only, the way it always was.
+  subjectEn?: string;
+  // An optional extra block, rendered between the intro and the detail rows
+  // only when the SENDER supplies one for this particular mail (buildTemplatedEmail's
+  // `note`/`noteEn` opts) — the reminder uses it to tell a coachee their
+  // colleague on the game is cc'd and will get their own feedback too; other
+  // sends simply never pass one, so it stays invisible until then.
+  note?: string; noteEn?: string;
 };
 
 // The German half of the feedback mail, on its own so a retired copy of the
@@ -1362,7 +1372,14 @@ const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
   },
   reminder: {
     subject: 'Coaching-Begleitung bei deinem nächsten Einsatz',
+    subjectEn: 'Coaching visit at your next match',
     heading: '',
+    // Shown only when the game has exactly one coachee and one other
+    // referee — the other referee is cc'd on this same mail rather than
+    // getting their own, so this line is what tells them (and the coachee)
+    // why (Luca, 21.09.2026).
+    note: 'Zur Information: {{kollegeVorname}} ({{kollege}}) steht bei diesem Spiel ebenfalls auf der Pfeife und ist in Kopie (Cc) dieser E-Mail. {{coachVorname}} bereitet nach dem Spiel auch für {{kollegeVorname}} eine eigene, individuelle Rückmeldung vor.',
+    noteEn: 'For your information: {{colleagueFirstName}} ({{colleague}}) is also on the whistle for this match and is copied (Cc) on this e-mail. {{coachFirstName}} will prepare separate, individual feedback for {{colleagueFirstName}} too, after the game.',
     intro: `Liebe/r {{vorname}},
 
 bei deinem nächsten Einsatz wirst du im Rahmen unseres Schiedsrichter-Coachings begleitet: {{coach}} ist als Coach vor Ort, um dich zu unterstützen und gemeinsam mit dir an deiner Weiterentwicklung zu arbeiten.
@@ -1466,11 +1483,12 @@ function isShippedTemplate(kind: EmailTemplateKind, stored: Partial<EmailTemplat
   const norm = (v: unknown) => String(v ?? '').replace(/\r\n/g, '\n').trim();
   const same = (shipped: EmailTemplate) =>
     (['subject', 'heading', 'intro', 'outro'] as const).every((k) => norm(stored[k]) === norm(shipped[k]))
-    // An English field is only a customisation once it was stored: a record
+    // An optional field is only a customisation once it was stored: a record
     // from before the console could send one has none, and that is the shipped
-    // English by definition. A stored one must match, or the admin rewrote it
+    // value by definition — `note`/`subjectEn` included, since no record
+    // predates them either. A stored one must match, or the admin rewrote it
     // and returning the default would throw their text away.
-    && (['headingEn', 'introEn', 'outroEn'] as const).every((k) => typeof stored[k] !== 'string' || norm(stored[k]) === norm(shipped[k]));
+    && (['headingEn', 'introEn', 'outroEn', 'subjectEn', 'note', 'noteEn'] as const).every((k) => typeof stored[k] !== 'string' || norm(stored[k]) === norm(shipped[k]));
   return same(DEFAULT_EMAIL_TEMPLATES[kind]) || (RETIRED_EMAIL_TEMPLATES[kind] ?? []).some(same);
 }
 
@@ -1499,6 +1517,7 @@ async function getEmailTemplate(kind: EmailTemplateKind): Promise<EmailTemplate>
       heading: str(p.heading, def.heading),
       intro: str(p.intro, def.intro),
       outro: str(p.outro, def.outro),
+      note: str(p.note, def.note ?? ''),
     };
     // The English half follows what was stored; where nothing was, the shipped
     // English stands in — but ONLY while the German beside it is still the
@@ -1514,6 +1533,8 @@ async function getEmailTemplate(kind: EmailTemplateKind): Promise<EmailTemplate>
       headingEn: en(p.headingEn, de.heading, def.heading, def.headingEn),
       introEn: en(p.introEn, de.intro, def.intro, def.introEn),
       outroEn: en(p.outroEn, de.outro, def.outro, def.outroEn),
+      subjectEn: en(p.subjectEn, de.subject, def.subject, def.subjectEn),
+      noteEn: en(p.noteEn, de.note, def.note ?? '', def.noteEn),
     };
   } catch { return def; }
 }
@@ -1572,20 +1593,32 @@ function fmtTimeDe(value: string): string {
   return `${p.hour}:${p.minute}`;
 }
 
+// Shared with buildRemindersFor, which needs it to join two referees' first
+// names for a combined salutation.
+function firstNameOf(n: string): string {
+  return n.trim().split(/\s+/)[0] || '';
+}
+
 // Values available as {{placeholders}} in the templates. The German names are
 // the documented ones (listed in the admin editor); English aliases are kept so
 // a template written either way keeps working.
 function emailVars(o: {
   refereeName: string; rcName: string; matchNo: string; league: string;
   date: string; time: string; location: string; homeTeam: string; awayTeam: string; role: string;
+  // The other referee on the game, cc'd on this same mail instead of getting
+  // their own — only the reminder ever passes this. '' everywhere else, so
+  // {{kollege}}/{{colleague}} simply render empty rather than leaking braces.
+  colleagueName?: string;
 }): Record<string, string> {
-  const first = (n: string) => n.trim().split(/\s+/)[0] || '';
+  const first = firstNameOf;
+  const colleague = o.colleagueName || '';
   return {
     vorname: first(o.refereeName), name: o.refereeName,
     coach: o.rcName, coachVorname: first(o.rcName),
     datum: o.date, uhrzeit: o.time,
     heim: o.homeTeam, gast: o.awayTeam, liga: o.league, halle: o.location,
     spielNr: o.matchNo, rolle: o.role,
+    kollege: colleague, kollegeVorname: first(colleague),
     // The English names — one per German name, so the English half of a mail
     // can be written in English placeholders (the console offers these chips
     // when it is switched to English) — plus the older aliases, kept so a
@@ -1593,6 +1626,7 @@ function emailVars(o: {
     firstName: first(o.refereeName), coachFirstName: first(o.rcName),
     date: o.date, time: o.time, home: o.homeTeam, away: o.awayTeam, league: o.league, venue: o.location,
     matchNo: o.matchNo, role: o.role,
+    colleague, colleagueFirstName: first(colleague),
     coachee: o.refereeName, rc: o.rcName, location: o.location, homeTeam: o.homeTeam, awayTeam: o.awayTeam,
     match: `${o.homeTeam} – ${o.awayTeam}`,
   };
@@ -1611,6 +1645,13 @@ const EMAIL_PLACEHOLDERS_MATCH_EN = ['firstName', 'name', 'coach', 'coachFirstNa
 // about a template that works. It was one: the shipped default used {{coachee}}
 // and {{role}}, and the editor flagged both.
 const EMAIL_PLACEHOLDER_ALIASES = ['coachee', 'rc', 'location', 'homeTeam', 'awayTeam', 'match'];
+// Only the reminder ever fills these — the other referee on the game, cc'd on
+// this mail instead of getting their own. Offered as their own chips rather
+// than folded into EMAIL_PLACEHOLDERS_MATCH so the feedback editor, which
+// never has a colleague to name, does not offer a placeholder that always
+// renders blank there.
+const EMAIL_PLACEHOLDERS_REMINDER_EXTRA = ['kollege', 'kollegeVorname'];
+const EMAIL_PLACEHOLDERS_REMINDER_EXTRA_EN = ['colleague', 'colleagueFirstName'];
 const EMAIL_PLACEHOLDERS_SURVEY = ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'spielNr'];
 const EMAIL_PLACEHOLDERS_SURVEY_EN = ['firstName', 'name', 'coach', 'coachFirstName', 'date', 'matchNo'];
 
@@ -1684,6 +1725,10 @@ function buildTemplatedEmail(opts: {
   enclosures?: Array<[string, string]>;
   surveyUrl?: string;
   footerNote?: string;
+  /** The template's optional `note`/`noteEn` block, shown only when the
+   *  CALLER passes it — a send with nothing to say here (most of them) simply
+   *  leaves it out, the same way `tips` and `enclosures` already work. */
+  includeNote?: boolean;
 }): { subject: string; html: string; text: string } {
   const r = (s: string) => renderPlaceholders(s, opts.vars);
   const heading = r(opts.tpl.heading);
@@ -1692,6 +1737,9 @@ function buildTemplatedEmail(opts: {
   const headingEn = r(opts.tpl.headingEn ?? '');
   const introEn = r(opts.tpl.introEn ?? '');
   const outroEn = r(opts.tpl.outroEn ?? '');
+  const note = opts.includeNote ? r(opts.tpl.note ?? '') : '';
+  const noteEn = opts.includeNote ? r(opts.tpl.noteEn ?? '') : '';
+  const subjectEn = r(opts.tpl.subjectEn ?? '');
   const tips = (opts.tips || '').trim();
   // The app's own section idiom: an inset stone panel under a small uppercase
   // label, with the brand rule down the side. (It used to be an emerald box —
@@ -1718,10 +1766,16 @@ function buildTemplatedEmail(opts: {
     ? `<h1 style="margin:0 0 4px;${mailText(20, MAIL_INK, `font-weight:700;line-height:1.3;${MAIL_DISPLAY}`)}">${escapeHtml(heading)}</h1>`
       + (headingEn.trim() ? `<p style="margin:0 0 16px;${mailText(14, MAIL_MUTED, `line-height:1.3;${MAIL_DISPLAY}`)}">${escapeHtml(headingEn)}</p>` : '')
     : '';
+  // Same panel idiom as tips/enclosures: an aside about the mail, not the
+  // main message — currently only the reminder's "your colleague is cc'd" line.
+  const noteHtml = note.trim()
+    ? `<div style="margin:18px 0;padding:14px 18px 4px;border-left:3px solid ${MAIL_BRAND};background:${MAIL_PANEL};border-radius:0 12px 12px 0;">${bilingualBlockHtml(note, noteEn)}</div>`
+    : '';
   const html = emailShell(
     headingHtml
     + bilingualBlockHtml(intro, introEn)
     + detailRowsHtml(opts.rows)
+    + noteHtml
     + qaBlocksHtml(opts.qa ?? [])
     + tipsHtml
     + enclosuresHtml
@@ -1732,13 +1786,15 @@ function buildTemplatedEmail(opts: {
   let text = heading.trim() ? `${heading}${headingEn.trim() ? ` · ${headingEn}` : ''}\n\n` : '';
   text += bilingualText(intro, introEn);
   for (const [k, v] of opts.rows) if (v) text += `${k.replace('|', ' · ')}: ${v}\n`;
+  if (note.trim()) text += `\n${bilingualText(note, noteEn)}`;
   for (const [q, a] of opts.qa ?? []) if (a) text += `\n${q}\n${a}\n`;
   if (tips) text += `\n--- Tipps & Tricks ---\n${tips}\n`;
   if (enclosures.length > 0) text += `\n--- Beilagen · Enclosures ---\n${enclosures.map(([de, en]) => (en && en !== de ? `${de} · ${en}` : de)).join('\n')}\n`;
   text += `\n${bilingualText(outro, outroEn)}`;
   if (opts.surveyUrl) text += `\n${opts.surveyUrl}\n`;
   if (footNote) text += `\n${footNote}${footNoteEn ? `\n${footNoteEn}` : ''}\n`;
-  return { subject: r(opts.tpl.subject), html, text };
+  const subject = subjectEn.trim() ? `${r(opts.tpl.subject)} · ${subjectEn}` : r(opts.tpl.subject);
+  return { subject, html, text };
 }
 
 // Prominent monospace box for a PIN or one-time code.
@@ -10370,19 +10426,15 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       });
       const surveyUrl = surveyToken ? `${MAIL_APP_URL}#/survey/${surveyToken}` : '';
       const feedbackTpl = await getEmailTemplate('feedback');
-      // Rendered twice on purpose — see the two-message send below. The survey
-      // token is a capability: whoever holds it can answer, once, as the
-      // referee. It must not travel to anyone else.
-      const renderFeedbackMail = (linkForThisCopy: string) => buildTemplatedEmail({
+      const built = buildTemplatedEmail({
         // The outro IS the survey's lead-in ("Wir freuen uns über dein Feedback
         // zum Coaching-Erlebnis:"), so without the button it is a sentence that
-        // stops at a colon and promises something the mail does not contain.
-        // That is what the copies have looked like all along, and what a report
-        // filed against the register looks like — there is no token for
-        // somebody who is not a coachee.
-        // Both languages of it: blanking only `outro` left the copy ending on
-        // the English half of the lead-in, promising a button it does not have.
-        tpl: linkForThisCopy ? feedbackTpl : { ...feedbackTpl, outro: '', outroEn: '' },
+        // stops at a colon and promises something the mail does not contain —
+        // which is exactly what happens when no token could be minted: a
+        // report filed against the register has no coachee, and so no token.
+        // Both languages of it: blanking only `outro` left it ending on the
+        // English half of the lead-in, promising a button it does not have.
+        tpl: surveyUrl ? feedbackTpl : { ...feedbackTpl, outro: '', outroEn: '' },
         vars: emailVars({
           refereeName,
           rcName: asText(formData.meta?.rc),
@@ -10406,14 +10458,11 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         ],
         tips: String(tipsAndTricks || ''),
         enclosures: enclosures.map((e) => [e.doc.DE.title, e.doc.EN.title] as [string, string]),
-        surveyUrl: linkForThisCopy,
+        surveyUrl,
         // No footer line about the attachment: the intro names it ("Im Anhang
         // findest du …"), the enclosures have their own block above, and the
         // mail said "als PDF angehängt" twice in three lines.
       });
-      const built = renderFeedbackMail(surveyUrl);
-      // The copy for everyone who is not the referee. Identical but for the link.
-      const builtForCopies = surveyUrl ? renderFeedbackMail('') : built;
       const subject = built.subject;
 
       // ONE notion of test mode. This used to read the env var here and the
@@ -10483,74 +10532,32 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
             contentType: 'application/pdf',
           })),
         ]);
-        // TWO messages, not one with Cc. The survey link is a one-shot
-        // capability to answer AS the referee, and the RC in Cc is by
-        // construction the very person that survey assesses — the button sat in
-        // her own inbox. One click (curiosity is enough, malice not required)
-        // burns the referee's token, the chair reads her answer as his, and his
-        // genuine attempt then gets a 409. Merely opening the link also reveals
-        // whether he has answered yet.
-        //
-        // The same mailbox does not need it twice. A coach who is also the
-        // referee on the game — which is every test game somebody makes for
-        // themselves — was sent the report and then the copy of it, and the
-        // second one only differs by the survey link it leaves out. Nothing is
-        // withheld by dropping it: the address already has the fuller message.
-        const copyRecipients = [...(mailCc ?? []), ...(mailBcc ?? [])]
-          .filter((address) => !sameMailbox(address, mailTo));
-        // Sent side by side, not one after the other. Each message carries the
-        // whole report, and the coach sits in front of a spinner for the entire
-        // exchange — two sequential uploads of it were most of a six-second
-        // "Abschliessen". The pool has three connections; this uses two.
+        // ONE message — referee in To, RC in Cc, the commission in Bcc — not
+        // the referee's message plus a separate link-less copy. The RC (and so
+        // the survey's one-shot link) now sits in the same inbox as the report;
+        // simplicity was chosen over the edge case of an RC opening the link
+        // out of curiosity, which costs the referee a re-ask, not the report
+        // (Luca, 21.09.2026 — supersedes the two-message design below it once
+        // guarded against exactly that).
         const mailStarted = Date.now();
-        const [mainOutcome, copyOutcome] = await Promise.allSettled([
-          sendMailResilient({
-            from: MAIL_FROM,
-            replyTo: rcEmail || undefined,
-            to: mailTo,
-            subject: mailSubject,
-            html: built.html,
-            text: built.text,
-            attachments,
-          }),
-          copyRecipients.length > 0
-            ? sendMailResilient({
-              from: MAIL_FROM,
-              replyTo: rcEmail || undefined,
-              to: copyRecipients,
-              subject: mailSubject,
-              html: builtForCopies.html,
-              text: builtForCopies.text,
-              attachments,
-            })
-            : Promise.resolve(null),
-        ]);
-        if (mainOutcome.status === 'rejected') {
-          // The two left together, so the copy can have been accepted while
-          // the referee's was refused — a bounced address, a greeting that
-          // timed out on the retry too. The rethrow must not swallow that:
-          // the RC and the commission are holding the report, and a coach
-          // told only "nicht gesendet" forwards it to them by hand, or has
-          // the record deleted and re-files, which mails them twice. Before
-          // the sends were paired the copy never left after a failure, so
-          // this state could not arise.
-          if (copyOutcome.status === 'fulfilled' && copyRecipients.length > 0) {
-            log.warn('feedback.mail', 'referee send failed — the copy to the RC / commission did go out', { feedbackId: created.id, copies: copyRecipients.length });
-            const delivered = 'Kopie an RC und Kommission wurde gesendet / copy to RC and commission was sent';
-            emailWarning = emailWarning ? `${emailWarning}; ${delivered}` : delivered;
-          }
-          throw mainOutcome.reason;
-        }
-        // The referee has their report; a failure of the copy must not report
-        // otherwise.
+        const sendOutcome = await sendMailResilient({
+          from: MAIL_FROM,
+          replyTo: rcEmail || undefined,
+          to: mailTo,
+          cc: mailCc,
+          bcc: mailBcc,
+          subject: mailSubject,
+          html: built.html,
+          text: built.text,
+          attachments,
+        }) as { messageId?: string; accepted?: unknown[] };
         emailSent = true;
         // The one positive line this request writes about its mail. Until now
         // only a FAILURE left a trace, so "did the report go out?" could only
         // be answered by the absence of an error. Recipient counts, never
         // addresses. Mailbox ids come back from the provider and identify the
         // message for a delivery query.
-        const mainInfo = mainOutcome.value as { messageId?: string; accepted?: unknown[] };
-        log.info('feedback.mail', `report mailed to the referee${copyRecipients.length > 0 ? ` + ${copyRecipients.length} cop${copyRecipients.length === 1 ? 'y' : 'ies'}` : ''} (${Date.now() - mailStarted} ms)`, {
+        log.info('feedback.mail', `report mailed (${Date.now() - mailStarted} ms)`, {
           feedbackId: created.id,
           game: asText(game.match_no) || game.id,
           role: String(role),
@@ -10558,23 +10565,12 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           attachmentBytes: pdfBuffer.length,
           enclosures: enclosures.map((e) => e.doc.id),
           enclosedBytes: enclosures.reduce((total, e) => total + e.content.byteLength, 0),
-          messageId: mainInfo?.messageId || '',
-          accepted: Array.isArray(mainInfo?.accepted) ? mainInfo.accepted.length : undefined,
-          copies: copyRecipients.length,
-          copyOk: copyOutcome.status === 'fulfilled',
+          messageId: sendOutcome?.messageId || '',
+          accepted: Array.isArray(sendOutcome?.accepted) ? sendOutcome.accepted.length : undefined,
+          cc: (mailCc ?? []).length,
+          bcc: (mailBcc ?? []).length,
           testMode: isTestMode,
         });
-        if (copyOutcome.status === 'rejected') {
-          // The referee has the report; the RC and the commission do not. Worth
-          // an alert, not a failure of the submit.
-          const reason = copyOutcome.reason instanceof Error ? copyOutcome.reason.message : String(copyOutcome.reason);
-          log.error('feedback.mail', 'copy to the RC / commission failed', { feedbackId: created.id, copies: copyRecipients.length, error: reason });
-          // Both languages, like the mails: the client shows this verbatim
-          // inside its localised notice, and the submit never learns which
-          // language the coach worked in.
-          const undelivered = 'Kopie an RC und Kommission nicht gesendet / copy to RC and commission not sent';
-          emailWarning = emailWarning ? `${emailWarning}; ${undelivered}` : undelivered;
-        }
       }
     } catch (emailErr) {
       emailError = emailErr instanceof Error ? emailErr.message : String(emailErr);
@@ -10962,7 +10958,17 @@ async function findCoacheeByRefereeName(
 }
 
 type ReminderPlan = {
-  gameId: string; role: string; to: string; cc: string[]; replyTo: string;
+  gameId: string;
+  /** Who is addressed directly — "1. SR", "2. SR", or both when the game has
+   *  two coachees (or, for a test/VM-marked game with neither, both slots). */
+  role: string;
+  /** Everyone in the To: line — one address per coachee (or, with no coachee
+   *  on the game at all, every addressable referee). Always at least one. */
+  to: string[];
+  /** The RC, plus a referee who is NOT a coachee when the game also has one
+   *  who is — cc'd on the coachee's mail rather than getting their own. */
+  cc: string[];
+  replyTo: string;
   subject: string; text: string; html: string; coachee: string; rc: string; match: string;
   /** How the preview names the game: the number, the day, the league — and
    *  whether tomorrow's mail is for a Testspiel, which the preview could not
@@ -11013,6 +11019,15 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
     // The register may answer for a marked game too — the season exemption
     // above may not; a marked game is a real fixture in a real season.
     const viaRegister = registerMayStandIn(game, manualIds);
+    const gameSeason = seasonOfDate(asText(game.match_date));
+
+    // Resolve both slots first — who they are, whether each is a coachee, and
+    // whether an address exists — before deciding how the game as a whole is
+    // addressed. ONE mail per game, not one per slot (Luca, 21.09.2026): every
+    // coachee on it goes in To:, a referee who isn't rides in Cc instead of
+    // getting a separate mail of their own.
+    type Slot = { roleLabel: '1. SR' | '2. SR'; email: string; name: string; isCoachee: boolean };
+    const slots: Slot[] = [];
     // Nobody referees both ends of one match. A game naming the same person
     // twice is a typo — or a test fixture filled in quickly — and sending them
     // the identical mail twice is how "why did I get two e-mails?" starts.
@@ -11020,7 +11035,6 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
     for (const [roleLabel, refField] of [['1. SR', 'first_referee'], ['2. SR', 'second_referee']] as const) {
       const refereeName = asText(game[refField]);
       if (!refereeName) continue;
-      const gameSeason = seasonOfDate(asText(game.match_date));
       const refereeId = asText(game[`${refField}_id`]);
       const person = refereeId || normalizeName(refereeName);
       if (already.has(person)) continue;
@@ -11063,37 +11077,70 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
         });
         continue;
       }
-      const built = buildTemplatedEmail({
-        tpl,
-        vars: emailVars({
-          refereeName: recipientName,
-          rcName,
-          matchNo: asText(game.match_no),
-          league: asText(game.league),
-          date: fmtDateDe(asText(game.match_date)),
-          time: fmtTimeDe(asText(game.match_date)),
-          location: asText(game.location),
-          homeTeam: asText(game.home_team),
-          awayTeam: asText(game.away_team),
-          role: roleLabel,
-        }),
-        rows: [], // the reminder carries its details inline in the template text
-      });
-      plans.push({
-        gameId: String(game.id), role: roleLabel, to: email,
-        // The coach is copied so they see what their referee was told — unless
-        // they ARE the referee, which is every test game somebody makes for
-        // themselves. To and Cc on one mailbox is a message that looks sent
-        // twice. The reply address stays theirs either way.
-        cc: rcEmail && !sameMailbox(rcEmail, email) ? [rcEmail] : [],
-        replyTo: rcEmail,
-        subject: built.subject, text: built.text, html: built.html,
-        coachee: recipientName, rc: rcName,
-        match: `${asText(game.home_team)} – ${asText(game.away_team)}`,
-        matchNo: asText(game.match_no), date: asText(game.match_date), league: asText(game.league),
-        location: asText(game.location), isManual: isTest,
-      });
+      slots.push({ roleLabel, email, name: recipientName, isCoachee: !!coachee });
     }
+    if (slots.length === 0) continue;
+
+    // Every coachee is addressed directly. A referee who isn't rides in Cc —
+    // UNLESS nobody on the game is a coachee either (a pure test/VM-marked
+    // game), where there is no more-primary referee and both go in To:
+    // together, the same shape as two coachees.
+    const coacheeSlots = slots.filter((s) => s.isCoachee);
+    const primary = coacheeSlots.length > 0 ? coacheeSlots : slots;
+    const secondary = coacheeSlots.length > 0 ? slots.filter((s) => !s.isCoachee) : [];
+    // The colleague note only makes sense in the exactly-one-of-each shape:
+    // one coachee addressed by name, one other referee riding along in Cc.
+    // Two coachees — or two non-coachees — are addressed as equals; neither
+    // is "the colleague" of the other.
+    const colleague = primary.length === 1 && secondary.length === 1 ? secondary[0] : null;
+
+    const to = primary.map((s) => s.email);
+    const cc = secondary.map((s) => s.email);
+    // The coach is copied so they see what their referees were told — unless
+    // they ARE one of them, which is every test game somebody makes for
+    // themselves. The same mailbox in To: and Cc: is a message that looks
+    // sent twice.
+    if (rcEmail && ![...to, ...cc].some((addr) => sameMailbox(addr, rcEmail))) cc.push(rcEmail);
+
+    const primaryNames = primary.map((s) => s.name);
+    const joinedName = primaryNames.join(' und ');
+    const vars = emailVars({
+      refereeName: joinedName,
+      rcName,
+      matchNo: asText(game.match_no),
+      league: asText(game.league),
+      date: fmtDateDe(asText(game.match_date)),
+      time: fmtTimeDe(asText(game.match_date)),
+      location: asText(game.location),
+      homeTeam: asText(game.home_team),
+      awayTeam: asText(game.away_team),
+      role: primary.map((s) => s.roleLabel).join(' + '),
+      colleagueName: colleague?.name ?? '',
+    });
+    // Overridden after emailVars(), not passed into it: the DE and EN
+    // salutations need different conjunctions ("und" vs "and") for the same
+    // two names, and emailVars() only produces one joined value shared by
+    // both halves of the mail — {{vorname}} feeds the German paragraph,
+    // {{firstName}} the English one, so each gets its own join here.
+    vars.vorname = primaryNames.map(firstNameOf).join(' und ');
+    vars.firstName = primaryNames.map(firstNameOf).join(' and ');
+    vars.name = joinedName;
+    vars.coachee = joinedName;
+    const built = buildTemplatedEmail({
+      tpl, vars,
+      rows: [], // the reminder carries its details inline in the template text
+      includeNote: !!colleague,
+    });
+    plans.push({
+      gameId: String(game.id),
+      role: primary.map((s) => s.roleLabel).join(' + '),
+      to, cc, replyTo: rcEmail,
+      subject: built.subject, text: built.text, html: built.html,
+      coachee: joinedName, rc: rcName,
+      match: `${asText(game.home_team)} – ${asText(game.away_team)}`,
+      matchNo: asText(game.match_no), date: asText(game.match_date), league: asText(game.league),
+      location: asText(game.location), isManual: isTest,
+    });
   }
   return plans;
 }
@@ -11208,7 +11255,7 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
     const testMode = await isEmailTestMode();
     const testRecipient = asText(process.env.FEEDBACK_TEST_RECIPIENT);
     if (testMode && !testRecipient) {
-      res.json({ sent: 0, suppressed: true, recipients: plans.map((p) => p.to) });
+      res.json({ sent: 0, suppressed: true, recipients: plans.flatMap((p) => p.to) });
       return;
     }
 
@@ -11220,7 +11267,7 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
         // No cc in test mode: the copy list carries real addresses too.
         cc: !testMode && plan.cc.length ? plan.cc : undefined,
         replyTo: plan.replyTo || undefined,
-        subject: testMode ? `[TEST → ${plan.to}] ${plan.subject}` : plan.subject,
+        subject: testMode ? `[TEST → ${plan.to.join(', ')}] ${plan.subject}` : plan.subject,
         html: plan.html,
         text: plan.text,
         attachments: emailAttachments(),
@@ -11234,10 +11281,16 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
     if (!testMode) {
       await markRemindersSent(delivered, () => zonedDateOf(asText(game.match_date)));
     }
+    const recipientCount = delivered.reduce((n, p) => n + p.to.length + p.cc.length, 0);
     log.info('reminder.manual', 'reminder sent by hand', {
-      game: asText(game.match_no) || gameId, by: rcAuth?.name || 'admin', recipients: delivered.length,
+      game: asText(game.match_no) || gameId, by: rcAuth?.name || 'admin', emails: delivered.length, recipients: recipientCount,
     });
-    res.json({ sent: delivered.length, suppressed: false, testMode, recipients: delivered.map((p) => (testMode ? testRecipient : p.to)) });
+    res.json({
+      sent: delivered.length,
+      suppressed: false,
+      testMode,
+      recipients: testMode ? [testRecipient] : delivered.flatMap((p) => [...p.to, ...p.cc]),
+    });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
@@ -11300,13 +11353,13 @@ app.get('/api/admin/email-templates', requireAdminSession, async (_req: Request,
       // Offering those there would render silent blanks.
       placeholders: {
         feedback: EMAIL_PLACEHOLDERS_MATCH,
-        reminder: EMAIL_PLACEHOLDERS_MATCH,
+        reminder: [...EMAIL_PLACEHOLDERS_MATCH, ...EMAIL_PLACEHOLDERS_REMINDER_EXTRA],
         survey: EMAIL_PLACEHOLDERS_SURVEY,
       },
       // The same chips in English, for a console switched to English.
       placeholdersEn: {
         feedback: EMAIL_PLACEHOLDERS_MATCH_EN,
-        reminder: EMAIL_PLACEHOLDERS_MATCH_EN,
+        reminder: [...EMAIL_PLACEHOLDERS_MATCH_EN, ...EMAIL_PLACEHOLDERS_REMINDER_EXTRA_EN],
         survey: EMAIL_PLACEHOLDERS_SURVEY_EN,
       },
       // What renders, as opposed to what is offered: both languages and the
@@ -11314,7 +11367,7 @@ app.get('/api/admin/email-templates', requireAdminSession, async (_req: Request,
       // instead of being warned about.
       accepted: {
         feedback: [...EMAIL_PLACEHOLDERS_MATCH, ...EMAIL_PLACEHOLDERS_MATCH_EN, ...EMAIL_PLACEHOLDER_ALIASES],
-        reminder: [...EMAIL_PLACEHOLDERS_MATCH, ...EMAIL_PLACEHOLDERS_MATCH_EN, ...EMAIL_PLACEHOLDER_ALIASES],
+        reminder: [...EMAIL_PLACEHOLDERS_MATCH, ...EMAIL_PLACEHOLDERS_MATCH_EN, ...EMAIL_PLACEHOLDER_ALIASES, ...EMAIL_PLACEHOLDERS_REMINDER_EXTRA, ...EMAIL_PLACEHOLDERS_REMINDER_EXTRA_EN],
         survey: [...EMAIL_PLACEHOLDERS_SURVEY, ...EMAIL_PLACEHOLDERS_SURVEY_EN, 'coachee', 'rc'],
       },
     });
@@ -11340,6 +11393,7 @@ app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, 
         heading: oneLine(t.heading, 300),
         intro: String(t.intro ?? '').slice(0, 8000),
         outro: String(t.outro ?? '').slice(0, 4000),
+        note: String(t.note ?? '').slice(0, 4000),
       };
       // The English half, when the console sends it (it did not until
       // 2026-09-14 — the fields were dropped here, so the mail could only ever
@@ -11350,6 +11404,8 @@ app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, 
       if (typeof t.headingEn === 'string') clean.headingEn = oneLine(t.headingEn, 300);
       if (typeof t.introEn === 'string') clean.introEn = t.introEn.slice(0, 8000);
       if (typeof t.outroEn === 'string') clean.outroEn = t.outroEn.slice(0, 4000);
+      if (typeof t.subjectEn === 'string') clean.subjectEn = oneLine(t.subjectEn, 300);
+      if (typeof t.noteEn === 'string') clean.noteEn = t.noteEn.slice(0, 4000);
       if (!clean.subject.trim()) { res.status(400).json({ error: `Betreff darf nicht leer sein (${kind}).` }); return; }
       pending.push([kind, clean]);
     }

@@ -2850,8 +2850,8 @@ export default function App() {
           : 'Test mode is on — no e-mail was sent.', { lang: german ? 'DE' : 'EN' });
       } else {
         toast.success(german
-          ? `Erinnerung an ${res.sent} Empfänger gesendet.`
-          : `Reminder sent to ${res.sent} recipient(s).`, { lang: german ? 'DE' : 'EN' });
+          ? `Erinnerung an ${res.recipients.length} Empfänger gesendet.`
+          : `Reminder sent to ${res.recipients.length} recipient(s).`, { lang: german ? 'DE' : 'EN' });
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e), { lang: german ? 'DE' : 'EN' });

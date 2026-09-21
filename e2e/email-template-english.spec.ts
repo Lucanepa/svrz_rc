@@ -70,11 +70,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = readFileSync(join(HERE, '..', 'server', 'index.ts'), 'utf8');
 
 test('the save endpoint stores the English fields it is sent', () => {
-  for (const k of ['headingEn', 'introEn', 'outroEn']) {
+  for (const k of ['headingEn', 'introEn', 'outroEn', 'subjectEn', 'noteEn']) {
     expect(SRC, k).toMatch(new RegExp(`if \\(typeof t\\.${k} === 'string'\\) clean\\.${k} = `));
   }
 });
 
-test('the shipped-copy rule compares a stored English half', () => {
-  expect(SRC).toContain("(['headingEn', 'introEn', 'outroEn'] as const).every((k) => typeof stored[k] !== 'string' || norm(stored[k]) === norm(shipped[k]))");
+test('the shipped-copy rule compares a stored English half — and note, which no record predates either', () => {
+  expect(SRC).toContain("(['headingEn', 'introEn', 'outroEn', 'subjectEn', 'note', 'noteEn'] as const).every((k) => typeof stored[k] !== 'string' || norm(stored[k]) === norm(shipped[k]))");
 });

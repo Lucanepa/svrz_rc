@@ -103,25 +103,27 @@ test('the error alert is English by design', () => {
 /**
  * The mirror of the rule: a paragraph dropped on purpose drops BOTH halves.
  *
- * The feedback template's outro is the survey's lead-in ("Wir freuen uns über
- * dein Feedback zum Coaching-Erlebnis:"), and the copy to the RC and the
- * commission has no survey button under it — the token is the referee's and
- * must not travel to anyone else. The copy blanked `outro` alone, so it ended
- * on the muted English half, "We would be glad to hear how you found the
- * coaching:", a colon promising a button that was not there. That is the mail
- * the RC found in his own inbox on 15.09.2026.
+ * The feedback mail is ONE message now — referee in To:, RC in Cc:, the
+ * commission in Bcc: — not the referee's plus a separate link-less copy
+ * (Luca, 21.09.2026, superseding the two-message design this test used to
+ * pin). The lead-in ("Wir freuen uns über dein Feedback zum
+ * Coaching-Erlebnis:") is still dropped, in both languages, on the one case
+ * that still has no survey link at all: a report filed against the register
+ * with no coachee row, so no token could be minted. `outro: ''` alone,
+ * without `outroEn: ''` beside it, was the 15.09.2026 bug — it ended on the
+ * muted English half, a colon promising a button that was not there.
  *
  * Read from the source: the demo at #/demo composes ONE German mail with the
- * lead-in kept (`buildDemoEmail` in src/lib/demo.ts) and never the copy, so
- * there is no rendered message anywhere in this suite to read it from.
+ * lead-in kept (`buildDemoEmail` in src/lib/demo.ts), so there is no rendered
+ * message anywhere in this suite to read it from.
  */
-test('the RC copy of the feedback mail drops the survey lead-in in both languages', () => {
+test('the feedback mail drops the survey lead-in in both languages when there is no link', () => {
   const submit = routeBody('/api/feedback/submit');
-  // The copy is the render without a link; the referee's keeps the token.
-  expect(submit).toContain('const built = renderFeedbackMail(surveyUrl);');
-  expect(submit).toContain("const builtForCopies = surveyUrl ? renderFeedbackMail('') : built;");
+  // No separate copy render left over from the two-message design.
+  expect(submit).not.toContain('builtForCopies');
+  expect(submit).not.toContain('renderFeedbackMail');
   // The exact line, both fields — `outro: ''` on its own is the bug.
-  expect(submit).toContain("tpl: linkForThisCopy ? feedbackTpl : { ...feedbackTpl, outro: '', outroEn: '' },");
+  expect(submit).toContain("tpl: surveyUrl ? feedbackTpl : { ...feedbackTpl, outro: '', outroEn: '' },");
 
   // And those two fields are what the renderer prints, in both parts of the
   // mail: a template that blanks both leaves no lead-in in either language.

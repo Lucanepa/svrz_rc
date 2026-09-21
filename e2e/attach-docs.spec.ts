@@ -231,13 +231,13 @@ test.describe('Enclosures on the server (source)', () => {
     expect(submit).toContain('Eine Beilage konnte gerade nicht geladen werden');
   });
 
-  test('they are attached to both mails, after the report, and named in the body', () => {
+  test('they are attached to the mail, after the report, and named in the body', () => {
     const attachments = submit.slice(submit.indexOf('const attachments = emailAttachments(['), submit.indexOf(']);', submit.indexOf('const attachments = emailAttachments([')));
     expect(attachments.indexOf('filename: attachmentName')).toBeLessThan(attachments.indexOf('...enclosures.map'));
     expect(attachments).toContain("contentType: 'application/pdf'");
-    // Both sends share the one `attachments` array.
-    const batch = submit.slice(submit.indexOf('await Promise.allSettled(['), submit.indexOf(']);', submit.indexOf('await Promise.allSettled([')));
-    expect(batch.match(/\battachments,/g)).toHaveLength(2);
+    // The one send (referee To:, RC Cc:, commission Bcc:) carries the array.
+    const send = submit.slice(submit.indexOf('const sendOutcome = await sendMailResilient({'), submit.indexOf('}) as { messageId'));
+    expect(send).toContain('attachments,');
     // The body lists them, in both languages, in the same panel idiom as the tips.
     expect(submit).toContain('enclosures: enclosures.map((e) => [e.doc.DE.title, e.doc.EN.title]');
     const builder = SERVER.slice(SERVER.indexOf('function buildTemplatedEmail'), SERVER.indexOf('function emailCodeBox'));

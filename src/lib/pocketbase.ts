@@ -1286,6 +1286,11 @@ export async function listManualGames(q = ''): Promise<ManualGame[]> {
 export type EmailTemplate = {
   subject: string; heading: string; intro: string; outro: string;
   headingEn?: string; introEn?: string; outroEn?: string;
+  subjectEn?: string;
+  // An extra block shown between the detail rows and the closing, only when
+  // the send actually has something to say there — currently the reminder's
+  // "your colleague is cc'd" line. '' / absent renders nothing.
+  note?: string; noteEn?: string;
 };
 export type EmailTemplateKind = 'feedback' | 'reminder' | 'survey';
 export type EmailTemplates = {
@@ -1322,7 +1327,10 @@ export type ReminderPreview = {
   enabled: boolean;
   testMode: boolean;
   reminders: Array<{
-    gameId: string; role: string; to: string; cc: string[]; subject: string; text: string; coachee: string; rc: string; match: string;
+    // One combined mail per game now: `to` holds every coachee addressed
+    // directly, `cc` the RC plus a referee who rides along without a coachee
+    // row of their own (2026-09-21).
+    gameId: string; role: string; to: string[]; cc: string[]; subject: string; text: string; coachee: string; rc: string; match: string;
     /** How the preview names the game and whether the mail is for a
      *  Testspiel. Absent from an older server. */
     matchNo?: string; date?: string; league?: string; location?: string; isManual?: boolean;

@@ -147,12 +147,15 @@ const STR = {
     tplFeedback: 'Feedback-E-Mail (nach dem Spiel)',
     tplFeedbackHint: 'Wird nach dem Absenden eines Feedbacks an den Coachee gesendet (RC in Kopie, PDF im Anhang).',
     tplReminder: 'Erinnerung (Tag vor dem Spiel)',
-    tplReminderHint: 'Wird am Vortag an jeden Coachee gesendet, dessen Spiel ein RC übernommen hat (RC in Kopie). Sind beide SR Coachees, erhält jeder eine eigene E-Mail.',
+    tplReminderHint: 'Wird am Vortag an das Spiel gesendet — eine E-Mail pro Spiel, nicht pro SR. Jeder Coachee steht in „An"; ein SR ohne eigene Coachee-Akte steht in Kopie, zusammen mit dem RC. Sind beide SR Coachees (oder keiner von beiden), stehen beide in „An".',
     tplSurvey: 'RC-Feedback-Benachrichtigung',
     tplSurveyHint: 'Geht an die RC-Kommission, sobald jemand den Fragebogen abgeschickt hat. Die Antworten hängen automatisch darunter — anonyme Rückmeldungen ohne Namen.',
-    tplSubject: 'Betreff', tplHeading: 'Titel (optional)', tplIntro: 'Text', tplOutro: 'Schluss / Grussformel',
+    tplSubject: 'Betreff', tplSubjectEn: 'Betreff (EN, optional)', tplHeading: 'Titel (optional)', tplIntro: 'Text', tplOutro: 'Schluss / Grussformel',
+    tplNote: 'Hinweis an den mitkopierten SR (optional)',
+    tplNoteHint: 'Nur bei einem Spiel mit genau einem Coachee und einem zweiten SR ohne eigene Akte: erscheint zwischen den Spieldetails und dem Schluss und erklärt, warum der zweite SR in Kopie steht. {{kollege}}/{{kollegeVorname}} sind seine Namen.',
+    tplNoteEn: 'Hinweis an den mitkopierten SR (EN)',
     tplEnglish: 'Englische Fassung',
-    tplEnglishHint: 'Steht in der E-Mail unter dem deutschen Text. Leer lassen = nur Deutsch. Der Betreff bleibt einer für beide.',
+    tplEnglishHint: 'Steht in der E-Mail unter dem deutschen Text. Leer lassen = nur Deutsch.',
     tplHeadingEn: 'Titel (EN, optional)', tplIntroEn: 'Text (EN)', tplOutroEn: 'Schluss (EN)',
     tplPlaceholders: 'Platzhalter — anklicken zum Einfügen, oder {{ tippen:',
     tplUnknown: 'Orange markierte Platzhalter kennt diese E-Mail nicht — sie bleiben im Versand leer.',
@@ -454,12 +457,15 @@ const STR = {
     tplFeedback: 'Feedback email (after the match)',
     tplFeedbackHint: 'Sent to the coachee when a feedback is submitted (RC in CC, PDF attached).',
     tplReminder: 'Reminder (day before the match)',
-    tplReminderHint: 'Sent the day before to every coachee whose game an RC has taken (RC in CC). If both referees are coachees, each gets their own email.',
+    tplReminderHint: 'Sent the day before, one email per game rather than per referee. Every coachee goes in To:; a referee with no coachee record of their own rides in Cc, alongside the RC. With two coachees (or neither), both go in To: together.',
     tplSurvey: 'RC feedback notification',
     tplSurveyHint: 'Goes to the RC commission as soon as somebody submits the questionnaire. The answers are appended automatically — anonymous responses without a name.',
-    tplSubject: 'Subject', tplHeading: 'Title (optional)', tplIntro: 'Body', tplOutro: 'Closing / sign-off',
+    tplSubject: 'Subject', tplSubjectEn: 'Subject (EN, optional)', tplHeading: 'Title (optional)', tplIntro: 'Body', tplOutro: 'Closing / sign-off',
+    tplNote: 'Note to the cc\'d referee (optional)',
+    tplNoteHint: 'Only for a game with exactly one coachee and a second referee with no record of their own: appears between the match details and the closing, explaining why the second referee is cc\'d. {{colleague}}/{{colleagueFirstName}} are their name.',
+    tplNoteEn: 'Note to the cc\'d referee (EN)',
     tplEnglish: 'English version',
-    tplEnglishHint: 'Shown under the German text in the mail. Leave empty for German only. The subject is one for both.',
+    tplEnglishHint: 'Shown under the German text in the mail. Leave empty for German only.',
     tplHeadingEn: 'Title (EN, optional)', tplIntroEn: 'Body (EN)', tplOutroEn: 'Closing (EN)',
     tplPlaceholders: 'Placeholders — click to insert, or type {{:',
     tplUnknown: 'Placeholders marked amber are unknown to this email — they render empty when it is sent.',
@@ -2954,7 +2960,7 @@ function EmailsAdmin({ t, lang }: { t: T; lang: Lang }) {
       requestAnimationFrame(() => { el?.focus(); el?.setSelectionRange(pos, pos); });
     };
     const fieldProps = (field: keyof EmailTemplate) => ({ known, suggest: offered, label, kind, field });
-    const unknownUsed = [tpl.subject, tpl.heading, tpl.intro, tpl.outro, tpl.headingEn ?? '', tpl.introEn ?? '', tpl.outroEn ?? '']
+    const unknownUsed = [tpl.subject, tpl.subjectEn ?? '', tpl.heading, tpl.intro, tpl.outro, tpl.note ?? '', tpl.headingEn ?? '', tpl.introEn ?? '', tpl.outroEn ?? '', tpl.noteEn ?? '']
       .some((v) => hasUnknownPlaceholder(v, known));
     // A mail that ships with an English half is edited in both halves. The
     // survey notification goes to the commission in German only, and offering
@@ -2976,6 +2982,12 @@ function EmailsAdmin({ t, lang }: { t: T; lang: Lang }) {
             <span className={fieldLabel}>{t.tplSubject}</span>
             <TemplateField value={tpl.subject} onChange={(v) => patch(kind, { subject: v })} rows={1} singleLine {...fieldProps('subject')} />
           </label>
+          {bilingual && (
+            <label className="block">
+              <span className={fieldLabel}>{t.tplSubjectEn}</span>
+              <TemplateField value={tpl.subjectEn ?? ''} onChange={(v) => patch(kind, { subjectEn: v })} rows={1} singleLine {...fieldProps('subjectEn')} />
+            </label>
+          )}
           <label className="block">
             <span className={fieldLabel}>{t.tplHeading}</span>
             <TemplateField value={tpl.heading} onChange={(v) => patch(kind, { heading: v })} rows={1} singleLine {...fieldProps('heading')} />
@@ -2984,6 +2996,13 @@ function EmailsAdmin({ t, lang }: { t: T; lang: Lang }) {
             <span className={fieldLabel}>{t.tplIntro}</span>
             <TemplateField value={tpl.intro} onChange={(v) => patch(kind, { intro: v })} rows={kind === 'reminder' ? 14 : 6} {...fieldProps('intro')} />
           </label>
+          {kind === 'reminder' && (
+            <label className="block">
+              <span className={fieldLabel}>{t.tplNote}</span>
+              <span className="block text-[11px] text-stone-400 mb-1">{t.tplNoteHint}</span>
+              <TemplateField value={tpl.note ?? ''} onChange={(v) => patch(kind, { note: v })} rows={3} {...fieldProps('note')} />
+            </label>
+          )}
           <label className="block">
             <span className={fieldLabel}>{t.tplOutro}</span>
             <TemplateField value={tpl.outro} onChange={(v) => patch(kind, { outro: v })} rows={3} {...fieldProps('outro')} />
@@ -3002,6 +3021,12 @@ function EmailsAdmin({ t, lang }: { t: T; lang: Lang }) {
                 <span className={fieldLabel}>{t.tplIntroEn}</span>
                 <TemplateField value={tpl.introEn ?? ''} onChange={(v) => patch(kind, { introEn: v })} rows={kind === 'reminder' ? 14 : 6} {...fieldProps('introEn')} />
               </label>
+              {kind === 'reminder' && (
+                <label className="block">
+                  <span className={fieldLabel}>{t.tplNoteEn}</span>
+                  <TemplateField value={tpl.noteEn ?? ''} onChange={(v) => patch(kind, { noteEn: v })} rows={3} {...fieldProps('noteEn')} />
+                </label>
+              )}
               <label className="block">
                 <span className={fieldLabel}>{t.tplOutroEn}</span>
                 <TemplateField value={tpl.outroEn ?? ''} onChange={(v) => patch(kind, { outroEn: v })} rows={3} {...fieldProps('outroEn')} />
@@ -3055,7 +3080,7 @@ function EmailsAdmin({ t, lang }: { t: T; lang: Lang }) {
             ) : preview.reminders.map((r, i) => (
               <div key={i} className="rounded-lg border border-stone-200 overflow-hidden">
                 <div className="bg-stone-50 px-3 py-2 text-[11px] text-stone-600 border-b border-stone-200">
-                  <div><span className="font-semibold">An:</span> {r.to} <span className="font-semibold ml-2">Cc:</span> {r.cc.join(', ') || '—'}</div>
+                  <div><span className="font-semibold">An:</span> {r.to.join(', ')} <span className="font-semibold ml-2">Cc:</span> {r.cc.join(', ') || '—'}</div>
                   <div><span className="font-semibold">Betreff:</span> {r.subject}</div>
                   <div className="flex flex-wrap items-center gap-x-1 text-stone-400">
                     <span>

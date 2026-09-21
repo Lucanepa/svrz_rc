@@ -148,14 +148,13 @@ test.describe('API auth', () => {
 /**
  * The send path inside POST /api/feedback/submit, read from the source.
  *
- * Two messages leave: the referee's, with the survey token, and the copy for
- * the RC and the commission without it. They used to go one after the other,
- * and each carries the whole PDF — two sequential uploads of it were most of
- * a six-second "Abschliessen" with the coach in front of a spinner. Now they
- * leave together, and only the referee's decides whether the mail counts as
- * sent. What the source can prove is that shape, and that a request leaves a
- * trace either way: until now only a failure was logged, so "did the report
- * go out?" could only be answered by the absence of an error.
+ * ONE message leaves: the referee in To:, the RC in Cc:, the commission in
+ * Bcc: — the survey link rides along in the same mail the RC and commission
+ * see (Luca, 21.09.2026, superseding the two-message design this used to
+ * test: a separate link-less copy, sent alongside the referee's, so the RC's
+ * inbox never held the referee's one-shot survey token). What the source can
+ * prove is that shape, and that a send failure still surfaces: a rejected
+ * send propagates to the outer catch rather than being swallowed.
  */
 test.describe('Send path (source)', () => {
   // The specs run as ES modules, so `__dirname` is not defined — and a path
@@ -165,69 +164,46 @@ test.describe('Send path (source)', () => {
   const start = SRC.indexOf("app.post('/api/feedback/submit'");
   const submit = SRC.slice(start, SRC.indexOf('\n});\n', start));
 
-  test('the referee’s mail and the copy leave side by side', () => {
+  test('exactly one message, to the referee, cc the RC, bcc the commission', () => {
     expect(start, 'the submit handler still exists').toBeGreaterThan(-1);
-    const from = submit.indexOf('await Promise.allSettled([');
+    expect(submit.match(/sendMailResilient\(/g)).toHaveLength(1);
+    const from = submit.indexOf('const sendOutcome = await sendMailResilient({');
     expect(from).toBeGreaterThan(-1);
-    const batch = submit.slice(from, submit.indexOf(']);', from));
-    // Both sends in the one batch. A submit with nobody to copy — the coach is
-    // the referee on their own test game — settles a placeholder in its place,
-    // so the two outcomes keep their positions.
-    expect(batch.match(/sendMailResilient\(/g)).toHaveLength(2);
-    expect(batch).toContain('copyRecipients.length > 0');
-    expect(batch).toContain('Promise.resolve(null)');
-    // No send awaited on its own anywhere in the handler: that is the
-    // sequential version coming back.
-    expect(submit).not.toMatch(/await sendMailResilient\(/);
+    const call = submit.slice(from, submit.indexOf('}) as { messageId', from));
+    expect(call).toContain('to: mailTo,');
+    expect(call).toContain('cc: mailCc,');
+    expect(call).toContain('bcc: mailBcc,');
+    // No leftover two-message machinery.
+    expect(submit).not.toContain('Promise.allSettled');
+    expect(submit).not.toContain('copyRecipients');
+    expect(submit).not.toContain('builtForCopies');
   });
 
-  test('a rejected referee send still throws, before emailSent is set', () => {
-    // The order is the point: `allSettled` never rejects, so without the
-    // rethrow a bounced referee address would come back as `emailSent: true`.
-    const branch = submit.indexOf("if (mainOutcome.status === 'rejected') {");
-    const rethrow = submit.indexOf('throw mainOutcome.reason;');
-    const sent = submit.indexOf('emailSent = true;');
-    expect(branch).toBeGreaterThan(-1);
-    expect(rethrow).toBeGreaterThan(branch);
-    expect(sent).toBeGreaterThan(rethrow);
-  });
-
-  test('a copy that went out while the referee’s send failed is recorded, in both languages', () => {
-    // The two leave together, so the RC and the commission can be holding
-    // the report when the referee's address bounces. Rethrown without a word,
-    // that left the Protokoll with only a failure line and the coach
-    // forwarding a PDF by hand to people who already had it.
-    const from = submit.indexOf("if (mainOutcome.status === 'rejected') {");
-    const block = submit.slice(from, submit.indexOf('throw mainOutcome.reason;', from));
-    expect(block).toContain("copyOutcome.status === 'fulfilled' && copyRecipients.length > 0");
-    expect(block).toContain("log.warn('feedback.mail', 'referee send failed — the copy to the RC / commission did go out'");
-    expect(block).toContain('Kopie an RC und Kommission wurde gesendet / copy to RC and commission was sent');
-    expect(block).toContain('emailWarning =');
-  });
-
-  test('a rejected copy is logged and warned about, never thrown', () => {
-    const from = submit.indexOf("if (copyOutcome.status === 'rejected') {");
-    expect(from).toBeGreaterThan(-1);
-    // After `emailSent = true`: the referee has the report whatever the copy did.
-    expect(from).toBeGreaterThan(submit.indexOf('emailSent = true;'));
-    const block = submit.slice(from, submit.indexOf('} catch (emailErr)', from));
-    expect(block).toContain("log.error('feedback.mail', 'copy to the RC / commission failed'");
-    // Verbatim inside the client's localised notice, so it carries both
-    // languages itself — the submit never learns which one the coach used.
-    expect(block).toContain('Kopie an RC und Kommission nicht gesendet / copy to RC and commission not sent');
-    expect(block).not.toMatch(/\bthrow\b/);
+  test('a rejected send is not swallowed — it reaches the outer catch', () => {
+    // Awaited directly (not through allSettled), so a rejection throws out of
+    // the try block into `catch (emailErr)` below, which sets emailError —
+    // never emailSent = true.
+    const sendAt = submit.indexOf('const sendOutcome = await sendMailResilient({');
+    const sentAt = submit.indexOf('emailSent = true;');
+    const catchAt = submit.indexOf('} catch (emailErr) {');
+    expect(sendAt).toBeGreaterThan(-1);
+    expect(sentAt).toBeGreaterThan(sendAt);
+    expect(catchAt).toBeGreaterThan(sentAt);
+    const catchBlock = submit.slice(catchAt, submit.indexOf('\n    }', catchAt));
+    expect(catchBlock).toContain('emailError = emailErr instanceof Error ? emailErr.message : String(emailErr);');
   });
 
   test('a success writes one mail line, and the response one with the phases', () => {
     // ONE positive line, with what a delivery query needs: the provider's
-    // message id and how many addresses it accepted. Counts, never addresses.
+    // message id and how many addresses it accepted, plus cc/bcc counts —
+    // never addresses.
     expect(submit.match(/log\.info\('feedback\.mail'/g)).toHaveLength(1);
     const mailLine = submit.slice(
       submit.indexOf("log.info('feedback.mail'"),
-      submit.indexOf("if (copyOutcome.status === 'rejected')"),
+      submit.indexOf('});', submit.indexOf("log.info('feedback.mail'")),
     );
-    expect(mailLine).toMatch(/log\.info\('feedback\.mail', `report mailed to the referee/);
-    for (const key of ['feedbackId:', 'ms:', 'messageId:', 'accepted:', 'copies:', 'copyOk:']) {
+    expect(mailLine).toMatch(/log\.info\('feedback\.mail', `report mailed \(/);
+    for (const key of ['feedbackId:', 'ms:', 'messageId:', 'accepted:', 'cc:', 'bcc:', 'testMode:']) {
       expect(mailLine, key).toContain(key);
     }
     // And the phases on the way out, so "Abschliessen took six seconds" is

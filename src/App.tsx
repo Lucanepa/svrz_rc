@@ -116,6 +116,18 @@ function metaNiveau(c?: { referee_level?: string; stage?: string } | null): stri
   return /^\d+$/.test(st) ? `${lvl} - ${st}` : lvl;
 }
 
+// The referee register's level for whichever slot is being observed — the
+// fallback for a referee who was never formally added as a coachee (the
+// other referee on a game taken for someone else's coachee). '' when the
+// register has nothing on file either.
+function registerNiveau(game?: EligibleGame | null, role?: SlotRole): string {
+  if (!game || !role) return '';
+  const [level, stage] = role === '1. SR'
+    ? [game.firstRefereeLevel, game.firstRefereeStage]
+    : [game.secondRefereeLevel, game.secondRefereeStage];
+  return metaNiveau({ referee_level: level, stage });
+}
+
 const RATINGS = ['A', 'B', 'C', 'D', 'E'];
 
 // A/B are the two greens (exemplary → mostly exceeded), C is the neutral
@@ -2110,7 +2122,7 @@ export default function App() {
         // game_result overwrite here silently reverted their correction.
         ergebnis: resultUnlocked ? prev.meta.ergebnis : (selectedGame.game_result || prev.meta.ergebnis),
         srName: srName || prev.meta.srName,
-        srNiveau: metaNiveau(coachee) || prev.meta.srNiveau,
+        srNiveau: metaNiveau(coachee) || registerNiveau(selectedGame, formData.role) || prev.meta.srNiveau,
         gruppe: normalizeCoacheeGroup(coachee?.groups) || prev.meta.gruppe,
         rc: rcAuth.rcName || selectedGame.assignedRc || prev.meta.rc,
       },

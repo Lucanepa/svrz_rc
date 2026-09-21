@@ -82,6 +82,13 @@ export interface EligibleGame {
   secondCoacheeId?: string;
   firstCoacheeVia?: string;
   secondCoacheeVia?: string;
+  /** The referee register's own level/stage for this slot — present even when
+   *  the slot is nobody's coachee, so the form can still show a level for a
+   *  2SR nobody formally added. '' means the register has none on file. */
+  firstRefereeLevel?: string;
+  firstRefereeStage?: string;
+  secondRefereeLevel?: string;
+  secondRefereeStage?: string;
   feedbackClosedRoles?: string[];
   isRdGame?: boolean;
   isLdGame?: boolean;

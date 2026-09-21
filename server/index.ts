@@ -2874,7 +2874,33 @@ function assignedQueries(game: Record<string, unknown>): CoacheeQuery[] {
  *  a slot the number did not settle. Every field is additive — an older
  *  client ignores them, and a newer client against an older API falls back
  *  to the name when they are absent. */
-function slotIdentityFields(coachees: CoacheeIndex, game: AnyRecord, manual: Set<string>) {
+// A referee's level/stage off the register, keyed by SV-Nr. first and the
+// name only when the register spells it under exactly one licence — the same
+// two-tier rule refereeRegisterContact uses for a mail address. Built once
+// per request so slotIdentityFields can look either slot up without an
+// await, the way the coachee index already lets it.
+function buildRefereeLevelIndex(register: AnyRecord[]): (name: string, svId: string) => { level: string; stage: string } {
+  const bySv = new Map<string, AnyRecord>();
+  for (const row of register) {
+    const sv = asText(row.sv_number);
+    if (sv) bySv.set(sv, row);
+  }
+  const numbersFor = registerNumbers(register);
+  return (name, svId) => {
+    const row = (svId && bySv.get(svId)) || (() => {
+      const nums = numbersFor(name);
+      return nums.length === 1 ? bySv.get(nums[0]) : undefined;
+    })();
+    return row ? { level: asText(row.level), stage: asText(row.stage) } : { level: '', stage: '' };
+  };
+}
+
+function slotIdentityFields(
+  coachees: CoacheeIndex,
+  game: AnyRecord,
+  manual: Set<string>,
+  levelFor: (name: string, svId: string) => { level: string; stage: string },
+) {
   const season = seasonOfGame(game.match_date);
   // A manual game is on every season's list whatever its date, and one made
   // in the summer belongs to the season just ended — where its referee may
@@ -2884,6 +2910,8 @@ function slotIdentityFields(coachees: CoacheeIndex, game: AnyRecord, manual: Set
   // is badged on the list and filed on the row the list showed.
   const lookup = manual.has(String(game.id)) ? coachees.findOrNewest : coachees.find;
   const [first, second] = refereeSlotQueries(game).map((slot) => lookup(season, slot));
+  const firstLevel = levelFor(asText(game.first_referee), asText(game.first_referee_id));
+  const secondLevel = levelFor(asText(game.second_referee), asText(game.second_referee_id));
   return {
     firstRefereeId: asText(game.first_referee_id),
     secondRefereeId: asText(game.second_referee_id),
@@ -2892,6 +2920,15 @@ function slotIdentityFields(coachees: CoacheeIndex, game: AnyRecord, manual: Set
     secondCoacheeId: second.row ? String(second.row.id) : '',
     firstCoacheeVia: first.via,
     secondCoacheeVia: second.via,
+    // The register's own level/stage for this slot, filled in even when
+    // nobody made a coachee row of them (a 2SR who isn't anyone's coachee):
+    // the commission's rule is that both referees on an observed game are
+    // treated the same, and the form should not show a blank level just
+    // because only one of them was formally added as a coachee.
+    firstRefereeLevel: firstLevel.level,
+    firstRefereeStage: firstLevel.stage,
+    secondRefereeLevel: secondLevel.level,
+    secondRefereeStage: secondLevel.stage,
   };
 }
 
@@ -3045,6 +3082,7 @@ async function makeRcGameTest(coacheeIndex?: CoacheeIndex): Promise<(game: AnyRe
 async function getEligibleGames(subject: RcAuthInfo | null = null) {
   await ensureAdminAuth();
   const coachees = await getCoacheeIndex();
+  const levelFor = buildRefereeLevelIndex(await getRefereeRegister());
   // A test game exists to be walked through, so it is on the list whatever its
   // referees are. Filtered out with everything else, it could only be reached
   // from the admin console that made it — which is not where the flow it is
@@ -3101,7 +3139,7 @@ async function getEligibleGames(subject: RcAuthInfo | null = null) {
     secondReferee: asText(game.second_referee),
     assignedRc: asText(game.assigned_rc),
     // Who these people ARE, beside what they are called — see the helper.
-    ...slotIdentityFields(coachees, game, manual),
+    ...slotIdentityFields(coachees, game, manual, levelFor),
     feedbackClosedRoles: Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [],
     isRdGame: Boolean(game.is_rd_game),
     isLdGame: Boolean(game.is_ld_game),
@@ -5767,15 +5805,20 @@ app.post('/api/admin/games/backfill-referee-ids', requireAdminSession, async (_r
  *  for the reason it always does here. */
 // Whose report — or reminder — may go to the referee register instead of a
 // coachee row. A TEST game, because the referee on one is usually nobody's
-// coachee and the game exists to walk the flow through. And a game
-// VolleyManager marked for observation (RD-Spiel / RSV-Markierung), because it
-// is on the list on that mark alone (gamesSync.ts): the RD asked for THIS
-// referee to be watched, coachee or not, and a coach who has sat through the
-// game and filled in the form must not be told at the end to go and create a
-// coachee first. Either way the report is filed against no coachee — nothing
-// counted, nothing written onto anybody's record — and mailed as usual.
+// coachee and the game exists to walk the flow through. A game VolleyManager
+// marked for observation (RD-Spiel / RSV-Markierung), because it is on the
+// list on that mark alone (gamesSync.ts): the RD asked for THIS referee to be
+// watched, coachee or not. And — the same reasoning one hop over — any game
+// an RC has actually taken: the game is on the list because ONE slot is a
+// coachee, but a coach who sits through the whole match is watching both
+// referees, and the commission's own rule (Luca, 21.09.2026, after asking
+// specifically about a 2SR who wasn't his coachee) is that both are informed
+// and both may receive written feedback, coachee or not. In every case the
+// report is filed against no coachee — nothing counted, nothing written onto
+// anybody's record — and mailed as usual.
 function registerMayStandIn(game: AnyRecord, manualIds: Set<string>): boolean {
-  return manualIds.has(String(game.id)) || isVmMarkedRow(game);
+  return manualIds.has(String(game.id)) || isVmMarkedRow(game)
+    || rcRefPresent(game.assigned_rc_id, game.assigned_rc);
 }
 
 async function refereeRegisterContact(
@@ -8656,6 +8699,7 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
     // the same chips as on the games list, which reads the ids and not the
     // names.
     const coachees = await getCoacheeIndex();
+    const levelFor = buildRefereeLevelIndex(await getRefereeRegister());
     const isRcGame = await makeRcGameTest(coachees);
     const boerseFor = await makeBoerseVerdict(await boerseViewerFor(rcAuthByReq.get(req) ?? null), coachees);
     const candidates = await withCollection(collectionCandidates.games, (collection) =>
@@ -8685,7 +8729,7 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
         secondReferee: assigned.secondReferee,
         firstLineJudge: assigned.firstLineJudge,
         secondLineJudge: assigned.secondLineJudge,
-        ...slotIdentityFields(coachees, game, manualIds),
+        ...slotIdentityFields(coachees, game, manualIds, levelFor),
         assignedRoles,
         isRcGame: isRcGame(game),
         // Badged here too: the same game must not read as a fixture on one
@@ -9026,6 +9070,7 @@ app.get('/api/games/calendar-status', requireRcSession, async (req: Request, res
     // hand and the register is cached; the people list and the Börse index
     // are cached too, so the two settings reads are the whole cost.
     const allCoachees = await getCoacheeIndex(coachees);
+    const levelFor = buildRefereeLevelIndex(await getRefereeRegister());
     const [isRcGame, boerseFor, starredIds, manualIds] = await Promise.all([
       makeRcGameTest(allCoachees),
       makeBoerseVerdict(await boerseViewerFor(rcAuthByReq.get(req) ?? null), allCoachees),
@@ -9060,7 +9105,7 @@ app.get('/api/games/calendar-status', requireRcSession, async (req: Request, res
         // the same index, the same tier rule for a manual game, the same ''
         // for nobody, and which tier answered. A line judge cannot be
         // observed, so those two slots stay unnamed.
-        ...slotIdentityFields(allCoachees, game, manualIds),
+        ...slotIdentityFields(allCoachees, game, manualIds, levelFor),
         firstReferee: asText(game.first_referee),
         secondReferee: asText(game.second_referee),
         assignedRc: asText(game.assigned_rc),
@@ -10130,7 +10175,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         : { email: '', name: '', ambiguous: false };
       if (!fromRegister.email) {
         // Named by what the game IS, so the coach knows which list to fix.
-        const what = isTestGame ? 'Testspiel' : 'Im VolleyManager markiertes Spiel';
+        const what = isTestGame ? 'Testspiel' : isVmMarkedRow(game) ? 'Im VolleyManager markiertes Spiel' : 'Spiel';
         res.status(422).json({
           error: viaRegister
             ? (fromRegister.ambiguous
@@ -11010,8 +11055,8 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
           data: {
             reason: viaRegister
               ? (fromRegister.ambiguous
-                ? `${isTest ? 'test' : 'VM-marked'} game: the name matches several referees in the register`
-                : `${isTest ? 'test' : 'VM-marked'} game: neither a coachee nor a single register entry`)
+                ? `${isTest ? 'test' : isVmMarkedRow(game) ? 'VM-marked' : 'RC-held'} game: the name matches several referees in the register`
+                : `${isTest ? 'test' : isVmMarkedRow(game) ? 'VM-marked' : 'RC-held'} game: neither a coachee nor a single register entry`)
               : coachee ? 'no e-mail on file' : `not a coachee in ${gameSeason}`,
             referee: refereeName, season: gameSeason, rc: rcName,
           },
@@ -11149,9 +11194,7 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
       res.status(422).json({
         error: isTest
           ? 'Keine Empfänger: die SR dieses Testspiels sind weder Coachees noch eindeutig im Schiedsrichter-Register. Bitte im Admin-Bereich einen Namen aus der Liste wählen.'
-          : registerMayStandIn(game, manualIds)
-            ? 'Keine Empfänger: die SR dieses im VolleyManager markierten Spiels sind weder Coachees noch eindeutig im Schiedsrichter-Register (oder haben dort keine E-Mail).'
-            : 'Keine Empfänger: die SR dieses Spiels sind keine Coachees dieser Saison (oder haben keine E-Mail).',
+          : 'Keine Empfänger: die SR dieses Spiels sind weder Coachees noch eindeutig im Schiedsrichter-Register (oder haben dort keine E-Mail).',
       });
       return;
     }

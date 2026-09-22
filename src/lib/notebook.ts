@@ -192,7 +192,13 @@ function getAll<T>(store: string): Promise<T[]> {
  *  The sync engine's view; the UI reads through `livePages`. */
 export async function listStoredPages(ownerId: string): Promise<NotebookPage[]> {
   const all = await getAll<NotebookPage>(PAGES);
-  return all.filter((p) => p && p.ownerId === ownerId && (p.schema ?? 1) <= NOTEBOOK_SCHEMA);
+  return all
+    .filter((p) => p && p.ownerId === ownerId && (p.schema ?? 1) <= NOTEBOOK_SCHEMA)
+    // A row written before titles existed carries no `title` at all, and
+    // `undefined` is not the empty title — it is the value that quietly turns
+    // the header field into an uncontrolled input, which then keeps showing
+    // the page before it. Every page that leaves this store has one.
+    .map((p) => (typeof p.title === 'string' ? p : { ...p, title: '' }));
 }
 
 /** The pages a coach sees: this owner's, live, newest first. */

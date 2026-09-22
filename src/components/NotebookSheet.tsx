@@ -412,7 +412,11 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
           {mode !== 'import' && (current || showVirtual) ? (
             <input
               type="text"
-              value={current ? current.title : ''}
+              // `|| ''`, never `current.title`: one undefined — a page stored
+              // before this field existed — makes React let go of the input,
+              // and it goes on showing the title of the page before it.
+              key={current ? current.pageId : 'new'}
+              value={(current && current.title) || ''}
               onChange={(e) => handleTitle(e.target.value)}
               maxLength={NOTEBOOK_MAX_TITLE_LEN}
               placeholder={tp.padTitlePlaceholder}

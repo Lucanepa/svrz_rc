@@ -89,6 +89,33 @@ test('a page can be named, and its name stands on its pill with the time beside 
     .toBe('Halbzeit Rämi');
 });
 
+test("a page with no title of its own never wears the last page's", async ({ page }) => {
+  // The older row carries no `title` KEY at all — which is every page already
+  // on a coach's device, written before the field existed. Handed to a
+  // controlled input as `undefined`, React lets go of it, and the field goes
+  // on showing whatever the page before it was called.
+  const untitled: Seed = padPage({ pageId: 'p-untitled', text: 'untitled page', createdAt: Date.now() - 2 * 60 * 60 * 1000 });
+  delete untitled.title;
+  const titled = padPage({ pageId: 'p-titled', text: 'titled page', createdAt: Date.now() - 60 * 60 * 1000, title: 'Urs 2SR' });
+
+  await stubSignedInApp(page);
+  await seedPad(page, [untitled, titled]);
+  await page.goto('/');
+  await launcher(page).click();
+
+  await expect(titleBox(page)).toHaveValue('Urs 2SR');
+  await sheet(page).getByRole('button', { name: /^(Ältere Seite|Older page)$/ }).click();
+  await expect(pageBox(page)).toHaveText('untitled page');
+  await expect(titleBox(page)).toHaveValue('');
+
+  await sheet(page).getByRole('button', { name: /^(Neuere Seite|Newer page)$/ }).click();
+  await expect(titleBox(page)).toHaveValue('Urs 2SR');
+
+  // A page not yet written is nameless too, however it was reached.
+  await sheet(page).getByRole('button', { name: /^(Text)$/ }).click();
+  await expect(titleBox(page)).toHaveValue('');
+});
+
 test('the sheet reopens on the page it was closed on, not on the newest', async ({ page }) => {
   await stubSignedInApp(page);
   await seedPad(page, [OLDER, NEWER]);

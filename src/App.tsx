@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy, type MutableRefObject } from 'react';
-import { Maximize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip } from 'lucide-react';
+import { Maximize2, Minimize2, UnfoldHorizontal, FoldHorizontal, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 // About a megabyte of renderer, fetched the first time a coach opens a
 // document and never for anyone who does not.
@@ -221,6 +221,10 @@ const UI_STRINGS = {
     noGames: "Keine passenden Spiele gefunden.",
     selectedGame: "Ausgewähltes Spiel",
     downloadPdf: "PDF herunterladen",
+    fullscreen: "Vollbild",
+    fullscreenExit: "Vollbild verlassen",
+    widen: "Volle Breite",
+    widenExit: "Normale Breite",
     downloadEmptyForm: "Leeres Formular herunterladen",
     emptyFormChoose: "Formular wählen",
     emptyForm1SR: "1. SR",
@@ -399,6 +403,10 @@ const UI_STRINGS = {
     noGames: "No matching games found.",
     selectedGame: "Selected Game",
     downloadPdf: "Download PDF",
+    fullscreen: "Fullscreen",
+    fullscreenExit: "Exit fullscreen",
+    widen: "Full width",
+    widenExit: "Normal width",
     downloadEmptyForm: "Download empty form",
     emptyFormChoose: "Choose form",
     emptyForm1SR: "1st Ref",
@@ -1621,10 +1629,15 @@ export default function App() {
   const leaveBrowserFullscreen = () => {
     try { if (document.fullscreenElement) void document.exitFullscreen().catch(() => {}); } catch { /* unsupported */ }
   };
+  const padFullRef = useRef(padFull);
+  padFullRef.current = padFull;
   const closeNotebook = useCallback(() => {
     setPadOpen(false);
     void notebookSync.flushNow();
-    leaveBrowserFullscreen();
+    // Only when the PAD is what asked for fullscreen. The form has a toggle of
+    // its own now, and a coach who opens the notebook mid-form and closes it
+    // again must come back to the screen they were working on.
+    if (padFullRef.current) leaveBrowserFullscreen();
   }, []);
   const openNotebook = () => {
     setPadOpen(true);
@@ -1637,6 +1650,36 @@ export default function App() {
     try { localStorage.setItem('svrz_pad_full', next ? '1' : '0'); } catch { /* private mode — this session only */ }
     if (next) enterBrowserFullscreen(); else leaveBrowserFullscreen();
   };
+  // The form is a sheet to fill in, and on a laptop it is filled in better with
+  // the window and the whole width given to it. Two separate preferences: the
+  // browser's fullscreen (Esc leaves it without telling us, hence the listener
+  // — the button must never claim a state the browser is not in), and our own
+  // column width, which the device remembers and a phone never needs, where the
+  // sheet already fills the screen.
+  const canFullscreen = typeof document !== 'undefined' && document.fullscreenEnabled;
+  const [docFull, setDocFull] = useState(false);
+  useEffect(() => {
+    const sync = () => setDocFull(!!document.fullscreenElement);
+    sync();
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, []);
+  const toggleDocFull = () => {
+    if (document.fullscreenElement) leaveBrowserFullscreen(); else enterBrowserFullscreen();
+  };
+  const [formWide, setFormWide] = useState<boolean>(() => {
+    try { return localStorage.getItem('svrz_form_wide') === '1'; } catch { return false; }
+  });
+  const toggleFormWide = () => {
+    const next = !formWide;
+    setFormWide(next);
+    try { localStorage.setItem('svrz_form_wide', next ? '1' : '0'); } catch { /* private mode — this session only */ }
+  };
+  /** The column every block of the form page is measured by — the toolbar, the
+   *  sheet, and the signature, Beilagen and send blocks under it. One name, so
+   *  they cannot drift apart, and only on the form: the games and calendar
+   *  views share this toolbar and have a width of their own. */
+  const sheetWidth = formWide && feedbackSubView === 'feedbackForm' ? 'max-w-none' : 'max-w-4xl';
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   /** The document open in the reader, or null. */
@@ -5821,7 +5864,7 @@ export default function App() {
         </div>
       )}
       {/* UI Controls */}
-      <div className="max-w-4xl mx-auto mb-6 flex flex-wrap gap-3 no-print">
+      <div className={cn(sheetWidth, 'mx-auto mb-6 flex flex-wrap gap-3 no-print')}>
         {feedbackSubView !== 'coachees' && (
           <>
         <button
@@ -5946,9 +5989,44 @@ export default function App() {
             )}
           </>
         )}
+        {/* How the sheet is shown, next to the language it is written
+            in: both are the coach's preference, neither is part of the
+            report. Fullscreen is the browser's own and is simply not
+            offered where the API is missing (iPhone Safari, the installed
+            PWA); the width is ours, and a phone never needs it — the sheet
+            already fills the screen there. */}
+        <div className="ml-auto flex items-center gap-3">
+          <button
+            type="button"
+            onClick={toggleFormWide}
+            aria-pressed={formWide}
+            aria-label={formWide ? t.widenExit : t.widen}
+            title={formWide ? t.widenExit : t.widen}
+            data-testid="form-widen"
+            className="hidden lg:flex items-center bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
+          >
+            {formWide ? <FoldHorizontal size={18} /> : <UnfoldHorizontal size={18} />}
+          </button>
+          {canFullscreen && (
+            <button
+              type="button"
+              onClick={toggleDocFull}
+              aria-pressed={docFull}
+              aria-label={docFull ? t.fullscreenExit : t.fullscreen}
+              title={docFull ? t.fullscreenExit : t.fullscreen}
+              data-testid="form-fullscreen"
+              className="flex items-center bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
+            >
+              {docFull ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+            </button>
+          )}
+        </div>
         <button
           onClick={toggleLang}
-          className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors ml-auto"
+          // No ml-auto of its own: the view-mode group before it carries the
+          // gap, and two auto margins in one flex row split the space between
+          // them instead of pushing this to the end.
+          className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
           title={t.languageToggleTitle}
         >
           <Languages size={18} />
@@ -8544,7 +8622,7 @@ export default function App() {
           the one thing this feature cannot afford: the whole point is that
           nobody has to wonder. */}
       {!formDisabled && (
-        <div className="max-w-4xl mx-auto mb-3 no-print space-y-2">
+        <div className={cn(sheetWidth, 'mx-auto mb-3 no-print space-y-2')}>
           {!draftStoreOk && (
             <div className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs font-medium text-red-800">
               <CloudOff size={14} className="shrink-0 mt-0.5" />
@@ -8657,7 +8735,7 @@ export default function App() {
         </div>
       )}
       {/* Main Form Container */}
-      <div className="max-w-4xl mx-auto bg-white p-4 md:p-8 shadow-xl border border-stone-200 print:shadow-none print:border-none print:p-0 print:max-w-none print:mx-0">
+      <div className={cn(sheetWidth, 'mx-auto bg-white p-4 md:p-8 shadow-xl border border-stone-200 print:shadow-none print:border-none print:p-0 print:max-w-none print:mx-0')}>
         
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start gap-4 mb-6 print:flex-row">
@@ -9020,7 +9098,7 @@ export default function App() {
       </div>
 
       {/* Tips & Tricks (not saved to feedback, included in email only) */}
-      <div className="max-w-4xl mx-auto mt-6 bg-white p-6 shadow-xl border border-stone-200 no-print">
+      <div className={cn(sheetWidth, 'mx-auto mt-6 bg-white p-6 shadow-xl border border-stone-200 no-print')}>
         <h3 className="font-bold text-stone-800 mb-3 flex items-center gap-2">
           <Info size={16} />
           {formData.lang === 'DE' ? 'Tipps & Tricks' : 'Tips & Tricks'}
@@ -9067,7 +9145,7 @@ export default function App() {
           }))
           .filter((g) => g.docs.length > 0);
         return (
-          <div className="max-w-4xl mx-auto mt-6 bg-white p-6 shadow-xl border border-stone-200 no-print" data-testid="attach-docs">
+          <div className={cn(sheetWidth, 'mx-auto mt-6 bg-white p-6 shadow-xl border border-stone-200 no-print')} data-testid="attach-docs">
             <h3 className="font-bold text-stone-800 mb-3 flex items-center gap-2">
               <Paperclip size={16} />
               {formData.lang === 'DE' ? 'Dokumente beilegen' : 'Attach documents'}
@@ -9158,7 +9236,7 @@ export default function App() {
           wrapper: the feedback it belongs to is already filed and read-only,
           and this note is the one thing still writable on that screen. */}
       {openFeedbackId && openFeedbackMine && (
-        <div className="max-w-4xl mx-auto mt-6 bg-white p-6 shadow-xl border border-amber-200 no-print">
+        <div className={cn(sheetWidth, 'mx-auto mt-6 bg-white p-6 shadow-xl border border-amber-200 no-print')}>
           <h3 className="font-bold text-stone-800 mb-3 flex items-center gap-2">
             <Lock size={16} className="text-amber-600" />
             {formData.lang === 'DE' ? 'Vertrauliche Notiz an die RC-Vorsitzende' : 'Private note to the RC president'}
@@ -9192,7 +9270,7 @@ export default function App() {
       )}
 
       {formDisabled && (
-        <div className="max-w-4xl mx-auto mt-4 no-print">
+        <div className={cn(sheetWidth, 'mx-auto mt-4 no-print')}>
           <div className="bg-stone-100 border border-stone-300 rounded-lg px-4 py-3 text-sm text-stone-600 font-medium">
             {isGameRoleClosed ? t.gameClosed
               : draftRoleSent === 'queued' ? t.draftQueued
@@ -9208,7 +9286,7 @@ export default function App() {
           Senden button live on a role whose report has already gone — with only
           the blank form's own validation between it and a second submission. */}
       {!formDisabled && (
-        <div className="max-w-4xl mx-auto mt-4 flex justify-end no-print">
+        <div className={cn(sheetWidth, 'mx-auto mt-4 flex justify-end no-print')}>
           <div className="flex flex-col items-end gap-2">
             {validationError && (
               <p className="text-sm text-red-600 font-medium">{validationError}</p>
@@ -9225,7 +9303,7 @@ export default function App() {
         </div>
       )}
       {backendNotice && (
-        <p className="max-w-4xl mx-auto mt-2 text-sm text-red-700 no-print">{backendNotice}</p>
+        <p className={cn(sheetWidth, 'mx-auto mt-2 text-sm text-red-700 no-print')}>{backendNotice}</p>
       )}
       </>
       )}

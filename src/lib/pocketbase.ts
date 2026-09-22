@@ -26,6 +26,9 @@ export type CoacheeObservationStatus = {
   hasCompletedObservation: boolean;
   needsObservation: boolean;
   latestObservationAt: string;
+  /** Whether the coachee's most recently filed report has the RC president's
+   *  private note on it. Absent from an older server. */
+  hasPresidentNote?: boolean;
 };
 
 export type Coachee = {
@@ -98,9 +101,13 @@ export type CalendarGameStatus = Partial<EligibleGame> & {
   location: string;
   homeTeam: string;
   awayTeam: string;
-  status: 'outstanding' | 'completed' | 'none';
+  /** 'awaiting' — a report is filed but the coachee's latest one is still
+   *  missing the RC president's note. Absent from an older API, where
+   *  'completed' meant only "sent". */
+  status: 'outstanding' | 'completed' | 'awaiting' | 'none';
   hasOutstanding: boolean;
   hasCompleted: boolean;
+  hasAwaiting?: boolean;
   /** The coachee row on each whistle slot, resolved on the server the way
    *  the games list resolves it ('' for nobody). Absent from an older API. */
   firstCoacheeId?: string;
@@ -561,6 +568,9 @@ export type FormsEntry = {
    *  Absent from an older server. */
   gameId?: string;
   isManual?: boolean;
+  /** Whether the RC president's private note has been filed on this report.
+   *  Absent from an older server. */
+  hasPresidentNote?: boolean;
 };
 
 export type FormsFolder = {

@@ -111,6 +111,8 @@ const STR = {
     formsDate: 'Datum', formsRole: 'Rolle', formsGame: 'Spiel', formsRc: 'RC',
     formsUnnamed: 'Ohne Namen',
     formsDelete: 'Formular löschen',
+    formsAwaiting: 'Wartet auf Abschluss', formsCompleted: 'Abgeschlossen',
+    formsMissingNote: 'Fehlt: private Notiz ans RC-Präsidium.',
     formsDeleteConfirm: (who: string, when: string) => `Formular für „${who}" vom ${when} löschen?`,
     formsDeleteWarn: 'Mit dem Formular gehen die Beobachtung, der Eintrag beim Coachee und die Notiz ans Präsidium; die Rolle im Spiel wird wieder frei. Das kann nicht rückgängig gemacht werden.',
     formsDeleteOk: 'Formular gelöscht.',
@@ -422,6 +424,8 @@ const STR = {
     formsDate: 'Date', formsRole: 'Role', formsGame: 'Game', formsRc: 'RC',
     formsUnnamed: 'Unnamed',
     formsDelete: 'Delete form',
+    formsAwaiting: 'Awaiting Completion', formsCompleted: 'Completed',
+    formsMissingNote: 'Missing: private note to the RC president.',
     formsDeleteConfirm: (who: string, when: string) => `Delete the form for "${who}" of ${when}?`,
     formsDeleteWarn: 'The observation, the entry on the coachee and the note to the chair go with it; the role on the game is reopened. This cannot be undone.',
     formsDeleteOk: 'Form deleted.',
@@ -3639,6 +3643,29 @@ function FormsAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolean }) 
                                   throwaway, and nothing in the folder said
                                   which rows those were. */}
                               {e.isManual && <span className="ml-1.5 inline-block align-middle"><GameFlagChips game={{ isManual: true }} lang={lang} /></span>}
+                              {/* This list is entirely SENT forms — no Pending
+                                  or In Progress here — so the only question
+                                  left is whether the president's private note
+                                  has been filed too. Absent (older server):
+                                  say nothing rather than guess. */}
+                              {e.hasPresidentNote !== undefined && (
+                                <>
+                                  <span
+                                    className={cn(
+                                      'ml-1.5 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 align-middle text-[10px] font-medium',
+                                      e.hasPresidentNote
+                                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                        : 'border-amber-200 bg-amber-50 text-amber-800',
+                                    )}
+                                  >
+                                    <span className={cn('h-1.5 w-1.5 rounded-full', e.hasPresidentNote ? 'bg-emerald-500' : 'bg-amber-500')} />
+                                    {e.hasPresidentNote ? t.formsCompleted : t.formsAwaiting}
+                                  </span>
+                                  {!e.hasPresidentNote && (
+                                    <span className="mt-0.5 block text-[11px] text-amber-700">{t.formsMissingNote}</span>
+                                  )}
+                                </>
+                              )}
                             </span>
                             <span className={FORMS_LABEL}>{t.formsRc}</span>
                             <span className="text-stone-700 min-w-0 truncate">{e.rc || '–'}</span>

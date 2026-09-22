@@ -391,6 +391,10 @@ export interface rcCoachSummaryFeedback {
   isRcGame?: boolean;
   isLdGame?: boolean;
   isManual?: boolean;
+  /** Whether the RC president's private note has been filed on this report.
+   *  Absent from an older server, where a done row reads as complete the
+   *  moment it is sent — the pre-4-state behaviour. */
+  hasPresidentNote?: boolean;
 }
 
 export interface rcCoachSummaryGame {

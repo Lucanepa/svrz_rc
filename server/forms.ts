@@ -61,6 +61,10 @@ export type FormsEntry = {
   /** Filed on a throwaway fixture: the chair's bin exists for exactly these,
    *  and nothing in the folder said which rows they were. */
   isManual: boolean;
+  /** Whether the RC president's private note is on this report. Always false
+   *  out of `formsEntryOf` — this module is pure and has no settings store —
+   *  the route stamps the real value in after grouping (server/index.ts). */
+  hasPresidentNote: boolean;
 };
 
 export type FormsFolder = {
@@ -150,6 +154,7 @@ export function formsEntryOf(row: FormsRow): FormsEntry {
     filename: formsEntryName(row),
     gameId: text(row.game?.id) || text(row.rec.game),
     isManual: row.isManual === true,
+    hasPresidentNote: false,
   };
 }
 

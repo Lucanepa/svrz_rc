@@ -3395,10 +3395,24 @@ export default function App() {
     if (status === 'outstanding') {
       return 'bg-yellow-400';
     }
+    if (status === 'awaiting') {
+      return 'bg-orange-500';
+    }
     if (status === 'completed') {
       return 'bg-emerald-500';
     }
     return 'bg-stone-300';
+  };
+
+  // Two different oranges would say the same thing twice; 'awaiting' gets a
+  // title of its own precisely because it looks like 'outstanding' but means
+  // something else — sent, just missing the president's note.
+  const statusDotTitle = (status: CalendarGameStatus['status']) => {
+    const de = formData.lang === 'DE';
+    if (status === 'outstanding') return de ? 'Beobachtung ausstehend' : 'Observation outstanding';
+    if (status === 'awaiting') return de ? 'Gesendet — Notiz ans Präsidium fehlt' : 'Sent — missing the note to the president';
+    if (status === 'completed') return de ? 'Abgeschlossen' : 'Completed';
+    return de ? 'Keine Beobachtung nötig' : 'No observation needed';
   };
 
   // The document as it was FILED — read back from the server, not redrawn
@@ -6468,6 +6482,12 @@ export default function App() {
               const gameRow = (g: HomeGame, key: string, canRemind = false, tone: RowTone = 'red') => {
                 const scope = gameScope(g);
                 const inScope = scope.hard.length === 0;
+                // Nothing filed yet: the only question this list can answer is
+                // whether a draft is sitting open on THIS device — drafts are
+                // per-device by design (formDraft.ts), so this is knowable
+                // for a coach's own list and nowhere else the app shows this
+                // badge.
+                const inProgress = hasEditingDraft(g.gameId);
                 return (
                 <GameRow
                   key={key}
@@ -6479,6 +6499,19 @@ export default function App() {
                   teams={g.teams}
                   location={g.location}
                   mapsUrl={g.mapsUrl}
+                  status={
+                    <span
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium',
+                        inProgress
+                          ? 'border-blue-200 bg-blue-50 text-blue-700'
+                          : 'border-amber-200 bg-amber-50 text-amber-800',
+                      )}
+                    >
+                      <span className={cn('h-1.5 w-1.5 rounded-full', inProgress ? 'bg-blue-500' : 'bg-amber-500')} />
+                      {inProgress ? (de ? 'In Bearbeitung' : 'In Progress') : (de ? 'Ausstehend' : 'Pending')}
+                    </span>
+                  }
                   // No click on the card itself: the row carries its three
                   // buttons, and a thumb scrolling a phone through the list
                   // opened forms it never meant to (Luca, 17.09.2026).
@@ -6935,11 +6968,18 @@ export default function App() {
                               const row = roster.resolve({ id: f.coacheeId, name: f.coacheeName });
                               const group = coacheeGroupOf(row) || groupLabel(f.groups, formData.lang) || undefined;
                               const level = coacheeLevelOf(row) || (f.refereeLevel !== undefined ? levelDisplay(f.refereeLevel, f.stage).text : undefined);
+                              // Sent is not yet complete: a report without the
+                              // RC president's private note still needs work,
+                              // so it keeps the amber tone the not-yet-filed
+                              // rows use instead of the settled emerald.
+                              // Absent (older server) reads as complete — the
+                              // pre-4-state behaviour.
+                              const awaitingNote = f.hasPresidentNote === false;
                               return (
                               <GameRow
                                 key={`done-${f.coacheeId}-${f.gameDate}-${i}`}
                                 lang={formData.lang}
-                                tone="emerald"
+                                tone={awaitingNote ? 'amber' : 'emerald'}
                                 date={f.gameDate}
                                 league={f.league}
                                 matchNo={f.matchNo}
@@ -6968,6 +7008,11 @@ export default function App() {
                                   />
                                 </>}
                               >
+                                {awaitingNote && (
+                                  <p className="mt-1.5 text-[11px] leading-snug text-amber-700">
+                                    {de ? 'Fehlt: private Notiz ans RC-Präsidium.' : 'Missing: private note to the RC president.'}
+                                  </p>
+                                )}
                                 <MatchResult result={f.result} className="mt-1" />
                               </GameRow>
                               );
@@ -8405,7 +8450,7 @@ export default function App() {
                               className={cn('h-2.5 w-2.5 rounded-full', game.assignedRc ? 'bg-green-500' : 'bg-stone-300')}
                               title={game.assignedRc || 'No RC'}
                             />
-                            <span className={cn('h-3 w-3 rounded-full', statusDotClass(game.status))} />
+                            <span className={cn('h-3 w-3 rounded-full', statusDotClass(game.status))} title={statusDotTitle(game.status)} />
                           </>}
                           chips={<>
                             <GameFlagChips game={game} lang={formData.lang} />

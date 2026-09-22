@@ -3233,10 +3233,17 @@ type CoacheeObservationSummary = {
   hasCompletedObservation: boolean;
   needsObservation: boolean;
   latestObservationAt: string;
+  /** Whether the coachee's MOST RECENTLY filed report (by feedback_entries,
+   *  not the observations row — that collection carries no link back to the
+   *  feedback id) has the RC president's private note on it. A report is
+   *  "sent" the moment it exists here; it is only "complete" once this is
+   *  true too. */
+  hasPresidentNote: boolean;
 };
 
 async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<string, boolean>; coachees?: AnyRecord[] }) {
   const coachees = opts?.coachees ?? await listCoacheesWithFallbackSort();
+  const notedIds = await getPresidentNotedIds();
 
   // Fetch all observations in a single getFullList call to avoid 429 rate limiting
   const stats = new Map<string, { count: number; hasFurther: boolean; hasCompleted: boolean; latestAt: string }>();
@@ -3311,6 +3318,14 @@ async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<st
     const isActive = opts?.activeOverrides?.get(coacheeId) ?? (stage !== 'inactive');
     const count = st?.count ?? 0;
 
+    // The newest FILED feedback (feedback_entries, keyed by submitted_at) —
+    // deliberately not the "observations" row above, which has no field
+    // linking back to the feedback record the president's note is keyed by.
+    const feedbackEntries = Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries as AnyRecord[] : [];
+    const latestFeedback = feedbackEntries.reduce<AnyRecord | null>((latest, entry) =>
+      (!latest || asText(entry.submitted_at) > asText(latest.submitted_at)) ? entry : latest, null);
+    const latestFeedbackId = asText(latestFeedback?.referee_coaches_id);
+
     summaryById.set(coacheeId, {
       count,
       hasNoObservation: count === 0,
@@ -3318,6 +3333,7 @@ async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<st
       hasCompletedObservation: st?.hasCompleted ?? false,
       needsObservation: isActive && (count === 0 || (st?.hasFurther ?? false)),
       latestObservationAt: st?.latestAt ?? '',
+      hasPresidentNote: Boolean(latestFeedbackId) && notedIds.has(latestFeedbackId),
     });
   }
 
@@ -6577,6 +6593,19 @@ async function readAllPresidentNotes(): Promise<Array<PresidentNoteEntry & { id:
     .sort((a, b) => asText(b.updatedAt).localeCompare(asText(a.updatedAt)));
 }
 
+/** Just the feedback ids that carry a president's note, across every season —
+ *  the cheap membership test the "is this report actually complete" badges
+ *  need (Formulare, Home, the calendar dot), without the note text itself. */
+async function getPresidentNotedIds(): Promise<Set<string>> {
+  const rows = await withCollection(['app_settings'], (c) =>
+    c.getFullList<AnyRecord>({ filter: `key ~ "${PRESIDENT_NOTES_PREFIX}"` }));
+  const ids = new Set<string>();
+  for (const row of rows) {
+    for (const id of Object.keys(parseNoteMap(row.value))) ids.add(id);
+  }
+  return ids;
+}
+
 /** Drop a feedback's note wherever it lives — used when the feedback is deleted. */
 async function deletePresidentNote(feedbackId: string): Promise<void> {
   const rows = await withCollection(['app_settings'], (c) =>
@@ -6846,7 +6875,15 @@ async function loadFormsRows(): Promise<FormsRow[]> {
 app.get('/api/forms/index', requireArchiveReader, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    res.json({ referees: groupForms(await loadFormsRows()) });
+    const [rows, notedIds] = await Promise.all([loadFormsRows(), getPresidentNotedIds()]);
+    // A filed form is only "Completed" once the chair's private note for the
+    // president is on it too — otherwise it is "Awaiting Completion", even
+    // though the PDF is long since sent and sitting in the folder.
+    const referees = groupForms(rows).map((folder) => ({
+      ...folder,
+      forms: folder.forms.map((entry) => ({ ...entry, hasPresidentNote: notedIds.has(entry.id) })),
+    }));
+    res.json({ referees });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -7871,6 +7908,10 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
         expand: 'game,coachee',
       }),
     );
+    // A sent report is not yet "Completed" on Home either — the coach's own
+    // dashboard should ask for the same missing president's note the chair's
+    // Formulare list flags.
+    const notedIds = await getPresidentNotedIds();
     const rcFeedbacks = allFeedbacks.filter((fb) => isSubject(fb.rc_id, fb.rc_name));
 
     // Build feedback game IDs set
@@ -7888,7 +7929,7 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
     type GameMarks = { starred: boolean; vmFlagged: boolean; isRdGame: boolean; isRcGame: boolean; isLdGame: boolean; isManual: boolean };
     type GameIdentity = ReturnType<typeof identityOf>;
     type SummaryGame = { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: CrewEntry[]; coacheeId?: string; noCoachee?: boolean; result: string; boerse: BoerseOnGame } & GameMarks & GameIdentity;
-    type SummaryFeedback = { feedbackId: string; gameId: string; matchNo: string; gameDate: string; league: string; teams: string; location: string; mapsUrl: string; role: string; submittedAt: string; result: string; groups: string; refereeLevel: string; stage: string } & Partial<GameMarks>;
+    type SummaryFeedback = { feedbackId: string; gameId: string; matchNo: string; gameDate: string; league: string; teams: string; location: string; mapsUrl: string; role: string; submittedAt: string; result: string; groups: string; refereeLevel: string; stage: string; hasPresidentNote: boolean } & Partial<GameMarks>;
     const coacheeMap = new Map<string, {
       coacheeName: string;
       coacheeId: string;
@@ -7938,6 +7979,7 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
         mapsUrl: asText(gameRec?.maps_url),
         role: asText(fb.role_assessed),
         submittedAt: asText(fb.submitted_at),
+        hasPresidentNote: notedIds.has(String(fb.id)),
         // Off the expanded game, not the feedback: the feedback's own copy is
         // whatever the coach typed at the time, while the game record is what
         // the sync keeps corrected.
@@ -8568,6 +8610,7 @@ app.get('/api/coachees', requireRcSession, async (_req: Request, res: ExpressRes
         hasCompletedObservation: false,
         needsObservation: isActive,
         latestObservationAt: '',
+        hasPresidentNote: false,
       };
       return {
         ...row,
@@ -9143,7 +9186,12 @@ app.get('/api/games/calendar-status', requireRcSession, async (req: Request, res
 
       const statuses = matchedCoachees.map((coachee) => summaryById.get(String(coachee.id))).filter(Boolean) as CoacheeObservationSummary[];
       const hasOutstanding = statuses.some((status) => status.needsObservation);
-      const hasCompleted = statuses.some((status) => status.hasCompletedObservation);
+      // "Completed" now means the coachee's latest filed report also carries
+      // the president's note — a report sent without one is "awaiting" (still
+      // orange, like outstanding, but a different reason: nothing left to
+      // WRITE, something left to FILE).
+      const hasCompleted = statuses.some((status) => status.hasCompletedObservation && status.hasPresidentNote);
+      const hasAwaiting = statuses.some((status) => status.hasCompletedObservation && !status.hasPresidentNote);
       const vmFlagged = isVmMarkedRow(game);
 
       return {
@@ -9154,9 +9202,10 @@ app.get('/api/games/calendar-status', requireRcSession, async (req: Request, res
         location: asText(game.location),
         homeTeam: asText(game.home_team),
         awayTeam: asText(game.away_team),
-        status: hasOutstanding ? 'outstanding' : hasCompleted ? 'completed' : 'none',
+        status: hasOutstanding ? 'outstanding' : hasCompleted ? 'completed' : hasAwaiting ? 'awaiting' : 'none',
         hasOutstanding,
         hasCompleted,
+        hasAwaiting,
         // The coachee on each whistle slot, as the games list carries it —
         // the same index, the same tier rule for a manual game, the same ''
         // for nobody, and which tier answered. A line judge cannot be

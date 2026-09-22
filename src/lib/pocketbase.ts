@@ -167,6 +167,10 @@ export async function saveFeedbackToPocketBase(params: {
   pdfBase64: string;
   pdfFilename: string;
   tipsAndTricks: string;
+  /** The filed report this one CORRECTS — a reopened observation, sent again.
+   *  The server updates that record instead of refusing it as a duplicate, so
+   *  the id, the chair's note and the history entry all stay where they are. */
+  replaceId?: string;
 }): Promise<FeedbackSubmitResponse> {
   if (isDemoMode()) return demo.saveFeedbackToPocketBase(params);
   const response = await fetch(apiUrl('/api/feedback/submit'), {
@@ -175,6 +179,7 @@ export async function saveFeedbackToPocketBase(params: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       submissionKey: params.submissionKey,
+      replaceId: params.replaceId || undefined,
       gameId: params.gameId,
       role: params.role,
       refereeId: params.refereeId || undefined,
@@ -490,6 +495,18 @@ export async function loadPriorGoals(coacheeId: string): Promise<PriorGoals> {
   return response.json();
 }
 
+/** The coach's own filed report for one half of one game, or null when there
+ *  is none. The way back to a report that belongs to no coachee list — a
+ *  report on a referee who is not a coachee — and the same way back to any
+ *  other, reached from the game rather than from a person. */
+export async function getGameFeedback(gameId: string, role: '1. SR' | '2. SR'): Promise<FeedbackRecord | null> {
+  if (isDemoMode()) return null;
+  const response = await fetch(apiUrl(`/api/games/${encodeURIComponent(gameId)}/feedback?role=${encodeURIComponent(role)}`), { credentials: 'include' });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(await response.text());
+  return response.json() as Promise<FeedbackRecord>;
+}
+
 export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackRecord[]> {
   if (isDemoMode()) return demo.listCoacheeFeedbacks(coacheeId);
   const response = await fetch(apiUrl(`/api/coachees/${coacheeId}/feedbacks`), { credentials: 'include' });
@@ -601,12 +618,15 @@ export function feedbackFileUrl(feedbackId: string): string {
 
 /** The coach's own filed form, handed to the share sheet on a phone and saved
  *  as a download elsewhere — the same two exits the form's PDF button uses. */
-export async function shareFeedbackFile(feedbackId: string, title: string): Promise<void> {
+export async function shareFeedbackFile(feedbackId: string, title: string, fallbackName = ''): Promise<void> {
   const r = await fetch(feedbackFileUrl(feedbackId), { credentials: 'include' });
   if (!r.ok) throw new Error(await r.text());
   const named = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '');
   const blob = await r.blob();
-  const name = named ? named[1] : 'feedback.pdf';
+  // The server names every filed document by date, person, role and match. The
+  // header only arrives across origins because the API exposes it; a caller's
+  // fallback still beats "feedback.pdf", which named every report the same.
+  const name = named ? named[1] : (fallbackName || 'feedback.pdf');
   const file = new File([blob], name, { type: blob.type || 'application/pdf' });
   if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
     await navigator.share({ title, files: [file] });

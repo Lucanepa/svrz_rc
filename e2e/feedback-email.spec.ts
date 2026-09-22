@@ -208,7 +208,9 @@ test.describe('Send path (source)', () => {
     }
     // And the phases on the way out, so "Abschliessen took six seconds" is
     // answerable with which part took them.
-    expect(submit).toMatch(/log\.info\('feedback\.submit', `filed /);
+    // "filed" or "refiled" — a reopened report is sent again over the same
+    // record, and the line says which of the two happened.
+    expect(submit).toMatch(/log\.info\('feedback\.submit', `\$\{replacing \? 'refiled' : 'filed'\} /);
     expect(submit).toContain('ms: { write: writeMs, mail: emailMs, close: Date.now() - closeStarted, total: Date.now() - writeStarted }');
   });
 });

@@ -21,6 +21,7 @@ import {
   FeedbackRecord,
   hasPocketBaseConfig,
   listCoacheeFeedbacks,
+  getGameFeedback,
   shareFeedbackFile,
   loadPriorGoals,
   type PriorGoals,
@@ -235,6 +236,9 @@ const UI_STRINGS = {
     saveOkEmail: "Feedback gespeichert und E-Mail gesendet.",
     saveOkNoEmail: "Feedback gespeichert, aber E-Mail fehlgeschlagen:",
     feedbackLocked: "Feedback eingereicht",
+    reopenObservation: "Beobachtung erneut öffnen",
+    reopenHint: "Beim Senden wird der eingereichte Bericht ersetzt — die E-Mail geht erneut an den Schiedsrichter.",
+    sendAgain: "Erneut senden",
     gameClosed: "Dieses Spiel wurde für diese Rolle bereits beobachtet",
     saveError: "Speichern fehlgeschlagen.",
     loading: "Lädt...",
@@ -417,6 +421,9 @@ const UI_STRINGS = {
     saveOkEmail: "Feedback saved and email sent.",
     saveOkNoEmail: "Feedback saved, but email failed:",
     feedbackLocked: "Feedback submitted",
+    reopenObservation: "Reopen observation",
+    reopenHint: "Sending replaces the filed report — the email goes to the referee again.",
+    sendAgain: "Send again",
     gameClosed: "This game has already been observed for this role",
     saveError: "Saving failed.",
     loading: "Loading...",
@@ -2975,7 +2982,6 @@ export default function App() {
     // game's ratings, results, or tips.
     setDualFormData({ '1. SR': null, '2. SR': null });
     if (isNewGame) setResultUnlocked(false);
-    if (isNewGame) setTipsAndTricks(demoTips());
 
     // Pre-select the observation target based on which referee(s) are coachees — freely changeable afterwards
     const g = game as EligibleGame;
@@ -3004,12 +3010,34 @@ export default function App() {
     else if (preferredId && roster.idOnSlot(g, '1. SR') === preferredId) role = '1. SR';
     if (preferredRole && (preferredRole === '1. SR' || has2)) role = preferredRole;
     setObservationTarget(target);
+    // Tips & Tricks are written for one referee and mailed to them: a new game
+    // clears them, and so does moving to the other referee of this one.
+    if (isNewGame || formData.role !== role) setTipsAndTricks(demoTips());
     setFormData(prev => {
       if (!isNewGame && prev.role === role) return prev;
       const newSections = role === '1. SR'
         ? adjustSectionsFor2SR(prev.lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN, has2)
         : (prev.lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN);
-      if (!isNewGame) return { ...prev, role, sections: newSections };
+      // The OTHER referee of the SAME game. Everything about a person —
+      // their ratings, the strip under them, the text written for them and
+      // above all the ink they put on the page — belongs to the form it was
+      // filled in, and this path used to carry the whole of it across: one
+      // referee's signature ended up on the other's report, and the send gate
+      // was satisfied by somebody else's acknowledgement. What stays is the
+      // GAME (same fixture) and the coach's own signature, since the coach
+      // signs the visit. Nothing is lost: handleSelectGame flushes and parks
+      // the outgoing role's draft before any of this runs.
+      if (!isNewGame) return {
+        ...prev,
+        role,
+        sections: newSections,
+        results: { ...INITIAL_DATA.results },
+        signature: '',
+        attachedDocs: [],
+        // Refilled for the new role by the meta effect, which watches
+        // formData.role — the game's own fields are left alone.
+        meta: { ...prev.meta, srName: '', srNiveau: '', gruppe: '' },
+      };
       return {
         ...prev,
         role,
@@ -3488,7 +3516,10 @@ export default function App() {
   const openSentPdf = async (feedbackId: string) => {
     setSentPdfBusy(feedbackId);
     try {
-      await shareFeedbackFile(feedbackId, t.title);
+      // A name even where the header cannot be read (an older API that does
+      // not expose it): the match number and the role, which is what tells two
+      // reports of one evening apart in a downloads folder.
+      await shareFeedbackFile(feedbackId, t.title, pdfFilename(formData));
     } catch (err) {
       if ((err as Error)?.name === 'AbortError') return;
       toast.error(t.sentPdfFailed, { lang: formData.lang });
@@ -3740,6 +3771,9 @@ export default function App() {
         pdfBase64: feedbackPdfBase64(deFormData),
         pdfFilename: pdfFilename(deFormData),
         tipsAndTricks: tips,
+        // Only for the half that was actually reopened: the other referee's
+        // report, filed in the same visit, is its own document.
+        replaceId: reopenedId && fd.role === formData.role ? reopenedId : '',
       };
     }
     try {
@@ -3926,32 +3960,15 @@ export default function App() {
     // notice; only a real SERVER error throws. Locking the form after a
     // successful send/queue prevents accidental duplicate submissions.
     try {
-      let notice: string;
-      if (dualMode) {
-        const notices: string[] = [];
-        const roles = ['1. SR', '2. SR'] as const;
-        for (const role of roles) {
-          if (selectedGame.feedbackClosedRoles?.includes(role)) continue;
-          const stored = role === formData.role
-            ? { formData, tipsAndTricks }
-            : dualFormData[role];
-          if (!stored) continue;
-          const fd = 'formData' in stored ? stored.formData : stored as FeedbackFormData;
-          const tips = 'tipsAndTricks' in stored ? stored.tipsAndTricks : '';
-          try {
-            notices.push(await submitSingleFeedback(fd, tips));
-          } catch (err) {
-            // A role already recorded on the server (e.g. after a partial retry)
-            // must not abort the other role — skip it and carry on.
-            if ((err as { status?: number }).status === 409) continue;
-            throw err;
-          }
-        }
-        setFormData(formData);
-        notice = notices.join(' | ');
-      } else {
-        notice = (await submitSingleFeedback(formData, tipsAndTricks)).replace(`${formData.role}: `, '');
-      }
+      // ONE report per send, named by the button that was pressed. A visit to
+      // two referees is two observations of two people: a coach who has
+      // finished with one files it and goes on writing about the other, and
+      // neither report can be sent by the other's send.
+      const role = sendRole ?? formData.role;
+      const stored = formForRole(role);
+      if (!stored) throw new Error(`No form for ${role}`);
+      const notice = (await submitSingleFeedback(stored.formData, stored.tipsAndTricks))
+        .replace(`${role}: `, '');
       // Refreshed in the background so every other tab is already up to date
       // when the coach navigates back to it.
       //
@@ -3963,7 +3980,12 @@ export default function App() {
       // the warning it can carry. Begun first, the notice wins the batch.
       void refreshAfterFeedback();
       setBackendNotice(notice);
-      setFeedbackLocked(true);
+      // Only the half on screen: the other referee's form is still to write,
+      // and the server's own `feedbackClosedRoles` keeps a filed role closed
+      // once the refresh lands.
+      if (role === formData.role) setFeedbackLocked(true);
+      // The correction has been filed; the record is a filed record again.
+      setReopenedId('');
       // In the demo nothing is emailed — show the message(s) that would have gone out.
       if (isDemoMode()) {
         const mail = getSentMail();
@@ -3975,6 +3997,7 @@ export default function App() {
       setBackendNotice(`${t.saveError} ${localizeRuntimeError(reason, formData.lang)}`);
     } finally {
       setSavingFeedback(false);
+      setSendRole(null);
     }
   };
 
@@ -3987,6 +4010,11 @@ export default function App() {
   // do not need.
   const [docPickerOpen, setDocPickerOpen] = useState(false);
   const [feedbackLocked, setFeedbackLocked] = useState(false);
+  /** A filed report the coach has reopened to correct. While it is set the
+   *  form is a form again — the role is closed on the server and stays closed,
+   *  and sending REPLACES that record rather than being refused as a
+   *  duplicate. Cleared by anything that leaves the record behind. */
+  const [reopenedId, setReopenedId] = useState('');
   // Only the coach who filed an observation (or an admin) may write its note.
   // Anyone else opening the same record would get a box that 403s on save.
   const [openFeedbackMine, setOpenFeedbackMine] = useState(false);
@@ -4034,6 +4062,9 @@ export default function App() {
   const [demoMail, setDemoMail] = useState<DemoEmail[]>([]);
   const [demoMailOpen, setDemoMailOpen] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState<'reset' | 'save' | null>(null);
+  /** On a two-referee visit each report is sent on its own, so every send names
+   *  the half it is about. Null means the one on screen. */
+  const [sendRole, setSendRole] = useState<'1. SR' | '2. SR' | null>(null);
   const [validationError, setValidationError] = useState('');
 
   const validateSingleForm = (fd: FeedbackFormData): string | null => {
@@ -4044,7 +4075,11 @@ export default function App() {
         : `Please fill in all ratings (${unrated.length} missing).`;
     }
     const r = fd.results;
-    if (!r.spielniveau || !r.motivation || !r.einstufung || !r.secondBesuch || !r.srZiel) {
+    // A dash is what a coach types to get past a required field. The goal is
+    // the one line the next coach reads first (it is handed over with the
+    // record), so it has to say something: at least one letter or digit.
+    const goalSaid = /[\p{L}\p{N}]/u.test(String(r.srZiel || ''));
+    if (!r.spielniveau || !r.motivation || !r.einstufung || !r.secondBesuch || !goalSaid) {
       return fd.lang === 'DE'
         ? 'Bitte alle Felder im unteren Bereich ausfüllen (Spielniveau, Motivation, Ausblick, 2. Besuch, SR-Ziel).'
         : 'Please fill in all bottom fields (Match Level, Motivation, Outlook, 2nd Visit, Referee Goal).';
@@ -4069,34 +4104,28 @@ export default function App() {
     return null;
   };
 
-  const validateForm = (): boolean => {
-    // Validate current form
-    const currentError = validateSingleForm(formData);
-    if (currentError) {
-      setValidationError(currentError);
+  /** The form a role is filled in: the one on screen, or the other half as it
+   *  was stashed when the coach switched away from it. */
+  const formForRole = (role: '1. SR' | '2. SR') => (
+    role === formData.role
+      ? { formData, tipsAndTricks }
+      : dualFormData[role]
+  );
+
+  const validateForm = (role: '1. SR' | '2. SR' = formData.role): boolean => {
+    // One report, one send: the other referee's form is their own business and
+    // must not hold this one back — nor be filed by it.
+    const stored = formForRole(role);
+    if (!stored) {
+      setValidationError(formData.lang === 'DE'
+        ? `Bitte zuerst das Formular für ${role} ausfüllen.`
+        : `Please fill in the form for ${role} first.`);
       return false;
     }
-
-    // In dual mode, also validate the other role's form
-    if (dualMode) {
-      const otherRole = formData.role === '1. SR' ? '2. SR' : '1. SR';
-      const otherClosed = selectedGame?.feedbackClosedRoles?.includes(otherRole);
-      if (!otherClosed) {
-        const otherData = dualFormData[otherRole];
-        if (!otherData) {
-          setValidationError(formData.lang === 'DE'
-            ? `Bitte auch das Formular fuer ${otherRole} ausfuellen.`
-            : `Please also fill in the form for ${otherRole}.`);
-          return false;
-        }
-        const otherError = validateSingleForm(otherData.formData);
-        if (otherError) {
-          setValidationError(formData.lang === 'DE'
-            ? `${otherRole}: ${otherError}`
-            : `${otherRole}: ${otherError}`);
-          return false;
-        }
-      }
+    const error = validateSingleForm(stored.formData);
+    if (error) {
+      setValidationError(role === formData.role ? error : `${role}: ${error}`);
+      return false;
     }
 
     setValidationError('');
@@ -4147,7 +4176,30 @@ export default function App() {
     if (!rec) return '';
     return rec.status === 'queued' ? 'queued' : rec.status === 'filed' ? 'filed' : '';
   })();
-  const formDisabled = feedbackLocked || isGameRoleClosed || !!draftRoleSent;
+  const formDisabled = !reopenedId && (feedbackLocked || isGameRoleClosed || !!draftRoleSent);
+  /** The Tips & Tricks box lives outside the form card and so outside the
+   *  wrapper that goes inert with it; it is locked by the same three facts,
+   *  plus a filed record being on screen. */
+  const tipsLocked = formDisabled || (!!openFeedbackId && !reopenedId);
+
+  // A role whose report is filed opens THAT report. Reached from the game, so
+  // it works for a report that belongs to no coachee list — one on a referee
+  // who is not a coachee counts nowhere and shows in no coachee view, and the
+  // game is the only way back to it (Luca, 22.09.2026). Keyed so it runs once
+  // per half, and never over a record already on screen or one being corrected.
+  const filedLookupRef = useRef('');
+  useEffect(() => {
+    if (!selectedGameId || !isGameRoleClosed || openFeedbackId || reopenedId || isDemoMode()) return;
+    const key = `${selectedGameId}:${formData.role}`;
+    if (filedLookupRef.current === key) return;
+    filedLookupRef.current = key;
+    void getGameFeedback(selectedGameId, formData.role)
+      .then((record) => { if (record && filedLookupRef.current === key) openFeedbackRecord(record); })
+      // Nothing to say: the banner already tells the coach the role is filed,
+      // and a lookup that fails leaves exactly that behind.
+      .catch(() => {});
+  }, [selectedGameId, formData.role, isGameRoleClosed, openFeedbackId, reopenedId]);
+
 
   // ── Drafts: the in-progress observation, held on this device ──────────
   //
@@ -4975,6 +5027,19 @@ export default function App() {
     setShowConfirmModal('reset');
   };
 
+  /** Moving to the OTHER referee of this visit. Everything that says "this
+   *  report is done" belongs to the half that was filed, not to the evening:
+   *  the lock, and the filed record the form was showing after its send —
+   *  which is what made the other referee's form read as submitted, refuse
+   *  every edit and offer no send at all. The server's own
+   *  `feedbackClosedRoles` keeps a filed role closed on its own. */
+  const leaveFiledRole = () => {
+    setFeedbackLocked(false);
+    setOpenFeedbackId(null);
+    setOpenFeedbackMine(false);
+    setReopenedId('');
+  };
+
   const changeObservationTarget = (target: '1SR' | '2SR' | 'both') => {
     if (target === observationTarget) return;
     void flushDraftNowRef.current();
@@ -4985,6 +5050,7 @@ export default function App() {
     }
     const newRole: FeedbackFormData['role'] = target === '1SR' ? '1. SR' : '2. SR';
     if (formData.role === newRole) return;
+    leaveFiledRole();
     // Stash the current role's work so nothing is lost if the user returns to "both"
     setDualFormData(prev => ({
       ...prev,
@@ -5022,6 +5088,7 @@ export default function App() {
     // Flushed before the swap, so a crash can never leave the stashed role a
     // role-switch of typing behind.
     void flushDraftNowRef.current();
+    leaveFiledRole();
     const currentRole = formData.role;
     const newRole = currentRole === '1. SR' ? '2. SR' : '1. SR';
 
@@ -5776,7 +5843,7 @@ export default function App() {
           pages={padPages}
           status={padStatus}
           insert={padInsert}
-          reviewOnly={feedbackSubView === 'feedbackForm' && (!!openFeedbackId || formDisabled)}
+          reviewOnly={feedbackSubView === 'feedbackForm' && !reopenedId && (!!openFeedbackId || formDisabled)}
           full={padFull}
           onToggleFull={togglePadFull}
           onClose={closeNotebook}
@@ -5998,13 +6065,13 @@ export default function App() {
                   ? 'Beide Schiedsrichter in einem Besuch — je ein Formular, Wechsel mit dem roten Knopf.'
                   : 'Both referees on one visit — one form each, switch with the red button.'}
                 {' '}
-                {/* Why this is not just 1SR and 2SR done one after the other:
-                    it files them together, and it refuses to file either half.
-                    Nobody could tell that from the word "Beide". */}
+                {/* Each half is sent on its own button, when it is finished:
+                    a coach at the hall is done with one referee before the
+                    other, and used to have to hold the first report back. */}
                 <span className="text-stone-400">
                   {formData.lang === 'DE'
-                    ? 'Ein Senden für beide — und es geht keines raus, bevor beide vollständig sind.'
-                    : 'One send files both — and neither goes out until both are complete.'}
+                    ? 'Je ein Senden pro Schiedsrichter — was fertig ist, geht raus.'
+                    : 'One send per referee — what is finished goes out.'}
                 </span>
               </p>
             )}
@@ -9135,10 +9202,19 @@ export default function App() {
             ? 'Diese Tipps werden nicht im offiziellen Feedback gespeichert, sondern nur per E-Mail an den Schiedsrichter gesendet.'
             : 'These tips will not be saved in the official feedback, but will be sent to the referee via email only.'}
         </p>
+        {/* Outside the form card, so the wrapper that goes inert on a filed
+            record never covered it: the tips of a report already mailed could
+            be rewritten, on a box whose own line says they are only ever sent
+            by mail — the edit reached nobody and the screen said otherwise. */}
         <textarea
-          className="w-full min-h-[8rem] text-sm leading-relaxed resize-none outline-none bg-stone-50 border border-stone-200 rounded p-3 placeholder:text-stone-300"
+          className={cn(
+            'w-full min-h-[8rem] text-sm leading-relaxed resize-none outline-none bg-stone-50 border border-stone-200 rounded p-3 placeholder:text-stone-300',
+            tipsLocked && 'cursor-not-allowed opacity-60',
+          )}
           placeholder={formData.lang === 'DE' ? 'Tipps und Tricks für den Schiedsrichter eingeben...' : 'Enter tips and tricks for the referee...'}
           value={tipsAndTricks}
+          disabled={tipsLocked}
+          readOnly={tipsLocked}
           onChange={e => setTipsAndTricks(e.target.value)}
         />
       </div>
@@ -9298,12 +9374,37 @@ export default function App() {
 
       {formDisabled && (
         <div className={cn(sheetWidth, 'mx-auto mt-4 no-print')}>
-          <div className="bg-stone-100 border border-stone-300 rounded-lg px-4 py-3 text-sm text-stone-600 font-medium">
-            {isGameRoleClosed ? t.gameClosed
-              : draftRoleSent === 'queued' ? t.draftQueued
-              : draftRoleSent === 'filed' ? t.draftFiled
-              : t.feedbackLocked}
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-stone-100 border border-stone-300 rounded-lg px-4 py-3 text-sm text-stone-600 font-medium">
+            <span>
+              {isGameRoleClosed ? t.gameClosed
+                : draftRoleSent === 'queued' ? t.draftQueued
+                : draftRoleSent === 'filed' ? t.draftFiled
+                : t.feedbackLocked}
+            </span>
+            {/* A filed report is not a mistake that has to stand. Only the
+                coach who wrote it may reopen it, and only while the record is
+                on screen — the correction replaces THAT document. */}
+            {openFeedbackId && openFeedbackMine && (
+              <button
+                type="button"
+                data-testid="reopen-observation"
+                onClick={() => setReopenedId(openFeedbackId)}
+                className="inline-flex items-center gap-2 h-9 px-4 rounded-lg border border-stone-300 bg-white text-sm font-medium text-stone-700 hover:bg-stone-50 transition-colors"
+              >
+                <RotateCcw size={14} />{t.reopenObservation}
+              </button>
+            )}
           </div>
+        </div>
+      )}
+
+      {/* Reopened: a form again, and honest about what pressing Senden does. */}
+      {reopenedId && (
+        <div className={cn(sheetWidth, 'mx-auto mt-4 no-print')}>
+          <p className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            {t.reopenHint}
+          </p>
         </div>
       )}
 
@@ -9318,14 +9419,57 @@ export default function App() {
             {validationError && (
               <p className="text-sm text-red-600 font-medium">{validationError}</p>
             )}
-            <button
-              onClick={() => { if (validateForm()) setShowConfirmModal('save'); }}
-              disabled={savingFeedback || !selectedGame}
-              className="flex items-center gap-2 bg-emerald-600 text-white px-6 py-3 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50 font-medium"
-            >
-              <Send size={18} />
-              <span>{savingFeedback ? t.loading : t.saveBackend}</span>
-            </button>
+            {/* One button per REFEREE on a two-referee visit. One send for
+                both was one report too many: a coach who has finished with the
+                referee in front of them files it and goes on writing about the
+                other, and neither report waits for — or is filed by — the
+                other's send. A half already filed says so instead of
+                disappearing, so the visit still reads as two. */}
+            {dualMode ? (
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {(['1. SR', '2. SR'] as const).map((role) => {
+                  const short = role === '1. SR' ? '1SR' : '2SR';
+                  const sent = !!selectedGame?.feedbackClosedRoles?.includes(role);
+                  const started = !!formForRole(role);
+                  const name = selectedGame ? getRefereeForRole(selectedGame, role) : '';
+                  const busy = savingFeedback && (sendRole ?? formData.role) === role;
+                  return (
+                    <button
+                      key={role}
+                      type="button"
+                      data-testid={`send-${short.toLowerCase()}`}
+                      onClick={() => { setSendRole(role); if (validateForm(role)) setShowConfirmModal('save'); }}
+                      disabled={sent || !started || savingFeedback || !selectedGame}
+                      title={sent
+                        ? (formData.lang === 'DE' ? `${role}: bereits gesendet` : `${role}: already sent`)
+                        : !started
+                          ? (formData.lang === 'DE' ? `Das Formular für ${role} ist noch nicht begonnen.` : `The form for ${role} has not been started yet.`)
+                          : undefined}
+                      className={cn(
+                        'flex items-center gap-2 px-5 py-3 rounded-lg shadow-sm transition-colors font-medium disabled:cursor-default',
+                        sent
+                          ? 'bg-stone-100 text-stone-500 border border-stone-200'
+                          : 'bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50',
+                      )}
+                    >
+                      {sent ? <CheckCircle2 size={18} /> : <Send size={18} />}
+                      <span className="truncate max-w-[11rem]">
+                        {busy ? t.loading : `${short}${name ? ` · ${name}` : ''}`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <button
+                onClick={() => { setSendRole(null); if (validateForm()) setShowConfirmModal('save'); }}
+                disabled={savingFeedback || !selectedGame}
+                className="flex items-center gap-2 bg-emerald-600 text-white px-6 py-3 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50 font-medium"
+              >
+                <Send size={18} />
+                <span>{savingFeedback ? t.loading : reopenedId ? t.sendAgain : t.saveBackend}</span>
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -9351,7 +9495,9 @@ export default function App() {
                   : 'The feedback will be saved and an email with the PDF will be sent:'}</p>
                 {dualMode ? (
                   <div className="bg-stone-50 rounded-lg p-3 text-xs space-y-2">
-                    {(['1. SR', '2. SR'] as const).map(role => {
+                    {/* The half this send is about, and no other — the other
+                        referee's report goes out on its own button. */}
+                    {(['1. SR', '2. SR'] as const).filter((role) => role === (sendRole ?? formData.role)).map(role => {
                       const refName = selectedGame ? getRefereeForRole(selectedGame, role) : '';
                       const coachee = selectedGame ? roster.onSlot(selectedGame, role) : undefined;
                       const email = coachee?.email || '';

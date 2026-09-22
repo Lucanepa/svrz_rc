@@ -165,6 +165,12 @@ app.use(cors({
     return cb(new Error('Origin not allowed by CORS'));
   },
   credentials: true,
+  // The app and the API are different origins, so a response header the browser
+  // is not told to expose simply is not there. `Content-Disposition` carries the
+  // name a filed report is saved under — "2026-09-22_Urs-Ackermann_2SR_406965.pdf" —
+  // and without this line the client read nothing and fell back to the same
+  // "feedback.pdf" for every report ever sent.
+  exposedHeaders: ['Content-Disposition'],
   // The app stamps X-Svrz-Session/Device on API calls (log correlation), which
   // makes every request preflighted. A long max-age lets the browser cache that
   // OPTIONS instead of sending one per request.
@@ -8918,6 +8924,36 @@ app.get('/api/coachees/:id/feedbacks', requireRcSession, async (req: Request, re
   }
 });
 
+// ── The report filed on one game, reached from the game ───────────────
+// A report on a referee who is NOT a coachee belongs to no coachee list: it
+// counts nowhere, is owed by nobody and appears in no coachee view — by
+// design. The game is then the only way back to it, and a coach opening that
+// game must still be able to read what they filed, download the PDF that went
+// out, and reopen it. Their own report only: this route is about the coach's
+// own work, and a colleague's assessment is not theirs to read for the asking.
+app.get('/api/games/:gameId/feedback', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const role = asText(req.query.role);
+    if (role !== '1. SR' && role !== '2. SR') {
+      res.status(400).json({ error: 'Rolle fehlt oder ist unbekannt.' });
+      return;
+    }
+    const rows = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+      collection.getFullList<AnyRecord>({
+        filter: `game = "${escapeFilterValue(asText(req.params.gameId))}" && role_assessed = "${escapeFilterValue(role)}"`,
+        sort: '-submitted_at',
+        expand: 'game,coachee',
+      }));
+    const me = await sessionRcIdentity(req);
+    const mine = me ? rows.find((fb) => rcRefMatches(fb.rc_id, fb.rc_name, me)) : rows[0];
+    if (!mine) { res.status(404).json({ error: 'Für diese Rolle ist nichts eingereicht.' }); return; }
+    res.json(mine);
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
 // ── What the last coach wrote under "Ziele für nächste Spiele" ─────────
 // A second observation — this season or a later one — should start from what
 // the previous one asked the referee to work on. The written assessment stays
@@ -10061,7 +10097,7 @@ async function findRecentSubmission(gameId: string, role: string): Promise<strin
 }
 
 app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: ExpressResponse) => {
-  const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks, submissionKey } = req.body ?? {};
+  const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks, submissionKey, replaceId } = req.body ?? {};
 
   // Phase 1 — Validation
   if (!gameId || !role || !formData || !pdfBase64) {
@@ -10151,6 +10187,22 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       formData.meta = { ...(formData.meta ?? {}), rc: rcAuth.name };
     }
 
+    // A report the coach REOPENED: the same observation, corrected and sent
+    // again. It is the one case where a second submission for a closed role is
+    // not a duplicate, so it is resolved first and then carried past the three
+    // guards below — each of which exists to stop exactly this shape of
+    // request when nobody asked for it.
+    let replacing: AnyRecord | null = null;
+    if (asText(replaceId)) {
+      try {
+        replacing = await withCollection<AnyRecord>(collectionCandidates.refereeCoaches, (collection) =>
+          collection.getOne<AnyRecord>(asText(replaceId)));
+      } catch {
+        res.status(404).json({ error: 'Dieses Feedback gibt es nicht mehr.' });
+        return;
+      }
+    }
+
     // Fetch game and check closure
     const game = await withCollection(collectionCandidates.games, (collection) =>
       collection.getOne<AnyRecord>(String(gameId)),
@@ -10167,8 +10219,25 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       return;
     }
 
+    if (replacing) {
+      // Checked against the GAME this request is for, not against what the
+      // client says the record is: an id is guessable, and overwriting another
+      // coach's report — or another referee's half of this one — is the whole
+      // risk this route now carries.
+      if (String(replacing.game) !== String(game.id) || asText(replacing.role_assessed) !== String(role)) {
+        res.status(400).json({ error: 'Dieses Feedback gehört zu einem anderen Spiel oder einer anderen Rolle.' });
+        return;
+      }
+      if (rcAuth && !rcRefMatches(replacing.rc_id, replacing.rc_name, rcAuth)) {
+        res.status(403).json({ error: 'Dieses Feedback stammt von einem anderen Referee Coach.' });
+        return;
+      }
+    }
+
     const closedRoles: string[] = Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [];
-    if (closedRoles.includes(String(role))) {
+    // A reopened report is expected to find its own role closed — that is what
+    // being filed means. Every other second submission is a duplicate.
+    if (!replacing && closedRoles.includes(String(role))) {
       res.status(409).json({ error: `Feedback for role "${role}" has already been submitted for this game.` });
       return;
     }
@@ -10178,7 +10247,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     // twice, never a genuine second observation.
     // Exact first: a replayed outbox item is the same submission no matter how
     // much time has passed, and answering 409 is what makes the client drop it.
-    const replayed = await findSubmissionByKey(asText(submissionKey));
+    const replayed = replacing ? '' : await findSubmissionByKey(asText(submissionKey));
     if (replayed) {
       res.status(409).json({
         error: `Feedback for role "${role}" was already submitted for this game.`,
@@ -10187,7 +10256,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       return;
     }
 
-    const recentDuplicate = await findRecentSubmission(String(game.id), String(role));
+    const recentDuplicate = replacing ? '' : await findRecentSubmission(String(game.id), String(role));
     if (recentDuplicate) {
       res.status(409).json({
         error: `Feedback for role "${role}" was already submitted for this game.`,
@@ -10251,6 +10320,11 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     let coachee: AnyRecord | null = null;
     let coacheeCollection: ReturnType<typeof pb.collection> | null = null;
     let coacheeEmail = '';
+    // A Testspiel is on every season's list whatever its date, so its referee
+    // may legitimately resolve to a row from another season; a real fixture may
+    // not — see findCoacheeRecord.
+    const manualGameIds = await getManualGameIds();
+    const onManualGame = manualGameIds.has(String(game.id));
     try {
       // Season comes from the GAME, not from whatever the console has selected.
       const found = await findCoacheeRecord(
@@ -10259,6 +10333,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         slotRefereeId,
         asText(game.match_no),
         coacheeIndex,
+        { strictSeason: !onManualGame },
       );
       coachee = found.coachee;
       coacheeCollection = found.collection;
@@ -10276,8 +10351,8 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       // Answered as a 500 this looked like a server fault and the offline
       // outbox retried it forever instead of surfacing the fix.
       if (!isRecordNotFound(lookupError)) throw lookupError;
-      const manualIds = await getManualGameIds();
-      const isTestGame = manualIds.has(String(game.id));
+      const manualIds = manualGameIds;
+      const isTestGame = onManualGame;
       const viaRegister = registerMayStandIn(game, manualIds);
       const fromRegister = viaRegister
         ? await refereeRegisterContact(refereeName, slotRefereeId)
@@ -10310,8 +10385,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       ? rcAuth.rcId
       : await resolveRefereeCoachPersonId(asText(formData.meta?.rc), asText(req.body?.rcId));
 
-    const created = await withCollection<AnyRecord>(collectionCandidates.refereeCoaches, (collection) =>
-      collection.create({
+    const record = {
         game: game.id,
         // Empty on a test game filed against the register — there is no coachee
         // row to point at, and inventing one is how a throwaway ends up in
@@ -10327,7 +10401,13 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         // Empty for an online submit; set for anything that came through the
         // offline outbox, so a later replay of the same item is recognised.
         submission_key: asText(submissionKey),
-      }),
+    };
+    // The reopened report keeps its id, and with it everything that points at
+    // it: the chair's private note, the row on the coach's Home, the link in
+    // the archive. A new record would leave all of that pointing at a document
+    // nobody can open any more.
+    const created = await withCollection<AnyRecord>(collectionCandidates.refereeCoaches, (collection) =>
+      (replacing ? collection.update<AnyRecord>(replacing.id, record) : collection.create<AnyRecord>(record)),
     );
 
     // From here the feedback record exists but is not yet complete. If any of
@@ -10343,7 +10423,10 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       return;
     }
     const attachmentName = attachmentFilename(String(pdfFilename || 'feedback.pdf'), attachmentType);
-    const priorEntries = coachee && Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries : [];
+    const priorEntries = (coachee && Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries : [])
+      // A corrected report is the same report: its old entry goes, or the
+      // coachee's history would count one visit twice.
+      .filter((e) => !replacing || asText((e as AnyRecord).referee_coaches_id) !== String(replacing.id));
     // A Testspiel counts nowhere (Luca, 17.09.2026): even with a real coachee
     // standing on it, the report and the mail go out and nothing is written
     // onto the coachee or into the observations — exactly what a register-
@@ -10394,10 +10477,27 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       // not add to it — and one pointing at no coachee would be counted by
       // nobody and readable by no one.
       if (countsForCoachee) {
-        const observation = await withCollection<AnyRecord>(collectionCandidates.observations, (collection) =>
-          collection.create(observationPayload),
-        );
-        observationId = observation.id;
+        // A corrected report is not a second visit. The observations row
+        // carries no link back to the feedback, so the one this report already
+        // wrote is found by what identifies a visit — this coachee, this game,
+        // this whistle — and rewritten with the corrected grades.
+        const existingObservation = replacing
+          ? await withCollection(collectionCandidates.observations, (collection) =>
+              collection.getFirstListItem<AnyRecord>(
+                `coachee = "${escapeFilterValue(String(coachee.id))}" && game = "${escapeFilterValue(String(game.id))}" && coachee_function = "${escapeFilterValue(String(mapCoacheeFunction(role)))}"`,
+              )).catch(() => null)
+          : null;
+        if (existingObservation) {
+          await withCollection(collectionCandidates.observations, (collection) =>
+            collection.update(existingObservation.id, observationPayload));
+          // Deliberately NOT set: observationId is what the rollback deletes,
+          // and this row is not ours to delete — it was here before.
+        } else {
+          const observation = await withCollection<AnyRecord>(collectionCandidates.observations, (collection) =>
+            collection.create(observationPayload),
+          );
+          observationId = observation.id;
+        }
       }
 
       // Upload the filed document to the feedback record. A manual upload may
@@ -10429,7 +10529,9 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           });
         } catch (e) { rollbackClean = false; log.error('feedback.submit', 'rollback: coachee entry cleanup failed', { feedbackId: created.id, coacheeId: coachee.id, error: String(e) }); }
       }
-      if (rollbackClean) {
+      // Never on a replace: the row is the coach's filed report, which existed
+      // before this request and must survive its failure.
+      if (rollbackClean && !replacing) {
         try { await withCollection(collectionCandidates.refereeCoaches, (c) => c.delete(created.id)); }
         catch (e) { log.error('feedback.submit', 'rollback: feedback delete failed', { feedbackId: created.id, error: String(e) }); }
       } else {
@@ -10681,7 +10783,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     }
 
     // Phase 5 — Response
-    log.info('feedback.submit', `filed ${asText(game.match_no) || game.id} · ${String(role)}${emailSent ? '' : ' (no mail)'}`, {
+    log.info('feedback.submit', `${replacing ? 'refiled' : 'filed'} ${asText(game.match_no) || game.id} · ${String(role)}${emailSent ? '' : ' (no mail)'}`, {
       feedbackId: created.id,
       observationId,
       role: String(role),
@@ -10964,19 +11066,34 @@ async function findCoacheeRecord(
   // for every slot of every game due, and the roster is the same for all of
   // them — without this each slot re-read the whole coachee collection.
   index?: CoacheeIndex,
+  // `strictSeason`: a row from ANOTHER season is not this season's coachee.
+  // Without this, filing a report on the second referee of a game taken for
+  // the FIRST one found last season's row for them and made them a coachee
+  // again — counted on, written onto, and shown with a COACHEE chip — when
+  // this season's imported list does not have them at all. Who is a coachee
+  // is decided by that list and by the admin console, never by a report
+  // happening to name somebody (Luca, 22.09.2026).
+  opts: { strictSeason?: boolean } = {},
 ): Promise<{ collection: ReturnType<typeof pb.collection>; coachee: AnyRecord }> {
   return withCollection(collectionCandidates.coachees, async (collection) => {
     const coachees = index ?? await getCoacheeIndex();
-    const hit = coachees.findOrNewest(season, { sv: refereeId, name: refereeName, matchNo }).row;
+    const query = { sv: refereeId, name: refereeName, matchNo };
+    const hit = (opts.strictSeason ? coachees.find(season, query) : coachees.findOrNewest(season, query)).row;
     if (hit) return { collection, coachee: hit };
 
     // Kept as a throw: every caller reads "no such coachee" off this error, and
     // returning null here would make each of them invent the same check. The
     // filter is the exact name — it finds nothing (the index just looked
     // wider) and PocketBase answers the 404 isRecordNotFound recognises.
+    // Under strictSeason the name alone is not enough either: it is the second
+    // door onto another season's row. Rows with no season at all predate the
+    // field and still count, as everywhere.
+    const seasonClause = opts.strictSeason && season != null
+      ? ` && (season = ${season} || season = '' || season = null)`
+      : '';
     return {
       collection,
-      coachee: await collection.getFirstListItem<AnyRecord>(`full_name = "${escapeFilterValue(refereeName)}"`, { sort: '-season' }),
+      coachee: await collection.getFirstListItem<AnyRecord>(`full_name = "${escapeFilterValue(refereeName)}"${seasonClause}`, { sort: '-season' }),
     };
   });
 }

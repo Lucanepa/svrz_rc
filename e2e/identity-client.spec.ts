@@ -191,7 +191,10 @@ test.describe('the confirm dialog names the referee the report is about', () => 
     await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
 
     // Both are coachees, so the app opened on "both"; single out the 2. SR.
-    await page.getByRole('button', { name: /^2SR/ }).click();
+    // Scoped to the target group: each referee now has a send button of their
+    // own down the page, and "2SR · <name>" answers to the same name.
+    await page.getByRole('group', { name: /Observation for|Beobachtung f/ })
+      .getByRole('button', { name: /^2SR/ }).click();
     await expect(page.getByLabel('2. SR', { exact: true })).toHaveValue(second.full_name);
 
     await fillWholeForm(page);

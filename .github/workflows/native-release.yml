@@ -1,0 +1,137 @@
+name: Release the installed app
+
+# The installed app (Tauri, src-tauri/) for Linux, Windows, macOS and Android,
+# published as one GitHub Release that the apps themselves update from.
+#
+# Cut a release by bumping package.json's version (the app's version is read
+# from it), committing, and pushing a tag of the same number:
+#   V=$(node -p "require('./package.json').version")
+#   git tag "native-v$V" && git push origin "native-v$V"
+# The desktop updater reads latest.json off the newest release; Android checks
+# the same release for its APK (src/lib/nativeShell.ts).
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   TAURI_SIGNING_PRIVATE_KEY           ~/.tauri/svrz-rc-updater.key on Framework13
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  empty (the key has none)
+#   ANDROID_KEYSTORE_BASE64             base64 of ~/.tauri/svrz-rc-android.jks
+#   ANDROID_KEYSTORE_PASSWORD           the keystore's password
+# Without the updater key a build still succeeds but installed apps cannot
+# verify it; without the keystore the APK is not signed and will not install.
+#
+# No code signing for Windows or macOS (see infrastructure.md → "Installed
+# app"): SmartScreen says "unknown publisher", macOS asks for right-click → Open.
+
+on:
+  push:
+    tags: ['native-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: native-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - name: Linux build dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: native-v__VERSION__
+          releaseName: 'SVRZ RC app __VERSION__'
+          releaseBody: |
+            Installers for the SVRZ RC app. Pick the one for your device:
+            - **Windows**: the `.exe` (or `.msi`). SmartScreen may say "unknown publisher" → *More info* → *Run anyway*.
+            - **macOS**: the `.dmg` (`aarch64` = Apple silicon, `x64` = Intel). First start: right-click the app → *Open*.
+            - **Linux**: the `.AppImage` (updates itself) or the `.deb`.
+            - **Android**: the `.apk`. Allow "install unknown apps" for your browser when asked.
+            - **iPhone / iPad**: no app — open https://svrz-rc.openvolley.app in Safari → Share → *Add to Home Screen*.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+  android:
+    # After the desktop builds, so the release exists and the APK joins it.
+    needs: desktop
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - name: Android NDK
+        run: sdkmanager "ndk;27.2.12479018"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - run: npm ci
+      - name: Signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/svrz-rc-android.jks"
+          cat > src-tauri/gen/android/keystore.properties <<EOF
+          storeFile=$RUNNER_TEMP/svrz-rc-android.jks
+          password=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=svrz-rc
+          EOF
+      - name: Build APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: npx tauri android build --apk
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          APK=$(find src-tauri/gen/android/app/build/outputs/apk -name '*-release.apk' | head -1)
+          cp "$APK" "SVRZ-RC_${VERSION}_android.apk"
+          gh release upload "native-v${VERSION}" "SVRZ-RC_${VERSION}_android.apk" --clobber

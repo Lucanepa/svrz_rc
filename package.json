@@ -14,12 +14,18 @@
     "lint": "tsc --noEmit",
     "start:api": "tsx server/index.ts",
     "test": "playwright test",
-    "test:ui": "playwright test --ui"
+    "test:ui": "playwright test --ui",
+    "build:native": "VITE_NATIVE=1 VITE_API_BASE_URL=https://svrz-rc-api.openvolley.app vite build --outDir dist-native",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
     "@pdf-lib/fontkit": "^1.1.1",
     "@tailwindcss/vite": "^4.2.1",
+    "@tauri-apps/api": "~2.11.1",
+    "@tauri-apps/plugin-opener": "~2.5.5",
+    "@tauri-apps/plugin-process": "~2.3.1",
+    "@tauri-apps/plugin-updater": "~2.12.0",
     "@vitejs/plugin-react": "^6.1.1",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
@@ -48,6 +54,7 @@
   "devDependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
     "@playwright/test": "^1.58.2",
+    "@tauri-apps/cli": "~2.11.5",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.3",

@@ -1,6 +1,7 @@
 import { apiUrl } from './pocketbase';
 import { isDemoMode } from './demo';
 import { clientLog } from './logger';
+import { FetchEventSource, IS_NATIVE } from './native';
 
 // The other half of /api/events: the API says an assignment changed the moment
 // it happens, instead of every client asking again on a timer.
@@ -25,7 +26,7 @@ type StatusListener = (connected: boolean) => void;
 
 const listeners = new Set<Listener>();
 const statusListeners = new Set<StatusListener>();
-let source: EventSource | null = null;
+let source: Pick<EventSource, 'close'> & { onopen: unknown; onmessage: unknown; onerror: unknown } | null = null;
 let connected = false;
 // EventSource retries by itself, tirelessly. That is right for a dropped
 // connection and wrong for a refusal: a session that expired answers /api/events
@@ -49,17 +50,25 @@ function setConnected(next: boolean) {
 }
 
 function open() {
-  if (source || typeof EventSource === 'undefined') return;
-  // Cross-origin in production (the API is its own hostname), so the session
-  // cookie only travels with credentials — CORS there already allows this origin.
-  source = new EventSource(apiUrl('/api/events'), { withCredentials: true });
-  source.onopen = () => {
+  if (source) return;
+  let stream: FetchEventSource | EventSource;
+  if (IS_NATIVE) {
+    // EventSource cannot send the session header the installed app signs in with.
+    stream = new FetchEventSource(apiUrl('/api/events'));
+  } else {
+    if (typeof EventSource === 'undefined') return;
+    // Cross-origin in production (the API is its own hostname), so the session
+    // cookie only travels with credentials — CORS there already allows this origin.
+    stream = new EventSource(apiUrl('/api/events'), { withCredentials: true });
+  }
+  source = stream;
+  stream.onopen = () => {
     failures = 0;
     clientLog.info('live.open', backoffs ? `event stream back after ${backoffs} backoff round(s)` : 'event stream open');
     backoffs = 0;
     setConnected(true);
   };
-  source.onmessage = (message) => {
+  stream.onmessage = (message: { data: string }) => {
     let event: LiveEvent;
     try {
       event = JSON.parse(message.data) as LiveEvent;
@@ -74,7 +83,7 @@ function open() {
       }
     }
   };
-  source.onerror = () => {
+  stream.onerror = () => {
     // Stop claiming the stream is live, so the poll speeds back up.
     setConnected(false);
     failures += 1;

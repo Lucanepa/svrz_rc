@@ -19,6 +19,7 @@
 // item, never an exception into the form.
 
 import { draftStoreAvailable } from './formDraft';
+import { IS_NATIVE, readCachedApi } from './native';
 
 export type OfflineCheckKey = 'sw' | 'shell' | 'pdf' | 'api' | 'store' | 'persist' | 'quota';
 
@@ -148,6 +149,8 @@ function controlledSoon(ms: number): Promise<boolean> {
 
 async function checkServiceWorker(s: Strings): Promise<OfflineCheckItem> {
   const item = (ok: boolean, detail?: string): OfflineCheckItem => ({ key: 'sw', ok, must: true, label: s.sw, detail });
+  // The installed app has no worker and needs none: its files are in the binary.
+  if (IS_NATIVE) return item(true);
   return guarded(async () => {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return item(false, s.swUnsupported);
     // Controlled is what counts, not registered: a worker that installed a
@@ -166,6 +169,7 @@ async function checkServiceWorker(s: Strings): Promise<OfflineCheckItem> {
 
 async function checkShell(s: Strings): Promise<OfflineCheckItem> {
   const item = (ok: boolean, detail?: string): OfflineCheckItem => ({ key: 'shell', ok, must: true, label: s.shell, detail });
+  if (IS_NATIVE) return item(true);
   return guarded(async () => {
     if (typeof caches === 'undefined') return item(false, s.shellNoCache);
     const names = await caches.keys();
@@ -207,9 +211,30 @@ async function matchSoon(cache: Cache, url: string, attempts: number): Promise<R
   return undefined;
 }
 
+/** The installed app's version of the lookup: its own IndexedDB copy
+ *  (lib/native.ts), which the fetch wrapper writes a moment after the answer. */
+async function nativeCachedSoon(url: string, attempts: number): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, WARM_MATCH_DELAY_MS));
+    if (await readCachedApi(url)) return true;
+  }
+  return false;
+}
+
 async function checkApi(s: Strings, apiUrls: OfflineApiUrl[], warm: boolean): Promise<OfflineCheckItem> {
   const missing: OfflineApiUrl[] = [];
-  const noCache = await guarded(async () => {
+  const noCache = IS_NATIVE ? await guarded(async () => {
+    for (const entry of apiUrls) {
+      if (await nativeCachedSoon(entry.url, 1)) continue;
+      if (warm && typeof navigator !== 'undefined' && navigator.onLine) {
+        const res = await guarded(() => fetch(entry.url), undefined);
+        if (res) await guarded(() => res.arrayBuffer(), undefined);
+        if (await nativeCachedSoon(entry.url, WARM_MATCH_ATTEMPTS)) continue;
+      }
+      missing.push(entry);
+    }
+    return false;
+  }, true) : await guarded(async () => {
     if (typeof caches === 'undefined') return true;
     const cache = await caches.open(API_CACHE_NAME);
     for (const entry of apiUrls) {
@@ -255,6 +280,8 @@ async function checkStore(s: Strings): Promise<OfflineCheckItem> {
 
 async function checkPersist(s: Strings, warm: boolean): Promise<OfflineCheckItem> {
   const item = (ok: boolean): OfflineCheckItem => ({ key: 'persist', ok, must: false, label: s.persist, detail: ok ? undefined : s.persistNo });
+  // An installed app's storage is its own data folder: nothing evicts it.
+  if (IS_NATIVE) return item(true);
   return guarded(async () => {
     const storage = typeof navigator !== 'undefined' ? navigator.storage : undefined;
     if (!storage || !storage.persisted) return item(false);

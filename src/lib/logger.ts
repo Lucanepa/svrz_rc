@@ -1,3 +1,5 @@
+import { IS_NATIVE } from './native';
+
 // Browser-side activity log: every click, every request, every error.
 //
 // Why it exists: the app runs on other people's phones. When a coach says "it
@@ -131,7 +133,9 @@ export async function flush(beacon = false): Promise<void> {
   const payload = JSON.stringify({ sid, did, user, entries: batch });
   const url = `${apiBase}/api/client-logs`;
   try {
-    if (beacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+    // Not in the installed app: a beacon cannot carry the session header, and
+    // its lines would all land as `unverified`. keepalive fetch does the job there.
+    if (beacon && !IS_NATIVE && typeof navigator !== 'undefined' && navigator.sendBeacon) {
       // Offline the beacon goes nowhere and reports nothing, and this flush also
       // runs on every switch to another app — so the offline failure window the
       // log exists to explain was exactly what got dropped. Keep the batch.
@@ -173,7 +177,11 @@ export async function flush(beacon = false): Promise<void> {
 export function getClientLogs(): ClientLogEntry[] { return [...ring]; }
 
 // ── Instrumentation ───────────────────────────────────────────────────
-const originalFetch: typeof fetch = typeof window !== 'undefined' ? window.fetch.bind(window) : (undefined as never);
+// Taken again when the patch goes in (installFetchLogging), not only here at
+// module load: the installed app wraps fetch first (lib/native.ts) to carry its
+// session, and a copy taken before that — imports run before main.tsx does —
+// would route every request, the log shipping included, around it.
+let originalFetch: typeof fetch = typeof window !== 'undefined' ? window.fetch.bind(window) : (undefined as never);
 
 /** Short, human-recognisable description of what was clicked. */
 // Capability tokens ride in URLs: #/survey/<token>, #/sign/<slug>, and the
@@ -367,6 +375,7 @@ export function classifyFetchFailure(ms: number, error: unknown, isLeaving = lea
 }
 
 function installFetchLogging(): void {
+  originalFetch = window.fetch.bind(window);
   window.fetch = async function loggedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const method = (init?.method || (input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;

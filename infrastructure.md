@@ -1204,6 +1204,84 @@ cookie, `svrz_pending_admin_logout` for the console cookie); while it is set
 the client refuses that session and retries the POST until the server answers
 2xx (`settlePendingLogout` in `src/lib/pocketbase.ts`, `e2e/logout-owed.spec.ts`).
 
+The installed app does not use these cookies at all: it carries the same tokens
+in headers (see "Installed app" below).
+
+## Installed app (Tauri: Linux, Windows, macOS, Android)
+
+Besides the PWA there is an installed app: the same React build wrapped in a
+Tauri v2 shell (`src-tauri/`), for Linux, Windows, macOS and Android. iPhone and
+iPad stay on the PWA (Safari → Share → *Add to Home Screen*): sideloading
+without the App Store needs a paid Apple account and a device list.
+
+**What is different from the PWA** (all of it in `src/lib/native.ts`,
+`src/lib/nativeShell.ts` and `server/nativeClient.ts`, switched on by
+`VITE_NATIVE=1` at build time; the web build is unchanged):
+
+- **Files bundled.** `npm run build:native` builds into `dist-native/` with the
+  service worker disabled, and Tauri embeds that folder in the binary. It runs
+  from `tauri://localhost` (macOS, iOS, Linux) or `http://tauri.localhost`
+  (Windows, Android). Those origins are always in the API's CORS list
+  (`NATIVE_APP_ORIGINS` in `server/index.ts`); `CORS_ALLOWED_ORIGINS` does not
+  need them.
+- **Session in headers, not cookies.** Every native origin is a different site
+  from the API, so the session cookies would be third-party. The app keeps the
+  same signed tokens itself (localStorage in the app's own data folder, which no
+  browser clean-up reaches) and sends them as `X-Svrz-Jar`. The API reads that
+  as the Cookie line and answers new tokens in `X-Svrz-Set-Session`. Only
+  `svrz_rc_session` and `svrz_admin_session` cross; everything else about auth
+  is unchanged. A native request is marked `X-Svrz-Client: native/<version>`.
+- **API reads cached without a service worker.** A wrapper around `fetch` does
+  what the Workbox `svrz-api-get` rule does for the PWA: network first, 6 s
+  timeout, the last good copy from IndexedDB (`svrz-native` / `api-get`, 300
+  entries, 30 days). The live stream runs over `fetch` (`FetchEventSource`),
+  because `EventSource` cannot send the session header.
+- **The whole slice pre-loaded.** On launch and whenever the network comes back,
+  the app fetches the offline check's reads, the prior goals of every coachee on
+  the coach's own games in the next 30 days, and every document on the shelf.
+- **Links and files.** Links to other sites open in the system browser; a link
+  straight to an API file (a filed report) is fetched with the session and saved.
+
+**Minimum version.** `NATIVE_MIN_VERSION` in `svrz-api.env` (e.g. `1.2.0`, unset
+by default) answers `426` to any older installed app, which then shows "Update
+required" with the update button. `/api/health` and `/api/client-logs` stay open
+to it. Set it only when an API change breaks older clients, and only once the
+release that follows the change is out. The web app never sends the header and
+is never gated.
+
+**Releases.** `.github/workflows/native-release.yml`, on a tag `native-v<version>`
+where `<version>` is `package.json`'s: Linux AppImage + deb (built on Ubuntu
+22.04 for glibc reach), Windows exe + msi, macOS dmg (Apple silicon and Intel),
+then the Android APK, all on one GitHub Release. Installed desktop apps update
+in place from that release's `latest.json` (Tauri updater, signed). Android
+checks the same release and opens the new APK in the browser to install over
+the old one. Unsigned for Windows and macOS: SmartScreen says "unknown
+publisher", macOS wants right-click → *Open* the first time.
+
+**Keys** (both on lenovoserver in `~/.tauri/`, back them up in Bitwarden; losing
+either one means installed apps can no longer take updates):
+
+- `svrz-rc-updater.key` (no password): signs desktop updates. The public half is
+  in `src-tauri/tauri.conf.json`. GitHub secret `TAURI_SIGNING_PRIVATE_KEY`
+  (+ `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, empty).
+- `svrz-rc-android.jks` + `svrz-rc-android.pass`, alias `svrz-rc`: signs the APK.
+  Android refuses an update signed with a different key. GitHub secrets
+  `ANDROID_KEYSTORE_BASE64` (`base64 -w0 svrz-rc-android.jks`) and
+  `ANDROID_KEYSTORE_PASSWORD`.
+
+**Building locally** (lenovoserver has the toolchain: Rust, WebKitGTK dev
+packages, JDK 21, Android SDK + NDK 27.2 in `~/Android/Sdk`):
+
+```bash
+TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/svrz-rc-updater.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
+  npx tauri build --bundles appimage,deb          # → src-tauri/target/release/bundle/
+ANDROID_HOME=~/Android/Sdk NDK_HOME=~/Android/Sdk/ndk/27.2.12479018 \
+  npx tauri android build --apk --target aarch64   # needs src-tauri/gen/android/keystore.properties
+```
+
+`keystore.properties` (gitignored) holds `storeFile=`, `password=` and
+`keyAlias=svrz-rc`.
+
 ## Deploy trap: a 404 fallback cached under an asset URL
 
 `_headers` marks `/assets/*` `immutable, max-age=31536000`, and the Pages

@@ -21,6 +21,7 @@ import { latestTakes, type LogLine } from './assignedAt.ts';
 import { sameVisit } from '../src/lib/doubleGame.ts';
 import { boundedKeys, clientLogUser, clientTimestamp } from './logguard.ts';
 import { computePlanning, seasonProgress, type PlanningReport, type PlanningGameInput, type SeasonProgress } from './planning.ts';
+import { nativeClient } from './nativeClient.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
 import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, rcWorkloadRule, resolvePaidCap, type ExpenseVisit, type RcGameSets } from './expenses.ts';
 import { computeBreakdowns, computeStatistics, coacheeSummaries, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
@@ -160,8 +161,16 @@ app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false,
 // twice (Codeberg, then GitHub Pages) — a stale fallback rejects the real
 // frontend and surfaces in the browser as a bare "Failed to fetch" with no
 // status, so keep this in step with wherever the app is actually served.
-const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || 'https://svrz-rc.openvolley.app')
-  .split(',').map((o) => o.trim()).filter(Boolean);
+// The installed app (Tauri) is served from its own scheme inside the binary:
+// tauri://localhost on macOS/iOS/Linux, http(s)://tauri.localhost on Windows
+// and Android. Always allowed — they are not a deployment that moves, and an
+// env list that forgot them would sign every installed app out at once.
+const NATIVE_APP_ORIGINS = ['tauri://localhost', 'http://tauri.localhost', 'https://tauri.localhost'];
+const ALLOWED_ORIGINS = [...new Set([
+  ...(process.env.CORS_ALLOWED_ORIGINS || 'https://svrz-rc.openvolley.app')
+    .split(',').map((o) => o.trim()).filter(Boolean),
+  ...NATIVE_APP_ORIGINS,
+])];
 // Once the app (svrz-rc.openvolley.app) and this API (svrz-rc-api.openvolley.app)
 // share a registrable domain, the session cookies stop being third-party and can
 // go back to SameSite=Lax — which is the whole fix for Safari/WebKit silently
@@ -194,13 +203,18 @@ app.use(cors({
   // "feedback.pdf" for every report ever sent.
   // X-Archive-Count is how many forms went into a ZIP from /api/feedback-archive
   // or /api/forms/archive; unexposed, the console reported "0 forms" for every
-  // archive it downloaded.
-  exposedHeaders: ['Content-Disposition', 'X-Archive-Count'],
+  // archive it downloaded. `X-Svrz-Set-Session` is where the installed app
+  // reads its session tokens (see server/nativeClient.ts).
+  exposedHeaders: ['Content-Disposition', 'X-Archive-Count', 'X-Svrz-Set-Session'],
   // The app stamps X-Svrz-Session/Device on API calls (log correlation), which
   // makes every request preflighted. A long max-age lets the browser cache that
   // OPTIONS instead of sending one per request.
   maxAge: 86_400,
 }));
+
+// The installed app carries its session in headers, not cookies — see
+// server/nativeClient.ts. Right after CORS, before anything reads a session.
+app.use(nativeClient({ minVersion: asText(process.env.NATIVE_MIN_VERSION) }));
 // A submitted feedback carries the finished PDF as base64 in the body. It is now
 // drawn as vector text (see src/lib/feedbackPdf.ts) and lands around 100 KB
 // whatever the coach's screen, rather than the multi-megabyte screenshot it used

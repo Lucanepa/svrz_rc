@@ -16,6 +16,8 @@ import { canonicalizeLegacyHash, routeRoot } from './lib/routes';
 import { installLogging, clientLog, noteReloadingPage, scrubTokens } from './lib/logger';
 import { connection, installConnectionWatch } from './lib/connection';
 import ConnectionBanner from './components/ConnectionBanner.tsx';
+import { IS_NATIVE, installNativeFetch } from './lib/native';
+import { installNativeShell } from './lib/nativeShell';
 import {
   decideSwReload, recentSwReloads, noteSwReload, retryDelayMs, SW_RELOAD_STATE_KEY,
 } from './lib/swReload';
@@ -53,6 +55,14 @@ if (/^\/demo\/?$/i.test(window.location.pathname)) {
   history.replaceState(null, '', '/' + window.location.search);
 }
 
+// The installed app carries its session itself and caches API reads without a
+// service worker (lib/native.ts). Before the logger, so the logger's own copy
+// of fetch — the one that ships the logs — is this one and carries the session.
+if (IS_NATIVE) {
+  installNativeFetch((import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || '');
+  installNativeShell();
+}
+
 // FIRST thing that runs after the demo latch: patches fetch and the error
 // handlers, so nothing that happens afterwards — including a failing boot —
 // goes unrecorded.
@@ -79,7 +89,9 @@ const hadControllerAtStartup = 'serviceWorker' in navigator && !!navigator.servi
 const SW_UPDATE_INTERVAL_MS = 60 * 60 * 1000;
 const SW_UPDATE_MIN_GAP_MS = 5 * 60 * 1000;
 
-registerSW({
+// The installed app has its files bundled and no worker to register: its
+// updates come from the app updater (lib/nativeShell.ts) instead.
+if (!IS_NATIVE) registerSW({
   immediate: true,
   onRegisteredSW(_swUrl, registration) {
     clientLog.info('sw.registered', 'service worker registered');

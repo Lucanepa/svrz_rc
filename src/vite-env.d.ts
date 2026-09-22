@@ -1,6 +1,11 @@
 /// <reference types="vite/client" />
 /// <reference types="vite-plugin-pwa/client" />
 
+interface ImportMetaEnv {
+  /** '1' in the installed app's build (Tauri) — see src/lib/native.ts. */
+  readonly VITE_NATIVE?: string;
+}
+
 declare const __APP_VERSION__: string;
 declare const __BUILD_SHA__: string;
 declare const __BUILD_TIME__: string;

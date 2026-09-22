@@ -170,3 +170,34 @@ test('an SR-Spiel wears its marks, and a Börse verdict on it is said in words',
   // says it again is not drawn.
   await expect(page.getByText(/^(RC Game|RC-Spiel)$/)).toHaveCount(0);
 });
+
+test('with no network the Rückmeldung is kept on the device and sent once the network is back', async ({ page }) => {
+  const posted: Record<string, unknown>[] = [];
+  let online = false;
+  await stubSignedInApp(page);
+  await page.route('**/api/rc-games*', (r) => r.fulfill({ json: [SR_GAME] }));
+  await page.route('**/api/rc-game-notes', async (r) => {
+    if (!online) { await r.abort('internetdisconnected'); return; }
+    posted.push(JSON.parse(r.request().postData() || '{}'));
+    await r.fulfill({ json: { ...OTHER_NOTE, id: 'n-mine', gameId: SR_GAME.gameId, rcId: RC.id, rcName: RC.name, note: 'In der Halle geschrieben.' } });
+  });
+
+  await page.goto('/');
+  await openSrGame(page).click();
+  await page.getByLabel(/Deine Rückmeldung|Your note/).fill('In der Halle geschrieben.');
+  await page.getByRole('button', { name: /^(Senden|Send)$/ }).click();
+
+  // Kept, said so, and the row stops asking — no error left in a closed dialog.
+  await expect(page.getByText(/Offline gespeichert|Saved offline/)).toBeVisible();
+  await expect(page.getByText(/Keine offene Rückmeldung|No note outstanding/)).toBeVisible();
+  const queued = await page.evaluate(() => JSON.parse(localStorage.getItem('svrz-rc-note-outbox') || '[]'));
+  expect(queued).toHaveLength(1);
+
+  // Back online: sent once, under the key it was queued with, and the queue is empty.
+  online = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect.poll(() => posted.length).toBe(1);
+  expect(posted[0].note).toBe('In der Halle geschrieben.');
+  expect(posted[0].submissionKey).toBe(queued[0].submissionKey);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('svrz-rc-note-outbox'))).toBeNull();
+});

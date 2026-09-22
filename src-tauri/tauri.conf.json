@@ -1,0 +1,57 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "SVRZ RC",
+  "version": "../package.json",
+  "identifier": "app.openvolley.svrzrc",
+  "build": {
+    "frontendDist": "../dist-native",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "VITE_NATIVE=1 npm run dev:web",
+    "beforeBuildCommand": "npm run build:native"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SVRZ Referee Coaching",
+        "width": 1200,
+        "height": 820,
+        "minWidth": 360,
+        "minHeight": 560,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    },
+    "createUpdaterArtifacts": true,
+    "category": "Productivity",
+    "shortDescription": "SVRZ Referee Coaching",
+    "publisher": "Luca Canepa"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY1RkI3QUUzQUM3NDQxOTkKUldTWlFYU3M0M3I3WmV5S0U0aDBJQ2hqRVQwdjhXK3RGMWxMa2MrY1Q5YlZRekFQMXlPckFHNmoK",
+      "endpoints": [
+        "https://github.com/Lucanepa/svrz_rc/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

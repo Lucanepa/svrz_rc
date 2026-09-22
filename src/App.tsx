@@ -85,6 +85,8 @@ import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
 import { dayLabel, dayTimeLabel, shortDayLabel, clockLabel, dayKey, todayKey, shiftDayKey, zonedParts, instantOf } from './lib/appTime';
 import { subscribeLive } from './lib/liveEvents';
+import { IS_NATIVE } from './lib/native';
+import { flushRcNotes, isNetworkFailure, queueRcNote, queuedRcNotes, type QueuedRcNote } from './lib/noteQueue';
 import { richToPlain, richToDisplayHtml, sanitizeRich, appendToRich } from './lib/richText';
 import { importFresh } from './lib/freshImport';
 import StaleBuildNotice from './components/StaleBuildNotice';
@@ -1640,15 +1642,7 @@ export default function App() {
   // not overwrite the newer report with a stale one.
   const offlineRunRef = useRef(0);
 
-  const runOfflineReadyCheck = async () => {
-    const run = ++offlineRunRef.current;
-    setOfflineChecking(true);
-    const de = formData.lang === 'DE';
-    const report = await runOfflineCheck({
-      lang: formData.lang,
-      warm: true,
-      loadPdf: loadPdfBuilder,
-      apiUrls: [
+  const offlineApiUrls = (de: boolean) => [
         // What the form itself reads back offline: the session, the games, the
         // coachees and the settings. Without any one of them a cold offline
         // load shows the login screen or an empty games list.
@@ -1663,7 +1657,16 @@ export default function App() {
         { url: apiUrl(`/api/rc-overview?season=${seasonStartYear}`), must: false, label: de ? 'Übersicht' : 'Overview' },
         { url: apiUrl(`/api/rc-games?season=${seasonStartYear}`), must: false, label: de ? 'Spielplan' : 'Schedule' },
         { url: apiUrl(`/api/games/calendar-status?season=${seasonStartYear}`), must: false, label: de ? 'Kalender' : 'Calendar' },
-      ],
+  ];
+
+  const runOfflineReadyCheck = async () => {
+    const run = ++offlineRunRef.current;
+    setOfflineChecking(true);
+    const report = await runOfflineCheck({
+      lang: formData.lang,
+      warm: true,
+      loadPdf: loadPdfBuilder,
+      apiUrls: offlineApiUrls(formData.lang === 'DE'),
     });
     if (run !== offlineRunRef.current) return;
     setOfflineReport(report);
@@ -1732,6 +1735,46 @@ export default function App() {
     offlineWarmedRef.current = true;
     void runOfflineCheckRef.current();
   }, [booting, landingSettled, isOffline, rcAuth.rcName]);
+
+  // The installed app keeps the coach's whole slice on the device, not only
+  // what a form happened to open: on launch and whenever the network comes
+  // back, the reads the offline check lists, the prior goals of every coachee
+  // on the coach's own games in the next 30 days, and every document on the
+  // shelf. A coach who opens the app at home walks into any gym with all of it.
+  const nativePreloadRef = useRef<() => Promise<void>>(async () => {});
+  nativePreloadRef.current = async () => {
+    const report = await runOfflineCheck({
+      lang: formData.lang, warm: true, loadPdf: loadPdfBuilder, apiUrls: offlineApiUrls(formData.lang === 'DE'),
+    });
+    const today = todayKey();
+    const until = shiftDayKey(today, 30);
+    const coacheeIds = new Set<string>();
+    for (const game of eligibleGamesRef.current) {
+      const day = dayKey(game.date);
+      if (!day || day < today || day > until || !isMyGame(game, rcAuth, rcKnownIds)) continue;
+      if (game.firstCoacheeId) coacheeIds.add(game.firstCoacheeId);
+      if (game.secondCoacheeId) coacheeIds.add(game.secondCoacheeId);
+    }
+    for (const id of coacheeIds) await loadPriorGoals(id).catch(() => {});
+    await storeAllDocs();
+    clientLog.info('native.preload', 'offline slice refreshed', {
+      ok: report.ok, coachees: coacheeIds.size, games: eligibleGamesRef.current.length,
+    });
+  };
+  useEffect(() => {
+    if (!IS_NATIVE || isDemoMode() || !landingSettled || !rcAuth.rcId) return;
+    let running = false;
+    const preload = () => {
+      if (running || !navigator.onLine) return;
+      running = true;
+      void nativePreloadRef.current().catch(() => {}).finally(() => { running = false; });
+    };
+    // After the games list has had its own chance to load: the prior goals
+    // are picked from it.
+    const timer = window.setTimeout(preload, 5_000);
+    window.addEventListener('online', preload);
+    return () => { window.clearTimeout(timer); window.removeEventListener('online', preload); };
+  }, [landingSettled, rcAuth.rcId]);
 
   const [backendNotice, setBackendNotice] = useState('');
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
@@ -2542,6 +2585,44 @@ export default function App() {
   const [rcNoteSaving, setRcNoteSaving] = useState(false);
   const [rcNoteError, setRcNoteError] = useState('');
 
+  // A Rückmeldung still waiting in the device's queue shows as written, so the
+  // row stops asking for one — after a reload as much as right after "Senden".
+  const withQueuedNotes = (rows: MyRcGame[], queued: Pick<QueuedRcNote, 'gameId' | 'note' | 'rolesSwapped'>[]): MyRcGame[] => rows.map((r) => {
+    const q = queued.find((item) => item.gameId === r.gameId);
+    if (!q || (r.note && !r.note.pending)) return r;
+    return {
+      ...r,
+      note: {
+        id: '', gameId: r.gameId, rcId: rcAuth.rcId ?? '', rcName: rcAuth.rcName ?? '', rcRole: r.rcRole,
+        coacheeId: r.coacheeId, coacheeName: r.coacheeName, coacheeRole: r.coacheeRole,
+        note: q.note, submittedAt: new Date().toISOString(), rolesSwapped: q.rolesSwapped,
+        matchNo: r.matchNo, league: r.league, gameDate: r.gameDate, teams: r.teams, pending: true,
+      },
+    };
+  });
+
+  // Send the queued ones whenever this coach is here and the network is.
+  useEffect(() => {
+    const ownerId = rcAuth.rcId;
+    if (!ownerId || isDemoMode()) return;
+    const flush = () => {
+      if (!navigator.onLine || queuedRcNotes(ownerId).length === 0) return;
+      void flushRcNotes(ownerId, (item) => submitRcGameNote(item), {
+        onSent: (_item, filed) => setMyRcGames((rows) => rows.map((r) => (r.gameId === filed.gameId ? { ...r, note: filed } : r))),
+        onDropped: (item, error) => {
+          clientLog.warn('rcnote.dropped', 'queued SR-Spiel Rückmeldung refused by the server', { gameId: item.gameId, error: String(error) });
+          setMyRcGames((rows) => rows.map((r) => (r.gameId === item.gameId && r.note?.pending ? { ...r, note: null } : r)));
+          toast.error(formData.lang === 'DE'
+            ? 'Eine offline gespeicherte Rückmeldung wurde vom Server abgelehnt. Bitte erneut erfassen.'
+            : 'A feedback saved offline was refused by the server. Please write it again.', { lang: formData.lang });
+        },
+      });
+    };
+    flush();
+    window.addEventListener('online', flush);
+    return () => window.removeEventListener('online', flush);
+  }, [rcAuth.rcId]);
+
   const openRcNote = (game: MyRcGame) => {
     setRcNoteGame(game);
     setRcNoteText(game.note?.note ?? '');
@@ -2562,7 +2643,22 @@ export default function App() {
       setMyRcGames((rows) => rows.map((r) => (r.gameId === filed.gameId ? { ...r, note: filed } : r)));
       setRcNoteGame(null);
     } catch (error) {
-      setRcNoteError(error instanceof Error ? error.message : String(error));
+      // No network: keep it on the device and send it when the app is back
+      // online (noteQueue.ts), instead of losing the text with the dialog.
+      const queued = isNetworkFailure(error) && !!rcAuth.rcId && queueRcNote({
+        submissionKey: crypto.randomUUID(), ownerId: rcAuth.rcId, gameId: rcNoteGame.gameId,
+        note: text, season: seasonStartYear, rolesSwapped: rcNoteSwapped,
+      });
+      if (queued) {
+        const game = rcNoteGame;
+        setMyRcGames((rows) => withQueuedNotes(rows, [{ gameId: game.gameId, note: text, rolesSwapped: rcNoteSwapped }]));
+        setRcNoteGame(null);
+        toast.info(formData.lang === 'DE'
+          ? 'Offline gespeichert — die Rückmeldung wird gesendet, sobald du wieder online bist.'
+          : 'Saved offline — the feedback will be sent as soon as you are back online.', { lang: formData.lang });
+      } else {
+        setRcNoteError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setRcNoteSaving(false);
     }
@@ -2596,7 +2692,7 @@ export default function App() {
         loadMyRcGames(season).catch(() => [] as MyRcGame[]),
       ]);
       if (!isCurrentLoad('home', gen)) return;
-      setMyRcGames(rcGames);
+      setMyRcGames(withQueuedNotes(rcGames, rcAuth.rcId ? queuedRcNotes(rcAuth.rcId) : []));
       // My own row, by id — the overview names every coach by their roster id.
       // The name is the fallback for a session that has none.
       const myRow = overview.find((r) => samePerson({ id: r.id, name: r.fullName }, { id: rcAuth.rcId ?? '', name: myName }, rcKnownIds));

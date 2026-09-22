@@ -6,6 +6,7 @@ import { draftKey, type DraftRecord } from './formDraft';
 import { sanitizeRich } from './richText';
 import { normalizeAttachedDocs } from './usefulDocs';
 import * as demo from './demo';
+import { IS_NATIVE, clearNativeApiCache } from './native';
 import { isDemoMode } from './demo';
 import { normalizeBudget, type BudgetSettings } from './budget';
 import type { PageAck, PageWire, ServerPage } from './notebook';
@@ -236,6 +237,7 @@ export async function clearApiCache(): Promise<void> {
   try {
     if (typeof caches !== 'undefined') await caches.delete('svrz-api-get');
   } catch { /* cache API unavailable — nothing to clear */ }
+  if (IS_NATIVE) await clearNativeApiCache();
 }
 
 // Who the cached responses belong to, per half of the app. The explicit
@@ -1075,6 +1077,9 @@ export type RcGameNote = {
   result?: string;
   /** Written on a throwaway fixture. Absent from an older server. */
   isManual?: boolean;
+  /** Client-only: written offline and still waiting in the device's queue
+   *  (noteQueue.ts). Never sent by the server. */
+  pending?: boolean;
 };
 
 export type MyRcGame = {
@@ -1132,7 +1137,7 @@ export async function loadRcGameNotes(): Promise<RcGameNote[]> {
   return response.json() as Promise<RcGameNote[]>;
 }
 
-export async function submitRcGameNote(payload: { gameId: string; note: string; season: number; rolesSwapped?: boolean }): Promise<RcGameNote> {
+export async function submitRcGameNote(payload: { gameId: string; note: string; season: number; rolesSwapped?: boolean; submissionKey?: string }): Promise<RcGameNote> {
   if (isDemoMode()) return demo.submitRcGameNote(payload);
   const response = await fetch(apiUrl('/api/rc-game-notes'), {
     method: 'POST',
@@ -1140,7 +1145,8 @@ export async function submitRcGameNote(payload: { gameId: string; note: string; 
     headers: { 'Content-Type': 'application/json' },
     // The key rides along so a resend the server already committed rewrites its
     // own row instead of filing a second Rückmeldung.
-    body: JSON.stringify({ ...payload, submissionKey: crypto.randomUUID() }),
+    // A queued Rückmeldung (noteQueue.ts) brings its own, the same on every try.
+    body: JSON.stringify({ ...payload, submissionKey: payload.submissionKey || crypto.randomUUID() }),
   });
   if (!response.ok) throw await apiError(response, 'Die Rückmeldung konnte nicht gesendet werden.');
   return response.json() as Promise<RcGameNote>;

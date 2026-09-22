@@ -65,6 +65,9 @@ export default defineConfig(() => {
       react(), 
       tailwindcss(),
       VitePWA({
+        // The installed app (VITE_NATIVE=1, see src/lib/native.ts) bundles its
+        // files and has no worker: nothing to precache, nothing to register.
+        disable: process.env.VITE_NATIVE === '1',
         // 'prompt', not 'autoUpdate' — and nothing here prompts anybody. In
         // autoUpdate the plugin installs its OWN reload on controllerchange,
         // next to the guarded one in main.tsx: it does not wait for a dirty

@@ -120,7 +120,9 @@ test('a payload with no börse field renders nothing rather than a false all-cle
 test.describe('the Games tab', () => {
   const listGame = (over: Record<string, unknown> = {}) => ({
     id: 'eg1', matchNo: '408178', league: 'DU23 3. Liga',
-    date: '2026-09-22T18:15:00Z', location: 'Zwingert, Buchs ZH',
+    // Relative, not a date typed once: the Games tab hides past fixtures, so a
+    // hard-coded day turns this spec red the morning after it is written.
+    date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), location: 'Zwingert, Buchs ZH',
     homeTeam: 'VBC Furttal', awayTeam: 'KSC Wiedikon DU23-1',
     firstReferee: 'Coachee Eins', secondReferee: '',
     assignedRc: '', feedbackClosedRoles: [], starred: false, vmFlagged: false,

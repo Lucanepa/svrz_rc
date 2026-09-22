@@ -37,5 +37,12 @@ test('a report filed on a Testspiel writes nothing onto a real coachee', () => {
   expect(SRC).toContain("const onTestGame = (await getManualGameIds()).has(String(game.id));");
   expect(SRC).toContain('const countsForCoachee = !!coachee && !onTestGame;');
   expect(SRC).toContain('if (countsForCoachee && coacheeCollection) await coacheeCollection.update(coachee.id, {');
-  expect(SRC).toMatch(/if \(countsForCoachee\) \{\n\s+const observation = await withCollection<AnyRecord>\(collectionCandidates\.observations/);
+  // The observation — the row a season's target counts — is written only
+  // under that flag. Its body grew a branch (a reopened report rewrites the
+  // observation it already wrote rather than adding a second), so what is
+  // pinned here is the gate, not the shape inside it.
+  const guarded = SRC.slice(SRC.indexOf('if (countsForCoachee) {'), SRC.indexOf('// Upload the filed document'));
+  expect(guarded).toContain('collectionCandidates.observations');
+  expect(guarded).toContain('collection.create(observationPayload)');
+  expect(SRC.indexOf('collection.create(observationPayload)')).toBeGreaterThan(SRC.indexOf('if (countsForCoachee) {'));
 });

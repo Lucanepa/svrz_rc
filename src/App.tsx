@@ -4189,16 +4189,26 @@ export default function App() {
   // per half, and never over a record already on screen or one being corrected.
   const filedLookupRef = useRef('');
   useEffect(() => {
+    // Only for a coach who is LOOKING at that form. The app keeps a game
+    // selected in the background — the list auto-selects one — and opening a
+    // record sets the view: without this, tapping Spiele bounced straight back
+    // into the form of whatever game happened to be selected.
+    if (!landingSettled || feedbackSubView !== 'feedbackForm') return;
     if (!selectedGameId || !isGameRoleClosed || openFeedbackId || reopenedId || isDemoMode()) return;
     const key = `${selectedGameId}:${formData.role}`;
     if (filedLookupRef.current === key) return;
     filedLookupRef.current = key;
     void getGameFeedback(selectedGameId, formData.role)
-      .then((record) => { if (record && filedLookupRef.current === key) openFeedbackRecord(record); })
+      .then((record) => {
+        // A record, not merely a 200: an answer that is not one (a stub, a
+        // proxy page) must not be opened as an observation.
+        const usable = record && typeof record === 'object' && !Array.isArray(record) && !!record.id;
+        if (usable && filedLookupRef.current === key) openFeedbackRecord(record);
+      })
       // Nothing to say: the banner already tells the coach the role is filed,
       // and a lookup that fails leaves exactly that behind.
       .catch(() => {});
-  }, [selectedGameId, formData.role, isGameRoleClosed, openFeedbackId, reopenedId]);
+  }, [landingSettled, feedbackSubView, selectedGameId, formData.role, isGameRoleClosed, openFeedbackId, reopenedId]);
 
 
   // ── Drafts: the in-progress observation, held on this device ──────────

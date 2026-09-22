@@ -231,3 +231,42 @@ test('the chair can delete a form from its folder, and everything filed with it 
   await expect.poll(() => deleted).toEqual(['/api/referee-coaches/fb3']);
   await expect(page.getByText('Formular gelöscht.')).toBeVisible();
 });
+
+test('sent is not complete — unless no note was owed in the first place', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true, surveyReader: true });
+  // Three reports on one referee: one still missing the chair's private note
+  // to the president, one that has it, and one filed on a referee who is not a
+  // coachee at all — a game is taken FOR the coachee on it, and the other
+  // referee may be written to as well. That last report is about nobody's
+  // progress, so no note is owed and it is finished as sent.
+  const entry = (id: string, over: Record<string, unknown>) => ({
+    id, date: '2026-11-20', season: 2026, role: '1. SR', matchNo: '1000', league: '2L',
+    homeTeam: 'C', awayTeam: 'D', rc: 'Cora Coach', submittedAt: '2026-11-21T10:00:00Z',
+    file: 'pdf', filename: `2026-11-20_Hans-Muster_1SR_${id}.pdf`, ...over,
+  });
+  await page.route('**/api/forms/index', (r) => r.fulfill({
+    json: {
+      referees: [{
+        key: 'sv:4711', name: 'Hans Muster', refereeId: '4711', seasons: [2026],
+        forms: [
+          entry('fb-awaiting', { hasPresidentNote: false, needsPresidentNote: true }),
+          entry('fb-complete', { hasPresidentNote: true, needsPresidentNote: true }),
+          entry('fb-guest', { hasPresidentNote: false, needsPresidentNote: false }),
+        ],
+      }],
+    },
+  }));
+
+  await page.goto('/admin/forms');
+  const folder = page.getByTestId('forms-folder').nth(0);
+  await folder.getByRole('button', { name: /Hans Muster/ }).click();
+  const rows = folder.getByTestId('forms-entry');
+  await expect(rows).toHaveCount(3);
+
+  await expect(rows.nth(0)).toContainText(/Wartet auf Abschluss|Awaiting Completion/);
+  await expect(rows.nth(0)).toContainText(/Fehlt: private Notiz|Missing: private note/);
+  await expect(rows.nth(1)).toContainText(/Abgeschlossen|Completed/);
+  await expect(rows.nth(2)).toContainText(/Abgeschlossen|Completed/);
+  // Only the one that owes a note says anything is missing.
+  await expect(folder.getByText(/Fehlt: private Notiz|Missing: private note/)).toHaveCount(1);
+});

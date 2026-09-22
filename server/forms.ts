@@ -65,6 +65,12 @@ export type FormsEntry = {
    *  out of `formsEntryOf` — this module is pure and has no settings store —
    *  the route stamps the real value in after grouping (server/index.ts). */
   hasPresidentNote: boolean;
+  /** Whether this report needs one at all. A game is taken for a coachee, and
+   *  the other referee on it may be written to as well (both referees on an
+   *  observed game are reportable) — but the private note to the RC president
+   *  is about a coachee's progress, so a report on somebody who is not one is
+   *  finished the moment it is sent. */
+  needsPresidentNote: boolean;
 };
 
 export type FormsFolder = {
@@ -155,6 +161,9 @@ export function formsEntryOf(row: FormsRow): FormsEntry {
     gameId: text(row.game?.id) || text(row.rec.game),
     isManual: row.isManual === true,
     hasPresidentNote: false,
+    // The linked coachee row is the whole test: a feedback filed against the
+    // referee register alone stores an empty `coachee` (server/index.ts).
+    needsPresidentNote: !!row.coachee,
   };
 }
 

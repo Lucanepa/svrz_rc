@@ -571,6 +571,10 @@ export type FormsEntry = {
   /** Whether the RC president's private note has been filed on this report.
    *  Absent from an older server. */
   hasPresidentNote?: boolean;
+  /** Whether it needs one at all: a report on a referee who is not a coachee
+   *  is finished when it is sent. Absent from an older server, where every
+   *  filed report was asked the question. */
+  needsPresidentNote?: boolean;
 };
 
 export type FormsFolder = {

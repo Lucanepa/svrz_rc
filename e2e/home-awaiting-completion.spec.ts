@@ -14,7 +14,7 @@ import { stubSignedInApp, RC, COACHEE } from './support/app';
 
 /** One Home done row, as /api/rc-overview/:rc/coachees sends it. `noted`
  *  undefined stands for an older server, which sent no such field at all. */
-function doneRow(matchNo: string, teams: string, noted?: boolean) {
+function doneRow(matchNo: string, teams: string, noted?: boolean, needed?: boolean) {
   return {
     feedbackId: `fb-${matchNo}`,
     gameId: `g-${matchNo}`,
@@ -27,12 +27,16 @@ function doneRow(matchNo: string, teams: string, noted?: boolean) {
     submittedAt: '2026-03-14T21:00:00Z',
     result: '3:0',
     ...(noted === undefined ? {} : { hasPresidentNote: noted }),
+    ...(needed === undefined ? {} : { needsPresidentNote: needed }),
   };
 }
 
 const AWAITING = doneRow('2345678', 'VBC Offen vs TV Offen', false);
 const COMPLETED = doneRow('2345679', 'VBC Fertig vs TV Fertig', true);
 const OLD_SERVER = doneRow('2345680', 'VBC Alt vs TV Alt');
+/** A game is taken for the coachee on it; the other referee may be written to
+ *  as well, and that report is about nobody's progress — so no note is owed. */
+const NOT_A_COACHEE = doneRow('2345681', 'VBC Gast vs TV Gast', false, false);
 
 const awaitingHead = (page: Page) => page.getByRole('heading', { name: /Abschluss ausstehend|Awaiting completion/ });
 const completedHead = (page: Page) => page.getByRole('heading', { name: /Erledigte Beobachtungen|Completed observations/ });
@@ -84,4 +88,15 @@ test('a row from an older server, which knows no notes, still reads as completed
   await expect(awaitingHead(page)).toHaveCount(0);
   await expect(rowsUnder(completedHead(page))).toHaveCount(1);
   await expect(rowsUnder(completedHead(page))).toContainText('VBC Alt');
+});
+
+test('a report on a referee who is not a coachee is complete the moment it is sent', async ({ page }) => {
+  await stubHome(page, [NOT_A_COACHEE, COMPLETED]);
+
+  // No note is owed, so nothing waits on one: no section, and the row sits
+  // with the finished ones.
+  await expect(awaitingHead(page)).toHaveCount(0);
+  await expect(rowsUnder(completedHead(page))).toHaveCount(2);
+  await expect(rowsUnder(completedHead(page)).filter({ hasText: 'VBC Gast' })).toHaveCount(1);
+  await expect(page.getByText(/Fehlt: private Notiz|Missing: private note/)).toHaveCount(0);
 });

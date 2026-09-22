@@ -1193,6 +1193,10 @@ export default function App() {
   // record's own id and match number when the server sent them (an older one
   // answers without; the row then opens by its day).
   type HomeDone = rcCoachSummaryFeedback & { coacheeName: string; coacheeId: string };
+  /** Whether a filed report is still waiting on the RC president's private
+   *  note. One rule for Home's two lists and for the row's own line, so a row
+   *  cannot be sorted into one list and drawn as the other. */
+  const needsNote = (f: HomeDone) => f.hasPresidentNote === false && f.needsPresidentNote !== false;
   // The coach summary is per coachee, so a game with two coachees on the
   // whistle arrives twice. Home lists appointments — one row per game — and
   // carries the other referee(s) along for the subtitle. The per-coachee split
@@ -6742,8 +6746,12 @@ export default function App() {
                 // so it keeps the amber tone the not-yet-filed
                 // rows use instead of the settled emerald.
                 // Absent (older server) reads as complete — the
-                // pre-4-state behaviour.
-                const awaitingNote = f.hasPresidentNote === false;
+                // pre-4-state behaviour. And a report on a referee who is
+                // NOT a coachee never needed the note at all: the note is
+                // about a coachee's progress, and a game is taken for the
+                // coachee on it — the other referee is written to as well,
+                // and that report is finished when it is sent.
+                const awaitingNote = needsNote(f);
                 return (
                 <GameRow
                   key={`done-${f.coacheeId}-${f.gameDate}-${i}`}
@@ -6793,12 +6801,14 @@ export default function App() {
               const myMandate = rcAuth.rcId ? rcMandates[rcAuth.rcId] : undefined;
               const myGoal = goalForMandate(defaultGoal, myMandate);
               const toGoal = homeData ? Math.max(0, myGoal - homeData.done) : 0;
-              // Two lists, not one: `hasPresidentNote === false` is the
-              // server saying the note is genuinely missing, while absent
-              // (an older API) still reads as complete — the pre-4-state
-              // behaviour, and the reason this is not a truthiness test.
-              const awaitingDone = homeData ? homeData.doneList.filter((f) => f.hasPresidentNote === false) : [];
-              const completedDone = homeData ? homeData.doneList.filter((f) => f.hasPresidentNote !== false) : [];
+              // Two lists, not one. `hasPresidentNote === false` is the
+              // server saying the note is genuinely missing, while absent (an
+              // older API) still reads as complete — the pre-4-state
+              // behaviour, and the reason neither of these is a truthiness
+              // test. `needsPresidentNote === false` is a report on somebody
+              // who is not a coachee, which needs no note in the first place.
+              const awaitingDone = homeData ? homeData.doneList.filter(needsNote) : [];
+              const completedDone = homeData ? homeData.doneList.filter((f) => !needsNote(f)) : [];
               return (
                 <div className="space-y-4">
                   <div>

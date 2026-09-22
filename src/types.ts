@@ -395,6 +395,9 @@ export interface rcCoachSummaryFeedback {
    *  Absent from an older server, where a done row reads as complete the
    *  moment it is sent — the pre-4-state behaviour. */
   hasPresidentNote?: boolean;
+  /** Whether this report needs that note at all — false for a report on a
+   *  referee who is not a coachee. Absent from an older server. */
+  needsPresidentNote?: boolean;
 }
 
 export interface rcCoachSummaryGame {

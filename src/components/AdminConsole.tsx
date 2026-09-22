@@ -3647,25 +3647,31 @@ function FormsAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolean }) 
                                   or In Progress here — so the only question
                                   left is whether the president's private note
                                   has been filed too. Absent (older server):
-                                  say nothing rather than guess. */}
-                              {e.hasPresidentNote !== undefined && (
+                                  say nothing rather than guess. And a report
+                                  on a referee who is not a coachee is asked no
+                                  such question: the note is about a coachee's
+                                  progress, so that report is complete as sent. */}
+                              {e.hasPresidentNote !== undefined && (() => {
+                                const awaiting = !e.hasPresidentNote && e.needsPresidentNote !== false;
+                                return (
                                 <>
                                   <span
                                     className={cn(
                                       'ml-1.5 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 align-middle text-[10px] font-medium',
-                                      e.hasPresidentNote
-                                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                        : 'border-amber-200 bg-amber-50 text-amber-800',
+                                      awaiting
+                                        ? 'border-amber-200 bg-amber-50 text-amber-800'
+                                        : 'border-emerald-200 bg-emerald-50 text-emerald-700',
                                     )}
                                   >
-                                    <span className={cn('h-1.5 w-1.5 rounded-full', e.hasPresidentNote ? 'bg-emerald-500' : 'bg-amber-500')} />
-                                    {e.hasPresidentNote ? t.formsCompleted : t.formsAwaiting}
+                                    <span className={cn('h-1.5 w-1.5 rounded-full', awaiting ? 'bg-amber-500' : 'bg-emerald-500')} />
+                                    {awaiting ? t.formsAwaiting : t.formsCompleted}
                                   </span>
-                                  {!e.hasPresidentNote && (
+                                  {awaiting && (
                                     <span className="mt-0.5 block text-[11px] text-amber-700">{t.formsMissingNote}</span>
                                   )}
                                 </>
-                              )}
+                                );
+                              })()}
                             </span>
                             <span className={FORMS_LABEL}>{t.formsRc}</span>
                             <span className="text-stone-700 min-w-0 truncate">{e.rc || '–'}</span>

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { personKey, formsRowOf, formsEntryName, formsFileKind, groupForms } from '../server/forms';
+import { personKey, formsRowOf, formsEntryOf, formsEntryName, formsFileKind, groupForms } from '../server/forms';
 
 // The sorting rules of Admin → Formulare on their own, without a database:
 // which filed forms belong to the same referee, what a folder is called, how
@@ -113,4 +113,15 @@ test('a nameless record gets a folder of its own rather than a shared "unnamed" 
   const folders = groupForms(rows);
   expect(folders).toHaveLength(2);
   expect(folders.map((f) => f.key).sort()).toEqual(['name:x', 'name:y']);
+});
+
+test('a report on somebody who is not a coachee owes no note to the president', () => {
+  // The linked coachee row is the whole test. A game is taken FOR the coachee
+  // on it; the other referee may be written to as well, and that report is
+  // about nobody's progress — so it is finished the moment it is sent.
+  expect(formsEntryOf(formsRowOf(filed())).needsPresidentNote).toBe(true);
+  expect(formsEntryOf(formsRowOf(filed({ coachee: null }))).needsPresidentNote).toBe(false);
+  // The note itself is never known here: this module has no settings store,
+  // and the route stamps it in after grouping.
+  expect(formsEntryOf(formsRowOf(filed())).hasPresidentNote).toBe(false);
 });

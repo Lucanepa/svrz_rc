@@ -7929,7 +7929,7 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
     type GameMarks = { starred: boolean; vmFlagged: boolean; isRdGame: boolean; isRcGame: boolean; isLdGame: boolean; isManual: boolean };
     type GameIdentity = ReturnType<typeof identityOf>;
     type SummaryGame = { gameId: string; gameDate: string; league: string; matchNo: string; location: string; mapsUrl: string; teams: string; refereeName: string; refereeRole?: string; crew?: CrewEntry[]; coacheeId?: string; noCoachee?: boolean; result: string; boerse: BoerseOnGame } & GameMarks & GameIdentity;
-    type SummaryFeedback = { feedbackId: string; gameId: string; matchNo: string; gameDate: string; league: string; teams: string; location: string; mapsUrl: string; role: string; submittedAt: string; result: string; groups: string; refereeLevel: string; stage: string; hasPresidentNote: boolean } & Partial<GameMarks>;
+    type SummaryFeedback = { feedbackId: string; gameId: string; matchNo: string; gameDate: string; league: string; teams: string; location: string; mapsUrl: string; role: string; submittedAt: string; result: string; groups: string; refereeLevel: string; stage: string; hasPresidentNote: boolean; needsPresidentNote: boolean } & Partial<GameMarks>;
     const coacheeMap = new Map<string, {
       coacheeName: string;
       coacheeId: string;
@@ -7980,6 +7980,10 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
         role: asText(fb.role_assessed),
         submittedAt: asText(fb.submitted_at),
         hasPresidentNote: notedIds.has(String(fb.id)),
+        // Always true here: this list is built per coachee and a feedback
+        // without one is skipped above. Sent anyway, so the client asks the
+        // same question of a Home row as of a Formulare row.
+        needsPresidentNote: true,
         // Off the expanded game, not the feedback: the feedback's own copy is
         // whatever the coach typed at the time, while the game record is what
         // the sync keeps corrected.

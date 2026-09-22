@@ -12007,6 +12007,7 @@ const NOTEBOOK_COLLECTION = 'rc_notebook';
 // (NOTEBOOK_MAX_BYTES).
 const NOTEBOOK_MAX_PAGES_PER_REQUEST = 50;
 const NOTEBOOK_MAX_TEXT_LEN = 20_000;          // a page, not a report
+const NOTEBOOK_MAX_TITLE_LEN = 60;             // a label in the page strip, not a heading
 const NOTEBOOK_MAX_INK_CHARS = 800_000;        // serialised ink page — the SAME predicate src/lib/notebook.ts checks at stroke end
 const NOTEBOOK_MAX_INK_STROKES = 4_000;
 const NOTEBOOK_MAX_PAGES = 40;                 // live pages per coach: a backstop, not a working budget
@@ -12062,6 +12063,7 @@ type NotebookUse = { f: string; r: string; g: string; label: string; t: number }
 type NotebookPagePayload = {
   pageId: string;
   kind: 'text' | 'ink';
+  title: string;
   text: string;
   bg: string;
   points: number;
@@ -12150,6 +12152,10 @@ function sanitizeNotebookPage(raw: unknown, now: number): NotebookSanitised {
   const page: NotebookPagePayload = {
     pageId,
     kind: kind as 'text' | 'ink',
+    // One line of plain text on either kind of page: a pen page is named the
+    // same way a written one is. Whitespace is collapsed here rather than
+    // trusted, because this string is drawn, not parsed.
+    title: deleted ? '' : parkText(source.title, NOTEBOOK_MAX_TITLE_LEN).replace(/\s+/g, ' ').trim(),
     text: deleted || kind !== 'text' ? '' : parkText(source.text, NOTEBOOK_MAX_TEXT_LEN),
     bg: !deleted && kind === 'ink' && NOTEBOOK_BACKGROUNDS.has(parkText(source.bg, 16)) ? parkText(source.bg, 16) : '',
     points: 0,

@@ -155,7 +155,7 @@ export function deletePage(pageId: string): void {
   const o = owner();
   const prev = cache.get(`${o}|${pageId}`);
   if (!prev || prev.deleted) return;
-  commit({ ...prev, deleted: true, text: '', points: 0, usedIn: [] }, null, 0);
+  commit({ ...prev, deleted: true, title: '', text: '', points: 0, usedIn: [] }, null, 0);
 }
 
 /** Record that pages were inserted into a form field. */

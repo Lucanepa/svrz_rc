@@ -43,12 +43,17 @@ export type PageUse = { f: PadField; r: '1. SR' | '2. SR'; g: string; label: str
  * seed derives it the same way. Flat on purpose: tsconfig has no `strict`, so
  * a union tagged by a boolean would not narrow.
  */
+/** One line in the page strip: long enough for "Halbzeit Rämi", short
+ *  enough that the strip stays a strip. */
+export const NOTEBOOK_MAX_TITLE_LEN = 60;
+
 export type NotebookPage = {
   id: string;
   schema: number;
   ownerId: string;        // outboxOwnerId; the only identity that reads it back
   pageId: string;         // crypto.randomUUID() at creation — the merge identity
   kind: PageKind;
+  title: string;          // the coach's own name for the page; '' = untitled
   text: string;           // kind 'text'; '' on ink
   bg: PageBackground;     // kind 'ink': a printed background under the strokes
   points: number;         // kind 'ink': sample count (cheap "is there ink"); 0 for text
@@ -76,7 +81,7 @@ export type PageWire = Omit<NotebookPage, 'id' | 'ownerId' | 'dirty' | 'savedAt'
 /** What the server hands back for one page (the index carries no ink). */
 export type ServerPage = {
   pageId: string; kind: string; createdAt: number; updatedAt: number; deleted: boolean; schema: number; savedAt: string;
-  text?: string; bg?: string; points?: number; usedIn?: PageUse[]; ink?: InkPage; extra?: Record<string, unknown>;
+  title?: string; text?: string; bg?: string; points?: number; usedIn?: PageUse[]; ink?: InkPage; extra?: Record<string, unknown>;
 };
 
 export type PageAck = {
@@ -117,7 +122,7 @@ export function makePage(ownerId: string, kind: PageKind, bg: PageBackground = '
   const now = Date.now();
   return {
     id: pageKey(ownerId, pageId), schema: NOTEBOOK_SCHEMA, ownerId, pageId, kind,
-    text: '', bg: kind === 'ink' ? bg : '', points: 0, usedIn: [],
+    title: '', text: '', bg: kind === 'ink' ? bg : '', points: 0, usedIn: [],
     createdAt: now, updatedAt: now, deleted: false, dirty: true, savedAt: '', rejectedReason: '',
   };
 }
@@ -266,6 +271,11 @@ export { requestPersistentStorage };
 export type MergeDecision = { write: NotebookPage | null; dropInk: boolean; fetchInk: boolean };
 
 const SAFE_BG = (v: unknown): PageBackground => (v === 'court' ? 'court' : '');
+/** A title is a LABEL, not content: one line of plain text, capped, and never
+ *  markup — it is drawn into the page strip, which has room for neither a
+ *  second line nor a tag. */
+export const safeTitle = (v: unknown): string =>
+  (typeof v === 'string' ? v : '').replace(/\s+/g, ' ').trim().slice(0, NOTEBOOK_MAX_TITLE_LEN);
 const SAFE_USES = (v: unknown): PageUse[] => (Array.isArray(v) ? v.filter((u) => u && typeof u === 'object').slice(0, 10) as PageUse[] : []);
 
 /** A server row as a stored page under the owner the SERVER named. */
@@ -274,6 +284,7 @@ export function pageFromServer(ownerId: string, s: ServerPage): NotebookPage | n
   const kind: PageKind = s.kind === 'ink' ? 'ink' : 'text';
   return {
     id: pageKey(ownerId, s.pageId), schema: Number(s.schema) || 1, ownerId, pageId: s.pageId, kind,
+    title: safeTitle(s.title),
     // A page is markup from the editor's subset; what the server hands back is
     // untrusted at this boundary and lands in a contenteditable, so it goes
     // through the sanitiser exactly like a parked draft's rich boxes.

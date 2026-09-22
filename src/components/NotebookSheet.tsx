@@ -15,7 +15,7 @@ import { cn } from '../lib/utils';
 import { clockLabel, dayLabel, dayTimeLabel } from '../lib/appTime';
 import { PAD_STRINGS, fill, type PadLang } from '../lib/notepadStrings';
 import {
-  NOTEBOOK_MAX_PAGES, NOTEBOOK_INK_DEBOUNCE_MS, NOTEBOOK_TTL_MS, inkPoints, makePage, pageExpiresAt,
+  NOTEBOOK_MAX_PAGES, NOTEBOOK_MAX_TITLE_LEN, NOTEBOOK_INK_DEBOUNCE_MS, NOTEBOOK_TTL_MS, inkPoints, makePage, pageExpiresAt,
   type InkPage, type InkStroke, type NotebookPage, type PadField, type PageBackground, type PageKind,
 } from '../lib/notebook';
 import * as notebookSync from '../lib/notebookSync';
@@ -58,6 +58,9 @@ export type NotebookSheetProps = {
 };
 
 const FINGER_KEY = 'svrz_ink_finger';
+/** The page the sheet was last closed on, per owner: a shared laptop must not
+ *  reopen one coach's notebook on another's page. */
+const LAST_PAGE_KEY = 'svrz_pad_last_page';
 const PEN_SEEN_KEY = 'svrz_ink_pen_seen';
 
 function readPref(key: string): string | null {
@@ -73,7 +76,16 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const tp = PAD_STRINGS[lang] || PAD_STRINGS.DE;
   const de = lang === 'DE';
   const [mode, setMode] = useState<'pages' | 'import'>('pages');
-  const [currentId, setCurrentId] = useState<string>(() => (pages[0] ? pages[0].pageId : ''));
+  // Closing the sheet is not leaving the page: a coach who looks something up
+  // mid-observation comes back to the page they were writing on, not to the
+  // newest one. Only if it is still there — a week passes, and pages go.
+  const lastPageKey = `${LAST_PAGE_KEY}:${ownerId}`;
+  const rememberedPage = (list: NotebookPage[]): string => {
+    const id = readPref(lastPageKey) || '';
+    return id && list.some((p) => p.pageId === id) ? id : '';
+  };
+  const [currentId, setCurrentId] = useState<string>(() => rememberedPage(pages) || (pages[0] ? pages[0].pageId : ''));
+  useEffect(() => { if (currentId) writePref(lastPageKey, currentId); }, [currentId, lastPageKey]);
   const [virtual, setVirtual] = useState<{ kind: PageKind; bg: PageBackground } | null>(null);
   const [ink, setInk] = useState<InkPage | null>(null);
   const [inkLoading, setInkLoading] = useState(false);
@@ -101,7 +113,9 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   // A page that expired or was deleted while on screen: move to the newest.
   useEffect(() => {
     if (currentId && !pages.some((p) => p.pageId === currentId)) setCurrentId(pages[0] ? pages[0].pageId : '');
-    if (!currentId && !virtual && pages[0]) setCurrentId(pages[0].pageId);
+    // Pages arrive after the first render (IndexedDB, then the server), so the
+    // remembered one is looked for again here and not only in the initial state.
+    if (!currentId && !virtual && pages[0]) setCurrentId(rememberedPage(pages) || pages[0].pageId);
   }, [pages, currentId, virtual]);
 
   // Body scroll lock and focus restore, the ConfirmDialog way.
@@ -141,6 +155,21 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     if (!value) return;
     const page = makePage(ownerId, 'text');
     page.text = value;
+    notebookSync.commit(page, undefined, 0);
+    setVirtual(null);
+    setCurrentId(page.pageId);
+  };
+
+  const handleTitle = (value: string) => {
+    // One line: the strip draws this, and a pasted paragraph would break it.
+    const title = value.replace(/[\r\n]+/g, ' ').slice(0, NOTEBOOK_MAX_TITLE_LEN);
+    if (current) {
+      notebookSync.commit({ ...current, title });
+      return;
+    }
+    if (!title.trim()) return;
+    const page = makePage(ownerId, virtualKind, virtualBg);
+    page.title = title;
     notebookSync.commit(page, undefined, 0);
     setVirtual(null);
     setCurrentId(page.pageId);
@@ -275,14 +304,22 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
       type="button"
       onClick={() => { setVirtual(null); setCurrentId(p.pageId); setMode('pages'); }}
       aria-current={current && current.pageId === p.pageId ? 'page' : undefined}
-      title={dayTimeLabel(p.createdAt)}
+      title={p.updatedAt - p.createdAt > 60_000
+        ? `${fill(tp.padCreated, { date: dayTimeLabel(p.createdAt) })} · ${fill(tp.padEdited, { time: clockLabel(p.updatedAt) })}`
+        : fill(tp.padCreated, { date: dayTimeLabel(p.createdAt) })}
       className={cn(
         'shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border text-[11px] font-medium transition-colors',
         current && current.pageId === p.pageId && !virtual ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-600 border-stone-300 hover:bg-stone-50',
       )}
     >
       {p.kind === 'ink' ? <PenLine size={12} className="shrink-0" /> : <Pencil size={12} className="shrink-0" />}
-      {clockLabel(p.createdAt)}
+      {/* A named page is found by its name; the time stays beside it, quieter,
+          because two pages from one evening are still told apart by it. */}
+      {p.title && <span className="max-w-[7rem] truncate">{p.title}</span>}
+      <span className={cn(
+        'tabular-nums',
+        p.title && (current && current.pageId === p.pageId && !virtual ? 'text-white/60' : 'text-stone-400'),
+      )}>{clockLabel(p.createdAt)}</span>
       {p.usedIn.length > 0 && <span className="text-emerald-500">✓</span>}
     </button>
   );
@@ -328,7 +365,26 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
         {/* header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-200">
           <NotebookPen size={18} className="shrink-0 text-stone-700" />
-          <h3 className="text-sm font-semibold text-stone-800 truncate">{mode === 'import' ? tp.padInsertTitle : tp.padTitle}</h3>
+          {/* The page's own name, where the panel's name used to be: the icon
+              and the dialog's own label already say what this is, and a row of
+              its own is height a phone cannot spare (it pushes the page turner
+              out from under the thumb). Nothing to name before there is a page,
+              and never in the import view, which is not about one page. */}
+          {mode !== 'import' && (current || showVirtual) ? (
+            <input
+              type="text"
+              value={current ? current.title : ''}
+              onChange={(e) => handleTitle(e.target.value)}
+              maxLength={NOTEBOOK_MAX_TITLE_LEN}
+              placeholder={tp.padTitlePlaceholder}
+              aria-label={tp.padTitlePlaceholder}
+              data-testid="pad-title"
+              data-log-redact
+              className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-stone-800 outline-none placeholder:font-normal placeholder:text-stone-400"
+            />
+          ) : (
+            <h3 className="text-sm font-semibold text-stone-800 truncate">{mode === 'import' ? tp.padInsertTitle : tp.padTitle}</h3>
+          )}
           {insert && mode === 'import' && <span className="text-xs text-stone-500 truncate hidden sm:inline">· {insert.label}</span>}
           <div className="ml-auto flex items-center gap-1">
             <button type="button" onClick={onToggleFull} aria-pressed={full} aria-label={full ? tp.padFullExit : tp.padFull} title={full ? tp.padFullExit : tp.padFull} className="p-1.5 rounded text-stone-500 hover:bg-stone-100 hover:text-stone-800">
@@ -369,6 +425,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                           ? <span className="mt-0.5 inline-block w-4 h-4 rounded-full border border-stone-300" aria-hidden="true" />
                           : <input type="checkbox" className="mt-1" checked={selected.has(p.pageId)} onChange={(e) => setSelected((s) => { const n = new Set(s); if (e.target.checked) n.add(p.pageId); else n.delete(p.pageId); return n; })} />}
                         <span className="min-w-0 flex-1">
+                          {/* Named pages are picked by name here too — the
+                              preview under it is three lines of the middle of
+                              a page, which is not what a coach remembers it by. */}
+                          {p.title && <span className="block text-xs font-semibold text-stone-800 truncate">{p.title}</span>}
                           <span className="block text-[10.5px] text-stone-500">{dayTimeLabel(p.createdAt)}{used ? ` · ${tp.padUsedIn.split(' → ')[0]}` : ''}</span>
                           {isInk
                             ? <span className="block text-xs">{tp.padInkOnly}</span>
@@ -429,6 +489,14 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                 {current ? (
                   <>
                     <span>{fill(tp.padCreated, { date: dayTimeLabel(current.createdAt) })}</span>
+                    {/* Only once it says something the line above does not: a
+                        page written in ten minutes ago was not "created" then. */}
+                    {current.updatedAt - current.createdAt > 60_000 && (
+                      <>
+                        <span className="hidden sm:inline">·</span>
+                        <span className="hidden sm:inline">{fill(tp.padEdited, { time: clockLabel(current.updatedAt) })}</span>
+                      </>
+                    )}
                     <span>·</span>
                     <span className={expiryLine(current).soon ? 'text-amber-700 font-semibold' : ''}>{expiryLine(current).text}</span>
                     {current.rejectedReason && <span className="text-amber-700">· {fill(tp.padSyncRejected, { reason: current.rejectedReason })}</span>}

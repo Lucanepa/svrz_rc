@@ -1584,6 +1584,23 @@ export default function App() {
     void runOfflineReadyCheck();
   }, [landingSettled, feedbackSubView, selectedGameId, openFeedbackId, formData.lang]);
 
+  // A worker that takes the page over AFTER the check ran leaves the panel
+  // saying "reload the page once" to a coach who has, and nothing ever asks
+  // again — the check runs on form open and on the pill, and neither happens
+  // by itself. The one event that says the answer changed is this one.
+  const runOfflineCheckRef = useRef(runOfflineReadyCheck);
+  runOfflineCheckRef.current = runOfflineReadyCheck;
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    const onControllerChange = () => {
+      // Only where a report is on screen to correct; a controllerchange on the
+      // games list is nobody's business.
+      if (offlineCheckedForRef.current) void runOfflineCheckRef.current();
+    };
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
+    return () => navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
+  }, []);
+
   const [backendNotice, setBackendNotice] = useState('');
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
   // Admin via the admin-console session or the in-app database login: keeps

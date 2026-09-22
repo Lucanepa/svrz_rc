@@ -86,6 +86,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   };
   const [currentId, setCurrentId] = useState<string>(() => rememberedPage(pages) || (pages[0] ? pages[0].pageId : ''));
   useEffect(() => { if (currentId) writePref(lastPageKey, currentId); }, [currentId, lastPageKey]);
+  const [sectionMenu, setSectionMenu] = useState(false);
   const [virtual, setVirtual] = useState<{ kind: PageKind; bg: PageBackground } | null>(null);
   const [ink, setInk] = useState<InkPage | null>(null);
   const [inkLoading, setInkLoading] = useState(false);
@@ -117,6 +118,21 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     // remembered one is looked for again here and not only in the initial state.
     if (!currentId && !virtual && pages[0]) setCurrentId(rememberedPage(pages) || pages[0].pageId);
   }, [pages, currentId, virtual]);
+
+  // Escape peels this menu first. App.tsx keeps a window-level Escape handler
+  // that closes the whole sheet, and losing the page you are writing on is a
+  // lot to pay for a menu opened by mistake. Capture, so it runs before that
+  // one — the ConfirmDialog does the same.
+  useEffect(() => {
+    if (!sectionMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setSectionMenu(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [sectionMenu]);
 
   // Body scroll lock and focus restore, the ConfirmDialog way.
   useEffect(() => {
@@ -176,6 +192,29 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   };
 
   const currentText = current && current.kind === 'text' ? current.text : '';
+  /** The evening in the order it happens. A coach taking notes through a match
+   *  writes the same handful of headings every time and writes them badly with
+   *  a thumb; these are the headings, spelled the same way on every page, so a
+   *  page read back a week later has a shape. */
+  const sectionLabels = (): string[] => [
+    tp.padSectionPre,
+    tp.padSectionProtocol,
+    ...[1, 2, 3, 4, 5].map((n) => fill(tp.padSectionSet, { n })),
+    tp.padSectionBreak,
+    tp.padSectionPost,
+  ];
+  /** A heading on its own line. Plain text, like the time stamp: it is carried
+   *  into the form verbatim and has to read as a line there too. */
+  const insertSection = (label: string) => {
+    const line = `— ${label} —`;
+    const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
+    if (surface && document.activeElement === surface) {
+      document.execCommand('insertText', false, `\n${line}\n`);
+      return;
+    }
+    const plain = richToPlain(currentText);
+    handleText(currentText ? `${currentText.replace(/\s+$/, '')}${plain ? '\n' : ''}${line}\n` : `${line}\n`);
+  };
   const insertTime = () => {
     const stamp = `${clockLabel(Date.now())} `;
     const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
@@ -519,10 +558,54 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
             {/* body */}
             <div className="flex-1 min-h-0 flex flex-col" data-log-redact>
               {activeKind === 'text' ? (
-                <div ref={surfaceRef} className="flex-1 min-h-0 flex flex-col">
+                <div ref={surfaceRef} className="relative flex-1 min-h-0 flex flex-col">
                   <div className="px-3 py-1.5 border-b border-stone-100 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
-                    <RichToolbar de={de} onCommand={format} onBullet={() => handleText(appendBullet(currentText))} onNumber={() => handleText(appendNumbered(currentText))} />
+                    <RichToolbar de={de} onCommand={format} onBullet={() => handleText(appendBullet(currentText))} onNumber={() => handleText(appendNumbered(currentText))}>
+                      <span className="mx-0.5 h-5 w-px bg-stone-200" />
+                      {/* One button, not nine: nine pills wrap, and a wrapped
+                          row is a second row of height this sheet does not
+                          have. mousedown is prevented so the page keeps the
+                          caret — the heading goes where the coach was typing. */}
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => setSectionMenu((v) => !v)}
+                        aria-expanded={sectionMenu}
+                        title={tp.padSectionTitle}
+                        data-testid="pad-section"
+                        className="h-8 px-2 inline-flex items-center gap-1 rounded-lg border border-stone-200 text-xs font-medium text-stone-700 hover:bg-stone-100 transition-colors"
+                      >
+                        <Plus size={12} className="shrink-0" />{tp.padSection}
+                      </button>
+                    </RichToolbar>
                   </div>
+                  {sectionMenu && (
+                    <>
+                      {/* Anywhere else closes it, including the page itself. */}
+                      <button
+                        type="button"
+                        aria-label={tp.padCancel}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => setSectionMenu(false)}
+                        className="absolute inset-0 z-10 cursor-default"
+                      />
+                      <div className="absolute left-3 right-3 top-[2.85rem] z-20 rounded-xl border border-stone-200 bg-white p-1.5 shadow-lg sm:max-w-sm">
+                        <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
+                          {sectionLabels().map((label) => (
+                            <button
+                              key={label}
+                              type="button"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => { insertSection(label); setSectionMenu(false); }}
+                              className="h-8 rounded-lg border border-stone-200 px-2 text-xs font-medium text-stone-700 hover:bg-stone-100 transition-colors"
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
                   <RichSurface
                     autoFocus
                     value={currentText}

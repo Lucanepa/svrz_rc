@@ -204,7 +204,7 @@ test.describe('A week is a week', () => {
     await page.goto('/');
     await openPad(page);
     await expect(pageBox(page)).toHaveText('six days old');
-    await expect(sheet(page).locator('span', { hasText: /^(Wird (am .+|morgen) gelöscht|Deleted (on .+|tomorrow))$/ })).toBeVisible();
+    await expect(sheet(page).locator('span', { hasText: /^(Wird (am .+|morgen) gelöscht|Will be deleted (on .+|tomorrow))$/ })).toBeVisible();
     await expect(sheet(page).getByText('eight days old')).toHaveCount(0);
     await expect.poll(async () => (await storedPages(page)).map((r) => r.pageId).sort()).toEqual(['page-fresh']);
   });
@@ -214,7 +214,7 @@ test.describe('A week is a week', () => {
     await seedPad(page, [padPage({ createdAt: Date.now() - 6.5 * DAY })]);
     await page.goto('/');
     await openPad(page);
-    await expect(sheet(page).getByText(/Wird morgen gelöscht|Deleted tomorrow/)).toBeVisible();
+    await expect(sheet(page).getByText(/Wird morgen gelöscht|Will be deleted tomorrow/)).toBeVisible();
   });
 });
 
@@ -381,6 +381,41 @@ test.describe('Into the form', () => {
     await expect(pageBox(page)).toHaveText(/2\. ?$/);
     await expect(padSaved(page)).toBeVisible();
     expect((await storedPages(page))[0].text).toMatch(/<b>erster Satz<\/b>/);
+  });
+
+  test('the phases of a match are headings a thumb can write', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await pageBox(page).fill('Aufwärmen gesehen');
+
+    // Nine phases behind one button: the formatting row is a row, and a
+    // wrapped row is height this sheet does not have.
+    await sheet(page).getByTestId('pad-section').click();
+    await sheet(page).getByRole('button', { name: /^(Vorspiel|Pre-game)$/ }).click();
+    await expect(pageBox(page)).toHaveText(/— (Vorspiel|Pre-game) —/);
+    // Chosen, so the menu is done.
+    await expect(sheet(page).getByRole('button', { name: /^(Satz 1|Set 1)$/ })).toHaveCount(0);
+
+    await sheet(page).getByTestId('pad-section').click();
+    await sheet(page).getByRole('button', { name: /^(Satz 3|Set 3)$/ }).click();
+    await expect(pageBox(page)).toHaveText(/— (Satz 3|Set 3) —/);
+
+    // Each on its own line, under what was written before it — a heading in
+    // the middle of a sentence is not a heading.
+    await expect(padSaved(page)).toBeVisible();
+    const text = (await storedPages(page))[0].text;
+    expect(text).toMatch(/Aufwärmen gesehen[\s\S]*— (Vorspiel|Pre-game) —[\s\S]*— (Satz 3|Set 3) —/);
+
+    // And it can be dismissed without writing anything.
+    await sheet(page).getByTestId('pad-section').click();
+    await expect(sheet(page).getByRole('button', { name: /^(Satzpause|Between sets)$/ })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(sheet(page).getByRole('button', { name: /^(Satzpause|Between sets)$/ })).toHaveCount(0);
+    // The menu, and only the menu: the page being written on is not the price
+    // of an Escape.
+    await expect(sheet(page)).toBeVisible();
+    await expect(pageBox(page)).toHaveText(/Aufwärmen gesehen/);
   });
 
   test('a second insert into the same field asks first', async ({ page }) => {

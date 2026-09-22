@@ -123,6 +123,29 @@ async function guarded<T>(probe: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
+/** How long to wait for a worker that is registered but has not taken the page
+ *  yet. `clientsClaim` runs on activation, which is asynchronous and easily
+ *  later than this check — a fresh install would otherwise be reported as
+ *  "reload the page once" to a coach who just did. */
+const SW_CONTROL_WAIT_MS = 2000;
+
+/** Resolves true as soon as a worker controls this page, false on timeout. */
+function controlledSoon(ms: number): Promise<boolean> {
+  if (navigator.serviceWorker.controller) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      navigator.serviceWorker.removeEventListener('controllerchange', onChange);
+      resolve(ok);
+    };
+    const onChange = () => finish(true);
+    navigator.serviceWorker.addEventListener('controllerchange', onChange);
+    setTimeout(() => finish(!!navigator.serviceWorker.controller), ms);
+  });
+}
+
 async function checkServiceWorker(s: Strings): Promise<OfflineCheckItem> {
   const item = (ok: boolean, detail?: string): OfflineCheckItem => ({ key: 'sw', ok, must: true, label: s.sw, detail });
   return guarded(async () => {
@@ -132,7 +155,12 @@ async function checkServiceWorker(s: Strings): Promise<OfflineCheckItem> {
     // control fetches straight from the network — which offline is not there.
     if (navigator.serviceWorker.controller) return item(true);
     const registration = await navigator.serviceWorker.getRegistration();
-    return item(false, registration ? s.swNoController : s.swNotInstalled);
+    if (!registration) return item(false, s.swNotInstalled);
+    // Registered, so the only question left is whether it has claimed this
+    // page yet. Waited for rather than answered at once, because the honest
+    // answer two seconds from now is worth more than a wrong one today.
+    if (await controlledSoon(SW_CONTROL_WAIT_MS)) return item(true);
+    return item(false, s.swNoController);
   }, item(false, s.swUnsupported));
 }
 

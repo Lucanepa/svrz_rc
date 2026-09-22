@@ -6628,12 +6628,82 @@ export default function App() {
                 );
               };
 
+              /** One filed observation, in either of the two lists it can
+               *  sit in. A report is SENT the moment it exists and only
+               *  COMPLETE once the president's note is on it too; the row
+               *  itself is the same either way — the section it sits in and
+               *  its tone carry the difference. */
+              const doneRow = (f: HomeDone, i: number) => {
+                // Whose row the observation is on, by the id the
+                // summary carries beside the name — the roster
+                // row first, the group and Niveau the summary
+                // stamps on the row after it, as on the games
+                // still to do.
+                const row = roster.resolve({ id: f.coacheeId, name: f.coacheeName });
+                const group = coacheeGroupOf(row) || groupLabel(f.groups, formData.lang) || undefined;
+                const level = coacheeLevelOf(row) || (f.refereeLevel !== undefined ? levelDisplay(f.refereeLevel, f.stage).text : undefined);
+                // Sent is not yet complete: a report without the
+                // RC president's private note still needs work,
+                // so it keeps the amber tone the not-yet-filed
+                // rows use instead of the settled emerald.
+                // Absent (older server) reads as complete — the
+                // pre-4-state behaviour.
+                const awaitingNote = f.hasPresidentNote === false;
+                return (
+                <GameRow
+                  key={`done-${f.coacheeId}-${f.gameDate}-${i}`}
+                  lang={formData.lang}
+                  tone={awaitingNote ? 'amber' : 'emerald'}
+                  date={f.gameDate}
+                  league={f.league}
+                  matchNo={f.matchNo}
+                  teams={f.teams}
+                  location={f.location}
+                  mapsUrl={f.mapsUrl}
+                  onOpen={() => void openDoneObservation(f)}
+                  title={de ? 'Feedback öffnen' : 'Open feedback'}
+                  status={<Eye size={15} className="text-stone-400" />}
+                  chips={<>
+                    {/* The same marks as on the games still to
+                        do: a filed observation on a Testspiel or
+                        an LD game read like any other here — and
+                        the observed coachee as the same chip,
+                        Coachee mark, Niveau and group, so the
+                        done list reads like the planned one and
+                        like the chair's Übersicht detail. */}
+                    <GameFlagChips game={f} lang={formData.lang} />
+                    <CrewChip
+                      role={f.role}
+                      name={f.coacheeName}
+                      lang={formData.lang}
+                      coachee
+                      level={level}
+                      group={group}
+                    />
+                  </>}
+                >
+                  {awaitingNote && (
+                    <p className="mt-1.5 text-[11px] leading-snug text-amber-700">
+                      {de ? 'Fehlt: private Notiz ans RC-Präsidium.' : 'Missing: private note to the RC president.'}
+                    </p>
+                  )}
+                  <MatchResult result={f.result} className="mt-1" />
+                </GameRow>
+                );
+              };
+
               if (!rcAuth.rcName) {
                 return <p className="text-sm text-stone-500 py-6 text-center">{de ? 'Willkommen.' : 'Welcome.'}</p>;
               }
               const myMandate = rcAuth.rcId ? rcMandates[rcAuth.rcId] : undefined;
               const myGoal = goalForMandate(defaultGoal, myMandate);
               const toGoal = homeData ? Math.max(0, myGoal - homeData.done) : 0;
+              // Two lists, not one: `hasPresidentNote === false` is the
+              // server saying the note is genuinely missing, while absent
+              // (an older API) still reads as complete — the pre-4-state
+              // behaviour, and the reason this is not a truthiness test.
+              const awaitingDone = homeData ? homeData.doneList.filter((f) => f.hasPresidentNote === false) : [];
+              const completedDone = homeData ? homeData.doneList.filter((f) => f.hasPresidentNote !== false) : [];
               return (
                 <div className="space-y-4">
                   <div>
@@ -6724,6 +6794,30 @@ export default function App() {
                           )}
                         </div>
                       </div>
+
+                      {/* Sent is not finished, so it does not sit under a
+                          green heading a coach reads as "nothing to do here".
+                          Its own section, above the rest: it is the cheapest
+                          thing on the page to clear — one note, on a report
+                          whose game is long played. */}
+                      {awaitingDone.length > 0 && (
+                        <div>
+                          <SectionHead
+                            tone="amber"
+                            icon={<PenLine size={14} />}
+                            title={de ? 'Abschluss ausstehend' : 'Awaiting completion'}
+                            count={awaitingDone.length}
+                          />
+                          <p className="mt-1.5 text-xs text-stone-500">
+                            {de
+                              ? 'Gesendet — es fehlt die private Notiz ans RC-Präsidium.'
+                              : 'Sent — the private note to the RC president is still missing.'}
+                          </p>
+                          <GameList className="mt-1">
+                            {awaitingDone.map(doneRow)}
+                          </GameList>
+                        </div>
+                      )}
 
                       {/* Outstanding observations. A heading on a rule rather
                           than a filled amber card: the rows below it carry the
@@ -6953,70 +7047,20 @@ export default function App() {
                           tone="emerald"
                           icon={<ClipboardCheck size={14} />}
                           title={de ? 'Erledigte Beobachtungen' : 'Completed observations'}
-                          count={homeData.doneList.length || undefined}
+                          count={completedDone.length || undefined}
                         />
-                        {homeData.doneList.length === 0 ? (
-                          <p className="py-3 text-sm text-stone-400">{de ? 'Noch keine Beobachtung erfasst.' : 'No observations filed yet.'}</p>
+                        {completedDone.length === 0 ? (
+                          // "Nothing filed yet" would be a lie while a report
+                          // sits in the section above it — filed, sent, and one
+                          // note short of finished.
+                          <p className="py-3 text-sm text-stone-400">
+                            {awaitingDone.length > 0
+                              ? (de ? 'Noch nichts abgeschlossen.' : 'Nothing completed yet.')
+                              : (de ? 'Noch keine Beobachtung erfasst.' : 'No observations filed yet.')}
+                          </p>
                         ) : (
                           <GameList className="mt-1">
-                            {homeData.doneList.map((f, i) => {
-                              // Whose row the observation is on, by the id the
-                              // summary carries beside the name — the roster
-                              // row first, the group and Niveau the summary
-                              // stamps on the row after it, as on the games
-                              // still to do.
-                              const row = roster.resolve({ id: f.coacheeId, name: f.coacheeName });
-                              const group = coacheeGroupOf(row) || groupLabel(f.groups, formData.lang) || undefined;
-                              const level = coacheeLevelOf(row) || (f.refereeLevel !== undefined ? levelDisplay(f.refereeLevel, f.stage).text : undefined);
-                              // Sent is not yet complete: a report without the
-                              // RC president's private note still needs work,
-                              // so it keeps the amber tone the not-yet-filed
-                              // rows use instead of the settled emerald.
-                              // Absent (older server) reads as complete — the
-                              // pre-4-state behaviour.
-                              const awaitingNote = f.hasPresidentNote === false;
-                              return (
-                              <GameRow
-                                key={`done-${f.coacheeId}-${f.gameDate}-${i}`}
-                                lang={formData.lang}
-                                tone={awaitingNote ? 'amber' : 'emerald'}
-                                date={f.gameDate}
-                                league={f.league}
-                                matchNo={f.matchNo}
-                                teams={f.teams}
-                                location={f.location}
-                                mapsUrl={f.mapsUrl}
-                                onOpen={() => void openDoneObservation(f)}
-                                title={de ? 'Feedback öffnen' : 'Open feedback'}
-                                status={<Eye size={15} className="text-stone-400" />}
-                                chips={<>
-                                  {/* The same marks as on the games still to
-                                      do: a filed observation on a Testspiel or
-                                      an LD game read like any other here — and
-                                      the observed coachee as the same chip,
-                                      Coachee mark, Niveau and group, so the
-                                      done list reads like the planned one and
-                                      like the chair's Übersicht detail. */}
-                                  <GameFlagChips game={f} lang={formData.lang} />
-                                  <CrewChip
-                                    role={f.role}
-                                    name={f.coacheeName}
-                                    lang={formData.lang}
-                                    coachee
-                                    level={level}
-                                    group={group}
-                                  />
-                                </>}
-                              >
-                                {awaitingNote && (
-                                  <p className="mt-1.5 text-[11px] leading-snug text-amber-700">
-                                    {de ? 'Fehlt: private Notiz ans RC-Präsidium.' : 'Missing: private note to the RC president.'}
-                                  </p>
-                                )}
-                                <MatchResult result={f.result} className="mt-1" />
-                              </GameRow>
-                              );
-                            })}
+                            {completedDone.map(doneRow)}
                           </GameList>
                         )}
                       </div>

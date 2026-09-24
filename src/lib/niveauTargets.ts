@@ -70,6 +70,25 @@ export const NIVEAU_TABLE: NiveauMatrix = {
   'N1': row(['NL'], ['NL'], ['NL'], ['NL'], [], []),
 };
 
+/** The roles a referee of this level may be coached in, by the table in force:
+ *  1. SR when any 1. SR column (Herren, Damen, HU23, DU23) lists a league,
+ *  2. SR when a 2. SR column does. Takes the form's own spelling ("N3 - 2",
+ *  "N4-2", "N1"); a level whose Stufe is not known yet ("N3") gets what any of
+ *  its Stufen allows — every N4 row is 1. SR only, so an N4 still reads as
+ *  such. Empty when the level says nothing the table knows. */
+export function visitRolesFor(srNiveau: string, table: NiveauMatrix = NIVEAU_TABLE): TargetRole[] {
+  const m = /N\s*([1-5])(?:\s*-\s*(\d))?/i.exec(srNiveau || '');
+  if (!m) return [];
+  const exact = m[2] ? `N${m[1]}-${m[2]}` : `N${m[1]}`;
+  const rows = table[exact]
+    ? [table[exact]]
+    : Object.entries(table).filter(([k]) => k === `N${m[1]}` || k.startsWith(`N${m[1]}-`)).map(([, r]) => r);
+  const roles: TargetRole[] = [];
+  if (rows.some((r) => r.H1.length || r.D1.length || r.JH.length || r.JD.length)) roles.push('1SR');
+  if (rows.some((r) => r.H2.length || r.D2.length)) roles.push('2SR');
+  return roles;
+}
+
 export function emptyNiveauRow(): NiveauRow {
   return row([], [], [], [], [], []);
 }

@@ -32,6 +32,10 @@ export interface Results {
   srZiel: string;
   spielniveau: 'leicht' | 'normal' | 'schwierig' | '';
   secondBesuch: 'Y' | 'N' | '';
+  /** With a Y: the role the next visit should watch, among those the Niveau
+   *  table allows this referee. Empty on a report filed before it existed, or
+   *  when the level told the form nothing. */
+  secondBesuchRole?: '1SR' | '2SR' | '';
 }
 
 export interface FeedbackFormData {

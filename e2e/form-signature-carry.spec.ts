@@ -7,8 +7,7 @@ import { stubSignedInApp, openFeedbackForm, signOpenPad, GAME } from './support/
  * A game taken for both referees is two reports and one coach. Asked to sign
  * twice, a coach signs twice — the same hand, the same evening, on a pad, for
  * no reason. So the coach's signature reaches the other role's form the moment
- * it is placed, whichever way the two forms are being filled: held together in
- * "Beide", or one after the other with the role switch.
+ * it is placed, when the coach switches to the other referee's form.
  *
  * The REFEREE's signature is the opposite case and must never travel: it is
  * one person acknowledging the discussion about themselves, and carried over
@@ -34,21 +33,7 @@ test.beforeEach(async ({ page }) => {
   await openFeedbackForm(page);
 });
 
-test('in a "Beide" visit the coach signs once, and only the coach\'s ink travels', async ({ page }) => {
-  await targetButton(page, /^(Both|Beide)$/).click();
-  await signAs(page, 'referee');
-  await signAs(page, 'rc');
-  await expect(rcSig(page)).toBeVisible();
-  await expect(refereeSig(page)).toBeVisible();
-
-  await page.getByRole('button', { name: /^(Switch to|Wechseln zu) 2\. SR$/ }).click();
-  await expect(rcSig(page)).toBeVisible();
-  // The other referee has not acknowledged anything yet, and their form must
-  // not say they have.
-  await expect(refereeSig(page)).toHaveCount(0);
-});
-
-test('the same holds when the two forms are filled one after the other', async ({ page }) => {
+test('the coach signs once for both referees, filled one after the other, and only the coach\'s ink travels', async ({ page }) => {
   await signAs(page, 'rc');
   await expect(rcSig(page)).toBeVisible();
 

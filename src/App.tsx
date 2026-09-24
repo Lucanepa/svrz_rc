@@ -90,7 +90,7 @@ import { parseResult, formatResult, validateResult, findSetError, tallyFromSets,
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, isPromotionGroup, newSrGroupOptions, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName as normName } from './lib/coacheeName';
 import { coacheeLookup, coacheeUrlToken, gameLabel, gameUrlToken, isMyGame, isMyRecord, resolveCoacheeToken, resolveGameToken, samePerson, svClaimOnSlot, type SlotRole } from './lib/identity';
-import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
+import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, visitRolesFor, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
 import LevelText from './components/LevelText';
 import { GroupChip } from './components/CoacheeChips';
@@ -2993,14 +2993,10 @@ export default function App() {
     const r2IsC = !!r2 && !!roster.onSlot(g, '2. SR');
     const has2 = !!r2;
 
-    let target: '1SR' | '2SR' | 'both' = '1SR';
+    // One referee, one form, one send. A visit with two coachees starts on the
+    // 1. SR; the toggle moves to the other, and each keeps its own draft.
     let role: FeedbackFormData['role'] = '1. SR';
-    if (has2 && r1IsC && r2IsC) {
-      target = 'both';
-    } else if (has2 && r2IsC && !r1IsC) {
-      target = '2SR';
-      role = '2. SR';
-    }
+    if (has2 && r2IsC && !r1IsC) role = '2. SR';
     // Coming from the RC view we know whom the coach plans to observe — start
     // there. Compared as record ids: the slot's, as the server resolved it,
     // against the coachee's — a name only ever reaches this as a row the
@@ -3009,7 +3005,7 @@ export default function App() {
     if (preferredId && has2 && roster.idOnSlot(g, '2. SR') === preferredId) role = '2. SR';
     else if (preferredId && roster.idOnSlot(g, '1. SR') === preferredId) role = '1. SR';
     if (preferredRole && (preferredRole === '1. SR' || has2)) role = preferredRole;
-    setObservationTarget(target);
+    setObservationTarget(role === '2. SR' ? '2SR' : '1SR');
     // Tips & Tricks are written for one referee and mailed to them: a new game
     // clears them, and so does moving to the other referee of this one.
     if (isNewGame || formData.role !== role) setTipsAndTricks(demoTips());
@@ -4507,8 +4503,10 @@ export default function App() {
     // chose, and this record is the only thing left saying so. Collapsing there
     // silently filed one report on a two-referee visit.
     const blocked = !other && records.some((d) => d.role !== live.role && d.status !== 'editing');
+    // "Both" is gone from the toggle (2026-09-24): a draft saved in it comes
+    // back on the role it was showing, its sibling stashed for the switch.
     const target: '1SR' | '2SR' | 'both' =
-      blocked ? (live.role === '2. SR' ? '2SR' : '1SR') : live.observationTarget;
+      blocked || live.observationTarget === 'both' ? (live.role === '2. SR' ? '2SR' : '1SR') : live.observationTarget;
 
     setSelectedGameId(game.id);
     setSelectedCoacheeId(live.coacheeId);
@@ -6022,25 +6020,22 @@ export default function App() {
               role="group"
               aria-label={formData.lang === 'DE' ? 'Beobachtung f\u00FCr' : 'Observation for'}
             >
-              {(['1SR', '2SR', 'both'] as const).map((tg) => {
-                const refName = tg === 'both' || !selectedGame ? '' : getRefereeForRole(selectedGame, tg === '1SR' ? '1. SR' : '2. SR');
+              {(['1SR', '2SR'] as const).map((tg) => {
+                const refName = !selectedGame ? '' : getRefereeForRole(selectedGame, tg === '1SR' ? '1. SR' : '2. SR');
                 const isCoachee = !!refName && !!selectedGame && !!roster.onSlot(selectedGame, tg === '1SR' ? '1. SR' : '2. SR');
                 const active = observationTarget === tg;
                 return (
                   <button
                     key={tg}
+                    aria-pressed={active}
                     onClick={() => changeObservationTarget(tg)}
-                    title={tg === 'both'
-                      ? (formData.lang === 'DE'
-                        ? 'Beide Schiedsrichter in einem Besuch — je ein Formular, ein Senden für beide, und keines geht raus, bevor beide vollständig sind.'
-                        : 'Both referees on one visit — one form each, one send for both, and neither goes out until both are complete.')
-                      : `${refName}${isCoachee ? ' (Coachee)' : ''}`}
+                    title={`${refName}${isCoachee ? ' (Coachee)' : ''}`}
                     className={cn(
                       "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors",
                       active ? "bg-slate-900 text-white" : "text-stone-600 hover:bg-stone-50"
                     )}
                   >
-                    {tg === 'both' ? (formData.lang === 'DE' ? 'Beide' : 'Both') : tg}
+                    {tg}
                     {isCoachee && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title="Coachee" />}
                   </button>
                 );
@@ -9121,20 +9116,40 @@ export default function App() {
           </div>
           <div className="p-3">
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.secondVisit}</h4><InfoHint id="secondVisit" lang={formData.lang} className="ml-1 mb-1" />
-            <div className="flex gap-1">
-              {['Y', 'N'].map(v => (
-                <button 
-                  key={v}
-                  onClick={() => updateResult('secondBesuch', v)}
+            {/* A Y names the role the next visit should watch — only the ones
+                the Niveau table allows this referee, so an N4 is offered
+                1. SR alone. A level the table cannot place keeps a plain Y,
+                and so does an older report filed with one. */}
+            {(() => {
+              const roles = visitRolesFor(formData.meta.srNiveau, niveauTable);
+              const r = formData.results;
+              const yesRoles: Array<'1SR' | '2SR' | ''> = roles.length ? [...roles] : [''];
+              if (roles.length && r.secondBesuch === 'Y' && !r.secondBesuchRole) yesRoles.unshift('');
+              const pick = (value: 'Y' | 'N', role: '1SR' | '2SR' | '') => setFormData(prev => {
+                const same = prev.results.secondBesuch === value && (prev.results.secondBesuchRole || '') === role;
+                return { ...prev, results: { ...prev.results, secondBesuch: same ? '' : value, secondBesuchRole: same ? '' : role } };
+              });
+              const btn = (key: string, label: string, chosen: boolean, onClick: () => void) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={onClick}
                   className={cn(
-                    "w-8 h-8 border border-stone-300 rounded flex items-center justify-center text-xs font-bold transition-all",
-                    formData.results.secondBesuch === v ? SELECTED_RESULT : "bg-white hover:bg-stone-100"
+                    "h-8 min-w-8 px-2 border border-stone-300 rounded flex items-center justify-center text-xs font-bold whitespace-nowrap transition-all",
+                    chosen ? SELECTED_RESULT : "bg-white hover:bg-stone-100"
                   )}
                 >
-                  {v}
+                  {label}
                 </button>
-              ))}
-            </div>
+              );
+              return (
+                <div className="flex flex-wrap gap-1">
+                  {yesRoles.map((role) => btn(`Y${role}`, role ? `Y, ${formData.lang === 'DE' ? 'als' : 'as'} ${role}` : 'Y',
+                    r.secondBesuch === 'Y' && (r.secondBesuchRole || '') === role, () => pick('Y', role)))}
+                  {btn('N', 'N', r.secondBesuch === 'N', () => pick('N', ''))}
+                </div>
+              );
+            })()}
           </div>
           <div className="p-3">
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.refGoal}</h4><InfoHint id="refGoal" lang={formData.lang} className="ml-1 mb-1" />

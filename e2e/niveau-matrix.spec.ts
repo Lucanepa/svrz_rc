@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
+import { visitRolesFor, NIVEAU_TABLE } from '../src/lib/niveauTargets';
 
 // Admin → Niveau edits the official SVRZ table "Übersicht SR-Niveau und Stufe",
 // which decides which games are in a coachee's focus. A wrong cell here is not a
@@ -79,4 +80,19 @@ test('the table says the focus hides rather than blocks', async ({ page }) => {
   // like a ban. The sentence that says otherwise has to stay next to the grid.
   await page.goto('/admin/niveau');
   await expect(page.getByText(/blendet nur aus, er sperrt nichts/)).toBeVisible();
+});
+
+test('a further visit is offered in the roles the table allows the referee', () => {
+  // N4 is "ohne Ausbildung zum 2. SR": no 2. SR column at any Stufe.
+  expect(visitRolesFor('N4 - 2')).toEqual(['1SR']);
+  expect(visitRolesFor('N4-3')).toEqual(['1SR']);
+  expect(visitRolesFor('N4')).toEqual(['1SR']);        // Stufe unknown: still no 2. SR
+  expect(visitRolesFor('N3 - 3')).toEqual(['1SR', '2SR']);
+  expect(visitRolesFor('N2-1')).toEqual(['1SR', '2SR']);
+  expect(visitRolesFor('N1')).toEqual(['1SR', '2SR']);
+  expect(visitRolesFor('')).toEqual([]);
+  expect(visitRolesFor('ITA')).toEqual([]);
+  // The table in force, not the paper: an admin who opens a 2. SR cell for N4-1 is followed.
+  const edited = { ...NIVEAU_TABLE, 'N4-1': { ...NIVEAU_TABLE['N4-1'], H2: ['5'] } };
+  expect(visitRolesFor('N4 - 1', edited)).toEqual(['1SR', '2SR']);
 });

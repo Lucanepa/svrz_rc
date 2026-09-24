@@ -53,8 +53,9 @@ const FILED = {
 const formHeading = (page: Page) => page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ });
 const tipsBox = (page: Page) =>
   page.locator('textarea[placeholder*="tips" i], textarea[placeholder*="tipps" i]');
-const switchTo = (page: Page, half: '1. SR' | '2. SR') =>
-  page.getByRole('button', { name: new RegExp(`^(Switch to|Wechseln zu) ${half.replace('.', '\\.')}$`) });
+/** A half of the "Observation for" toggle — 1SR or 2SR, pressed when shown. */
+const half = (page: Page, which: '1SR' | '2SR') =>
+  page.getByRole('group', { name: /Observation for|Beobachtung für/ }).getByRole('button', { name: new RegExp(`^${which}`) });
 
 test.describe('the form names its game and half', () => {
   test.beforeEach(async ({ page }) => { await stubSignedInApp(page); });
@@ -176,10 +177,9 @@ test.describe('the form names its game and half', () => {
     await page.goto(`/form/${GAME.matchNo}/2sr`);
 
     await expect(formHeading(page)).toBeVisible();
-    // On the 2. SR: the swap offers the 1. SR. The app's own guess for a dual
-    // visit is to start on the 1. SR, so a form on the 2. SR can only have
-    // come from the URL.
-    await expect(switchTo(page, '1. SR')).toBeVisible();
+    // On the 2. SR. The app's own guess for a visit with two coachees is to
+    // start on the 1. SR, so a form on the 2. SR can only have come from the URL.
+    await expect(half(page, '2SR')).toHaveAttribute('aria-pressed', 'true');
     await atPath(page, `/form/${GAME.matchNo}/2sr`);
   });
 
@@ -189,8 +189,8 @@ test.describe('the form names its game and half', () => {
     await openFeedbackForm(page);
     await atPath(page, `/form/${GAME.matchNo}/1sr`);
 
-    await switchTo(page, '2. SR').click();
-    await expect(switchTo(page, '1. SR')).toBeVisible();
+    await half(page, '2SR').click();
+    await expect(half(page, '2SR')).toHaveAttribute('aria-pressed', 'true');
     await atPath(page, `/form/${GAME.matchNo}/2sr`);
 
     // Back leaves the form for the screen before it — not the 1. SR half.

@@ -608,6 +608,12 @@ function drawResultsRow(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
       doc.text(value, bx + 7, top + 22.5, { baseline: 'middle', align: 'center' });
     });
   });
+  // With a Y, the role the next visit should watch, beside the boxes.
+  const visitRole = !sheet.blank && results.secondBesuch === 'Y' ? results.secondBesuchRole || '' : '';
+  if (visitRole) {
+    sheet.font('bold', 7.5, INK);
+    doc.text(`→ ${visitRole}`, visitX + 5 + 2 * 17 + 2, top + 22.5, { baseline: 'middle' });
+  }
 
   // Referee goal — free text.
   const goalX = cellLabel(t.refGoal, 4);

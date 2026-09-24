@@ -61,16 +61,8 @@ test('the other referee of the same game starts on an empty form', async ({ page
 });
 
 test.slow();
-test('each referee has a send of their own, and one going does not take the other', async ({ page }) => {
+test('a send files the referee on screen, and only that one', async ({ page }) => {
   await open2SrGame(page);
-  await targetButton(page, /^(Both|Beide)$/).click();
-
-  const send1 = page.getByTestId('send-1sr');
-  const send2 = page.getByTestId('send-2sr');
-  await expect(send1).toBeVisible();
-  await expect(send2).toBeVisible();
-  // The other half has not been written yet, so it cannot be sent by mistake.
-  await expect(send2).toBeDisabled();
 
   const posted: Record<string, unknown>[] = [];
   await page.route('**/api/feedback/submit', async (route) => {
@@ -82,10 +74,10 @@ test('each referee has a send of their own, and one going does not take the othe
   }));
 
   await fillWholeForm(page);
-  await send1.click();
+  await page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ }).click();
   await confirmSend(page).click();
 
-  // Exactly one report went, and it is the one whose button was pressed.
+  // Exactly one report went, and it is the one on screen.
   await expect.poll(() => posted.length, { timeout: 15000 }).toBe(1);
   expect(posted[0].role).toBe('1. SR');
 });
@@ -109,24 +101,23 @@ test('a goal that says nothing is not a goal', async ({ page }) => {
 test.slow();
 test('filing one referee\'s report leaves the other referee\'s form open', async ({ page }) => {
   await open2SrGame(page);
-  await targetButton(page, /^(Both|Beide)$/).click();
   await page.route('**/api/feedback/submit', (r) => r.fulfill({ status: 201, json: { id: 'fb-1sr', emailSent: true } }));
   await page.route(/\/api\/drafts\/parked\//, (r) => r.fulfill({
     json: r.request().method() === 'DELETE' ? { removed: 1 } : { parked: 1 },
   }));
 
   await fillWholeForm(page);
-  await page.getByTestId('send-1sr').click();
+  await page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ }).click();
   await confirmSend(page).click();
+  // The sent report is what is on screen now.
+  await expect(page.getByTestId('sent-pdf')).toBeVisible();
 
-  // The other half is a report nobody has written yet. It used to inherit the
-  // first one's ending — one lock for the whole visit, and the filed record
-  // left on screen — so a coach who had filed one referee could neither edit
-  // nor send the other, on a form that read as submitted.
-  await page.getByRole('button', { name: /^(Switch to|Wechseln zu) 2\. SR$/ }).click();
-  await expect(page.getByText(/Feedback eingereicht|Feedback submitted/)).toHaveCount(0);
-  await expect(page.getByTestId('send-2sr')).toBeVisible();
-  // And it is a form again: its pads take ink.
+  // The other referee is a report nobody has written yet: not submitted, not
+  // locked, and its pads take ink.
+  await targetButton(page, /^2SR/).click();
+  await expect(targetButton(page, /^2SR/)).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('sent-pdf')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).first()).toBeEnabled();
 });
 

@@ -293,8 +293,8 @@ test.describe('The device keeps the work', () => {
     await expect(restoredToast(page)).toBeVisible();
     await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
     await expect(tipsBox(page)).toHaveValue('the second half');
-    // On the 2. SR: the swap offers the 1. SR.
-    await expect(page.getByRole('button', { name: /^(Switch to|Wechseln zu) 1\. SR$/ })).toBeVisible();
+    // On the 2. SR, as the address asked.
+    await expect(targetButton(page, /^2SR/)).toHaveAttribute('aria-pressed', 'true');
     await expect(draftsBanner(page)).toHaveCount(0);
     await expect(page).toHaveURL(new RegExp(`/form/${GAME.matchNo}/2sr$`));
   });
@@ -574,33 +574,28 @@ test.describe('Work that has already been sent', () => {
   }
 });
 
-test.describe('A two-referee visit stays a two-referee visit', () => {
-  test('a sibling that was never started does not collapse it', async ({ page }) => {
+test.describe('A draft from the retired "Both" mode', () => {
+  // "Both" left the toggle on 2026-09-24: one referee, one form, one send.
+  // Drafts saved in it are still on devices and must come back usable.
+  test('comes back on the half it was showing, with no "Both" to choose', async ({ page }) => {
     await stubSignedInApp(page);
     await useTwoRefereeGame(page);
-    // One role, mid-visit, on a game whose OTHER role has simply not been
-    // opened yet. This record is the only thing left saying the coach chose to
-    // observe both — collapsing here silently filed one report of two.
     await seedDrafts(page, [draftRecord({ role: '1. SR', observationTarget: 'both' })]);
     await page.goto('/');
 
     await openGameFromList(page);
     await expect(restoredToast(page)).toBeVisible();
 
-    await expect(targetButton(page, /^(Both|Beide)$/)).toHaveClass(TARGET_ACTIVE);
-    await expect(targetButton(page, /^1SR/)).not.toHaveClass(TARGET_ACTIVE);
-    // The visit is dual again, so the other referee's form is one tap away.
-    await expect(page.getByRole('button', { name: /^(Switch to|Wechseln zu) 2\. SR$/ })).toBeVisible();
+    await expect(targetButton(page, /^1SR/)).toHaveAttribute('aria-pressed', 'true');
+    await expect(targetButton(page, /^(Both|Beide)$/)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^(Switch to|Wechseln zu) 2\. SR$/ })).toHaveCount(0);
   });
 
-  test('a sibling already filed does collapse it', async ({ page }) => {
+  test('a sibling already filed changes nothing about that', async ({ page }) => {
     await stubSignedInApp(page);
     await useTwoRefereeGame(page);
     await seedDrafts(page, [
       draftRecord({ role: '1. SR', observationTarget: 'both' }),
-      // The other half of the visit is gone: sent, confirmed, blanked. Keeping
-      // the visit dual here would make validateForm demand a form for a role
-      // that can no longer be edited.
       draftRecord({
         role: '2. SR', status: 'filed',
         ratings: {}, tipsAndTricks: '', signature: '', rcSignature: '',
@@ -611,9 +606,8 @@ test.describe('A two-referee visit stays a two-referee visit', () => {
     await openGameFromList(page);
     await expect(restoredToast(page)).toBeVisible();
 
-    await expect(targetButton(page, /^1SR/)).toHaveClass(TARGET_ACTIVE);
-    await expect(targetButton(page, /^(Both|Beide)$/)).not.toHaveClass(TARGET_ACTIVE);
-    await expect(page.getByRole('button', { name: /^(Switch to|Wechseln zu) 2\. SR$/ })).toHaveCount(0);
+    await expect(targetButton(page, /^1SR/)).toHaveAttribute('aria-pressed', 'true');
+    await expect(targetButton(page, /^(Both|Beide)$/)).toHaveCount(0);
   });
 });
 

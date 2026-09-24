@@ -49,11 +49,21 @@ test('a feedback becomes an observation: grades scored, level and group as filed
   expect(o.groups).toEqual(['Beförderung?']);
   expect(o.ratings.map((r) => [r.id, r.section, r.score])).toEqual([['1sr-prep-1', 0, 11], ['1sr-prep-2', 0, 8], ['1sr-lead-1', 1, 13]]);
   expect(o.offered).toBe(4);
+  expect(o.answered).toBe(3);             // the blank "Absprache" is the one unanswered
   expect(o.words).toBe(8);                 // "Sehr gute Leistung, ruhig und klar." + "Netzfehler sicher."
   expect(o.filled).toEqual({ highlights: true, improvements: false, goals: false });
   expect(o.signed).toBe(true);
   expect(o.rcSigned).toBe(false);
   expect(o.secondBesuch).toBe('N');
+});
+
+test('N/A answers a criterion without grading it: completeness counts it, the grades do not', () => {
+  const base = feedback().feedback_json as { sections: Array<{ items: Array<Record<string, string>> }> };
+  const sections = base.sections.map((sec) => ({ ...sec, items: sec.items.map((it) => (it.rating === '' ? { ...it, rating: 'N/A' } : it)) }));
+  const o = observationFromFeedback({ feedback: feedback({ feedback_json: { ...base, sections } }), game: GAME, coachee: COACHEE, rc: RC_A })!;
+  expect(o.ratings).toHaveLength(3);
+  expect(o.answered).toBe(4);
+  expect(o.offered).toBe(4);
 });
 
 test('a test game — no coachee — is not an observation; the roster fills an empty level', () => {
@@ -95,7 +105,7 @@ function obs(over: Partial<StatObservation>): StatObservation {
     homeTeam: 'A', awayTeam: 'B', result: '3:0 (25:20 / 25:22 / 25:18)', role: '1SR', lang: 'DE',
     rcId: RC_A.id, rcName: RC_A.name, coacheeId: 'c-1', coacheeName: 'Zoe Zwei', level: 'N3-2', groups: ['Beförderung?'],
     ratings: [{ id: '1sr-prep-1', section: 0, score: 8 }, { id: '1sr-prep-2', section: 0, score: 11 }],
-    offered: 4, einstufung: 'check', motivation: 'up', spielniveau: 'normal', secondBesuch: 'N', srZiel: '',
+    offered: 4, answered: 4, einstufung: 'check', motivation: 'up', spielniveau: 'normal', secondBesuch: 'N', srZiel: '',
     words: 10, chars: 50, filled: { highlights: true, improvements: false, goals: false },
     signed: true, rcSigned: true, submittedAt: '2025-10-03T21:00:00Z',
     ...over,

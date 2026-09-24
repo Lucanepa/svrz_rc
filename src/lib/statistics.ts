@@ -119,7 +119,7 @@ export type StatTotals = {
   filledHighlights: number;
   filledImprovements: number;
   filledGoals: number;
-  /** Rated criteria and the criteria the forms offered — completeness. */
+  /** Answered criteria (grades + N/A) and the criteria the forms offered — completeness. */
   ratedItems: number;
   offeredItems: number;
   grade: GradeAgg;

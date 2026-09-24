@@ -58,7 +58,7 @@ export function statObservations(season: number, count = 44): StatObservation[] 
       homeTeam: `VBC ${['Nord', 'Süd', 'West', 'Ost'][i % 4]}`, awayTeam: `TV ${['Gast', 'Fern', 'Weit'][i % 3]}`,
       result: RESULTS[i % RESULTS.length], role, lang: i % 11 === 0 ? 'EN' : 'DE',
       rcId: rc.id, rcName: rc.name, coacheeId: coachee.id, coacheeName: coachee.name, level: coachee.level, groups: coachee.groups,
-      ratings, offered: ids.length,
+      ratings, offered: ids.length, answered: ratings.length,
       einstufung: ['check', 'check', 'up', 'check', 'down'][i % 5], motivation: ['up', 'check', 'check'][i % 3],
       spielniveau: ['normal', 'leicht', 'schwierig', 'normal'][i % 4], secondBesuch: i % 6 === 0 ? 'Y' : 'N', srZiel: ['2L', '3L', 'Verbleib', ''][i % 4],
       words: 60 + (i * 37) % 200, chars: 350 + (i * 211) % 1100,

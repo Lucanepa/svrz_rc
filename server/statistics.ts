@@ -60,6 +60,10 @@ export type StatObservation = {
   ratings: Array<{ id: string; section: number; score: number }>;
   /** Criteria the form offered — the denominator of completeness. */
   offered: number;
+  /** Criteria the coach answered: every grade plus every N/A. N/A says the
+   *  thing never came up (no sanction to give), so it completes the form
+   *  without being a grade — completeness counts it, the averages do not. */
+  answered: number;
   einstufung: string;
   motivation: string;
   spielniveau: string;
@@ -120,11 +124,13 @@ export function observationFromFeedback(args: {
 
   const ratings: StatObservation['ratings'] = [];
   let offered = 0;
+  let answered = 0;
   sections.forEach((section, index) => {
     const items = Array.isArray(section.items) ? section.items as Array<Plain> : [];
     for (const item of items) {
       offered += 1;
       const score = gradeToScore(text(item.rating));
+      if (score !== null || text(item.rating).trim().toUpperCase() === 'N/A') answered += 1;
       if (score === null) continue;
       ratings.push({ id: text(item.id), section: index, score });
     }
@@ -171,6 +177,7 @@ export function observationFromFeedback(args: {
     groups,
     ratings,
     offered,
+    answered,
     einstufung: text(results.einstufung),
     motivation: text(results.motivation),
     spielniveau: text(results.spielniveau),
@@ -391,7 +398,7 @@ export function computeStatistics(input: StatisticsInput): SeasonStatisticsCore 
   const scoreLetter = (score: number) => Object.entries(GRADE_SCALE).find(([, s]) => s === score)?.[0] ?? '';
   for (const o of observations) {
     offeredItems += o.offered;
-    ratedItems += o.ratings.length;
+    ratedItems += o.answered;
     const seenSections = new Set<number>();
     for (const r of o.ratings) {
       ratingsAll += 1;

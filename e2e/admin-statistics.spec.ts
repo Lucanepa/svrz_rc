@@ -287,3 +287,18 @@ test('the deck: one set of slides per level and per group, empty slices left out
   const plain = buildDeck(full.stats, { lang: 'DE', includeRcGrades: false, includeLeagues: false }).slides.map((s) => s.title);
   expect(plain.some((t) => t.startsWith('Niveau '))).toBe(false);
 });
+
+test('on a phone nothing on the page scrolls sideways — tables fold their extra columns under the name', async ({ page, isMobile }) => {
+  test.skip(!isMobile, 'Mobile viewport only');
+  await stubSignedInApp(page, { admin: true });
+  await openStats(page);
+  await page.getByTestId('stats-groupbar').getByRole('radio', { name: 'Niveau' }).click();
+  await expect(page.getByTestId('stats-compare').locator('tbody tr').first()).toBeVisible();
+  const overflowing = await page.getByTestId('stats-body').evaluate((body) =>
+    [...body.querySelectorAll<HTMLElement>('.overflow-x-auto')]
+      .filter((el) => el.scrollWidth > el.clientWidth + 1)
+      .map((el) => el.closest('[data-testid]')?.getAttribute('data-testid') ?? el.className));
+  expect(overflowing).toEqual([]);
+  // The folded figures are there, under the coach's name.
+  await expect(page.getByTestId('stats-rcs').locator('tbody tr').first()).toContainText(/Coachees/);
+});

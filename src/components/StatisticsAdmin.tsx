@@ -19,7 +19,7 @@ import {
 } from '../lib/statsLabels';
 import { SECTIONS_1SR_DE, SECTIONS_2SR_DE } from '../types';
 import { buildDeck, deckFileName } from '../lib/statsDeck';
-import { BarList, ColumnChart, Donut, GradeScale, StatTile, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
+import { BarList, Donut, GradeScale, HBarChart, StatTile, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
 
 const select = 'h-9 px-2.5 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500 max-w-full';
 const btn = 'inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-40 transition-colors';
@@ -269,7 +269,15 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     const groupRows = keep(stats.byGroup.map((b) => bucketRow(b, groupKeyLabel(b.key, lang), t)));
     // One Niveau picked: its bar would be the whole chart, so only its Stufen stay.
     const levelRows = filters.level ? [] : keep(stats.byLevel.map((b) => bucketRow(b, levelKeyLabel(b.key, lang), t)));
-    const stufeRows = keepScale(stats.byStufe.map((b) => ({ key: b.key, label: levelKeyLabel(b.key, lang), avg: gradeAvg(b.grade), n: b.observations })));
+    // Each Niveau as a whole, then its Stufen under it. A Niveau with no
+    // Stufen (N1) is one row; a Stufe that is its own Niveau is not repeated.
+    const stufeRows = keepScale(stats.byLevel.flatMap((lv) => {
+      const subs = stats.byStufe.filter((b) => b.key !== lv.key && b.key.startsWith(`${lv.key}-`));
+      return [
+        { key: `lv-${lv.key}`, label: levelKeyLabel(lv.key, lang), avg: gradeAvg(lv.grade), n: lv.observations, strong: subs.length > 0 },
+        ...subs.map((b) => ({ key: b.key, label: levelKeyLabel(b.key, lang), avg: gradeAvg(b.grade), n: b.observations, indent: true })),
+      ];
+    }));
     const showMonths = !filtered || monthsAny;
     const showObservations = showMonths || coverageRows.length > 0 || roleRows.length > 0 || rcRows.length > 0 || groupRows.length > 0 || levelRows.length > 0 || stufeRows.length > 0;
     // ── Grades
@@ -331,9 +339,9 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
             <Grid>
               {showMonths && (
               <Block span="lg:col-span-5" title={t.perMonth} hint={`${t.role1} / ${t.role2}`} testId="stats-months">
-                <ColumnChart
+                <HBarChart
                   series={[t.role1, t.role2]}
-                  data={stats.byMonth.map((b) => ({ key: b.key, label: monthLabel(b.key, lang), values: [b.roles['1SR'], b.roles['2SR']], hint: `${monthLabel(b.key, lang)} ${b.key.slice(0, 4)}` }))}
+                  data={stats.byMonth.filter((b) => !filtered || b.observations > 0).map((b) => ({ key: b.key, label: monthLabel(b.key, lang), values: [b.roles['1SR'], b.roles['2SR']], hint: `${monthLabel(b.key, lang)} ${b.key.slice(0, 4)}` }))}
                 />
               </Block>
               )}
@@ -354,14 +362,14 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="text-[10px] uppercase tracking-wide text-stone-400">
-                        <th className="text-left font-medium py-1.5 px-1">{t.rc}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.observations}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.coacheesCol}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.gamesCol}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.setsCol}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.wordsCol}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.gradeCol}</th>
-                        <th className="text-left font-medium py-1.5 pl-3 min-w-[9rem]">{t.goalCol}</th>
+                        <th className="text-left font-medium py-1.5 px-1 align-bottom">{t.rc}</th>
+                        <th className="text-right font-medium py-1.5 px-1 align-bottom" title={t.observations}><span className="sm:hidden">{t.compareObs}</span><span className="hidden sm:inline">{t.observations}</span></th>
+                        <th className="hidden sm:table-cell text-right font-medium py-1.5 px-1 align-bottom">{t.coacheesCol}</th>
+                        <th className="hidden sm:table-cell text-right font-medium py-1.5 px-1 align-bottom">{t.gamesCol}</th>
+                        <th className="hidden sm:table-cell text-right font-medium py-1.5 px-1 align-bottom">{t.setsCol}</th>
+                        <th className="hidden sm:table-cell text-right font-medium py-1.5 px-1 align-bottom">{t.wordsCol}</th>
+                        <th className="text-right font-medium py-1.5 px-1 align-bottom">{t.gradeCol}</th>
+                        <th className="text-left font-medium py-1.5 pl-2 sm:pl-3 sm:min-w-[9rem] align-bottom">{t.goalCol}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -370,16 +378,20 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                         const fill = r.goal > 0 ? Math.min(100, (r.observations / r.goal) * 100) : 0;
                         return (
                           <tr key={r.key} className="border-t border-stone-100">
-                            <td className="py-1.5 px-1 text-stone-800 whitespace-nowrap">{r.label}</td>
+                            <td className="py-1.5 px-1 text-stone-800 leading-tight">
+                              {r.label}
+                              {/* The columns a phone has no room for, as one line under the name. */}
+                              {r.observations > 0 && <span className="sm:hidden block text-[10px] text-stone-400 tabular-nums">{fmtInt(r.coachees)} {t.coacheesCol} · {fmtInt(r.games)} {t.gamesCol} · {fmtInt(r.sets)} {t.setsCol}</span>}
+                            </td>
                             <td className="py-1.5 px-1 text-right tabular-nums font-semibold">{fmtInt(r.observations)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.coachees)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.games)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.sets)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.words)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums whitespace-nowrap" title={a === null ? '–' : `${fmtDec(a)} · ${t.nObs(r.observations)}`}>{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(r.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b> <span className="text-stone-500">{fmtDec(a)}</span>{isThin(r.observations) && <span className="text-stone-400"> · n = {r.observations}</span>}</>}</td>
-                            <td className="py-1.5 pl-3">
+                            <td className="hidden sm:table-cell py-1.5 px-1 text-right tabular-nums">{fmtInt(r.coachees)}</td>
+                            <td className="hidden sm:table-cell py-1.5 px-1 text-right tabular-nums">{fmtInt(r.games)}</td>
+                            <td className="hidden sm:table-cell py-1.5 px-1 text-right tabular-nums">{fmtInt(r.sets)}</td>
+                            <td className="hidden sm:table-cell py-1.5 px-1 text-right tabular-nums">{fmtInt(r.words)}</td>
+                            <td className="py-1.5 px-1 text-right tabular-nums whitespace-nowrap" title={a === null ? '–' : `${fmtDec(a)} · ${t.nObs(r.observations)}`}>{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(r.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b> <span className="hidden sm:inline text-stone-500">{fmtDec(a)}</span>{isThin(r.observations) && <span className="hidden sm:inline text-stone-400"> · n = {r.observations}</span>}</>}</td>
+                            <td className="py-1.5 pl-2 sm:pl-3">
                               <div className="flex items-center gap-2" title={`${fmtInt(r.observations)} / ${fmtInt(r.goal)} · ${r.planned} ${t.planned} · ${r.outstanding} ${t.outstanding}`}>
-                                <span className="h-2 flex-1 min-w-[4rem] rounded-full bg-stone-100 overflow-hidden"><span className="block h-full rounded-full" style={{ width: `${fill}%`, background: fill >= 100 ? '#1f7a4d' : '#2a78d6' }} /></span>
+                                <span className="h-2 flex-1 min-w-[1.5rem] sm:min-w-[4rem] rounded-full bg-stone-100 overflow-hidden"><span className="block h-full rounded-full" style={{ width: `${fill}%`, background: fill >= 100 ? '#1f7a4d' : '#2a78d6' }} /></span>
                                 <span className="tabular-nums text-stone-500 whitespace-nowrap">{fmtInt(r.observations)}/{fmtInt(r.goal)}</span>
                               </div>
                             </td>
@@ -401,7 +413,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                 {levelRows.length > 0 && <BarList rows={levelRows} />}
                 {stufeRows.length > 0 && (
                   <div className={levelRows.length > 0 ? 'mt-4' : undefined}>
-                    <SubHead>{t.perStufe} · {t.avgGrade}</SubHead>
+                    <SubHead>{t.perLevelStufe}</SubHead>
                     <GradeScale rows={stufeRows} nLabel={t.nObs} />
                   </div>
                 )}
@@ -417,11 +429,14 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
             <Grid>
               {showHistogram && (
               <Block span="lg:col-span-7" title={t.histogram} hint={t.histogramHint} testId="stats-histogram">
-                <ColumnChart
+                {/* A+ … E− top to bottom, a letter's three grades together; the ±
+                    grades in the soft tint. With a filter on, a letter nobody
+                    was given is left out whole. */}
+                <HBarChart
                   series={[t.histogram]}
-                  slotWidth={26}
-                  soft={GRADE_ORDER.map((g, i) => (g.length > 1 ? i : -1)).filter((i) => i >= 0)}
-                  data={GRADE_ORDER.map((g) => ({ key: g, label: GRADE_LETTERS.includes(g) ? g : '', values: [stats.histogram[g] ?? 0], hint: g }))}
+                  data={GRADE_ORDER
+                    .filter((g) => !filtered || GRADE_ORDER.some((h) => h[0] === g[0] && (stats.histogram[h] ?? 0) > 0))
+                    .map((g, i, list) => ({ key: g, label: g.replace('-', '−'), values: [stats.histogram[g] ?? 0], soft: !GRADE_LETTERS.includes(g), gapBefore: i > 0 && list[i - 1][0] !== g[0] }))}
                 />
               </Block>
               )}
@@ -642,9 +657,9 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                         <th className="text-right font-medium py-1.5 px-1 align-bottom" title={t.observations}>{t.compareObs}</th>
                         <th className="text-right font-medium py-1.5 px-1 align-bottom">{t.compareCoverage}</th>
                         <th className="text-right font-medium py-1.5 px-1 align-bottom">{t.gradeCol}</th>
-                        <th className="text-right font-medium py-1.5 px-1 align-bottom" title={t.comparePromotionHint}>{t.comparePromotion}</th>
-                        <th className="text-right font-medium py-1.5 px-1 align-bottom leading-tight" title={t.compareFurtherHint}>{t.compareFurther}</th>
-                        {rows.some((r) => r.stats.trend) && <th className="text-right font-medium py-1.5 px-1 align-bottom" title={t.trendHint}>{t.trendCol}</th>}
+                        <th className="hidden sm:table-cell text-right font-medium py-1.5 px-1 align-bottom" title={t.comparePromotionHint}>{t.comparePromotion}</th>
+                        <th className="hidden sm:table-cell text-right font-medium py-1.5 px-1 align-bottom leading-tight" title={t.compareFurtherHint}>{t.compareFurther}</th>
+                        {rows.some((r) => r.stats.trend) && <th className="hidden sm:table-cell text-right font-medium py-1.5 px-1 align-bottom" title={t.trendHint}>{t.trendCol}</th>}
                       </tr>
                     </thead>
                     <tbody>
@@ -659,14 +674,22 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                             onClick={() => (dim === 'level' ? pickLevel(key) : pickGroup(key))}
                             className={cn('border-t border-stone-100 cursor-pointer hover:bg-stone-50', on && 'bg-stone-100 font-semibold')}
                           >
-                            <td className="py-2.5 px-1 text-stone-800 leading-tight">{label}</td>
+                            <td className="py-2.5 px-1 text-stone-800 leading-tight">
+                              {label}
+                              {/* Promotion, further visit and trend under the label on a phone. */}
+                              <span className="sm:hidden mt-0.5 flex flex-wrap gap-x-2 text-[10px] font-normal text-stone-500 tabular-nums">
+                                <span>{t.comparePromotion} {pctText(pct(s.outcomes.einstufung.up ?? 0, sum(s.outcomes.einstufung)))}</span>
+                                <span>{t.compareFurtherShort} {pctText(pct(s.outcomes.secondBesuch.Y ?? 0, sum(s.outcomes.secondBesuch)))}</span>
+                                {s.trend && s.trend.coachees > 0 && <TrendCounts tr={s.trend} />}
+                              </span>
+                            </td>
                             <td className="py-2.5 px-1 text-right tabular-nums font-semibold">{fmtInt(c.observations)}</td>
                             <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap leading-tight">{pctText(pct(c.coachees, c.roster))}<span className="block text-[10px] text-stone-400">{fmtInt(c.coachees)}/{fmtInt(c.roster)}</span></td>
-                            <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap">{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(c.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b> <span className="text-stone-500">{fmtDec(a)}</span></>}</td>
-                            <td className="py-2.5 px-1 text-right tabular-nums">{pctText(pct(s.outcomes.einstufung.up ?? 0, sum(s.outcomes.einstufung)))}</td>
-                            <td className="py-2.5 px-1 text-right tabular-nums">{pctText(pct(s.outcomes.secondBesuch.Y ?? 0, sum(s.outcomes.secondBesuch)))}</td>
+                            <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap">{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(c.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b> <span className="hidden sm:inline text-stone-500">{fmtDec(a)}</span></>}</td>
+                            <td className="hidden sm:table-cell py-2.5 px-1 text-right tabular-nums">{pctText(pct(s.outcomes.einstufung.up ?? 0, sum(s.outcomes.einstufung)))}</td>
+                            <td className="hidden sm:table-cell py-2.5 px-1 text-right tabular-nums">{pctText(pct(s.outcomes.secondBesuch.Y ?? 0, sum(s.outcomes.secondBesuch)))}</td>
                             {rows.some((r) => r.stats.trend) && (
-                              <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap">
+                              <td className="hidden sm:table-cell py-2.5 px-1 text-right tabular-nums whitespace-nowrap">
                                 {s.trend && s.trend.coachees > 0 ? <TrendCounts tr={s.trend} /> : <span className="text-stone-400">–</span>}
                               </td>
                             )}

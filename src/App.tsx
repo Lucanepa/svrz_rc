@@ -4049,6 +4049,16 @@ export default function App() {
     try {
       await savePresidentNote(openFeedbackId, presidentNote);
       setPresidentNoteSaved(true);
+      // The note is what moves a sent report from "Abschluss ausstehend" to
+      // done — on Home and in the coachee statuses — and both only learned of
+      // it on a reload. Flip the row now (the server stores a cleared box as
+      // no note), then re-read everything a filed report feeds.
+      const hasNote = presidentNote.trim() !== '';
+      setHomeData((prev) => prev && {
+        ...prev,
+        doneList: prev.doneList.map((f) => (f.feedbackId === openFeedbackId ? { ...f, hasPresidentNote: hasNote } : f)),
+      });
+      void refreshAfterFeedback();
       setTimeout(() => setPresidentNoteSaved(false), 2500);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

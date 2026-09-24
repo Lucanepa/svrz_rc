@@ -142,3 +142,32 @@ test.describe('what an entry carries', () => {
     expect(entry).toMatchObject({ note: 'still here', gameId: '', matchNo: '', teams: '', refereeId: '', rcName: 'Bea Beispiel', rcId: '' });
   });
 });
+
+test('saving the note moves the report out of "Awaiting completion" without a reload', async ({ page }) => {
+  // Reported 2026-09-24: the note was saved, but back on Home the report still
+  // sat under "Abschluss ausstehend" until the page was reloaded by hand.
+  let noted = false;
+  await stub(page, { signedInAs: RC.name, onPut: () => { noted = true; } });
+  await page.route('**/api/rc-overview/*/coachees*', (r) => r.fulfill({
+    json: [{
+      coacheeName: 'Ref One', coacheeId: 'c1',
+      doneFeedbacks: [{
+        feedbackId: 'fb1', gameId: 'g1', matchNo: '1', gameDate: '2026-03-14', league: '3L', teams: 'A vs B',
+        role: '1. SR', submittedAt: '2026-03-15T10:00:00Z', hasPresidentNote: noted, needsPresidentNote: true,
+      }],
+      outstandingGames: [], plannedGames: [],
+    }],
+  }));
+  const awaiting = page.getByRole('heading', { name: /Abschluss ausstehend|Awaiting completion/ });
+  await page.goto('/');
+  await expect(awaiting).toBeVisible();
+
+  await page.getByRole('button', { name: /Ref One/ }).first().click();
+  await noteBox(page).fill('needs another visit');
+  await page.getByRole('button', { name: /Notiz speichern|Save note/ }).click();
+  await expect.poll(() => noted).toBe(true);
+
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: /Erledigte Beobachtungen|Completed observations/ })).toBeVisible();
+  await expect(awaiting).toHaveCount(0);
+});

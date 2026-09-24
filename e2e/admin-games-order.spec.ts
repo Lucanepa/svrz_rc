@@ -1,4 +1,7 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { stubSignedInApp, GAME } from './support/app';
 
 // Admin → Spiele opened on March 2027. The endpoint serves newest-first, the
@@ -78,4 +81,35 @@ test('the rest of the season is a click away, not a search away', async ({ page 
   // A narrowed list starts at its first page again.
   await page.getByPlaceholder(/Liga oder Halle|league or venue/).fill('524');
   await expect(rows(page)).toHaveCount(10);
+});
+
+test('a game whose report was sent keeps its coach: the picker is locked', async ({ page }) => {
+  // Completed or awaiting the president's note, the report went out under the
+  // coach who holds the game; moving it would put the report under another name.
+  const SENT = { ...SOON, assignedRc: '', feedbackClosedRoles: ['1. SR'] };
+  await stubSignedInApp(page, { admin: true });
+  await page.route('**/api/coachees*', (r) => r.fulfill({ json: [] }));
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [NOVEMBER, SENT] }));
+  await page.clock.setFixedTime(NOON);
+
+  await page.goto('/admin');
+  await page.getByRole('button', { name: /^(Spiele|Games)$/ }).click();
+
+  const pickers = page.locator('select').filter({ has: page.locator('option', { hasText: /^–$/ }) });
+  await expect(rows(page)).toHaveText(['#4002', '#4003']);
+  await expect(pickers.nth(0)).toBeDisabled();
+  await expect(page.getByTestId('rc-locked')).toHaveCount(1);
+  await expect(pickers.nth(1)).toBeEnabled();
+});
+
+test('the server refuses it too, admin included (source)', () => {
+  // The picker is only the front door. Pinned from the source: the route
+  // needs PocketBase, and there is none here.
+  const server = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server', 'index.ts'), 'utf8');
+  const start = server.indexOf("app.put('/api/games/:id/assign-rc'");
+  const route = server.slice(start, server.indexOf('\napp.', start + 10));
+  const guard = route.indexOf('feedback_closed_roles.length > 0');
+  expect(guard).toBeGreaterThan(0);
+  // Before the RC-only branch, so an admin session meets it as well.
+  expect(guard).toBeLessThan(route.indexOf('if (rcAuth) {'));
 });

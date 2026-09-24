@@ -331,6 +331,8 @@ const STR = {
     gamesNone: 'Keine Spiele gefunden.',
     gamesUnassigned: 'Nur ohne RC',
     gamesPast: 'Auch vergangene',
+    gamesRcSent: 'Bericht gesendet',
+    gamesRcLocked: 'Bericht bereits gesendet — der Referee Coach kann nicht mehr geändert werden.',
     gamesMore: (n: number) => `Weitere ${n} Spiele anzeigen`,
     gamesFlag: 'Vormerken', gamesFlagged: 'Vorgemerkt', gamesFlaggedVm: 'Vorgemerkt (VM)',
     gamesFlagHint: 'Für eine Beobachtung vormerken — die RC sehen das Spiel dann unter „Vorgemerkt".',
@@ -636,6 +638,8 @@ const STR = {
     gamesNone: 'No games found.',
     gamesUnassigned: 'Unassigned only',
     gamesPast: 'Include past',
+    gamesRcSent: 'Report sent',
+    gamesRcLocked: 'Report already sent — the referee coach can no longer be changed.',
     gamesMore: (n: number) => `Show ${n} more games`,
     gamesFlag: 'Flag', gamesFlagged: 'Flagged', gamesFlaggedVm: 'Flagged (VM)',
     gamesFlagHint: 'Flag for observation — coaches then find the game under "Flagged".',
@@ -5514,17 +5518,24 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
                 {(() => {
                   const holder = holderOf(g);
                   const stored = !holder && g.assignedRc ? `stored:${g.assignedRc}` : '';
+                  const sent = (g.feedbackClosedRoles ?? []).length > 0;
                   return (
+                <>
                 <select
-                  className={cn(input, 'flex-1 min-w-[12rem] max-w-sm cursor-pointer')}
+                  className={cn(input, 'flex-1 min-w-[12rem] max-w-sm', sent ? 'cursor-not-allowed opacity-70' : 'cursor-pointer')}
                   value={holder?.id ?? stored}
-                  disabled={busy === g.id}
+                  // A report already went out under this coach: moving the
+                  // game would put it under somebody else's name.
+                  disabled={busy === g.id || sent}
+                  title={sent ? t.gamesRcLocked : undefined}
                   onChange={(e) => void assign(g, e.target.value)}
                 >
                   <option value="">–</option>
                   {stored && <option value={stored} disabled>{g.assignedRc}</option>}
                   {people.map((p) => <option key={p.id} value={p.id}>{p.fullName}</option>)}
                 </select>
+                {sent && <span data-testid="rc-locked" className="text-xs text-stone-500">{t.gamesRcSent}</span>}
+                </>
                   );
                 })()}
                 {busy === g.id && <Loader2 size={14} className="animate-spin text-stone-400" />}

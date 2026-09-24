@@ -7249,6 +7249,15 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
       let rcId = '';
       // Nobody named on either half is the give-back.
       const givingBack = rcName === '' && requestedRcId === '';
+      // A report already sent on this game — completed, or awaiting the
+      // president's note — was sent by the coach who holds it. Moving the game
+      // then would put that report under somebody else's name, so nobody
+      // moves it, admin included (asked 2026-09-24).
+      const closed = await withCollection(collectionCandidates.games, (collection) =>
+        collection.getOne<AnyRecord>(gameId, { fields: 'feedback_closed_roles' }));
+      if (Array.isArray(closed.feedback_closed_roles) && closed.feedback_closed_roles.length > 0) {
+        return { status: 409, body: { error: 'Für dieses Spiel wurde bereits ein Bericht gesendet — der Referee Coach kann nicht mehr geändert werden.' } };
+      }
       if (rcAuth) {
         // Non-admin RCs may only take games for themselves, and only give back
         // games they currently hold. Admin sessions have no rcAuth and skip this.

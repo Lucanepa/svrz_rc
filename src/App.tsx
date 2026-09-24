@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy, type MutableRefObject } from 'react';
-import { Maximize2, Minimize2, UnfoldHorizontal, FoldHorizontal, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip } from 'lucide-react';
+import { Maximize2, Minimize2, UnfoldHorizontal, FoldHorizontal, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip, Menu } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 // About a megabyte of renderer, fetched the first time a coach opens a
 // document and never for anyone who does not.
@@ -1618,12 +1618,6 @@ export default function App() {
   // the unrestricted RC picker and may open any RC's detail. Plain RC sessions
   // act only as themselves (the server enforces this too).
   const isPrivileged = rcAuth.isAdminSession || adminAuthenticated;
-  // How many tabs the nav actually renders: Home drops out for a session with no
-  // dashboard, Referee Coaches for one with no admin rights. An odd count leaves
-  // the last tile alone on the second mobile row, so it takes the full width.
-  // Three tabs in a two-column grid on a phone leaves the last one alone on its
-  // row; it spans the width instead of sitting half-empty.
-  const oddTabOut = 'max-sm:col-span-2';
   // Identity that owns any outbox item created now — a queued submission is only
   // ever sent back under this same identity, never a different coach's.
   const outboxOwnerId = rcAuth.rcId || (isPrivileged ? 'admin' : 'anon');
@@ -1633,6 +1627,8 @@ export default function App() {
   // React only mirrors what it emits. Owner from a ref, so the flushes that
   // run on pagehide read the LIVE identity, never the one a render captured.
   const [padOpen, setPadOpen] = useState(false);
+  // The Options sheet behind the bottom nav (language, admin, calendar, log out, Load draft).
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const padOpenRef = useRef(false);
   padOpenRef.current = padOpen;
   const [padPages, setPadPages] = useState<NotebookPage[]>([]);
@@ -4149,6 +4145,7 @@ export default function App() {
       if (e.key !== 'Escape') return;
       // The notebook is the most transient layer of all: it opens over any screen.
       if (padOpen) { closeNotebook(); return; }
+      if (optionsOpen) { setOptionsOpen(false); return; }
       if (showConfirmModal !== null) { setShowConfirmModal(null); return; }
       if (sigModalOpen) { setSigModalOpen(false); return; }
       if (demoMailOpen) { setDemoMailOpen(false); return; }
@@ -4158,7 +4155,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [padOpen, closeNotebook, showConfirmModal, sigModalOpen, demoMailOpen, showCalendarModal, showEmptyFormModal, expandedCoacheeId]);
+  }, [padOpen, optionsOpen, closeNotebook, showConfirmModal, sigModalOpen, demoMailOpen, showCalendarModal, showEmptyFormModal, expandedCoacheeId]);
 
   // The sheet closes on any navigation under it — a Back that pops the URL, a
   // link, a game switch — or it would sit over a screen it was not opened on.
@@ -4962,6 +4959,8 @@ export default function App() {
   // Hidden for the console (the server refuses it anyway), for a session with no
   // identity, in the demo ("nothing is stored" must stay literally true) and for
   // an admin who is being sent to /admin.
+  // The list screens carry the bottom nav; the form and the other sub-views keep their Back button.
+  const bottomNav = feedbackSubView === 'coachees';
   const padLauncher = outboxOwnerId !== 'admin' && outboxOwnerId !== 'anon' && !isDemoMode() && !homelessAdmin;
   const tpPad = PAD_STRINGS[formData.lang] || PAD_STRINGS.DE;
   // A page not yet in IndexedDB, a write that failed, or a device that cannot
@@ -5834,7 +5833,214 @@ export default function App() {
   };
 
   return (
-    <div className={cn("min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0", padLauncher && "pb-24")}>
+    <div className={cn("min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0", padLauncher && "pb-24", bottomNav && (padLauncher ? "pb-44" : "pb-28"))}>
+      {/* Bottom navigation for the list screens. Everything that used to sit
+          between the title card and the greeting now lives here: the three
+          tabs as a thumb-reach bar, and the language / admin / calendar /
+          switch / log-out buttons plus Load draft behind Options. The root div
+          pads the page while it shows, and the Notizblock launcher rides above
+          it. z-40 like the launcher; the Options sheet is an overlay (z-50). */}
+      {bottomNav && (
+        <nav
+          aria-label={formData.lang === 'DE' ? 'Hauptnavigation' : 'Main navigation'}
+          className="no-print fixed inset-x-0 bottom-0 z-40 border-t border-stone-200 bg-white/95 backdrop-blur"
+          style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+        >
+          <div className={cn("mx-auto max-w-5xl grid gap-1.5 px-2 py-2", homelessAdmin ? "grid-cols-3" : "grid-cols-4")}>
+            {/* Hidden rather than left to bounce off the redirect: a tab that
+                answers a click by highlighting a different one is worse than
+                no tab. See homelessAdmin. */}
+            {!homelessAdmin && (
+              <button
+                onClick={() => setListTab('home')}
+                className={cn(
+                  "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1",
+                  listTab === 'home'
+                    ? "bg-slate-900 text-white"
+                    : "text-stone-600 hover:bg-stone-100"
+                )}
+              >
+                <Home size={20} />
+                {formData.lang === 'DE' ? 'Start' : 'Home'}
+              </button>
+            )}
+            <button
+              onClick={() => { setListTab('coachees'); setListSearch(''); setListPage(0); }}
+              className={cn(
+                "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1",
+                listTab === 'coachees'
+                  ? "bg-slate-900 text-white"
+                  : "text-stone-600 hover:bg-stone-100"
+              )}
+            >
+              <Users size={20} />
+              {t.coacheePool}
+            </button>
+            <button
+              onClick={() => { setListTab('games'); setListSearch(''); setListPage(0); }}
+              className={cn(
+                "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1",
+                listTab === 'games'
+                  ? "bg-slate-900 text-white"
+                  : "text-stone-600 hover:bg-stone-100"
+              )}
+            >
+              <CalendarDays size={20} />
+              {t.gamePool}
+            </button>
+            <button
+              onClick={() => setOptionsOpen((o) => !o)}
+              aria-haspopup="dialog"
+              aria-expanded={optionsOpen}
+              className={cn(
+                "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1",
+                optionsOpen ? "bg-stone-200 text-stone-900" : "text-stone-600 hover:bg-stone-100"
+              )}
+            >
+              <Menu size={20} />
+              {formData.lang === 'DE' ? 'Optionen' : 'Options'}
+            </button>
+          </div>
+        </nav>
+      )}
+      {bottomNav && optionsOpen && (
+        <div className="no-print fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true" aria-label={formData.lang === 'DE' ? 'Optionen' : 'Options'}>
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-hidden="true"
+            className="absolute inset-0 bg-slate-900/40"
+            onClick={() => setOptionsOpen(false)}
+          />
+          <div
+            className="relative w-full max-w-md rounded-t-2xl border border-stone-200 bg-white p-2 shadow-xl max-h-[80vh] overflow-y-auto"
+            style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom, 0px))' }}
+          >
+            <div className="flex items-center justify-between pl-4 pt-1">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-stone-400">{formData.lang === 'DE' ? 'Optionen' : 'Options'}</p>
+              <button
+                type="button"
+                onClick={() => setOptionsOpen(false)}
+                aria-label={formData.lang === 'DE' ? 'Schliessen' : 'Close'}
+                className="h-11 w-11 inline-flex items-center justify-center rounded-full text-stone-500 hover:bg-stone-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex flex-col">
+              {/* First: loading a draft is how an observation started on a
+                  dead phone gets finished — the one a coach reaches for
+                  mid-season. The input hides behind the label because the
+                  native control renders in the BROWSER's language. */}
+              <label className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer">
+                <Upload size={18} />
+                <span>{t.draftImport}</span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  className="sr-only"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    // Cleared before the read, so picking the SAME file twice
+                    // still fires change — otherwise a failed import cannot be
+                    // retried without choosing something else first.
+                    e.target.value = '';
+                    setOptionsOpen(false);
+                    if (f) void handleImportDraftFile(f);
+                  }}
+                />
+              </label>
+              <button
+                onClick={toggleLang}
+                className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
+                title={t.languageToggleTitle}
+              >
+                <Languages size={18} />
+                <span className="flex-1 text-left">{formData.lang === 'DE' ? 'Sprache' : 'Language'}</span>
+                <span className="text-xs font-semibold text-stone-500">{formData.lang}</span>
+              </button>
+              {(isPrivileged || rcAuth.adminShortcut) && (
+              <button
+                onClick={() => { setOptionsOpen(false); window.location.assign('/admin'); }}
+                className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
+                // The label is hidden below sm, which left an icon with no
+                // accessible name on every phone — the same trap the console's
+                // tab bar already names itself out of. `title` is not a
+                // substitute: it is a sentence, and it changes with language.
+                aria-label="Admin"
+                title={isPrivileged
+                  ? 'Admin'
+                  : (formData.lang === 'DE' ? 'Admin-Bereich — Anmeldung erforderlich' : 'Admin area — sign-in required')}
+              >
+                {isPrivileged ? <ShieldAlert size={18} /> : <Lock size={18} />}
+                <span>Admin</span>
+              </button>
+              )}
+              {rcAuth.rcName && !isDemoMode() && (
+                <button
+                  onClick={() => { setOptionsOpen(false); setShowCalendarModal(true); }}
+                  className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
+                  title={formData.lang === 'DE' ? 'Kalender-Abo' : 'Calendar subscription'}
+                >
+                  <CalendarPlus size={18} />
+                  <span>{formData.lang === 'DE' ? 'Kalender-Abo' : 'Calendar subscription'}</span>
+                </button>
+              )}
+              {rcAuth.rcName && rcAuth.sharedSession && (
+                <button
+                  onClick={() => { void (async () => {
+                    // Ask BEFORE the hand-off, not after: an item queued under
+                    // the outgoing coach can only ever be sent as that coach,
+                    // so switching now is what strands it.
+                    if (outboxPending > 0) {
+                      const de = formData.lang === 'DE';
+                      const ok = await confirmDialog({
+                        title: de ? 'Trotzdem wechseln?' : 'Switch anyway?',
+                        // An unfinished draft is NOT a reason to block a
+                        // hand-off — nothing is stranded, it simply waits for
+                        // its author. Saying so stops the queued-item warning
+                        // from reading as "you are about to lose everything".
+                        message: (de
+                          ? `${outboxPending} Feedback wartet noch auf Übermittlung und kann nur von ${rcAuth.rcName} gesendet werden.`
+                          : `${outboxPending} feedback submission is still waiting to send and can only be sent by ${rcAuth.rcName}.`)
+                          + (drafts.some((d) => d.status === 'editing')
+                            ? (de
+                              ? ` Deine unfertige Beobachtung bleibt gespeichert und ist wieder da, wenn du dich als ${rcAuth.rcName} anmeldest.`
+                              : ` Your unfinished observation stays saved and comes back when you sign in as ${rcAuth.rcName}.`)
+                            : ''),
+                        confirmLabel: de ? 'Wechseln' : 'Switch',
+                        cancelLabel: de ? 'Abbrechen' : 'Cancel',
+                        tone: 'danger',
+                        lang: formData.lang,
+                      });
+                      if (!ok) return;
+                    }
+                    setOptionsOpen(false);
+                    rcAuth.switchRc();
+                  })(); }}
+                  className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
+                  title={formData.lang === 'DE' ? `Angemeldet als ${rcAuth.rcName} — wechseln` : `Signed in as ${rcAuth.rcName} — switch`}
+                >
+                  <Users size={18} />
+                  <span className="min-w-0 truncate">{formData.lang === 'DE' ? `${rcAuth.rcName} — wechseln` : `${rcAuth.rcName} — switch`}</span>
+                </button>
+              )}
+              {(rcAuth.rcName || isPrivileged) && (
+                <button
+                  onClick={rcAuth.logout}
+                  className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
+                  title={rcAuth.rcName
+                    ? (formData.lang === 'DE' ? `Abmelden (${rcAuth.rcName})` : `Log out (${rcAuth.rcName})`)
+                    : (formData.lang === 'DE' ? 'Abmelden' : 'Log out')}
+                >
+                  <LogOut size={18} />
+                  <span className="min-w-0 truncate">{formData.lang === 'DE' ? 'Abmelden' : 'Log out'}</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {/* The Notizblock launcher: floating, on every screen the coach can be on.
           z-40 sits under every overlay (z-50) and the toasts (z-60); the extra
           bottom padding on the page above keeps the red Senden block able to
@@ -5848,7 +6054,9 @@ export default function App() {
           title={tpPad.padLaunch}
           data-testid="pad-launcher"
           className="no-print fixed z-40 right-4 sm:right-6 h-14 w-14 sm:h-12 sm:w-auto sm:px-4 rounded-full bg-slate-900 text-white shadow-lg hover:bg-slate-800 active:scale-95 transition flex items-center justify-center gap-2"
-          style={{ bottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))' }}
+          style={{ bottom: bottomNav
+            ? 'calc(5.5rem + env(safe-area-inset-bottom, 0px))'
+            : 'calc(1rem + env(safe-area-inset-bottom, 0px))' }}
         >
           <NotebookPen size={22} />
           <span className="hidden sm:inline text-sm font-semibold">{tpPad.padTitle}</span>
@@ -6279,7 +6487,6 @@ export default function App() {
               </div>
               );
             })()}
-            {/* Top row: language toggle + empty form download */}
             {isOffline && (
               <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
                 <CloudOff size={14} className="shrink-0" />
@@ -6350,205 +6557,6 @@ export default function App() {
                 </div>
               </div>
             )}
-            <div className="mb-3 space-y-2 sm:space-y-0 sm:flex sm:items-center sm:gap-2">
-              {/* Wraps rather than overflows: with Admin, season, calendar and
-                  the logout name all present, this row runs out of phone. */}
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={toggleLang}
-                  className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
-                  title={t.languageToggleTitle}
-                >
-                  <Languages size={14} />
-                  <span>{formData.lang}</span>
-                </button>
-                {/* Shown to the people who actually use the console, not to
-                    all fourteen coaches. It briefly appeared for everyone —
-                    admin rights used to come from an RC's own login, so when
-                    that login went the door vanished and #/admin had to be
-                    typed by hand; putting it back for everybody fixed that and
-                    left most of the team a locked door they can't open.
-
-                    `adminShortcut` is COSMETIC and has to stay that way. It is
-                    true for a console session, or when the name picked on this
-                    device is on a list an admin keeps. That name was chosen off
-                    a picker, never proven, so anyone with the team password can
-                    make it true by picking differently — which costs them a
-                    button and nothing else, because the page behind it asks for
-                    the admin password regardless. Do not read it as a
-                    permission; the last flag here that looked like one was
-                    honoured as one. */}
-                {(isPrivileged || rcAuth.adminShortcut) && (
-                <button
-                  onClick={() => { window.location.assign('/admin'); }}
-                  className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
-                  // The label is hidden below sm, which left an icon with no
-                  // accessible name on every phone — the same trap the console's
-                  // tab bar already names itself out of. `title` is not a
-                  // substitute: it is a sentence, and it changes with language.
-                  aria-label="Admin"
-                  title={isPrivileged
-                    ? 'Admin'
-                    : (formData.lang === 'DE' ? 'Admin-Bereich — Anmeldung erforderlich' : 'Admin area — sign-in required')}
-                >
-                  {isPrivileged ? <ShieldAlert size={14} /> : <Lock size={14} />}
-                  <span className="hidden sm:inline">Admin</span>
-                </button>
-                )}
-                {/* No (i) button and no season pill here any more. The button
-                    opened a modal listing the same documents as the "Nützliche
-                    Infos & Dokumente" card further down the page, and the
-                    season — set once in the admin console, followed by
-                    everyone — reads as part of the greeting on Home rather
-                    than as a control that does nothing when tapped. */}
-                {/* The feed is per RC and served by the API, so it needs a real
-                    session — the demo has neither. */}
-                {rcAuth.rcName && !isDemoMode() && (
-                  <button
-                    onClick={() => setShowCalendarModal(true)}
-                    className="h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
-                    title={formData.lang === 'DE' ? 'Kalender-Abo' : 'Calendar subscription'}
-                  >
-                    <CalendarPlus size={14} />
-                    <span className="hidden sm:inline">{formData.lang === 'DE' ? 'Kalender' : 'Calendar'}</span>
-                  </button>
-                )}
-                {/* On the team login the name is a claim, so it has to stay
-                    changeable in the app: whoever picked wrong — or is handing
-                    the tablet to the next coach — must not need the password
-                    again. The name doubles as that button; a personal session
-                    can't switch, so there it just labels the logout. */}
-                {rcAuth.rcName && rcAuth.sharedSession && (
-                  <button
-                    onClick={() => { void (async () => {
-                      // Ask BEFORE the hand-off, not after: an item queued under
-                      // the outgoing coach can only ever be sent as that coach,
-                      // so switching now is what strands it.
-                      if (outboxPending > 0) {
-                        const de = formData.lang === 'DE';
-                        const ok = await confirmDialog({
-                          title: de ? 'Trotzdem wechseln?' : 'Switch anyway?',
-                          // An unfinished draft is NOT a reason to block a
-                          // hand-off — nothing is stranded, it simply waits for
-                          // its author. Saying so stops the queued-item warning
-                          // from reading as "you are about to lose everything".
-                          message: (de
-                            ? `${outboxPending} Feedback wartet noch auf Übermittlung und kann nur von ${rcAuth.rcName} gesendet werden.`
-                            : `${outboxPending} feedback submission is still waiting to send and can only be sent by ${rcAuth.rcName}.`)
-                            + (drafts.some((d) => d.status === 'editing')
-                              ? (de
-                                ? ` Deine unfertige Beobachtung bleibt gespeichert und ist wieder da, wenn du dich als ${rcAuth.rcName} anmeldest.`
-                                : ` Your unfinished observation stays saved and comes back when you sign in as ${rcAuth.rcName}.`)
-                              : ''),
-                          confirmLabel: de ? 'Wechseln' : 'Switch',
-                          cancelLabel: de ? 'Abbrechen' : 'Cancel',
-                          tone: 'danger',
-                          lang: formData.lang,
-                        });
-                        if (!ok) return;
-                      }
-                      rcAuth.switchRc();
-                    })(); }}
-                    className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
-                    title={formData.lang === 'DE' ? `Angemeldet als ${rcAuth.rcName} — wechseln` : `Signed in as ${rcAuth.rcName} — switch`}
-                  >
-                    <Users size={14} />
-                    <span className="hidden sm:inline max-w-[9rem] truncate">{rcAuth.rcName}</span>
-                  </button>
-                )}
-                {/* Also for a session with no RC name — the admin console
-                    login is one. Gating this on the name left that session with
-                    no way out of the app at all: the only exit was typing
-                    #/admin and signing out from the console instead. */}
-                {(rcAuth.rcName || isPrivileged) && (
-                  <button
-                    onClick={rcAuth.logout}
-                    className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors"
-                    title={rcAuth.rcName
-                      ? (formData.lang === 'DE' ? `Abmelden (${rcAuth.rcName})` : `Log out (${rcAuth.rcName})`)
-                      : (formData.lang === 'DE' ? 'Abmelden' : 'Log out')}
-                  >
-                    <LogOut size={14} />
-                    {!rcAuth.sharedSession && (
-                      <span className="hidden sm:inline max-w-[9rem] truncate">
-                        {rcAuth.rcName ?? (formData.lang === 'DE' ? 'Abmelden' : 'Log out')}
-                      </span>
-                    )}
-                  </button>
-                )}
-              </div>
-              {/* The wide slot goes to the thing a coach reaches for mid-season.
-                  The empty form is a once-a-year download and now sits with the
-                  other documents; loading a draft is how an observation started
-                  on a dead phone gets finished, so it is the one that earns the
-                  room. Rendered whether or not this device holds a draft —
-                  loading a file onto a FRESH device is the entire point.
-                  The input hides behind the label because the native control
-                  renders in the BROWSER's language, not the app's. */}
-              <label className="w-full sm:w-auto sm:ml-auto h-9 inline-flex items-center justify-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-stone-50 text-stone-600 hover:bg-stone-100 transition-colors cursor-pointer">
-                <Upload size={14} />
-                <span>{t.draftImport}</span>
-                <input
-                  type="file"
-                  accept=".json,application/json"
-                  className="sr-only"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    // Cleared before the read, so picking the SAME file twice
-                    // still fires change — otherwise a failed import cannot be
-                    // retried without choosing something else first.
-                    e.target.value = '';
-                    if (f) void handleImportDraftFile(f);
-                  }}
-                />
-              </label>
-            </div>
-            {/* Toggle tabs */}
-            <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {/* Hidden rather than left to bounce off the redirect: a tab that
-                  answers a click by highlighting a different one is worse than
-                  no tab. See homelessAdmin. */}
-              {!homelessAdmin && (
-                <button
-                  onClick={() => setListTab('home')}
-                  className={cn(
-                    "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center gap-1.5",
-                    listTab === 'home'
-                      ? "bg-slate-900 text-white"
-                      : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                  )}
-                >
-                  <Home size={16} />
-                  {formData.lang === 'DE' ? 'Start' : 'Home'}
-                </button>
-              )}
-              <button
-                onClick={() => { setListTab('coachees'); setListSearch(''); setListPage(0); }}
-                className={cn(
-                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center gap-1.5",
-                  listTab === 'coachees'
-                    ? "bg-slate-900 text-white"
-                    : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                )}
-              >
-                <Users size={16} />
-                {t.coacheePool}
-              </button>
-              <button
-                onClick={() => { setListTab('games'); setListSearch(''); setListPage(0); }}
-                className={cn(
-                  "h-14 w-full px-3 text-sm font-medium rounded-xl transition-colors flex items-center justify-center text-center gap-1.5",
-                  oddTabOut,
-                  listTab === 'games'
-                    ? "bg-slate-900 text-white"
-                    : "bg-stone-100 text-stone-600 hover:bg-stone-200"
-                )}
-              >
-                <CalendarDays size={16} />
-                {t.gamePool}
-              </button>
-            </div>
-
             {/* Home dashboard */}
             {listTab === 'home' && (() => {
               const de = formData.lang === 'DE';
@@ -9146,15 +9154,13 @@ export default function App() {
           </div>
           <div className="p-3">
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.secondVisit}</h4><InfoHint id="secondVisit" lang={formData.lang} className="ml-1 mb-1" />
-            {/* A Y names the role the next visit should watch — only the ones
-                the Niveau table allows this referee, so an N4 is offered
-                1. SR alone. A level the table cannot place keeps a plain Y,
-                and so does an older report filed with one. */}
+            {/* A plain Y always stands first: "needs another visit", no role
+                named. The role-specific Ys follow — only the ones the Niveau
+                table allows this referee, so an N4 is offered 1. SR alone. */}
             {(() => {
               const roles = visitRolesFor(formData.meta.srNiveau, niveauTable);
               const r = formData.results;
-              const yesRoles: Array<'1SR' | '2SR' | ''> = roles.length ? [...roles] : [''];
-              if (roles.length && r.secondBesuch === 'Y' && !r.secondBesuchRole) yesRoles.unshift('');
+              const yesRoles: Array<'1SR' | '2SR' | ''> = ['', ...roles];
               const pick = (value: 'Y' | 'N', role: '1SR' | '2SR' | '') => setFormData(prev => {
                 const same = prev.results.secondBesuch === value && (prev.results.secondBesuchRole || '') === role;
                 return { ...prev, results: { ...prev.results, secondBesuch: same ? '' : value, secondBesuchRole: same ? '' : role } };

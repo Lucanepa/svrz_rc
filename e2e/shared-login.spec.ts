@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp, RC } from './support/app';
+import { stubSignedInApp, openOptions, RC } from './support/app';
 
 /**
  * The team login and the picker behind it.
@@ -75,6 +75,7 @@ test.describe('Team login', () => {
 
     await expect(page.locator('h1')).toContainText('Coaching Feedback');
     // The app came up as the name that was picked, not merely as "signed in".
+    await openOptions(page);
     await expect(page.getByTitle(new RegExp(`${RC.name} — (wechseln|switch)`))).toBeVisible();
   });
 
@@ -127,6 +128,7 @@ test.describe('Team login', () => {
     await page.goto('/');
     await expect(page.locator('h1')).toContainText('Coaching Feedback');
 
+    await openOptions(page);
     await page.getByTitle(new RegExp(`${RC.name} — (wechseln|switch)`)).click();
 
     await expect(page.getByRole('heading', { name: /Wer bist du\?|Who are you\?/ })).toBeVisible();

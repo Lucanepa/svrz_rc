@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp, COACHEE, COACHEE_LISTED } from './support/app';
+import { stubSignedInApp, openOptions, COACHEE, COACHEE_LISTED } from './support/app';
 
 // These tests only run in the mobile-chrome project (Pixel 5 viewport). They
 // sign in first: the app is behind a login, so without one they were asserting
@@ -7,15 +7,23 @@ import { stubSignedInApp, COACHEE, COACHEE_LISTED } from './support/app';
 test.describe('Mobile layout', () => {
   test.beforeEach(async ({ page }) => { await stubSignedInApp(page); });
 
-  test('toolbar buttons hide text labels on mobile', async ({ page, isMobile }) => {
+  test('the tabs sit in a bottom nav and the rest behind Options', async ({ page, isMobile }) => {
     test.skip(!isMobile, 'Mobile viewport only');
     await page.goto('/');
 
-    // The sign-out button carries the coach's name beside its icon on a wide
-    // screen and drops to the icon alone here — the button stays, the label goes.
-    const signOut = page.getByRole('button', { name: /Abmelden|Log out/ });
-    await expect(signOut).toBeVisible();
-    await expect(signOut.getByText('Anna Muster')).toBeHidden();
+    const nav = page.getByRole('navigation', { name: /Main navigation|Hauptnavigation/ });
+    for (const name of [/^(Home|Start)$/, /^Coachees$/, /^(Games|Spiele)$/, /^(Options|Optionen)$/]) {
+      await expect(nav.getByRole('button', { name })).toBeVisible();
+    }
+    // Pinned to the bottom of the viewport, not scrolled away with the page.
+    const box = await nav.boundingBox();
+    const vh = page.viewportSize()!.height;
+    expect(Math.round(box!.y + box!.height)).toBeGreaterThanOrEqual(vh - 1);
+
+    await expect(page.getByRole('button', { name: /Abmelden|Log out/ })).toHaveCount(0);
+    await openOptions(page);
+    await expect(page.getByRole('button', { name: /Abmelden|Log out/ })).toBeVisible();
+    await expect(page.getByText(/Load draft|Entwurf laden/)).toBeVisible();
   });
 
   test('the coachees list stays within the mobile viewport', async ({ page, isMobile }) => {

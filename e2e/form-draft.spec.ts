@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { stubSignedInApp, openFeedbackForm, ratingControl, fillWholeForm, signOpenPad, RC, COACHEE, GAME } from './support/app';
+import { stubSignedInApp, openFeedbackForm, ratingControl, fillWholeForm, signOpenPad, openOptions, RC, COACHEE, GAME } from './support/app';
 
 /**
  * An unfinished observation, and the three ways it is allowed to survive: the
@@ -246,6 +246,7 @@ function draftFile(over: Record<string, unknown> = {}): Record<string, unknown> 
 }
 
 async function pickDraftFile(page: Page, contents: Record<string, unknown>): Promise<void> {
+  await openOptions(page);
   await page.getByLabel(/Load draft|Entwurf laden/).setInputFiles({
     name: 'SVRZ draft.json',
     mimeType: 'application/json',

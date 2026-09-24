@@ -304,6 +304,13 @@ export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promi
 }
 
 /** Games tab → reveal held games → expand the fixture → open its feedback form. */
+/** Opens the Options sheet behind the bottom nav — language, admin, calendar,
+ *  switch, log out and Load draft all live there. */
+export async function openOptions(page: Page): Promise<void> {
+  await page.getByRole('button', { name: /^(Options|Optionen)$/ }).click();
+  await page.getByRole('dialog', { name: /^(Options|Optionen)$/ }).waitFor();
+}
+
 export async function openFeedbackForm(page: Page): Promise<void> {
   await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
   // Games already held by a coach live behind this filter.

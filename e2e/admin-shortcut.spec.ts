@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp } from './support/app';
+import { stubSignedInApp, openOptions } from './support/app';
 
 /**
- * The /admin shortcut in the coach toolbar.
+ * The /admin shortcut in the coach's Options sheet.
  *
  * It is DISPLAY ONLY. The name on an app session is picked off a list, never
  * proven, so anyone holding the team credential can make the flag true by
@@ -18,12 +18,14 @@ test('an ordinary coach is not shown a door they cannot open', async ({ page }) 
   await stubSignedInApp(page);
   await page.goto('/');
   await expect(page.locator('h1')).toContainText('Coaching Feedback');
+  await openOptions(page);
   await expect(adminButton(page)).toHaveCount(0);
 });
 
 test('the shortcut is cosmetic: it opens the console login, not the console', async ({ page }) => {
   await stubSignedInApp(page, { adminShortcut: true });
   await page.goto('/');
+  await openOptions(page);
   await expect(adminButton(page)).toBeVisible();
 
   await adminButton(page).click();
@@ -37,5 +39,6 @@ test('the shortcut is cosmetic: it opens the console login, not the console', as
 test('a real console session sees it too, without the flag', async ({ page }) => {
   await stubSignedInApp(page, { admin: true });
   await page.goto('/');
+  await openOptions(page);
   await expect(adminButton(page)).toBeVisible();
 });

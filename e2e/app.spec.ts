@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp } from './support/app';
+import { stubSignedInApp, openOptions } from './support/app';
 
 // These asserted against an app that rendered straight away. It has sat behind
 // a login for a while now, so every one of them was really asserting things
@@ -31,8 +31,9 @@ test.describe('Language toggle', () => {
   test('toggles between DE and EN', async ({ page }) => {
     const title = page.locator('h1');
     const before = await title.innerText();
-    // The button offers the other language, so its name flips with the app.
-    await page.getByRole('button', { name: /^(DE|EN)$/ }).click();
+    // The toggle lives in the Options sheet behind the bottom nav.
+    await openOptions(page);
+    await page.getByRole('button', { name: /^(Sprache|Language)\s*(DE|EN)$/ }).click();
     await expect(title).not.toHaveText(before);
   });
 });

@@ -19,8 +19,11 @@ export type InfoHintId =
   | 'niveau'
   | 'group'
   | 'goal'
-  | 'srGame';
+  | 'srGame'
+  | 'pdfButtons';
 
+/** `ref` is the Infoschreiben section quoted; '' for a hint about the app
+ *  itself, which quotes nothing. */
 export type InfoHint = { ref: string; DE: string; EN: string };
 
 export const INFO_HINTS: Record<InfoHintId, InfoHint> = {
@@ -97,5 +100,14 @@ export const INFO_HINTS: Record<InfoHintId, InfoHint> = {
     ref: '4.4.10',
     DE: 'Pfeift ein RC mit einem Schiedsrichter von der Liste zusammen, wird für diesen kein Feedbackformular ausgefüllt. Stattdessen erfasst der RC hier eine kurze Rückmeldung. Sie geht nur ans RC-Präsidium und zählt nicht ans Saisonziel.',
     EN: 'When a coach is on the whistle next to a referee from the list, no feedback form is filled in for that referee. The coach writes a short note here instead. It goes to the RC chair alone and does not count toward the season target.',
+  },
+  pdfButtons: {
+    ref: '',
+    DE: '«Gesendetes PDF» ist genau die Datei, die der Schiedsrichter beim Senden per Mail bekommen hat — sie ändert sich nie mehr.\n\n'
+      + '«PDF herunterladen» erstellt jedes Mal eine neue Kopie aus dem gespeicherten Bericht, im aktuellen Layout der App. Inhalt, Bewertungen und Unterschriften sind dieselben; das Aussehen kann bei älteren Berichten abweichen.\n\n'
+      + 'Was hat der Schiedsrichter erhalten? → «Gesendetes PDF».',
+    EN: '"Sent PDF" is exactly the file the referee received by e-mail when the report was sent — it never changes.\n\n'
+      + '"Download PDF" builds a fresh copy from the saved report each time, in the app\'s current layout. Content, ratings and signatures are the same; the look can differ on older reports.\n\n'
+      + 'What did the referee get? → "Sent PDF".',
   },
 };

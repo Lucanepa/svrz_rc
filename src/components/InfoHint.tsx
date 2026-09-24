@@ -59,7 +59,7 @@ export default function InfoHint({ id, lang, className }: { id: InfoHintId; lang
         >
           <span className="flex items-start justify-between gap-2 mb-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-sky-700">
-              {lang === 'DE' ? 'Infoschreiben' : 'RC information sheet'} {hint.ref}
+              {hint.ref ? `${lang === 'DE' ? 'Infoschreiben' : 'RC information sheet'} ${hint.ref}` : (lang === 'DE' ? 'Erklärung' : 'Explanation')}
             </span>
             <button
               type="button"

@@ -171,3 +171,15 @@ test('saving the note moves the report out of "Awaiting completion" without a re
   await expect(page.getByRole('heading', { name: /Erledigte Beobachtungen|Completed observations/ })).toBeVisible();
   await expect(awaiting).toHaveCount(0);
 });
+
+test('an (i) beside the two PDF buttons says which one the referee got', async ({ page }) => {
+  await stub(page, { signedInAs: RC.name });
+  await openFiledObservation(page);
+
+  const info = page.getByTestId('sent-pdf').locator('xpath=following-sibling::span[1]').getByRole('button', { name: /Erklärung anzeigen|Show explanation/ });
+  await info.click();
+  const dialog = page.getByRole('dialog', { name: /Erklärung anzeigen|Show explanation/ });
+  await expect(dialog).toContainText(/Gesendetes PDF|Sent PDF/);
+  // An app hint quotes no section of the Infoschreiben.
+  await expect(dialog).not.toContainText(/Infoschreiben|RC information sheet/);
+});

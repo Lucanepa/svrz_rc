@@ -6220,6 +6220,11 @@ export default function App() {
             <span className="hidden sm:inline">{t.sentPdf}</span>
           </button>
         )}
+        {/* Two PDF buttons side by side read as the same thing twice; the (i)
+            says which one the referee actually got. */}
+        {openFeedbackId && !isDemoMode() && (
+          <InfoHint id="pdfButtons" lang={formData.lang} className="self-center" />
+        )}
         {/* The PDF is the document; this is the work. A PDF can be read but not
             loaded back, so a coach who wants to carry an unfinished observation
             to another device needs a file the app can re-open. */}

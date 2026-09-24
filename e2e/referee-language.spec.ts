@@ -36,6 +36,10 @@ async function sendAndCapture(page: Page): Promise<Record<string, unknown>> {
   return posted[0];
 }
 
+// Each test fills the whole form, builds the PDF and sends it: more than the
+// default 30 s on a CI runner, like the other full-send specs.
+test.slow();
+
 test.beforeEach(async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');

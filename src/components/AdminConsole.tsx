@@ -5391,10 +5391,11 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
     if (!inSeasonOrManual(g, season)) return false;
     if (unassignedOnly && g.assignedRc) return false;
     // Handing out and flagging are about games still to come, so a played
-    // game is off the list unless asked for — but a search looks through all
-    // of them: a typed match number is a question about THAT game, wherever
+    // game is off the list unless asked for — searching included, or the
+    // button did nothing while a name was typed (reported 2026-09-24). The one
+    // exception is a typed match number: a question about THAT game, wherever
     // it is. The Zürich day, so tonight's game stays listed until midnight.
-    if (!showPast && !needle && dayKey(g.date) < today) return false;
+    if (!showPast && dayKey(g.date) < today && !(needle && g.matchNo === q.trim())) return false;
     if (!needle) return true;
     // Accent-blind, like every other name match: "muller" finds "Müller".
     return [g.matchNo, g.league, g.location, g.homeTeam, g.awayTeam, g.firstReferee, g.secondReferee, g.assignedRc]

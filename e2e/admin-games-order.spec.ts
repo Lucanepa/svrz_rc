@@ -43,6 +43,13 @@ test('the list runs from the next game forward, and a played game is behind a to
   // found without the toggle.
   await page.getByPlaceholder(/Liga oder Halle|league or venue/).fill('4001');
   await expect(rows(page)).toHaveText(['#4001']);
+
+  // Any other search keeps to the toggle: typing a name used to show the
+  // played games too, and the button then changed nothing.
+  await page.getByPlaceholder(/Liga oder Halle|league or venue/).fill('400');
+  await expect(rows(page)).toHaveText(['#4000', '#4002', '#4003', '#4004']);
+  await page.getByRole('button', { name: /Auch vergangene|Include past/ }).click();
+  await expect(rows(page)).toHaveText(['#4001', '#4000', '#4002', '#4003', '#4004']);
 });
 
 test('the rest of the season is a click away, not a search away', async ({ page }) => {

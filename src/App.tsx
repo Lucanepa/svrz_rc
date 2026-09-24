@@ -5840,7 +5840,7 @@ export default function App() {
   };
 
   return (
-    <div className={cn("min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0", padLauncher && "pb-24", bottomNav && (padLauncher ? "pb-44" : "pb-28"))}>
+    <div className={cn("min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0", padLauncher && "pb-24", bottomNav && (padLauncher ? "pb-44" : "pb-28"), bottomNav && "pt-3 sm:pt-6")}>
       {/* Bottom navigation for the list screens. Everything that used to sit
           between the title card and the greeting now lives here: the three
           tabs as a thumb-reach bar, and the language / admin / calendar /
@@ -6188,7 +6188,9 @@ export default function App() {
         </div>
       )}
       {/* UI Controls */}
-      <div className={cn(sheetWidth, 'mx-auto mb-6 flex flex-wrap gap-3 no-print')}>
+      {/* Empty on the list screens (everything in it is for the form), and
+          an empty row still cost its 24px margin at the top of the page. */}
+      <div className={cn(sheetWidth, 'mx-auto mb-6 flex flex-wrap gap-3 no-print', feedbackSubView === 'coachees' && 'hidden')}>
         {feedbackSubView !== 'coachees' && (
           <>
         <button

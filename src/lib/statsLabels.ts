@@ -311,12 +311,11 @@ export function categoryLabel(key: string, lang: Lang): string {
   const de = lang === 'DE';
   if (key === 'H') return de ? 'Herren' : 'Men';
   if (key === 'D') return de ? 'Damen' : 'Women';
-  if (key === 'J') return 'U23';
   return de ? 'Übrige (Cup, Nachwuchs)' : 'Other (cup, youth)';
 }
 export function divisionLabel(key: string, lang: Lang): string {
-  if (key === 'NL') return lang === 'DE' ? 'Nationalliga' : 'National league';
-  if (/^[1-5]$/.test(key)) return lang === 'DE' ? `${key}. Liga` : `${key}. league`;
+  if (key === 'NL') return 'NL';
+  if (/^[1-5]$/.test(key)) return `${key}L`;
   return lang === 'DE' ? 'Übrige' : 'Other';
 }
 export function groupKeyLabel(key: string, lang: Lang): string {

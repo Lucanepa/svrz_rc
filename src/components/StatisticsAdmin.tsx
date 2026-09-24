@@ -441,11 +441,11 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               <Block span="lg:col-span-4" title={t.perLeague} hint={t.observations} testId="stats-leagues">
                 <BarList rows={stats.byLeague.slice(0, 10).map((b) => ({ key: b.key || '-', label: b.label || '–', value: b.observations }))} />
                 <div className="mt-4">
-                  <SubHead>{categoryLabel('H', lang)} · {categoryLabel('D', lang)} · U23</SubHead>
+                  <SubHead>{categoryLabel('H', lang)} · {categoryLabel('D', lang)}</SubHead>
                   <BarList rows={stats.byCategory.map((b) => ({ key: b.key || '-', label: categoryLabel(b.key, lang), value: b.observations }))} />
                 </div>
                 <div className="mt-4">
-                  <SubHead>{divisionLabel('NL', lang)} … {divisionLabel('5', lang)}</SubHead>
+                  <SubHead>{lang === 'DE' ? 'Liga' : 'League'}</SubHead>
                   <BarList rows={stats.byDivision.map((b) => ({ key: b.key || '-', label: divisionLabel(b.key, lang), value: b.observations }))} />
                 </div>
               </Block>

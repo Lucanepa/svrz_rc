@@ -241,3 +241,14 @@ test('words: whitespace-split, markup-free', () => {
   expect(countWords('  Sehr gute\nLeistung  ')).toBe(3);
   expect(countWords('')).toBe(0);
 });
+
+test('a U23 game counts under its gender — DU23 women, HU23 men — and the league by its number', () => {
+  const leagues = ['DU23 3. Liga', 'HU23 2. Liga', '5L ♀ B', 'U23'];
+  const stats = computeStatistics({
+    season: 2025, filters: {}, now: new Date(), rcs: RCS, roster: ROSTER,
+    observations: leagues.map((league, i) => obs({ id: `o-${i}`, gameId: `g-${i}`, league })),
+  });
+  // A bare "U23" names no gender: Other, never a third kind of its own.
+  expect(stats.byCategory.map((b) => [b.key, b.observations])).toEqual([['H', 1], ['D', 2], ['', 1]]);
+  expect(stats.byDivision.map((b) => [b.key, b.observations])).toEqual([['2', 1], ['3', 1], ['5', 1], ['', 1]]);
+});

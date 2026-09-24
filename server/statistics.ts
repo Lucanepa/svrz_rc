@@ -278,7 +278,16 @@ const inOrder = (list: string[]) => (a: StatBucket, b: StatBucket) => {
 const STUFE_ORDER = ['N1', 'N2-1', 'N2-2', 'N3-1', 'N3-2', 'N3-3', 'N4-1', 'N4-2', 'N4-3'];
 const LEVEL_ORDER = ['N1', 'N2', 'N3', 'N4'];
 const DIVISION_ORDER = ['NL', '1', '2', '3', '4', '5', ''];
-const CATEGORY_ORDER = ['H', 'D', 'J', ''];
+const CATEGORY_ORDER = ['H', 'D', ''];
+/** Men or women for the Statistik. A U23 game is a men's or a women's game
+ *  like any other — the prefix says which (HU23/MU23 men, DU23 women) — so it
+ *  is counted under its gender, not as a third kind. A bare "U23" that names
+ *  no gender falls under Other. */
+function genderOf(league: string): string {
+  const p = parseLeague(league);
+  if (p.category === 'J') return p.juniorColumn === 'JH' ? 'H' : p.juniorColumn === 'JD' ? 'D' : '';
+  return p.category;
+}
 
 function median(values: number[]): number | null {
   if (values.length === 0) return null;
@@ -545,7 +554,7 @@ export function computeStatistics(input: StatisticsInput): SeasonStatisticsCore 
     byLevel: bucketize(observations, (o) => [niveauOf(o.level)], (k) => k, inOrder(LEVEL_ORDER)),
     byStufe: bucketize(observations, (o) => [o.level], (k) => k, inOrder(STUFE_ORDER)),
     byLeague: bucketize(observations, (o) => [o.league], (k) => k, byCount),
-    byCategory: bucketize(observations, (o) => [parseLeague(o.league).category], (k) => k, inOrder(CATEGORY_ORDER)),
+    byCategory: bucketize(observations, (o) => [genderOf(o.league)], (k) => k, inOrder(CATEGORY_ORDER)),
     byDivision: bucketize(observations, (o) => [parseLeague(o.league).division], (k) => k, inOrder(DIVISION_ORDER)),
     byWeekday: bucketize(observations, (o) => [weekdayOf(o.gameDate)].filter(Boolean), (k) => k, byKey),
     byHour: bucketize(observations, (o) => [hourOf(o.gameDate)].filter(Boolean), (k) => k, byKey),

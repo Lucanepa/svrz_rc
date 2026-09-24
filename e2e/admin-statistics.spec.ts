@@ -2,11 +2,21 @@ import { test, expect, type Page } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
 import { statsResponse } from './support/statsFixture';
 import { buildDeck } from '../src/lib/statsDeck';
+import { rcFirstNamer } from '../src/lib/statistics';
 
 // Admin → Statistik: the tab reads one aggregated response per season and
 // filter slice, shows it as tiles, charts and tables, and exports the same
 // numbers as a deck. The server's counting rules have their own spec
 // (statistics-rules.spec.ts); this one is about the page.
+
+// The RC records the page names coaches from — first names only.
+async function stubRcPeople(page: Page) {
+  await page.route('**/api/admin/rc-people*', (r) => r.fulfill({ json: [
+    { id: 'rc-anna', first_name: 'Anna', last_name: 'Amsler' },
+    { id: 'rc-beat', first_name: 'Beat', last_name: 'Brunner' },
+    { id: 'rc-cla', first_name: 'Claudia', last_name: 'Casanova' },
+  ] }));
+}
 
 async function openStats(page: Page) {
   const asked: string[] = [];
@@ -22,6 +32,7 @@ async function openStats(page: Page) {
     };
     r.fulfill({ json: statsResponse(season, filters, u.searchParams.get('compare') === '1') });
   });
+  await stubRcPeople(page);
   await page.goto('/admin/stats');
   await expect(page.getByTestId('stats-body')).toBeVisible();
   return asked;
@@ -55,10 +66,12 @@ test('the tab shows the season in numbers, and only asks once it is opened', asy
   // The comparison with the season before rides on the tiles as a delta chip.
   await expect(tiles).toContainText('+');
 
-  // Per coach: every coach with a Pensum, observations first.
+  // Per coach: every coach with a Pensum, observations first — by first name.
   const rcs = page.getByTestId('stats-rcs');
-  await expect(rcs).toContainText('Anna Amsler');
-  await expect(rcs).toContainText('Claudia Casanova');
+  await expect(rcs).toContainText('Anna');
+  await expect(rcs).toContainText('Claudia');
+  await expect(rcs).not.toContainText('Amsler');
+  await expect(rcs).not.toContainText('Casanova');
   // The criteria block shows the 1. SR form and switches to the 2. SR one.
   const criteria = page.getByTestId('stats-criteria');
   await expect(criteria).toContainText('Absprache mit Schreiber und 2. SR');
@@ -78,24 +91,30 @@ test('filters re-query the server with the slice, and the season picker offers e
   await expect.poll(() => asked.at(-1)).toBe('?season=2026&rc=rc-beat&compare=1');
   // The slice shows only that coach.
   const rcs = page.getByTestId('stats-rcs');
-  await expect(rcs).toContainText('Beat Brunner');
-  await expect(rcs).not.toContainText('Anna Amsler');
+  await expect(rcs).toContainText('Beat');
+  await expect(rcs).not.toContainText('Anna');
+  // The RC picker names them by first name too.
+  await expect(page.getByTestId('stats-filter-rc').locator('option')).toHaveText([/^alle$/i, 'Anna', 'Beat', 'Claudia']);
 
   await page.getByTestId('stats-filter-role').selectOption('2SR');
   await expect.poll(() => asked.at(-1)).toBe('?season=2026&rc=rc-beat&role=2SR&compare=1');
 
   await page.getByTestId('stats-filter-rc').selectOption('');
-  await page.getByTestId('stats-filter-group').selectOption('Varia');
-  await expect.poll(() => asked.at(-1)).toBe('?season=2026&group=Varia&role=2SR&compare=1');
+  // Level and group live in the bar at the bottom.
+  const bar = page.getByTestId('stats-groupbar');
+  await bar.getByRole('radio', { name: 'Gruppe' }).click();
+  await bar.getByTestId('stats-filter-group').getByRole('button', { name: 'Varia' }).click();
+  await expect.poll(() => asked.filter((q) => !q.includes('compare')).length).toBeGreaterThan(0);
+  await expect.poll(() => asked.filter((q) => q.includes('compare=1')).at(-1)).toBe('?season=2026&group=Varia&role=2SR&compare=1');
 
   // Comparison off → no compare flag, no delta chips.
   await page.getByLabel('Vergleich mit Vorsaison').uncheck();
-  await expect.poll(() => asked.at(-1)).toBe('?season=2026&group=Varia&role=2SR');
+  await expect.poll(() => asked.includes('?season=2026&group=Varia&role=2SR')).toBe(true);
 
   const seasons = page.getByTestId('stats-season');
   await expect(seasons.locator('option')).toHaveText(['2026/27', '2025/26']);
   await seasons.selectOption('2025');
-  await expect.poll(() => asked.at(-1)).toBe('?season=2025&group=Varia&role=2SR');
+  await expect.poll(() => asked.includes('?season=2025&group=Varia&role=2SR')).toBe(true);
 });
 
 test('an average from a single observation is shown, but hollow and with its n', async ({ page }) => {
@@ -151,4 +170,69 @@ test('the console\'s English follows into the tab', async ({ page }) => {
   await openStats(page);
   await expect(page.getByTestId('stats-tiles')).toContainText('Observations');
   await expect(page.getByTestId('stats-criteria')).toContainText('Briefing with scorer and 2nd referee');
+});
+
+test('the bottom bar slices by Niveau, then Stufe, and lines the slices up in a table', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  const asked = await openStats(page);
+  const bar = page.getByTestId('stats-groupbar');
+  await expect(bar.getByRole('radio', { name: 'Kein Filter' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByTestId('stats-compare')).toHaveCount(0);
+
+  await bar.getByRole('radio', { name: 'Niveau' }).click();
+  // One row per Niveau, each its own request with that slice.
+  const table = page.getByTestId('stats-compare');
+  await expect(table.locator('tbody tr')).toHaveText([/^N1/, /^N2/, /^N3/, /^N4/]);
+  expect(asked).toContain('?season=2026&level=N3');
+
+  await bar.getByTestId('stats-filter-level').getByRole('button', { name: 'N3' }).click();
+  await expect.poll(() => asked.includes('?season=2026&level=N3&compare=1')).toBe(true);
+  // The Stufen of N3 appear as a second row of chips, and the table goes one level down.
+  const stufe = bar.getByTestId('stats-filter-stufe');
+  await expect(stufe.getByRole('button')).toHaveText(['Ganzes N3', 'N3-1', 'N3-2', 'N3-3']);
+  await expect(table.locator('tbody tr')).toHaveText([/^N3-1/, /^N3-2/, /^N3-3/]);
+  await stufe.getByRole('button', { name: 'N3-2' }).click();
+  await expect.poll(() => asked.includes('?season=2026&level=N3-2&compare=1')).toBe(true);
+  // A single Niveau is not drawn as a one-bar chart; its Stufe is.
+  await expect(page.getByTestId('stats-levels')).toContainText('N3-2');
+
+  // Back to no filter: level cleared, the table gone.
+  await bar.getByRole('radio', { name: 'Kein Filter' }).click();
+  await expect.poll(() => asked.at(-1)).toBe('?season=2026&compare=1');
+  await expect(page.getByTestId('stats-compare')).toHaveCount(0);
+});
+
+test('with a filter on, empty figures are left out', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  await openStats(page);
+  // Unfiltered, every coach with a Pensum is listed, observed or not.
+  await expect(page.getByTestId('stats-rcs').locator('tbody tr')).toHaveCount(3);
+
+  const bar = page.getByTestId('stats-groupbar');
+  await bar.getByRole('radio', { name: 'Gruppe' }).click();
+  await bar.getByTestId('stats-filter-group').getByRole('button', { name: '2. Schiedsrichter' }).click();
+  await expect(page.getByTestId('stats-body')).toBeVisible();
+  // Only the coaches who observed this group stay, and no chart shows a bar
+  // or a legend line at zero.
+  const rcRows = page.getByTestId('stats-rcs').locator('tbody tr');
+  await expect.poll(() => rcRows.count()).toBeLessThan(3);
+  for (const row of await rcRows.all()) await expect(row.locator('td').nth(1)).not.toHaveText('0');
+  for (const list of await page.getByTestId('stats-body').locator('span.tabular-nums.font-medium').all()) {
+    await expect(list).not.toHaveText('0');
+  }
+});
+
+test('coaches are named by first name; a shared one gets the initial', () => {
+  const nameOf = rcFirstNamer([
+    { id: 'a', first_name: 'Luca', last_name: 'Canepa' },
+    { id: 'b', first_name: 'Luca', last_name: 'Meier' },
+    { id: 'c', first_name: 'Thanh Ut', last_name: 'Nguyen' },
+  ], ['Old Spelling Person']);
+  expect(nameOf({ id: 'a', name: 'Luca Canepa' })).toBe('Luca C.');
+  expect(nameOf({ id: 'b', name: 'Luca Meier' })).toBe('Luca M.');
+  // The record's own first name, not the first word of the full one.
+  expect(nameOf({ id: 'c', name: 'Thanh Ut Nguyen' })).toBe('Thanh Ut');
+  expect(nameOf({ name: 'Thanh Ut Nguyen' })).toBe('Thanh Ut');
+  // No record behind the name: its first word.
+  expect(nameOf({ name: 'Old Spelling Person' })).toBe('Old');
 });

@@ -6671,7 +6671,10 @@ export default function App() {
                *  a phone, a compact fixed-width button from `sm`, where three
                *  thirds of a laptop row would be three slabs. */
               const HOME_TOOL_BTN = 'inline-flex h-8 flex-1 basis-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-1.5 text-[11px] font-medium transition-colors sm:flex-none sm:basis-auto sm:px-3 sm:text-xs';
-              const gameRow = (g: HomeGame, key: string, canRemind = false, tone: RowTone = 'red') => {
+              /** `pendingPill` off for the upcoming list: a game still to come
+               *  is pending by definition, so the pill said nothing there. The
+               *  "In Bearbeitung" pill for an open draft stays everywhere. */
+              const gameRow = (g: HomeGame, key: string, canRemind = false, tone: RowTone = 'red', pendingPill = true) => {
                 const scope = gameScope(g);
                 const inScope = scope.hard.length === 0;
                 // Nothing filed yet: the only question this list can answer is
@@ -6691,7 +6694,7 @@ export default function App() {
                   teams={g.teams}
                   location={g.location}
                   mapsUrl={g.mapsUrl}
-                  status={
+                  status={(inProgress || pendingPill) ? (
                     <span
                       className={cn(
                         'inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium',
@@ -6703,7 +6706,7 @@ export default function App() {
                       <span className={cn('h-1.5 w-1.5 rounded-full', inProgress ? 'bg-blue-500' : 'bg-amber-500')} />
                       {inProgress ? (de ? 'In Bearbeitung' : 'In Progress') : (de ? 'Ausstehend' : 'Pending')}
                     </span>
-                  }
+                  ) : undefined}
                   // No click on the card itself: the row carries its three
                   // buttons, and a thumb scrolling a phone through the list
                   // opened forms it never meant to (Luca, 17.09.2026).
@@ -7234,7 +7237,7 @@ export default function App() {
                           <p className="py-3 text-sm text-stone-400">{de ? 'Keine geplanten Spiele.' : 'No planned games.'}</p>
                         ) : (
                           <GameList className="mt-1">
-                            {homeData.nextGames.map((g, i) => gameRow(g, `next-${g.gameId}-${i}`, true))}
+                            {homeData.nextGames.map((g, i) => gameRow(g, `next-${g.gameId}-${i}`, true, 'red', false))}
                           </GameList>
                         )}
                       </div>

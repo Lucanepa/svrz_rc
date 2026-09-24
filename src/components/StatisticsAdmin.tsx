@@ -8,10 +8,10 @@ import { cn } from '../lib/utils';
 import { importFresh } from '../lib/freshImport';
 import type { Lang } from '../lib/appTime';
 import { dayLabel } from '../lib/appTime';
-import { loadStatistics } from '../lib/pocketbase';
+import { listRcPeopleFull, loadStatistics, type RcPerson } from '../lib/pocketbase';
 import {
-  a4Pages, estimatedHours, gradeAvg, isThin, pct, scoreToLetter, GRADE_ORDER, GRADE_LETTERS,
-  type StatBucket, type StatFilters, type StatRole, type StatisticsResponse,
+  a4Pages, estimatedHours, gradeAvg, isThin, pct, scoreToLetter, withRcFirstNames, GRADE_ORDER, GRADE_LETTERS,
+  type SeasonStatistics, type StatBucket, type StatFilters, type StatRole, type StatisticsResponse,
 } from '../lib/statistics';
 import {
   categoryLabel, criterionLabel, divisionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER, outcomeColor, outcomeLabel,
@@ -19,7 +19,7 @@ import {
 } from '../lib/statsLabels';
 import { SECTIONS_1SR_DE, SECTIONS_2SR_DE } from '../types';
 import { buildDeck, deckFileName } from '../lib/statsDeck';
-import { BarList, ColumnChart, Donut, GradeScale, StatTile, fmtDec, fmtInt, type ScaleRow } from './StatsCharts';
+import { BarList, ColumnChart, Donut, GradeScale, StatTile, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
 
 const select = 'h-9 px-2.5 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500 max-w-full';
 const btn = 'inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-40 transition-colors';
@@ -126,6 +126,15 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
   // and then stays loaded across tab switches.
   const [armed, setArmed] = useState(false);
   useEffect(() => { if (active) setArmed(true); }, [active]);
+  // The RC records, for first names (withRcFirstNames). A failure only costs
+  // the precision: the names then fall back to the first word of the full one.
+  const [people, setPeople] = useState<RcPerson[] | null>(null);
+  useEffect(() => {
+    if (!armed || people) return;
+    listRcPeopleFull().then(setPeople).catch(() => setPeople([]));
+  }, [armed, people]);
+  // The bottom bar: no filter, or a slice by level (N3, then N3-2) or by group.
+  const [dim, setDim] = useState<'none' | 'level' | 'group'>('none');
 
   const effectiveSeason = season ?? defaultSeason;
   useEffect(() => {
@@ -140,8 +149,9 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     return () => { cancelled = true; };
   }, [settingsLoading, armed, effectiveSeason, filters, compare]);
 
-  const stats = data?.stats ?? null;
-  const options = data?.options ?? null;
+  const view = useMemo(() => (data ? withRcFirstNames(data, people ?? []) : null), [data, people]);
+  const stats = view?.stats ?? null;
+  const options = view?.options ?? null;
   const rcNames = useMemo(() => Object.fromEntries((options?.rcs ?? []).map((r) => [r.id, r.name])), [options]);
 
   const runExport = async (kind: 'pptx' | 'pdf') => {
@@ -171,11 +181,516 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     });
   };
 
+  const chooseDim = (d: 'none' | 'level' | 'group') => {
+    setDim(d);
+    setFilters((f) => {
+      if (!f.level && !f.group) return f;
+      const next = { ...f };
+      delete next.level;
+      delete next.group;
+      return next;
+    });
+  };
+  const allLevels = options?.levels ?? [];
+  const niveaus = allLevels.filter((l) => !l.includes('-'));
+  const selNiv = filters.level ? filters.level.split('-')[0] : '';
+  const stufen = selNiv ? allLevels.filter((l) => l.startsWith(`${selNiv}-`)) : [];
+  // The slices the comparison table lines up: the Niveaus, or the Stufen of
+  // the one picked; or every group.
+  const cmpValues = useMemo(() => (
+    dim === 'level' ? (selNiv ? (stufen.length ? stufen : [selNiv]) : niveaus)
+      : dim === 'group' ? (options?.groups ?? [])
+        : []
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [dim, selNiv, allLevels.join('|'), (options?.groups ?? []).join('|')]);
+  const cmpSig = JSON.stringify([effectiveSeason, filters.rc ?? '', filters.role ?? '', dim, cmpValues]);
+  const [cmp, setCmp] = useState<{ sig: string; rows: Array<{ key: string; stats: SeasonStatistics }> } | null>(null);
+  const [cmpLoading, setCmpLoading] = useState(false);
+  useEffect(() => {
+    if (dim === 'none' || !armed || settingsLoading || cmpValues.length === 0) return;
+    let cancelled = false;
+    setCmpLoading(true);
+    // One request per slice, the rest of the filters kept: the server's rows
+    // are cached for a minute, so this is a handful of cheap counts.
+    const base: StatFilters = { ...(filters.rc ? { rc: filters.rc } : {}), ...(filters.role ? { role: filters.role } : {}) };
+    Promise.all(cmpValues.map((v) => loadStatistics(effectiveSeason, { ...base, [dim]: v }, false).then((r) => ({ key: v, stats: r.stats }))))
+      .then((rows) => { if (!cancelled) setCmp({ sig: cmpSig, rows }); })
+      .catch(() => { if (!cancelled) setCmp({ sig: cmpSig, rows: [] }); })
+      .finally(() => { if (!cancelled) setCmpLoading(false); });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cmpSig, armed, settingsLoading]);
+  const cmpRows = cmp && cmp.sig === cmpSig ? cmp.rows : null;
+
   const seasons = options?.seasons ?? [effectiveSeason];
   const T = stats?.totals;
   const P = stats?.previous?.totals;
   const prevName = stats?.previous ? seasonName(stats.previous.season) : '';
   const avg = T ? gradeAvg(T.grade) : null;
+
+  // With a filter on, a figure with nothing in it is left out rather than
+  // drawn as an empty chart or a row of zeros — and a section with nothing
+  // left in it goes too.
+  const filtered = !!(filters.rc || filters.group || filters.level || filters.role);
+  const keep = (rows: BarRow[]) => (filtered ? rows.filter((r) => r.value > 0) : rows);
+  const keepScale = (rows: ScaleRow[]) => (filtered ? rows.filter((r) => r.avg !== null) : rows);
+  const sum = (d: Record<string, number>) => Object.values(d).reduce((a, n) => a + n, 0);
+
+  // Level: a Niveau, then (when it has them) one of its Stufen. Tapping the
+  // chosen one again steps back — a Stufe to its Niveau, a Niveau to none.
+  const pickLevel = (v: string) => {
+    if (filters.level === v) setFilter('level', v.includes('-') ? v.split('-')[0] : '');
+    else setFilter('level', v);
+  };
+  const pickGroup = (v: string) => setFilter('group', filters.group === v ? '' : v);
+  const body = (() => {
+    if (!stats || !T) return null;
+    // ── Observations
+    const monthsAny = stats.byMonth.some((b) => b.observations > 0);
+    const coverageRows = keep(['0', '1', '2', '3+'].map((k) => ({ key: k, label: t.visits(k), value: stats.coacheeVisits[k] ?? 0 })));
+    const roleRows = keep(stats.byRole.map((b) => bucketRow(b, roleLabel(b.key, lang), t)));
+    const rcRows = stats.byRc.filter((r) => r.observations > 0 || (!filtered && r.goal > 0));
+    const groupRows = keep(stats.byGroup.map((b) => bucketRow(b, groupKeyLabel(b.key, lang), t)));
+    // One Niveau picked: its bar would be the whole chart, so only its Stufen stay.
+    const levelRows = filters.level ? [] : keep(stats.byLevel.map((b) => bucketRow(b, levelKeyLabel(b.key, lang), t)));
+    const stufeRows = keepScale(stats.byStufe.map((b) => ({ key: b.key, label: levelKeyLabel(b.key, lang), avg: gradeAvg(b.grade), n: b.observations })));
+    const showMonths = !filtered || monthsAny;
+    const showObservations = showMonths || coverageRows.length > 0 || roleRows.length > 0 || rcRows.length > 0 || groupRows.length > 0 || levelRows.length > 0 || stufeRows.length > 0;
+    // ── Grades
+    const showHistogram = !filtered || sum(stats.histogram) > 0;
+    const roleScale = keepScale(stats.byRole.map((b) => ({ key: b.key, label: roleLabel(b.key, lang), avg: gradeAvg(b.grade), n: b.observations })));
+    const showGradeSummary = !filtered || avg !== null;
+    const sectionRows = (['1SR', '2SR'] as StatRole[]).map((role) => ({
+      role,
+      rows: keepScale(stats.sections.filter((s) => s.role === role).map((s) => ({ key: `${role}-${s.section}`, label: sectionTitle(role, s.section, lang), avg: gradeAvg(s.grade), n: s.grade.obs }))),
+    })).filter((x) => !filtered || x.rows.length > 0);
+    const criteriaFor = (role: StatRole) => Array.from({ length: sectionCount(role) }, (_, sectionIndex) => {
+      const form = role === '2SR' ? SECTIONS_2SR_DE : SECTIONS_1SR_DE;
+      const rows = keepScale(form[sectionIndex].items.map((item) => {
+        const c = stats.criteria.find((x) => x.role === role && x.id === item.id);
+        return { key: item.id, label: criterionLabel(role, item.id, lang), avg: c ? gradeAvg(c.grade) : null, n: c?.grade.obs ?? 0 };
+      }));
+      return { sectionIndex, rows };
+    }).filter((x) => !filtered || x.rows.length > 0);
+    const criteriaRoles = (['1SR', '2SR'] as StatRole[]).filter((role) => !filtered || criteriaFor(role).length > 0);
+    const shownCriteriaRole: StatRole | null = criteriaRoles.includes(criteriaRole) ? criteriaRole : (criteriaRoles[0] ?? null);
+    const showGrades = showHistogram || showGradeSummary || sectionRows.length > 0 || shownCriteriaRole !== null;
+    // ── Assessments
+    const outcomeKinds = (['einstufung', 'motivation', 'spielniveau', 'secondBesuch'] as const).filter((kind) => !filtered || sum(stats.outcomes[kind]) > 0);
+    // ── Games
+    const showGamesBlock = !filtered || T.games > 0;
+    const leagueRows = keep(stats.byLeague.slice(0, 10).map((b) => ({ key: b.key || '-', label: b.label || '–', value: b.observations })));
+    const categoryRows = keep(stats.byCategory.map((b) => ({ key: b.key || '-', label: categoryLabel(b.key, lang), value: b.observations })));
+    const divisionRows = keep(stats.byDivision.map((b) => ({ key: b.key || '-', label: divisionLabel(b.key, lang), value: b.observations })));
+    const weekdayRows = keep(stats.byWeekday.map((b) => ({ key: b.key, label: weekdayKeyLabel(b.key, lang), value: b.observations })));
+    const hourRows = keep(stats.byHour.map((b) => ({ key: b.key, label: `${b.key}:00`, value: b.observations })));
+    const showLeagues = leagueRows.length + categoryRows.length + divisionRows.length > 0;
+    const showWhen = weekdayRows.length + hourRows.length > 0;
+    const showGames = showGamesBlock || showLeagues || showWhen;
+    // ── Writing & process
+    const hasObs = !filtered || T.observations > 0;
+    const F = stats.fun;
+    const showFun = !filtered || !!(F.busiestDay || F.topHall || F.topCoachee || F.topWriter || F.first);
+    const showWriting = hasObs || showFun;
+
+    return (
+        <div className={cn('space-y-4 transition-opacity', loading && 'opacity-60')} data-testid="stats-body">
+          {/* ── Overview ── */}
+          <Section title={t.secOverview} hint={t.secOverviewHint} testId="stats-overview">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3" data-testid="stats-tiles">
+              <StatTile hero label={t.observations} value={fmtInt(T.observations)} sub={T.games ? t.games(T.games) : undefined} delta={P ? delta(T.observations, P.observations) : null} deltaLabel={t.deltaVs(prevName)} />
+              <StatTile label={t.coacheesVisited} value={`${fmtInt(T.coachees)} / ${fmtInt(T.roster)}`} sub={pctText(pct(T.coachees, T.roster))} delta={P ? delta(T.coachees, P.coachees) : null} deltaLabel={t.deltaVs(prevName)} />
+              <StatTile label={t.activeRcs} value={`${fmtInt(T.rcsActive)} / ${fmtInt(T.rcsTotal)}`} sub={`${t.pensum} ${pctText(pct(T.observations, T.goal))}`} />
+              <StatTile label={t.avgGrade} value={avg === null ? '–' : <><span className={isThin(T.grade.obs) ? 'text-stone-600' : undefined}>{scoreToLetter(avg)}</span> <span className="text-base font-medium text-stone-500">{fmtDec(avg)}</span></>} sub={isThin(T.grade.obs) ? `${t.tooFew(T.grade.obs)} · ${t.normalCase}` : t.normalCase} delta={P && avg !== null && gradeAvg(P.grade) !== null ? `${avg - gradeAvg(P.grade)! >= 0 ? '+' : ''}${fmtDec(avg - gradeAvg(P.grade)!)}` : null} deltaLabel={t.deltaVs(prevName)} />
+              <StatTile label={t.sets} value={fmtInt(T.sets)} sub={T.games ? `${fmtDec(T.sets / T.games)} ${t.setsPerGame}` : undefined} delta={P ? delta(T.sets, P.sets) : null} deltaLabel={t.deltaVs(prevName)} />
+              <StatTile label={t.points} value={fmtInt(T.points)} sub={t.hours(estimatedHours(T.sets))} delta={P ? delta(T.points, P.points) : null} deltaLabel={t.deltaVs(prevName)} />
+              <StatTile label={t.words} value={fmtInt(T.words)} sub={T.observations ? `${t.perObs} ${fmtInt(T.words / T.observations)}` : undefined} delta={P ? delta(T.words, P.words) : null} deltaLabel={t.deltaVs(prevName)} />
+            </div>
+            {T.observations === 0 && <p className="mt-3 text-sm text-stone-400">{t.none}</p>}
+          </Section>
+
+          {/* ── Observations: when, by whom, of whom ── */}
+          {showObservations && (
+          <Section title={t.secObservations} hint={t.secObservationsHint} testId="stats-section-observations">
+            <Grid>
+              {showMonths && (
+              <Block span="lg:col-span-5" title={t.perMonth} hint={`${t.role1} / ${t.role2}`} testId="stats-months">
+                <ColumnChart
+                  series={[t.role1, t.role2]}
+                  data={stats.byMonth.map((b) => ({ key: b.key, label: monthLabel(b.key, lang), values: [b.roles['1SR'], b.roles['2SR']], hint: `${monthLabel(b.key, lang)} ${b.key.slice(0, 4)}` }))}
+                />
+              </Block>
+              )}
+              {coverageRows.length > 0 && (
+              <Block span="lg:col-span-3" title={t.coverage} hint={t.coverageHint} testId="stats-coverage">
+                <BarList rows={coverageRows} />
+                <p className="mt-3 text-[11px] text-stone-500">{t.coacheesVisited}: <b className="text-stone-700">{fmtInt(T.coachees)} / {fmtInt(T.roster)}</b> · {pctText(pct(T.coachees, T.roster))}</p>
+              </Block>
+              )}
+              {roleRows.length > 0 && (
+              <Block span="lg:col-span-4" title={t.role} hint={t.observations} testId="stats-roles">
+                <BarList rows={roleRows} />
+              </Block>
+              )}
+              {rcRows.length > 0 && (
+              <Block span="lg:col-span-12" title={t.perRc} testId="stats-rcs">
+                <div className="overflow-x-auto -mx-1">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-[10px] uppercase tracking-wide text-stone-400">
+                        <th className="text-left font-medium py-1.5 px-1">{t.rc}</th>
+                        <th className="text-right font-medium py-1.5 px-1">{t.observations}</th>
+                        <th className="text-right font-medium py-1.5 px-1">{t.coacheesCol}</th>
+                        <th className="text-right font-medium py-1.5 px-1">{t.gamesCol}</th>
+                        <th className="text-right font-medium py-1.5 px-1">{t.setsCol}</th>
+                        <th className="text-right font-medium py-1.5 px-1">{t.wordsCol}</th>
+                        <th className="text-right font-medium py-1.5 px-1">{t.gradeCol}</th>
+                        <th className="text-left font-medium py-1.5 pl-3 min-w-[9rem]">{t.goalCol}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rcRows.map((r) => {
+                        const a = gradeAvg(r.grade);
+                        const fill = r.goal > 0 ? Math.min(100, (r.observations / r.goal) * 100) : 0;
+                        return (
+                          <tr key={r.key} className="border-t border-stone-100">
+                            <td className="py-1.5 px-1 text-stone-800 whitespace-nowrap">{r.label}</td>
+                            <td className="py-1.5 px-1 text-right tabular-nums font-semibold">{fmtInt(r.observations)}</td>
+                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.coachees)}</td>
+                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.games)}</td>
+                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.sets)}</td>
+                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.words)}</td>
+                            <td className="py-1.5 px-1 text-right tabular-nums whitespace-nowrap" title={a === null ? '–' : `${fmtDec(a)} · ${t.nObs(r.observations)}`}>{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(r.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b> <span className="text-stone-500">{fmtDec(a)}</span>{isThin(r.observations) && <span className="text-stone-400"> · n = {r.observations}</span>}</>}</td>
+                            <td className="py-1.5 pl-3">
+                              <div className="flex items-center gap-2" title={`${fmtInt(r.observations)} / ${fmtInt(r.goal)} · ${r.planned} ${t.planned} · ${r.outstanding} ${t.outstanding}`}>
+                                <span className="h-2 flex-1 min-w-[4rem] rounded-full bg-stone-100 overflow-hidden"><span className="block h-full rounded-full" style={{ width: `${fill}%`, background: fill >= 100 ? '#1f7a4d' : '#2a78d6' }} /></span>
+                                <span className="tabular-nums text-stone-500 whitespace-nowrap">{fmtInt(r.observations)}/{fmtInt(r.goal)}</span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Block>
+              )}
+              {groupRows.length > 0 && (
+              <Block span="lg:col-span-6" title={t.perGroup} hint={t.observations} testId="stats-groups">
+                <BarList rows={groupRows} />
+              </Block>
+              )}
+              {(levelRows.length > 0 || stufeRows.length > 0) && (
+              <Block span="lg:col-span-6" title={t.perLevel} hint={t.observations} testId="stats-levels">
+                {levelRows.length > 0 && <BarList rows={levelRows} />}
+                {stufeRows.length > 0 && (
+                  <div className={levelRows.length > 0 ? 'mt-4' : undefined}>
+                    <SubHead>{t.perStufe} · {t.avgGrade}</SubHead>
+                    <GradeScale rows={stufeRows} nLabel={t.nObs} />
+                  </div>
+                )}
+              </Block>
+              )}
+            </Grid>
+          </Section>
+          )}
+
+          {/* ── Grades ── */}
+          {showGrades && (
+          <Section title={t.secGrades} hint={t.secGradesHint} testId="stats-section-grades">
+            <Grid>
+              {showHistogram && (
+              <Block span="lg:col-span-7" title={t.histogram} hint={t.histogramHint} testId="stats-histogram">
+                <ColumnChart
+                  series={[t.histogram]}
+                  slotWidth={26}
+                  soft={GRADE_ORDER.map((g, i) => (g.length > 1 ? i : -1)).filter((i) => i >= 0)}
+                  data={GRADE_ORDER.map((g) => ({ key: g, label: GRADE_LETTERS.includes(g) ? g : '', values: [stats.histogram[g] ?? 0], hint: g }))}
+                />
+              </Block>
+              )}
+              {showGradeSummary && (
+              <Block span="lg:col-span-5" title={t.avgGrade} hint={t.normalCase} testId="stats-grade-summary">
+                <div className="grid grid-cols-3 gap-2">
+                  <MiniStat label={t.avgGrade} value={avg === null ? '–' : `${scoreToLetter(avg)} · ${fmtDec(avg)}${isThin(T.grade.obs) ? ` (n = ${T.grade.obs})` : ''}`} />
+                  <MiniStat label={t.shareC} value={pctText(pct(T.ratingsC, T.ratingsAll))} />
+                  <MiniStat label={t.shareB} value={pctText(pct(T.ratingsBPlus, T.ratingsAll))} />
+                </div>
+                {roleScale.length > 0 && (
+                  <div className="mt-4">
+                    <SubHead>{t.avgGrade} · {t.role}</SubHead>
+                    <GradeScale rows={roleScale} nLabel={t.nObs} />
+                  </div>
+                )}
+                <p className="mt-3 text-[11px] text-stone-500">{t.completeness}: <b className="text-stone-700">{pctText(pct(T.ratedItems, T.offeredItems))}</b></p>
+              </Block>
+              )}
+              {sectionRows.length > 0 && (
+              <Block span="lg:col-span-5" title={t.sections} hint={t.normalCase} testId="stats-sections">
+                {sectionRows.map(({ role, rows }) => (
+                  <div key={role} className="mb-4 last:mb-0">
+                    <SubHead>{roleLabel(role, lang)}</SubHead>
+                    {rows.length ? <GradeScale rows={rows} nLabel={t.nObs} /> : <p className="text-xs text-stone-400">–</p>}
+                  </div>
+                ))}
+              </Block>
+              )}
+              {shownCriteriaRole && (
+              <Block span="lg:col-span-7" title={t.criteria} hint={t.normalCase} testId="stats-criteria"
+                aside={criteriaRoles.length > 1 ? (
+                  <div className="inline-flex rounded-lg border border-stone-200 p-0.5 text-xs bg-white">
+                    {criteriaRoles.map((role) => (
+                      <button key={role} type="button" onClick={() => setCriteriaRole(role)} className={cn('px-2.5 h-7 rounded-md', shownCriteriaRole === role ? 'bg-slate-900 text-white' : 'text-stone-600 hover:bg-stone-100')}>{roleLabel(role, lang)}</button>
+                    ))}
+                  </div>
+                ) : <span className="text-xs text-stone-500">{roleLabel(shownCriteriaRole, lang)}</span>}>
+                {criteriaFor(shownCriteriaRole).map(({ sectionIndex, rows }) => (
+                  <div key={sectionIndex} className="mb-4 last:mb-0">
+                    <SubHead>{sectionTitle(shownCriteriaRole, sectionIndex, lang)}</SubHead>
+                    <GradeScale rows={rows} nLabel={t.nObs} />
+                  </div>
+                ))}
+              </Block>
+              )}
+            </Grid>
+          </Section>
+          )}
+
+          {/* ── Assessments ── */}
+          {outcomeKinds.length > 0 && (
+          <Section title={t.secOutcomes} hint={t.secOutcomesHint} testId="stats-section-outcomes">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+              {outcomeKinds.map((kind) => (
+                <Block key={kind} title={kind === 'einstufung' ? t.einstufung : kind === 'motivation' ? t.motivation : kind === 'spielniveau' ? t.difficulty : t.secondVisit} testId={`stats-${kind}`}>
+                  <Donut emptyLabel="–" slices={OUTCOME_ORDER[kind].map((k) => ({ key: k, label: outcomeLabel(kind, k, lang), value: stats.outcomes[kind][k] ?? 0, color: outcomeColor(kind, k) })).filter((sl) => !filtered || sl.value > 0)} />
+                </Block>
+              ))}
+            </div>
+          </Section>
+          )}
+
+          {/* ── Games ── */}
+          {showGames && (
+          <Section title={t.secGames} hint={t.secGamesHint} testId="stats-section-games">
+            <Grid>
+              {showGamesBlock && (
+              <Block span="lg:col-span-4" title={t.gamesBlock} testId="stats-games">
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <MiniStat label={t.sets} value={fmtInt(T.sets)} />
+                  <MiniStat label={t.points} value={fmtInt(T.points)} />
+                  <MiniStat label={t.setsPerGame} value={T.games ? fmtDec(T.sets / T.games) : '–'} />
+                  <MiniStat label={t.estHours} value={`≈ ${fmtInt(estimatedHours(T.sets))} h`} />
+                </div>
+                <KV rows={[
+                  [t.deciders, `${fmtInt(T.deciders)} (${pctText(pct(T.deciders, T.games))})`],
+                  [t.longestGame, T.longestGame ? `${fmtInt(T.longestGame.points)} · ${T.longestGame.sets} ${t.sets}` : '–'],
+                  [t.hallsSeen, fmtInt(T.halls)],
+                  [t.teamsSeen, fmtInt(T.teams)],
+                ]} />
+                {T.longestGame && <p className="mt-2 text-[11px] text-stone-400 truncate">{t.longestGame}: {T.longestGame.label}</p>}
+              </Block>
+              )}
+              {showLeagues && (
+              <Block span="lg:col-span-4" title={t.perLeague} hint={t.observations} testId="stats-leagues">
+                {leagueRows.length > 0 && <BarList rows={leagueRows} />}
+                {categoryRows.length > 0 && (
+                  <div className="mt-4">
+                    <SubHead>{categoryLabel('H', lang)} · {categoryLabel('D', lang)}</SubHead>
+                    <BarList rows={categoryRows} />
+                  </div>
+                )}
+                {divisionRows.length > 0 && (
+                  <div className="mt-4">
+                    <SubHead>{lang === 'DE' ? 'Liga' : 'League'}</SubHead>
+                    <BarList rows={divisionRows} />
+                  </div>
+                )}
+              </Block>
+              )}
+              {showWhen && (
+              <Block span="lg:col-span-4" title={`${t.weekday} · ${t.hour}`} hint={t.observations} testId="stats-when">
+                {weekdayRows.length > 0 && (<>
+                  <SubHead>{t.weekday}</SubHead>
+                  <div data-testid="stats-weekday"><BarList rows={weekdayRows} /></div>
+                </>)}
+                {hourRows.length > 0 && (
+                  <div className={weekdayRows.length > 0 ? 'mt-4' : undefined}>
+                    <SubHead>{t.hour}</SubHead>
+                    <div data-testid="stats-hour"><BarList rows={hourRows} /></div>
+                  </div>
+                )}
+              </Block>
+              )}
+            </Grid>
+          </Section>
+          )}
+
+          {/* ── Writing & process ── */}
+          {showWriting && (
+          <Section title={t.secWriting} hint={t.secWritingHint} testId="stats-section-writing">
+            <Grid>
+              {hasObs && (
+              <Block span="lg:col-span-4" title={t.writing} testId="stats-writing">
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <MiniStat label={t.words} value={fmtInt(T.words)} />
+                  <MiniStat label={t.chars} value={fmtInt(T.chars)} />
+                  <MiniStat label={t.perObs} value={T.observations ? fmtInt(T.words / T.observations) : '–'} />
+                  <MiniStat label={t.pagesA4} value={fmtDec(a4Pages(T.words))} />
+                </div>
+                <KV rows={[
+                  [t.wordsMedian, T.wordsMedian !== null ? fmtInt(T.wordsMedian) : '–'],
+                  [t.longestRemark, `${fmtInt(T.longestRemark)} ${t.words}`],
+                  [`${t.filled}: ${t.highlights}`, pctText(pct(T.filledHighlights, T.observations))],
+                  [`${t.filled}: ${t.improvements}`, pctText(pct(T.filledImprovements, T.observations))],
+                  [`${t.filled}: ${t.goals}`, pctText(pct(T.filledGoals, T.observations))],
+                ]} />
+                {stats.byRc.some((r) => r.words > 0) && (
+                  <div className="mt-4">
+                    <SubHead>{t.wordsCol} · {t.perRc}</SubHead>
+                    <BarList rows={stats.byRc.filter((r) => r.words > 0).slice(0, 5).map((r) => ({ key: r.key, label: r.label, value: r.words }))} />
+                  </div>
+                )}
+              </Block>
+              )}
+              {hasObs && (
+              <Block span="lg:col-span-4" title={t.process} testId="stats-process">
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <MiniStat label={t.filingMedian} value={T.filingMedianDays !== null ? t.days(Math.round(T.filingMedianDays)) : '–'} />
+                  <MiniStat label={t.sameDay} value={pctText(pct(T.filedSameDay, T.observations))} />
+                </div>
+                <KV rows={[
+                  [t.late, pctText(pct(T.filedLate, T.observations))],
+                  [t.signedRef, pctText(pct(T.signedReferee, T.observations))],
+                  [t.signedRc, pctText(pct(T.signedRc, T.observations))],
+                  [t.completeness, pctText(pct(T.ratedItems, T.offeredItems))],
+                ]} />
+              </Block>
+              )}
+              {showFun && (
+              <Block span="lg:col-span-4" title={t.fun} testId="stats-fun">
+                <KV rows={[
+                  [t.busiestDay, F.busiestDay ? `${fmtInt(F.busiestDay.count)} · ${dayLabel(F.busiestDay.key, { year: true })}` : '–'],
+                  [t.topHall, F.topHall ? `${F.topHall.name} (${fmtInt(F.topHall.count)})` : '–'],
+                  [t.topCoachee, F.topCoachee ? `${F.topCoachee.name} (${fmtInt(F.topCoachee.count)})` : '–'],
+                  [t.topWriter, F.topWriter ? `${F.topWriter.name} (${fmtInt(F.topWriter.words)})` : '–'],
+                  [t.firstLast, F.first ? `${dayLabel(F.first, { year: true })} – ${F.last ? dayLabel(F.last, { year: true }) : ''}` : '–'],
+                ]} />
+              </Block>
+              )}
+            </Grid>
+          </Section>
+          )}
+
+          {/* ── By level / by group: one row per slice ── */}
+          {dim !== 'none' && (
+          <Section title={dim === 'level' && selNiv ? `${t.compareTitle(dim)} · ${selNiv}` : t.compareTitle(dim)} hint={t.compareHint} testId="stats-compare">
+            {!cmpRows ? (
+              <div className="flex items-center gap-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /> {t.loading}</div>
+            ) : (() => {
+              const rows = cmpRows.filter((r) => r.stats.totals.observations > 0 || r.stats.totals.roster > 0);
+              if (!rows.length) return <p className="text-sm text-stone-400">{t.compareEmpty}</p>;
+              const selected = dim === 'level' ? filters.level : filters.group;
+              return (
+                <div className={cn('overflow-x-auto -mx-1 transition-opacity', cmpLoading && 'opacity-60')}>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-[10px] uppercase tracking-wide text-stone-400">
+                        <th className="text-left font-medium py-1.5 px-1 align-bottom">{dim === 'level' ? t.byLevel : t.byGroup}</th>
+                        <th className="text-right font-medium py-1.5 px-1 align-bottom" title={t.observations}>{t.compareObs}</th>
+                        <th className="text-right font-medium py-1.5 px-1 align-bottom">{t.compareCoverage}</th>
+                        <th className="text-right font-medium py-1.5 px-1 align-bottom">{t.gradeCol}</th>
+                        <th className="text-right font-medium py-1.5 px-1 align-bottom" title={t.comparePromotionHint}>{t.comparePromotion}</th>
+                        <th className="text-right font-medium py-1.5 px-1 align-bottom leading-tight" title={t.compareFurtherHint}>{t.compareFurther}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(({ key, stats: s }) => {
+                        const c = s.totals;
+                        const a = gradeAvg(c.grade);
+                        const label = dim === 'level' ? levelKeyLabel(key, lang) : groupKeyLabel(key, lang);
+                        const on = selected === key;
+                        return (
+                          <tr
+                            key={key}
+                            onClick={() => (dim === 'level' ? pickLevel(key) : pickGroup(key))}
+                            className={cn('border-t border-stone-100 cursor-pointer hover:bg-stone-50', on && 'bg-stone-100 font-semibold')}
+                          >
+                            <td className="py-2.5 px-1 text-stone-800 leading-tight">{label}</td>
+                            <td className="py-2.5 px-1 text-right tabular-nums font-semibold">{fmtInt(c.observations)}</td>
+                            <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap leading-tight">{pctText(pct(c.coachees, c.roster))}<span className="block text-[10px] text-stone-400">{fmtInt(c.coachees)}/{fmtInt(c.roster)}</span></td>
+                            <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap">{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(c.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b> <span className="text-stone-500">{fmtDec(a)}</span></>}</td>
+                            <td className="py-2.5 px-1 text-right tabular-nums">{pctText(pct(s.outcomes.einstufung.up ?? 0, sum(s.outcomes.einstufung)))}</td>
+                            <td className="py-2.5 px-1 text-right tabular-nums">{pctText(pct(s.outcomes.secondBesuch.Y ?? 0, sum(s.outcomes.secondBesuch)))}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </Section>
+          )}
+
+          <details className="px-1 text-[11px] text-stone-500">
+            <summary className="cursor-pointer font-medium text-stone-600">{t.method}</summary>
+            <ul className="mt-1 list-disc pl-4 space-y-0.5">{t.methodLines.map((l) => <li key={l}>{l}</li>)}</ul>
+            <p className="mt-1">{t.stand}: {dayLabel(stats.generatedAt, { year: true })}</p>
+          </details>
+        </div>
+    );
+  })();
+
+  const chip = (on: boolean) => cn(
+    'shrink-0 h-9 px-3.5 rounded-full border text-xs font-medium whitespace-nowrap transition-colors',
+    on ? 'bg-slate-900 border-slate-900 text-white' : 'bg-white border-stone-200 text-stone-600 hover:bg-stone-100',
+  );
+  // The filter bar: pinned to the bottom of the screen while the page scrolls,
+  // above the console's own tab bar on a phone.
+  const groupBar = options && (
+    <div className="sticky z-10 mt-4 bottom-[calc(4rem+env(safe-area-inset-bottom,0px))] lg:bottom-3" data-testid="stats-groupbar">
+      <div className="rounded-2xl border border-stone-200 bg-white/95 backdrop-blur shadow-card-lg p-2 space-y-2">
+        <div role="radiogroup" aria-label={t.groupBy} className="grid grid-cols-3 gap-1 rounded-xl bg-stone-100 p-1">
+          {([['none', t.noFilter], ['level', t.byLevel], ['group', t.byGroup]] as const).map(([d, label]) => (
+            <button
+              key={d}
+              type="button"
+              role="radio"
+              aria-checked={dim === d}
+              onClick={() => chooseDim(d)}
+              className={cn('h-9 rounded-lg text-xs font-medium transition-colors', dim === d ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-600 hover:bg-stone-200/60')}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {dim === 'level' && (
+          <>
+            <div className="flex gap-1.5 overflow-x-auto" data-testid="stats-filter-level">
+              {niveaus.map((l) => (
+                <button key={l} type="button" aria-pressed={selNiv === l} onClick={() => setFilter('level', selNiv === l ? '' : l)} className={chip(selNiv === l)}>{l}</button>
+              ))}
+            </div>
+            {stufen.length > 0 && (
+              <div className="flex gap-1.5 overflow-x-auto" data-testid="stats-filter-stufe">
+                <button type="button" aria-pressed={filters.level === selNiv} onClick={() => setFilter('level', selNiv)} className={chip(filters.level === selNiv)}>{t.allOfLevel(selNiv)}</button>
+                {stufen.map((l) => (
+                  <button key={l} type="button" aria-pressed={filters.level === l} onClick={() => pickLevel(l)} className={chip(filters.level === l)}>{l}</button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {dim === 'group' && (
+          <div className="flex gap-1.5 overflow-x-auto" data-testid="stats-filter-group">
+            {(options.groups ?? []).map((g) => (
+              <button key={g} type="button" aria-pressed={filters.group === g} onClick={() => pickGroup(g)} className={chip(filters.group === g)}>{groupKeyLabel(g, lang)}</button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   const filterField = (label: string, control: React.ReactNode) => (
     <label className="flex flex-col gap-1 text-[11px] font-medium uppercase tracking-wide text-stone-400 min-w-0">
@@ -221,8 +736,9 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           </div>
         </div>
 
-        {/* Filters — one row of labelled controls; every section below follows them. */}
-        <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-[8rem_minmax(0,1fr)_minmax(0,1fr)_8rem_8rem_auto] gap-3 items-end" data-testid="stats-filters">
+        {/* Filters — one row of labelled controls; every section below follows them.
+            Level and group are in the bar at the bottom of the page. */}
+        <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-[8rem_minmax(0,1fr)_8rem_auto] gap-3 items-end" data-testid="stats-filters">
           {filterField(t.season, (
             <select className={select} value={effectiveSeason} onChange={(e) => setSeason(Number(e.target.value))} data-testid="stats-season">
               {seasons.map((s) => <option key={s} value={s}>{seasonName(s)}</option>)}
@@ -232,18 +748,6 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
             <select className={select} value={filters.rc ?? ''} onChange={(e) => setFilter('rc', e.target.value)} data-testid="stats-filter-rc">
               <option value="">{t.all}</option>
               {(options?.rcs ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
-          ))}
-          {filterField(t.group, (
-            <select className={select} value={filters.group ?? ''} onChange={(e) => setFilter('group', e.target.value)} data-testid="stats-filter-group">
-              <option value="">{t.all}</option>
-              {(options?.groups ?? []).map((g) => <option key={g} value={g}>{groupKeyLabel(g, lang)}</option>)}
-            </select>
-          ))}
-          {filterField(t.level, (
-            <select className={select} value={filters.level ?? ''} onChange={(e) => setFilter('level', e.target.value)} data-testid="stats-filter-level">
-              <option value="">{t.all}</option>
-              {(options?.levels ?? []).map((l) => <option key={l} value={l}>{l}</option>)}
             </select>
           ))}
           {filterField(t.role, (
@@ -262,259 +766,8 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
         {loading && !stats && <div className="mt-4 flex items-center gap-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /> {t.loading}</div>}
       </Card>
 
-      {stats && T && (
-        <div className={cn('space-y-4 transition-opacity', loading && 'opacity-60')} data-testid="stats-body">
-          {/* ── Overview ── */}
-          <Section title={t.secOverview} hint={t.secOverviewHint} testId="stats-overview">
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3" data-testid="stats-tiles">
-              <StatTile hero label={t.observations} value={fmtInt(T.observations)} sub={T.games ? t.games(T.games) : undefined} delta={P ? delta(T.observations, P.observations) : null} deltaLabel={t.deltaVs(prevName)} />
-              <StatTile label={t.coacheesVisited} value={`${fmtInt(T.coachees)} / ${fmtInt(T.roster)}`} sub={pctText(pct(T.coachees, T.roster))} delta={P ? delta(T.coachees, P.coachees) : null} deltaLabel={t.deltaVs(prevName)} />
-              <StatTile label={t.activeRcs} value={`${fmtInt(T.rcsActive)} / ${fmtInt(T.rcsTotal)}`} sub={`${t.pensum} ${pctText(pct(T.observations, T.goal))}`} />
-              <StatTile label={t.avgGrade} value={avg === null ? '–' : <><span className={isThin(T.grade.obs) ? 'text-stone-600' : undefined}>{scoreToLetter(avg)}</span> <span className="text-base font-medium text-stone-500">{fmtDec(avg)}</span></>} sub={isThin(T.grade.obs) ? `${t.tooFew(T.grade.obs)} · ${t.normalCase}` : t.normalCase} delta={P && avg !== null && gradeAvg(P.grade) !== null ? `${avg - gradeAvg(P.grade)! >= 0 ? '+' : ''}${fmtDec(avg - gradeAvg(P.grade)!)}` : null} deltaLabel={t.deltaVs(prevName)} />
-              <StatTile label={t.sets} value={fmtInt(T.sets)} sub={T.games ? `${fmtDec(T.sets / T.games)} ${t.setsPerGame}` : undefined} delta={P ? delta(T.sets, P.sets) : null} deltaLabel={t.deltaVs(prevName)} />
-              <StatTile label={t.points} value={fmtInt(T.points)} sub={t.hours(estimatedHours(T.sets))} delta={P ? delta(T.points, P.points) : null} deltaLabel={t.deltaVs(prevName)} />
-              <StatTile label={t.words} value={fmtInt(T.words)} sub={T.observations ? `${t.perObs} ${fmtInt(T.words / T.observations)}` : undefined} delta={P ? delta(T.words, P.words) : null} deltaLabel={t.deltaVs(prevName)} />
-            </div>
-            {T.observations === 0 && <p className="mt-3 text-sm text-stone-400">{t.none}</p>}
-          </Section>
-
-          {/* ── Observations: when, by whom, of whom ── */}
-          <Section title={t.secObservations} hint={t.secObservationsHint} testId="stats-section-observations">
-            <Grid>
-              <Block span="lg:col-span-5" title={t.perMonth} hint={`${t.role1} / ${t.role2}`} testId="stats-months">
-                <ColumnChart
-                  series={[t.role1, t.role2]}
-                  data={stats.byMonth.map((b) => ({ key: b.key, label: monthLabel(b.key, lang), values: [b.roles['1SR'], b.roles['2SR']], hint: `${monthLabel(b.key, lang)} ${b.key.slice(0, 4)}` }))}
-                />
-              </Block>
-              <Block span="lg:col-span-3" title={t.coverage} hint={t.coverageHint} testId="stats-coverage">
-                <BarList rows={['0', '1', '2', '3+'].map((k) => ({ key: k, label: t.visits(k), value: stats.coacheeVisits[k] ?? 0 }))} />
-                <p className="mt-3 text-[11px] text-stone-500">{t.coacheesVisited}: <b className="text-stone-700">{fmtInt(T.coachees)} / {fmtInt(T.roster)}</b> · {pctText(pct(T.coachees, T.roster))}</p>
-              </Block>
-              <Block span="lg:col-span-4" title={t.role} hint={t.observations} testId="stats-roles">
-                <BarList rows={stats.byRole.map((b) => bucketRow(b, roleLabel(b.key, lang), t))} />
-              </Block>
-              <Block span="lg:col-span-12" title={t.perRc} testId="stats-rcs">
-                <div className="overflow-x-auto -mx-1">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-[10px] uppercase tracking-wide text-stone-400">
-                        <th className="text-left font-medium py-1.5 px-1">{t.rc}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.observations}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.coacheesCol}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.gamesCol}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.setsCol}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.wordsCol}</th>
-                        <th className="text-right font-medium py-1.5 px-1">{t.gradeCol}</th>
-                        <th className="text-left font-medium py-1.5 pl-3 min-w-[9rem]">{t.goalCol}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {stats.byRc.filter((r) => r.observations > 0 || r.goal > 0).map((r) => {
-                        const a = gradeAvg(r.grade);
-                        const fill = r.goal > 0 ? Math.min(100, (r.observations / r.goal) * 100) : 0;
-                        return (
-                          <tr key={r.key} className="border-t border-stone-100">
-                            <td className="py-1.5 px-1 text-stone-800 whitespace-nowrap">{r.label}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums font-semibold">{fmtInt(r.observations)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.coachees)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.games)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.sets)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums">{fmtInt(r.words)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums whitespace-nowrap" title={a === null ? '–' : `${fmtDec(a)} · ${t.nObs(r.observations)}`}>{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(r.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b> <span className="text-stone-500">{fmtDec(a)}</span>{isThin(r.observations) && <span className="text-stone-400"> · n = {r.observations}</span>}</>}</td>
-                            <td className="py-1.5 pl-3">
-                              <div className="flex items-center gap-2" title={`${fmtInt(r.observations)} / ${fmtInt(r.goal)} · ${r.planned} ${t.planned} · ${r.outstanding} ${t.outstanding}`}>
-                                <span className="h-2 flex-1 min-w-[4rem] rounded-full bg-stone-100 overflow-hidden"><span className="block h-full rounded-full" style={{ width: `${fill}%`, background: fill >= 100 ? '#1f7a4d' : '#2a78d6' }} /></span>
-                                <span className="tabular-nums text-stone-500 whitespace-nowrap">{fmtInt(r.observations)}/{fmtInt(r.goal)}</span>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </Block>
-              <Block span="lg:col-span-6" title={t.perGroup} hint={t.observations} testId="stats-groups">
-                <BarList rows={stats.byGroup.map((b) => bucketRow(b, groupKeyLabel(b.key, lang), t))} />
-              </Block>
-              <Block span="lg:col-span-6" title={t.perLevel} hint={t.observations} testId="stats-levels">
-                <BarList rows={stats.byLevel.map((b) => bucketRow(b, levelKeyLabel(b.key, lang), t))} />
-                {stats.byStufe.length > 0 && (
-                  <div className="mt-4">
-                    <SubHead>{t.perStufe} · {t.avgGrade}</SubHead>
-                    <GradeScale rows={stats.byStufe.map((b) => ({ key: b.key, label: levelKeyLabel(b.key, lang), avg: gradeAvg(b.grade), n: b.observations }))} nLabel={t.nObs} />
-                  </div>
-                )}
-              </Block>
-            </Grid>
-          </Section>
-
-          {/* ── Grades ── */}
-          <Section title={t.secGrades} hint={t.secGradesHint} testId="stats-section-grades">
-            <Grid>
-              <Block span="lg:col-span-7" title={t.histogram} hint={t.histogramHint} testId="stats-histogram">
-                <ColumnChart
-                  series={[t.histogram]}
-                  slotWidth={26}
-                  soft={GRADE_ORDER.map((g, i) => (g.length > 1 ? i : -1)).filter((i) => i >= 0)}
-                  data={GRADE_ORDER.map((g) => ({ key: g, label: GRADE_LETTERS.includes(g) ? g : '', values: [stats.histogram[g] ?? 0], hint: g }))}
-                />
-              </Block>
-              <Block span="lg:col-span-5" title={t.avgGrade} hint={t.normalCase} testId="stats-grade-summary">
-                <div className="grid grid-cols-3 gap-2">
-                  <MiniStat label={t.avgGrade} value={avg === null ? '–' : `${scoreToLetter(avg)} · ${fmtDec(avg)}${isThin(T.grade.obs) ? ` (n = ${T.grade.obs})` : ''}`} />
-                  <MiniStat label={t.shareC} value={pctText(pct(T.ratingsC, T.ratingsAll))} />
-                  <MiniStat label={t.shareB} value={pctText(pct(T.ratingsBPlus, T.ratingsAll))} />
-                </div>
-                <div className="mt-4">
-                  <SubHead>{t.avgGrade} · {t.role}</SubHead>
-                  <GradeScale rows={stats.byRole.map((b) => ({ key: b.key, label: roleLabel(b.key, lang), avg: gradeAvg(b.grade), n: b.observations }))} nLabel={t.nObs} />
-                </div>
-                <p className="mt-3 text-[11px] text-stone-500">{t.completeness}: <b className="text-stone-700">{pctText(pct(T.ratedItems, T.offeredItems))}</b></p>
-              </Block>
-              <Block span="lg:col-span-5" title={t.sections} hint={t.normalCase} testId="stats-sections">
-                {(['1SR', '2SR'] as StatRole[]).map((role) => {
-                  const rows: ScaleRow[] = stats.sections.filter((s) => s.role === role).map((s) => ({ key: `${role}-${s.section}`, label: sectionTitle(role, s.section, lang), avg: gradeAvg(s.grade), n: s.grade.obs }));
-                  return (
-                    <div key={role} className="mb-4 last:mb-0">
-                      <SubHead>{roleLabel(role, lang)}</SubHead>
-                      {rows.length ? <GradeScale rows={rows} nLabel={t.nObs} /> : <p className="text-xs text-stone-400">–</p>}
-                    </div>
-                  );
-                })}
-              </Block>
-              <Block span="lg:col-span-7" title={t.criteria} hint={t.normalCase} testId="stats-criteria"
-                aside={(
-                  <div className="inline-flex rounded-lg border border-stone-200 p-0.5 text-xs bg-white">
-                    {(['1SR', '2SR'] as StatRole[]).map((role) => (
-                      <button key={role} type="button" onClick={() => setCriteriaRole(role)} className={cn('px-2.5 h-7 rounded-md', criteriaRole === role ? 'bg-slate-900 text-white' : 'text-stone-600 hover:bg-stone-100')}>{roleLabel(role, lang)}</button>
-                    ))}
-                  </div>
-                )}>
-                {Array.from({ length: sectionCount(criteriaRole) }, (_, sectionIndex) => {
-                  const form = criteriaRole === '2SR' ? SECTIONS_2SR_DE : SECTIONS_1SR_DE;
-                  const rows: ScaleRow[] = form[sectionIndex].items.map((item) => {
-                    const c = stats.criteria.find((x) => x.role === criteriaRole && x.id === item.id);
-                    return { key: item.id, label: criterionLabel(criteriaRole, item.id, lang), avg: c ? gradeAvg(c.grade) : null, n: c?.grade.obs ?? 0 };
-                  });
-                  return (
-                    <div key={sectionIndex} className="mb-4 last:mb-0">
-                      <SubHead>{sectionTitle(criteriaRole, sectionIndex, lang)}</SubHead>
-                      <GradeScale rows={rows} nLabel={t.nObs} />
-                    </div>
-                  );
-                })}
-              </Block>
-            </Grid>
-          </Section>
-
-          {/* ── Assessments ── */}
-          <Section title={t.secOutcomes} hint={t.secOutcomesHint} testId="stats-section-outcomes">
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-              {(['einstufung', 'motivation', 'spielniveau', 'secondBesuch'] as const).map((kind) => (
-                <Block key={kind} title={kind === 'einstufung' ? t.einstufung : kind === 'motivation' ? t.motivation : kind === 'spielniveau' ? t.difficulty : t.secondVisit} testId={`stats-${kind}`}>
-                  <Donut emptyLabel="–" slices={OUTCOME_ORDER[kind].map((k) => ({ key: k, label: outcomeLabel(kind, k, lang), value: stats.outcomes[kind][k] ?? 0, color: outcomeColor(kind, k) }))} />
-                </Block>
-              ))}
-            </div>
-          </Section>
-
-          {/* ── Games ── */}
-          <Section title={t.secGames} hint={t.secGamesHint} testId="stats-section-games">
-            <Grid>
-              <Block span="lg:col-span-4" title={t.gamesBlock} testId="stats-games">
-                <div className="grid grid-cols-2 gap-2 mb-3">
-                  <MiniStat label={t.sets} value={fmtInt(T.sets)} />
-                  <MiniStat label={t.points} value={fmtInt(T.points)} />
-                  <MiniStat label={t.setsPerGame} value={T.games ? fmtDec(T.sets / T.games) : '–'} />
-                  <MiniStat label={t.estHours} value={`≈ ${fmtInt(estimatedHours(T.sets))} h`} />
-                </div>
-                <KV rows={[
-                  [t.deciders, `${fmtInt(T.deciders)} (${pctText(pct(T.deciders, T.games))})`],
-                  [t.longestGame, T.longestGame ? `${fmtInt(T.longestGame.points)} · ${T.longestGame.sets} ${t.sets}` : '–'],
-                  [t.hallsSeen, fmtInt(T.halls)],
-                  [t.teamsSeen, fmtInt(T.teams)],
-                ]} />
-                {T.longestGame && <p className="mt-2 text-[11px] text-stone-400 truncate">{t.longestGame}: {T.longestGame.label}</p>}
-              </Block>
-              <Block span="lg:col-span-4" title={t.perLeague} hint={t.observations} testId="stats-leagues">
-                <BarList rows={stats.byLeague.slice(0, 10).map((b) => ({ key: b.key || '-', label: b.label || '–', value: b.observations }))} />
-                <div className="mt-4">
-                  <SubHead>{categoryLabel('H', lang)} · {categoryLabel('D', lang)}</SubHead>
-                  <BarList rows={stats.byCategory.map((b) => ({ key: b.key || '-', label: categoryLabel(b.key, lang), value: b.observations }))} />
-                </div>
-                <div className="mt-4">
-                  <SubHead>{lang === 'DE' ? 'Liga' : 'League'}</SubHead>
-                  <BarList rows={stats.byDivision.map((b) => ({ key: b.key || '-', label: divisionLabel(b.key, lang), value: b.observations }))} />
-                </div>
-              </Block>
-              <Block span="lg:col-span-4" title={`${t.weekday} · ${t.hour}`} hint={t.observations} testId="stats-when">
-                <SubHead>{t.weekday}</SubHead>
-                <div data-testid="stats-weekday"><BarList rows={stats.byWeekday.map((b) => ({ key: b.key, label: weekdayKeyLabel(b.key, lang), value: b.observations }))} /></div>
-                <div className="mt-4">
-                  <SubHead>{t.hour}</SubHead>
-                  <div data-testid="stats-hour"><BarList rows={stats.byHour.map((b) => ({ key: b.key, label: `${b.key}:00`, value: b.observations }))} /></div>
-                </div>
-              </Block>
-            </Grid>
-          </Section>
-
-          {/* ── Writing & process ── */}
-          <Section title={t.secWriting} hint={t.secWritingHint} testId="stats-section-writing">
-            <Grid>
-              <Block span="lg:col-span-4" title={t.writing} testId="stats-writing">
-                <div className="grid grid-cols-2 gap-2 mb-3">
-                  <MiniStat label={t.words} value={fmtInt(T.words)} />
-                  <MiniStat label={t.chars} value={fmtInt(T.chars)} />
-                  <MiniStat label={t.perObs} value={T.observations ? fmtInt(T.words / T.observations) : '–'} />
-                  <MiniStat label={t.pagesA4} value={fmtDec(a4Pages(T.words))} />
-                </div>
-                <KV rows={[
-                  [t.wordsMedian, T.wordsMedian !== null ? fmtInt(T.wordsMedian) : '–'],
-                  [t.longestRemark, `${fmtInt(T.longestRemark)} ${t.words}`],
-                  [`${t.filled}: ${t.highlights}`, pctText(pct(T.filledHighlights, T.observations))],
-                  [`${t.filled}: ${t.improvements}`, pctText(pct(T.filledImprovements, T.observations))],
-                  [`${t.filled}: ${t.goals}`, pctText(pct(T.filledGoals, T.observations))],
-                ]} />
-                {stats.byRc.some((r) => r.words > 0) && (
-                  <div className="mt-4">
-                    <SubHead>{t.wordsCol} · {t.perRc}</SubHead>
-                    <BarList rows={stats.byRc.filter((r) => r.words > 0).slice(0, 5).map((r) => ({ key: r.key, label: r.label, value: r.words }))} />
-                  </div>
-                )}
-              </Block>
-              <Block span="lg:col-span-4" title={t.process} testId="stats-process">
-                <div className="grid grid-cols-2 gap-2 mb-3">
-                  <MiniStat label={t.filingMedian} value={T.filingMedianDays !== null ? t.days(Math.round(T.filingMedianDays)) : '–'} />
-                  <MiniStat label={t.sameDay} value={pctText(pct(T.filedSameDay, T.observations))} />
-                </div>
-                <KV rows={[
-                  [t.late, pctText(pct(T.filedLate, T.observations))],
-                  [t.signedRef, pctText(pct(T.signedReferee, T.observations))],
-                  [t.signedRc, pctText(pct(T.signedRc, T.observations))],
-                  [t.completeness, pctText(pct(T.ratedItems, T.offeredItems))],
-                ]} />
-              </Block>
-              <Block span="lg:col-span-4" title={t.fun} testId="stats-fun">
-                <KV rows={[
-                  [t.busiestDay, stats.fun.busiestDay ? `${fmtInt(stats.fun.busiestDay.count)} · ${dayLabel(stats.fun.busiestDay.key, { year: true })}` : '–'],
-                  [t.topHall, stats.fun.topHall ? `${stats.fun.topHall.name} (${fmtInt(stats.fun.topHall.count)})` : '–'],
-                  [t.topCoachee, stats.fun.topCoachee ? `${stats.fun.topCoachee.name} (${fmtInt(stats.fun.topCoachee.count)})` : '–'],
-                  [t.topWriter, stats.fun.topWriter ? `${stats.fun.topWriter.name} (${fmtInt(stats.fun.topWriter.words)})` : '–'],
-                  [t.firstLast, stats.fun.first ? `${dayLabel(stats.fun.first, { year: true })} – ${stats.fun.last ? dayLabel(stats.fun.last, { year: true }) : ''}` : '–'],
-                ]} />
-              </Block>
-            </Grid>
-          </Section>
-
-          <details className="px-1 text-[11px] text-stone-500">
-            <summary className="cursor-pointer font-medium text-stone-600">{t.method}</summary>
-            <ul className="mt-1 list-disc pl-4 space-y-0.5">{t.methodLines.map((l) => <li key={l}>{l}</li>)}</ul>
-            <p className="mt-1">{t.stand}: {dayLabel(stats.generatedAt, { year: true })}</p>
-          </details>
-        </div>
-      )}
+      {body}
+      {groupBar}
     </div>
   );
 }

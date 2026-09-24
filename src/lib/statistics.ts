@@ -219,3 +219,81 @@ export function estimatedHours(sets: number): number {
 export function a4Pages(words: number): number {
   return Math.round((words / WORDS_PER_A4) * 10) / 10;
 }
+
+// ── RC names ────────────────────────────────────────────────────────────────
+// The statistics name coaches by first name — "Anna", not "Anna Amsler". Two
+// coaches sharing one get their last name's initial ("Luca C." / "Luca M."),
+// and only a pair that still collides keeps the full name. The server labels
+// rows with the full name; this relabels a response on the client from the
+// RC records, which carry the first name as its own field (splitting the full
+// name at the first space makes "Thanh Ut Nguyen" a "Thanh"). A name with no
+// record behind it — an older observation filed under a spelling nobody has
+// any more — falls back to that split.
+export type RcNameRecord = { id: string; first_name?: string; last_name?: string };
+
+const normName = (s: string) => s.normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('de');
+
+export function rcFirstNamer(people: RcNameRecord[], extraFullNames: string[] = []): (key: { id?: string; name: string }) => string {
+  type Entry = { first: string; last: string; full: string };
+  const byId = new Map<string, Entry>();
+  const byFull = new Map<string, Entry>();
+  const entries: Entry[] = [];
+  const add = (e: Entry, id?: string) => {
+    entries.push(e);
+    if (id) byId.set(id, e);
+    if (e.full && !byFull.has(normName(e.full))) byFull.set(normName(e.full), e);
+  };
+  for (const p of people) {
+    const first = (p.first_name ?? '').trim();
+    const last = (p.last_name ?? '').trim();
+    if (!first && !last) continue;
+    add({ first: first || last, last: first ? last : '', full: `${first} ${last}`.trim() }, p.id);
+  }
+  for (const raw of extraFullNames) {
+    const full = raw.trim().replace(/\s+/g, ' ');
+    if (!full || byFull.has(normName(full))) continue;
+    const [first, ...rest] = full.split(' ');
+    add({ first, last: rest.join(' '), full });
+  }
+  const firstCount = new Map<string, number>();
+  for (const e of entries) firstCount.set(normName(e.first), (firstCount.get(normName(e.first)) ?? 0) + 1);
+  const initialOf = (e: Entry) => `${e.first} ${e.last ? `${e.last[0]}.` : ''}`.trim();
+  const initialCount = new Map<string, number>();
+  for (const e of entries) {
+    if ((firstCount.get(normName(e.first)) ?? 0) > 1) initialCount.set(normName(initialOf(e)), (initialCount.get(normName(initialOf(e))) ?? 0) + 1);
+  }
+  const display = (e: Entry): string => {
+    if ((firstCount.get(normName(e.first)) ?? 0) <= 1) return e.first;
+    return (initialCount.get(normName(initialOf(e))) ?? 0) <= 1 ? initialOf(e) : e.full;
+  };
+  return ({ id, name }) => {
+    const e = (id ? byId.get(id) : undefined) ?? byFull.get(normName(name));
+    if (e) return display(e);
+    return name.trim().split(/\s+/)[0] || name;
+  };
+}
+
+/** The response with every coach named by first name (rows, top writer, the
+ *  RC filter). Keys and ids are untouched, so filters and exports still work. */
+export function withRcFirstNames(resp: StatisticsResponse, people: RcNameRecord[]): StatisticsResponse {
+  const cores = [resp.stats, resp.stats.previous].filter((c): c is SeasonStatisticsCore => !!c);
+  const fullNames = [
+    ...resp.options.rcs.map((r) => r.name),
+    ...cores.flatMap((c) => [...c.byRc.map((r) => r.label), ...(c.fun.topWriter ? [c.fun.topWriter.name] : [])]),
+  ];
+  const nameOf = rcFirstNamer(people, fullNames);
+  const relabel = <C extends SeasonStatisticsCore>(c: C): C => ({
+    ...c,
+    byRc: c.byRc.map((r) => ({ ...r, label: nameOf({ id: r.key.startsWith('name:') ? undefined : r.key, name: r.label }) })),
+    fun: { ...c.fun, topWriter: c.fun.topWriter ? { ...c.fun.topWriter, name: nameOf({ name: c.fun.topWriter.name }) } : null },
+  });
+  return {
+    stats: { ...relabel(resp.stats), previous: resp.stats.previous ? relabel(resp.stats.previous) : null },
+    options: {
+      ...resp.options,
+      rcs: resp.options.rcs
+        .map((r) => ({ id: r.id, name: nameOf({ id: r.id, name: r.name }) }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'de')),
+    },
+  };
+}

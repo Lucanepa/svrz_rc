@@ -426,6 +426,10 @@ export const OUTCOME_ORDER = {
 // the commission's own reading of these three-way ticks. "Second visit: yes"
 // is not bad news, so it takes the neutral blue and "no" the green.
 export const OUTCOME_GREEN = '#1f7a4d';
+/** Sequential blue, light → dark (fewer → more), validated: adjacent ΔE ≥ 16.5. */
+export const SEQ_BLUE = ['#c3daf7', '#6aa6ea', '#2466c0', '#132f5c'] as const;
+/** The neutral middle of a diverging bar (✓ / same). */
+export const NEUTRAL = '#d6d3d1';
 export const OUTCOME_BLUE = '#2a78d6';
 export const OUTCOME_RED = '#dc2626';
 export const OUTCOME_COLORS: Record<keyof typeof OUTCOME_ORDER, Record<string, string>> = {

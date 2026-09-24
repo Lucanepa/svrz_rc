@@ -11,7 +11,7 @@ import {
 } from './statistics';
 import {
   categoryLabel, criterionLabel, divisionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER,
-  outcomeColor, outcomeLabel, roleLabel, sectionTitle, seasonName, statStrings, type StatStrings,
+  outcomeColor, outcomeLabel, NEUTRAL, SEQ_BLUE, roleLabel, sectionTitle, seasonName, statStrings, type StatStrings,
 } from './statsLabels';
 
 export type DeckTile = { label: string; value: string; sub?: string };
@@ -19,7 +19,13 @@ export type DeckChart =
   | { kind: 'columns'; series: string[]; categories: string[]; values: number[][]; grouping: 'stacked' | 'clustered' }
   | { kind: 'bars'; categories: string[]; values: number[] }
   | { kind: 'grade'; categories: string[]; values: Array<number | null>; ns: number[] }
-  | { kind: 'donut'; categories: string[]; values: number[]; colors?: string[] };
+  | { kind: 'donut'; categories: string[]; values: number[]; colors?: string[] }
+  /** One 100 % bar: the parts of a whole, counts and shares in the legend. */
+  | { kind: 'stack'; categories: string[]; values: number[]; colors: string[] }
+  /** Rows centred on a neutral middle: negative left, positive right, in shares. */
+  | { kind: 'diverging'; categories: string[]; neg: number[]; mid: number[]; pos: number[]; labels: { neg: string; mid: string; pos: string }; colors: { neg: string; mid: string; pos: string } }
+  /** Averages on the grade scale over time, C as the reference; null = no grade that month. */
+  | { kind: 'line'; categories: string[]; values: Array<number | null>; ns: number[] };
 export type DeckFigure = { title: string; chart: DeckChart };
 export type DeckTable = {
   head: string[];
@@ -138,7 +144,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
     figures: [
       {
         title: t.coverageHint,
-        chart: { kind: 'bars', categories: ['0', '1', '2', '3+'].map((k) => t.visits(k)), values: ['0', '1', '2', '3+'].map((k) => stats.coacheeVisits[k] ?? 0) },
+        chart: { kind: 'stack', categories: ['0', '1', '2', '3+'].map((k) => t.visits(k)), values: ['0', '1', '2', '3+'].map((k) => stats.coacheeVisits[k] ?? 0), colors: [...SEQ_BLUE] },
       },
       {
         title: `${t.pensum} — ${t.perRc}`,
@@ -153,12 +159,19 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   });
 
   // 5 — how we graded
+  const monthGrades = stats.byMonth.map((b) => gradeAvg(b.grade));
   slides.push({
     title: t.histogram,
-    figures: [{
-      title: t.histogramHint,
-      chart: { kind: 'bars', categories: GRADE_ORDER, values: GRADE_ORDER.map((g) => stats.histogram[g] ?? 0) },
-    }],
+    figures: [
+      {
+        title: t.histogramHint,
+        chart: { kind: 'bars', categories: GRADE_ORDER, values: GRADE_ORDER.map((g) => stats.histogram[g] ?? 0) },
+      },
+      ...(monthGrades.some((v) => v !== null) ? [{
+        title: t.gradePerMonth,
+        chart: { kind: 'line' as const, categories: stats.byMonth.map((b) => monthLabel(b.key, lang)), values: monthGrades, ns: stats.byMonth.map((b) => b.observations) },
+      }] : []),
+    ],
     tiles: [
       { label: t.avgGrade, value: gradeText(avg, t, T.grade.obs) },
       { label: t.shareC, value: pctText(pct(T.ratingsC, T.ratingsAll)) },
@@ -222,19 +235,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   });
 
   // 9 — assessments
-  const donut = (title: string, kind: keyof typeof OUTCOME_ORDER): DeckFigure => ({
-    title,
-    chart: {
-      kind: 'donut',
-      categories: OUTCOME_ORDER[kind].map((k) => outcomeLabel(kind, k, lang)),
-      values: OUTCOME_ORDER[kind].map((k) => stats.outcomes[kind][k] ?? 0),
-      colors: OUTCOME_ORDER[kind].map((k) => outcomeColor(kind, k)),
-    },
-  });
-  slides.push({
-    title: t.outcomes,
-    figures: [donut(t.einstufung, 'einstufung'), donut(t.motivation, 'motivation'), donut(t.difficulty, 'spielniveau'), donut(t.secondVisit, 'secondBesuch')],
-  });
+  slides.push({ title: t.outcomes, figures: outcomeFigures(stats, t, lang, false) });
 
   // 9b — trend: first visit against the latest
   const trendSlide = trendSlideOf(stats, t, lang);
@@ -360,7 +361,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
       title: t.perLeague,
       figures: [
         { title: t.perLeague, chart: { kind: 'bars', categories: stats.byLeague.slice(0, 12).map((b) => b.label || '–'), values: stats.byLeague.slice(0, 12).map((b) => b.observations) } },
-        { title: `${categoryLabel('H', lang)} / ${categoryLabel('D', lang)}`, chart: { kind: 'donut', categories: stats.byCategory.map((b) => categoryLabel(b.key, lang)), values: stats.byCategory.map((b) => b.observations) } },
+        { title: `${categoryLabel('H', lang)} / ${categoryLabel('D', lang)}`, chart: { kind: 'stack', categories: stats.byCategory.map((b) => categoryLabel(b.key, lang)), values: stats.byCategory.map((b) => b.observations), colors: stats.byCategory.map((_, i) => ['#2a78d6', '#dc2626', '#eda100'][i % 3]) } },
       ],
       table: { head: [t.perLeague, t.observations], rows: stats.byDivision.map((b) => [divisionLabel(b.key, lang), int(b.observations)]) },
     });
@@ -379,6 +380,35 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
 }
 
 const sumOf = (d: Record<string, number>) => Object.values(d).reduce((a, n) => a + n, 0);
+
+/** The assessments as the dashboard draws them: Einstufung and motivation as
+ *  rows centred on ✓, difficulty and the further visit as one 100 % bar
+ *  each. `dropEmpty` leaves out a figure (and a part) with nothing in it. */
+function outcomeFigures(stats: SeasonStatisticsCore, t: StatStrings, lang: Lang, dropEmpty: boolean): DeckFigure[] {
+  const o = stats.outcomes;
+  const out: DeckFigure[] = [];
+  const updown = (['einstufung', 'motivation'] as const).filter((k) => !dropEmpty || sumOf(o[k]) > 0);
+  if (updown.length) {
+    out.push({
+      title: `${t.einstufung} · ${t.motivation}`,
+      chart: {
+        kind: 'diverging',
+        categories: updown.map((k) => (k === 'einstufung' ? t.einstufung : t.motivation)),
+        neg: updown.map((k) => o[k].down ?? 0), mid: updown.map((k) => o[k].check ?? 0), pos: updown.map((k) => o[k].up ?? 0),
+        labels: { neg: '↓', mid: '✓', pos: '↑' },
+        colors: { neg: outcomeColor('einstufung', 'down'), mid: NEUTRAL, pos: outcomeColor('einstufung', 'up') },
+      },
+    });
+  }
+  const bar = (kind: 'spielniveau' | 'secondBesuch', title: string, colors: string[]) => {
+    const keys = OUTCOME_ORDER[kind].map((k, i) => ({ k, c: colors[i] })).filter((x) => !dropEmpty || (o[kind][x.k] ?? 0) > 0);
+    if (dropEmpty && keys.length === 0) return;
+    out.push({ title, chart: { kind: 'stack', categories: keys.map((x) => outcomeLabel(kind, x.k, lang)), values: keys.map((x) => o[kind][x.k] ?? 0), colors: keys.map((x) => x.c) } });
+  };
+  bar('spielniveau', t.difficulty, [SEQ_BLUE[0], SEQ_BLUE[2], SEQ_BLUE[3]]);
+  bar('secondBesuch', t.secondVisit, ['#2a78d6', NEUTRAL]);
+  return out;
+}
 const trendCounts = (tr: TrendAgg | undefined) => (tr && tr.coachees > 0 ? `↑${tr.improved} =${tr.same} ↓${tr.worse}` : '–');
 const trendAvgText = (tr: TrendAgg | undefined) => {
   const d = trendAvgDelta(tr);
@@ -389,17 +419,21 @@ const trendAvgText = (tr: TrendAgg | undefined) => {
 function trendSlideOf(stats: SeasonStatisticsCore, t: StatStrings, lang: Lang, title = t.trendTitle, subtitle?: string): DeckSlide | null {
   const tr = stats.trend;
   if (!tr || tr.coachees === 0) return null;
+  const byLevel = tr.byLevel.filter((r) => r.coachees > 0);
+  const byGroup = tr.byGroup.filter((r) => r.coachees > 0);
+  // Worse left, same in the middle, better right — all coachees first, then
+  // each level (the table beside it carries the groups and the mean change).
+  const rowsOf = [{ label: t.trendCoachees, r: tr }, ...(byLevel.length > 1 ? byLevel.map((r) => ({ label: levelKeyLabel(r.key, lang), r })) : [])];
   const figures: DeckFigure[] = [{
     title: t.trendTitle,
     chart: {
-      kind: 'donut',
-      categories: [t.trendImproved, t.trendSame, t.trendWorse],
-      values: [tr.improved, tr.same, tr.worse],
-      colors: [outcomeColor('einstufung', 'up'), outcomeColor('einstufung', 'check'), outcomeColor('einstufung', 'down')],
+      kind: 'diverging',
+      categories: rowsOf.map((x) => x.label),
+      neg: rowsOf.map((x) => x.r.worse), mid: rowsOf.map((x) => x.r.same), pos: rowsOf.map((x) => x.r.improved),
+      labels: { neg: t.trendWorse, mid: t.trendSame, pos: t.trendImproved },
+      colors: { neg: outcomeColor('einstufung', 'down'), mid: NEUTRAL, pos: outcomeColor('einstufung', 'up') },
     },
   }];
-  const byLevel = tr.byLevel.filter((r) => r.coachees > 0);
-  const byGroup = tr.byGroup.filter((r) => r.coachees > 0);
   const table = byLevel.length + byGroup.length > 1 ? {
     head: ['', t.trendCoachees, t.trendImproved, t.trendSame, t.trendWorse, t.trendAvg],
     widths: [0.34, 0.16, 0.12, 0.12, 0.12, 0.14],
@@ -411,12 +445,12 @@ function trendSlideOf(stats: SeasonStatisticsCore, t: StatStrings, lang: Lang, t
   return {
     title,
     subtitle: subtitle ?? t.trendHint,
+    // Four tiles, one row: the count of coachees rides on the mean change.
     tiles: [
-      { label: t.trendCoachees, value: int(tr.coachees) },
       { label: t.trendImproved, value: int(tr.improved), sub: pctText(pct(tr.improved, tr.coachees)) },
       { label: t.trendSame, value: int(tr.same), sub: pctText(pct(tr.same, tr.coachees)) },
       { label: t.trendWorse, value: int(tr.worse), sub: pctText(pct(tr.worse, tr.coachees)) },
-      { label: t.trendAvg, value: trendAvgText(tr) },
+      { label: t.trendAvg, value: trendAvgText(tr), sub: `${t.trendCoachees}: ${int(tr.coachees)}` },
     ],
     figures,
     table,
@@ -486,17 +520,7 @@ function sliceSets(slices: StatSlice[], dim: 'level' | 'group', t: StatStrings, 
     }
     if (gradeFigures.length) out.push({ title, subtitle: t.secGrades, figures: gradeFigures.slice(0, 3), note: `${t.normalCase} · ${t.thinNote}` });
     // 3 — the assessments
-    const donuts: DeckFigure[] = (['einstufung', 'motivation', 'spielniveau', 'secondBesuch'] as const)
-      .filter((kind) => sumOf(o[kind]) > 0)
-      .map((kind) => ({
-        title: kind === 'einstufung' ? t.einstufung : kind === 'motivation' ? t.motivation : kind === 'spielniveau' ? t.difficulty : t.secondVisit,
-        chart: {
-          kind: 'donut' as const,
-          categories: OUTCOME_ORDER[kind].filter((k) => (o[kind][k] ?? 0) > 0).map((k) => outcomeLabel(kind, k, lang)),
-          values: OUTCOME_ORDER[kind].filter((k) => (o[kind][k] ?? 0) > 0).map((k) => o[kind][k] ?? 0),
-          colors: OUTCOME_ORDER[kind].filter((k) => (o[kind][k] ?? 0) > 0).map((k) => outcomeColor(kind, k)),
-        },
-      }));
+    const donuts = outcomeFigures(S, t, lang, true);
     if (donuts.length) out.push({ title, subtitle: t.outcomes, figures: donuts });
     // 4 — the trend, when a coachee in it was seen twice
     const tr = trendSlideOf(S, t, lang, title, t.trendTitle);

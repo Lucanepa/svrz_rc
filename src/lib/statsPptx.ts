@@ -125,6 +125,46 @@ function addChart(pptx: PptxGenJS, slide: Slide, title: string, chart: DeckChart
     if (withheld.length) {
       slide.addText(`–: ${withheld.join(', ')}`, { x, y: y + h - 0.02, w, h: 0.22, fontFace: FONT, fontSize: 7, color: MUTED, valign: 'top' });
     }
+  } else if (chart.kind === 'stack') {
+    // One 100 % bar, a series per part: native, so it stays editable.
+    const hex = (c: string) => c.replace('#', '').toUpperCase();
+    slide.addChart(pptx.ChartType.bar, chart.categories.map((name, i) => ({ name, labels: [''], values: [chart.values[i]] })), {
+      ...common, h: Math.min(ch, 1.6), barDir: 'bar', barGrouping: 'percentStacked', barGapWidthPct: 30,
+      chartColors: chart.colors.map(hex), showLegend: true, legendPos: 'b', showValue: true, dataLabelColor: 'FFFFFF',
+      valAxisHidden: true, catAxisHidden: true, valGridLine: { style: 'none' },
+    });
+  } else if (chart.kind === 'diverging') {
+    // Centred on the neutral middle: each row's middle split in two halves
+    // around zero, the negative part stacked outward to the left. Shares in %.
+    const hex = (c: string) => c.replace('#', '').toUpperCase();
+    const rows = chart.categories.map((_, i) => {
+      const n = chart.neg[i] + chart.mid[i] + chart.pos[i] || 1;
+      return { neg: (chart.neg[i] / n) * 100, mid: (chart.mid[i] / n) * 100, pos: (chart.pos[i] / n) * 100 };
+    }).reverse();
+    const labels = [...chart.categories].reverse();
+    slide.addChart(pptx.ChartType.bar, [
+      { name: chart.labels.mid, labels, values: rows.map((r) => -r.mid / 2) },
+      { name: chart.labels.neg, labels, values: rows.map((r) => -r.neg) },
+      { name: `${chart.labels.mid} `, labels, values: rows.map((r) => r.mid / 2) },
+      { name: chart.labels.pos, labels, values: rows.map((r) => r.pos) },
+    ], {
+      ...common, barDir: 'bar', barGrouping: 'stacked', barGapWidthPct: 45, barOverlapPct: 100,
+      chartColors: [hex(chart.colors.mid), hex(chart.colors.neg), hex(chart.colors.mid), hex(chart.colors.pos)],
+      showLegend: true, legendPos: 'b', showValue: false,
+      valAxisLabelFormatCode: '0"%";0"%"', valAxisMinVal: -100, valAxisMaxVal: 100, valAxisMajorUnit: 25,
+    });
+  } else if (chart.kind === 'line') {
+    // Averages per month on the grade scale, with C as a flat reference line.
+    const vals = chart.values.map((v) => (v === null ? null : Math.round(v * 10) / 10));
+    slide.addChart(pptx.ChartType.line, [
+      { name: title, labels: chart.categories, values: vals as number[] },
+      { name: 'C', labels: chart.categories, values: chart.categories.map(() => 8) },
+    ], {
+      ...common, chartColors: [SERIES[0], 'A8A29E'], lineSize: 2, lineDataSymbol: 'circle', lineDataSymbolSize: 6,
+      showLegend: false, showValue: false, displayBlanksAs: 'gap',
+      valAxisMinVal: 1, valAxisMaxVal: 15, valAxisMajorUnit: 3, valAxisLabelFormatCode: '0',
+      valAxisTitle: 'E = 2 · D = 5 · C = 8 · B = 11 · A = 14', showValAxisTitle: true, valAxisTitleFontSize: 7, valAxisTitleColor: MUTED,
+    });
   } else {
     slide.addChart(pptx.ChartType.doughnut, [{ name: title, labels: chart.categories, values: chart.values }], {
       ...common, chartColors: chart.colors ? chart.colors.map((c) => c.replace('#', '').toUpperCase()) : SERIES,

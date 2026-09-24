@@ -122,9 +122,17 @@ function tiles(s: Sheet, list: DeckTile[], y: number, maxH: number): number {
     const x = MARGIN + (i % perRow) * (w + gap);
     const ty = y + Math.floor(i / perRow) * (h + gap);
     s.rect(x, ty, w, h, TILE, LINE, 6);
-    s.text(tile.label, x + 10, ty + 16, { size: 7.5, color: MUTED, maxWidth: w - 20 });
-    s.text(tile.value, x + 10, ty + 44, { size: tile.value.length > 12 ? 14 : 20, bold: true, maxWidth: w - 20 });
-    if (tile.sub) s.text(tile.sub, x + 10, ty + h - 12, { size: 7.5, color: INK_2, maxWidth: w - 20 });
+    if (h < 64) {
+      // A short row (tiles above a chart and a table): label and sub share
+      // the top line, the value sits under them — nothing stacks into it.
+      s.text(tile.label, x + 10, ty + 13, { size: 7, color: MUTED, maxWidth: (w - 20) * (tile.sub ? 0.58 : 1) });
+      if (tile.sub) s.text(tile.sub, x + w - 10, ty + 13, { size: 7, color: INK_2, align: 'right', maxWidth: (w - 20) * 0.4 });
+      s.text(tile.value, x + 10, ty + Math.min(h - 8, 36), { size: tile.value.length > 12 ? 12 : 16, bold: true, maxWidth: w - 20 });
+    } else {
+      s.text(tile.label, x + 10, ty + 16, { size: 7.5, color: MUTED, maxWidth: w - 20 });
+      s.text(tile.value, x + 10, ty + 44, { size: tile.value.length > 12 ? 14 : 20, bold: true, maxWidth: w - 20 });
+      if (tile.sub) s.text(tile.sub, x + 10, ty + h - 12, { size: 7.5, color: INK_2, maxWidth: w - 20 });
+    }
   });
   return rows * h + (rows - 1) * gap;
 }
@@ -224,7 +232,76 @@ function drawChart(s: Sheet, heading: string, chart: DeckChart, x: number, y: nu
     return;
   }
 
-  // donut → a proportion bar: the same shares, readable in print.
+  if (chart.kind === 'diverging') {
+    // Rows centred on the neutral middle: negative left, positive right, in
+    // shares so rows of different size compare; the % at each end.
+    const rows = chart.categories.length;
+    const legendH = 14;
+    const rowH = Math.min(34, (height - legendH) / Math.max(1, rows));
+    const labelW = Math.min(150, w * 0.3);
+    const trackX = x + labelW;
+    const trackW = w - labelW;
+    const mid = trackX + trackW / 2;
+    const shares = chart.categories.map((_, i) => {
+      const n = chart.neg[i] + chart.mid[i] + chart.pos[i];
+      return n ? { n, neg: chart.neg[i] / n, mid: chart.mid[i] / n, pos: chart.pos[i] / n } : null;
+    });
+    const reach = Math.max(0.01, ...shares.map((v) => (v ? Math.max(v.neg + v.mid / 2, v.pos + v.mid / 2) : 0)));
+    const px = (v: number) => (v / reach) * (trackW / 2);
+    const cNeg = hexRgb(chart.colors.neg); const cMid = hexRgb(chart.colors.mid); const cPos = hexRgb(chart.colors.pos);
+    chart.categories.forEach((label, i) => {
+      const ry = top + i * rowH;
+      const v = shares[i];
+      s.text(label, x, ry + rowH * 0.45, { size: 7.5, color: INK_2, maxWidth: labelW - 6 });
+      if (v) s.text(`n = ${v.n}`, x, ry + rowH * 0.45 + 9, { size: 6.5, color: MUTED });
+      const by = ry + rowH * 0.2;
+      const bh = rowH * 0.42;
+      s.rect(trackX, by, trackW, bh, LINE);
+      if (v) {
+        const half = px(v.mid / 2);
+        if (v.neg) s.rect(mid - half - px(v.neg), by, px(v.neg), bh, cNeg);
+        if (v.mid) s.rect(mid - half, by, px(v.mid), bh, cMid);
+        if (v.pos) s.rect(mid + half, by, px(v.pos), bh, cPos);
+        s.text(`${chart.labels.neg} ${Math.round(v.neg * 100)} %`, trackX, by + bh + 8, { size: 6.5, color: INK_2 });
+        s.text(`${chart.labels.pos} ${Math.round(v.pos * 100)} %`, trackX + trackW, by + bh + 8, { size: 6.5, color: INK_2, align: 'right' });
+      }
+      s.line(mid, by - 2, mid, by + bh + 2, MUTED, 0.6);
+    });
+    legend(s, [{ name: chart.labels.neg, color: cNeg }, { name: chart.labels.mid, color: cMid }, { name: chart.labels.pos, color: cPos }], x, top + rows * rowH + 8);
+    return;
+  }
+
+  if (chart.kind === 'line') {
+    // Averages over time on the grade scale; C dashed as the reference, a
+    // point from fewer than three observations drawn hollow.
+    const vals = chart.values.filter((v): v is number => v !== null);
+    if (!vals.length) { s.text('–', x + w / 2, top + 20, { size: 7, color: MUTED, align: 'center' }); return; }
+    const lo = Math.max(1, Math.min(NORMAL_SCORE - 1, Math.floor(Math.min(...vals)) - 1));
+    const hi = Math.min(15, Math.max(NORMAL_SCORE + 1, Math.ceil(Math.max(...vals)) + 1));
+    const left = 14;
+    const plotH = height - 20;
+    const n = chart.categories.length;
+    const px = (i: number) => x + left + (n === 1 ? (w - left) / 2 : ((w - left - 8) * i) / (n - 1));
+    const py = (v: number) => top + 4 + plotH - ((v - lo) / (hi - lo)) * plotH;
+    for (const l of ['E', 'D', 'C', 'B', 'A']) {
+      const v = GRADE_SCALE[l];
+      if (v < lo || v > hi) continue;
+      s.line(x + left, py(v), x + w, py(v), v === NORMAL_SCORE ? MUTED : LINE, v === NORMAL_SCORE ? 0.8 : 0.5);
+      s.text(l, x + left - 5, py(v) + 2.5, { size: 6.5, color: MUTED, align: 'right' });
+    }
+    let prev: [number, number] | null = null;
+    chart.values.forEach((v, i) => {
+      if (v === null) { prev = null; return; }
+      const pt: [number, number] = [px(i), py(v)];
+      if (prev) s.line(prev[0], prev[1], pt[0], pt[1], SERIES[0], 1.6);
+      prev = pt;
+    });
+    chart.values.forEach((v, i) => { if (v !== null) s.circle(px(i), py(v), 3, SERIES[0], isThin(chart.ns[i])); });
+    chart.categories.forEach((c, i) => s.text(c, px(i), top + plotH + 16, { size: 7, color: MUTED, align: 'center' }));
+    return;
+  }
+
+  // donut / stack → a proportion bar: the same shares, readable in print.
   const total = chart.values.reduce((a, b) => a + b, 0);
   const barY = top + 4;
   const barH = 14;

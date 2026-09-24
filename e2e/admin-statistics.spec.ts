@@ -280,7 +280,8 @@ test('the deck: one set of slides per level and per group, empty slices left out
   }
   // No figure in a slice set is empty.
   for (const s of deck.slides) for (const f of s.figures ?? []) {
-    const v = f.chart.kind === 'columns' ? f.chart.values.flat() : f.chart.values;
+    const c = f.chart;
+    const v = c.kind === 'columns' ? c.values.flat() : c.kind === 'diverging' ? [...c.neg, ...c.mid, ...c.pos] : c.values;
     if (s.title.startsWith('Niveau ') || s.title.startsWith('Gruppe: ')) expect(v.some((n) => n !== null && n > 0)).toBe(true);
   }
   // Without the slices, the deck is the aggregate alone.

@@ -109,7 +109,7 @@ export function ColumnChart({ data, series, height = 180, soft = [], slotWidth =
 // A share across a few ordered or named parts — coverage by visits, 1. SR vs
 // 2. SR, a three-way assessment. Segments sit 2px apart; the legend under it
 // carries every count and share, so no colour has to be read alone.
-export const SEQ_BLUE = ['#c3daf7', '#6aa6ea', '#2466c0', '#132f5c'] as const; // validated: adjacent ΔE ≥ 16.5
+export { SEQ_BLUE } from '../lib/statsLabels';
 export type Segment = { key: string; label: string; value: number; color: string };
 
 export function StackBar({ segments, format = fmtInt }: { segments: Segment[]; format?: (n: number) => string }) {

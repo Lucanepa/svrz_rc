@@ -36,6 +36,15 @@ export interface Results {
    *  table allows this referee. Empty on a report filed before it existed, or
    *  when the level told the form nothing. */
   secondBesuchRole?: '1SR' | '2SR' | '';
+  /** What the referee wants, beside the goal: two independent ticks — both,
+   *  either or neither. Absent on a report filed before they existed. */
+  wantsPromotion?: 'Y' | '';
+  wantsCandidate?: 'Y' | '';
+  /** The language the referee reads: their PDF is built in it, whatever
+   *  language the coach works in. Empty or absent means German, the default.
+   *  Kept with the results so a draft carries it and the next referee starts
+   *  from German again. */
+  refereeLang?: 'DE' | 'EN' | '';
 }
 
 export interface FeedbackFormData {

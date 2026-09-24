@@ -97,9 +97,11 @@ const LABELS = {
     criteria: 'Kriterien',
     matchLevel: 'Spielniveau',
     motivation: 'Motivation',
-    outlook: 'Ausblick',
+    outlook: 'Einstufung',
     secondVisit: 'Weiterer Besuch',
     refGoal: 'SR-Ziel',
+    wantsPromotion: 'Will befördert werden',
+    wantsCandidate: 'Kandidat:in nächste Saison',
     easy: 'Leicht',
     normal: 'Normal',
     difficult: 'Schwierig',
@@ -132,6 +134,8 @@ const LABELS = {
     outlook: 'Outlook',
     secondVisit: 'Further visit',
     refGoal: 'Referee Goal',
+    wantsPromotion: 'Wants to be promoted',
+    wantsCandidate: "Next year's candidates",
     easy: 'Easy',
     normal: 'Normal',
     difficult: 'Difficult',
@@ -569,7 +573,9 @@ function drawResultsRow(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
   if (sheet.blank) {
     sheet.field({ name: 'matchLevel', x: lvlX + 4, y: top + 15, w: cellW - 8, h: 14 });
   } else {
-    const levels: [string, string][] = [['leicht', t.easy], ['normal', t.normal], ['schwierig', t.difficult]];
+    // A sent report shows what was chosen, not the menu it was chosen from.
+    const levels = ([['leicht', t.easy], ['normal', t.normal], ['schwierig', t.difficult]] as [string, string][])
+      .filter(([value]) => results.spielniveau === value);
     let chipX = lvlX + 5;
     sheet.font('bold', 5.6);
     for (const [value, label] of levels) {
@@ -590,7 +596,8 @@ function drawResultsRow(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
   ];
   for (const [key, label, col] of verdicts) {
     const x = cellLabel(label, col);
-    (['up', 'check', 'down'] as const).forEach((kind, i) => {
+    // The blank form offers all three; a filled one shows only the answer.
+    (['up', 'check', 'down'] as const).filter((kind) => sheet.blank || results[key] === kind).forEach((kind, i) => {
       const bx = x + 5 + i * 17;
       const chosen = !sheet.blank && results[key] === kind;
       drawChoiceBox(sheet, bx, top + 15, 14, 14, chosen, (colour) =>
@@ -600,7 +607,8 @@ function drawResultsRow(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
 
   // Further visit — Y / N.
   const visitX = cellLabel(t.secondVisit, 3);
-  (['Y', 'N'] as const).forEach((value, i) => {
+  const visitValues = (['Y', 'N'] as const).filter((value) => sheet.blank || results.secondBesuch === value);
+  visitValues.forEach((value, i) => {
     const bx = visitX + 5 + i * 17;
     const chosen = !sheet.blank && results.secondBesuch === value;
     drawChoiceBox(sheet, bx, top + 15, 14, 14, chosen, (colour) => {
@@ -612,13 +620,22 @@ function drawResultsRow(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
   const visitRole = !sheet.blank && results.secondBesuch === 'Y' ? results.secondBesuchRole || '' : '';
   if (visitRole) {
     sheet.font('bold', 7.5, INK);
-    doc.text(`→ ${visitRole}`, visitX + 5 + 2 * 17 + 2, top + 22.5, { baseline: 'middle' });
+    doc.text(`→ ${visitRole}`, visitX + 5 + visitValues.length * 17 + 2, top + 22.5, { baseline: 'middle' });
   }
 
   // Referee goal — free text.
   const goalX = cellLabel(t.refGoal, 4);
+  // What the referee wants, under the goal — only what was ticked.
+  const wants = sheet.blank ? [] : [
+    results.wantsPromotion === 'Y' ? t.wantsPromotion : '',
+    results.wantsCandidate === 'Y' ? t.wantsCandidate : '',
+  ].filter(Boolean);
   sheet.font('normal', 8.5, INK);
-  sheet.fitText(sheet.blank ? '' : results.srZiel, goalX + 5, top + 23, cellW - 10, 8.5);
+  sheet.fitText(sheet.blank ? '' : results.srZiel, goalX + 5, wants.length ? top + 18 : top + 23, cellW - 10, 8.5);
+  wants.forEach((w, i) => {
+    sheet.font('bold', 5.8, INK);
+    sheet.fitText(`» ${w}`, goalX + 5, top + 27 + i * 6.5, cellW - 10, 5.8, 4.5);
+  });
   sheet.field({ name: 'refGoal', x: goalX + 4, y: top + 15, w: cellW - 8, h: 14 });
 
   sheet.y = top + h;

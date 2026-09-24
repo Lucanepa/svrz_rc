@@ -171,7 +171,7 @@ const UI_STRINGS = {
     criteria: "Kriterien",
     matchLevel: "Spielniveau",
     motivation: "Motivation",
-    rating: "Ausblick",
+    rating: "Einstufung",
     secondVisit: "Weiterer Besuch",
     remarks: "Bemerkungen",
     refGoal: "SR-Ziel",
@@ -282,7 +282,7 @@ const UI_STRINGS = {
     muRefName: "SR-Name", muRefLevel: "SR-Niveau", muRc: "Referee Coach", muGroup: "Gruppe",
     muPlusMinus: "+/- Noten", muPlusMinusOn: "A+ bis E- verfügbar", muPlusMinusOff: "A bis E",
     muGameLevel: "Spielniveau", muEasy: "Leicht", muNormal: "Normal", muHard: "Schwierig",
-    muMotivation: "Motivation", muOutlook: "Ausblick",
+    muMotivation: "Motivation", muOutlook: "Einstufung",
     muSecondVisit: "2. Besuch", muYes: "Ja", muNo: "Nein", muRefGoal: "SR-Ziel",
     muHighlights: "Positiv / Stärken", muImprovements: "Verbesserungspotenzial",
     muGoals: "Ziele / Nächste Schritte", muRemarks: "Bemerkungen",
@@ -3534,12 +3534,11 @@ export default function App() {
     const de = formData.lang === 'DE';
     try {
       const { buildFeedbackPdf } = await loadPdfBuilder();
-      // The PDF is always German — it is the document the referee is sent and
-      // files, and the coaching vocabulary it is written in is German whatever
-      // language the coach set the app to. The emailed copy already did this; the
-      // downloaded one carried the UI language, so the same observation existed
-      // as two different documents.
-      const pdfData = toGermanFormData(formData);
+      // The PDF is the one the referee is sent: in the language picked for
+      // them at the top of the form (German unless English was chosen),
+      // whatever the app is set to — so the downloaded copy and the mailed
+      // one are the same document.
+      const pdfData = toRefereePdfData(formData);
       const pdf = buildFeedbackPdf(pdfData);
 
       const file = new File([pdf.output('blob')], pdfFilename(pdfData), { type: 'application/pdf' });
@@ -3719,21 +3718,25 @@ export default function App() {
    * catalogue rather than from `fd.sections`, which carries whichever language
    * was on screen; ratings travel with the item id.
    */
-  const toGermanFormData = (fd: FeedbackFormData): FeedbackFormData => {
+  const toFormLang = (fd: FeedbackFormData, lang: 'DE' | 'EN'): FeedbackFormData => {
     const catalogue = adjustSectionsFor2SR(
-      fd.role === '1. SR' ? SECTIONS_1SR_DE : SECTIONS_2SR_DE,
+      fd.role === '1. SR' ? (lang === 'DE' ? SECTIONS_1SR_DE : SECTIONS_1SR_EN) : (lang === 'DE' ? SECTIONS_2SR_DE : SECTIONS_2SR_EN),
       gameHas2SR,
     );
     const ratings = new Map(fd.sections.flatMap(s => s.items.map(i => [i.id, i.rating] as const)));
     return {
       ...fd,
-      lang: 'DE' as const,
+      lang,
       sections: catalogue.map(section => ({
         ...section,
         items: section.items.map(item => ({ ...item, rating: ratings.get(item.id) ?? '' })),
       })),
     };
   };
+  const toGermanFormData = (fd: FeedbackFormData) => toFormLang(fd, 'DE');
+  /** The document the referee is sent: in the language they read (German
+   *  unless the coach picked English), whatever the app is set to. */
+  const toRefereePdfData = (fd: FeedbackFormData) => toFormLang(fd, fd.results.refereeLang === 'EN' ? 'EN' : 'DE');
 
   const submitSingleFeedback = async (fd: FeedbackFormData, tips: string): Promise<string> => {
     if (!selectedGame) throw new Error(t.noGames);
@@ -3764,7 +3767,7 @@ export default function App() {
         role: fd.role,
         refereeId: svClaimOnSlot(selectedGame!, fd.role, about),
         formData: deFormData,
-        pdfBase64: feedbackPdfBase64(deFormData),
+        pdfBase64: feedbackPdfBase64(toRefereePdfData(fd)),
         pdfFilename: pdfFilename(deFormData),
         tipsAndTricks: tips,
         // Only for the half that was actually reopened: the other referee's
@@ -4087,7 +4090,7 @@ export default function App() {
     const goalSaid = /[\p{L}\p{N}]/u.test(String(r.srZiel || ''));
     if (!r.spielniveau || !r.motivation || !r.einstufung || !r.secondBesuch || !goalSaid) {
       return fd.lang === 'DE'
-        ? 'Bitte alle Felder im unteren Bereich ausfüllen (Spielniveau, Motivation, Ausblick, 2. Besuch, SR-Ziel).'
+        ? 'Bitte alle Felder im unteren Bereich ausfüllen (Spielniveau, Motivation, Einstufung, 2. Besuch, SR-Ziel).'
         : 'Please fill in all bottom fields (Match Level, Motivation, Outlook, 2nd Visit, Referee Goal).';
     }
     // The result is on the form and in the mail the coachee gets, so a missing
@@ -8858,6 +8861,33 @@ export default function App() {
               </h1>
             </div>
           </div>
+          {/* Which language the referee reads. Their PDF is built in it,
+              whatever language the coach works in; German unless changed. */}
+          <div
+            role="group"
+            aria-label={formData.lang === 'DE' ? 'Sprache des PDF für den SR' : 'Language of the referee\'s PDF'}
+            className={cn('flex shrink-0 items-center gap-2 print:hidden', formDisabled && 'pointer-events-none opacity-60')}
+          >
+            <span className="text-[10px] font-bold uppercase text-stone-500">
+              {formData.lang === 'DE' ? 'SR spricht' : 'Referee speaks'}
+            </span>
+            <div className="flex overflow-hidden rounded border border-stone-300">
+              {(['DE', 'EN'] as const).map((l) => {
+                const on = (formData.results.refereeLang === 'EN' ? 'EN' : 'DE') === l;
+                return (
+                  <button
+                    key={l}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => setFormData(prev => ({ ...prev, results: { ...prev.results, refereeLang: l === 'DE' ? '' : 'EN' } }))}
+                    className={cn('h-8 px-3 text-xs font-bold transition-colors', on ? SELECTED_RESULT : 'bg-white text-stone-600 hover:bg-stone-100')}
+                  >
+                    {l}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
         {/* Meta Data Grid — inside the disabled wrapper's reach: a filed or
@@ -9159,6 +9189,31 @@ export default function App() {
               value={formData.results.srZiel}
               onChange={e => setFormData(prev => ({ ...prev, results: { ...prev.results, srZiel: e.target.value } }))}
             />
+            {/* What the referee wants, beside the goal: two independent
+                ticks, drawn as the result buttons are. Both, either or
+                neither; tapping again clears. */}
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {([
+                ['wantsPromotion', formData.lang === 'DE' ? 'Will befördert werden' : 'Wants to be promoted'],
+                ['wantsCandidate', formData.lang === 'DE' ? 'Kandidat:in nächste Saison' : "Next year's candidates"],
+              ] as const).map(([key, label]) => {
+                const on = formData.results[key] === 'Y';
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => setFormData(prev => ({ ...prev, results: { ...prev.results, [key]: prev.results[key] === 'Y' ? '' : 'Y' } }))}
+                    className={cn(
+                      "min-h-8 px-2 py-1 border border-stone-300 rounded text-[11px] font-bold leading-tight text-left transition-all",
+                      on ? SELECTED_RESULT : "bg-white hover:bg-stone-100"
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 

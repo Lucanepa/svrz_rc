@@ -383,7 +383,7 @@ export async function fillWholeForm(page: Page): Promise<void> {
   const group = (heading: RegExp) => page.getByRole('heading', { name: heading }).locator('xpath=..');
   await group(/Match Level|Spielniveau/).getByRole('button', { name: /^(Normal)$/ }).click();
   await group(/^(Motivation)$/).getByRole('button', { name: '✓' }).click();
-  await group(/Outlook|Ausblick/).getByRole('button', { name: '✓' }).click();
+  await group(/Outlook|Einstufung/).getByRole('button', { name: '✓' }).click();
   await group(/Further visit|Weiterer Besuch/).getByRole('button', { name: 'N', exact: true }).click();
   await group(/Referee Goal|SR-Ziel/).locator('input').fill('2L');
   // A 3:0 built from three legal sets — the match score is derived, not typed.

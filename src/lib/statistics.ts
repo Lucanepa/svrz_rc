@@ -191,7 +191,45 @@ export type SeasonStatisticsCore = {
     srZiel: Dist;
   };
   fun: StatFun;
+  /** Absent from an API older than the trend. */
+  trend?: StatTrend;
 };
+
+// ── Trend ────────────────────────────────────────────────────────────────────
+// A coachee seen more than once this season: their first observation's
+// average grade against their latest one. Only the two ends count, so a
+// coachee with two visits and one with three read the same way — did the
+// grade go up, stay, or go down since the first visit. Less than half a step
+// on the 1–15 scale (a third of a letter) is "the same".
+export const TREND_SAME_BAND = 0.5;
+export type TrendAgg = {
+  /** Coachees with two or more graded observations. */
+  coachees: number;
+  improved: number;
+  same: number;
+  worse: number;
+  /** Sum of (latest − first) over those coachees, in scale points. */
+  deltaSum: number;
+};
+export type TrendRow = TrendAgg & { key: string };
+export type StatTrend = TrendAgg & {
+  /** By the Niveau of the coachee's latest observation. */
+  byLevel: TrendRow[];
+  /** By every group the coachee's latest observation carried. */
+  byGroup: TrendRow[];
+};
+export const emptyTrend = (): TrendAgg => ({ coachees: 0, improved: 0, same: 0, worse: 0, deltaSum: 0 });
+export function trendOf(delta: number): 'improved' | 'same' | 'worse' {
+  return delta >= TREND_SAME_BAND ? 'improved' : delta <= -TREND_SAME_BAND ? 'worse' : 'same';
+}
+export const trendAvgDelta = (t: TrendAgg | undefined): number | null =>
+  t && t.coachees > 0 ? Math.round((t.deltaSum / t.coachees) * 10) / 10 : null;
+
+// ── Breakdowns ───────────────────────────────────────────────────────────────
+/** One slice of the season (a Niveau, a Stufe, a group), computed with the
+ *  same filters plus that slice's. Sent with `breakdown=1`. */
+export type StatSlice = { key: string; stats: SeasonStatisticsCore };
+export type StatBreakdowns = { level: StatSlice[]; stufe: StatSlice[]; group: StatSlice[] };
 
 export type SeasonStatistics = SeasonStatisticsCore & {
   /** The season before, same filters — null when it holds no observation. */
@@ -206,7 +244,40 @@ export type StatOptions = {
   seasons: number[];
 };
 
-export type StatisticsResponse = { stats: SeasonStatistics; options: StatOptions };
+export type StatisticsResponse = { stats: SeasonStatistics; options: StatOptions; breakdowns?: StatBreakdowns };
+
+// ── Per-coachee summary (Admin → Coachees → export) ──────────────────────────
+export type CoacheeSummary = {
+  coacheeId: string;
+  observations: number;
+  obs1SR: number;
+  obs2SR: number;
+  /** Average grade over every rated criterion, and per role. */
+  grade: GradeAgg;
+  grade1SR: GradeAgg;
+  grade2SR: GradeAgg;
+  firstDate: string;
+  lastDate: string;
+  /** First and latest observation's own average; delta and its reading when there are two. */
+  firstAvg: number | null;
+  lastAvg: number | null;
+  trend: 'improved' | 'same' | 'worse' | '';
+  /** Einstufung counts over the season, and the latest one. */
+  einstufungUp: number;
+  einstufungSame: number;
+  einstufungDown: number;
+  lastEinstufung: string;
+  lastMotivation: string;
+  lastSpielniveau: string;
+  lastSecondBesuch: string;
+  lastSecondBesuchRole: string;
+  lastSrZiel: string;
+  /** Ticked on any observation this season. */
+  wantsPromotion: boolean;
+  wantsCandidate: boolean;
+  rcs: string[];
+};
+export type CoacheeSummaryResponse = { season: number; summaries: CoacheeSummary[] };
 
 // ── Derived readings ─────────────────────────────────────────────────────────
 export const pct = (part: number, whole: number): number | null =>
@@ -241,7 +312,7 @@ export function rcFirstNamer(people: RcNameRecord[], extraFullNames: string[] = 
   const add = (e: Entry, id?: string) => {
     entries.push(e);
     if (id) byId.set(id, e);
-    if (e.full && !byFull.has(normName(e.full))) byFull.set(normName(e.full), e);
+    if (e.full && !byFull.has(normName(e.full))) byFull.set(normName(e.full), e); // identity:display — picks the first name a label shows; ids are tried first and nothing is merged
   };
   for (const p of people) {
     const first = (p.first_name ?? '').trim();
@@ -251,23 +322,23 @@ export function rcFirstNamer(people: RcNameRecord[], extraFullNames: string[] = 
   }
   for (const raw of extraFullNames) {
     const full = raw.trim().replace(/\s+/g, ' ');
-    if (!full || byFull.has(normName(full))) continue;
+    if (!full || byFull.has(normName(full))) continue; // identity:display — picks the first name a label shows; ids are tried first and nothing is merged
     const [first, ...rest] = full.split(' ');
     add({ first, last: rest.join(' '), full });
   }
   const firstCount = new Map<string, number>();
-  for (const e of entries) firstCount.set(normName(e.first), (firstCount.get(normName(e.first)) ?? 0) + 1);
+  for (const e of entries) firstCount.set(normName(e.first), (firstCount.get(normName(e.first)) ?? 0) + 1); // identity:display — picks the first name a label shows; ids are tried first and nothing is merged
   const initialOf = (e: Entry) => `${e.first} ${e.last ? `${e.last[0]}.` : ''}`.trim();
   const initialCount = new Map<string, number>();
   for (const e of entries) {
-    if ((firstCount.get(normName(e.first)) ?? 0) > 1) initialCount.set(normName(initialOf(e)), (initialCount.get(normName(initialOf(e))) ?? 0) + 1);
+    if ((firstCount.get(normName(e.first)) ?? 0) > 1) initialCount.set(normName(initialOf(e)), (initialCount.get(normName(initialOf(e))) ?? 0) + 1); // identity:display — picks the first name a label shows; ids are tried first and nothing is merged
   }
   const display = (e: Entry): string => {
-    if ((firstCount.get(normName(e.first)) ?? 0) <= 1) return e.first;
-    return (initialCount.get(normName(initialOf(e))) ?? 0) <= 1 ? initialOf(e) : e.full;
+    if ((firstCount.get(normName(e.first)) ?? 0) <= 1) return e.first; // identity:display — picks the first name a label shows; ids are tried first and nothing is merged
+    return (initialCount.get(normName(initialOf(e))) ?? 0) <= 1 ? initialOf(e) : e.full; // identity:display — picks the first name a label shows; ids are tried first and nothing is merged
   };
   return ({ id, name }) => {
-    const e = (id ? byId.get(id) : undefined) ?? byFull.get(normName(name));
+    const e = (id ? byId.get(id) : undefined) ?? byFull.get(normName(name)); // identity:display — picks the first name a label shows; ids are tried first and nothing is merged
     if (e) return display(e);
     return name.trim().split(/\s+/)[0] || name;
   };
@@ -288,6 +359,7 @@ export function withRcFirstNames(resp: StatisticsResponse, people: RcNameRecord[
     fun: { ...c.fun, topWriter: c.fun.topWriter ? { ...c.fun.topWriter, name: nameOf({ name: c.fun.topWriter.name }) } : null },
   });
   return {
+    ...resp,
     stats: { ...relabel(resp.stats), previous: resp.stats.previous ? relabel(resp.stats.previous) : null },
     options: {
       ...resp.options,

@@ -22,10 +22,11 @@ import { parseResult, isSetComplete } from '../src/lib/matchResult.ts';
 import { splitCoacheeGroups } from '../src/lib/coacheeGroup.ts';
 import { richToPlain } from '../src/lib/richText.ts';
 import {
-  countChars, countWords, emptyGrade, GRADE_SCALE, gradeToScore, mergeGrade, NORMAL_SCORE,
+  countChars, countWords, emptyGrade, emptyTrend, GRADE_SCALE, gradeToScore, mergeGrade, NORMAL_SCORE, trendOf,
+  type CoacheeSummary, type StatTrend, type TrendAgg, type TrendRow,
   type CriterionAgg, type Dist, type GradeAgg, type RcBucket, type SeasonStatisticsCore,
   type SectionAgg, type StatBucket, type StatFilters, type StatFun, type StatOptions,
-  type StatRole, type StatTotals,
+  type StatRole, type StatTotals, type StatBreakdowns, type StatSlice,
 } from '../src/lib/statistics.ts';
 
 export type StatObservation = {
@@ -68,7 +69,12 @@ export type StatObservation = {
   motivation: string;
   spielniveau: string;
   secondBesuch: string;
+  /** The role a Y named ('1SR' / '2SR'), '' for a plain Y. Optional: older fixtures. */
+  secondBesuchRole?: string;
   srZiel: string;
+  /** The two ticks under the SR goal. Optional: older fixtures. */
+  wantsPromotion?: boolean;
+  wantsCandidate?: boolean;
   words: number;
   chars: number;
   filled: { highlights: boolean; improvements: boolean; goals: boolean };
@@ -182,7 +188,10 @@ export function observationFromFeedback(args: {
     motivation: text(results.motivation),
     spielniveau: text(results.spielniveau),
     secondBesuch: text(results.secondBesuch).toUpperCase(),
+    secondBesuchRole: text(results.secondBesuchRole),
     srZiel: text(results.srZiel),
+    wantsPromotion: text(results.wantsPromotion).toUpperCase() === 'Y',
+    wantsCandidate: text(results.wantsCandidate).toUpperCase() === 'Y',
     words: countWords(all),
     chars: countChars(all),
     filled: {
@@ -361,6 +370,117 @@ function top<T extends { count: number }>(map: Map<string, number>, make: (name:
     if (!best || count > best.count) best = make(name, count);
   }
   return best;
+}
+
+/** One observation's own average grade, or null when it rated nothing. */
+function obsAvg(o: StatObservation): number | null {
+  return o.ratings.length ? o.ratings.reduce((a, r) => a + r.score, 0) / o.ratings.length : null;
+}
+
+/** Game date first, filing time second — the order visits happened in. */
+function chronological(a: StatObservation, b: StatObservation): number {
+  return (dayKey(a.gameDate) || '').localeCompare(dayKey(b.gameDate) || '')
+    || String(a.gameDate).localeCompare(String(b.gameDate))
+    || String(a.submittedAt).localeCompare(String(b.submittedAt));
+}
+
+/** Each coachee's graded observations, oldest first. */
+function gradedByCoachee(observations: StatObservation[]): Map<string, StatObservation[]> {
+  const by = new Map<string, StatObservation[]>();
+  for (const o of observations) {
+    if (!o.coacheeId || obsAvg(o) === null) continue;
+    const list = by.get(o.coacheeId) ?? [];
+    list.push(o);
+    by.set(o.coacheeId, list);
+  }
+  for (const list of by.values()) list.sort(chronological);
+  return by;
+}
+
+/** First visit against latest, per coachee with two or more graded visits. */
+export function computeTrend(observations: StatObservation[]): StatTrend {
+  const total = emptyTrend();
+  const levels = new Map<string, TrendAgg>();
+  const groups = new Map<string, TrendAgg>();
+  const add = (agg: TrendAgg, delta: number) => {
+    agg.coachees += 1;
+    agg[trendOf(delta)] += 1;
+    agg.deltaSum += delta;
+  };
+  for (const list of gradedByCoachee(observations).values()) {
+    if (list.length < 2) continue;
+    const first = list[0];
+    const last = list[list.length - 1];
+    const delta = obsAvg(last)! - obsAvg(first)!;
+    add(total, delta);
+    const lv = niveauOf(last.level);
+    if (!levels.has(lv)) levels.set(lv, emptyTrend());
+    add(levels.get(lv)!, delta);
+    for (const g of last.groups.length ? last.groups : ['']) {
+      if (!groups.has(g)) groups.set(g, emptyTrend());
+      add(groups.get(g)!, delta);
+    }
+  }
+  const rows = (m: Map<string, TrendAgg>, order: (a: TrendRow, b: TrendRow) => number): TrendRow[] =>
+    [...m.entries()].map(([key, agg]) => ({ key, ...agg, deltaSum: Math.round(agg.deltaSum * 100) / 100 })).sort(order);
+  return {
+    ...total,
+    deltaSum: Math.round(total.deltaSum * 100) / 100,
+    byLevel: rows(levels, (a, b) => (LEVEL_ORDER.indexOf(a.key) + 99 * +(a.key === '')) - (LEVEL_ORDER.indexOf(b.key) + 99 * +(b.key === ''))),
+    byGroup: rows(groups, (a, b) => b.coachees - a.coachees || a.key.localeCompare(b.key, 'de')),
+  };
+}
+
+/** Everything the season says about each coachee — the columns of the
+ *  coachee export. Filters do not apply: it is the whole season. */
+export function coacheeSummaries(observations: StatObservation[]): CoacheeSummary[] {
+  const by = new Map<string, StatObservation[]>();
+  for (const o of observations) {
+    if (!o.coacheeId) continue;
+    const list = by.get(o.coacheeId) ?? [];
+    list.push(o);
+    by.set(o.coacheeId, list);
+  }
+  const out: CoacheeSummary[] = [];
+  for (const [coacheeId, list] of by) {
+    list.sort(chronological);
+    const grade = (pick: (o: StatObservation) => boolean) => list.filter(pick).reduce(
+      (acc, o) => mergeGrade(acc, { obs: o.ratings.length ? 1 : 0, items: o.ratings.length, sum: o.ratings.reduce((a, r) => a + r.score, 0) }),
+      emptyGrade(),
+    );
+    const graded = list.filter((o) => obsAvg(o) !== null);
+    const firstAvg = graded.length ? obsAvg(graded[0]) : null;
+    const lastAvg = graded.length ? obsAvg(graded[graded.length - 1]) : null;
+    const last = list[list.length - 1];
+    const round1 = (n: number | null) => (n === null ? null : Math.round(n * 10) / 10);
+    out.push({
+      coacheeId,
+      observations: list.length,
+      obs1SR: list.filter((o) => o.role === '1SR').length,
+      obs2SR: list.filter((o) => o.role === '2SR').length,
+      grade: grade(() => true),
+      grade1SR: grade((o) => o.role === '1SR'),
+      grade2SR: grade((o) => o.role === '2SR'),
+      firstDate: dayKey(list[0].gameDate) || '',
+      lastDate: dayKey(last.gameDate) || '',
+      firstAvg: round1(firstAvg),
+      lastAvg: round1(lastAvg),
+      trend: graded.length >= 2 ? trendOf(lastAvg! - firstAvg!) : '',
+      einstufungUp: list.filter((o) => o.einstufung === 'up').length,
+      einstufungSame: list.filter((o) => o.einstufung === 'check').length,
+      einstufungDown: list.filter((o) => o.einstufung === 'down').length,
+      lastEinstufung: [...list].reverse().find((o) => o.einstufung)?.einstufung ?? '',
+      lastMotivation: [...list].reverse().find((o) => o.motivation)?.motivation ?? '',
+      lastSpielniveau: [...list].reverse().find((o) => o.spielniveau)?.spielniveau ?? '',
+      lastSecondBesuch: [...list].reverse().find((o) => o.secondBesuch)?.secondBesuch ?? '',
+      lastSecondBesuchRole: [...list].reverse().find((o) => o.secondBesuch)?.secondBesuchRole ?? '',
+      lastSrZiel: [...list].reverse().find((o) => o.srZiel)?.srZiel ?? '',
+      wantsPromotion: list.some((o) => o.wantsPromotion),
+      wantsCandidate: list.some((o) => o.wantsCandidate),
+      rcs: [...new Set(list.map((o) => o.rcName).filter(Boolean))],
+    });
+  }
+  return out;
 }
 
 export function computeStatistics(input: StatisticsInput): SeasonStatisticsCore {
@@ -570,6 +690,25 @@ export function computeStatistics(input: StatisticsInput): SeasonStatisticsCore 
       srZiel: dist((o) => o.srZiel),
     },
     fun,
+    trend: computeTrend(observations),
+  };
+}
+
+/** The season cut by Niveau, by Stufe and by group, each slice computed with
+ *  the caller's filters (level and group replaced by the slice's). Slices
+ *  with neither an observation nor a coachee on the roster are left out. */
+export function computeBreakdowns(input: StatisticsInput, options: StatOptions): StatBreakdowns {
+  const base: StatFilters = { ...input.filters };
+  delete base.level;
+  delete base.group;
+  const slice = (filters: StatFilters, key: string): StatSlice => ({ key, stats: computeStatistics({ ...input, filters }) });
+  const keep = (s: StatSlice) => s.stats.totals.observations > 0 || s.stats.totals.roster > 0;
+  const niveaus = options.levels.filter((l) => !l.includes('-'));
+  const stufen = options.levels.filter((l) => l.includes('-'));
+  return {
+    level: niveaus.map((l) => slice({ ...base, level: l }, l)).filter(keep),
+    stufe: stufen.map((l) => slice({ ...base, level: l }, l)).filter(keep),
+    group: options.groups.map((g) => slice({ ...base, group: g }, g)).filter(keep),
   };
 }
 

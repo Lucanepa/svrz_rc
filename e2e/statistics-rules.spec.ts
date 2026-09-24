@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   computeStatistics, observationFromFeedback, gameFacts, filingDelayDays, normalizeLevel, statOptions,
+  computeTrend, coacheeSummaries, computeBreakdowns,
   type StatObservation, type StatRcInput, type StatCoacheeInput,
 } from '../server/statistics';
 import { gradeAvg, isThin, scoreToLetter, countWords } from '../src/lib/statistics';
@@ -251,4 +252,72 @@ test('a U23 game counts under its gender — DU23 women, HU23 men — and the le
   // A bare "U23" names no gender: Other, never a third kind of its own.
   expect(stats.byCategory.map((b) => [b.key, b.observations])).toEqual([['H', 1], ['D', 2], ['', 1]]);
   expect(stats.byDivision.map((b) => [b.key, b.observations])).toEqual([['2', 1], ['3', 1], ['5', 1], ['', 1]]);
+});
+
+// ── Trend: first visit against the latest ────────────────────────────────────
+
+const graded = (score: number) => [{ id: '1sr-prep-1', section: 0, score }, { id: '1sr-prep-2', section: 0, score }];
+
+test('trend: only the first and the latest visit count, so two and three visits read alike', () => {
+  const tr = computeTrend([
+    // c-1: C → B (8 → 11), with a dip in between that does not count.
+    obs({ id: 'a1', coacheeId: 'c-1', gameDate: '2025-10-01 18:00:00.000Z', ratings: graded(8) }),
+    obs({ id: 'a2', coacheeId: 'c-1', gameDate: '2025-11-01 18:00:00.000Z', ratings: graded(5) }),
+    obs({ id: 'a3', coacheeId: 'c-1', gameDate: '2025-12-01 18:00:00.000Z', ratings: graded(11) }),
+    // c-2: two visits, B → C: worse. Filed out of order — the game date decides.
+    obs({ id: 'b2', coacheeId: 'c-2', level: 'N4-1', groups: ['Varia'], gameDate: '2025-12-01 18:00:00.000Z', ratings: graded(8) }),
+    obs({ id: 'b1', coacheeId: 'c-2', level: 'N4-1', groups: ['Varia'], gameDate: '2025-10-01 18:00:00.000Z', ratings: graded(11) }),
+    // c-3: a change under half a step is the same.
+    obs({ id: 'c1', coacheeId: 'c-3', level: 'N2-1', groups: [], gameDate: '2025-10-01 18:00:00.000Z', ratings: [{ id: 'x', section: 0, score: 8 }, { id: 'y', section: 0, score: 9 }] }),
+    obs({ id: 'c2', coacheeId: 'c-3', level: 'N2-1', groups: [], gameDate: '2025-11-01 18:00:00.000Z', ratings: [{ id: 'x', section: 0, score: 8 }, { id: 'y', section: 0, score: 9 }, { id: 'z', section: 0, score: 8 }] }),
+    // c-4: one visit — no trend. c-5: a visit with no grades does not count as one.
+    obs({ id: 'd1', coacheeId: 'c-4' }),
+    obs({ id: 'e1', coacheeId: 'c-5', ratings: graded(8) }),
+    obs({ id: 'e2', coacheeId: 'c-5', ratings: [] }),
+  ]);
+  expect(tr).toMatchObject({ coachees: 3, improved: 1, same: 1, worse: 1 });
+  expect(tr.deltaSum).toBeCloseTo(3 - 3 - 1 / 6, 2);
+  expect(tr.byLevel.map((r) => [r.key, r.improved, r.same, r.worse])).toEqual([['N2', 0, 1, 0], ['N3', 1, 0, 0], ['N4', 0, 0, 1]]);
+  expect(tr.byGroup.find((r) => r.key === 'Varia')).toMatchObject({ coachees: 1, worse: 1 });
+  expect(tr.byGroup.find((r) => r.key === '')).toMatchObject({ coachees: 1, same: 1 });
+});
+
+test('the season statistics carry the trend, and a filter cuts it', () => {
+  const list = [
+    obs({ id: 'a1', coacheeId: 'c-1', gameDate: '2025-10-01 18:00:00.000Z', ratings: graded(8) }),
+    obs({ id: 'a2', coacheeId: 'c-1', gameDate: '2025-11-01 18:00:00.000Z', ratings: graded(11) }),
+  ];
+  const all = computeStatistics({ season: 2025, observations: list, rcs: RCS, roster: ROSTER, filters: {}, now: new Date('2026-01-01') });
+  expect(all.trend).toMatchObject({ coachees: 1, improved: 1 });
+  const other = computeStatistics({ season: 2025, observations: list, rcs: RCS, roster: ROSTER, filters: { group: 'Varia' }, now: new Date('2026-01-01') });
+  expect(other.trend?.coachees).toBe(0);
+});
+
+test('per-coachee summary: counts, averages per role, the latest answers and the ticks', () => {
+  const [s] = coacheeSummaries([
+    obs({ id: 'a1', gameDate: '2025-10-01 18:00:00.000Z', ratings: graded(8), einstufung: 'check', secondBesuch: 'Y', secondBesuchRole: '2SR', wantsPromotion: true }),
+    obs({ id: 'a2', role: '2SR', gameDate: '2025-11-01 18:00:00.000Z', ratings: graded(11), einstufung: 'up', secondBesuch: 'N', srZiel: '2L' }),
+  ]);
+  expect(s).toMatchObject({
+    coacheeId: 'c-1', observations: 2, obs1SR: 1, obs2SR: 1, firstAvg: 8, lastAvg: 11, trend: 'improved',
+    einstufungUp: 1, einstufungSame: 1, lastEinstufung: 'up', lastSecondBesuch: 'N', lastSrZiel: '2L',
+    wantsPromotion: true, wantsCandidate: false, firstDate: '2025-10-01', lastDate: '2025-11-01',
+  });
+  expect(gradeAvg(s.grade)).toBe(9.5);
+  expect(gradeAvg(s.grade1SR)).toBe(8);
+  expect(gradeAvg(s.grade2SR)).toBe(11);
+});
+
+test('breakdowns: one slice per Niveau, Stufe and group, empty ones left out', () => {
+  const list = [
+    obs({ id: 'a1', coacheeId: 'c-1' }),
+    obs({ id: 'b1', coacheeId: 'c-2', level: 'N4-1', groups: ['Varia'] }),
+  ];
+  const input = { season: 2025, observations: list, rcs: RCS, roster: ROSTER, filters: { level: 'N3' }, now: new Date('2026-01-01') };
+  const options = statOptions({ observations: list, rcs: RCS, roster: ROSTER, seasons: [2025] });
+  const b = computeBreakdowns(input, options);
+  // The slice replaces the caller's level filter rather than stacking on it.
+  expect(b.level.map((x) => [x.key, x.stats.totals.observations])).toEqual([['N2', 0], ['N3', 1], ['N4', 1]]);
+  expect(b.stufe.map((x) => x.key)).toEqual(['N2-1', 'N3-1', 'N3-2', 'N4-1'].filter((k) => k !== 'N3-1'));
+  expect(b.group.map((x) => x.key).sort()).toEqual(['Beförderung?', 'Varia']);
 });

@@ -17,7 +17,7 @@ import {
 import { installErrorAlerts } from './erroralerts.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
 import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, type ExpenseVisit } from './expenses.ts';
-import { computeStatistics, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
+import { computeBreakdowns, computeStatistics, coacheeSummaries, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
 import { archiveSlug, formsRowOf, formsEntryName, groupForms, folderKeys, type FormsRow } from './forms.ts';
 import type { StatFilters, StatRole } from '../src/lib/statistics.ts';
 import { goalForMandate, OBSERVATION_GOAL } from '../src/types.ts';
@@ -7760,6 +7760,46 @@ async function readRcGoal(): Promise<(rcId: string) => number> {
   return (rcId) => goalForMandate(defaultGoal, mandates[rcId]);
 }
 
+/** One season's observations, coaches and roster, as computeStatistics reads them. */
+function buildStatInput(raw: StatRaw, s: number, goalOf: (rcId: string) => number, now: Date) {
+  const identities = raw.people.map((p) => ({
+    id: String(p.id),
+    name: `${asText(p.first_name)} ${asText(p.last_name)}`.trim(),
+  }));
+  const inSeason = seasonWindowFilter(s, raw.manual);
+  const workload = workloadByRc(raw.people, raw.games, raw.feedbacks, inSeason, now, raw.manual);
+  const rcs: StatRcInput[] = identities.map((rc) => {
+    const load = workload.get(rc.id);
+    return { id: rc.id, name: rc.name, goal: goalOf(rc.id), planned: load?.planned ?? 0, outstanding: load?.outstanding ?? 0 };
+  });
+  const observations: StatObservation[] = [];
+  for (const fb of raw.feedbacks) {
+    const expanded = fb.expand as Record<string, AnyRecord | undefined> | undefined;
+    const game = expanded?.game;
+    if (!game || !inSeason(game)) continue;
+    const owner = identities.find((rc) => rcRefMatches(fb.rc_id, fb.rc_name, { rcId: rc.id, name: rc.name })) ?? null;
+    // A Testspiel counts nowhere — not in the season's numbers either
+    // (Luca, 17.09.2026); it was carried and marked until then.
+    if (raw.manual.has(String(game.id))) continue;
+    const observation = observationFromFeedback({ feedback: fb, game, coachee: expanded?.coachee, rc: owner, manualIds: raw.manual });
+    if (observation) observations.push(observation);
+  }
+  const roster: StatCoacheeInput[] = raw.coachees
+    .filter((c) => { const cs = coacheeRowSeason(c.season); return cs === null || cs === s; })
+    .map((c) => {
+      const stage = asText(c.stage);
+      const level = asText(c.referee_level) && /^\d$/.test(stage) ? `${asText(c.referee_level)}-${stage}` : asText(c.referee_level);
+      return {
+        id: String(c.id),
+        name: asText(c.full_name),
+        level,
+        groups: splitCoacheeGroups(asText(c.groups)),
+        active: stage !== 'inactive',
+      };
+    });
+  return { observations, rcs, roster };
+}
+
 app.get('/api/admin/statistics', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     const season = await resolveSeason(req.query.season);
@@ -7771,47 +7811,10 @@ app.get('/api/admin/statistics', requireAdminSession, async (req: Request, res: 
       ...(roleRaw === '1SR' || roleRaw === '2SR' ? { role: roleRaw as StatRole } : {}),
     };
     const compare = asText(req.query.compare) === '1';
+    const breakdown = asText(req.query.breakdown) === '1';
     const [raw, goalOf] = await Promise.all([loadStatRaw(), readRcGoal()]);
     const now = new Date();
-    const identities = raw.people.map((p) => ({
-      id: String(p.id),
-      name: `${asText(p.first_name)} ${asText(p.last_name)}`.trim(),
-    }));
-
-    const build = (s: number) => {
-      const inSeason = seasonWindowFilter(s, raw.manual);
-      const workload = workloadByRc(raw.people, raw.games, raw.feedbacks, inSeason, now, raw.manual);
-      const rcs: StatRcInput[] = identities.map((rc) => {
-        const load = workload.get(rc.id);
-        return { id: rc.id, name: rc.name, goal: goalOf(rc.id), planned: load?.planned ?? 0, outstanding: load?.outstanding ?? 0 };
-      });
-      const observations: StatObservation[] = [];
-      for (const fb of raw.feedbacks) {
-        const expanded = fb.expand as Record<string, AnyRecord | undefined> | undefined;
-        const game = expanded?.game;
-        if (!game || !inSeason(game)) continue;
-        const owner = identities.find((rc) => rcRefMatches(fb.rc_id, fb.rc_name, { rcId: rc.id, name: rc.name })) ?? null;
-        // A Testspiel counts nowhere — not in the season's numbers either
-        // (Luca, 17.09.2026); it was carried and marked until then.
-        if (raw.manual.has(String(game.id))) continue;
-        const observation = observationFromFeedback({ feedback: fb, game, coachee: expanded?.coachee, rc: owner, manualIds: raw.manual });
-        if (observation) observations.push(observation);
-      }
-      const roster: StatCoacheeInput[] = raw.coachees
-        .filter((c) => { const cs = coacheeRowSeason(c.season); return cs === null || cs === s; })
-        .map((c) => {
-          const stage = asText(c.stage);
-          const level = asText(c.referee_level) && /^\d$/.test(stage) ? `${asText(c.referee_level)}-${stage}` : asText(c.referee_level);
-          return {
-            id: String(c.id),
-            name: asText(c.full_name),
-            level,
-            groups: splitCoacheeGroups(asText(c.groups)),
-            active: stage !== 'inactive',
-          };
-        });
-      return { observations, rcs, roster };
-    };
+    const build = (s: number) => buildStatInput(raw, s, goalOf, now);
 
     const current = build(season);
     const stats = computeStatistics({ season, ...current, filters, now });
@@ -7828,10 +7831,26 @@ app.get('/api/admin/statistics', requireAdminSession, async (req: Request, res: 
       if (s !== null) seasons.add(s);
     }
     for (const c of raw.coachees) { const s = coacheeRowSeason(c.season); if (s !== null) seasons.add(s); }
+    const options = statOptions({ observations: current.observations, rcs: current.rcs, roster: current.roster, seasons: [...seasons] });
     res.json({
       stats: { ...stats, previous },
-      options: statOptions({ observations: current.observations, rcs: current.rcs, roster: current.roster, seasons: [...seasons] }),
+      options,
+      ...(breakdown ? { breakdowns: computeBreakdowns({ season, ...current, filters, now }, options) } : {}),
     });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+// Admin → Coachees → export: what the season's observations say about each
+// coachee (counts, averages, the latest assessment, the ticks). Counts and
+// the coach's structured answers only — no remark text leaves here.
+app.get('/api/admin/coachee-summaries', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    const season = await resolveSeason(req.query.season);
+    const [raw, goalOf] = await Promise.all([loadStatRaw(), readRcGoal()]);
+    const { observations } = buildStatInput(raw, season, goalOf, new Date());
+    res.json({ season, summaries: coacheeSummaries(observations) });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

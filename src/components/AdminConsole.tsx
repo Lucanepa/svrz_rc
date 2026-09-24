@@ -19,7 +19,7 @@ import {
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
   getErrorLogs, getErrorLogDates, annotateLogEntries,
   getLogMuteRules, createLogMuteRule, setLogMuteRuleEnabled, deleteLogMuteRule,
-  loadRcGameNotes, downloadFeedbackArchive,
+  loadRcGameNotes, downloadFeedbackArchive, loadCoacheeSummaries,
   loadFormsIndex, downloadRefereeForms, feedbackFileUrl, deleteFeedbackRecord, getCoacheeFootprint, type FormsFolder,
   syncGames, type GamesSyncStatus,
   getBoerseStatus, runBoerseSync, type BoerseSyncStatus,
@@ -55,6 +55,7 @@ import { GameList, GameRow, MetaChip, SectionHead, type RowTone } from './GameRo
 import { Skeleton, SkeletonRows } from './Skeleton';
 import { dayLabel, dayTimeLabel, clockLabel, dayKey, todayKey, instantOf } from '../lib/appTime';
 import { inSeasonOrManual, currentSeason, seasonLabel } from '../lib/season';
+import { importFresh } from '../lib/freshImport';
 import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
 
 type Lang = 'DE' | 'EN';
@@ -195,6 +196,7 @@ const STR = {
     reminderEnabled: 'Erinnerungen aktiv', reminderEnabledHint: 'Wenn aus, wird am Vortag nichts versendet. Der Testmodus unterdrückt den Versand zusätzlich.',
     reminderPreview: 'Vorschau: morgen', reminderPreviewHint: 'Zeigt exakt, was morgen versendet würde — es wird nichts gesendet.',
     reminderNone: 'Für morgen stehen keine Erinnerungen an.',
+    exportXlsx: 'Export xlsx', exportPdf: 'Export PDF', exportNoFigures: 'Die Auswertung pro Coachee ist auf dem Server noch nicht verfügbar — exportiert werden die Stammdaten.', exportFail: (e: string) => `Export fehlgeschlagen: ${e}`,
     importXlsx: 'xlsx importieren', importHint: (s: string) => `Import setzt die Saison ${s}. Bestehende (gleicher Name + Saison) werden aktualisiert.`,
     firstName: 'Vorname', lastName: 'Nachname', svNumber: 'SV-Nummer', aliases: 'Frühere Namen', level: 'Niveau', stage: 'Niveau', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
@@ -504,6 +506,7 @@ const STR = {
     reminderEnabled: 'Reminders active', reminderEnabledHint: 'When off, nothing is sent the day before. Test mode suppresses sending as well.',
     reminderPreview: 'Preview: tomorrow', reminderPreviewHint: 'Shows exactly what would be sent tomorrow — nothing is sent.',
     reminderNone: 'No reminders due for tomorrow.',
+    exportXlsx: 'Export xlsx', exportPdf: 'Export PDF', exportNoFigures: 'The per-coachee figures are not on the server yet; the roster columns were exported.', exportFail: (e: string) => `Export failed: ${e}`,
     importXlsx: 'Import xlsx', importHint: (s: string) => `Import targets season ${s}. Existing (same name + season) are updated.`,
     firstName: 'First name', lastName: 'Last name', svNumber: 'SV number', aliases: 'Former names', level: 'Level', stage: 'Niveau', group: 'Group', email: 'Email', phone: 'Phone',
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
@@ -2206,6 +2209,34 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
 
   const missingEmail = rows.filter((c) => !c.email).length;
 
+  // Every coachee of the season with the season's figures beside the roster
+  // columns. The figures come from the server; an API that predates them
+  // (404) still gets the roster columns, and says so.
+  const [exporting, setExporting] = useState<'xlsx' | 'pdf' | null>(null);
+  const exportCoachees = async (kind: 'xlsx' | 'pdf') => {
+    setExporting(kind);
+    try {
+      const summaries = await loadCoacheeSummaries(season);
+      const [mod, files] = await Promise.all([
+        importFresh(() => import('../lib/coacheeExport')),
+        importFresh(() => import('../lib/coacheeExportFiles')),
+      ]);
+      const table = mod.coacheeExportTable(seasonRows, summaries?.summaries ?? null, season, lang);
+      const blob = kind === 'xlsx' ? await files.coacheeExportXlsx(table, season, lang) : files.coacheeExportPdf(table, season, lang);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = mod.coacheeExportName(season, kind);
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      if (!summaries) toast.info(t.exportNoFigures, { lang });
+    } catch (e) {
+      setNotice(t.exportFail(e instanceof Error ? e.message : String(e)));
+    } finally {
+      setExporting(null);
+    }
+  };
+
   return (
     <>
       <Card>
@@ -2213,6 +2244,8 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
           <h2 className="text-sm font-semibold text-stone-700">{t.coachees}</h2>
           <select value={season} onChange={(e) => { seasonTouched.current = true; setSeason(Number(e.target.value)); }} className="ml-auto h-9 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5">{[...new Set([season, ...SEASONS])].sort().map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
           <label className={`${btnPrimary} cursor-pointer ${importing ? 'opacity-60 pointer-events-none' : ''}`}>{importing ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}<span>{t.importXlsx}</span><input type="file" accept=".xlsx" className="hidden" onChange={onFile} /></label>
+          <button type="button" onClick={() => void exportCoachees('xlsx')} disabled={exporting !== null || seasonRows.length === 0} className={cn(btnGhost, 'h-9')} data-testid="coachees-export-xlsx">{exporting === 'xlsx' ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}<span>{t.exportXlsx}</span></button>
+          <button type="button" onClick={() => void exportCoachees('pdf')} disabled={exporting !== null || seasonRows.length === 0} className={cn(btnGhost, 'h-9')} data-testid="coachees-export-pdf">{exporting === 'pdf' ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}<span>{t.exportPdf}</span></button>
         </div>
         <p className="text-xs text-stone-400">{t.importHint(seasonLabel(season))}</p>
         {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}

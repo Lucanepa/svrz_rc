@@ -6,8 +6,8 @@
 import type { Lang } from './appTime';
 import { dayLabel } from './appTime';
 import {
-  a4Pages, estimatedHours, gradeAvg, isThin, pct, scoreToLetter, GRADE_ORDER,
-  type SeasonStatistics, type SeasonStatisticsCore, type StatBucket, type StatRole,
+  a4Pages, estimatedHours, gradeAvg, isThin, pct, scoreToLetter, trendAvgDelta, GRADE_ORDER,
+  type SeasonStatistics, type SeasonStatisticsCore, type StatBreakdowns, type StatBucket, type StatRole, type StatSlice, type TrendAgg,
 } from './statistics';
 import {
   categoryLabel, criterionLabel, divisionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER,
@@ -47,7 +47,17 @@ export type Deck = {
   slides: DeckSlide[];
 };
 
-export type DeckOptions = { lang: Lang; includeRcGrades: boolean; includeLeagues: boolean; rcNames?: Record<string, string> };
+export type DeckOptions = {
+  lang: Lang;
+  includeRcGrades: boolean;
+  includeLeagues: boolean;
+  rcNames?: Record<string, string>;
+  /** The per-level and per-group slices. With them, the deck gets a set of
+   *  slides per Niveau and per group after the aggregate one. */
+  breakdowns?: StatBreakdowns | null;
+  /** Leave the per-slice sets out even when the slices are there. */
+  skipSlices?: boolean;
+};
 
 const int = (n: number) => new Intl.NumberFormat('de-CH').format(Math.round(n));
 const dec = (n: number, d = 1) => new Intl.NumberFormat('de-CH', { minimumFractionDigits: d, maximumFractionDigits: d }).format(n);
@@ -226,6 +236,10 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
     figures: [donut(t.einstufung, 'einstufung'), donut(t.motivation, 'motivation'), donut(t.difficulty, 'spielniveau'), donut(t.secondVisit, 'secondBesuch')],
   });
 
+  // 9b — trend: first visit against the latest
+  const trendSlide = trendSlideOf(stats, t, lang);
+  if (trendSlide) slides.push(trendSlide);
+
   // 10 — per RC
   slides.push({
     title: t.perRc,
@@ -352,10 +366,143 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
     });
   }
 
+  // the per-level and per-group sets
+  if (opts.breakdowns && !opts.skipSlices) {
+    slides.push(...sliceSets(opts.breakdowns.level, 'level', t, lang, opts.breakdowns.stufe));
+    slides.push(...sliceSets(opts.breakdowns.group, 'group', t, lang));
+  }
+
   // last — method
   slides.push({ title: t.method, bullets: t.methodLines });
 
   return { title: t.deckTitle, subtitle: t.deckSubtitle(season), footer, lang, slides };
+}
+
+const sumOf = (d: Record<string, number>) => Object.values(d).reduce((a, n) => a + n, 0);
+const trendCounts = (tr: TrendAgg | undefined) => (tr && tr.coachees > 0 ? `↑${tr.improved} =${tr.same} ↓${tr.worse}` : '–');
+const trendAvgText = (tr: TrendAgg | undefined) => {
+  const d = trendAvgDelta(tr);
+  return d === null ? '–' : `${d > 0 ? '+' : ''}${dec(d)}`;
+};
+
+/** The trend slide for one core (the season or a slice); null with no coachee seen twice. */
+function trendSlideOf(stats: SeasonStatisticsCore, t: StatStrings, lang: Lang, title = t.trendTitle, subtitle?: string): DeckSlide | null {
+  const tr = stats.trend;
+  if (!tr || tr.coachees === 0) return null;
+  const figures: DeckFigure[] = [{
+    title: t.trendTitle,
+    chart: {
+      kind: 'donut',
+      categories: [t.trendImproved, t.trendSame, t.trendWorse],
+      values: [tr.improved, tr.same, tr.worse],
+      colors: [outcomeColor('einstufung', 'up'), outcomeColor('einstufung', 'check'), outcomeColor('einstufung', 'down')],
+    },
+  }];
+  const byLevel = tr.byLevel.filter((r) => r.coachees > 0);
+  const byGroup = tr.byGroup.filter((r) => r.coachees > 0);
+  const table = byLevel.length + byGroup.length > 1 ? {
+    head: ['', t.trendCoachees, t.trendImproved, t.trendSame, t.trendWorse, t.trendAvg],
+    widths: [0.34, 0.16, 0.12, 0.12, 0.12, 0.14],
+    rows: [
+      ...(byLevel.length > 1 ? byLevel.map((r) => [levelKeyLabel(r.key, lang), int(r.coachees), int(r.improved), int(r.same), int(r.worse), trendAvgText(r)]) : []),
+      ...(byGroup.length > 1 ? byGroup.map((r) => [groupKeyLabel(r.key, lang), int(r.coachees), int(r.improved), int(r.same), int(r.worse), trendAvgText(r)]) : []),
+    ],
+  } : undefined;
+  return {
+    title,
+    subtitle: subtitle ?? t.trendHint,
+    tiles: [
+      { label: t.trendCoachees, value: int(tr.coachees) },
+      { label: t.trendImproved, value: int(tr.improved), sub: pctText(pct(tr.improved, tr.coachees)) },
+      { label: t.trendSame, value: int(tr.same), sub: pctText(pct(tr.same, tr.coachees)) },
+      { label: t.trendWorse, value: int(tr.worse), sub: pctText(pct(tr.worse, tr.coachees)) },
+      { label: t.trendAvg, value: trendAvgText(tr) },
+    ],
+    figures,
+    table,
+    note: t.trendBand,
+  };
+}
+
+/** One set of slides per slice with observations: an overview table first,
+ *  then per slice its numbers, its grades and its assessments. A figure with
+ *  nothing in it is left off, and a slide left with nothing is not made. */
+function sliceSets(slices: StatSlice[], dim: 'level' | 'group', t: StatStrings, lang: Lang, subSlices: StatSlice[] = []): DeckSlide[] {
+  const withObs = slices.filter((x) => x.stats.totals.observations > 0);
+  if (withObs.length === 0) return [];
+  const label = (key: string) => (dim === 'level' ? levelKeyLabel(key, lang) : groupKeyLabel(key, lang));
+  const titleOf = (key: string) => (dim === 'level' ? t.deckSetLevel(label(key)) : t.deckSetGroup(label(key)));
+  const row = (x: StatSlice) => {
+    const T = x.stats.totals;
+    const o = x.stats.outcomes;
+    return [
+      label(x.key), int(T.observations), `${int(T.coachees)} / ${int(T.roster)}`,
+      gradeText(gradeAvg(T.grade), t, T.grade.obs),
+      pctText(pct(o.einstufung.up ?? 0, sumOf(o.einstufung))),
+      pctText(pct(o.secondBesuch.Y ?? 0, sumOf(o.secondBesuch))),
+      trendCounts(x.stats.trend),
+    ];
+  };
+  const head = [dim === 'level' ? t.byLevel : t.byGroup, t.observations, t.compareCoverage, t.gradeCol, t.comparePromotionHint, t.compareFurther, t.trendCol];
+  const widths = [0.2, 0.12, 0.13, 0.15, 0.14, 0.13, 0.13];
+  const out: DeckSlide[] = [{
+    title: dim === 'level' ? t.deckSetsLevel : t.deckSetsGroup,
+    subtitle: t.deckSetsHint,
+    table: { head, widths, rows: slices.filter((x) => x.stats.totals.observations > 0 || x.stats.totals.roster > 0).map(row) },
+  }];
+  for (const x of withObs) {
+    const S = x.stats;
+    const T = S.totals;
+    const title = titleOf(x.key);
+    const avg = gradeAvg(T.grade);
+    const o = S.outcomes;
+    // 1 — the numbers
+    const subs = dim === 'level' ? subSlices.filter((y) => y.key.startsWith(`${x.key}-`) && y.stats.totals.observations > 0) : [];
+    out.push({
+      title,
+      subtitle: t.deckNumbers,
+      tiles: [
+        { label: t.observations, value: int(T.observations), sub: T.games ? t.games(T.games) : undefined },
+        { label: t.coacheesVisited, value: `${int(T.coachees)} / ${int(T.roster)}`, sub: pctText(pct(T.coachees, T.roster)) },
+        { label: t.avgGrade, value: gradeText(avg, t, T.grade.obs), sub: t.normalCase },
+        { label: t.comparePromotionHint, value: pctText(pct(o.einstufung.up ?? 0, sumOf(o.einstufung))) },
+        { label: t.compareFurtherHint, value: pctText(pct(o.secondBesuch.Y ?? 0, sumOf(o.secondBesuch))) },
+        ...(S.trend && S.trend.coachees > 0 ? [{ label: t.trendTitle, value: trendCounts(S.trend), sub: `${t.trendAvg} ${trendAvgText(S.trend)}` }] : []),
+      ],
+      table: subs.length > 1 ? { head, widths, rows: subs.map(row) } : undefined,
+    });
+    // 2 — the grades
+    const gradeFigures: DeckFigure[] = [];
+    if (sumOf(S.histogram) > 0) {
+      gradeFigures.push({ title: t.histogram, chart: { kind: 'bars', categories: GRADE_ORDER, values: GRADE_ORDER.map((g) => S.histogram[g] ?? 0) } });
+    }
+    for (const role of ['1SR', '2SR'] as StatRole[]) {
+      const rows = S.sections.filter((sec) => sec.role === role && gradeAvg(sec.grade) !== null);
+      if (!rows.length) continue;
+      gradeFigures.push({
+        title: `${t.sections} · ${roleLabel(role, lang)}`,
+        chart: { kind: 'grade', categories: rows.map((sec) => sectionTitle(role, sec.section, lang)), values: rows.map((sec) => gradeAvg(sec.grade)), ns: rows.map((sec) => sec.grade.obs) },
+      });
+    }
+    if (gradeFigures.length) out.push({ title, subtitle: t.secGrades, figures: gradeFigures.slice(0, 3), note: `${t.normalCase} · ${t.thinNote}` });
+    // 3 — the assessments
+    const donuts: DeckFigure[] = (['einstufung', 'motivation', 'spielniveau', 'secondBesuch'] as const)
+      .filter((kind) => sumOf(o[kind]) > 0)
+      .map((kind) => ({
+        title: kind === 'einstufung' ? t.einstufung : kind === 'motivation' ? t.motivation : kind === 'spielniveau' ? t.difficulty : t.secondVisit,
+        chart: {
+          kind: 'donut' as const,
+          categories: OUTCOME_ORDER[kind].filter((k) => (o[kind][k] ?? 0) > 0).map((k) => outcomeLabel(kind, k, lang)),
+          values: OUTCOME_ORDER[kind].filter((k) => (o[kind][k] ?? 0) > 0).map((k) => o[kind][k] ?? 0),
+          colors: OUTCOME_ORDER[kind].filter((k) => (o[kind][k] ?? 0) > 0).map((k) => outcomeColor(kind, k)),
+        },
+      }));
+    if (donuts.length) out.push({ title, subtitle: t.outcomes, figures: donuts });
+    // 4 — the trend, when a coachee in it was seen twice
+    const tr = trendSlideOf(S, t, lang, title, t.trendTitle);
+    if (tr) out.push(tr);
+  }
+  return out;
 }
 
 export function deckFileName(stats: SeasonStatistics, ext: 'pptx' | 'pdf'): string {

@@ -4961,6 +4961,13 @@ export default function App() {
   // an admin who is being sent to /admin.
   // The list screens carry the bottom nav; the form and the other sub-views keep their Back button.
   const bottomNav = feedbackSubView === 'coachees';
+  // Whatever is scrolled into view (keyboard focus, scrollIntoView, a row
+  // opened near the foot of the page) stops above the bar, not under it.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.scrollPaddingBottom = bottomNav ? 'calc(6rem + env(safe-area-inset-bottom, 0px))' : '';
+    return () => { root.style.scrollPaddingBottom = ''; };
+  }, [bottomNav]);
   const padLauncher = outboxOwnerId !== 'admin' && outboxOwnerId !== 'anon' && !isDemoMode() && !homelessAdmin;
   const tpPad = PAD_STRINGS[formData.lang] || PAD_STRINGS.DE;
   // A page not yet in IndexedDB, a write that failed, or a device that cannot
@@ -6003,20 +6010,8 @@ export default function App() {
                   <span className="min-w-0 truncate">{formData.lang === 'DE' ? `${rcAuth.rcName} — wechseln` : `${rcAuth.rcName} — switch`}</span>
                 </button>
               )}
-              {(rcAuth.rcName || isPrivileged) && (
-                <button
-                  onClick={rcAuth.logout}
-                  className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
-                  title={rcAuth.rcName
-                    ? (formData.lang === 'DE' ? `Abmelden (${rcAuth.rcName})` : `Log out (${rcAuth.rcName})`)
-                    : (formData.lang === 'DE' ? 'Abmelden' : 'Log out')}
-                >
-                  <LogOut size={18} />
-                  <span className="min-w-0 truncate">{formData.lang === 'DE' ? 'Abmelden' : 'Log out'}</span>
-                </button>
-              )}
-              {/* Last: loading a draft finishes an observation started on a
-                  dead phone — rare, so it waits at the bottom. The input hides
+              {/* Near the bottom: loading a draft finishes an observation started
+                  on a dead phone — rare, so only Log out comes after it. The input hides
                   behind the label because the native control renders in the
                   BROWSER's language. */}
               <label className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer">
@@ -6037,6 +6032,18 @@ export default function App() {
                   }}
                 />
               </label>
+              {(rcAuth.rcName || isPrivileged) && (
+                <button
+                  onClick={rcAuth.logout}
+                  className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
+                  title={rcAuth.rcName
+                    ? (formData.lang === 'DE' ? `Abmelden (${rcAuth.rcName})` : `Log out (${rcAuth.rcName})`)
+                    : (formData.lang === 'DE' ? 'Abmelden' : 'Log out')}
+                >
+                  <LogOut size={18} />
+                  <span className="min-w-0 truncate">{formData.lang === 'DE' ? 'Abmelden' : 'Log out'}</span>
+                </button>
+              )}
             </div>
           </div>
         </div>

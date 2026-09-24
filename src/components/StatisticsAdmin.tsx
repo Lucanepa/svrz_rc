@@ -10,8 +10,8 @@ import type { Lang } from '../lib/appTime';
 import { dayLabel } from '../lib/appTime';
 import { listRcPeopleFull, loadStatistics, type RcPerson } from '../lib/pocketbase';
 import {
-  a4Pages, estimatedHours, gradeAvg, isThin, pct, scoreToLetter, withRcFirstNames, GRADE_ORDER, GRADE_LETTERS,
-  type SeasonStatistics, type StatBucket, type StatFilters, type StatRole, type StatisticsResponse,
+  a4Pages, estimatedHours, gradeAvg, isThin, pct, scoreToLetter, trendAvgDelta, withRcFirstNames, GRADE_ORDER, GRADE_LETTERS,
+  type SeasonStatistics, type TrendAgg, type StatBucket, type StatFilters, type StatRole, type StatisticsResponse,
 } from '../lib/statistics';
 import {
   categoryLabel, criterionLabel, divisionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER, outcomeColor, outcomeLabel,
@@ -118,6 +118,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
   const [exporting, setExporting] = useState<'pptx' | 'pdf' | null>(null);
   const [includeRcGrades, setIncludeRcGrades] = useState(false);
   const [includeLeagues, setIncludeLeagues] = useState(false);
+  const [includeSlices, setIncludeSlices] = useState(true);
   // The deck's language is chosen at export time; it starts as the console's.
   const [exportLang, setExportLang] = useState<Lang>(lang);
   useEffect(() => { setExportLang(lang); }, [lang]);
@@ -142,7 +143,9 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     let cancelled = false;
     setLoading(true);
     setError('');
-    loadStatistics(effectiveSeason, filters, compare)
+    // breakdown=1: the per-level and per-group slices ride along (the
+    // comparison table and the deck read them). An older API ignores it.
+    loadStatistics(effectiveSeason, filters, compare, true)
       .then((r) => { if (!cancelled) setData(r); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -158,7 +161,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     if (!stats) return;
     setExporting(kind);
     try {
-      const deck = buildDeck(stats, { lang: exportLang, includeRcGrades, includeLeagues, rcNames });
+      const deck = buildDeck(stats, { lang: exportLang, includeRcGrades, includeLeagues, rcNames, breakdowns: view?.breakdowns, skipSlices: !includeSlices });
       if (kind === 'pptx') {
         const { buildDeckPptx } = await importFresh(() => import('../lib/statsPptx'));
         download(await buildDeckPptx(deck), deckFileName(stats, 'pptx'));
@@ -206,7 +209,10 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
   const cmpSig = JSON.stringify([effectiveSeason, filters.rc ?? '', filters.role ?? '', dim, cmpValues]);
   const [cmp, setCmp] = useState<{ sig: string; rows: Array<{ key: string; stats: SeasonStatistics }> } | null>(null);
   const [cmpLoading, setCmpLoading] = useState(false);
+  const breakdowns = view?.breakdowns ?? null;
   useEffect(() => {
+    // The server sent the slices with the main answer: nothing to fetch.
+    if (breakdowns) return;
     if (dim === 'none' || !armed || settingsLoading || cmpValues.length === 0) return;
     let cancelled = false;
     setCmpLoading(true);
@@ -219,8 +225,18 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
       .finally(() => { if (!cancelled) setCmpLoading(false); });
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cmpSig, armed, settingsLoading]);
-  const cmpRows = cmp && cmp.sig === cmpSig ? cmp.rows : null;
+  }, [cmpSig, armed, settingsLoading, !!breakdowns]);
+  const cmpRows = (() => {
+    if (breakdowns) {
+      const list = dim === 'group' ? breakdowns.group
+        : dim === 'level' ? (selNiv
+          ? (breakdowns.stufe.some((x) => x.key.startsWith(`${selNiv}-`)) ? breakdowns.stufe.filter((x) => x.key.startsWith(`${selNiv}-`)) : breakdowns.level.filter((x) => x.key === selNiv))
+          : breakdowns.level)
+          : [];
+      return list.map((x) => ({ key: x.key, stats: x.stats as SeasonStatistics }));
+    }
+    return cmp && cmp.sig === cmpSig ? cmp.rows : null;
+  })();
 
   const seasons = options?.seasons ?? [effectiveSeason];
   const T = stats?.totals;
@@ -456,6 +472,33 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           </Section>
           )}
 
+          {/* ── Trend: first visit against the latest, per coachee ── */}
+          {stats.trend && (stats.trend.coachees > 0 || !filtered) && (
+          <Section title={t.trendTitle} hint={t.trendHint} testId="stats-trend">
+            {stats.trend.coachees === 0 ? <p className="text-sm text-stone-400">{t.trendNone}</p> : (
+            <Grid>
+              <Block span="lg:col-span-4" title={t.trendTitle} hint={t.trendBand} testId="stats-trend-total">
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <MiniStat label={t.trendCoachees} value={fmtInt(stats.trend.coachees)} />
+                  <MiniStat label={t.trendAvg} value={(() => { const d = trendAvgDelta(stats.trend); return d === null ? '–' : `${d > 0 ? '+' : ''}${fmtDec(d)}`; })()} />
+                </div>
+                <Donut emptyLabel="–" slices={TREND_KEYS.map((k) => ({ key: k, label: trendLabel(k, t), value: stats.trend![k], color: TREND_COLOR[k] })).filter((sl) => !filtered || sl.value > 0)} />
+              </Block>
+              {stats.trend.byLevel.length > 0 && (
+              <Block span="lg:col-span-4" title={`${t.trendTitle} · ${t.byLevel}`} testId="stats-trend-level">
+                <TrendBars rows={stats.trend.byLevel.map((r) => ({ ...r, label: levelKeyLabel(r.key, lang) }))} t={t} />
+              </Block>
+              )}
+              {stats.trend.byGroup.length > 0 && (
+              <Block span="lg:col-span-4" title={`${t.trendTitle} · ${t.byGroup}`} testId="stats-trend-group">
+                <TrendBars rows={stats.trend.byGroup.map((r) => ({ ...r, label: groupKeyLabel(r.key, lang) }))} t={t} />
+              </Block>
+              )}
+            </Grid>
+            )}
+          </Section>
+          )}
+
           {/* ── Assessments ── */}
           {outcomeKinds.length > 0 && (
           <Section title={t.secOutcomes} hint={t.secOutcomesHint} testId="stats-section-outcomes">
@@ -601,6 +644,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                         <th className="text-right font-medium py-1.5 px-1 align-bottom">{t.gradeCol}</th>
                         <th className="text-right font-medium py-1.5 px-1 align-bottom" title={t.comparePromotionHint}>{t.comparePromotion}</th>
                         <th className="text-right font-medium py-1.5 px-1 align-bottom leading-tight" title={t.compareFurtherHint}>{t.compareFurther}</th>
+                        {rows.some((r) => r.stats.trend) && <th className="text-right font-medium py-1.5 px-1 align-bottom" title={t.trendHint}>{t.trendCol}</th>}
                       </tr>
                     </thead>
                     <tbody>
@@ -621,6 +665,11 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                             <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap">{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(c.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b> <span className="text-stone-500">{fmtDec(a)}</span></>}</td>
                             <td className="py-2.5 px-1 text-right tabular-nums">{pctText(pct(s.outcomes.einstufung.up ?? 0, sum(s.outcomes.einstufung)))}</td>
                             <td className="py-2.5 px-1 text-right tabular-nums">{pctText(pct(s.outcomes.secondBesuch.Y ?? 0, sum(s.outcomes.secondBesuch)))}</td>
+                            {rows.some((r) => r.stats.trend) && (
+                              <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap">
+                                {s.trend && s.trend.coachees > 0 ? <TrendCounts tr={s.trend} /> : <span className="text-stone-400">–</span>}
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
@@ -723,6 +772,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                 </div>
                 <label className="flex items-start gap-2 text-stone-700"><input type="checkbox" className="mt-0.5" checked={includeRcGrades} onChange={(e) => setIncludeRcGrades(e.target.checked)} /> {t.optRcGrades}</label>
                 <label className="flex items-start gap-2 text-stone-700"><input type="checkbox" className="mt-0.5" checked={includeLeagues} onChange={(e) => setIncludeLeagues(e.target.checked)} /> {t.optLeagues}</label>
+                {view?.breakdowns && <label className="flex items-start gap-2 text-stone-700"><input type="checkbox" className="mt-0.5" checked={includeSlices} onChange={(e) => setIncludeSlices(e.target.checked)} /> {t.optSlices}</label>}
                 <div className="flex gap-2 pt-1">
                   <button type="button" onClick={() => void runExport('pptx')} disabled={exporting !== null} className={cn(btn, 'flex-1 justify-center')} data-testid="stats-export-pptx">
                     {exporting === 'pptx' ? <Loader2 size={14} className="animate-spin" /> : <Presentation size={14} />} {t.exportPptx}
@@ -768,6 +818,47 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
 
       {body}
       {groupBar}
+    </div>
+  );
+}
+
+// ── Trend pieces ──
+const TREND_KEYS = ['improved', 'same', 'worse'] as const;
+// The Einstufung's own colours: green up, blue level, red down.
+const TREND_COLOR = { improved: outcomeColor('einstufung', 'up'), same: outcomeColor('einstufung', 'check'), worse: outcomeColor('einstufung', 'down') };
+function trendLabel(k: typeof TREND_KEYS[number], t: ReturnType<typeof statStrings>) {
+  return k === 'improved' ? t.trendImproved : k === 'same' ? t.trendSame : t.trendWorse;
+}
+
+/** "↑3 =1 ↓0" — compact enough for a table cell. */
+function TrendCounts({ tr }: { tr: TrendAgg }) {
+  return (
+    <span className="inline-flex gap-1.5">
+      <span style={{ color: TREND_COLOR.improved }}>↑{tr.improved}</span>
+      <span className="text-stone-500">={tr.same}</span>
+      <span style={{ color: TREND_COLOR.worse }}>↓{tr.worse}</span>
+    </span>
+  );
+}
+
+/** One stacked bar per row: better / same / worse, to the row's own width. */
+function TrendBars({ rows, t }: { rows: Array<TrendAgg & { key: string; label: string }>; t: ReturnType<typeof statStrings> }) {
+  return (
+    <div className="space-y-2">
+      {rows.map((r) => {
+        const d = trendAvgDelta(r);
+        return (
+          <div key={r.key || '-'} className="text-xs" title={`${r.label}: ${TREND_KEYS.map((k) => `${trendLabel(k, t)} ${r[k]}`).join(' · ')}`}>
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="truncate text-stone-700">{r.label}</span>
+              <span className="shrink-0 tabular-nums text-stone-500"><TrendCounts tr={r} />{d !== null && <span className="ml-1.5 text-stone-400">Ø {d > 0 ? '+' : ''}{fmtDec(d)}</span>}</span>
+            </div>
+            <div className="mt-1 flex h-2.5 overflow-hidden rounded-full bg-stone-100">
+              {TREND_KEYS.map((k) => r[k] > 0 && <span key={k} style={{ width: `${(r[k] / r.coachees) * 100}%`, background: TREND_COLOR[k] }} />)}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 // A synthetic season for Admin → Statistik: forty-odd observations across
 // three coaches, four groups, three levels and eight months, aggregated by the
 // real server code so the fixture can never drift from the shape the tab reads.
-import { computeStatistics, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from '../../server/statistics';
+import { computeBreakdowns, computeStatistics, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from '../../server/statistics';
 import type { StatFilters, StatisticsResponse } from '../../src/lib/statistics';
 
 export const STAT_RCS: StatRcInput[] = [
@@ -75,14 +75,16 @@ export function statObservations(season: number, count = 44): StatObservation[] 
   return out;
 }
 
-export function statsResponse(season = 2026, filters: StatFilters = {}, compare = true): StatisticsResponse {
+export function statsResponse(season = 2026, filters: StatFilters = {}, compare = true, breakdown = false): StatisticsResponse {
   const now = new Date(`${season + 1}-04-16T10:00:00Z`);
   const current = statObservations(season);
   const stats = computeStatistics({ season, observations: current, rcs: STAT_RCS, roster: STAT_ROSTER, filters, now });
   const before = statObservations(season - 1, 31);
   const previous = compare ? computeStatistics({ season: season - 1, observations: before, rcs: STAT_RCS, roster: STAT_ROSTER, filters, now }) : null;
+  const options = statOptions({ observations: current, rcs: STAT_RCS, roster: STAT_ROSTER, seasons: [season, season - 1] });
   return {
     stats: { ...stats, previous },
-    options: statOptions({ observations: current, rcs: STAT_RCS, roster: STAT_ROSTER, seasons: [season, season - 1] }),
+    options,
+    ...(breakdown ? { breakdowns: computeBreakdowns({ season, observations: current, rcs: STAT_RCS, roster: STAT_ROSTER, filters, now }, options) } : {}),
   };
 }

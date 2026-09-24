@@ -18,7 +18,7 @@ async function stubRcPeople(page: Page) {
   ] }));
 }
 
-async function openStats(page: Page) {
+async function openStats(page: Page, opts: { oldApi?: boolean } = {}) {
   const asked: string[] = [];
   await page.route('**/api/admin/statistics*', (r) => {
     const u = new URL(r.request().url());
@@ -30,7 +30,8 @@ async function openStats(page: Page) {
       ...(u.searchParams.get('level') ? { level: u.searchParams.get('level')! } : {}),
       ...(u.searchParams.get('role') ? { role: u.searchParams.get('role') as '1SR' | '2SR' } : {}),
     };
-    r.fulfill({ json: statsResponse(season, filters, u.searchParams.get('compare') === '1') });
+    // An API from before the breakdowns ignores the flag.
+    r.fulfill({ json: statsResponse(season, filters, u.searchParams.get('compare') === '1', !opts.oldApi && u.searchParams.get('breakdown') === '1') });
   });
   await stubRcPeople(page);
   await page.goto('/admin/stats');
@@ -55,7 +56,7 @@ test('the tab shows the season in numbers, and only asks once it is opened', asy
   await page.getByRole('button', { name: 'Statistik' }).first().click();
   await expect(page).toHaveURL(/\/admin\/stats$/);
   await expect(page.getByTestId('stats-body')).toBeVisible();
-  expect(asked).toEqual(['?season=2026&compare=1']);
+  expect(asked).toEqual(['?season=2026&compare=1&breakdown=1']);
 
   const expected = statsResponse(2026).stats.totals;
   const tiles = page.getByTestId('stats-tiles');
@@ -88,7 +89,7 @@ test('filters re-query the server with the slice, and the season picker offers e
   const asked = await openStats(page);
 
   await page.getByTestId('stats-filter-rc').selectOption('rc-beat');
-  await expect.poll(() => asked.at(-1)).toBe('?season=2026&rc=rc-beat&compare=1');
+  await expect.poll(() => asked.at(-1)).toBe('?season=2026&rc=rc-beat&compare=1&breakdown=1');
   // The slice shows only that coach.
   const rcs = page.getByTestId('stats-rcs');
   await expect(rcs).toContainText('Beat');
@@ -97,24 +98,23 @@ test('filters re-query the server with the slice, and the season picker offers e
   await expect(page.getByTestId('stats-filter-rc').locator('option')).toHaveText([/^alle$/i, 'Anna', 'Beat', 'Claudia']);
 
   await page.getByTestId('stats-filter-role').selectOption('2SR');
-  await expect.poll(() => asked.at(-1)).toBe('?season=2026&rc=rc-beat&role=2SR&compare=1');
+  await expect.poll(() => asked.at(-1)).toBe('?season=2026&rc=rc-beat&role=2SR&compare=1&breakdown=1');
 
   await page.getByTestId('stats-filter-rc').selectOption('');
   // Level and group live in the bar at the bottom.
   const bar = page.getByTestId('stats-groupbar');
   await bar.getByRole('radio', { name: 'Gruppe' }).click();
   await bar.getByTestId('stats-filter-group').getByRole('button', { name: 'Varia' }).click();
-  await expect.poll(() => asked.filter((q) => !q.includes('compare')).length).toBeGreaterThan(0);
-  await expect.poll(() => asked.filter((q) => q.includes('compare=1')).at(-1)).toBe('?season=2026&group=Varia&role=2SR&compare=1');
+  await expect.poll(() => asked.at(-1)).toBe('?season=2026&group=Varia&role=2SR&compare=1&breakdown=1');
 
   // Comparison off → no compare flag, no delta chips.
   await page.getByLabel('Vergleich mit Vorsaison').uncheck();
-  await expect.poll(() => asked.includes('?season=2026&group=Varia&role=2SR')).toBe(true);
+  await expect.poll(() => asked.at(-1)).toBe('?season=2026&group=Varia&role=2SR&breakdown=1');
 
   const seasons = page.getByTestId('stats-season');
   await expect(seasons.locator('option')).toHaveText(['2026/27', '2025/26']);
   await seasons.selectOption('2025');
-  await expect.poll(() => asked.includes('?season=2025&group=Varia&role=2SR')).toBe(true);
+  await expect.poll(() => asked.at(-1)).toBe('?season=2025&group=Varia&role=2SR&breakdown=1');
 });
 
 test('an average from a single observation is shown, but hollow and with its n', async ({ page }) => {
@@ -158,10 +158,13 @@ test('the export builds a PowerPoint deck and a PDF from the same numbers', asyn
   const bytes = readFileSync((await pdfFile.path())!);
   expect(bytes.subarray(0, 5).toString()).toBe('%PDF-');
   // One page per slide, as many as the deck model says for this slice.
-  const expected = buildDeck(statsResponse(2026).stats, { lang: 'EN', includeRcGrades: true, includeLeagues: false }).slides.length;
+  const full = statsResponse(2026, {}, true, true);
+  const expected = buildDeck(full.stats, { lang: 'EN', includeRcGrades: true, includeLeagues: false, breakdowns: full.breakdowns }).slides.length;
   const pages = (bytes.toString('latin1').match(/\/Type\s*\/Page[^s]/g) ?? []).length;
   expect(pages).toBe(expected);
   expect(expected).toBeGreaterThanOrEqual(15);
+  // The per-level and per-group sets ride along: more slides than the aggregate alone.
+  expect(expected).toBeGreaterThan(buildDeck(full.stats, { lang: 'EN', includeRcGrades: true, includeLeagues: false }).slides.length + 10);
 });
 
 test('the console\'s English follows into the tab', async ({ page }) => {
@@ -180,26 +183,50 @@ test('the bottom bar slices by Niveau, then Stufe, and lines the slices up in a 
   await expect(page.getByTestId('stats-compare')).toHaveCount(0);
 
   await bar.getByRole('radio', { name: 'Niveau' }).click();
-  // One row per Niveau, each its own request with that slice.
+  // One row per Niveau, read off the slices that came with the main answer —
+  // no request per row.
   const table = page.getByTestId('stats-compare');
   await expect(table.locator('tbody tr')).toHaveText([/^N1/, /^N2/, /^N3/, /^N4/]);
-  expect(asked).toContain('?season=2026&level=N3');
+  expect(asked.every((q) => q.includes('breakdown=1'))).toBe(true);
+  // The trend column is there, and N3 has coachees seen more than once.
+  await expect(table.locator('thead')).toContainText('Trend');
+  await expect(table.locator('tbody tr', { hasText: /^N3/ })).toContainText('↑');
 
   await bar.getByTestId('stats-filter-level').getByRole('button', { name: 'N3' }).click();
-  await expect.poll(() => asked.includes('?season=2026&level=N3&compare=1')).toBe(true);
+  await expect.poll(() => asked.at(-1)).toBe('?season=2026&level=N3&compare=1&breakdown=1');
   // The Stufen of N3 appear as a second row of chips, and the table goes one level down.
   const stufe = bar.getByTestId('stats-filter-stufe');
   await expect(stufe.getByRole('button')).toHaveText(['Ganzes N3', 'N3-1', 'N3-2', 'N3-3']);
   await expect(table.locator('tbody tr')).toHaveText([/^N3-1/, /^N3-2/, /^N3-3/]);
   await stufe.getByRole('button', { name: 'N3-2' }).click();
-  await expect.poll(() => asked.includes('?season=2026&level=N3-2&compare=1')).toBe(true);
+  await expect.poll(() => asked.at(-1)).toBe('?season=2026&level=N3-2&compare=1&breakdown=1');
   // A single Niveau is not drawn as a one-bar chart; its Stufe is.
   await expect(page.getByTestId('stats-levels')).toContainText('N3-2');
 
   // Back to no filter: level cleared, the table gone.
   await bar.getByRole('radio', { name: 'Kein Filter' }).click();
-  await expect.poll(() => asked.at(-1)).toBe('?season=2026&compare=1');
+  await expect.poll(() => asked.at(-1)).toBe('?season=2026&compare=1&breakdown=1');
   await expect(page.getByTestId('stats-compare')).toHaveCount(0);
+});
+
+test('an API without the slices still gets the table, one request per row', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  const asked = await openStats(page, { oldApi: true });
+  await page.getByTestId('stats-groupbar').getByRole('radio', { name: 'Gruppe' }).click();
+  await expect(page.getByTestId('stats-compare').locator('tbody tr').first()).toBeVisible();
+  expect(asked).toContain('?season=2026&group=Varia');
+});
+
+test('the trend: first visit against the latest, overall and per level and group', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  await openStats(page);
+  const tr = statsResponse(2026).stats.trend!;
+  expect(tr.coachees).toBeGreaterThan(0);
+  const total = page.getByTestId('stats-trend-total');
+  await expect(total).toContainText(String(tr.coachees));
+  await expect(total).toContainText('Besser');
+  await expect(page.getByTestId('stats-trend-level')).toContainText('N3');
+  await expect(page.getByTestId('stats-trend-group')).toContainText('Varia');
 });
 
 test('with a filter on, empty figures are left out', async ({ page }) => {
@@ -235,4 +262,28 @@ test('coaches are named by first name; a shared one gets the initial', () => {
   expect(nameOf({ name: 'Thanh Ut Nguyen' })).toBe('Thanh Ut');
   // No record behind the name: its first word.
   expect(nameOf({ name: 'Old Spelling Person' })).toBe('Old');
+});
+
+test('the deck: one set of slides per level and per group, empty slices left out', () => {
+  const full = statsResponse(2026, {}, true, true);
+  const deck = buildDeck(full.stats, { lang: 'DE', includeRcGrades: false, includeLeagues: false, breakdowns: full.breakdowns });
+  const titles = deck.slides.map((s) => s.title);
+  expect(titles).toContain('Nach Niveau');
+  expect(titles).toContain('Nach Gruppe');
+  expect(titles).toContain('Entwicklung');
+  for (const x of full.breakdowns!.level) {
+    expect(titles.includes(`Niveau ${x.key}`)).toBe(x.stats.totals.observations > 0);
+  }
+  for (const x of full.breakdowns!.group) {
+    expect(titles.some((t) => t.startsWith('Gruppe: '))).toBe(true);
+    if (x.stats.totals.observations === 0) expect(titles.some((t) => t.endsWith(`: ${x.key}`))).toBe(false);
+  }
+  // No figure in a slice set is empty.
+  for (const s of deck.slides) for (const f of s.figures ?? []) {
+    const v = f.chart.kind === 'columns' ? f.chart.values.flat() : f.chart.values;
+    if (s.title.startsWith('Niveau ') || s.title.startsWith('Gruppe: ')) expect(v.some((n) => n !== null && n > 0)).toBe(true);
+  }
+  // Without the slices, the deck is the aggregate alone.
+  const plain = buildDeck(full.stats, { lang: 'DE', includeRcGrades: false, includeLeagues: false }).slides.map((s) => s.title);
+  expect(plain.some((t) => t.startsWith('Niveau '))).toBe(false);
 });

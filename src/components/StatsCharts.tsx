@@ -4,6 +4,7 @@
 // and the grade charts sit on the 1–15 scale with C marked as the Normalfall.
 import React, { useEffect, useRef, useState } from 'react';
 import { GRADE_SCALE, NORMAL_SCORE, isThin, scoreToLetter } from '../lib/statistics';
+import { cn } from '../lib/utils';
 
 // Validated (dataviz six checks, light surface): blue / SVRZ red / yellow are
 // CVD-separable as neighbours; the yellow needs its label, which every chart
@@ -104,6 +105,52 @@ export function ColumnChart({ data, series, height = 180, soft = [], slotWidth =
   );
 }
 
+// ── Horizontal bars (stacked) ────────────────────────────────────────────────
+// The histogram and the months as rows rather than columns: fifteen grades or
+// eight months read top to bottom on a phone without scrolling sideways, and
+// every row carries its label and its total in plain text.
+export type HBarDatum = {
+  key: string;
+  label: string;
+  values: number[];
+  hint?: string;
+  /** Drawn in the soft tint — the ± grades beside the plain letter. */
+  soft?: boolean;
+  /** A little air above the row — where a new letter starts. */
+  gapBefore?: boolean;
+};
+
+export function HBarChart({ data, series }: { data: HBarDatum[]; /** One name per stacked series; one series draws no legend. */ series: string[] }) {
+  const totals = data.map((d) => d.values.reduce((a, b) => a + b, 0));
+  const max = Math.max(1, ...totals);
+  return (
+    <div>
+      <div className="space-y-1">
+        {data.map((d, i) => (
+          <div
+            key={d.key}
+            className={cn('grid grid-cols-[3.5rem_1fr_2.5rem] items-center gap-2 text-xs', d.gapBefore && i > 0 && 'pt-1.5')}
+            title={`${d.hint ?? d.label}: ${series.length > 1 ? d.values.map((v, s) => `${series[s]} ${fmtInt(v)}`).join(' · ') : fmtInt(totals[i])}`}
+          >
+            <span className={cn('truncate', d.soft ? 'text-stone-500' : 'font-medium text-stone-700')}>{d.label}</span>
+            <span className="flex h-3.5 overflow-hidden rounded-r-[3px] bg-stone-100">
+              {d.values.map((v, s) => v > 0 && (
+                <span
+                  key={s}
+                  className={s > 0 ? 'border-l border-white' : undefined}
+                  style={{ width: `${(v / max) * 100}%`, background: d.soft ? SERIES_SOFT[s % SERIES_SOFT.length] : SERIES[s % SERIES.length] }}
+                />
+              ))}
+            </span>
+            <span className={cn('tabular-nums text-right', totals[i] > 0 ? 'font-medium text-stone-700' : 'text-stone-300')}>{fmtInt(totals[i])}</span>
+          </div>
+        ))}
+      </div>
+      {series.length > 1 && <Legend items={series.map((name, i) => ({ name, color: SERIES[i % SERIES.length] }))} />}
+    </div>
+  );
+}
+
 function niceSteps(max: number, count: number): number[] {
   const raw = max / count;
   const mag = 10 ** Math.floor(Math.log10(Math.max(1, raw)));
@@ -155,7 +202,11 @@ export function BarList({ rows, color = SERIES[0], format = fmtInt, max: maxIn }
 }
 
 // ── The grade scale (averages) ───────────────────────────────────────────────
-export type ScaleRow = { key: string; label: string; avg: number | null; n: number; sub?: string };
+export type ScaleRow = { key: string; label: string; avg: number | null; n: number; sub?: string;
+  /** A sub-row (a Stufe under its Niveau): indented, lighter. */
+  indent?: boolean;
+  /** A heading row (the Niveau itself): bold. */
+  strong?: boolean };
 
 /** One row per thing graded: a dot on the E-…A+ track, C marked. An average
  *  from fewer than three observations is drawn hollow and carries its n. */
@@ -174,7 +225,7 @@ export function GradeScale({ rows, minLabel, maxLabel, nLabel }: { rows: ScaleRo
       <div className="space-y-1.5">
         {rows.map((r) => (
           <div key={r.key} className="grid grid-cols-[minmax(0,6.5rem)_1fr_auto] sm:grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-2 text-xs" data-thin={r.avg !== null && isThin(r.n) ? 'true' : undefined} title={r.avg === null ? `${r.label}: ${nLabel(r.n)}` : `${r.label}: ${scoreToLetter(r.avg)} · ${fmtDec(r.avg)} · ${nLabel(r.n)}${isThin(r.n) ? ` (n < 3)` : ''}`}>
-            <span className="truncate text-stone-700">{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
+            <span className={cn('truncate', r.indent ? 'pl-3 text-stone-500' : 'text-stone-700', r.strong && 'font-semibold text-stone-800')}>{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
             <span className="relative h-4">
               <span className="absolute inset-x-0 top-1/2 h-px bg-stone-200" />
               <span className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-stone-400" style={{ left: `${pos(NORMAL_SCORE)}%` }} title="C" />

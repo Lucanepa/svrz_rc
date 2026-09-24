@@ -6021,9 +6021,12 @@ export default function App() {
                   })(); }}
                   className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
                   title={formData.lang === 'DE' ? `Angemeldet als ${rcAuth.rcName} — wechseln` : `Signed in as ${rcAuth.rcName} — switch`}
+                  aria-label={formData.lang === 'DE' ? `Angemeldet als ${rcAuth.rcName} — Referee Coach wechseln` : `Signed in as ${rcAuth.rcName} — switch referee coach`}
                 >
                   <Users size={18} />
-                  <span className="min-w-0 truncate">{formData.lang === 'DE' ? `${rcAuth.rcName} — wechseln` : `${rcAuth.rcName} — switch`}</span>
+                  <span className="min-w-0 flex-1 truncate text-left">{rcAuth.rcName}</span>
+                  {/* The action as an icon: the name is who, the arrows are "someone else". */}
+                  <ArrowLeftRight size={18} className="shrink-0 text-stone-400" aria-hidden="true" />
                 </button>
               )}
               {/* Near the bottom: loading a draft finishes an observation started

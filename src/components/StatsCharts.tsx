@@ -9,7 +9,9 @@ import { cn } from '../lib/utils';
 // Validated (dataviz six checks, light surface): blue / SVRZ red / yellow are
 // CVD-separable as neighbours; the yellow needs its label, which every chart
 // here draws.
-export const SERIES = ['#2a78d6', '#dc2626', '#eda100'] as const;
+// The red is the app's own brand red (--color-brand, #e2001a), not Tailwind's
+// stock red-600 — the console, the charts and the export all wear one red.
+export const SERIES = ['#2a78d6', '#e2001a', '#eda100'] as const;
 export const SERIES_SOFT = ['#9ec5f4', '#f2a3a3', '#f6d58a'] as const;
 const INK = '#44403c';      // stone-700
 const INK_SOFT = '#78716c'; // stone-500

@@ -23,11 +23,14 @@ const INK_2 = '57534E';
 const MUTED = '78716C';
 const LINE = 'E7E5E4';
 const TILE_FILL = 'FAFAF9';
-const ACCENT = 'DC2626';
-const SERIES = ['2A78D6', 'DC2626', 'EDA100'];
-// Rendered as Inter Display where the font is installed; PowerPoint cannot
-// embed a font from here, so a machine without it substitutes its default.
-const FONT = 'Inter Display';
+// Brand red (#e2001a, the app's --color-brand) and the dashboard's series.
+const ACCENT = 'E2001A';
+const SERIES = ['2A78D6', 'E2001A', 'EDA100'];
+// The app's typeface. "Inter" is the family name the Google Fonts / rsms
+// download installs (the variable font carries the display cut the app uses);
+// PowerPoint cannot embed a font from here, so a machine without Inter
+// substitutes its default. The PDF embeds Inter Display and needs nothing.
+const FONT = 'Inter';
 
 type Slide = PptxGenJS.Slide;
 
@@ -120,7 +123,7 @@ function addChart(pptx: PptxGenJS, slide: Slide, title: string, chart: DeckChart
     }], {
       ...common, barDir: 'bar', barGapWidthPct: 45, showLegend: false, showValue: true, dataLabelPosition: 'outEnd', dataLabelFormatCode: '0.0',
       valAxisMinVal: 1, valAxisMaxVal: 15, valAxisMajorUnit: 3, valAxisLabelFormatCode: '0',
-      valAxisTitle: 'E = 2 · D = 5 · C = 8 · B = 11 · A = 14', showValAxisTitle: true, valAxisTitleFontSize: 7, valAxisTitleColor: MUTED,
+      valAxisTitle: 'E = 2 · D = 5 · C = 8 · B = 11 · A = 14', showValAxisTitle: true, valAxisTitleFontSize: 7, valAxisTitleColor: MUTED, valAxisTitleFontFace: FONT,
     });
     if (withheld.length) {
       slide.addText(`–: ${withheld.join(', ')}`, { x, y: y + h - 0.02, w, h: 0.22, fontFace: FONT, fontSize: 7, color: MUTED, valign: 'top' });
@@ -163,7 +166,7 @@ function addChart(pptx: PptxGenJS, slide: Slide, title: string, chart: DeckChart
       ...common, chartColors: [SERIES[0], 'A8A29E'], lineSize: 2, lineDataSymbol: 'circle', lineDataSymbolSize: 6,
       showLegend: false, showValue: false, displayBlanksAs: 'gap',
       valAxisMinVal: 1, valAxisMaxVal: 15, valAxisMajorUnit: 3, valAxisLabelFormatCode: '0',
-      valAxisTitle: 'E = 2 · D = 5 · C = 8 · B = 11 · A = 14', showValAxisTitle: true, valAxisTitleFontSize: 7, valAxisTitleColor: MUTED,
+      valAxisTitle: 'E = 2 · D = 5 · C = 8 · B = 11 · A = 14', showValAxisTitle: true, valAxisTitleFontSize: 7, valAxisTitleColor: MUTED, valAxisTitleFontFace: FONT,
     });
   } else {
     slide.addChart(pptx.ChartType.doughnut, [{ name: title, labels: chart.categories, values: chart.values }], {
@@ -244,6 +247,8 @@ export async function buildDeckPptx(deck: Deck): Promise<Blob> {
   const { default: PptxGen } = await import('pptxgenjs');
   const pptx = new PptxGen();
   pptx.layout = 'LAYOUT_16x9';
+  // The theme's fonts too, so text typed into the deck later is Inter as well.
+  pptx.theme = { headFontFace: FONT, bodyFontFace: FONT };
   pptx.title = deck.title;
   pptx.subject = deck.subtitle;
   deck.slides.forEach((s, i) => renderSlide(pptx, deck, s, i, deck.slides.length));

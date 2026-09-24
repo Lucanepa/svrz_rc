@@ -22,8 +22,9 @@ const INK_2: [number, number, number] = [87, 83, 78];
 const MUTED: [number, number, number] = [120, 113, 108];
 const LINE: [number, number, number] = [231, 229, 228];
 const TILE: [number, number, number] = [250, 250, 249];
-const ACCENT: [number, number, number] = [220, 38, 38];
-const SERIES: Array<[number, number, number]> = [[42, 120, 214], [220, 38, 38], [237, 161, 0]];
+// Brand red (#e2001a, the app's --color-brand) and the dashboard's series.
+const ACCENT: [number, number, number] = [226, 0, 26];
+const SERIES: Array<[number, number, number]> = [[42, 120, 214], [226, 0, 26], [237, 161, 0]];
 
 type Rgb = [number, number, number];
 

@@ -361,7 +361,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
       title: t.perLeague,
       figures: [
         { title: t.perLeague, chart: { kind: 'bars', categories: stats.byLeague.slice(0, 12).map((b) => b.label || '–'), values: stats.byLeague.slice(0, 12).map((b) => b.observations) } },
-        { title: `${categoryLabel('H', lang)} / ${categoryLabel('D', lang)}`, chart: { kind: 'stack', categories: stats.byCategory.map((b) => categoryLabel(b.key, lang)), values: stats.byCategory.map((b) => b.observations), colors: stats.byCategory.map((_, i) => ['#2a78d6', '#dc2626', '#eda100'][i % 3]) } },
+        { title: `${categoryLabel('H', lang)} / ${categoryLabel('D', lang)}`, chart: { kind: 'stack', categories: stats.byCategory.map((b) => categoryLabel(b.key, lang)), values: stats.byCategory.map((b) => b.observations), colors: stats.byCategory.map((_, i) => ['#2a78d6', '#e2001a', '#eda100'][i % 3]) } },
       ],
       table: { head: [t.perLeague, t.observations], rows: stats.byDivision.map((b) => [divisionLabel(b.key, lang), int(b.observations)]) },
     });

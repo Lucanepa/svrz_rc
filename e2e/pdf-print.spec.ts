@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp, openFeedbackForm } from './support/app';
+import { stubSignedInApp, openFeedbackForm, openFileMenu } from './support/app';
 
 test.describe('Print layout', () => {
   test.beforeEach(async ({ page }) => {
@@ -92,9 +92,10 @@ test.describe('PDF download button', () => {
 
     // Exercises the app's own naming, not a copy of it re-implemented here —
     // the previous version asserted on a string it had just built itself.
+    await openFileMenu(page);
     const [download] = await Promise.all([
       page.waitForEvent('download'),
-      page.locator('button').filter({ hasText: /PDF|Download/ }).first().click(),
+      page.getByTestId('download-pdf').click(),
     ]);
     expect(download.suggestedFilename()).toMatch(/^[\w.-]+-[12]SR\.pdf$/);
   });

@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { stubSignedInApp, openFeedbackForm, signOpenPad, fillWholeForm, GAME } from './support/app';
+import { stubSignedInApp, openFeedbackForm, signOpenPad, fillWholeForm, openFileMenu, GAME } from './support/app';
 
 const SERVER = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server', 'index.ts'), 'utf8');
 
@@ -110,13 +110,17 @@ test('filing one referee\'s report leaves the other referee\'s form open', async
   await page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ }).click();
   await confirmSend(page).click();
   // The sent report is what is on screen now.
+  await openFileMenu(page);
   await expect(page.getByTestId('sent-pdf')).toBeVisible();
+  await page.keyboard.press('Escape');
 
   // The other referee is a report nobody has written yet: not submitted, not
   // locked, and its pads take ink.
   await targetButton(page, /^2SR/).click();
   await expect(targetButton(page, /^2SR/)).toHaveAttribute('aria-pressed', 'true');
+  await openFileMenu(page);
   await expect(page.getByTestId('sent-pdf')).toHaveCount(0);
+  await page.keyboard.press('Escape');
   await expect(page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).first()).toBeEnabled();
 });

@@ -404,3 +404,11 @@ export async function fillWholeForm(page: Page): Promise<void> {
     await signOpenPad(page);
   }
 }
+
+/** The form's ☰ PDF menu: Download PDF, Sent PDF, Save draft. Opens it (if
+ *  shut) and returns it; the items keep their test ids. */
+export async function openFileMenu(page: Page) {
+  const toggle = page.getByRole('button', { name: /^(PDF & Entwurf|PDF & draft)$/ });
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  return page.getByRole('menu');
+}

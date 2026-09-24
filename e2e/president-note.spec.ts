@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { RC, stubSignedInApp } from './support/app';
+import { RC, stubSignedInApp, openFileMenu } from './support/app';
 import { presidentNoteEntry } from '../server/presidentNotes';
 
 /**
@@ -172,14 +172,15 @@ test('saving the note moves the report out of "Awaiting completion" without a re
   await expect(awaiting).toHaveCount(0);
 });
 
-test('an (i) beside the two PDF buttons says which one the referee got', async ({ page }) => {
+test('the PDF menu says which PDF the referee got', async ({ page }) => {
   await stub(page, { signedInAs: RC.name });
   await openFiledObservation(page);
 
-  const info = page.getByTestId('sent-pdf').locator('xpath=following-sibling::span[1]').getByRole('button', { name: /Erklärung anzeigen|Show explanation/ });
-  await info.click();
-  const dialog = page.getByRole('dialog', { name: /Erklärung anzeigen|Show explanation/ });
-  await expect(dialog).toContainText(/Gesendetes PDF|Sent PDF/);
-  // An app hint quotes no section of the Infoschreiben.
-  await expect(dialog).not.toContainText(/Infoschreiben|RC information sheet/);
+  const menu = await openFileMenu(page);
+  await expect(page.getByTestId('sent-pdf')).toContainText(/Genau die Datei, die der SR per Mail bekam|Exactly the file the referee was mailed/);
+  await expect(page.getByTestId('download-pdf')).toContainText(/aktuellen Layout|current layout/);
+  await expect(menu.getByRole('menuitem')).toHaveCount(3);
+  // Shut by Escape, like any menu.
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
 });

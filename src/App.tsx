@@ -3505,6 +3505,22 @@ export default function App() {
   // feedback_json, and even for a drawn one the stored copy is the one the
   // referee holds.
   const [sentPdfBusy, setSentPdfBusy] = useState('');
+  const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const fileMenuRef = useRef<HTMLDivElement>(null);
+  // Closed by a click anywhere else and by Escape, like any menu.
+  useEffect(() => {
+    if (!fileMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (fileMenuRef.current && !fileMenuRef.current.contains(e.target as Node)) setFileMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFileMenuOpen(false); };
+    document.addEventListener('mousedown', onDown, true);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [fileMenuOpen]);
   const openSentPdf = async (feedbackId: string) => {
     setSentPdfBusy(feedbackId);
     try {
@@ -6202,41 +6218,62 @@ export default function App() {
         </button>
         {feedbackSubView === 'feedbackForm' && (
           <>
-        <button
-          onClick={() => void handleDownloadPdf()}
-          className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
-        >
-          <Download size={18} />
-          <span className="hidden sm:inline">{t.downloadPdf}</span>
-        </button>
-        {openFeedbackId && !isDemoMode() && (
+        {/* The documents in one menu, so the toolbar is one row: the PDF as
+            it looks now, the PDF the referee was sent, and the draft file.
+            Each says in a line what it is — two PDF buttons side by side read
+            as the same thing twice. */}
+        <div ref={fileMenuRef} className="relative">
           <button
-            onClick={() => void openSentPdf(openFeedbackId)}
-            disabled={sentPdfBusy === openFeedbackId}
-            data-testid="sent-pdf"
-            className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 disabled:opacity-60 transition-colors"
+            type="button"
+            onClick={() => setFileMenuOpen((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={fileMenuOpen}
+            aria-label={formData.lang === 'DE' ? 'PDF & Entwurf' : 'PDF & draft'}
+            className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
           >
-            {sentPdfBusy === openFeedbackId ? <Loader2 size={18} className="animate-spin" /> : <ExternalLink size={18} />}
-            <span className="hidden sm:inline">{t.sentPdf}</span>
+            {sentPdfBusy ? <Loader2 size={18} className="animate-spin" /> : <Menu size={18} />}
+            <span className="hidden sm:inline">PDF</span>
+            <ChevronDown size={14} className="text-stone-400" />
           </button>
-        )}
-        {/* Two PDF buttons side by side read as the same thing twice; the (i)
-            says which one the referee actually got. */}
-        {openFeedbackId && !isDemoMode() && (
-          <InfoHint id="pdfButtons" lang={formData.lang} className="self-center" />
-        )}
-        {/* The PDF is the document; this is the work. A PDF can be read but not
-            loaded back, so a coach who wants to carry an unfinished observation
-            to another device needs a file the app can re-open. */}
-        <button
-          onClick={() => void handleExportDraft()}
-          disabled={!draftWorth}
-          title={t.draftExport}
-          className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors disabled:opacity-50"
-        >
-          <FileJson size={18} />
-          <span className="hidden sm:inline">{t.draftExport}</span>
-        </button>
+          {fileMenuOpen && (
+            <div role="menu" className="absolute left-0 top-full z-40 mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-stone-200 bg-white p-1 shadow-xl">
+              {([
+                {
+                  key: 'download', icon: <Download size={18} />, label: t.downloadPdf,
+                  hint: formData.lang === 'DE' ? 'Neue Kopie im aktuellen Layout der App' : "A fresh copy in the app's current layout",
+                  onClick: () => void handleDownloadPdf(), show: true, disabled: false, testId: 'download-pdf',
+                },
+                {
+                  key: 'sent', icon: <ExternalLink size={18} />, label: t.sentPdf,
+                  hint: formData.lang === 'DE' ? 'Genau die Datei, die der SR per Mail bekam' : 'Exactly the file the referee was mailed',
+                  onClick: () => { if (openFeedbackId) void openSentPdf(openFeedbackId); },
+                  show: !!openFeedbackId && !isDemoMode(), disabled: sentPdfBusy === openFeedbackId, testId: 'sent-pdf',
+                },
+                {
+                  key: 'draft', icon: <FileJson size={18} />, label: t.draftExport,
+                  hint: formData.lang === 'DE' ? 'Als Datei, um auf einem anderen Gerät weiterzuarbeiten' : 'As a file, to carry on on another device',
+                  onClick: () => void handleExportDraft(), show: true, disabled: !draftWorth, testId: 'save-draft',
+                },
+              ]).filter((item) => item.show).map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  role="menuitem"
+                  data-testid={item.testId}
+                  disabled={item.disabled}
+                  onClick={() => { setFileMenuOpen(false); item.onClick(); }}
+                  className="flex w-full items-start gap-3 rounded-md px-3 py-2 text-left hover:bg-stone-50 disabled:opacity-50 disabled:hover:bg-transparent"
+                >
+                  <span className="mt-0.5 text-stone-600">{item.icon}</span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium text-stone-800">{item.label}</span>
+                    <span className="block text-xs text-stone-500">{item.hint}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         {gameHas2SR && (
           <>
             <div className="flex flex-wrap items-center gap-2">

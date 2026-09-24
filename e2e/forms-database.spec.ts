@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { COACHEE, RC, stubSignedInApp } from './support/app';
+import { COACHEE, RC, stubSignedInApp, openFileMenu } from './support/app';
 
 // Admin → Formulare: every filed form, one folder per referee across seasons,
 // each openable as the PDF that was sent, the folder as a ZIP. And the coach's
@@ -200,6 +200,7 @@ test('a coach gets the sent PDF back from the Feedback-Verlauf, without redrawin
 
   // Opening the record offers the same document beside the redrawn PDF.
   await dialog.getByRole('button', { name: /A vs B/ }).nth(1).click();
+  await openFileMenu(page);
   const sent = page.getByTestId('sent-pdf');
   await expect(sent).toBeVisible();
   const second = page.waitForEvent('download');

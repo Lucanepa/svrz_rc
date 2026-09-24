@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { stubSignedInApp, openFeedbackForm, ratingControl, fillWholeForm, signOpenPad, openOptions, RC, COACHEE, GAME } from './support/app';
+import { stubSignedInApp, openFeedbackForm, ratingControl, fillWholeForm, signOpenPad, openOptions, openFileMenu, RC, COACHEE, GAME } from './support/app';
 
 /**
  * An unfinished observation, and the three ways it is allowed to survive: the
@@ -368,7 +368,7 @@ test.describe('The portable file', () => {
 
     const [download] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByRole('button', { name: /Save draft|Entwurf sichern/ }).click(),
+      openFileMenu(page).then(() => page.getByTestId('save-draft').click()),
     ]);
     expect(download.suggestedFilename()).toMatch(/\.json$/);
 

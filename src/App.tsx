@@ -5928,28 +5928,6 @@ export default function App() {
               </button>
             </div>
             <div className="flex flex-col">
-              {/* First: loading a draft is how an observation started on a
-                  dead phone gets finished — the one a coach reaches for
-                  mid-season. The input hides behind the label because the
-                  native control renders in the BROWSER's language. */}
-              <label className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer">
-                <Upload size={18} />
-                <span>{t.draftImport}</span>
-                <input
-                  type="file"
-                  accept=".json,application/json"
-                  className="sr-only"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    // Cleared before the read, so picking the SAME file twice
-                    // still fires change — otherwise a failed import cannot be
-                    // retried without choosing something else first.
-                    e.target.value = '';
-                    setOptionsOpen(false);
-                    if (f) void handleImportDraftFile(f);
-                  }}
-                />
-              </label>
               <button
                 onClick={toggleLang}
                 className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
@@ -6037,6 +6015,28 @@ export default function App() {
                   <span className="min-w-0 truncate">{formData.lang === 'DE' ? 'Abmelden' : 'Log out'}</span>
                 </button>
               )}
+              {/* Last: loading a draft finishes an observation started on a
+                  dead phone — rare, so it waits at the bottom. The input hides
+                  behind the label because the native control renders in the
+                  BROWSER's language. */}
+              <label className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer">
+                <Upload size={18} />
+                <span>{t.draftImport}</span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  className="sr-only"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    // Cleared before the read, so picking the SAME file twice
+                    // still fires change — otherwise a failed import cannot be
+                    // retried without choosing something else first.
+                    e.target.value = '';
+                    setOptionsOpen(false);
+                    if (f) void handleImportDraftFile(f);
+                  }}
+                />
+              </label>
             </div>
           </div>
         </div>
@@ -9158,12 +9158,16 @@ export default function App() {
           <div className="p-3">
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.secondVisit}</h4><InfoHint id="secondVisit" lang={formData.lang} className="ml-1 mb-1" />
             {/* A plain Y always stands first: "needs another visit", no role
-                named. The role-specific Ys follow — only the ones the Niveau
-                table allows this referee, so an N4 is offered 1. SR alone. */}
+                named. When the Niveau table allows this referee both roles,
+                "Y, als 1SR" and "Y, als 2SR" follow. When it allows only one
+                (an N4 is "ohne Ausbildung zum 2. SR"), a role button would say
+                nothing the plain Y does not, so the Y alone is offered and
+                records that one role. */}
             {(() => {
               const roles = visitRolesFor(formData.meta.srNiveau, niveauTable);
               const r = formData.results;
-              const yesRoles: Array<'1SR' | '2SR' | ''> = ['', ...roles];
+              const onlyRole: '1SR' | '2SR' | '' = roles.length === 1 ? roles[0] : '';
+              const yesRoles: Array<'1SR' | '2SR' | ''> = roles.length > 1 ? ['', ...roles] : [''];
               const pick = (value: 'Y' | 'N', role: '1SR' | '2SR' | '') => setFormData(prev => {
                 const same = prev.results.secondBesuch === value && (prev.results.secondBesuchRole || '') === role;
                 return { ...prev, results: { ...prev.results, secondBesuch: same ? '' : value, secondBesuchRole: same ? '' : role } };
@@ -9184,7 +9188,9 @@ export default function App() {
               return (
                 <div className="flex flex-wrap gap-1">
                   {yesRoles.map((role) => btn(`Y${role}`, role ? `Y, ${formData.lang === 'DE' ? 'als' : 'as'} ${role}` : 'Y',
-                    r.secondBesuch === 'Y' && (r.secondBesuchRole || '') === role, () => pick('Y', role)))}
+                    // With one role on offer, any earlier Y (with or without it) is this one.
+                    r.secondBesuch === 'Y' && (onlyRole ? true : (r.secondBesuchRole || '') === role),
+                    () => pick('Y', role || onlyRole)))}
                   {btn('N', 'N', r.secondBesuch === 'N', () => pick('N', ''))}
                 </div>
               );

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Info, X } from 'lucide-react';
 import { INFO_HINTS, type InfoHintId } from '../lib/infoHints';
 
@@ -16,6 +16,21 @@ import { INFO_HINTS, type InfoHintId } from '../lib/infoHints';
 export default function InfoHint({ id, lang, className }: { id: InfoHintId; lang: 'DE' | 'EN'; className?: string }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLSpanElement>(null);
+  const panel = useRef<HTMLSpanElement>(null);
+  // Pulled back inside the screen when it opens: a (i) near the right edge
+  // opened its panel off the page on a phone.
+  const [shift, setShift] = useState(0);
+  useLayoutEffect(() => {
+    if (!open) { setShift(0); return; }
+    const rect = panel.current?.getBoundingClientRect();
+    if (!rect) return;
+    // The part of the page on screen: on a phone whose page is laid out
+    // wider than the screen, innerWidth is the layout, not what is visible.
+    const vv = window.visualViewport;
+    const right = vv ? vv.offsetLeft + vv.width : window.innerWidth;
+    const overflow = rect.right - (right - 8);
+    setShift(overflow > 0 ? -Math.min(overflow, rect.left - 8) : 0);
+  }, [open]);
   const hint = INFO_HINTS[id];
 
   useEffect(() => {
@@ -50,8 +65,10 @@ export default function InfoHint({ id, lang, className }: { id: InfoHintId; lang
       </button>
       {open && (
         <span
+          ref={panel}
           role="dialog"
           aria-label={label}
+          style={shift ? { transform: `translateX(${shift}px)` } : undefined}
           // Anchored to the left edge and clamped to the viewport width: these
           // sit in a five-column grid whose last column ends at the page edge,
           // where a fixed-width panel would open off-screen on a phone.

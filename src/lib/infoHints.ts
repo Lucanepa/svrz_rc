@@ -16,8 +16,6 @@ export type InfoHintId =
   | 'rating'
   | 'secondVisit'
   | 'refGoal'
-  | 'niveau'
-  | 'group'
   | 'goal'
   | 'srGame';
 
@@ -59,36 +57,6 @@ export const INFO_HINTS: Record<InfoHintId, InfoHint> = {
     ref: '4.4.3 / 4.4.8',
     DE: 'Das Ziel, das der Schiedsrichter selbst verfolgt. Mit ihm besprechen — besonders bei Neu-SR im zweiten Jahr und bei Schiedsrichtern, die seit mindestens zwei Jahren nicht besucht wurden.',
     EN: "The referee's own goal. To be discussed with them — especially with second-year new referees and with anyone not visited for two years or more.",
-  },
-  niveau: {
-    ref: '7.3',
-    DE: 'Niveau und Stufe bestimmen, welche Spiele ein Schiedsrichter leiten darf und welche sich für eine Beurteilung eignen.\n\n'
-      + 'N4-3 leitet nur Damen- und Juniorinnenspiele; hier ist zu besprechen, ob die Person auch für H4 bereit wäre (dann Gruppe «Beförderung?»). N3-3 kann während der Saison zu N3-2 aufgestuft werden, wenn das Feedback entsprechend ausfällt. Bei N2-2 ist zu beurteilen, ob N2-1-Spiele in Frage kommen.',
-    EN: 'Level and stage decide which matches a referee may officiate, and which are suitable for an assessment.\n\n'
-      + 'N4-3 officiates only women’s and girls’ matches; discuss whether the person is also ready for men’s 4th league (then the "Promotion?" group). N3-3 can be raised to N3-2 during the season if the feedback supports it. For N2-2, assess whether N2-1 matches are an option.',
-  },
-  group: {
-    ref: '4.4.2–4.4.9',
-    DE: 'Warum diese Person auf der Liste steht:\n\n'
-      + 'Neu-SR 26/27 — erste Saison, braucht Unterstützung bei der Spielvor- und -nachbereitung.\n'
-      + 'Neu-SR 25/26 — zweite Saison, über Motivation und SR-Ziel sprechen.\n'
-      + 'Beförderung? — für eine Beförderung zu besuchen; passendes Spiel wählen.\n'
-      + 'Beförderung — letzte Saison befördert; Spiel nach dem neuen Niveau aussuchen.\n'
-      + '(Bei beiden zeigt der Fokus nur Spiele, die sich dem Niveau eindeutig zuordnen lassen — kein Cup.)\n'
-      + 'Referee Coaching — hat im VM selbst um einen Besuch gebeten.\n'
-      + '2. Schiedsrichter — kürzlich N3-Kurs, noch kein oder lange kein Besuch als 2. SR.\n'
-      + 'Varia — seit mindestens zwei Jahren nicht besucht.\n'
-      + 'Coaching — Ziel 1. Liga oder Nationalkader; Anzahl Besuche mit dem SR absprechen.',
-    EN: 'Why this person is on the list:\n\n'
-      + 'New SR 26/27 — first season, needs support preparing and reviewing the match.\n'
-      + 'New SR 25/26 — second season, discuss motivation and their goal.\n'
-      + 'Promotion? — to be visited with a promotion in view; pick a suitable match.\n'
-      + 'Promoted — promoted last season; pick a match matching the new level.\n'
-      + '(For both, the focus shows only games the level can be read off — no cup.)\n'
-      + 'RC requested — asked for a visit themselves in VolleyManager.\n'
-      + '2nd referee — recently took the N3 course, no recent visit as 2nd referee.\n'
-      + 'Misc — not visited for at least two years.\n'
-      + 'Coaching — aiming for 1st league or the national squad; agree the number of visits with them.',
   },
   goal: {
     ref: '6.2',

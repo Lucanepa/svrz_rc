@@ -6209,12 +6209,12 @@ export default function App() {
       {/* UI Controls */}
       {/* Empty on the list screens (everything in it is for the form), and
           an empty row still cost its 24px margin at the top of the page. */}
-      <div className={cn(sheetWidth, 'mx-auto mb-6 flex flex-wrap gap-3 no-print', feedbackSubView === 'coachees' && 'hidden')}>
+      <div className={cn(sheetWidth, 'mx-auto mb-6 flex flex-wrap items-center gap-2 sm:gap-3 no-print', feedbackSubView === 'coachees' && 'hidden')}>
         {feedbackSubView !== 'coachees' && (
           <>
         <button
           onClick={() => setFeedbackSubView('coachees')}
-          className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
+          className="flex h-11 items-center gap-2 bg-white px-4 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
         >
           <ArrowLeft size={18} />
           <span>{formData.lang === 'DE' ? 'Zurück' : 'Back'}</span>
@@ -6232,7 +6232,7 @@ export default function App() {
             aria-haspopup="menu"
             aria-expanded={fileMenuOpen}
             aria-label={formData.lang === 'DE' ? 'PDF & Entwurf' : 'PDF & draft'}
-            className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
+            className="flex h-11 items-center gap-2 bg-white px-4 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
           >
             {sentPdfBusy ? <Loader2 size={18} className="animate-spin" /> : <Menu size={18} />}
             <span className="hidden sm:inline">PDF</span>
@@ -6279,9 +6279,10 @@ export default function App() {
         </div>
         {gameHas2SR && (
           <>
-            <div className="flex flex-wrap items-center gap-2">
+            {/* On a phone the toggle takes what is left of the first row. */}
+            <div className="flex flex-1 sm:flex-none flex-wrap items-center gap-2">
             <div
-              className="flex shrink-0 rounded-lg border border-stone-300 bg-white shadow-sm overflow-hidden"
+              className="flex h-11 flex-1 sm:flex-none shrink-0 rounded-lg border border-stone-300 bg-white shadow-sm overflow-hidden"
               role="group"
               aria-label={formData.lang === 'DE' ? 'Beobachtung f\u00FCr' : 'Observation for'}
             >
@@ -6296,7 +6297,7 @@ export default function App() {
                     onClick={() => changeObservationTarget(tg)}
                     title={`${refName}${isCoachee ? ' (Coachee)' : ''}`}
                     className={cn(
-                      "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors",
+                      "flex flex-1 items-center justify-center gap-1.5 px-3 text-sm font-medium transition-colors",
                       active ? "bg-slate-900 text-white" : "text-stone-600 hover:bg-stone-50"
                     )}
                   >
@@ -6363,7 +6364,9 @@ export default function App() {
             offered where the API is missing (iPhone Safari, the installed
             PWA); the width is ours, and a phone never needs it — the sheet
             already fills the screen there. */}
-        <div className="ml-auto flex items-center gap-3">
+        {/* One cluster, same height, even widths on a phone (its own row
+            there), natural widths at the right end on a wider screen. */}
+        <div className="flex flex-1 sm:flex-none sm:ml-auto items-center gap-2 sm:gap-3">
           <button
             type="button"
             onClick={toggleFormWide}
@@ -6371,7 +6374,7 @@ export default function App() {
             aria-label={formWide ? t.widenExit : t.widen}
             title={formWide ? t.widenExit : t.widen}
             data-testid="form-widen"
-            className="hidden lg:flex items-center bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
+            className="hidden lg:flex h-11 items-center justify-center bg-white px-4 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
           >
             {formWide ? <FoldHorizontal size={18} /> : <UnfoldHorizontal size={18} />}
           </button>
@@ -6383,32 +6386,32 @@ export default function App() {
               aria-label={docFull ? t.fullscreenExit : t.fullscreen}
               title={docFull ? t.fullscreenExit : t.fullscreen}
               data-testid="form-fullscreen"
-              className="flex items-center bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
+              className="flex h-11 flex-1 sm:flex-none items-center justify-center bg-white px-4 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
             >
               {docFull ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
             </button>
           )}
+          <button
+            onClick={toggleLang}
+            // No ml-auto of its own: the view-mode group before it carries the
+            // gap, and two auto margins in one flex row split the space between
+            // them instead of pushing this to the end.
+            className="flex h-11 flex-1 sm:flex-none items-center justify-center gap-2 bg-white px-4 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
+            title={t.languageToggleTitle}
+          >
+            <Languages size={18} />
+            <span className="hidden sm:inline">{formData.lang}</span>
+          </button>
+          <button
+            onClick={resetForm}
+            aria-label={t.reset}
+            title={t.reset}
+            className="flex h-11 flex-1 sm:flex-none items-center justify-center gap-2 bg-red-50 text-red-600 px-4 rounded-lg shadow-sm border border-red-100 hover:bg-red-100 transition-colors"
+          >
+            <RotateCcw size={18} />
+            <span className="hidden sm:inline">{t.reset}</span>
+          </button>
         </div>
-        <button
-          onClick={toggleLang}
-          // No ml-auto of its own: the view-mode group before it carries the
-          // gap, and two auto margins in one flex row split the space between
-          // them instead of pushing this to the end.
-          className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
-          title={t.languageToggleTitle}
-        >
-          <Languages size={18} />
-          <span className="hidden sm:inline">{formData.lang}</span>
-        </button>
-        <button
-          onClick={resetForm}
-          aria-label={t.reset}
-          title={t.reset}
-          className="flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2 rounded-lg shadow-sm border border-red-100 hover:bg-red-100 transition-colors"
-        >
-          <RotateCcw size={18} />
-          <span className="hidden sm:inline">{t.reset}</span>
-        </button>
         {selectedGame && (
           <div className="w-full flex flex-wrap items-center gap-2">
             {/* What the game IS, the same chips as on the list it was opened
@@ -8438,8 +8441,7 @@ export default function App() {
                 return (
                   <span className="ml-2 text-xs font-normal text-stone-500">
                     (Level: {vc ? <LevelText level={vc.referee_level} stage={vc.stage} /> : selectedCoacheeLevel}
-                    <InfoHint id="niveau" lang={formData.lang} />
-                    {vcGroup ? <> · {vcGroup}<InfoHint id="group" lang={formData.lang} /></> : null})
+                    {vcGroup ? <> · {vcGroup}</> : null})
                   </span>
                 );
               })()}

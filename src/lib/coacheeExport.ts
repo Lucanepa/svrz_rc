@@ -49,7 +49,9 @@ export const COACHEE_EXPORT_STR = {
 
 const surname = (c: Coachee) => (c.last_name || '').trim() || c.full_name.split(' ').slice(1).join(' ');
 const given = (c: Coachee) => (c.first_name || '').trim() || c.full_name.split(' ')[0] || '';
-const grade = (g: GradeAgg | undefined): string => { const a = gradeAvg(g); return a === null ? '' : `${scoreToLetter(a)} (${a.toFixed(1)})`; };
+/** A to E only: the ± are the form's nuance and count as their letter. */
+const grade = (g: GradeAgg | undefined): string => { const a = gradeAvg(g); return a === null ? '' : scoreToLetter(a); };
+const letter = (v: number | null): string => (v === null ? '' : scoreToLetter(v));
 const date = (d: string) => (d ? dayLabel(d, { year: true }) : '');
 
 /** The table both files draw. Surname order; a coachee without observations
@@ -113,7 +115,7 @@ export function coacheeExportTable(coachees: Coachee[], summaries: CoacheeSummar
         s.observations, s.obs1SR, s.obs2SR,
         grade(s.grade), grade(s.grade1SR), grade(s.grade2SR),
         date(s.firstDate), date(s.lastDate),
-        s.firstAvg, s.observations > 1 ? s.lastAvg : null,
+        letter(s.firstAvg), s.observations > 1 ? letter(s.lastAvg) : '',
         trendText(s),
         s.einstufungUp, s.einstufungSame, s.einstufungDown,
         outcome('einstufung', s.lastEinstufung),

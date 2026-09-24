@@ -4,7 +4,7 @@ import {
   computeTrend, coacheeSummaries, computeBreakdowns,
   type StatObservation, type StatRcInput, type StatCoacheeInput,
 } from '../server/statistics';
-import { gradeAvg, isThin, scoreToLetter, countWords } from '../src/lib/statistics';
+import { foldHistogram, gradeAvg, isThin, letterScore, scoreToLetter, countWords, STAT_LETTERS } from '../src/lib/statistics';
 
 // The counting rules of Admin → Statistik on their own, without a database:
 // what is an observation, how a game with two referees counts, where the
@@ -48,7 +48,8 @@ test('a feedback becomes an observation: grades scored, level and group as filed
   expect(o.role).toBe('1SR');
   expect(o.level).toBe('N3-2');           // the form's own copy, not the roster's N3-1
   expect(o.groups).toEqual(['Beförderung?']);
-  expect(o.ratings.map((r) => [r.id, r.section, r.score])).toEqual([['1sr-prep-1', 0, 11], ['1sr-prep-2', 0, 8], ['1sr-lead-1', 1, 13]]);
+  // Each rating folded into its letter: the A− scores as an A (14).
+  expect(o.ratings.map((r) => [r.id, r.section, r.score])).toEqual([['1sr-prep-1', 0, 11], ['1sr-prep-2', 0, 8], ['1sr-lead-1', 1, 14]]);
   expect(o.offered).toBe(4);
   expect(o.answered).toBe(3);             // the blank "Absprache" is the one unanswered
   expect(o.words).toBe(8);                 // "Sehr gute Leistung, ruhig und klar." + "Netzfehler sicher."
@@ -171,7 +172,7 @@ test('grades: the histogram counts what was given, thin averages are marked, sec
   expect(stats.totals.ratingsC).toBe(2);
   expect(stats.totals.ratingsBPlus).toBe(1);
   expect(gradeAvg(stats.totals.grade)).toBe(8.6);
-  expect(scoreToLetter(8.6)).toBe('C+');
+  expect(scoreToLetter(8.6)).toBe('C');
   const x = stats.criteria.find((c) => c.id === 'x')!;
   expect(x.grade).toEqual({ obs: 3, items: 3, sum: 24 });
   const y = stats.criteria.find((c) => c.id === 'y')!;
@@ -320,4 +321,36 @@ test('breakdowns: one slice per Niveau, Stufe and group, empty ones left out', (
   expect(b.level.map((x) => [x.key, x.stats.totals.observations])).toEqual([['N2', 0], ['N3', 1], ['N4', 1]]);
   expect(b.stufe.map((x) => x.key)).toEqual(['N2-1', 'N3-1', 'N3-2', 'N4-1'].filter((k) => k !== 'N3-1'));
   expect(b.group.map((x) => x.key).sort()).toEqual(['Beförderung?', 'Varia']);
+});
+
+// ── Letters only: + and − are the form's nuance, statistics speak A to E ─────
+
+test('a score or an average reads as its letter — never with a + or −', () => {
+  // Every point on the 1–15 scale, and the halves between them.
+  for (let v = 1; v <= 15; v += 0.5) expect(STAT_LETTERS).toContain(scoreToLetter(v));
+  // A ± belongs to its letter: C− 7, C 8, C+ 9 are all C; B− 10 is B.
+  expect([7, 8, 9].map(scoreToLetter)).toEqual(['C', 'C', 'C']);
+  expect(scoreToLetter(10)).toBe('B');
+  // An average takes the letter whose band it lies in (halfway between centres).
+  expect(scoreToLetter(9.49)).toBe('C');
+  expect(scoreToLetter(9.5)).toBe('B');
+  expect(scoreToLetter(12.5)).toBe('A');
+  expect(scoreToLetter(3.49)).toBe('E');
+  // Folded ratings sit on the letters' centres.
+  expect([13, 14, 15, 7, 9, 1, 3].map(letterScore)).toEqual([14, 14, 14, 8, 8, 2, 2]);
+});
+
+test('a histogram in fifteen grades folds into five letters', () => {
+  expect(foldHistogram({ 'A+': 1, A: 2, 'A-': 3, 'C-': 4, C: 5, 'C+': 6, E: 7 })).toEqual({ A: 6, B: 0, C: 15, D: 0, E: 7 });
+  expect(foldHistogram({})).toEqual({ A: 0, B: 0, C: 0, D: 0, E: 0 });
+});
+
+test('the server folds each rating before it counts: a C− and a C+ are two Cs', () => {
+  const f = feedback();
+  (f.feedback_json as { sections: Array<{ items: Array<{ rating: string }> }> }).sections[0].items.forEach((it, i) => { it.rating = ['C-', 'C+', 'C', ''][i] ?? ''; });
+  const o = observationFromFeedback({ feedback: f, game: GAME, coachee: COACHEE, rc: RC_A })!;
+  expect(o.ratings.filter((r) => r.section === 0).map((r) => r.score)).toEqual([8, 8, 8]);
+  const stats = computeStatistics({ season: 2025, filters: {}, now: new Date(), rcs: RCS, roster: ROSTER, observations: [o] });
+  // Only plain letters in the histogram the page and the deck read.
+  expect(Object.keys(stats.histogram).every((k) => (STAT_LETTERS as readonly string[]).includes(k))).toBe(true);
 });

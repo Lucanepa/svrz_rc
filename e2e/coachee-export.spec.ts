@@ -34,8 +34,12 @@ test('the table: roster columns, then the season figures; a coachee never seen k
   expect(zoe[col('E-Mail')]).toBe('zoe@example.ch');
   expect(zoe[col('Gruppe')]).toBe('Beförderung?');
   expect(zoe[col('Beob.')]).toBe(3);
-  expect(zoe[col('Ø Note')]).toBe('B- (10.0)');
-  expect(zoe[col('Ø 2SR')]).toBe('B+ (12.0)');
+  // Letters only — the ± stay on the form.
+  expect(zoe[col('Ø Note')]).toBe('B');
+  expect(zoe[col('Ø 2SR')]).toBe('B');
+  expect(zoe[col('Ø erste')]).toBe('C');
+  expect(zoe[col('Ø letzte')]).toBe('B');
+  for (const row of t.rows) for (const cell of row) expect(String(cell ?? '')).not.toMatch(/\b[A-E][+\-−](?![\w])/);
   expect(zoe[col('Trend')]).toBe('Besser');
   expect(zoe[col('Einstufung ↑')]).toBe(2);
   expect(zoe[col('Letzte Einstufung')]).toBe('Beförderung');

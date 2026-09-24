@@ -5,18 +5,32 @@
 // Google Slides or PowerPoint — not pictures of charts.
 import type PptxGenJS from 'pptxgenjs';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
-import type { Deck, DeckChart, DeckSlide, DeckTable, DeckTile } from './statsDeck';
-import { isThin, scoreToLetter } from './statistics';
+import type { Deck, DeckChart, DeckFormat, DeckSlide, DeckTable, DeckTile } from './statsDeck';
+import { isThin, scoreToLetter, GRADE_SCALE, NORMAL_SCORE } from './statistics';
 
-// 16:9 — 10" × 5.625".
-const W = 10;
-const H = 5.625;
+// 16:9 — 10" × 5.625", or A4 landscape — 11.69" × 8.27". Set per export by
+// setLayout(); everything below reads these.
+let W = 10;
+let H = 5.625;
 const MARGIN = 0.45;
-const CONTENT_W = W - MARGIN * 2;
+let CONTENT_W = W - MARGIN * 2;
 const TITLE_Y = 0.32;
-const BODY_Y = 1.05;
-const FOOTER_Y = H - 0.38;
-const BODY_H = FOOTER_Y - BODY_Y - 0.12;
+const BODY_Y = 1.1;
+let FOOTER_Y = H - 0.38;
+let BODY_H = FOOTER_Y - BODY_Y - 0.12;
+function setLayout(pptx: PptxGenJS, format: DeckFormat) {
+  if (format === 'A4') {
+    pptx.defineLayout({ name: 'A4_LANDSCAPE', width: 11.69, height: 8.27 });
+    pptx.layout = 'A4_LANDSCAPE';
+    W = 11.69; H = 8.27;
+  } else {
+    pptx.layout = 'LAYOUT_16x9';
+    W = 10; H = 5.625;
+  }
+  CONTENT_W = W - MARGIN * 2;
+  FOOTER_Y = H - 0.38;
+  BODY_H = FOOTER_Y - BODY_Y - 0.12;
+}
 
 const INK = '1C1917';
 const INK_2 = '57534E';
@@ -34,17 +48,123 @@ const FONT = 'Inter';
 
 type Slide = PptxGenJS.Slide;
 
-function addTitle(slide: Slide, s: DeckSlide, isCover: boolean) {
+function addTitle(slide: Slide, s: DeckSlide) {
+  // The chapter above the title, in the brand red: where in the deck this is.
+  if (s.eyebrow) {
+    slide.addText(s.eyebrow.toUpperCase(), { x: MARGIN, y: TITLE_Y - 0.14, w: CONTENT_W - 1.2, h: 0.22, fontFace: FONT, fontSize: 8, bold: true, color: ACCENT, charSpacing: 1, valign: 'middle' });
+  }
   slide.addText(s.title, {
-    x: MARGIN, y: isCover ? 1.6 : TITLE_Y, w: CONTENT_W, h: isCover ? 0.9 : 0.55,
-    fontFace: FONT, fontSize: isCover ? 32 : 22, bold: true, color: INK, valign: 'middle',
+    x: MARGIN, y: TITLE_Y + 0.08, w: CONTENT_W - 1.2, h: 0.5,
+    fontFace: FONT, fontSize: 22, bold: true, color: INK, valign: 'middle', fit: 'shrink',
   });
   if (s.subtitle) {
     slide.addText(s.subtitle, {
-      x: MARGIN, y: isCover ? 2.5 : TITLE_Y + 0.5, w: CONTENT_W, h: 0.35,
-      fontFace: FONT, fontSize: isCover ? 18 : 11, color: MUTED, valign: 'middle',
+      x: MARGIN, y: TITLE_Y + 0.55, w: CONTENT_W - 1.2, h: 0.3,
+      fontFace: FONT, fontSize: 11, color: MUTED, valign: 'middle',
     });
   }
+}
+
+/** The cover: logo, title, season, and a brand-red band carrying the sender. */
+function addCover(slide: Slide, s: DeckSlide) {
+  const band = 0.85;
+  slide.addImage({ data: logoDataUrl, x: MARGIN, y: 0.5, w: 1.6, h: 0.64 });
+  const top = H * 0.36;
+  slide.addShape('rect', { x: MARGIN, y: top - 0.25, w: 0.65, h: 0.06, fill: { color: ACCENT }, line: { color: ACCENT, width: 0 } });
+  slide.addText(s.title, { x: MARGIN, y: top, w: CONTENT_W, h: 0.8, fontFace: FONT, fontSize: 34, bold: true, color: INK, valign: 'middle', fit: 'shrink' });
+  if (s.subtitle) slide.addText(s.subtitle, { x: MARGIN, y: top + 0.8, w: CONTENT_W, h: 0.45, fontFace: FONT, fontSize: 18, color: INK_2, valign: 'middle' });
+  if (s.bullets?.length) slide.addText(s.bullets.join('\n'), { x: MARGIN, y: top + 1.3, w: CONTENT_W, h: 0.7, fontFace: FONT, fontSize: 11, color: MUTED, valign: 'top' });
+  slide.addShape('rect', { x: 0, y: H - band, w: W, h: band, fill: { color: ACCENT }, line: { color: ACCENT, width: 0 } });
+  slide.addText('Swiss Volley Region Zürich · Referee Coaching', { x: MARGIN, y: H - band, w: CONTENT_W, h: band, fontFace: FONT, fontSize: 12, bold: true, color: 'FFFFFF', valign: 'middle' });
+}
+
+/** Contents: one line per chapter, its number in red. */
+function addAgenda(slide: Slide, s: DeckSlide) {
+  const lines = s.bullets ?? [];
+  const rowH = Math.min(0.62, BODY_H / Math.max(1, lines.length));
+  lines.forEach((l, i) => {
+    const [num, ...rest] = l.split('  ');
+    const y = BODY_Y + i * rowH;
+    slide.addText(num, { x: MARGIN, y, w: 0.8, h: rowH - 0.08, fontFace: FONT, fontSize: 24, bold: true, color: ACCENT, valign: 'middle' });
+    slide.addText(rest.join('  '), { x: MARGIN + 0.85, y, w: CONTENT_W - 0.85, h: rowH - 0.08, fontFace: FONT, fontSize: 17, bold: true, color: INK, valign: 'middle' });
+    slide.addShape('line', { x: MARGIN, y: y + rowH - 0.04, w: CONTENT_W, h: 0, line: { color: LINE, width: 0.75 } });
+  });
+}
+
+/** A chapter opens: its number large in red, its name, one line on what follows. */
+function addDivider(slide: Slide, s: DeckSlide) {
+  const mid = H * 0.44;
+  slide.addText(s.number ?? '', { x: MARGIN, y: mid - 1.1, w: 3, h: 1, fontFace: FONT, fontSize: 60, bold: true, color: ACCENT, valign: 'bottom' });
+  slide.addText(s.title, { x: MARGIN, y: mid, w: CONTENT_W, h: 0.65, fontFace: FONT, fontSize: 30, bold: true, color: INK, valign: 'middle' });
+  if (s.subtitle) slide.addText(s.subtitle, { x: MARGIN, y: mid + 0.65, w: CONTENT_W, h: 0.4, fontFace: FONT, fontSize: 13, color: INK_2, valign: 'middle' });
+  slide.addShape('rect', { x: MARGIN, y: mid + 1.15, w: 0.65, h: 0.06, fill: { color: ACCENT }, line: { color: ACCENT, width: 0 } });
+}
+
+/** The dashboard's dot scale: one row per thing graded, a dot on an E–A track
+ *  with C marked; the letter and n beside it. Drawn as shapes, so the only
+ *  scale anyone sees is the five letters. */
+function addGradeScale(slide: Slide, chart: Extract<DeckChart, { kind: 'grade' }>, x: number, y: number, w: number, h: number) {
+  const rows = chart.categories.length;
+  const labelW = Math.min(2.4, w * 0.4);
+  const valueW = 0.85;
+  const trackX = x + labelW;
+  const trackW = w - labelW - valueW;
+  const pos = (score: number) => trackX + ((score - 1) / 14) * trackW;
+  const rowH = Math.min(0.34, (h - 0.25) / Math.max(1, rows));
+  for (const l of ['E', 'D', 'C', 'B', 'A']) {
+    slide.addText(l, { x: pos(GRADE_SCALE[l]) - 0.15, y, w: 0.3, h: 0.2, fontFace: FONT, fontSize: 7.5, color: MUTED, align: 'center', valign: 'middle' });
+  }
+  chart.categories.forEach((label, i) => {
+    const cy = y + 0.25 + i * rowH + rowH / 2;
+    slide.addText(label, { x, y: cy - rowH / 2, w: labelW - 0.08, h: rowH, fontFace: FONT, fontSize: 8.5, color: INK_2, valign: 'middle', fit: 'shrink' });
+    slide.addShape('line', { x: trackX, y: cy, w: trackW, h: 0, line: { color: LINE, width: 1 } });
+    slide.addShape('line', { x: pos(NORMAL_SCORE), y: cy - 0.08, w: 0, h: 0.16, line: { color: 'A8A29E', width: 1 } });
+    const v = chart.values[i];
+    if (v === null) {
+      slide.addText('–', { x: x + w - valueW, y: cy - rowH / 2, w: valueW, h: rowH, fontFace: FONT, fontSize: 8.5, color: MUTED, align: 'right', valign: 'middle' });
+      return;
+    }
+    const thin = isThin(chart.ns[i]);
+    const d = 0.13;
+    slide.addShape('ellipse', { x: pos(v) - d / 2, y: cy - d / 2, w: d, h: d, fill: { color: thin ? 'FFFFFF' : SERIES[0] }, line: { color: SERIES[0], width: thin ? 1.5 : 0.75 } });
+    slide.addText(`${scoreToLetter(v)} · ${thin ? `n = ${chart.ns[i]}` : chart.ns[i]}`, { x: x + w - valueW, y: cy - rowH / 2, w: valueW, h: rowH, fontFace: FONT, fontSize: 8.5, bold: !thin, color: thin ? MUTED : INK, align: 'right', valign: 'middle' });
+  });
+}
+
+/** The average grade over the months: letters on the axis, C dashed. */
+function addGradeLine(slide: Slide, chart: Extract<DeckChart, { kind: 'line' }>, x: number, y: number, w: number, h: number) {
+  const vals = chart.values.filter((v): v is number => v !== null);
+  if (!vals.length) return;
+  const lo = Math.max(1, Math.min(NORMAL_SCORE - 1, Math.floor(Math.min(...vals)) - 1));
+  const hi = Math.min(15, Math.max(NORMAL_SCORE + 1, Math.ceil(Math.max(...vals)) + 1));
+  const left = 0.3;
+  const plotH = h - 0.35;
+  const n = chart.categories.length;
+  const px = (i: number) => x + left + (n === 1 ? (w - left) / 2 : ((w - left - 0.15) * i) / (n - 1));
+  const py = (v: number) => y + 0.05 + plotH - ((v - lo) / (hi - lo)) * plotH;
+  for (const l of ['E', 'D', 'C', 'B', 'A']) {
+    const v = GRADE_SCALE[l];
+    if (v < lo || v > hi) continue;
+    slide.addShape('line', { x: x + left, y: py(v), w: w - left, h: 0, line: { color: v === NORMAL_SCORE ? 'A8A29E' : LINE, width: 0.75, dashType: v === NORMAL_SCORE ? 'dash' : 'solid' } });
+    slide.addText(l, { x, y: py(v) - 0.1, w: left - 0.05, h: 0.2, fontFace: FONT, fontSize: 8, color: MUTED, align: 'right', valign: 'middle' });
+  }
+  let prev: [number, number] | null = null;
+  chart.values.forEach((v, i) => {
+    if (v === null) { prev = null; return; }
+    const pt: [number, number] = [px(i), py(v)];
+    if (prev) {
+      const [x1, y1] = prev;
+      slide.addShape('line', { x: Math.min(x1, pt[0]), y: Math.min(y1, pt[1]), w: Math.abs(pt[0] - x1), h: Math.abs(pt[1] - y1), flipV: pt[1] < y1, line: { color: SERIES[0], width: 2 } });
+    }
+    prev = pt;
+  });
+  const d = 0.12;
+  chart.values.forEach((v, i) => {
+    if (v === null) return;
+    const thin = isThin(chart.ns[i]);
+    slide.addShape('ellipse', { x: px(i) - d / 2, y: py(v) - d / 2, w: d, h: d, fill: { color: thin ? 'FFFFFF' : SERIES[0] }, line: { color: thin ? SERIES[0] : 'FFFFFF', width: 1.25 } });
+  });
+  chart.categories.forEach((c, i) => slide.addText(c, { x: px(i) - 0.3, y: y + plotH + 0.1, w: 0.6, h: 0.2, fontFace: FONT, fontSize: 8, color: MUTED, align: 'center', valign: 'middle' }));
 }
 
 function addChrome(slide: Slide, deck: Deck, index: number, total: number) {
@@ -107,27 +227,13 @@ function addChart(pptx: PptxGenJS, slide: Slide, title: string, chart: DeckChart
   } else if (chart.kind === 'bars') {
     // A horizontal bar chart lists its first category at the BOTTOM; reversed
     // here so the deck reads top-down like the dashboard.
+    // One series, one colour: PowerPoint would otherwise vary it per bar.
     slide.addChart(pptx.ChartType.bar, [{ name: title, labels: [...chart.categories].reverse(), values: [...chart.values].reverse() }], {
-      ...common, barDir: 'bar', barGapWidthPct: 50, showLegend: false, showValue: true, dataLabelPosition: 'outEnd',
+      ...common, chartColors: [SERIES[0]], barDir: 'bar', barGapWidthPct: 50, showLegend: false, showValue: true, dataLabelPosition: 'outEnd',
       valAxisMinVal: 0, valAxisHidden: true, valGridLine: { style: 'none' },
     });
   } else if (chart.kind === 'grade') {
-    // Averages on the 1–15 scale, the letter beside each; a thin one (fewer
-    // than three observations) says so in its label.
-    const keep = chart.values.map((v, i) => ({ v, i })).filter((e) => e.v !== null).reverse();
-    const withheld = chart.values.map((v, i) => ({ v, i })).filter((e) => e.v === null).map((e) => chart.categories[e.i]);
-    slide.addChart(pptx.ChartType.bar, [{
-      name: title,
-      labels: keep.map((e) => `${chart.categories[e.i]}  ${scoreToLetter(e.v!)} · ${isThin(chart.ns[e.i]) ? `n = ${chart.ns[e.i]} !` : `n ${chart.ns[e.i]}`}`),
-      values: keep.map((e) => e.v!),
-    }], {
-      ...common, barDir: 'bar', barGapWidthPct: 45, showLegend: false, showValue: true, dataLabelPosition: 'outEnd', dataLabelFormatCode: '0.0',
-      valAxisMinVal: 1, valAxisMaxVal: 15, valAxisMajorUnit: 3, valAxisLabelFormatCode: '0',
-      valAxisTitle: 'E = 2 · D = 5 · C = 8 · B = 11 · A = 14', showValAxisTitle: true, valAxisTitleFontSize: 7, valAxisTitleColor: MUTED, valAxisTitleFontFace: FONT,
-    });
-    if (withheld.length) {
-      slide.addText(`–: ${withheld.join(', ')}`, { x, y: y + h - 0.02, w, h: 0.22, fontFace: FONT, fontSize: 7, color: MUTED, valign: 'top' });
-    }
+    addGradeScale(slide, chart, x, cy, w, ch);
   } else if (chart.kind === 'stack') {
     // One 100 % bar, a series per part: native, so it stays editable.
     const hex = (c: string) => c.replace('#', '').toUpperCase();
@@ -153,21 +259,19 @@ function addChart(pptx: PptxGenJS, slide: Slide, title: string, chart: DeckChart
     ], {
       ...common, barDir: 'bar', barGrouping: 'stacked', barGapWidthPct: 45, barOverlapPct: 100,
       chartColors: [hex(chart.colors.mid), hex(chart.colors.neg), hex(chart.colors.mid), hex(chart.colors.pos)],
-      showLegend: true, legendPos: 'b', showValue: false,
+      // Row names at the left edge, not on the centre line through the bars;
+      // the legend is written out below (the middle is two series in the chart).
+      catAxisLabelPos: 'low', showLegend: false, showValue: false,
       valAxisLabelFormatCode: '0"%";0"%"', valAxisMinVal: -100, valAxisMaxVal: 100, valAxisMajorUnit: 25,
+      h: ch - 0.3,
     });
+    slide.addText([
+      { text: '■ ', options: { color: hex(chart.colors.neg) } }, { text: `${chart.labels.neg}    `, options: { color: INK_2 } },
+      { text: '■ ', options: { color: hex(chart.colors.mid) } }, { text: `${chart.labels.mid}    `, options: { color: INK_2 } },
+      { text: '■ ', options: { color: hex(chart.colors.pos) } }, { text: chart.labels.pos, options: { color: INK_2 } },
+    ], { x, y: cy + ch - 0.26, w, h: 0.24, fontFace: FONT, fontSize: 8, align: 'center', valign: 'middle' });
   } else if (chart.kind === 'line') {
-    // Averages per month on the grade scale, with C as a flat reference line.
-    const vals = chart.values.map((v) => (v === null ? null : Math.round(v * 10) / 10));
-    slide.addChart(pptx.ChartType.line, [
-      { name: title, labels: chart.categories, values: vals as number[] },
-      { name: 'C', labels: chart.categories, values: chart.categories.map(() => 8) },
-    ], {
-      ...common, chartColors: [SERIES[0], 'A8A29E'], lineSize: 2, lineDataSymbol: 'circle', lineDataSymbolSize: 6,
-      showLegend: false, showValue: false, displayBlanksAs: 'gap',
-      valAxisMinVal: 1, valAxisMaxVal: 15, valAxisMajorUnit: 3, valAxisLabelFormatCode: '0',
-      valAxisTitle: 'E = 2 · D = 5 · C = 8 · B = 11 · A = 14', showValAxisTitle: true, valAxisTitleFontSize: 7, valAxisTitleColor: MUTED, valAxisTitleFontFace: FONT,
-    });
+    addGradeLine(slide, chart, x, cy, w, ch);
   } else {
     slide.addChart(pptx.ChartType.doughnut, [{ name: title, labels: chart.categories, values: chart.values }], {
       ...common, chartColors: chart.colors ? chart.colors.map((c) => c.replace('#', '').toUpperCase()) : SERIES,
@@ -209,14 +313,12 @@ function addBullets(slide: Slide, bullets: string[], x: number, y: number, w: nu
 
 function renderSlide(pptx: PptxGenJS, deck: Deck, s: DeckSlide, index: number, total: number) {
   const slide = pptx.addSlide();
-  slide.background = { color: 'FFFFFF' };
-  const isCover = index === 0;
+  slide.background = { color: s.layout === 'divider' ? TILE_FILL : 'FFFFFF' };
+  if (s.layout === 'cover') { addCover(slide, s); return; }
   addChrome(slide, deck, index, total);
-  addTitle(slide, s, isCover);
-  if (isCover) {
-    if (s.bullets?.length) slide.addText(s.bullets.join('\n'), { x: MARGIN, y: 3.1, w: CONTENT_W, h: 0.8, fontFace: FONT, fontSize: 11, color: MUTED, valign: 'top' });
-    return;
-  }
+  if (s.layout === 'divider') { addDivider(slide, s); return; }
+  addTitle(slide, s);
+  if (s.layout === 'agenda') { addAgenda(slide, s); return; }
   let y = BODY_Y;
   let hLeft = BODY_H;
   if (s.tiles?.length) {
@@ -246,7 +348,7 @@ function renderSlide(pptx: PptxGenJS, deck: Deck, s: DeckSlide, index: number, t
 export async function buildDeckPptx(deck: Deck): Promise<Blob> {
   const { default: PptxGen } = await import('pptxgenjs');
   const pptx = new PptxGen();
-  pptx.layout = 'LAYOUT_16x9';
+  setLayout(pptx, deck.format ?? '16:9');
   // The theme's fonts too, so text typed into the deck later is Inter as well.
   pptx.theme = { headFontFace: FONT, bodyFontFace: FONT };
   pptx.title = deck.title;

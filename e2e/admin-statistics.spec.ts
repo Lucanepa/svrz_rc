@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
 import { statsResponse } from './support/statsFixture';
-import { buildDeck } from '../src/lib/statsDeck';
+import { buildDeck, DECK_SECTIONS } from '../src/lib/statsDeck';
 import { rcFirstNamer } from '../src/lib/statistics';
 
 // Admin → Statistik: the tab reads one aggregated response per season and
@@ -302,4 +302,74 @@ test('on a phone nothing on the page scrolls sideways — tables fold their extr
   expect(overflowing).toEqual([]);
   // The folded figures are there, under the coach's name.
   await expect(page.getByTestId('stats-rcs').locator('tbody tr').first()).toContainText(/Coachees/);
+});
+
+// ── Letters only, A to E: a ± never leaves the form ─────────────────────────
+const PLUS_MINUS = /\b[A-E][+\-−](?![\w])/;
+
+test('the page shows grades as A to E only — no + or − anywhere', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  await openStats(page);
+  const text = await page.getByTestId('stats-body').innerText();
+  expect(text).not.toMatch(PLUS_MINUS);
+  // The distribution has five rows, A to E.
+  await expect(page.getByTestId('stats-histogram')).toContainText('A');
+  await expect(page.getByTestId('stats-histogram').locator('.grid')).toHaveCount(5);
+});
+
+function deckText(deck: ReturnType<typeof buildDeck>): string {
+  return deck.slides.map((s) => [
+    s.title, s.subtitle, s.note, ...(s.bullets ?? []),
+    ...(s.tiles ?? []).flatMap((x) => [x.label, x.value, x.sub]),
+    ...(s.table ? [...s.table.head, ...s.table.rows.flat()] : []),
+    ...(s.figures ?? []).flatMap((f) => [f.title, ...f.chart.categories]),
+  ].filter(Boolean).join('\n')).join('\n');
+}
+
+test('the deck, every section on, shows grades as A to E only', () => {
+  const full = statsResponse(2026, {}, true, true);
+  for (const lang of ['DE', 'EN'] as const) {
+    const deck = buildDeck(full.stats, { lang, includeRcGrades: true, includeLeagues: true, breakdowns: full.breakdowns, sections: [...DECK_SECTIONS] });
+    expect(deckText(deck)).not.toMatch(PLUS_MINUS);
+    for (const s of deck.slides) for (const f of s.figures ?? []) {
+      if (f.chart.kind === 'bars' && f.title.match(/Notenverteilung|rating given/)) expect(f.chart.categories).toEqual(['A', 'B', 'C', 'D', 'E']);
+    }
+  }
+});
+
+test('the deck holds only the sections asked for, told in chapters', () => {
+  const full = statsResponse(2026, {}, true, true);
+  const only = buildDeck(full.stats, { lang: 'DE', includeRcGrades: false, includeLeagues: false, breakdowns: full.breakdowns, sections: ['numbers'] });
+  // One chapter: the cover and its slide — no agenda, no divider.
+  expect(only.slides.map((s) => s.layout ?? s.section)).toEqual(['cover', 'numbers']);
+  const two = buildDeck(full.stats, { lang: 'DE', includeRcGrades: false, includeLeagues: false, breakdowns: full.breakdowns, sections: ['histogram', 'numbers', 'trend'] });
+  // Chapters in their order, whatever order they were asked in; each opened by a divider.
+  expect(two.slides.map((s) => s.layout ?? s.section)).toEqual(['cover', 'agenda', 'divider', 'numbers', 'divider', 'histogram', 'divider', 'trend']);
+  expect(two.slides[1].bullets).toEqual(['01  Überblick', '02  Noten', '03  Beurteilungen & Entwicklung']);
+  expect(two.slides[3].eyebrow).toBe('01 · Überblick');
+});
+
+test('the export menu: sections to pick, and 16:9 or A4', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  await openStats(page);
+  await page.getByTestId('stats-export').click();
+  const menu = page.getByTestId('stats-export-menu');
+  await expect(menu.getByTestId('stats-export-sections')).toContainText('Folien pro Niveau');
+  // Nothing picked: nothing to export.
+  await menu.getByRole('button', { name: 'Keine' }).click();
+  await expect(page.getByTestId('stats-export-pdf')).toBeDisabled();
+  await menu.getByRole('button', { name: 'Alle' }).click();
+  await expect(page.getByTestId('stats-export-pdf')).toBeEnabled();
+
+  const mediaBox = async () => {
+    const dl = page.waitForEvent('download');
+    await page.getByTestId('stats-export-pdf').click();
+    const { readFileSync } = await import('node:fs');
+    const bytes = readFileSync((await (await dl).path())!).toString('latin1');
+    const m = /\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(bytes)!;
+    return Number(m[1]) / Number(m[2]);
+  };
+  expect(await mediaBox()).toBeCloseTo(16 / 9, 2);
+  await menu.getByRole('radio', { name: /A4/ }).check();
+  expect(await mediaBox()).toBeCloseTo(841.89 / 595.28, 2);
 });

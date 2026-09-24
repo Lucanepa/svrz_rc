@@ -239,7 +239,7 @@ export function GradeLine({ points, nLabel }: { points: LinePoint[]; nLabel: (n:
           <g key={p.key}>
             <circle cx={x(i)} cy={y(p.value)} r={4.5} fill={isThin(p.n) ? 'white' : SERIES[0]} stroke={isThin(p.n) ? SERIES[0] : 'white'} strokeWidth={2} />
             <circle cx={x(i)} cy={y(p.value)} r={12} fill="transparent">
-              <title>{`${p.hint ?? p.label}: ${scoreToLetter(p.value)} · ${fmtDec(p.value)} · ${nLabel(p.n)}`}</title>
+              <title>{`${p.hint ?? p.label}: ${scoreToLetter(p.value)} · ${nLabel(p.n)}`}</title>
             </circle>
           </g>
         )))}
@@ -387,7 +387,7 @@ export function GradeScale({ rows, minLabel, maxLabel, nLabel }: { rows: ScaleRo
       </div>
       <div className="space-y-1.5">
         {rows.map((r) => (
-          <div key={r.key} className="grid grid-cols-[minmax(0,6.5rem)_1fr_auto] sm:grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-2 text-xs" data-thin={r.avg !== null && isThin(r.n) ? 'true' : undefined} title={r.avg === null ? `${r.label}: ${nLabel(r.n)}` : `${r.label}: ${scoreToLetter(r.avg)} · ${fmtDec(r.avg)} · ${nLabel(r.n)}${isThin(r.n) ? ` (n < 3)` : ''}`}>
+          <div key={r.key} className="grid grid-cols-[minmax(0,6.5rem)_1fr_auto] sm:grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-2 text-xs" data-thin={r.avg !== null && isThin(r.n) ? 'true' : undefined} title={r.avg === null ? `${r.label}: ${nLabel(r.n)}` : `${r.label}: ${scoreToLetter(r.avg)} · ${nLabel(r.n)}${isThin(r.n) ? ` (n < 3)` : ''}`}>
             <span className={cn('truncate', r.indent ? 'pl-3 text-stone-500' : 'text-stone-700', r.strong && 'font-semibold text-stone-800')}>{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
             <span className="relative h-4">
               <span className="absolute inset-x-0 top-1/2 h-px bg-stone-200" />
@@ -400,8 +400,8 @@ export function GradeScale({ rows, minLabel, maxLabel, nLabel }: { rows: ScaleRo
               {r.avg === null
                 ? <span className="text-stone-400">{nLabel(r.n)}</span>
                 : isThin(r.n)
-                  ? <><span className="font-semibold text-stone-600">{scoreToLetter(r.avg)}</span> <span className="text-stone-500">{fmtDec(r.avg)}</span> <span className="text-stone-400">· n = {r.n}</span></>
-                  : <><span className="font-semibold text-stone-800">{scoreToLetter(r.avg)}</span> <span className="text-stone-500">{fmtDec(r.avg)}</span> <span className="text-stone-400">· {r.n}</span></>}
+                  ? <><span className="font-semibold text-stone-600">{scoreToLetter(r.avg)}</span> <span className="text-stone-400">· n = {r.n}</span></>
+                  : <><span className="font-semibold text-stone-800">{scoreToLetter(r.avg)}</span> <span className="text-stone-400">· {r.n}</span></>}
             </span>
           </div>
         ))}

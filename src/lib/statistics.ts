@@ -27,10 +27,36 @@ export function gradeToScore(rating: string): number | null {
   return typeof score === 'number' ? score : null;
 }
 
-/** The letter nearest a score: 8.4 → "C", 8.6 → "C+", 11.5 → "B+". */
-export function scoreToLetter(score: number): string {
-  const n = Math.min(15, Math.max(1, Math.round(score)));
-  return GRADE_ORDER.find((g) => GRADE_SCALE[g] === n) ?? 'C';
+// ── What the statistics show: the letter, never its ± ─────────────────────
+// The form grades in fifteen steps (A+ … E−); the + and − are the coach's
+// internal nuance. Everything the statistics show — the page, its charts, the
+// deck, the coachee export — speaks in the five letters, and a C− or a C+
+// COUNTS as a C: the server folds each rating into its letter before it
+// averages (server/statistics.ts), and every label goes through here.
+export const STAT_LETTERS = ['A', 'B', 'C', 'D', 'E'] as const;
+export type StatLetter = typeof STAT_LETTERS[number];
+/** The centre of each letter on the 1–15 scale: E = 2 … A = 14. */
+export const LETTER_SCORE: Record<StatLetter, number> = { A: 14, B: 11, C: 8, D: 5, E: 2 };
+
+/** The letter a score or an average falls in — A to E, no ±. The bands are
+ *  halfway between the letters' centres: 9.4 → C, 9.5 → B, 9 (C+) → C. */
+export function scoreToLetter(score: number): StatLetter {
+  const s = Math.min(15, Math.max(1, score));
+  return s >= 12.5 ? 'A' : s >= 9.5 ? 'B' : s >= 6.5 ? 'C' : s >= 3.5 ? 'D' : 'E';
+}
+
+/** A single rating folded into its letter: C− and C+ score as C (8). */
+export const letterScore = (score: number): number => LETTER_SCORE[scoreToLetter(score)];
+
+/** A histogram in the five letters, whatever it was counted in — an API that
+ *  still sends A+ … E− is folded here, so nothing downstream sees a ±. */
+export function foldHistogram(h: Dist): Record<StatLetter, number> {
+  const out: Record<StatLetter, number> = { A: 0, B: 0, C: 0, D: 0, E: 0 };
+  for (const [grade, n] of Object.entries(h)) {
+    const letter = grade.trim().charAt(0).toUpperCase() as StatLetter;
+    if (letter in out) out[letter] += n;
+  }
+  return out;
 }
 
 /** A grade aggregate: how many observations fed it, how many rated criteria

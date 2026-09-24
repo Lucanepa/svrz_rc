@@ -6,7 +6,7 @@
 import type { Lang } from './appTime';
 import { dayLabel } from './appTime';
 import {
-  a4Pages, estimatedHours, gradeAvg, isThin, pct, scoreToLetter, trendAvgDelta, GRADE_ORDER,
+  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, scoreToLetter, STAT_LETTERS,
   type SeasonStatistics, type SeasonStatisticsCore, type StatBreakdowns, type StatBucket, type StatRole, type StatSlice, type TrendAgg,
 } from './statistics';
 import {
@@ -35,8 +35,39 @@ export type DeckTable = {
   /** Per column; text columns left, numbers right. Default: first left, rest right. */
   align?: Array<'l' | 'r'>;
 };
+/** What the export menu offers, one key per kind of slide. */
+export const DECK_SECTIONS = [
+  'numbers', 'months', 'coverage', 'rcs', 'compare', 'fun',
+  'histogram', 'sections', 'criteria', 'levelGroup', 'rcGrades',
+  'outcomes', 'trend',
+  'games', 'writing', 'leagues',
+  'levelSets', 'groupSets',
+  'method',
+] as const;
+export type DeckSection = typeof DECK_SECTIONS[number];
+/** The chapters the deck is told in, in order; each section belongs to one. */
+export const DECK_CHAPTERS: Array<{ key: string; sections: DeckSection[] }> = [
+  { key: 'overview', sections: ['numbers', 'months', 'coverage', 'rcs', 'compare', 'fun'] },
+  { key: 'grades', sections: ['histogram', 'sections', 'criteria', 'levelGroup', 'rcGrades'] },
+  { key: 'outcomes', sections: ['outcomes', 'trend'] },
+  { key: 'games', sections: ['games', 'writing', 'leagues'] },
+  { key: 'levels', sections: ['levelSets'] },
+  { key: 'groups', sections: ['groupSets'] },
+];
+/** On unless the viewer turns them off; the two internal ones start off. */
+export const DEFAULT_DECK_SECTIONS: DeckSection[] = DECK_SECTIONS.filter((k) => k !== 'rcGrades' && k !== 'leagues');
+export type DeckFormat = '16:9' | 'A4';
+
 export type DeckSlide = {
   title: string;
+  /** Which export section made it; absent on the cover, agenda and dividers. */
+  section?: DeckSection;
+  /** Cover, agenda and chapter dividers are laid out on their own. */
+  layout?: 'cover' | 'agenda' | 'divider';
+  /** Small line above the title: the chapter this slide belongs to. */
+  eyebrow?: string;
+  /** Divider: the chapter's number. Agenda: its lines are the bullets. */
+  number?: string;
   subtitle?: string;
   tiles?: DeckTile[];
   figures?: DeckFigure[];
@@ -50,6 +81,7 @@ export type Deck = {
   /** Season · Stand · filters — the footer of every slide. */
   footer: string;
   lang: Lang;
+  format: DeckFormat;
   slides: DeckSlide[];
 };
 
@@ -63,14 +95,19 @@ export type DeckOptions = {
   breakdowns?: StatBreakdowns | null;
   /** Leave the per-slice sets out even when the slices are there. */
   skipSlices?: boolean;
+  /** Which sections to include; absent = the defaults (plus the two
+   *  optional ones when their flags are set). */
+  sections?: DeckSection[];
+  format?: DeckFormat;
 };
 
 const int = (n: number) => new Intl.NumberFormat('de-CH').format(Math.round(n));
 const dec = (n: number, d = 1) => new Intl.NumberFormat('de-CH', { minimumFractionDigits: d, maximumFractionDigits: d }).format(n);
 const pctText = (p: number | null) => (p === null ? '–' : `${dec(p, 0)} %`);
 /** "C+ · 8.6", with "(n = 2)" appended while the average is thin. */
+/** The letter only (A–E, a ± counts as its letter), "(n = 2)" while thin. */
 export const gradeText = (avg: number | null, t: StatStrings, n?: number) =>
-  avg === null ? '–' : `${scoreToLetter(avg)} · ${dec(avg)}${n !== undefined && isThin(n) ? ` (${t.tooFew(n)})` : ''}`;
+  avg === null ? '–' : `${scoreToLetter(avg)}${n !== undefined && isThin(n) ? ` (${t.tooFew(n)})` : ''}`;
 
 export function filtersLine(stats: SeasonStatisticsCore, t: StatStrings, lang: Lang, rcNames: Record<string, string> = {}): string {
   const f = stats.filters;
@@ -97,20 +134,29 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   const filters = filtersLine(stats, t, lang, opts.rcNames);
   const footer = [`${t.season} ${season}`, `${t.stand} ${dayLabel(stats.generatedAt, { year: true })}`, filters].filter(Boolean).join(' · ');
   const slides: DeckSlide[] = [];
+  const chosen = new Set<DeckSection>(opts.sections ?? [
+    ...DEFAULT_DECK_SECTIONS,
+    ...(opts.includeRcGrades ? ['rcGrades' as const] : []),
+    ...(opts.includeLeagues ? ['leagues' as const] : []),
+  ]);
+  if (opts.skipSlices) { chosen.delete('levelSets'); chosen.delete('groupSets'); }
+  const on = (k: DeckSection) => chosen.has(k);
+  const add = (section: DeckSection, slide: DeckSlide) => { if (on(section)) slides.push({ ...slide, section }); };
 
   // 1 — title
-  slides.push({
+  const cover: DeckSlide = {
+    layout: 'cover',
     title: t.deckTitle,
     subtitle: t.deckSubtitle(season),
     bullets: [
       `${t.stand}: ${dayLabel(stats.generatedAt, { year: true })}`,
       ...(filters ? [`${t.filtersLine}: ${filters}`] : []),
     ],
-  });
+  };
 
   // 2 — the season in numbers
   const avg = gradeAvg(T.grade);
-  slides.push({
+  add('numbers', {
     title: t.deckNumbers,
     tiles: [
       { label: t.observations, value: int(T.observations), sub: prev ? `${delta(T.observations, prev.totals.observations)} ${t.deltaVs(seasonName(prev.season))}` : undefined },
@@ -124,7 +170,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   });
 
   // 3 — per month, by role
-  slides.push({
+  add('months', {
     title: t.perMonth,
     figures: [{
       title: t.perMonth,
@@ -139,7 +185,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   });
 
   // 4 — coverage
-  slides.push({
+  add('coverage', {
     title: t.coverage,
     figures: [
       {
@@ -158,14 +204,16 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
     note: `${t.coacheesVisited}: ${int(T.coachees)} / ${int(T.roster)} (${pctText(pct(T.coachees, T.roster))}) · ${t.pensum}: ${int(T.observations)} / ${int(T.goal)}`,
   });
 
-  // 5 — how we graded
+  // 5 — how we graded (in five letters: a ± counts as its letter)
+  const letters = foldHistogram(stats.histogram);
+  const lettersAll = STAT_LETTERS.reduce((a, g) => a + letters[g], 0);
   const monthGrades = stats.byMonth.map((b) => gradeAvg(b.grade));
-  slides.push({
+  add('histogram', {
     title: t.histogram,
     figures: [
       {
         title: t.histogramHint,
-        chart: { kind: 'bars', categories: GRADE_ORDER, values: GRADE_ORDER.map((g) => stats.histogram[g] ?? 0) },
+        chart: { kind: 'bars', categories: [...STAT_LETTERS], values: STAT_LETTERS.map((g) => foldHistogram(stats.histogram)[g]) },
       },
       ...(monthGrades.some((v) => v !== null) ? [{
         title: t.gradePerMonth,
@@ -174,8 +222,8 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
     ],
     tiles: [
       { label: t.avgGrade, value: gradeText(avg, t, T.grade.obs) },
-      { label: t.shareC, value: pctText(pct(T.ratingsC, T.ratingsAll)) },
-      { label: t.shareB, value: pctText(pct(T.ratingsBPlus, T.ratingsAll)) },
+      { label: t.shareC, value: pctText(pct(letters.C, lettersAll)) },
+      { label: t.shareB, value: pctText(pct(letters.A + letters.B, lettersAll)) },
     ],
   });
 
@@ -192,7 +240,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
       },
     };
   };
-  slides.push({ title: t.sections, figures: [sectionFigure('1SR'), sectionFigure('2SR')], note: `${t.normalCase} · ${t.thinNote}` });
+  add('sections', { title: t.sections, figures: [sectionFigure('1SR'), sectionFigure('2SR')], note: `${t.normalCase} · ${t.thinNote}` });
 
   // 7 — strongest / weakest criteria
   const ranked = (role: StatRole) => stats.criteria
@@ -205,7 +253,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
     if (list.length === 0) continue;
     const top = list.slice(0, 5);
     const bottom = list.slice(-5).reverse().filter((x) => !top.includes(x));
-    slides.push({
+    add('criteria', {
       title: t.deckStrongWeak,
       subtitle: roleLabel(role, lang),
       table: {
@@ -225,7 +273,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
     title,
     chart: { kind: 'grade', categories: rows.map(label), values: rows.map((b) => gradeAvg(b.grade)), ns: rows.map((b) => b.observations) },
   });
-  slides.push({
+  add('levelGroup', {
     title: t.deckLevelGroup,
     figures: [
       gradeFigure(t.perLevel, stats.byLevel, (b) => levelKeyLabel(b.key, lang)),
@@ -235,14 +283,14 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   });
 
   // 9 — assessments
-  slides.push({ title: t.outcomes, figures: outcomeFigures(stats, t, lang, false) });
+  add('outcomes', { title: t.outcomes, figures: outcomeFigures(stats, t, lang, false) });
 
   // 9b — trend: first visit against the latest
   const trendSlide = trendSlideOf(stats, t, lang);
-  if (trendSlide) slides.push(trendSlide);
+  if (trendSlide) add('trend', trendSlide);
 
   // 10 — per RC
-  slides.push({
+  add('rcs', {
     title: t.perRc,
     table: {
       widths: [0.28, 0.12, 0.12, 0.12, 0.12, 0.12, 0.12],
@@ -255,7 +303,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   });
 
   // 11 — games watched
-  slides.push({
+  add('games', {
     title: t.gamesBlock,
     tiles: [
       { label: t.sets, value: int(T.sets), sub: t.games(T.games) },
@@ -270,7 +318,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   });
 
   // 12 — writing
-  slides.push({
+  add('writing', {
     title: t.writing,
     tiles: [
       { label: t.words, value: int(T.words) },
@@ -296,7 +344,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   if (prev) {
     const P = prev.totals;
     const prevAvg = gradeAvg(P.grade);
-    slides.push({
+    add('compare', {
       title: t.deckCompare,
       subtitle: `${seasonName(prev.season)} → ${season}`,
       table: {
@@ -305,7 +353,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
           [t.observations, int(P.observations), int(T.observations), delta(T.observations, P.observations) ?? ''],
           [t.coacheesVisited, `${int(P.coachees)} / ${int(P.roster)}`, `${int(T.coachees)} / ${int(T.roster)}`, delta(pct(T.coachees, T.roster) ?? 0, pct(P.coachees, P.roster) ?? 0, ' %') ?? ''],
           [t.activeRcs, int(P.rcsActive), int(T.rcsActive), delta(T.rcsActive, P.rcsActive) ?? ''],
-          [t.avgGrade, gradeText(prevAvg, t, P.grade.obs), gradeText(avg, t, T.grade.obs), avg !== null && prevAvg !== null ? `${avg - prevAvg > 0 ? '+' : ''}${dec(avg - prevAvg)}` : ''],
+          [t.avgGrade, gradeText(prevAvg, t, P.grade.obs), gradeText(avg, t, T.grade.obs), avg !== null && prevAvg !== null ? (scoreToLetter(avg) === scoreToLetter(prevAvg) ? '=' : `${scoreToLetter(prevAvg)} → ${scoreToLetter(avg)}`) : ''],
           [t.sets, int(P.sets), int(T.sets), delta(T.sets, P.sets) ?? ''],
           [t.points, int(P.points), int(T.points), delta(T.points, P.points) ?? ''],
           [t.words, int(P.words), int(T.words), delta(T.words, P.words) ?? ''],
@@ -329,7 +377,7 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
 
   // 14 — fun facts
   const F = stats.fun;
-  slides.push({
+  add('fun', {
     title: t.fun,
     tiles: [
       { label: t.busiestDay, value: F.busiestDay ? int(F.busiestDay.count) : '–', sub: F.busiestDay ? dayLabel(F.busiestDay.key, { year: true }) : undefined },
@@ -342,9 +390,9 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   });
 
   // optional — grades per coach
-  if (opts.includeRcGrades) {
+  if (on('rcGrades')) {
     const rows = stats.byRc.filter((r) => r.observations > 0);
-    slides.push({
+    add('rcGrades', {
       title: t.deckRcGrades,
       subtitle: t.deckRcGradesHint,
       figures: [{
@@ -356,8 +404,8 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   }
 
   // optional — leagues
-  if (opts.includeLeagues) {
-    slides.push({
+  if (on('leagues')) {
+    add('leagues', {
       title: t.perLeague,
       figures: [
         { title: t.perLeague, chart: { kind: 'bars', categories: stats.byLeague.slice(0, 12).map((b) => b.label || '–'), values: stats.byLeague.slice(0, 12).map((b) => b.observations) } },
@@ -368,15 +416,30 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
   }
 
   // the per-level and per-group sets
-  if (opts.breakdowns && !opts.skipSlices) {
-    slides.push(...sliceSets(opts.breakdowns.level, 'level', t, lang, opts.breakdowns.stufe));
-    slides.push(...sliceSets(opts.breakdowns.group, 'group', t, lang));
+  if (opts.breakdowns) {
+    if (on('levelSets')) for (const x of sliceSets(opts.breakdowns.level, 'level', t, lang, opts.breakdowns.stufe)) slides.push({ ...x, section: 'levelSets' });
+    if (on('groupSets')) for (const x of sliceSets(opts.breakdowns.group, 'group', t, lang)) slides.push({ ...x, section: 'groupSets' });
   }
 
-  // last — method
-  slides.push({ title: t.method, bullets: t.methodLines });
+  // Told in chapters: the slides sorted into them (stable, so a chapter keeps
+  // its own order), each chapter opened by a divider and named above every
+  // slide's title, and an agenda after the cover listing the chapters there are.
+  const chapterOf = (k: DeckSection | undefined) => DECK_CHAPTERS.findIndex((c) => k !== undefined && c.sections.includes(k));
+  const body = slides.map((sl, i) => ({ sl, i, c: chapterOf(sl.section) })).sort((a, b) => a.c - b.c || a.i - b.i);
+  const present = DECK_CHAPTERS.map((c, i) => ({ c, i })).filter(({ i }) => body.some((b) => b.c === i));
+  const out: DeckSlide[] = [cover];
+  if (present.length > 1) {
+    out.push({ layout: 'agenda', title: t.deckAgenda, bullets: present.map(({ c }, n) => `${String(n + 1).padStart(2, '0')}  ${t.chapterTitle(c.key)}`) });
+  }
+  present.forEach(({ c, i }, n) => {
+    const num = String(n + 1).padStart(2, '0');
+    if (present.length > 1) out.push({ layout: 'divider', number: num, title: t.chapterTitle(c.key), subtitle: t.chapterHint(c.key) });
+    for (const b of body) if (b.c === i) out.push({ ...b.sl, eyebrow: `${num} · ${t.chapterTitle(c.key)}` });
+  });
+  // last — how it was counted
+  if (on('method')) out.push({ title: t.method, bullets: t.methodLines, section: 'method' });
 
-  return { title: t.deckTitle, subtitle: t.deckSubtitle(season), footer, lang, slides };
+  return { title: t.deckTitle, subtitle: t.deckSubtitle(season), footer, lang, format: opts.format ?? '16:9', slides: out };
 }
 
 const sumOf = (d: Record<string, number>) => Object.values(d).reduce((a, n) => a + n, 0);
@@ -410,10 +473,8 @@ function outcomeFigures(stats: SeasonStatisticsCore, t: StatStrings, lang: Lang,
   return out;
 }
 const trendCounts = (tr: TrendAgg | undefined) => (tr && tr.coachees > 0 ? `↑${tr.improved} =${tr.same} ↓${tr.worse}` : '–');
-const trendAvgText = (tr: TrendAgg | undefined) => {
-  const d = trendAvgDelta(tr);
-  return d === null ? '–' : `${d > 0 ? '+' : ''}${dec(d)}`;
-};
+/** The share that got better — said in %, never as a change on the internal scale. */
+const trendAvgText = (tr: TrendAgg | undefined) => (tr && tr.coachees > 0 ? pctText(pct(tr.improved, tr.coachees)) : '–');
 
 /** The trend slide for one core (the season or a slice); null with no coachee seen twice. */
 function trendSlideOf(stats: SeasonStatisticsCore, t: StatStrings, lang: Lang, title = t.trendTitle, subtitle?: string): DeckSlide | null {
@@ -435,7 +496,7 @@ function trendSlideOf(stats: SeasonStatisticsCore, t: StatStrings, lang: Lang, t
     },
   }];
   const table = byLevel.length + byGroup.length > 1 ? {
-    head: ['', t.trendCoachees, t.trendImproved, t.trendSame, t.trendWorse, t.trendAvg],
+    head: ['', 'n', t.trendImproved, t.trendSame, t.trendWorse, `${t.trendImproved} %`],
     widths: [0.34, 0.16, 0.12, 0.12, 0.12, 0.14],
     rows: [
       ...(byLevel.length > 1 ? byLevel.map((r) => [levelKeyLabel(r.key, lang), int(r.coachees), int(r.improved), int(r.same), int(r.worse), trendAvgText(r)]) : []),
@@ -450,7 +511,7 @@ function trendSlideOf(stats: SeasonStatisticsCore, t: StatStrings, lang: Lang, t
       { label: t.trendImproved, value: int(tr.improved), sub: pctText(pct(tr.improved, tr.coachees)) },
       { label: t.trendSame, value: int(tr.same), sub: pctText(pct(tr.same, tr.coachees)) },
       { label: t.trendWorse, value: int(tr.worse), sub: pctText(pct(tr.worse, tr.coachees)) },
-      { label: t.trendAvg, value: trendAvgText(tr), sub: `${t.trendCoachees}: ${int(tr.coachees)}` },
+      { label: t.trendCoachees, value: int(tr.coachees) },
     ],
     figures,
     table,
@@ -501,14 +562,14 @@ function sliceSets(slices: StatSlice[], dim: 'level' | 'group', t: StatStrings, 
         { label: t.avgGrade, value: gradeText(avg, t, T.grade.obs), sub: t.normalCase },
         { label: t.comparePromotionHint, value: pctText(pct(o.einstufung.up ?? 0, sumOf(o.einstufung))) },
         { label: t.compareFurtherHint, value: pctText(pct(o.secondBesuch.Y ?? 0, sumOf(o.secondBesuch))) },
-        ...(S.trend && S.trend.coachees > 0 ? [{ label: t.trendTitle, value: trendCounts(S.trend), sub: `${t.trendAvg} ${trendAvgText(S.trend)}` }] : []),
+        ...(S.trend && S.trend.coachees > 0 ? [{ label: t.trendTitle, value: trendCounts(S.trend), sub: `${t.trendCoachees}: ${int(S.trend.coachees)}` }] : []),
       ],
       table: subs.length > 1 ? { head, widths, rows: subs.map(row) } : undefined,
     });
     // 2 — the grades
     const gradeFigures: DeckFigure[] = [];
     if (sumOf(S.histogram) > 0) {
-      gradeFigures.push({ title: t.histogram, chart: { kind: 'bars', categories: GRADE_ORDER, values: GRADE_ORDER.map((g) => S.histogram[g] ?? 0) } });
+      gradeFigures.push({ title: t.histogram, chart: { kind: 'bars', categories: [...STAT_LETTERS], values: STAT_LETTERS.map((g) => foldHistogram(S.histogram)[g]) } });
     }
     for (const role of ['1SR', '2SR'] as StatRole[]) {
       const rows = S.sections.filter((sec) => sec.role === role && gradeAvg(sec.grade) !== null);

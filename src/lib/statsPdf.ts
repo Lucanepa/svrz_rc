@@ -6,16 +6,22 @@ import { jsPDF } from 'jspdf';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
 import { INTER_DISPLAY_BOLD_B64, INTER_DISPLAY_REGULAR_B64 } from './pdfFontsDisplay';
 import { pdfSafeText } from './feedbackPdf';
-import type { Deck, DeckChart, DeckSlide, DeckTable, DeckTile } from './statsDeck';
+import type { Deck, DeckChart, DeckFormat, DeckSlide, DeckTable, DeckTile } from './statsDeck';
 import { isThin, scoreToLetter, GRADE_SCALE, NORMAL_SCORE } from './statistics';
 
+// The page: A4 landscape for print, or the same width at 16:9 for a screen.
+// Set per export by setPage(); everything below reads these.
 const PAGE_W = 841.89;
-const PAGE_H = 595.28;
+let PAGE_H = 595.28;
 const MARGIN = 36;
 const CONTENT_W = PAGE_W - MARGIN * 2;
 const TITLE_Y = 40;
-const BODY_Y = 92;
-const FOOTER_Y = PAGE_H - 26;
+const BODY_Y = 96;
+let FOOTER_Y = PAGE_H - 26;
+function setPage(format: DeckFormat) {
+  PAGE_H = format === 'A4' ? 595.28 : Math.round((PAGE_W * 9) / 16 * 100) / 100;
+  FOOTER_Y = PAGE_H - 26;
+}
 
 const INK: [number, number, number] = [28, 25, 23];
 const INK_2: [number, number, number] = [87, 83, 78];
@@ -31,7 +37,7 @@ type Rgb = [number, number, number];
 class Sheet {
   doc: jsPDF;
   constructor() {
-    this.doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+    this.doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: [PAGE_W, PAGE_H] });
     this.doc.addFileToVFS('InterDisplay-Regular.ttf', INTER_DISPLAY_REGULAR_B64);
     this.doc.addFont('InterDisplay-Regular.ttf', 'Inter', 'normal');
     this.doc.addFileToVFS('InterDisplay-Bold.ttf', INTER_DISPLAY_BOLD_B64);
@@ -102,15 +108,47 @@ function chrome(s: Sheet, deck: Deck, index: number, total: number) {
   s.text(`${index + 1} / ${total}`, PAGE_W - MARGIN, FOOTER_Y, { size: 7.5, color: MUTED, align: 'right' });
 }
 
-function title(s: Sheet, slide: DeckSlide, cover: boolean) {
-  if (cover) {
-    s.text(slide.title, MARGIN, 230, { size: 30, bold: true });
-    if (slide.subtitle) s.text(slide.subtitle, MARGIN, 262, { size: 16, color: MUTED });
-    (slide.bullets ?? []).forEach((b, i) => s.text(b, MARGIN, 300 + i * 16, { size: 10, color: MUTED }));
-    return;
-  }
-  s.text(slide.title, MARGIN, TITLE_Y + 6, { size: 18, bold: true, maxWidth: CONTENT_W - 90 });
-  if (slide.subtitle) s.text(slide.subtitle, MARGIN, TITLE_Y + 24, { size: 9.5, color: MUTED, maxWidth: CONTENT_W - 90 });
+function title(s: Sheet, slide: DeckSlide) {
+  // The chapter above the title, in the brand red: where in the deck this is.
+  if (slide.eyebrow) s.text(slide.eyebrow.toUpperCase(), MARGIN, TITLE_Y - 12, { size: 7, bold: true, color: ACCENT, maxWidth: CONTENT_W - 90 });
+  s.text(slide.title, MARGIN, TITLE_Y + 12, { size: 18, bold: true, maxWidth: CONTENT_W - 90 });
+  if (slide.subtitle) s.text(slide.subtitle, MARGIN, TITLE_Y + 30, { size: 9.5, color: MUTED, maxWidth: CONTENT_W - 90 });
+}
+
+/** The cover: logo, title, season, and a brand-red band carrying the sender. */
+function coverPage(s: Sheet, deck: Deck, slide: DeckSlide) {
+  const band = 64;
+  try { s.doc.addImage(logoDataUrl, 'PNG', MARGIN, 40, 120, 48); } catch { /* the page is fine without it */ }
+  const top = PAGE_H * 0.38;
+  s.rect(MARGIN, top - 46, 48, 4, ACCENT);
+  s.text(slide.title, MARGIN, top, { size: 30, bold: true, maxWidth: CONTENT_W });
+  if (slide.subtitle) s.text(slide.subtitle, MARGIN, top + 30, { size: 16, color: INK_2 });
+  (slide.bullets ?? []).forEach((b, i) => s.text(b, MARGIN, top + 58 + i * 15, { size: 9.5, color: MUTED, maxWidth: CONTENT_W }));
+  s.rect(0, PAGE_H - band, PAGE_W, band, ACCENT);
+  s.text('Swiss Volley Region Zürich · Referee Coaching', MARGIN, PAGE_H - band / 2 + 4, { size: 10, bold: true, color: [255, 255, 255] });
+  void deck;
+}
+
+/** Contents: one line per chapter, its number in red. */
+function agendaPage(s: Sheet, slide: DeckSlide) {
+  const lines = slide.bullets ?? [];
+  const rowH = Math.min(40, (FOOTER_Y - 40 - BODY_Y) / Math.max(1, lines.length));
+  lines.forEach((l, i) => {
+    const [num, ...rest] = l.split('  ');
+    const y = BODY_Y + 10 + i * rowH;
+    s.text(num, MARGIN, y + 14, { size: 20, bold: true, color: ACCENT });
+    s.text(rest.join('  '), MARGIN + 52, y + 13, { size: 14, bold: true });
+    s.line(MARGIN, y + rowH - 6, PAGE_W - MARGIN, y + rowH - 6);
+  });
+}
+
+/** A chapter opens: its number large in red, its name, one line on what follows. */
+function dividerPage(s: Sheet, slide: DeckSlide) {
+  const mid = PAGE_H * 0.46;
+  s.text(slide.number ?? '', MARGIN, mid - 18, { size: 54, bold: true, color: ACCENT });
+  s.text(slide.title, MARGIN, mid + 22, { size: 26, bold: true, maxWidth: CONTENT_W });
+  if (slide.subtitle) s.text(slide.subtitle, MARGIN, mid + 46, { size: 11, color: INK_2, maxWidth: CONTENT_W });
+  s.rect(MARGIN, mid + 62, 48, 4, ACCENT);
 }
 
 function tiles(s: Sheet, list: DeckTile[], y: number, maxH: number): number {
@@ -227,7 +265,7 @@ function drawChart(s: Sheet, heading: string, chart: DeckChart, x: number, y: nu
       } else {
         const thin = isThin(chart.ns[i]);
         s.circle(pos(v), ry, 4, SERIES[0], thin);
-        s.text(`${scoreToLetter(v)} · ${v.toFixed(1)} · ${thin ? `n = ${chart.ns[i]}` : chart.ns[i]}`, x + w, ry + 3, { size: 7, color: thin ? MUTED : INK_2, align: 'right' });
+        s.text(`${scoreToLetter(v)} · ${thin ? `n = ${chart.ns[i]}` : chart.ns[i]}`, x + w, ry + 3, { size: 7, color: thin ? MUTED : INK_2, align: 'right' });
       }
     });
     return;
@@ -356,9 +394,13 @@ function bullets(s: Sheet, list: string[], x: number, y: number, w: number) {
 
 function page(s: Sheet, deck: Deck, slide: DeckSlide, index: number, total: number) {
   if (index > 0) s.doc.addPage();
+  if (slide.layout === 'cover') { coverPage(s, deck, slide); return; }
+  // A divider sits on a stone-tinted page; the chrome goes on top of it.
+  if (slide.layout === 'divider') s.rect(0, 0, PAGE_W, PAGE_H, [250, 250, 249]);
   chrome(s, deck, index, total);
-  title(s, slide, index === 0);
-  if (index === 0) return;
+  if (slide.layout === 'divider') { dividerPage(s, slide); return; }
+  title(s, slide);
+  if (slide.layout === 'agenda') { agendaPage(s, slide); return; }
   let y = BODY_Y;
   const bottom = FOOTER_Y - 18 - (slide.note ? 14 : 0);
   if (slide.tiles?.length) {
@@ -385,6 +427,7 @@ function page(s: Sheet, deck: Deck, slide: DeckSlide, index: number, total: numb
 }
 
 export function buildDeckPdf(deck: Deck): Blob {
+  setPage(deck.format ?? 'A4');
   const s = new Sheet();
   deck.slides.forEach((slide, i) => page(s, deck, slide, i, deck.slides.length));
   return s.doc.output('blob');

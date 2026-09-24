@@ -10,7 +10,7 @@ import type { Lang } from '../lib/appTime';
 import { dayLabel } from '../lib/appTime';
 import { listRcPeopleFull, loadStatistics, type RcPerson } from '../lib/pocketbase';
 import {
-  a4Pages, estimatedHours, gradeAvg, isThin, pct, scoreToLetter, trendAvgDelta, withRcFirstNames, GRADE_ORDER, GRADE_LETTERS,
+  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, scoreToLetter, trendAvgDelta, withRcFirstNames, STAT_LETTERS,
   type SeasonStatistics, type TrendAgg, type StatBucket, type StatFilters, type StatRole, type StatisticsResponse,
 } from '../lib/statistics';
 import {
@@ -18,7 +18,7 @@ import {
   roleLabel, sectionCount, sectionTitle, seasonName, statStrings, weekdayKeyLabel,
 } from '../lib/statsLabels';
 import { SECTIONS_1SR_DE, SECTIONS_2SR_DE } from '../types';
-import { buildDeck, deckFileName } from '../lib/statsDeck';
+import { buildDeck, deckFileName, DECK_CHAPTERS, DEFAULT_DECK_SECTIONS, type DeckFormat, type DeckSection } from '../lib/statsDeck';
 import { BarList, ColumnChart, DivergingBars, GradeLine, GradeScale, HBarChart, SEQ_BLUE, SERIES, Sparkline, StackBar, StatTile, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
 
 const select = 'h-9 px-2.5 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500 max-w-full';
@@ -116,9 +116,15 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
   const [criteriaRole, setCriteriaRole] = useState<StatRole>('1SR');
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState<'pptx' | 'pdf' | null>(null);
-  const [includeRcGrades, setIncludeRcGrades] = useState(false);
-  const [includeLeagues, setIncludeLeagues] = useState(false);
-  const [includeSlices, setIncludeSlices] = useState(true);
+  // What goes into the deck, and on what page — remembered on this device
+  // (a convenience only: a blocked storage just starts from the defaults).
+  const [sections, setSections] = useState<DeckSection[]>(() => {
+    try { const v = JSON.parse(localStorage.getItem('svrz_deck_sections') || 'null'); if (Array.isArray(v)) return v as DeckSection[]; } catch { /* defaults */ }
+    return DEFAULT_DECK_SECTIONS;
+  });
+  const [format, setFormat] = useState<DeckFormat>(() => { try { return localStorage.getItem('svrz_deck_format') === 'A4' ? 'A4' : '16:9'; } catch { return '16:9'; } });
+  useEffect(() => { try { localStorage.setItem('svrz_deck_sections', JSON.stringify(sections)); localStorage.setItem('svrz_deck_format', format); } catch { /* ignore */ } }, [sections, format]);
+  const toggleSection = (k: DeckSection) => setSections((cur) => (cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k]));
   // The deck's language is chosen at export time; it starts as the console's.
   const [exportLang, setExportLang] = useState<Lang>(lang);
   useEffect(() => { setExportLang(lang); }, [lang]);
@@ -161,7 +167,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     if (!stats) return;
     setExporting(kind);
     try {
-      const deck = buildDeck(stats, { lang: exportLang, includeRcGrades, includeLeagues, rcNames, breakdowns: view?.breakdowns, skipSlices: !includeSlices });
+      const deck = buildDeck(stats, { lang: exportLang, includeRcGrades: false, includeLeagues: false, rcNames, breakdowns: view?.breakdowns, sections, format });
       if (kind === 'pptx') {
         const { buildDeckPptx } = await importFresh(() => import('../lib/statsPptx'));
         download(await buildDeckPptx(deck), deckFileName(stats, 'pptx'));
@@ -281,7 +287,11 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     const showMonths = !filtered || monthsAny;
     const showObservations = showMonths || coverageRows.length > 0 || roleRows.length > 0 || rcRows.length > 0 || groupRows.length > 0 || levelRows.length > 0 || stufeRows.length > 0;
     // ── Grades
-    const showHistogram = !filtered || sum(stats.histogram) > 0;
+    // The distribution in five letters (± fold into their letter), whatever
+    // the API sent; the shares of C and of B-or-better read off the same.
+    const letters = foldHistogram(stats.histogram);
+    const lettersAll = STAT_LETTERS.reduce((a, g) => a + letters[g], 0);
+    const showHistogram = !filtered || lettersAll > 0;
     const roleScale = keepScale(stats.byRole.map((b) => ({ key: b.key, label: roleLabel(b.key, lang), avg: gradeAvg(b.grade), n: b.observations })));
     const showGradeSummary = !filtered || avg !== null;
     const sectionRows = (['1SR', '2SR'] as StatRole[]).map((role) => ({
@@ -327,7 +337,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                 spark={<Sparkline values={stats.byMonth.map((b) => b.observations)} title={`${t.perMonth}: ${stats.byMonth.map((b) => `${monthLabel(b.key, lang)} ${b.observations}`).join(', ')}`} />} />
               <StatTile label={t.coacheesVisited} value={`${fmtInt(T.coachees)} / ${fmtInt(T.roster)}`} sub={pctText(pct(T.coachees, T.roster))} delta={P ? delta(T.coachees, P.coachees) : null} deltaLabel={t.deltaVs(prevName)} />
               <StatTile label={t.activeRcs} value={`${fmtInt(T.rcsActive)} / ${fmtInt(T.rcsTotal)}`} sub={`${t.pensum} ${pctText(pct(T.observations, T.goal))}`} />
-              <StatTile label={t.avgGrade} value={avg === null ? '–' : <><span className={isThin(T.grade.obs) ? 'text-stone-600' : undefined}>{scoreToLetter(avg)}</span> <span className="text-base font-medium text-stone-500">{fmtDec(avg)}</span></>} sub={isThin(T.grade.obs) ? `${t.tooFew(T.grade.obs)} · ${t.normalCase}` : t.normalCase} delta={P && avg !== null && gradeAvg(P.grade) !== null ? `${avg - gradeAvg(P.grade)! >= 0 ? '+' : ''}${fmtDec(avg - gradeAvg(P.grade)!)}` : null} deltaLabel={t.deltaVs(prevName)} />
+              <StatTile label={t.avgGrade} value={avg === null ? '–' : <span className={isThin(T.grade.obs) ? 'text-stone-600' : undefined}>{scoreToLetter(avg)}</span>} sub={isThin(T.grade.obs) ? `${t.tooFew(T.grade.obs)} · ${t.normalCase}` : t.normalCase} delta={P && avg !== null && gradeAvg(P.grade) !== null ? `${scoreToLetter(gradeAvg(P.grade)!)} → ${scoreToLetter(avg)}` : null} deltaLabel={t.deltaVs(prevName)} />
               <StatTile label={t.sets} value={fmtInt(T.sets)} sub={T.games ? `${fmtDec(T.sets / T.games)} ${t.setsPerGame}` : undefined} delta={P ? delta(T.sets, P.sets) : null} deltaLabel={t.deltaVs(prevName)} />
               <StatTile label={t.points} value={fmtInt(T.points)} sub={t.hours(estimatedHours(T.sets))} delta={P ? delta(T.points, P.points) : null} deltaLabel={t.deltaVs(prevName)} />
               <StatTile label={t.words} value={fmtInt(T.words)} sub={T.observations ? `${t.perObs} ${fmtInt(T.words / T.observations)}` : undefined} delta={P ? delta(T.words, P.words) : null} deltaLabel={t.deltaVs(prevName)} />
@@ -393,7 +403,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                             <td className="hidden sm:table-cell py-1.5 px-1 text-right tabular-nums">{fmtInt(r.games)}</td>
                             <td className="hidden sm:table-cell py-1.5 px-1 text-right tabular-nums">{fmtInt(r.sets)}</td>
                             <td className="hidden sm:table-cell py-1.5 px-1 text-right tabular-nums">{fmtInt(r.words)}</td>
-                            <td className="py-1.5 px-1 text-right tabular-nums whitespace-nowrap" title={a === null ? '–' : `${fmtDec(a)} · ${t.nObs(r.observations)}`}>{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(r.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b> <span className="hidden sm:inline text-stone-500">{fmtDec(a)}</span>{isThin(r.observations) && <span className="hidden sm:inline text-stone-400"> · n = {r.observations}</span>}</>}</td>
+                            <td className="py-1.5 px-1 text-right tabular-nums whitespace-nowrap" title={a === null ? '–' : `${scoreToLetter(a)} · ${t.nObs(r.observations)}`}>{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(r.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b>{isThin(r.observations) && <span className="hidden sm:inline text-stone-400"> · n = {r.observations}</span>}</>}</td>
                             <td className="py-1.5 pl-2 sm:pl-3">
                               <div className="flex items-center gap-2" title={`${fmtInt(r.observations)} / ${fmtInt(r.goal)} · ${r.planned} ${t.planned} · ${r.outstanding} ${t.outstanding}`}>
                                 <span className="h-2 flex-1 min-w-[1.5rem] sm:min-w-[4rem] rounded-full bg-stone-100 overflow-hidden"><span className="block h-full rounded-full" style={{ width: `${fill}%`, background: fill >= 100 ? '#1f7a4d' : '#2a78d6' }} /></span>
@@ -434,23 +444,22 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
             <Grid>
               {showHistogram && (
               <Block span="lg:col-span-7" title={t.histogram} hint={t.histogramHint} testId="stats-histogram">
-                {/* A+ … E− top to bottom, a letter's three grades together; the ±
-                    grades in the soft tint. With a filter on, a letter nobody
-                    was given is left out whole. */}
+                {/* A to E, top to bottom: a C− or a C+ counts as a C. With a
+                    filter on, a letter nobody was given is left out. */}
                 <HBarChart
                   series={[t.histogram]}
-                  data={GRADE_ORDER
-                    .filter((g) => !filtered || GRADE_ORDER.some((h) => h[0] === g[0] && (stats.histogram[h] ?? 0) > 0))
-                    .map((g, i, list) => ({ key: g, label: g.replace('-', '−'), values: [stats.histogram[g] ?? 0], soft: !GRADE_LETTERS.includes(g), gapBefore: i > 0 && list[i - 1][0] !== g[0] }))}
+                  data={STAT_LETTERS
+                    .filter((g) => !filtered || letters[g] > 0)
+                    .map((g) => ({ key: g, label: g, values: [letters[g]] }))}
                 />
               </Block>
               )}
               {showGradeSummary && (
               <Block span="lg:col-span-5" title={t.avgGrade} hint={t.normalCase} testId="stats-grade-summary">
                 <div className="grid grid-cols-3 gap-2">
-                  <MiniStat label={t.avgGrade} value={avg === null ? '–' : `${scoreToLetter(avg)} · ${fmtDec(avg)}${isThin(T.grade.obs) ? ` (n = ${T.grade.obs})` : ''}`} />
-                  <MiniStat label={t.shareC} value={pctText(pct(T.ratingsC, T.ratingsAll))} />
-                  <MiniStat label={t.shareB} value={pctText(pct(T.ratingsBPlus, T.ratingsAll))} />
+                  <MiniStat label={t.avgGrade} value={avg === null ? '–' : `${scoreToLetter(avg)}${isThin(T.grade.obs) ? ` (n = ${T.grade.obs})` : ''}`} />
+                  <MiniStat label={t.shareC} value={pctText(pct(letters.C, lettersAll))} />
+                  <MiniStat label={t.shareB} value={pctText(pct(letters.A + letters.B, lettersAll))} />
                 </div>
                 {roleScale.length > 0 && (
                   <div className="mt-4">
@@ -505,7 +514,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               <Block span="lg:col-span-4" title={t.trendTitle} hint={t.trendBand} testId="stats-trend-total">
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <MiniStat label={t.trendCoachees} value={fmtInt(stats.trend.coachees)} />
-                  <MiniStat label={t.trendAvg} value={(() => { const d = trendAvgDelta(stats.trend); return d === null ? '–' : `${d > 0 ? '+' : ''}${fmtDec(d)}`; })()} />
+                  <MiniStat label={t.trendImproved} value={pctText(pct(stats.trend.improved, stats.trend.coachees))} />
                 </div>
                 <DivergingBars
                   rows={[{ key: 'all', label: t.trendCoachees, neg: stats.trend.worse, mid: stats.trend.same, pos: stats.trend.improved }]}
@@ -719,7 +728,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                             </td>
                             <td className="py-2.5 px-1 text-right tabular-nums font-semibold">{fmtInt(c.observations)}</td>
                             <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap leading-tight">{pctText(pct(c.coachees, c.roster))}<span className="block text-[10px] text-stone-400">{fmtInt(c.coachees)}/{fmtInt(c.roster)}</span></td>
-                            <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap">{a === null ? <span className="text-stone-400">–</span> : <><b className={isThin(c.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b> <span className="hidden sm:inline text-stone-500">{fmtDec(a)}</span></>}</td>
+                            <td className="py-2.5 px-1 text-right tabular-nums whitespace-nowrap">{a === null ? <span className="text-stone-400">–</span> : <b className={isThin(c.observations) ? 'text-stone-600' : undefined}>{scoreToLetter(a)}</b>}</td>
                             <td className="hidden sm:table-cell py-2.5 px-1 text-right tabular-nums">{pctText(pct(s.outcomes.einstufung.up ?? 0, sum(s.outcomes.einstufung)))}</td>
                             <td className="hidden sm:table-cell py-2.5 px-1 text-right tabular-nums">{pctText(pct(s.outcomes.secondBesuch.Y ?? 0, sum(s.outcomes.secondBesuch)))}</td>
                             {rows.some((r) => r.stats.trend) && (
@@ -827,14 +836,43 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                     <label key={l} className="inline-flex items-center gap-1"><input type="radio" name="stats-export-lang" value={l} checked={exportLang === l} onChange={() => setExportLang(l)} /> {l}</label>
                   ))}
                 </div>
-                <label className="flex items-start gap-2 text-stone-700"><input type="checkbox" className="mt-0.5" checked={includeRcGrades} onChange={(e) => setIncludeRcGrades(e.target.checked)} /> {t.optRcGrades}</label>
-                <label className="flex items-start gap-2 text-stone-700"><input type="checkbox" className="mt-0.5" checked={includeLeagues} onChange={(e) => setIncludeLeagues(e.target.checked)} /> {t.optLeagues}</label>
-                {view?.breakdowns && <label className="flex items-start gap-2 text-stone-700"><input type="checkbox" className="mt-0.5" checked={includeSlices} onChange={(e) => setIncludeSlices(e.target.checked)} /> {t.optSlices}</label>}
+                <div className="flex items-center gap-3 text-stone-700" role="radiogroup" aria-label={t.exportFormat}>
+                  <span className="text-stone-500">{t.exportFormat}</span>
+                  {(['16:9', 'A4'] as DeckFormat[]).map((f) => (
+                    <label key={f} className="inline-flex items-center gap-1"><input type="radio" name="stats-export-format" value={f} checked={format === f} onChange={() => setFormat(f)} /> {f === 'A4' ? t.formatA4 : t.format169}</label>
+                  ))}
+                </div>
+                {/* Every kind of slide by chapter, as the deck will tell them. */}
+                <div className="border-t border-stone-100 pt-2" data-testid="stats-export-sections">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="font-medium text-stone-600">{t.exportSections}</span>
+                    <span className="flex gap-2">
+                      <button type="button" className="text-stone-500 underline" onClick={() => setSections([...DECK_CHAPTERS.flatMap((c) => c.sections), 'method'])}>{t.exportAll}</button>
+                      <button type="button" className="text-stone-500 underline" onClick={() => setSections([])}>{t.exportNone}</button>
+                    </span>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto pr-1 space-y-2">
+                    {DECK_CHAPTERS.map((c) => (
+                      <fieldset key={c.key}>
+                        <legend className="text-[10px] font-semibold uppercase tracking-wide text-stone-400">{t.chapterTitle(c.key)}</legend>
+                        {c.sections.map((k) => {
+                          const needsSlices = (k === 'levelSets' || k === 'groupSets') && !view?.breakdowns;
+                          return (
+                            <label key={k} className={cn('flex items-start gap-2 text-stone-700', needsSlices && 'opacity-50')}>
+                              <input type="checkbox" className="mt-0.5" disabled={needsSlices} checked={sections.includes(k) && !needsSlices} onChange={() => toggleSection(k)} /> {t.sectionLabel(k)}
+                            </label>
+                          );
+                        })}
+                      </fieldset>
+                    ))}
+                    <label className="flex items-start gap-2 text-stone-700"><input type="checkbox" className="mt-0.5" checked={sections.includes('method')} onChange={() => toggleSection('method')} /> {t.sectionLabel('method')}</label>
+                  </div>
+                </div>
                 <div className="flex gap-2 pt-1">
-                  <button type="button" onClick={() => void runExport('pptx')} disabled={exporting !== null} className={cn(btn, 'flex-1 justify-center')} data-testid="stats-export-pptx">
+                  <button type="button" onClick={() => void runExport('pptx')} disabled={exporting !== null || sections.length === 0} className={cn(btn, 'flex-1 justify-center')} data-testid="stats-export-pptx">
                     {exporting === 'pptx' ? <Loader2 size={14} className="animate-spin" /> : <Presentation size={14} />} {t.exportPptx}
                   </button>
-                  <button type="button" onClick={() => void runExport('pdf')} disabled={exporting !== null} className={cn(btn, 'flex-1 justify-center')} data-testid="stats-export-pdf">
+                  <button type="button" onClick={() => void runExport('pdf')} disabled={exporting !== null || sections.length === 0} className={cn(btn, 'flex-1 justify-center')} data-testid="stats-export-pdf">
                     {exporting === 'pdf' ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} {t.exportPdf}
                   </button>
                 </div>
@@ -901,7 +939,8 @@ function TrendCounts({ tr }: { tr: TrendAgg }) {
 /** A trend row for DivergingBars: worse left, same centred, better right; n and the mean change beside the name. */
 function trendRow(r: TrendAgg & { key: string }, label: string) {
   const d = trendAvgDelta(r);
-  return { key: r.key || '-', label, neg: r.worse, mid: r.same, pos: r.improved, sub: `n = ${r.coachees}${d === null ? '' : ` · Ø ${d > 0 ? '+' : ''}${fmtDec(d)}`}` };
+  void d;
+  return { key: r.key || '-', label, neg: r.worse, mid: r.same, pos: r.improved, sub: `n = ${r.coachees}` };
 }
 
 function bucketRow(b: StatBucket, label: string, t: ReturnType<typeof statStrings>) {
@@ -912,6 +951,6 @@ function bucketRow(b: StatBucket, label: string, t: ReturnType<typeof statString
     label,
     value: b.observations,
     sub: a === null ? `${b.coachees} ${t.coacheesCol}` : `${b.coachees} ${t.coacheesCol} · Ø ${scoreToLetter(a)}${thin ? ` (n = ${b.observations})` : ''}`,
-    hint: `${label}: ${b.observations} · ${b.coachees} ${t.coacheesCol} · ${a === null ? '–' : `Ø ${scoreToLetter(a)} ${fmtDec(a)}${thin ? ` · n = ${b.observations}` : ''}`}`,
+    hint: `${label}: ${b.observations} · ${b.coachees} ${t.coacheesCol} · ${a === null ? '–' : `Ø ${scoreToLetter(a)}${thin ? ` · n = ${b.observations}` : ''}`}`,
   };
 }

@@ -22,7 +22,7 @@ import { parseResult, isSetComplete } from '../src/lib/matchResult.ts';
 import { splitCoacheeGroups } from '../src/lib/coacheeGroup.ts';
 import { richToPlain } from '../src/lib/richText.ts';
 import {
-  countChars, countWords, emptyGrade, emptyTrend, GRADE_SCALE, gradeToScore, mergeGrade, NORMAL_SCORE, trendOf,
+  countChars, countWords, emptyGrade, emptyTrend, GRADE_SCALE, gradeToScore, letterScore, mergeGrade, NORMAL_SCORE, trendOf,
   type CoacheeSummary, type StatTrend, type TrendAgg, type TrendRow,
   type CriterionAgg, type Dist, type GradeAgg, type RcBucket, type SeasonStatisticsCore,
   type SectionAgg, type StatBucket, type StatFilters, type StatFun, type StatOptions,
@@ -138,7 +138,8 @@ export function observationFromFeedback(args: {
       const score = gradeToScore(text(item.rating));
       if (score !== null || text(item.rating).trim().toUpperCase() === 'N/A') answered += 1;
       if (score === null) continue;
-      ratings.push({ id: text(item.id), section: index, score });
+      // Folded into its letter: statistics count a C− or a C+ as a C.
+      ratings.push({ id: text(item.id), section: index, score: letterScore(score) });
     }
   });
 

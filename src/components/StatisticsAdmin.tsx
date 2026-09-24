@@ -19,7 +19,7 @@ import {
 } from '../lib/statsLabels';
 import { SECTIONS_1SR_DE, SECTIONS_2SR_DE } from '../types';
 import { buildDeck, deckFileName } from '../lib/statsDeck';
-import { BarList, Donut, GradeScale, HBarChart, StatTile, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
+import { BarList, ColumnChart, DivergingBars, GradeLine, GradeScale, HBarChart, SEQ_BLUE, SERIES, Sparkline, StackBar, StatTile, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
 
 const select = 'h-9 px-2.5 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500 max-w-full';
 const btn = 'inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-40 transition-colors';
@@ -298,6 +298,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     }).filter((x) => !filtered || x.rows.length > 0);
     const criteriaRoles = (['1SR', '2SR'] as StatRole[]).filter((role) => !filtered || criteriaFor(role).length > 0);
     const shownCriteriaRole: StatRole | null = criteriaRoles.includes(criteriaRole) ? criteriaRole : (criteriaRoles[0] ?? null);
+    const gradeMonths = stats.byMonth.map((b) => ({ key: b.key, label: monthLabel(b.key, lang), value: gradeAvg(b.grade), n: b.observations, hint: `${monthLabel(b.key, lang)} ${b.key.slice(0, 4)}` }));
     const showGrades = showHistogram || showGradeSummary || sectionRows.length > 0 || shownCriteriaRole !== null;
     // ── Assessments
     const outcomeKinds = (['einstufung', 'motivation', 'spielniveau', 'secondBesuch'] as const).filter((kind) => !filtered || sum(stats.outcomes[kind]) > 0);
@@ -322,7 +323,8 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           {/* ── Overview ── */}
           <Section title={t.secOverview} hint={t.secOverviewHint} testId="stats-overview">
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3" data-testid="stats-tiles">
-              <StatTile hero label={t.observations} value={fmtInt(T.observations)} sub={T.games ? t.games(T.games) : undefined} delta={P ? delta(T.observations, P.observations) : null} deltaLabel={t.deltaVs(prevName)} />
+              <StatTile hero label={t.observations} value={fmtInt(T.observations)} sub={T.games ? t.games(T.games) : undefined} delta={P ? delta(T.observations, P.observations) : null} deltaLabel={t.deltaVs(prevName)}
+                spark={<Sparkline values={stats.byMonth.map((b) => b.observations)} title={`${t.perMonth}: ${stats.byMonth.map((b) => `${monthLabel(b.key, lang)} ${b.observations}`).join(', ')}`} />} />
               <StatTile label={t.coacheesVisited} value={`${fmtInt(T.coachees)} / ${fmtInt(T.roster)}`} sub={pctText(pct(T.coachees, T.roster))} delta={P ? delta(T.coachees, P.coachees) : null} deltaLabel={t.deltaVs(prevName)} />
               <StatTile label={t.activeRcs} value={`${fmtInt(T.rcsActive)} / ${fmtInt(T.rcsTotal)}`} sub={`${t.pensum} ${pctText(pct(T.observations, T.goal))}`} />
               <StatTile label={t.avgGrade} value={avg === null ? '–' : <><span className={isThin(T.grade.obs) ? 'text-stone-600' : undefined}>{scoreToLetter(avg)}</span> <span className="text-base font-medium text-stone-500">{fmtDec(avg)}</span></>} sub={isThin(T.grade.obs) ? `${t.tooFew(T.grade.obs)} · ${t.normalCase}` : t.normalCase} delta={P && avg !== null && gradeAvg(P.grade) !== null ? `${avg - gradeAvg(P.grade)! >= 0 ? '+' : ''}${fmtDec(avg - gradeAvg(P.grade)!)}` : null} deltaLabel={t.deltaVs(prevName)} />
@@ -339,21 +341,24 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
             <Grid>
               {showMonths && (
               <Block span="lg:col-span-5" title={t.perMonth} hint={`${t.role1} / ${t.role2}`} testId="stats-months">
-                <HBarChart
+                {/* Time runs left to right: eight months fit a phone as columns. */}
+                <ColumnChart
                   series={[t.role1, t.role2]}
-                  data={stats.byMonth.filter((b) => !filtered || b.observations > 0).map((b) => ({ key: b.key, label: monthLabel(b.key, lang), values: [b.roles['1SR'], b.roles['2SR']], hint: `${monthLabel(b.key, lang)} ${b.key.slice(0, 4)}` }))}
+                  slotWidth={32}
+                  data={stats.byMonth.map((b) => ({ key: b.key, label: monthLabel(b.key, lang), values: [b.roles['1SR'], b.roles['2SR']], hint: `${monthLabel(b.key, lang)} ${b.key.slice(0, 4)}` }))}
                 />
               </Block>
               )}
               {coverageRows.length > 0 && (
               <Block span="lg:col-span-3" title={t.coverage} hint={t.coverageHint} testId="stats-coverage">
-                <BarList rows={coverageRows} />
+                {/* Part of the roster by visits: one bar, lighter = fewer visits. */}
+                <StackBar segments={['0', '1', '2', '3+'].map((k, i) => ({ key: k, label: t.visits(k), value: stats.coacheeVisits[k] ?? 0, color: SEQ_BLUE[i] })).filter((x) => !filtered || x.value > 0)} />
                 <p className="mt-3 text-[11px] text-stone-500">{t.coacheesVisited}: <b className="text-stone-700">{fmtInt(T.coachees)} / {fmtInt(T.roster)}</b> · {pctText(pct(T.coachees, T.roster))}</p>
               </Block>
               )}
               {roleRows.length > 0 && (
               <Block span="lg:col-span-4" title={t.role} hint={t.observations} testId="stats-roles">
-                <BarList rows={roleRows} />
+                <StackBar segments={stats.byRole.map((b, i) => ({ key: b.key, label: roleLabel(b.key, lang), value: b.observations, color: SERIES[i] })).filter((x) => !filtered || x.value > 0)} />
               </Block>
               )}
               {rcRows.length > 0 && (
@@ -456,6 +461,11 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                 <p className="mt-3 text-[11px] text-stone-500">{t.completeness}: <b className="text-stone-700">{pctText(pct(T.ratedItems, T.offeredItems))}</b></p>
               </Block>
               )}
+              {gradeMonths.some((p) => p.value !== null) && (
+              <Block span="lg:col-span-12" title={t.gradePerMonth} hint={`${t.normalCase} · ${t.thinNote}`} testId="stats-grade-month">
+                <GradeLine points={gradeMonths} nLabel={t.nObs} />
+              </Block>
+              )}
               {sectionRows.length > 0 && (
               <Block span="lg:col-span-5" title={t.sections} hint={t.normalCase} testId="stats-sections">
                 {sectionRows.map(({ role, rows }) => (
@@ -497,16 +507,20 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                   <MiniStat label={t.trendCoachees} value={fmtInt(stats.trend.coachees)} />
                   <MiniStat label={t.trendAvg} value={(() => { const d = trendAvgDelta(stats.trend); return d === null ? '–' : `${d > 0 ? '+' : ''}${fmtDec(d)}`; })()} />
                 </div>
-                <Donut emptyLabel="–" slices={TREND_KEYS.map((k) => ({ key: k, label: trendLabel(k, t), value: stats.trend![k], color: TREND_COLOR[k] })).filter((sl) => !filtered || sl.value > 0)} />
+                <DivergingBars
+                  rows={[{ key: 'all', label: t.trendCoachees, neg: stats.trend.worse, mid: stats.trend.same, pos: stats.trend.improved }]}
+                  colors={{ neg: TREND_COLOR.worse, mid: '#d6d3d1', pos: TREND_COLOR.improved }}
+                  labels={{ neg: t.trendWorse, mid: t.trendSame, pos: t.trendImproved }}
+                />
               </Block>
               {stats.trend.byLevel.length > 0 && (
               <Block span="lg:col-span-4" title={`${t.trendTitle} · ${t.byLevel}`} testId="stats-trend-level">
-                <TrendBars rows={stats.trend.byLevel.map((r) => ({ ...r, label: levelKeyLabel(r.key, lang) }))} t={t} />
+                <DivergingBars rows={stats.trend.byLevel.map((r) => trendRow(r, levelKeyLabel(r.key, lang)))} colors={{ neg: TREND_COLOR.worse, mid: '#d6d3d1', pos: TREND_COLOR.improved }} labels={{ neg: t.trendWorse, mid: t.trendSame, pos: t.trendImproved }} />
               </Block>
               )}
               {stats.trend.byGroup.length > 0 && (
               <Block span="lg:col-span-4" title={`${t.trendTitle} · ${t.byGroup}`} testId="stats-trend-group">
-                <TrendBars rows={stats.trend.byGroup.map((r) => ({ ...r, label: groupKeyLabel(r.key, lang) }))} t={t} />
+                <DivergingBars rows={stats.trend.byGroup.map((r) => trendRow(r, groupKeyLabel(r.key, lang)))} colors={{ neg: TREND_COLOR.worse, mid: '#d6d3d1', pos: TREND_COLOR.improved }} labels={{ neg: t.trendWorse, mid: t.trendSame, pos: t.trendImproved }} />
               </Block>
               )}
             </Grid>
@@ -517,12 +531,32 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           {/* ── Assessments ── */}
           {outcomeKinds.length > 0 && (
           <Section title={t.secOutcomes} hint={t.secOutcomesHint} testId="stats-section-outcomes">
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-              {outcomeKinds.map((kind) => (
-                <Block key={kind} title={kind === 'einstufung' ? t.einstufung : kind === 'motivation' ? t.motivation : kind === 'spielniveau' ? t.difficulty : t.secondVisit} testId={`stats-${kind}`}>
-                  <Donut emptyLabel="–" slices={OUTCOME_ORDER[kind].map((k) => ({ key: k, label: outcomeLabel(kind, k, lang), value: stats.outcomes[kind][k] ?? 0, color: outcomeColor(kind, k) })).filter((sl) => !filtered || sl.value > 0)} />
-                </Block>
-              ))}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              {/* Einstufung and motivation are the form's ↑ ✓ ↓: centred on ✓,
+                  down to the left, up to the right, so the two rows compare. */}
+              {outcomeKinds.some((k) => k === 'einstufung' || k === 'motivation') && (
+              <Block title={`${t.einstufung} · ${t.motivation}`} testId="stats-einstufung">
+                <DivergingBars
+                  rows={outcomeKinds.filter((k) => k === 'einstufung' || k === 'motivation').map((kind) => ({
+                    key: kind,
+                    label: kind === 'einstufung' ? t.einstufung : t.motivation,
+                    neg: stats.outcomes[kind].down ?? 0, mid: stats.outcomes[kind].check ?? 0, pos: stats.outcomes[kind].up ?? 0,
+                  }))}
+                  colors={{ neg: outcomeColor('einstufung', 'down'), mid: '#d6d3d1', pos: outcomeColor('einstufung', 'up') }}
+                  labels={{ neg: '↓', mid: '✓', pos: '↑' }}
+                />
+              </Block>
+              )}
+              {outcomeKinds.includes('spielniveau') && (
+              <Block title={t.difficulty} testId="stats-spielniveau">
+                <StackBar segments={OUTCOME_ORDER.spielniveau.map((k, i) => ({ key: k, label: outcomeLabel('spielniveau', k, lang), value: stats.outcomes.spielniveau[k] ?? 0, color: [SEQ_BLUE[0], SEQ_BLUE[2], SEQ_BLUE[3]][i] })).filter((x) => !filtered || x.value > 0)} />
+              </Block>
+              )}
+              {outcomeKinds.includes('secondBesuch') && (
+              <Block title={t.secondVisit} testId="stats-secondBesuch">
+                <StackBar segments={OUTCOME_ORDER.secondBesuch.map((k) => ({ key: k, label: outcomeLabel('secondBesuch', k, lang), value: stats.outcomes.secondBesuch[k] ?? 0, color: k === 'Y' ? SERIES[0] : '#d6d3d1' })).filter((x) => !filtered || x.value > 0)} />
+              </Block>
+              )}
             </div>
           </Section>
           )}
@@ -554,7 +588,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                 {categoryRows.length > 0 && (
                   <div className="mt-4">
                     <SubHead>{categoryLabel('H', lang)} · {categoryLabel('D', lang)}</SubHead>
-                    <BarList rows={categoryRows} />
+                    <StackBar segments={stats.byCategory.map((b, i) => ({ key: b.key || '-', label: categoryLabel(b.key, lang), value: b.observations, color: SERIES[i % SERIES.length] })).filter((x) => !filtered || x.value > 0)} />
                   </div>
                 )}
                 {divisionRows.length > 0 && (
@@ -569,12 +603,12 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               <Block span="lg:col-span-4" title={`${t.weekday} · ${t.hour}`} hint={t.observations} testId="stats-when">
                 {weekdayRows.length > 0 && (<>
                   <SubHead>{t.weekday}</SubHead>
-                  <div data-testid="stats-weekday"><BarList rows={weekdayRows} /></div>
+                  <div data-testid="stats-weekday"><ColumnChart series={[t.observations]} slotWidth={30} height={150} data={(filtered ? stats.byWeekday.filter((b) => b.observations > 0) : stats.byWeekday).map((b) => ({ key: b.key, label: weekdayKeyLabel(b.key, lang).slice(0, 2), values: [b.observations], hint: weekdayKeyLabel(b.key, lang) }))} /></div>
                 </>)}
                 {hourRows.length > 0 && (
                   <div className={weekdayRows.length > 0 ? 'mt-4' : undefined}>
                     <SubHead>{t.hour}</SubHead>
-                    <div data-testid="stats-hour"><BarList rows={hourRows} /></div>
+                    <div data-testid="stats-hour"><ColumnChart series={[t.observations]} slotWidth={30} height={150} data={(filtered ? stats.byHour.filter((b) => b.observations > 0) : stats.byHour).map((b) => ({ key: b.key, label: `${Number(b.key)}h`, values: [b.observations], hint: `${b.key}:00` }))} /></div>
                   </div>
                 )}
               </Block>
@@ -864,26 +898,10 @@ function TrendCounts({ tr }: { tr: TrendAgg }) {
   );
 }
 
-/** One stacked bar per row: better / same / worse, to the row's own width. */
-function TrendBars({ rows, t }: { rows: Array<TrendAgg & { key: string; label: string }>; t: ReturnType<typeof statStrings> }) {
-  return (
-    <div className="space-y-2">
-      {rows.map((r) => {
-        const d = trendAvgDelta(r);
-        return (
-          <div key={r.key || '-'} className="text-xs" title={`${r.label}: ${TREND_KEYS.map((k) => `${trendLabel(k, t)} ${r[k]}`).join(' · ')}`}>
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="truncate text-stone-700">{r.label}</span>
-              <span className="shrink-0 tabular-nums text-stone-500"><TrendCounts tr={r} />{d !== null && <span className="ml-1.5 text-stone-400">Ø {d > 0 ? '+' : ''}{fmtDec(d)}</span>}</span>
-            </div>
-            <div className="mt-1 flex h-2.5 overflow-hidden rounded-full bg-stone-100">
-              {TREND_KEYS.map((k) => r[k] > 0 && <span key={k} style={{ width: `${(r[k] / r.coachees) * 100}%`, background: TREND_COLOR[k] }} />)}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
+/** A trend row for DivergingBars: worse left, same centred, better right; n and the mean change beside the name. */
+function trendRow(r: TrendAgg & { key: string }, label: string) {
+  const d = trendAvgDelta(r);
+  return { key: r.key || '-', label, neg: r.worse, mid: r.same, pos: r.improved, sub: `n = ${r.coachees}${d === null ? '' : ` · Ø ${d > 0 ? '+' : ''}${fmtDec(d)}`}` };
 }
 
 function bucketRow(b: StatBucket, label: string, t: ReturnType<typeof statStrings>) {

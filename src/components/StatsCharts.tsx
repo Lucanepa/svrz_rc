@@ -105,6 +105,167 @@ export function ColumnChart({ data, series, height = 180, soft = [], slotWidth =
   );
 }
 
+// ── One 100 % bar (part-to-whole) ───────────────────────────────────────────
+// A share across a few ordered or named parts — coverage by visits, 1. SR vs
+// 2. SR, a three-way assessment. Segments sit 2px apart; the legend under it
+// carries every count and share, so no colour has to be read alone.
+export const SEQ_BLUE = ['#c3daf7', '#6aa6ea', '#2466c0', '#132f5c'] as const; // validated: adjacent ΔE ≥ 16.5
+export type Segment = { key: string; label: string; value: number; color: string };
+
+export function StackBar({ segments, format = fmtInt }: { segments: Segment[]; format?: (n: number) => string }) {
+  const total = segments.reduce((a, x) => a + x.value, 0);
+  if (total === 0) return <p className="text-xs text-stone-400">–</p>;
+  const shown = segments.filter((x) => x.value > 0);
+  return (
+    <div>
+      <div className="flex h-5 gap-[2px] overflow-hidden rounded-[4px]" role="img" aria-label={shown.map((x) => `${x.label} ${format(x.value)}`).join(', ')}>
+        {shown.map((x) => (
+          <span key={x.key} style={{ width: `${(x.value / total) * 100}%`, background: x.color }} title={`${x.label}: ${format(x.value)} (${Math.round((x.value / total) * 100)} %)`} />
+        ))}
+      </div>
+      <div className="mt-2 grid grid-cols-[auto_1fr_auto_auto] items-center gap-x-2 gap-y-1 text-xs">
+        {segments.map((x) => (
+          <React.Fragment key={x.key}>
+            <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: x.color }} />
+            <span className={x.value > 0 ? 'text-stone-700' : 'text-stone-400'}>{x.label}</span>
+            <span className="tabular-nums font-medium text-stone-700 text-right">{format(x.value)}</span>
+            <span className="tabular-nums text-stone-400 text-right w-10">{Math.round((x.value / total) * 100)} %</span>
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Diverging rows (an ordered three-way answer per row) ────────────────────
+// Negative to the left of a shared centre, positive to the right, the neutral
+// middle split across it — Likert-style, so rows compare at a glance: which
+// assessment leans up, which down. Shares, not counts, so rows of different
+// size line up; the count is in the hover and in the row's n.
+export type DivergingRow = { key: string; label: string; neg: number; mid: number; pos: number; sub?: string };
+
+export function DivergingBars({ rows, colors, labels }: {
+  rows: DivergingRow[];
+  colors: { neg: string; mid: string; pos: string };
+  labels: { neg: string; mid: string; pos: string };
+}) {
+  const shares = rows.map((r) => {
+    const n = r.neg + r.mid + r.pos;
+    return n ? { n, neg: r.neg / n, mid: r.mid / n, pos: r.pos / n } : null;
+  });
+  // The widest side decides the scale, so the centre stays in one place.
+  const reach = Math.max(0.01, ...shares.map((x) => (x ? Math.max(x.neg + x.mid / 2, x.pos + x.mid / 2) : 0)));
+  const pct = (v: number) => `${(v / reach) * 50}%`;
+  return (
+    <div>
+      <div className="space-y-2">
+        {rows.map((r, i) => {
+          const x = shares[i];
+          return (
+            <div key={r.key} className="text-xs">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="truncate text-stone-700">{r.label}</span>
+                <span className="shrink-0 tabular-nums text-stone-400">{r.sub ?? (x ? `n = ${x.n}` : '')}</span>
+              </div>
+              <div
+                className="relative mt-1 h-3.5 rounded-sm bg-stone-100"
+                title={`${r.label}: ${labels.neg} ${r.neg} · ${labels.mid} ${r.mid} · ${labels.pos} ${r.pos}`}
+              >
+                {x && (
+                  <>
+                    <span className="absolute inset-y-0" style={{ right: `calc(50% + ${pct(x.mid / 2)})`, width: pct(x.neg), background: colors.neg }} />
+                    <span className="absolute inset-y-0" style={{ left: `calc(50% - ${pct(x.mid / 2)})`, width: pct(x.mid), background: colors.mid }} />
+                    <span className="absolute inset-y-0" style={{ left: `calc(50% + ${pct(x.mid / 2)})`, width: pct(x.pos), background: colors.pos }} />
+                  </>
+                )}
+                <span className="absolute inset-y-[-2px] left-1/2 w-px bg-stone-500" />
+              </div>
+              {x && (
+                <div className="mt-0.5 flex justify-between tabular-nums text-[10px] text-stone-500">
+                  <span>{labels.neg} {Math.round(x.neg * 100)} %</span>
+                  <span>{labels.pos} {Math.round(x.pos * 100)} %</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <Legend items={[{ name: labels.neg, color: colors.neg }, { name: labels.mid, color: colors.mid }, { name: labels.pos, color: colors.pos }]} />
+    </div>
+  );
+}
+
+// ── Line on the grade scale (average per month) ─────────────────────────────
+// Change over time against the Normalfall: C drawn as the reference line,
+// letters on the axis, a month with under three observations drawn hollow.
+export type LinePoint = { key: string; label: string; value: number | null; n: number; hint?: string };
+
+export function GradeLine({ points, nLabel }: { points: LinePoint[]; nLabel: (n: number) => string }) {
+  const [box, boxWidth] = useWidth<HTMLDivElement>();
+  const width = Math.max(260, Math.floor(boxWidth) || 320);
+  const height = 170;
+  const left = 22; const right = 10; const top = 14; const bottom = 24;
+  const vals = points.map((p) => p.value).filter((v): v is number => v !== null);
+  if (vals.length === 0) return <p className="text-xs text-stone-400">–</p>;
+  // A band around the data that always includes C, in whole letters.
+  const lo = Math.max(1, Math.min(NORMAL_SCORE - 1, Math.floor(Math.min(...vals)) - 1));
+  const hi = Math.min(15, Math.max(NORMAL_SCORE + 1, Math.ceil(Math.max(...vals)) + 1));
+  const plotW = width - left - right;
+  const plotH = height - top - bottom;
+  const x = (i: number) => left + (points.length === 1 ? plotW / 2 : (plotW * i) / (points.length - 1));
+  const y = (v: number) => top + plotH - ((v - lo) / (hi - lo)) * plotH;
+  const ticks = ['E', 'D', 'C', 'B', 'A'].map((l) => ({ l, v: GRADE_SCALE[l] })).filter((t) => t.v >= lo && t.v <= hi);
+  // The line breaks over a month without a grade rather than inventing one.
+  const segs: string[] = [];
+  let cur = '';
+  points.forEach((p, i) => {
+    if (p.value === null) { if (cur) segs.push(cur); cur = ''; return; }
+    cur += `${cur ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`;
+  });
+  if (cur) segs.push(cur);
+  return (
+    <div ref={box}>
+      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" className="block max-w-full">
+        {ticks.map((t) => (
+          <g key={t.l}>
+            <line x1={left} x2={width - right} y1={y(t.v)} y2={y(t.v)} stroke={t.v === NORMAL_SCORE ? '#a8a29e' : GRID} strokeWidth={1} strokeDasharray={t.v === NORMAL_SCORE ? '4 3' : undefined} />
+            <text x={left - 6} y={y(t.v) + 3} fontSize={10} fill={INK_SOFT} textAnchor="end">{t.l}</text>
+          </g>
+        ))}
+        {segs.map((d) => <path key={d} d={d} fill="none" stroke={SERIES[0]} strokeWidth={2} strokeLinejoin="round" />)}
+        {points.map((p, i) => (p.value === null ? null : (
+          <g key={p.key}>
+            <circle cx={x(i)} cy={y(p.value)} r={4.5} fill={isThin(p.n) ? 'white' : SERIES[0]} stroke={isThin(p.n) ? SERIES[0] : 'white'} strokeWidth={2} />
+            <circle cx={x(i)} cy={y(p.value)} r={12} fill="transparent">
+              <title>{`${p.hint ?? p.label}: ${scoreToLetter(p.value)} · ${fmtDec(p.value)} · ${nLabel(p.n)}`}</title>
+            </circle>
+          </g>
+        )))}
+        {points.map((p, i) => (
+          <text key={`l-${p.key}`} x={x(i)} y={height - 8} fontSize={10} fill={INK_SOFT} textAnchor="middle">{p.label}</text>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+// ── Sparkline (a tile's trend) ───────────────────────────────────────────────
+export function Sparkline({ values, title }: { values: number[]; title?: string }) {
+  if (values.length < 2) return null;
+  const w = 100; const h = 24;
+  const max = Math.max(1, ...values);
+  const pts = values.map((v, i) => `${((w - 4) * i) / (values.length - 1) + 2},${h - 3 - (v / max) * (h - 6)}`);
+  const last = pts[pts.length - 1].split(',').map(Number);
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="mt-1 h-6 w-full" preserveAspectRatio="none" role="img" aria-label={title}>
+      {title && <title>{title}</title>}
+      <polygon points={`2,${h - 3} ${pts.join(' ')} ${w - 2},${h - 3}`} fill={SERIES_SOFT[0]} opacity={0.45} />
+      <polyline points={pts.join(' ')} fill="none" stroke={SERIES[0]} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+      <circle cx={last[0]} cy={last[1]} r={2.5} fill={SERIES[0]} />
+    </svg>
+  );
+}
+
 // ── Horizontal bars (stacked) ────────────────────────────────────────────────
 // The histogram and the months as rows rather than columns: fifteen grades or
 // eight months read top to bottom on a phone without scrolling sideways, and
@@ -293,7 +454,7 @@ export function Donut({ slices, size = 96, emptyLabel }: { slices: Slice[]; size
 }
 
 // ── Stat tile ────────────────────────────────────────────────────────────────
-export function StatTile({ label, value, sub, delta, deltaLabel, hero }: {
+export function StatTile({ label, value, sub, delta, deltaLabel, hero, spark }: {
   label: string;
   value: React.ReactNode;
   sub?: React.ReactNode;
@@ -301,6 +462,8 @@ export function StatTile({ label, value, sub, delta, deltaLabel, hero }: {
   delta?: string | null;
   deltaLabel?: string;
   hero?: boolean;
+  /** A small trend under the value (e.g. observations per month). */
+  spark?: React.ReactNode;
 }) {
   return (
     <div className="rounded-xl border border-stone-200/70 bg-white px-3 py-2.5 min-w-0">
@@ -310,6 +473,7 @@ export function StatTile({ label, value, sub, delta, deltaLabel, hero }: {
         {sub && <span>{sub}</span>}
         {delta && <span className="inline-flex items-center rounded-full bg-stone-100 px-1.5 py-px text-[10px] font-medium text-stone-600 tabular-nums" title={deltaLabel}>{delta}</span>}
       </div>
+      {spark}
     </div>
   );
 }

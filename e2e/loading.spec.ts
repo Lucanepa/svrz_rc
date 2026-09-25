@@ -94,21 +94,22 @@ test.describe('what a wait looks like', () => {
     });
   }
 
-  test('the first load of a session gets the branded spinner', async ({ page }) => {
+  test('the first load of a session draws skeleton rows, not a spinner', async ({ page }) => {
     // Nothing answers the dashboard, so the app never leaves its bootstrap.
+    // The page already has a shape to hold (strip, heading, rows), so it draws
+    // that shape rather than the branded orbit spinner.
     await stubOverview(page, 0);
     await page.goto('/');
     await expect(page.locator('h1')).toContainText('Coaching Feedback');
     await page.waitForTimeout(1500);
 
-    expect(await page.locator('.svrz-orbit').count()).toBeGreaterThan(0);
-    expect(await page.locator('.animate-pulse').count()).toBe(0);
+    expect(await page.locator('.animate-pulse').count()).toBeGreaterThan(0);
+    expect(await page.locator('.svrz-orbit').count()).toBe(0);
   });
 
   // GAP, deliberately left visible: there used to be a test here proving that a
-  // load AFTER the bootstrap draws skeleton rows rather than the branded orbit
-  // spinner. Its only trigger was the admin-only RC detail screen, which moved
-  // to the console — and neither the coachee feedback list nor anything else
+  // load AFTER the bootstrap draws skeleton rows as well. Its only trigger was
+  // the admin-only RC detail screen, which moved to the console — and neither the coachee feedback list nor anything else
   // reachable from the coach app reproduced the same late load. The behaviour
   // is still implemented (SkeletonRows in App.tsx); it is the trigger that is
   // missing. Re-pin it against the next on-demand fetch added to this app.

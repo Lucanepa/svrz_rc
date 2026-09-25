@@ -5,6 +5,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { BarChart3, Download, FileText, Loader2, Presentation } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { Skeleton } from './Skeleton';
 import { importFresh } from '../lib/freshImport';
 import type { Lang } from '../lib/appTime';
 import { dayLabel } from '../lib/appTime';
@@ -686,7 +687,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           {dim !== 'none' && (
           <Section title={dim === 'level' && selNiv ? `${t.compareTitle(dim)} · ${selNiv}` : t.compareTitle(dim)} hint={t.compareHint} testId="stats-compare">
             {!cmpRows ? (
-              <div className="flex items-center gap-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /> {t.loading}</div>
+              <div className="space-y-2" role="status" aria-busy="true" aria-label={t.loading}>{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-10 rounded-md" />)}</div>
             ) : (() => {
               const rows = cmpRows.filter((r) => r.stats.totals.observations > 0 || r.stats.totals.roster > 0);
               if (!rows.length) return <p className="text-sm text-stone-400">{t.compareEmpty}</p>;
@@ -908,7 +909,14 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
         </div>
 
         {error && <p className="mt-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
-        {loading && !stats && <div className="mt-4 flex items-center gap-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /> {t.loading}</div>}
+        {loading && !stats && (
+          // The page's own shape — a row of tiles, then two chart blocks —
+          // until the numbers arrive.
+          <div className="mt-4 space-y-3" role="status" aria-busy="true" aria-label={t.loading} data-testid="stats-skeleton">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-[84px] rounded-xl" />)}</div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3"><Skeleton className="h-48 rounded-xl" /><Skeleton className="h-48 rounded-xl" /></div>
+          </div>
+        )}
       </Card>
 
       {body}

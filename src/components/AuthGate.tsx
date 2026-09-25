@@ -8,6 +8,7 @@ import {
 } from '../lib/pocketbase';
 import { clientLog, setLogUser, flush } from '../lib/logger';
 import AppSpinner from './AppSpinner';
+import { Skeleton } from './Skeleton';
 import { getStoredLang, setStoredLang, getStoredRcId, setStoredRcId, type Lang } from '../lib/prefs';
 
 type ApiError = Error & { status?: number; retryAfterMs?: number };
@@ -453,7 +454,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
               </div>
 
               {roster === null && !rosterError && (
-                <div className="flex justify-center py-6"><AppSpinner size={104} /></div>
+                // The names, as the buttons they are about to be.
+                <div className="space-y-2" role="status" aria-busy="true">
+                  {Array.from({ length: 5 }, (_, i) => <Skeleton key={i} className="h-11 rounded-lg" />)}
+                </div>
               )}
 
               {rosterError && (

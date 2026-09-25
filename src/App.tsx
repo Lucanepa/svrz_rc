@@ -840,17 +840,15 @@ function ListLoading({
   framed?: boolean;
   className?: string;
 }) {
-  if (!first) {
-    const skeleton = <SkeletonRows rows={rows} pill={pill} />;
-    // Some of these stand in for a bordered table; the frame is part of the
-    // shape being held open.
-    return framed ? <div className="border border-stone-200 rounded">{skeleton}</div> : skeleton;
-  }
-  return (
-    <div className={`flex justify-center ${className}`}>
-      <AppSpinner size={132} label={label} />
-    </div>
-  );
+  // Skeleton rows on the first load too: the list's own shape, held open,
+  // reads faster than a spinner in the middle of an empty page, and the rows
+  // land where the placeholders were. (It used to be the branded spinner
+  // until the bootstrap was done; 25.09.2026 the coaches asked for this.)
+  void first; void label; void className;
+  const skeleton = <SkeletonRows rows={rows} pill={pill} />;
+  // Some of these stand in for a bordered table; the frame is part of the
+  // shape being held open.
+  return framed ? <div className="border border-stone-200 rounded">{skeleton}</div> : skeleton;
 }
 
 function detectInitialLang(): FeedbackFormData['lang'] {
@@ -6980,13 +6978,9 @@ export default function App() {
                   </div>
 
                   {(homeLoading || booting) && !homeData ? (
-                    booting ? (
-                      <div className="flex justify-center py-24">
-                        <AppSpinner size={132} label={t.loading} />
-                      </div>
-                    ) : (
+                    (
                       // Same shape as the loaded dashboard — one summary strip,
-                      // a heading, then rows.
+                      // a heading, then rows — from the very first load on.
                       <div className="space-y-4" role="status" aria-busy="true">
                         <Skeleton className="h-[74px] rounded-lg" />
                         <Skeleton className="h-4 w-40" />
@@ -9878,7 +9872,11 @@ export default function App() {
             )}
 
             {!icalInfo && !icalError && (
-              <div className="flex items-center gap-2 text-sm text-stone-500"><Loader2 size={15} className="animate-spin" /> {t.loading}</div>
+              // The link box and its buttons, held open until the link arrives.
+              <div className="space-y-2" role="status" aria-busy="true">
+                <Skeleton className="h-10 rounded-lg" />
+                <div className="flex gap-2"><Skeleton className="h-9 w-28 rounded-lg" /><Skeleton className="h-9 w-28 rounded-lg" /></div>
+              </div>
             )}
 
             {icalInfo && (

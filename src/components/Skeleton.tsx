@@ -2,12 +2,13 @@
 // layout on screen during the first load, so a list that is merely loading
 // never looks like a list that is empty.
 //
-// The admin console is the only caller left: the coach-facing app waits behind
-// the branded spinner instead (components/AppSpinner.tsx). Several of the
-// shapes below stand in for form fields and a text area rather than list rows,
-// which is the part a spinner cannot say.
+// Used wherever a list, a dashboard or a form is waiting for its data — in the
+// coach app from the very first load, and in the admin console. The branded
+// spinner (components/AppSpinner.tsx) is kept for the moments there is no
+// shape to hold yet: the session check before the app knows who you are, a
+// signature waiting on the server, a lazily loaded tool.
 
-export function Skeleton({ className = '' }: { className?: string }) {
+export function Skeleton({ className = '' }: { className?: string; key?: string | number }) {
   return <div aria-hidden="true" className={`animate-pulse rounded bg-stone-200/80 ${className}`} />;
 }
 

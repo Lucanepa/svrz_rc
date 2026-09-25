@@ -41,9 +41,10 @@ test('played games sit behind a button at the top, and tonight is not played', a
   await expect(page.getByText(YESTERDAY.homeTeam)).toHaveCount(0);
 });
 
-test('"Gestern" lifts the rule on its own', async ({ page }) => {
+test('picking yesterday lifts the rule on its own', async ({ page }) => {
   await page.goto('/games');
-  await page.getByRole('button', { name: /^(Gestern|Yesterday)$/ }).click();
+  // No "Gestern" chip any more: the ‹ button steps back from today.
+  await page.getByRole('button', { name: /^(Vorheriger Tag|Previous day)$/ }).click();
   await expect(page.getByText(YESTERDAY.homeTeam)).toBeVisible();
   await expect(page.getByText(TONIGHT.homeTeam)).toHaveCount(0);
   await expect(pastButton(page)).toHaveCount(0);

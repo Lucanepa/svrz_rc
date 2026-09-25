@@ -3,7 +3,7 @@ import { stubSignedInApp, COACHEE_LISTED } from './support/app';
 
 /**
  * Coachees tab: a coachee whose next observation is already booked is taken
- * care of, so by default the list leaves them out ("Geplante ausblenden",
+ * care of, so by default the list leaves them out ("Ohne Geplante",
  * on). One tap shows them again, and the choice is remembered on the device.
  * The shared fixture's coachee has a booked game, which is why every other
  * spec starts with the switch off (support/app.ts).
@@ -19,8 +19,9 @@ test('coachees with a booked observation are hidden by default, and one tap show
   await openCoachees(page);
   await expect(page.getByText(COACHEE_LISTED)).toHaveCount(0);
 
-  await page.getByRole('button', { name: /^(Filters|Filter)$/ }).first().click();
-  const toggle = page.getByRole('button', { name: /Geplante ausblenden|Hide planned/ });
+  // A pill above the list, beside "Vorgemerkt" — not inside the filter panel.
+  const toggle = page.getByRole('button', { name: /Ohne Geplante|Hide planned/ });
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   await toggle.click();
   await expect(page.getByText(COACHEE_LISTED).first()).toBeVisible();
 

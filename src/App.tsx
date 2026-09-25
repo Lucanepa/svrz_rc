@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy, type MutableRefObject } from 'react';
-import { Maximize2, Minimize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip, Menu } from 'lucide-react';
+import { Maximize2, Minimize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip, Menu, CalendarCheck } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 // About a megabyte of renderer, fetched the first time a coach opens a
 // document and never for anyone who does not.
@@ -840,15 +840,20 @@ function ListLoading({
   framed?: boolean;
   className?: string;
 }) {
-  // Skeleton rows on the first load too: the list's own shape, held open,
-  // reads faster than a spinner in the middle of an empty page, and the rows
-  // land where the placeholders were. (It used to be the branded spinner
-  // until the bootstrap was done; 25.09.2026 the coaches asked for this.)
-  void first; void label; void className;
-  const skeleton = <SkeletonRows rows={rows} pill={pill} />;
-  // Some of these stand in for a bordered table; the frame is part of the
-  // shape being held open.
-  return framed ? <div className="border border-stone-200 rounded">{skeleton}</div> : skeleton;
+  // Skeleton rows once the app is up; the first load of a session keeps the
+  // branded spinner — it stands for the whole app being fetched and cached,
+  // not for one list (the coaches asked to keep it, 25.09.2026).
+  if (!first) {
+    const skeleton = <SkeletonRows rows={rows} pill={pill} />;
+    // Some of these stand in for a bordered table; the frame is part of the
+    // shape being held open.
+    return framed ? <div className="border border-stone-200 rounded">{skeleton}</div> : skeleton;
+  }
+  return (
+    <div className={`flex justify-center ${className}`}>
+      <AppSpinner size={132} label={label} />
+    </div>
+  );
 }
 
 function detectInitialLang(): FeedbackFormData['lang'] {
@@ -1047,7 +1052,7 @@ function FilterToggle({ on, onToggle, label, title, dotClass }: {
       aria-pressed={on}
       title={title}
       className={cn(
-        'h-9 px-3 border rounded-md text-sm flex items-center gap-2 whitespace-nowrap transition-colors cursor-pointer select-none',
+        'min-h-9 px-3 py-1.5 border rounded-md text-sm flex items-center gap-2 text-left leading-tight sm:whitespace-nowrap transition-colors cursor-pointer select-none',
         on
           ? 'border-red-500 ring-1 ring-red-500/25 bg-red-50/60 text-red-700 font-medium'
           : 'border-stone-300 bg-white text-stone-600 hover:bg-stone-50',
@@ -1067,7 +1072,7 @@ function FilterToggle({ on, onToggle, label, title, dotClass }: {
  *  not always what the state holds — "Nur im Fokus" lights up while its flag is
  *  off, because the highlighted half is the narrowed list either way. */
 function QuickToggle({ on, onToggle, icon, label, title, tone }: {
-  on: boolean; onToggle: () => void; icon: React.ReactNode; label: string; title: string; tone: 'amber' | 'emerald';
+  on: boolean; onToggle: () => void; icon: React.ReactNode; label: string; title: string; tone: 'amber' | 'emerald' | 'sky';
 }) {
   return (
     <button
@@ -1076,16 +1081,19 @@ function QuickToggle({ on, onToggle, icon, label, title, tone }: {
       aria-pressed={on}
       title={title}
       className={cn(
-        'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-xs font-medium transition-colors',
+        // An equal share of the row on a phone, their own width beside it.
+        'inline-flex flex-1 sm:flex-none items-center justify-center gap-1.5 min-h-9 px-2.5 rounded-lg border text-xs font-medium leading-tight transition-colors',
         on
           ? (tone === 'amber'
             ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
-            : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100')
+            : tone === 'sky'
+              ? 'border-sky-300 bg-sky-50 text-sky-700 hover:bg-sky-100'
+              : 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100')
           : 'border-stone-200 text-stone-500 hover:bg-stone-100',
       )}
     >
-      {icon}
-      {label}
+      <span className="shrink-0">{icon}</span>
+      <span>{label}</span>
     </button>
   );
 }
@@ -1367,6 +1375,12 @@ export default function App() {
   const [gameFilterRcGame, setGameFilterRcGame] = useState(false);
   const [gameFilterLd, setGameFilterLd] = useState(false);
   const [gameFilterRcAssigned, setGameFilterRcAssigned] = useState(false);
+  // Games of a coachee whose observation is already booked: hidden by default,
+  // as in the Coachees tab, and remembered on the device the same way.
+  const [gameFilterHidePlanned, setGameFilterHidePlanned] = useState<boolean>(() => {
+    try { return localStorage.getItem('svrz_games_hide_planned') !== '0'; } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem('svrz_games_hide_planned', gameFilterHidePlanned ? '1' : '0'); } catch {} }, [gameFilterHidePlanned]);
   // Show only games an admin flagged as "we'd like this one observed".
   const [gameFilterStarred, setGameFilterStarred] = useState(false);
   // The two pills above a list, tied together: a star is somebody asking for
@@ -1612,6 +1626,20 @@ export default function App() {
     navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
     return () => navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
   }, []);
+
+  // Once per session, as soon as the first load is through: the same check,
+  // run for the whole app rather than one form. The branded spinner stands for
+  // "the app is being loaded onto this phone", and this is what makes that
+  // true — games, coachees, settings, the dashboard and the report builder are
+  // all on the device before the coach walks into a gym with no signal. What
+  // the cache already holds is skipped, so a warm phone pays next to nothing.
+  const offlineWarmedRef = useRef(false);
+  useEffect(() => {
+    if (offlineWarmedRef.current || booting || !landingSettled || isOffline) return;
+    if (!rcAuth.rcName || isDemoMode()) return;
+    offlineWarmedRef.current = true;
+    void runOfflineCheckRef.current();
+  }, [booting, landingSettled, isOffline, rcAuth.rcName]);
 
   const [backendNotice, setBackendNotice] = useState('');
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
@@ -5595,7 +5623,7 @@ export default function App() {
       // Season bound (whole-app season scope)
       if (!inSeasonOrManual(g)) return false;
       // Coachee-aware filters: check if at least one referee passes
-      if (gameFilterNeedsObs || !gameFilterShowInactive) {
+      if (gameFilterNeedsObs || gameFilterHidePlanned || !gameFilterShowInactive) {
         const refCoachees = slotCoachees(g);
         // If no referees are coachees at all, keep the game visible
         if (refCoachees.length > 0) {
@@ -5609,14 +5637,15 @@ export default function App() {
           // off (Jasmin, 2026-09-15). The "taken games" view is an assignment
           // audit — that one is not thinned out by the state either.
           const askNeedsObs = gameFilterNeedsObs && !gameFilterRcAssigned && !g.starred;
+          const askHidePlanned = gameFilterHidePlanned && !gameFilterRcAssigned && !g.starred;
           const hasEligibleRef = refCoachees.some((c) => {
             const isActive = (c.stage || 'active') !== 'inactive';
             if (!gameFilterShowInactive && !isActive) return false;
             if (askNeedsObs && !c.observation_status?.needsObservation) return false;
-            // Covered by a planned observation → all their games leave the open list.
-            // Skipped when the user explicitly picked coachees in the filter
-            // (explicit intent beats the coverage default).
-            if (askNeedsObs && gameFilterCoachees.length === 0 && coveredRefs.has(c.id)) return false;
+            // Covered by a planned observation → all their games leave the open list
+            // ("Ohne Geplante", on by default). Skipped when the user explicitly
+            // picked coachees in the filter (explicit intent beats the coverage default).
+            if (askHidePlanned && gameFilterCoachees.length === 0 && coveredRefs.has(c.id)) return false;
             return true;
           });
           if (!hasEligibleRef) return false;
@@ -5635,7 +5664,7 @@ export default function App() {
       // timestamps rather than strings so a stray offset cannot reorder a day,
       // and anything undated sinks to the bottom instead of leading.
       .sort((a, b) => gameTime(a.date) - gameTime(b.date));
-  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterBoerse, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterShowInactive, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, roster, inSeasonOrManual, showAllLevels, outOfNiveauFocus]);
+  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterBoerse, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterHidePlanned, gameFilterShowInactive, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, roster, inSeasonOrManual, showAllLevels, outOfNiveauFocus]);
 
   // Any filter can shrink a list below the page currently shown, and the pager
   // itself disappears under one page of rows — leaving a blank list with no
@@ -5994,6 +6023,32 @@ export default function App() {
                 >
                   <CalendarPlus size={18} />
                   <span>{formData.lang === 'DE' ? 'Kalender-Abo' : 'Calendar subscription'}</span>
+                </button>
+              )}
+              {/* Whether this phone holds what the app needs with no signal.
+                  Prepared by itself after the first load; tapping prepares it
+                  again (e.g. after a new season's games came in). */}
+              {rcAuth.rcName && !isDemoMode() && (
+                <button
+                  onClick={() => { if (!isOffline && !offlineChecking) void runOfflineReadyCheck(); }}
+                  disabled={isOffline && !offlineReport}
+                  className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer disabled:cursor-default"
+                  title={formData.lang === 'DE'
+                    ? 'Spiele, Coachees, Formular und PDF auf diesem Gerät speichern, damit alles ohne Netz funktioniert. Feedbacks ohne Netz werden gesendet, sobald das Netz zurück ist.'
+                    : 'Keep games, coachees, the form and the PDF on this device so everything works with no signal. Feedback filed offline is sent once the signal is back.'}
+                >
+                  {offlineChecking ? <Loader2 size={18} className="animate-spin" /> : <CloudOff size={18} />}
+                  <span className="flex-1 text-left">{formData.lang === 'DE' ? 'Offline verfügbar' : 'Available offline'}</span>
+                  <span className={cn('text-xs font-semibold',
+                    offlineChecking ? 'text-stone-400' : offlineReport?.ok ? 'text-emerald-600' : offlineReport ? 'text-amber-600' : 'text-stone-400')}>
+                    {offlineChecking
+                      ? (formData.lang === 'DE' ? 'Wird geladen…' : 'Loading…')
+                      : offlineReport?.ok
+                        ? (formData.lang === 'DE' ? 'Bereit' : 'Ready')
+                        : offlineReport
+                          ? (formData.lang === 'DE' ? 'Unvollständig — antippen' : 'Incomplete — tap')
+                          : (formData.lang === 'DE' ? 'Jetzt laden' : 'Load now')}
+                  </span>
                 </button>
               )}
               {rcAuth.rcName && rcAuth.sharedSession && (
@@ -6978,9 +7033,15 @@ export default function App() {
                   </div>
 
                   {(homeLoading || booting) && !homeData ? (
-                    (
+                    booting ? (
+                      // The first load of a session: the whole app, not one
+                      // list, so the branded spinner rather than a skeleton.
+                      <div className="flex justify-center py-24">
+                        <AppSpinner size={132} label={t.loading} />
+                      </div>
+                    ) : (
                       // Same shape as the loaded dashboard — one summary strip,
-                      // a heading, then rows — from the very first load on.
+                      // a heading, then rows.
                       <div className="space-y-4" role="status" aria-busy="true">
                         <Skeleton className="h-[74px] rounded-lg" />
                         <Skeleton className="h-4 w-40" />
@@ -7342,7 +7403,6 @@ export default function App() {
                       listFilterGroups.length > 0,
                       !listFilterNeedsObs,
                       listFilterShowInactive,
-                      !listFilterHidePlanned,
                     ].filter(Boolean).length;
                     return (
                       <button
@@ -7370,6 +7430,9 @@ export default function App() {
                   // labels above them. Two lists filtered by the same things
                   // should not need learning twice.
                   <div className="flex flex-wrap items-end gap-2 mb-3 p-3 bg-stone-50 border border-stone-200 rounded-md">
+                    {/* Switches first, as one row of equal halves on a phone;
+                        the dropdowns below them share the full width. */}
+                    <div className="w-full grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                     <FilterToggle
                       on={listFilterNeedsObs}
                       onToggle={() => { setListFilterNeedsObs(!listFilterNeedsObs); setListPage(0); }}
@@ -7382,13 +7445,8 @@ export default function App() {
                       dotClass="bg-red-600"
                       label={formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
                     />
-                    <FilterToggle
-                      on={listFilterHidePlanned}
-                      onToggle={() => { setListFilterHidePlanned(!listFilterHidePlanned); setListPage(0); }}
-                      dotClass="bg-sky-500"
-                      label={formData.lang === 'DE' ? 'Geplante ausblenden' : 'Hide planned'}
-                    />
-                    <div className="flex-1 min-w-[130px] max-w-[220px]">
+                    </div>
+                    <div className="flex-1 min-w-[130px] sm:max-w-[220px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
                         {formData.lang === 'DE' ? 'Niveau' : 'Level'}
                       </label>
@@ -7407,7 +7465,7 @@ export default function App() {
                         box answered it only by accident: "neu" also matches a
                         surname, and nothing said the list had been narrowed. */}
                     {coacheeGroups.length > 0 && (
-                      <div className="flex-1 min-w-[150px] max-w-[240px]">
+                      <div className="flex-1 min-w-[150px] sm:max-w-[240px]">
                         <label className="block text-xs font-medium text-stone-500 mb-0.5">
                           {formData.lang === 'DE' ? 'Gruppe' : 'Group'}
                         </label>
@@ -7445,8 +7503,22 @@ export default function App() {
                     it would push the games it filters off the screen. Each
                     appears only when it has something to act on, so most
                     visits see one pill or none. */}
-                {(coacheeQuickFilters.starred || coacheeFilterStarred || coacheeQuickFilters.focus || showAllLevels) && (
-                  <div className="mb-3 flex flex-wrap items-center justify-end gap-1.5">
+                {/* "Ohne Geplante" joins them: whether somebody already has
+                    an observation booked is asked on nearly every visit too. */}
+                {(plannedObsByCoachee.size > 0 || !listFilterHidePlanned || coacheeQuickFilters.starred || coacheeFilterStarred || coacheeQuickFilters.focus || showAllLevels) && (
+                  <div className="mb-3 flex items-stretch gap-1.5 sm:justify-end">
+                    {(plannedObsByCoachee.size > 0 || !listFilterHidePlanned) && (
+                      <QuickToggle
+                        on={listFilterHidePlanned}
+                        onToggle={() => { setListFilterHidePlanned(!listFilterHidePlanned); setListPage(0); }}
+                        tone="sky"
+                        icon={<CalendarCheck size={14} />}
+                        label={formData.lang === 'DE' ? 'Ohne Geplante' : 'Hide planned'}
+                        title={formData.lang === 'DE'
+                          ? 'Coachees ausblenden, für die schon eine Beobachtung geplant ist (Standard). Antippen, um sie zu zeigen.'
+                          : 'Hide coachees who already have an observation booked (default). Tap to show them.'}
+                      />
+                    )}
                     {(coacheeQuickFilters.starred || coacheeFilterStarred) && (
                       <QuickToggle
                         on={coacheeFilterStarred}
@@ -7516,7 +7588,6 @@ export default function App() {
                 {/* Quick date navigation */}
                 {(() => {
                   const todayStr = todayKey();
-                  const yesterdayStr = shiftDayKey(todayStr, -1);
                   const tomorrowStr = shiftDayKey(todayStr, 1);
                   const isDE = formData.lang === 'DE';
                   const shiftDay = (delta: number) => {
@@ -7527,7 +7598,7 @@ export default function App() {
                   };
                   const isActive = (ds: string) => gameFilterDateFrom === ds && gameFilterDateTo === ds;
                   const toggleDay = (ds: string) => { if (isActive(ds)) { setGameFilterDateFrom(''); setGameFilterDateTo(''); } else { setGameFilterDateFrom(ds); setGameFilterDateTo(ds); } setListPage(0); };
-                  const presets = [yesterdayStr, todayStr, tomorrowStr];
+                  const presets = [todayStr, tomorrowStr];
                   const selectedSingle = gameFilterDateFrom && gameFilterDateFrom === gameFilterDateTo ? gameFilterDateFrom : '';
                   const customSelected = Boolean(selectedSingle) && !presets.includes(selectedSingle);
                   const fmtSel = (ds: string) => new Date(ds + 'T00:00:00').toLocaleDateString(isDE ? 'de-CH' : 'en-GB', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -7541,7 +7612,26 @@ export default function App() {
                         <button onClick={() => shiftDay(-1)} className="h-8 w-8 shrink-0 flex items-center justify-center border border-stone-300 rounded hover:bg-stone-50 text-stone-500" title={isDE ? 'Vorheriger Tag' : 'Previous day'}>
                           <ChevronLeft size={16} />
                         </button>
-                        <button onClick={() => toggleDay(yesterdayStr)} className={chipCls(isActive(yesterdayStr))}>{isDE ? 'Gestern' : 'Yesterday'}</button>
+                        {/* List or calendar, where "Gestern" used to be — the
+                            ‹ button still reaches yesterday in one tap. */}
+                        <div className="h-8 shrink-0 flex items-center rounded border border-stone-300 p-0.5">
+                          <button
+                            onClick={() => setGameViewMode('list')}
+                            aria-pressed={gameViewMode === 'list'}
+                            className={cn('h-full px-2 flex items-center rounded-sm transition-colors', gameViewMode === 'list' ? 'bg-slate-900 text-white' : 'text-stone-400 hover:text-stone-600')}
+                            title={isDE ? 'Liste' : 'List'}
+                          >
+                            <List size={16} />
+                          </button>
+                          <button
+                            onClick={() => setGameViewMode('calendar')}
+                            aria-pressed={gameViewMode === 'calendar'}
+                            className={cn('h-full px-2 flex items-center rounded-sm transition-colors', gameViewMode === 'calendar' ? 'bg-slate-900 text-white' : 'text-stone-400 hover:text-stone-600')}
+                            title={isDE ? 'Kalender' : 'Calendar'}
+                          >
+                            <CalendarDays size={16} />
+                          </button>
+                        </div>
                         <button onClick={() => toggleDay(todayStr)} className={chipCls(isActive(todayStr))}>{isDE ? 'Heute' : 'Today'}</button>
                         <button onClick={() => toggleDay(tomorrowStr)} className={chipCls(isActive(tomorrowStr))}>{isDE ? 'Morgen' : 'Tomorrow'}</button>
                         <button onClick={() => shiftDay(1)} className="h-8 w-8 shrink-0 flex items-center justify-center border border-stone-300 rounded hover:bg-stone-50 text-stone-500" title={isDE ? 'Nächster Tag' : 'Next day'}>
@@ -7570,7 +7660,9 @@ export default function App() {
                     {/* A toggle for a marking no game in the list carries is a
                         control that can only ever empty the list, so it is not
                         offered — unless it is the one currently switched on,
-                        which must stay reachable to be switched off again. */}
+                        which must stay reachable to be switched off again.
+                        Switches as one block of equal halves on a phone. */}
+                    <div className="w-full grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                     <FilterToggle
                       on={gameFilterNeedsObs}
                       onToggle={() => setGameFilterNeedsObs(!gameFilterNeedsObs)}
@@ -7615,6 +7707,7 @@ export default function App() {
                         label={formData.lang === 'DE' ? 'RC zugewiesen' : 'RC assigned'}
                       />
                     )}
+                    </div>
                     {/* Twice the growth of its neighbours: these options are
                         full names, while Level, Funktion and Liga hold codes a
                         few characters long. */}
@@ -7631,7 +7724,7 @@ export default function App() {
                         placeholder={formData.lang === 'DE' ? 'Alle Coachees' : 'All coachees'}
                       />
                     </div>
-                    <div className="flex-1 min-w-[130px] max-w-[220px]">
+                    <div className="flex-1 min-w-[130px] sm:max-w-[220px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
                         {formData.lang === 'DE' ? 'Level' : 'Level'}
                       </label>
@@ -7643,7 +7736,7 @@ export default function App() {
                         placeholder={formData.lang === 'DE' ? 'Alle Level' : 'All levels'}
                       />
                     </div>
-                    <div className="flex-1 min-w-[140px] max-w-[220px]">
+                    <div className="flex-1 min-w-[140px] sm:max-w-[220px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
                         {formData.lang === 'DE' ? 'SR-Börse' : 'SR-Börse'}
                       </label>
@@ -7660,7 +7753,7 @@ export default function App() {
                           : { red: 'Red · coachee at risk', amber: 'Amber · 1 of 2', blue: 'Blue · own slot', marked: 'Anyone in the Börse' })[v] ?? v}
                       />
                     </div>
-                    <div className="flex-1 min-w-[100px] max-w-[160px]">
+                    <div className="flex-1 min-w-[100px] sm:max-w-[160px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
                         {formData.lang === 'DE' ? 'Funktion' : 'Function'}
                       </label>
@@ -7674,7 +7767,7 @@ export default function App() {
                     </div>
                     {/* Capped: "1L ♀ C" needs nothing like the width it was
                         taking from the Coachee box beside it. */}
-                    <div className="flex-1 min-w-[120px] max-w-[170px]">
+                    <div className="flex-1 min-w-[120px] sm:max-w-[170px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
                         {formData.lang === 'DE' ? 'Liga' : 'League'}
                       </label>
@@ -7996,34 +8089,20 @@ export default function App() {
             {/* Games: view toggle */}
             {listTab === 'games' && (
               <>
-                <div className="flex items-center gap-1 mb-3">
-                  <button
-                    onClick={() => setGameViewMode('list')}
-                    className={cn(
-                      "p-1.5 rounded transition-colors",
-                      gameViewMode === 'list' ? "bg-slate-900 text-white" : "text-stone-400 hover:text-stone-600"
+                  {(plannedObsByCoachee.size > 0 || !gameFilterHidePlanned || filterAvailability.starred || gameFilterStarred || filterAvailability.focus || showAllLevels) && (
+                  <div className="mb-3 flex items-stretch gap-1.5 sm:justify-end">
+                    {(plannedObsByCoachee.size > 0 || !gameFilterHidePlanned) && (
+                      <QuickToggle
+                        on={gameFilterHidePlanned}
+                        onToggle={() => { setGameFilterHidePlanned(!gameFilterHidePlanned); setListPage(0); }}
+                        tone="sky"
+                        icon={<CalendarCheck size={14} />}
+                        label={formData.lang === 'DE' ? 'Ohne Geplante' : 'Hide planned'}
+                        title={formData.lang === 'DE'
+                          ? 'Spiele von Coachees ausblenden, für die schon eine Beobachtung geplant ist (Standard). Vorgemerkte Spiele bleiben. Antippen, um sie zu zeigen.'
+                          : 'Hide games of coachees who already have an observation booked (default). Flagged games stay. Tap to show them.'}
+                      />
                     )}
-                    title={formData.lang === 'DE' ? 'Liste' : 'List'}
-                  >
-                    <List size={18} />
-                  </button>
-                  <button
-                    onClick={() => setGameViewMode('calendar')}
-                    className={cn(
-                      "p-1.5 rounded transition-colors",
-                      gameViewMode === 'calendar' ? "bg-slate-900 text-white" : "text-stone-400 hover:text-stone-600"
-                    )}
-                    title={formData.lang === 'DE' ? 'Kalender' : 'Calendar'}
-                  >
-                    <CalendarDays size={18} />
-                  </button>
-                  {/* A switch nothing in the list answers to can only ever
-                      empty it, so it is not offered: no upcoming game carries a
-                      star, or the Niveau rule prunes nothing, and the pill goes
-                      away. The one currently ON always stays — it has to be
-                      reachable to be switched off again. Same rule the filter
-                      panel's toggles already follow. */}
-                  <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
                     {(filterAvailability.starred || gameFilterStarred) && (
                       <QuickToggle
                         on={gameFilterStarred}
@@ -8051,7 +8130,7 @@ export default function App() {
                       />
                     )}
                   </div>
-                </div>
+                  )}
 
                 {/* Games list view */}
                 {gameViewMode === 'list' && (<>

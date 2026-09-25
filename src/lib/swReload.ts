@@ -15,7 +15,10 @@ export type SwReloadDecision =
   /** Too young to be stale: try again once the page has been up a minute. */
   | 'too-soon'
   /** This looks like a loop. Keep the build we have and say so. */
-  | 'looping';
+  | 'looping'
+  /** The app is on screen: take the new build the moment it is not — when
+   *  the coach switches app or locks the phone — never in front of them. */
+  | 'when-hidden';
 
 export const SW_RELOAD_STATE_KEY = 'svrz_sw_reloads';
 /** A page that has just started has nothing stale to escape. */
@@ -41,8 +44,18 @@ export function noteSwReload(raw: string | null, now: number): string {
   return JSON.stringify({ n: recentSwReloads(raw, now) + 1, at: now });
 }
 
-export function decideSwReload(input: { uptimeMs: number; reloadsSoFar: number }): SwReloadDecision {
+/**
+ * A reload in front of the coach reads as a crash: the list they were
+ * scrolling, the game they were opening, gone and redrawn — and with several
+ * deploys in a day it happened several times a day (25.09.2026, "the app
+ * crashes so many times"). So a visible page never reloads for a new build;
+ * it waits until it is hidden and reloads there, unseen, and the coach comes
+ * back to the new build. Meanwhile the old build keeps working, and a chunk it
+ * can no longer fetch is StaleBuildNotice's to explain, not a crash.
+ */
+export function decideSwReload(input: { uptimeMs: number; reloadsSoFar: number; visible?: boolean }): SwReloadDecision {
   if (input.reloadsSoFar >= SW_RELOAD_MAX_IN_A_ROW) return 'looping';
+  if (input.visible) return 'when-hidden';
   if (input.uptimeMs < SW_RELOAD_MIN_UPTIME_MS) return 'too-soon';
   return 'reload';
 }

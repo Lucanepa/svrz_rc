@@ -123,11 +123,28 @@ if ('serviceWorker' in navigator) {
   let pendingReload = false;
   let lastSuppressLog = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let waitingForHidden = false;
   const reloadIfSafe = async () => {
     if (refreshing) return;
     const uptimeMs = performance.now();
     const reloads = swReloadsSoFar();
-    const decision = decideSwReload({ uptimeMs, reloadsSoFar: reloads });
+    const decision = decideSwReload({ uptimeMs, reloadsSoFar: reloads, visible: document.visibilityState === 'visible' });
+    if (decision === 'when-hidden') {
+      // On screen: never reload in front of the coach. The moment the page is
+      // hidden (another app, the lock screen, a closed tab), ask again.
+      if (!waitingForHidden) {
+        waitingForHidden = true;
+        clientLog.info('sw.reload.deferred', 'new build waiting until the app is in the background');
+        const onHidden = () => {
+          if (document.visibilityState !== 'hidden') return;
+          document.removeEventListener('visibilitychange', onHidden);
+          waitingForHidden = false;
+          void reloadIfSafe();
+        };
+        document.addEventListener('visibilitychange', onHidden);
+      }
+      return;
+    }
     if (decision === 'too-soon') {
       // Deferred, not dropped. The old code returned here and nothing brought
       // the event back: the worker had already taken control, so the page ran

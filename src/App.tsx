@@ -1221,6 +1221,13 @@ export default function App() {
   const [listFilterGroups, setListFilterGroups] = useState<string[]>([]);
   const [listFilterNeedsObs, setListFilterNeedsObs] = useState(true);
   const [listFilterShowInactive, setListFilterShowInactive] = useState(false);
+  // Coachees whose next visit is already booked drop off the list by default:
+  // the list is for deciding whom to see next, and they are taken care of.
+  // Remembered on the device: a coach who switches it off once keeps it off.
+  const [listFilterHidePlanned, setListFilterHidePlanned] = useState<boolean>(() => {
+    try { return localStorage.getItem('svrz_hide_planned') !== '0'; } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem('svrz_hide_planned', listFilterHidePlanned ? '1' : '0'); } catch { /* ignore */ } }, [listFilterHidePlanned]);
   // Coachees who have an upcoming game flagged for observation. The games tab's
   // star, asked of the person rather than of the fixture.
   const [coacheeFilterStarred, setCoacheeFilterStarred] = useState(false);
@@ -5498,6 +5505,14 @@ export default function App() {
     return map;
   }, [eligibleGames, roster, inSeasonOrManual]);
 
+  // The list as shown: the filters above, then — by default — without the
+  // coachees who already have an observation booked. Applied here rather than
+  // in filteredCoachees because the bookings are only known from this point.
+  const listedCoachees = useMemo(
+    () => (listFilterHidePlanned ? filteredCoachees.filter((c) => !plannedObsByCoachee.has(c.id)) : filteredCoachees),
+    [filteredCoachees, plannedObsByCoachee, listFilterHidePlanned],
+  );
+
   const filteredGames = useMemo(() => {
     const gameTime = (d: string) => {
       const t = new Date(d).getTime();
@@ -5629,7 +5644,7 @@ export default function App() {
   // control to get back from it. Clamping here covers every filter control at
   // once, including the ones that forget to reset the page.
   const clampPage = (total: number) => Math.min(listPage, Math.max(0, Math.ceil(total / LIST_PAGE_SIZE) - 1));
-  const coacheesPage = clampPage(filteredCoachees.length);
+  const coacheesPage = clampPage(listedCoachees.length);
 
   /** The Games LIST, which is `filteredGames` less the played ones unless the
    *  coach asked for them. Kept out of `filteredGames` itself because the
@@ -7333,10 +7348,13 @@ export default function App() {
                       listFilterGroups.length > 0,
                       !listFilterNeedsObs,
                       listFilterShowInactive,
+                      !listFilterHidePlanned,
                     ].filter(Boolean).length;
                     return (
                       <button
                         onClick={() => setCoacheeFiltersOpen(!coacheeFiltersOpen)}
+                        // The word is hidden on a phone; the button keeps its name.
+                        aria-label={formData.lang === 'DE' ? 'Filter' : 'Filters'}
                         className={cn(
                           "h-9 flex items-center gap-1.5 px-2.5 text-sm border rounded-md transition-colors cursor-pointer",
                           coacheeFiltersOpen ? "bg-red-50 border-red-300 text-red-700" : "border-stone-300 text-stone-600 hover:bg-stone-50"
@@ -7369,6 +7387,12 @@ export default function App() {
                       onToggle={() => { setListFilterShowInactive(!listFilterShowInactive); setListPage(0); }}
                       dotClass="bg-red-600"
                       label={formData.lang === 'DE' ? 'Inaktive zeigen' : 'Show inactive'}
+                    />
+                    <FilterToggle
+                      on={listFilterHidePlanned}
+                      onToggle={() => { setListFilterHidePlanned(!listFilterHidePlanned); setListPage(0); }}
+                      dotClass="bg-sky-500"
+                      label={formData.lang === 'DE' ? 'Geplante ausblenden' : 'Hide planned'}
                     />
                     <div className="flex-1 min-w-[130px] max-w-[220px]">
                       <label className="block text-xs font-medium text-stone-500 mb-0.5">
@@ -7694,7 +7718,7 @@ export default function App() {
                 {coachees.length === 0 && (booting || loadingCoachees) ? (
                   // Still loading — a skeleton, never the "nothing found" state.
                   <ListLoading label={t.loading} first={booting} rows={8} />
-                ) : filteredCoachees.length === 0 ? (
+                ) : listedCoachees.length === 0 ? (
                   <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><Users size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noCoachees}</p></div>
                 ) : (
                   <>
@@ -7703,7 +7727,7 @@ export default function App() {
                       <span className="cursor-pointer select-none" onClick={() => toggleListSort('status')}>Status{listSortBy === 'status' ? (listSortAsc ? ' ▲' : ' ▼') : ''}</span>
                     </div>
                     <div className="divide-y divide-stone-200">
-                      {filteredCoachees.slice(coacheesPage * LIST_PAGE_SIZE, (coacheesPage + 1) * LIST_PAGE_SIZE).map((coachee) => {
+                      {listedCoachees.slice(coacheesPage * LIST_PAGE_SIZE, (coacheesPage + 1) * LIST_PAGE_SIZE).map((coachee) => {
                         const plannedObs = plannedObsByCoachee.get(coachee.id);
                         const balls = coacheeBalls(coachee, plannedObs);
                         const groupStr = groupLabel(coachee.groups, formData.lang);
@@ -7762,7 +7786,10 @@ export default function App() {
                                   <div className="mt-1 flex items-start gap-1.5 text-xs text-sky-700">
                                     <CalendarDays size={13} className="mt-px shrink-0 text-sky-500" />
                                     <span className="min-w-0">
-                                      {shortDate(plannedObs.game.date)} · {plannedObs.game.homeTeam} vs {plannedObs.game.awayTeam}
+                                      {/* No teams: they wrapped the line into three
+                                          and the list read as a wall. Date, league,
+                                          role and coach say which visit it is. */}
+                                      {shortDate(plannedObs.game.date)}
                                       {plannedObs.game.league ? ` · ${plannedObs.game.league}` : ''} · {plannedObs.role}
                                       {plannedObs.rc ? ` · RC ${plannedObs.rc}` : ''}
                                     </span>
@@ -7959,13 +7986,13 @@ export default function App() {
                     </div>
                   </>
                 )}
-                {filteredCoachees.length > LIST_PAGE_SIZE && (
+                {listedCoachees.length > LIST_PAGE_SIZE && (
                   <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
-                    <span>{filteredCoachees.length} {formData.lang === 'DE' ? 'Einträge' : 'entries'}</span>
+                    <span>{listedCoachees.length} {formData.lang === 'DE' ? 'Einträge' : 'entries'}</span>
                     <div className="flex items-center gap-2">
                       <button disabled={coacheesPage === 0} onClick={() => setListPage(coacheesPage - 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&laquo;</button>
-                      <span>{coacheesPage + 1} / {Math.ceil(filteredCoachees.length / LIST_PAGE_SIZE)}</span>
-                      <button disabled={(coacheesPage + 1) * LIST_PAGE_SIZE >= filteredCoachees.length} onClick={() => setListPage(coacheesPage + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
+                      <span>{coacheesPage + 1} / {Math.ceil(listedCoachees.length / LIST_PAGE_SIZE)}</span>
+                      <button disabled={(coacheesPage + 1) * LIST_PAGE_SIZE >= listedCoachees.length} onClick={() => setListPage(coacheesPage + 1)} className="px-2 py-1 border rounded disabled:opacity-30 hover:bg-stone-50">&raquo;</button>
                     </div>
                   </div>
                 )}

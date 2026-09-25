@@ -63,4 +63,13 @@ test.describe('the service-worker reload guard', () => {
     expect(recentSwReloads(second, later)).toBe(0);
     expect(decideSwReload({ uptimeMs: 10 * MINUTE, reloadsSoFar: recentSwReloads(second, later) })).toBe('reload');
   });
+  test('never reloads a page that is on screen — it waits until it is hidden', () => {
+    // A reload in front of the coach reads as a crash (25.09.2026).
+    expect(decideSwReload({ uptimeMs: 10 * MINUTE, reloadsSoFar: 0, visible: true })).toBe('when-hidden');
+    expect(decideSwReload({ uptimeMs: 0, reloadsSoFar: 0, visible: true })).toBe('when-hidden');
+    // Hidden, it takes the build at once (nobody is looking)...
+    expect(decideSwReload({ uptimeMs: 10 * MINUTE, reloadsSoFar: 0, visible: false })).toBe('reload');
+    // ...and the loop guard still outranks everything.
+    expect(decideSwReload({ uptimeMs: 10 * MINUTE, reloadsSoFar: 99, visible: true })).toBe('looping');
+  });
 });

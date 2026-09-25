@@ -229,6 +229,8 @@ export const MY_RC_GAME = {
 const EMAIL_TEMPLATE = { subject: 's', heading: 'h', intro: 'i', outro: 'o' };
 
 export type StubOptions = {
+  /** Leave the Coachees tab's "Hide planned" at its real default (on). */
+  keepHidePlannedDefault?: boolean;
   /** Name on the session; defaults to the coach who holds GAME. */
   signedInAs?: string;
   /** Give the session admin rights (opens the admin console). */
@@ -246,6 +248,13 @@ export type StubOptions = {
  */
 export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promise<void> {
   const name = opts.signedInAs ?? RC.name;
+  // The Coachees tab hides coachees with a booked observation by default; the
+  // specs were written against the full list, so they start with it off (only
+  // when nothing is stored yet, so a toggle a spec makes survives a reload).
+  // coachee-hide-planned.spec.ts is the one that pins the default.
+  if (!opts.keepHidePlannedDefault) {
+    await page.addInitScript(() => { try { if (localStorage.getItem('svrz_hide_planned') === null) localStorage.setItem('svrz_hide_planned', '0'); } catch { /* ignore */ } });
+  }
   // Catch-all first, so an endpoint nobody named still answers something valid.
   await page.route('**/api/**', (r) => r.fulfill({ json: [] }));
   // The live stream, answered as a stream. Left to the catch-all it came back as

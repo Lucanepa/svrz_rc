@@ -20,6 +20,7 @@ import { ChevronDown, ChevronUp, ExternalLink, Loader2, Minus, Plus, Search, X }
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import { fetchDocBytes } from '../lib/docCache';
+import { foldText } from '../lib/docText';
 import type { Lang } from '../lib/prefs';
 import { clientLog } from '../lib/logger';
 
@@ -73,22 +74,9 @@ const STR = {
   },
 } satisfies Record<Lang, Record<string, unknown>>;
 
-/**
- * Lower-cased and stripped of accents, one character in one character out.
- *
- * Length has to survive folding: a hit is a pair of offsets into this string,
- * and the highlight is drawn from the original text at the same offsets. The
- * usual `normalize('NFD').replace(...)` shortens "ü" to "u" plus a mark and
- * every offset after it drifts.
- */
-function fold(s: string): string {
-  let out = '';
-  for (const ch of s) {
-    const base = ch.normalize('NFD')[0].toLowerCase();
-    out += base.length === 1 ? base : ch.toLowerCase()[0] || ch;
-  }
-  return out;
-}
+// Folding (lower case, no accents, same length) is shared with the
+// search across documents on Home: lib/docText.ts.
+const fold = foldText;
 
 export type PdfReaderProps = {
   url: string;
@@ -96,9 +84,13 @@ export type PdfReaderProps = {
   originalHref: string;
   lang: Lang;
   onClose: () => void;
+  /** Opened from a hit of the search across documents: the term goes into the
+   *  reader's own search, and the reader lands on the hit's page. */
+  initialQuery?: string;
+  initialPage?: number;
 };
 
-export default function PdfReader({ url, title, originalHref, lang, onClose }: PdfReaderProps) {
+export default function PdfReader({ url, title, originalHref, lang, onClose, initialQuery, initialPage }: PdfReaderProps) {
   const t = STR[lang];
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -115,7 +107,9 @@ export default function PdfReader({ url, title, originalHref, lang, onClose }: P
   const [fitWidth, setFitWidth] = useState(true);
   const [current, setCurrent] = useState(1);
 
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery ?? '');
+  // The page to land on, once — consumed by the first search that finds it.
+  const landOnRef = useRef(initialPage ?? 0);
   const [hits, setHits] = useState<Hit[]>([]);
   const [hitIndex, setHitIndex] = useState(0);
   const [scanned, setScanned] = useState(0);
@@ -159,6 +153,20 @@ export default function PdfReader({ url, title, originalHref, lang, onClose }: P
   }, [url]);
 
   useEffect(() => () => { void taskRef.current?.destroy(); }, []);
+
+  // Opened on a hit: go to its page as soon as the pages are laid out, rather
+  // than after the search has read the whole document.
+  useEffect(() => {
+    if (!doc || !base || !initialPage) return;
+    const frame = window.requestAnimationFrame(() => {
+      const el = document.getElementById(`pdf-page-${initialPage}`);
+      const box = scrollRef.current;
+      if (el && box) box.scrollTo({ top: el.offsetTop - 12 });
+    });
+    return () => window.cancelAnimationFrame(frame);
+    // Once per document: the page is where the reader starts, not a leash.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, base]);
 
   // Fit the page to the window, and keep fitting it while the window changes —
   // until someone zooms, which is a decision the reader should not undo.
@@ -235,8 +243,18 @@ export default function PdfReader({ url, title, originalHref, lang, onClose }: P
           }
         }
         if (cancelled) return;
-        setHits(found.sort((a, b) => a.page - b.page || a.start - b.start));
-        setHitIndex(0);
+        const sorted = found.sort((a, b) => a.page - b.page || a.start - b.start);
+        setHits(sorted);
+        // Opened on a hit from Home: start at that page's first match.
+        const landOn = landOnRef.current;
+        landOnRef.current = 0;
+        const at = landOn ? sorted.findIndex((h) => h.page >= landOn) : -1;
+        setHitIndex(Math.max(0, at));
+        if (landOn) {
+          const el = document.getElementById(`pdf-page-${at >= 0 ? sorted[at].page : landOn}`);
+          const box = scrollRef.current;
+          if (el && box) box.scrollTo({ top: el.offsetTop - 12 });
+        }
         setSearching(false);
       })();
     }, 250);

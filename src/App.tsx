@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy, type MutableRefObject } from 'react';
-import { Maximize2, Minimize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip, Menu, CalendarCheck } from 'lucide-react';
+import { Maximize2, Minimize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip, Menu, CalendarCheck, Search } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 // About a megabyte of renderer, fetched the first time a coach opens a
 // document and never for anyone who does not.
@@ -104,6 +104,8 @@ import { APP_VERSION, BUILD_INFO, VERSION_STAMP } from './lib/buildInfo';
 import { confirmDialog, toast } from './components/ui';
 import { takenAfterReminder } from './lib/reminder';
 import { runOfflineCheck, type OfflineReport } from './lib/offlineReady';
+import { useDocTextSearch, DOC_TEXT_MIN_QUERY, type DocTextSearch } from './lib/useDocTextSearch';
+import type { DocTextResult } from './lib/docText';
 import { clientLog } from './lib/logger';
 
 // Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
@@ -1039,6 +1041,70 @@ function DateRangeDropdown({ from, to, onChangeFrom, onChangeTo, lang }: {
   );
 }
 
+/** Hits inside the documents' text, under the title matches: each document
+ *  that contains the term, with the first few places as tappable lines that
+ *  open the reader on that page. Says while it is still reading, and how many
+ *  documents it could not look into because they are not on this device. */
+function DocTextResults({ lang, search, onOpen, onSaveAll }: {
+  lang: 'DE' | 'EN';
+  search: DocTextSearch;
+  onOpen: (doc: UsefulDoc, page: number) => void;
+  onSaveAll?: () => void;
+  key?: string;
+}) {
+  const de = lang === 'DE';
+  const { results, searching, progress } = search;
+  const unsaved = progress?.unsaved.length ?? 0;
+  return (
+    <div className="border-t border-stone-100 pt-2 pb-1" data-testid="doc-text-results">
+      <p className="flex items-center gap-2 py-1 text-sm font-semibold text-stone-700">
+        <Search size={14} className="text-stone-400" />
+        <span className="flex-1">{de ? 'Im Text gefunden' : 'Found inside documents'}</span>
+        {searching && (
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-normal text-stone-400">
+            <Loader2 size={12} className="animate-spin" />
+            {progress ? `${progress.done}/${progress.total}` : ''}
+          </span>
+        )}
+      </p>
+      {results.length === 0 && !searching && (
+        <p className="py-1 text-sm text-stone-400">{de ? 'In keinem Dokument gefunden.' : 'Not found in any document.'}</p>
+      )}
+      <div className="space-y-2">
+        {results.map((r: DocTextResult) => (
+          <div key={r.doc.id} className="rounded-xl border border-stone-200 p-2">
+            <button type="button" onClick={() => onOpen(r.doc, r.hits[0]?.page ?? 1)} className="w-full flex items-center gap-2 px-1 text-left">
+              <span className="min-w-0 flex-1 text-[13px] font-medium text-stone-800">{r.doc[lang].title}</span>
+              <span className="shrink-0 text-[11px] font-semibold text-stone-400">{r.total} {de ? (r.total === 1 ? 'Treffer' : 'Treffer') : (r.total === 1 ? 'hit' : 'hits')}</span>
+            </button>
+            {r.hits.map((h, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => onOpen(r.doc, h.page)}
+                className="mt-1 w-full min-h-9 flex items-start gap-2 rounded-lg px-1 py-1 text-left text-xs text-stone-600 hover:bg-red-50/60"
+              >
+                <span className="shrink-0 w-10 font-semibold text-stone-400">{de ? 'S.' : 'p.'} {h.page}</span>
+                <span className="min-w-0 flex-1">{h.before}<mark className="rounded-sm bg-amber-200/70 px-0.5 text-stone-900">{h.match}</mark>{h.after}</span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+      {unsaved > 0 && !searching && (
+        <p className="mt-2 text-[11px] text-stone-500">
+          {de
+            ? `${unsaved} ${unsaved === 1 ? 'Dokument ist' : 'Dokumente sind'} nicht auf diesem Gerät und ${unsaved === 1 ? 'wurde' : 'wurden'} nur im Titel durchsucht.`
+            : `${unsaved} ${unsaved === 1 ? 'document is' : 'documents are'} not on this device and ${unsaved === 1 ? 'was' : 'were'} searched by title only.`}
+          {onSaveAll && (
+            <> <button type="button" onClick={onSaveAll} className="font-medium text-red-700 hover:underline">{de ? 'Alle offline speichern' : 'Save all offline'}</button></>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // A filter toggle. An active filter changes what the whole list shows, so it
 // says so on the button and not only in the little switch inside it — the
 // switch alone was a 20px colour cue on a bar of six identical white pills.
@@ -1738,7 +1804,16 @@ export default function App() {
   });
   useEffect(() => { try { localStorage.setItem('svrz_docs_open', JSON.stringify(docsOpen)); } catch {} }, [docsOpen]);
   const [docsQuery, setDocsQuery] = useState('');
+  // The same search in the form's "Dokumente beilegen" list.
+  const [attachQuery, setAttachQuery] = useState('');
+  // Both look inside the PDFs this device holds, not only at the titles.
+
+  // A reader opened from a hit lands on its page with the term searched.
+  const [readerJump, setReaderJump] = useState<{ query: string; page: number } | null>(null);
   const [storingDocs, setStoringDocs] = useState(0);
+  // Re-run when more PDFs land on the device: they can now be searched inside.
+  const docsText = useDocTextSearch(docsQuery, USEFUL_DOCS, docsOffline.stored);
+  const attachText = useDocTextSearch(attachQuery, ATTACHABLE_DOCS, docsOffline.stored);
 
   // The small SVRZ letters are kept once the app is idle, so the coach who
   // opens one in a gym with no signal still gets it. The two rulebooks — 12.5 MB
@@ -8465,10 +8540,19 @@ export default function App() {
               const groups = (Object.keys(USEFUL_DOC_GROUPS) as (keyof typeof USEFUL_DOC_GROUPS)[])
                 .map((group) => ({ group, docs: USEFUL_DOCS.filter((doc) => doc.group === group && matches(doc)) }))
                 .filter((g) => g.docs.length > 0);
-              if (groups.length === 0) {
+              const inText = q.length >= DOC_TEXT_MIN_QUERY ? (
+                <DocTextResults
+                  key="in-text"
+                  lang={formData.lang}
+                  search={docsText}
+                  onOpen={(doc, page) => { setReaderJump({ query: docsQuery.trim(), page }); setReaderDoc(doc); }}
+                  onSaveAll={docsOffline.stored < docsOffline.total && storingDocs === 0 ? () => void saveDocsOffline() : undefined}
+                />
+              ) : null;
+              if (groups.length === 0 && !inText) {
                 return <p className="py-3 text-sm text-stone-400">{formData.lang === 'DE' ? 'Nichts gefunden.' : 'Nothing found.'}</p>;
               }
-              return groups.map(({ group, docs }) => {
+              return [...groups.map(({ group, docs }) => {
                 // A search opens every section with a hit; the sections' own
                 // open state comes back when the box is cleared.
                 const open = !!q || docsOpen.includes(group);
@@ -8524,7 +8608,7 @@ export default function App() {
                     // rulebooks) falls back to the link it always was.
                     if (doc.kind === 'pdf' && docSourceUrl(doc)) {
                       return (
-                        <button key={doc.id} type="button" onClick={() => setReaderDoc(doc)} className={cls}>
+                        <button key={doc.id} type="button" onClick={() => { setReaderJump(null); setReaderDoc(doc); }} className={cls}>
                           {body}
                         </button>
                       );
@@ -8555,7 +8639,7 @@ export default function App() {
                 )}
               </div>
                 );
-              });
+              }), inText];
             })()}
           </div>
         </div>
@@ -9537,12 +9621,20 @@ export default function App() {
           const next = on ? [...current, id] : current.filter((x) => x !== id);
           return { ...prev, attachedDocs: normalizeAttachedDocs(next) };
         });
+        // The search, while the list is open: titles and notes in both
+        // languages, and the text inside every PDF this device holds.
+        const aq = expanded ? attachQuery.trim().toLocaleLowerCase('de') : '';
+        const textHit = new Map(attachText.results.map((r) => [r.doc.id, r]));
+        const titleMatch = (doc: UsefulDoc) => [doc.DE.title, doc.DE.note, doc.EN.title, doc.EN.note]
+          .some((f) => (f || '').toLocaleLowerCase('de').includes(aq));
+        const shown = (doc: UsefulDoc) => (aq ? titleMatch(doc) || textHit.has(doc.id) : (expanded || chosen.includes(doc.id)));
         const groups = (Object.keys(USEFUL_DOC_GROUPS) as (keyof typeof USEFUL_DOC_GROUPS)[])
           .map((group) => ({
             group,
-            docs: ATTACHABLE_DOCS.filter((doc) => doc.group === group && (expanded || chosen.includes(doc.id))),
+            docs: ATTACHABLE_DOCS.filter((doc) => doc.group === group && shown(doc)),
           }))
           .filter((g) => g.docs.length > 0);
+        const unsavedCount = attachText.progress?.unsaved.length ?? 0;
         return (
           <div className={cn(sheetWidth, 'mx-auto mt-6 bg-white p-6 shadow-xl border border-stone-200 no-print')} data-testid="attach-docs">
             <h3 className="font-bold text-stone-800 mb-3 flex items-center gap-2">
@@ -9555,6 +9647,30 @@ export default function App() {
                   ? 'Die angekreuzten PDFs aus «Nützliche Infos & Dokumente» gehen als Anhang zusammen mit dem Bericht an den Schiedsrichter — etwa das Spielprotokoll, wenn es im Gespräch darum ging.'
                   : 'The ticked PDFs from “Useful info & documents” go to the referee as attachments alongside the report — the match protocol, say, when that is what the debrief was about.'}
               </p>
+            )}
+            {expanded && (
+              <div className="mb-3">
+                <input
+                  type="search"
+                  value={attachQuery}
+                  onChange={(e) => setAttachQuery(e.target.value)}
+                  placeholder={formData.lang === 'DE' ? 'Dokumente durchsuchen, auch im Text…' : 'Search documents, inside too…'}
+                  aria-label={formData.lang === 'DE' ? 'Beilagen durchsuchen' : 'Search enclosures'}
+                  className="h-10 w-full px-3 text-sm border border-stone-300 rounded-lg bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+                />
+                {aq && (attachText.searching || unsavedCount > 0) && (
+                  <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-stone-500">
+                    {attachText.searching ? (
+                      <><Loader2 size={12} className="animate-spin" /> {formData.lang === 'DE' ? 'Suche in den Dokumenten…' : 'Searching inside documents…'} {attachText.progress ? `${attachText.progress.done}/${attachText.progress.total}` : ''}</>
+                    ) : (formData.lang === 'DE'
+                      ? `${unsavedCount} ${unsavedCount === 1 ? 'Dokument ist' : 'Dokumente sind'} nicht auf diesem Gerät gespeichert und ${unsavedCount === 1 ? 'wurde' : 'wurden'} nur im Titel durchsucht.`
+                      : `${unsavedCount} ${unsavedCount === 1 ? 'document is' : 'documents are'} not saved on this device and ${unsavedCount === 1 ? 'was' : 'were'} searched by title only.`)}
+                  </p>
+                )}
+                {aq && groups.length === 0 && !attachText.searching && (
+                  <p className="mt-2 text-sm text-stone-400">{formData.lang === 'DE' ? 'Nichts gefunden.' : 'Nothing found.'}</p>
+                )}
+              </div>
             )}
             {groups.map(({ group, docs }) => (
               <div key={group} className="mt-3 first:mt-0">
@@ -9571,7 +9687,8 @@ export default function App() {
                     // widened the column past the phone and pushed the eye off
                     // the edge.
                     return (
-                      <div key={doc.id} className={cn('min-w-0 flex items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors', on ? 'border-red-300 bg-red-50/40' : 'border-stone-200', tooBig && 'opacity-50')}>
+                      <div key={doc.id} className={cn('min-w-0 rounded-lg border px-2.5 py-2 transition-colors', on ? 'border-red-300 bg-red-50/40' : 'border-stone-200', tooBig && 'opacity-50')}>
+                        <div className="flex items-center gap-2">
                         <label className="flex-1 min-w-0 flex items-center gap-2.5 cursor-pointer" title={tooBig ? (formData.lang === 'DE' ? `Zu gross: höchstens ${mb(ATTACH_BUDGET_BYTES)} pro E-Mail` : `Too large: at most ${mb(ATTACH_BUDGET_BYTES)} per e-mail`) : text.note}>
                           <input
                             type="checkbox"
@@ -9592,13 +9709,30 @@ export default function App() {
                         {docSourceUrl(doc) && (
                           <button
                             type="button"
-                            onClick={() => setReaderDoc(doc)}
+                            onClick={() => { setReaderJump(null); setReaderDoc(doc); }}
                             className="shrink-0 grid place-items-center h-7 w-7 rounded-md text-stone-400 hover:text-red-700 hover:bg-red-50"
                             aria-label={formData.lang === 'DE' ? `${text.title} ansehen` : `View ${text.title}`}
                           >
                             <Eye size={14} />
                           </button>
                         )}
+                        </div>
+                        {/* Where the term is inside, when that is why the
+                            document is listed: one line, tap to read there. */}
+                        {aq && textHit.get(doc.id)?.hits[0] && (() => {
+                          const r = textHit.get(doc.id)!;
+                          const h = r.hits[0];
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => { setReaderJump({ query: attachQuery.trim(), page: h.page }); setReaderDoc(doc); }}
+                              className="mt-1 w-full flex items-start gap-2 rounded-md px-1 py-0.5 text-left text-[11px] text-stone-500 hover:bg-red-50/60"
+                            >
+                              <span className="shrink-0 font-semibold text-stone-400">{formData.lang === 'DE' ? 'S.' : 'p.'} {h.page}</span>
+                              <span className="min-w-0 flex-1">{h.before}<mark className="rounded-sm bg-amber-200/70 px-0.5 text-stone-900">{h.match}</mark>{h.after}{r.total > 1 && <span className="text-stone-400"> (+{r.total - 1})</span>}</span>
+                            </button>
+                          );
+                        })()}
                       </div>
                     );
                   })}
@@ -9973,7 +10107,9 @@ export default function App() {
             title={readerDoc[formData.lang].title}
             originalHref={docLinkUrl(readerDoc)}
             lang={formData.lang}
-            onClose={() => setReaderDoc(null)}
+            onClose={() => { setReaderDoc(null); setReaderJump(null); }}
+            initialQuery={readerJump?.query}
+            initialPage={readerJump?.page}
           />
         </Suspense>
       )}

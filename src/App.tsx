@@ -1,5 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy, type MutableRefObject } from 'react';
-import { Maximize2, Minimize2, UnfoldHorizontal, FoldHorizontal, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip, Menu } from 'lucide-react';
+import { Maximize2, Minimize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip, Menu } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 // About a megabyte of renderer, fetched the first time a coach opens a
 // document and never for anyone who does not.
@@ -224,8 +224,6 @@ const UI_STRINGS = {
     downloadPdf: "PDF herunterladen",
     fullscreen: "Vollbild",
     fullscreenExit: "Vollbild verlassen",
-    widen: "Volle Breite",
-    widenExit: "Normale Breite",
     downloadEmptyForm: "Leeres Formular herunterladen",
     emptyFormChoose: "Formular wählen",
     emptyForm1SR: "1. SR",
@@ -409,8 +407,6 @@ const UI_STRINGS = {
     downloadPdf: "Download PDF",
     fullscreen: "Fullscreen",
     fullscreenExit: "Exit fullscreen",
-    widen: "Full width",
-    widenExit: "Normal width",
     downloadEmptyForm: "Download empty form",
     emptyFormChoose: "Choose form",
     emptyForm1SR: "1st Ref",
@@ -1691,19 +1687,11 @@ export default function App() {
   const toggleDocFull = () => {
     if (document.fullscreenElement) leaveBrowserFullscreen(); else enterBrowserFullscreen();
   };
-  const [formWide, setFormWide] = useState<boolean>(() => {
-    try { return localStorage.getItem('svrz_form_wide') === '1'; } catch { return false; }
-  });
-  const toggleFormWide = () => {
-    const next = !formWide;
-    setFormWide(next);
-    try { localStorage.setItem('svrz_form_wide', next ? '1' : '0'); } catch { /* private mode — this session only */ }
-  };
   /** The column every block of the form page is measured by — the toolbar, the
-   *  sheet, and the signature, Beilagen and send blocks under it. One name, so
-   *  they cannot drift apart, and only on the form: the games and calendar
-   *  views share this toolbar and have a width of their own. */
-  const sheetWidth = formWide && feedbackSubView === 'feedbackForm' ? 'max-w-none' : 'max-w-4xl';
+   *  sheet, and the signature, Beilagen and send blocks under it. The whole
+   *  tool uses the whole window (2026-09-25), so this is no longer a column
+   *  the coach toggles; one name still keeps those blocks from drifting apart. */
+  const sheetWidth = 'max-w-none';
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   /** The document open in the reader, or null. */
@@ -4978,11 +4966,17 @@ export default function App() {
   // The list screens carry the bottom nav; the form and the other sub-views keep their Back button.
   const bottomNav = feedbackSubView === 'coachees';
   // Whatever is scrolled into view (keyboard focus, scrollIntoView, a row
-  // opened near the foot of the page) stops above the bar, not under it.
+  // opened near the foot of the page) stops above the bar, not under it. From
+  // lg up the bar is a rail at the side and there is nothing to stop above.
   useEffect(() => {
     const root = document.documentElement;
-    root.style.scrollPaddingBottom = bottomNav ? 'calc(6rem + env(safe-area-inset-bottom, 0px))' : '';
-    return () => { root.style.scrollPaddingBottom = ''; };
+    const wide = window.matchMedia?.('(min-width: 64rem)');
+    const apply = () => {
+      root.style.scrollPaddingBottom = bottomNav && !wide?.matches ? 'calc(6rem + env(safe-area-inset-bottom, 0px))' : '';
+    };
+    apply();
+    wide?.addEventListener?.('change', apply);
+    return () => { wide?.removeEventListener?.('change', apply); root.style.scrollPaddingBottom = ''; };
   }, [bottomNav]);
   const padLauncher = outboxOwnerId !== 'admin' && outboxOwnerId !== 'anon' && !isDemoMode() && !homelessAdmin;
   const tpPad = PAD_STRINGS[formData.lang] || PAD_STRINGS.DE;
@@ -5856,20 +5850,22 @@ export default function App() {
   };
 
   return (
-    <div className={cn("min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0", padLauncher && "pb-24", bottomNav && (padLauncher ? "pb-44" : "pb-28"), bottomNav && "pt-3 sm:pt-6")}>
+    <div className={cn("min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 py-6 sm:py-8 px-4 print:bg-white print:p-0", padLauncher && "pb-24", bottomNav && (padLauncher ? "pb-44 lg:pb-24" : "pb-28 lg:pb-8"), bottomNav && "pt-3 sm:pt-6 lg:pl-[15rem]")}>
       {/* Bottom navigation for the list screens. Everything that used to sit
           between the title card and the greeting now lives here: the three
           tabs as a thumb-reach bar, and the language / admin / calendar /
           switch / log-out buttons plus Load draft behind Options. The root div
           pads the page while it shows, and the Notizblock launcher rides above
-          it. z-40 like the launcher; the Options sheet is an overlay (z-50). */}
+          it. z-40 like the launcher; the Options sheet is an overlay (z-50).
+          From lg up the same buttons stand in a rail down the left edge, as
+          in the admin console, and the page makes room for it instead. */}
       {bottomNav && (
         <nav
           aria-label={formData.lang === 'DE' ? 'Hauptnavigation' : 'Main navigation'}
-          className="no-print fixed inset-x-0 bottom-0 z-40 border-t border-stone-200 bg-white/95 backdrop-blur"
+          className="no-print fixed inset-x-0 bottom-0 z-40 border-t border-stone-200 bg-white/95 backdrop-blur lg:inset-x-auto lg:left-0 lg:top-0 lg:w-56 lg:border-t-0 lg:border-r"
           style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
         >
-          <div className={cn("mx-auto max-w-5xl grid gap-1.5 px-2 py-2", homelessAdmin ? "grid-cols-3" : "grid-cols-4")}>
+          <div className={cn("mx-auto max-w-5xl grid gap-1.5 px-2 py-2 lg:flex lg:flex-col lg:gap-1 lg:px-3 lg:pt-8", homelessAdmin ? "grid-cols-3" : "grid-cols-4")}>
             {/* Hidden rather than left to bounce off the redirect: a tab that
                 answers a click by highlighting a different one is worse than
                 no tab. See homelessAdmin. */}
@@ -5877,7 +5873,7 @@ export default function App() {
               <button
                 onClick={() => setListTab('home')}
                 className={cn(
-                  "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1",
+                  "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1 lg:h-10 lg:flex-row lg:justify-start lg:gap-2.5 lg:px-3 lg:text-sm lg:text-left",
                   listTab === 'home'
                     ? "bg-slate-900 text-white"
                     : "text-stone-600 hover:bg-stone-100"
@@ -5890,7 +5886,7 @@ export default function App() {
             <button
               onClick={() => { setListTab('coachees'); setListSearch(''); setListPage(0); }}
               className={cn(
-                "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1",
+                "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1 lg:h-10 lg:flex-row lg:justify-start lg:gap-2.5 lg:px-3 lg:text-sm lg:text-left",
                 listTab === 'coachees'
                   ? "bg-slate-900 text-white"
                   : "text-stone-600 hover:bg-stone-100"
@@ -5902,7 +5898,7 @@ export default function App() {
             <button
               onClick={() => { setListTab('games'); setListSearch(''); setListPage(0); }}
               className={cn(
-                "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1",
+                "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1 lg:h-10 lg:flex-row lg:justify-start lg:gap-2.5 lg:px-3 lg:text-sm lg:text-left",
                 listTab === 'games'
                   ? "bg-slate-900 text-white"
                   : "text-stone-600 hover:bg-stone-100"
@@ -5916,7 +5912,7 @@ export default function App() {
               aria-haspopup="dialog"
               aria-expanded={optionsOpen}
               className={cn(
-                "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1",
+                "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1 lg:h-10 lg:flex-row lg:justify-start lg:gap-2.5 lg:px-3 lg:text-sm lg:text-left",
                 optionsOpen ? "bg-stone-200 text-stone-900" : "text-stone-600 hover:bg-stone-100"
               )}
             >
@@ -5927,7 +5923,7 @@ export default function App() {
         </nav>
       )}
       {bottomNav && optionsOpen && (
-        <div className="no-print fixed inset-0 z-50 flex items-end justify-center" role="dialog" aria-modal="true" aria-label={formData.lang === 'DE' ? 'Optionen' : 'Options'}>
+        <div className="no-print fixed inset-0 z-50 flex items-end justify-center lg:items-start lg:justify-start lg:pl-[14.5rem] lg:pt-8" role="dialog" aria-modal="true" aria-label={formData.lang === 'DE' ? 'Optionen' : 'Options'}>
           <button
             type="button"
             tabIndex={-1}
@@ -5936,7 +5932,7 @@ export default function App() {
             onClick={() => setOptionsOpen(false)}
           />
           <div
-            className="relative w-full max-w-md rounded-t-2xl border border-stone-200 bg-white p-2 shadow-xl max-h-[80vh] overflow-y-auto"
+            className="relative w-full max-w-md rounded-t-2xl lg:rounded-2xl border border-stone-200 bg-white p-2 shadow-xl max-h-[80vh] overflow-y-auto"
             style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom, 0px))' }}
           >
             <div className="flex items-center justify-between pl-4 pt-1">
@@ -6079,10 +6075,11 @@ export default function App() {
           aria-label={tpPad.padLaunch}
           title={tpPad.padLaunch}
           data-testid="pad-launcher"
-          className="no-print fixed z-40 right-4 sm:right-6 h-14 w-14 sm:h-12 sm:w-auto sm:px-4 rounded-full bg-slate-900 text-white shadow-lg hover:bg-slate-800 active:scale-95 transition flex items-center justify-center gap-2"
-          style={{ bottom: bottomNav
-            ? 'calc(5.5rem + env(safe-area-inset-bottom, 0px))'
-            : 'calc(1rem + env(safe-area-inset-bottom, 0px))' }}
+          className={cn("no-print fixed z-40 right-4 sm:right-6 h-14 w-14 sm:h-12 sm:w-auto sm:px-4 rounded-full bg-slate-900 text-white shadow-lg hover:bg-slate-800 active:scale-95 transition flex items-center justify-center gap-2",
+            // Above the bottom bar on a phone; from lg the bar is a side rail.
+            bottomNav
+              ? "bottom-[calc(5.5rem_+_env(safe-area-inset-bottom,0px))] lg:bottom-[calc(1rem_+_env(safe-area-inset-bottom,0px))]"
+              : "bottom-[calc(1rem_+_env(safe-area-inset-bottom,0px))]")}
         >
           <NotebookPen size={22} />
           <span className="hidden sm:inline text-sm font-semibold">{tpPad.padTitle}</span>
@@ -6105,7 +6102,7 @@ export default function App() {
         />
       )}
       {isDemoMode() && (
-        <div className="max-w-5xl mx-auto mb-3 no-print">
+        <div className="mx-auto mb-3 no-print">
           <div className="flex items-center justify-between gap-3 rounded-xl bg-red-600 text-white text-xs font-semibold px-3 py-2 shadow-sm">
             <span className="flex items-center gap-2">
               <Info size={14} />
@@ -6200,7 +6197,7 @@ export default function App() {
         </div>
       )}
       {emailTestMode && (
-        <div className="max-w-5xl mx-auto mb-3 no-print">
+        <div className="mx-auto mb-3 no-print">
           <div className="flex items-center gap-2 rounded-xl bg-amber-100 border border-amber-300 text-amber-800 text-xs font-semibold px-3 py-2">
             <Info size={14} /> {formData.lang === 'DE' ? 'Testmodus aktiv — es werden keine E-Mails versendet.' : 'Test mode on — no emails are sent.'}
           </div>
@@ -6362,22 +6359,11 @@ export default function App() {
             in: both are the coach's preference, neither is part of the
             report. Fullscreen is the browser's own and is simply not
             offered where the API is missing (iPhone Safari, the installed
-            PWA); the width is ours, and a phone never needs it — the sheet
-            already fills the screen there. */}
+            PWA). The width is not a toggle any more: the sheet always
+            uses the whole window. */}
         {/* One cluster, same height, even widths on a phone (its own row
             there), natural widths at the right end on a wider screen. */}
         <div className="flex flex-1 sm:flex-none sm:ml-auto items-center gap-2 sm:gap-3">
-          <button
-            type="button"
-            onClick={toggleFormWide}
-            aria-pressed={formWide}
-            aria-label={formWide ? t.widenExit : t.widen}
-            title={formWide ? t.widenExit : t.widen}
-            data-testid="form-widen"
-            className="hidden lg:flex h-11 items-center justify-center bg-white px-4 rounded-lg shadow-sm border border-stone-200 hover:bg-stone-50 transition-colors"
-          >
-            {formWide ? <FoldHorizontal size={18} /> : <UnfoldHorizontal size={18} />}
-          </button>
           {canFullscreen && (
             <button
               type="button"
@@ -6460,7 +6446,7 @@ export default function App() {
       </div>
 
       {feedbackSubView === 'coachees' && (
-        <div className="max-w-5xl mx-auto no-print">
+        <div className="mx-auto no-print">
           <div className="bg-white p-4 sm:p-5 rounded-2xl shadow-card border border-stone-200/70 mb-4 flex items-center sm:items-start gap-4">
             <div className="flex-1">
               <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-stone-900">{t.title}</h1>
@@ -8427,7 +8413,7 @@ export default function App() {
       )}
 
       {feedbackSubView === 'coacheeGames' && (
-        <div className="max-w-4xl mx-auto bg-white p-3 sm:p-6 shadow-xl border border-stone-200 no-print">
+        <div className="bg-white p-3 sm:p-6 shadow-xl border border-stone-200 no-print">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-stone-800">
               {selectedCoacheeName || '-'}
@@ -8696,7 +8682,7 @@ export default function App() {
       )}
 
       {feedbackSubView === 'calendar' && (
-        <div className="max-w-5xl mx-auto bg-white p-3 sm:p-6 shadow-xl border border-stone-200 no-print">
+        <div className="bg-white p-3 sm:p-6 shadow-xl border border-stone-200 no-print">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-stone-800">{t.calendar}</h2>
             <div className="flex gap-2">
@@ -10350,10 +10336,10 @@ export default function App() {
           already several missed runs for the hourly börse poll), because three
           VolleyManager roles answer the börse 200 with the WRONG row count —
           one of them zero — so a drifted role reads as "no games at risk". */}
-      <p className="mx-auto max-w-5xl mt-6 text-center no-print">
+      <p className="mx-auto mt-6 text-center no-print">
         <SyncFreshness games={freshness?.games} boerse={freshness?.boerse} lang={formData.lang} />
       </p>
-      <p className="mx-auto max-w-5xl mt-1 pb-2 text-center text-[10px] text-stone-400 no-print">
+      <p className="mx-auto mt-1 pb-2 text-center text-[10px] text-stone-400 no-print">
         v{APP_VERSION} · Build {BUILD_INFO}
         {/* The loading spinner's ball and whistle are Game Icons artwork, which
             is CC BY 3.0 — the licence requires the credit to be visible, so it

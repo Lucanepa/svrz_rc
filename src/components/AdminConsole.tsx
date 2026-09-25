@@ -1162,7 +1162,7 @@ export default function AdminConsole() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-stone-50 to-stone-100 pb-24 lg:pb-16">
       <header className="bg-white border-b border-stone-200/70 sticky top-0 z-20">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
+        <div className="px-4 py-3 flex items-center gap-3">
           <SvrzLogo className="h-7 w-auto" />
           <span className="text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">{t.admin}</span>
           {testMode && <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 border border-amber-300 text-amber-800 text-[11px] font-semibold px-2 py-0.5"><FlaskConical size={12} /> {t.testBadge}</span>}
@@ -1181,9 +1181,9 @@ export default function AdminConsole() {
           no room beside anything, so the same list sits along the bottom, where
           a thumb is, and scrolls sideways rather than stealing three rows of
           height from the page it is navigating. */}
-      {/* The statistics are a dashboard: seven tiles and three-up chart rows
-          want the whole screen, where a list of coachees does not. */}
-      <div className={cn('mx-auto px-4 flex gap-6', tab === 'stats' ? 'max-w-[1800px]' : 'max-w-6xl')}>
+      {/* Every tab uses the whole window (2026-09-25), not only the
+          statistics dashboard. */}
+      <div className="px-4 flex gap-6">
         <nav
           aria-label={t.admin}
           className="hidden lg:block w-56 shrink-0 sticky top-[68px] self-start pt-5 pb-8 space-y-1"

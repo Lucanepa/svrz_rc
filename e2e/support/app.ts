@@ -231,6 +231,8 @@ const EMAIL_TEMPLATE = { subject: 's', heading: 'h', intro: 'i', outro: 'o' };
 export type StubOptions = {
   /** Leave the Coachees tab's "Hide planned" at its real default (on). */
   keepHidePlannedDefault?: boolean;
+  /** Leave the documents card's sections folded, as a new device sees them. */
+  keepDocsDefault?: boolean;
   /** Name on the session; defaults to the coach who holds GAME. */
   signedInAs?: string;
   /** Give the session admin rights (opens the admin console). */
@@ -254,6 +256,12 @@ export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promi
   // coachee-hide-planned.spec.ts is the one that pins the default.
   if (!opts.keepHidePlannedDefault) {
     await page.addInitScript(() => { try { if (localStorage.getItem('svrz_hide_planned') === null) localStorage.setItem('svrz_hide_planned', '0'); } catch { /* ignore */ } });
+  }
+  // "Nützliche Infos & Dokumente" folds every section by default; the specs
+  // that open a document from Home were written against the open list, so they
+  // start with all sections open. docs-search.spec.ts pins the default.
+  if (!opts.keepDocsDefault) {
+    await page.addInitScript(() => { try { if (localStorage.getItem('svrz_docs_open') === null) localStorage.setItem('svrz_docs_open', JSON.stringify(['coaching', 'rules', 'regulations', 'season', 'contacts'])); } catch { /* ignore */ } });
   }
   // Catch-all first, so an endpoint nobody named still answers something valid.
   await page.route('**/api/**', (r) => r.fulfill({ json: [] }));

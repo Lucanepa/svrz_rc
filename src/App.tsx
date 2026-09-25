@@ -1730,6 +1730,14 @@ export default function App() {
   /** The document open in the reader, or null. */
   const [readerDoc, setReaderDoc] = useState<UsefulDoc | null>(null);
   const [docsOffline, setDocsOffline] = useState({ stored: 0, total: 0, missingBytes: 0 });
+  // "Nützliche Infos & Dokumente": every section folds, closed by default, and
+  // the ones a coach opened stay open on this device. A search looks through
+  // titles, notes and badges and opens whatever matches.
+  const [docsOpen, setDocsOpen] = useState<string[]>(() => {
+    try { const v = JSON.parse(localStorage.getItem('svrz_docs_open') || '[]'); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; } catch { return []; }
+  });
+  useEffect(() => { try { localStorage.setItem('svrz_docs_open', JSON.stringify(docsOpen)); } catch {} }, [docsOpen]);
+  const [docsQuery, setDocsQuery] = useState('');
   const [storingDocs, setStoringDocs] = useState(0);
 
   // The small SVRZ letters are kept once the app is idle, so the coach who
@@ -8436,11 +8444,49 @@ export default function App() {
                 )
               )}
             </div>
-            {(Object.keys(USEFUL_DOC_GROUPS) as (keyof typeof USEFUL_DOC_GROUPS)[]).map((group) => (
-              <div key={group} className="mt-3 first:mt-0">
-                <h4 className="text-[11px] font-semibold text-stone-500 mb-1.5">{USEFUL_DOC_GROUPS[group][formData.lang]}</h4>
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  {USEFUL_DOCS.filter((doc) => doc.group === group).map((doc) => {
+            {/* Search: through the title, the note (hidden on a phone, still
+                searched) and the badge, in the language on screen and the
+                other one — a coach may remember the rulebook's German name
+                while the app is in English. */}
+            <div className="relative mb-2">
+              <input
+                type="search"
+                value={docsQuery}
+                onChange={(e) => setDocsQuery(e.target.value)}
+                placeholder={formData.lang === 'DE' ? 'Dokumente durchsuchen…' : 'Search documents…'}
+                aria-label={formData.lang === 'DE' ? 'Dokumente durchsuchen' : 'Search documents'}
+                className="h-10 w-full px-3 text-sm border border-stone-300 rounded-lg bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+              />
+            </div>
+            {(() => {
+              const q = docsQuery.trim().toLocaleLowerCase('de');
+              const matches = (doc: UsefulDoc) => !q || [doc.DE.title, doc.DE.note, doc.EN.title, doc.EN.note, doc.badge]
+                .some((f) => (f || '').toLocaleLowerCase('de').includes(q));
+              const groups = (Object.keys(USEFUL_DOC_GROUPS) as (keyof typeof USEFUL_DOC_GROUPS)[])
+                .map((group) => ({ group, docs: USEFUL_DOCS.filter((doc) => doc.group === group && matches(doc)) }))
+                .filter((g) => g.docs.length > 0);
+              if (groups.length === 0) {
+                return <p className="py-3 text-sm text-stone-400">{formData.lang === 'DE' ? 'Nichts gefunden.' : 'Nothing found.'}</p>;
+              }
+              return groups.map(({ group, docs }) => {
+                // A search opens every section with a hit; the sections' own
+                // open state comes back when the box is cleared.
+                const open = !!q || docsOpen.includes(group);
+                return (
+              <div key={group} className="border-t border-stone-100 first:border-t-0">
+                <button
+                  type="button"
+                  onClick={() => { if (!q) setDocsOpen((o) => (o.includes(group) ? o.filter((g) => g !== group) : [...o, group])); }}
+                  aria-expanded={open}
+                  className="w-full min-h-11 flex items-center gap-2 py-2 text-left"
+                >
+                  <ChevronRight size={15} className={cn('shrink-0 text-stone-400 transition-transform', open && 'rotate-90')} />
+                  <span className="flex-1 text-sm font-semibold text-stone-700">{USEFUL_DOC_GROUPS[group][formData.lang]}</span>
+                  <span className="text-[11px] font-semibold text-stone-400">{docs.length}</span>
+                </button>
+                {open && (
+                <div className="grid gap-2 pb-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {docs.map((doc) => {
                     const text = doc[formData.lang];
                     const busy = doc.kind === 'form' && downloadingEmptyForm;
                     const Icon = doc.kind === 'video' ? Video : doc.kind === 'web' ? ExternalLink : doc.kind === 'mail' ? Mail : Download;
@@ -8506,8 +8552,11 @@ export default function App() {
                     );
                   })}
                 </div>
+                )}
               </div>
-            ))}
+                );
+              });
+            })()}
           </div>
         </div>
       )}

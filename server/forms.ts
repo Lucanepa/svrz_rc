@@ -119,18 +119,24 @@ export type FormsRow = {
 
 export function formsRowOf(rec: Rec & { id: string }): FormsRow {
   const expand = (rec.expand ?? {}) as Record<string, Rec | undefined>;
-  const game = expand.game;
+  // A form whose game or coachee row was deleted keeps a copy of what named
+  // and dated it (server/index.ts detachFeedback) — read only when the
+  // relation itself is gone, so a live row always wins. The copy carries no
+  // id: `gameId` stays '' for a form whose game was deleted.
+  const detached = (((rec.feedback_json as Rec | undefined)?.detached ?? {}) as Rec);
+  const game = expand.game ?? (detached.game as Rec | undefined);
   const coachee = expand.coachee;
+  const keptCoachee = detached.coachee as Rec | undefined;
   const second = text(rec.role_assessed).replace(/[^0-9]/g, '') === '2';
   const slot = second ? 'second' : 'first';
   const meta = ((rec.feedback_json as Rec | undefined)?.meta ?? {}) as Rec;
   return {
     rec, game, coachee,
-    refereeId: text(coachee?.referee_id) || text(game?.[`${slot}_referee_id`]),
+    refereeId: text(coachee?.referee_id) || text(keptCoachee?.referee_id) || text(game?.[`${slot}_referee_id`]),
     // The coachee row spells the name the way the roster does; a form filed
     // against the register (a test game) has only the game's referee line,
     // and a manual upload of a paper form may have only what the coach typed.
-    name: text(coachee?.full_name) || text(game?.[`${slot}_referee`]) || text(meta.srName),
+    name: text(coachee?.full_name) || text(keptCoachee?.full_name) || text(game?.[`${slot}_referee`]) || text(meta.srName),
     role: second ? '2. SR' : '1. SR',
     date: text(game?.match_date).slice(0, 10),
   };

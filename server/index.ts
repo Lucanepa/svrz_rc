@@ -42,8 +42,9 @@ import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrew
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
 import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan } from './dataHygiene.ts';
 import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
-import { presidentNoteEntry, type PresidentNoteEntry } from './presidentNotes.ts';
+import { presidentNoteEntry, presidentNoteBelongsToAnother, type PresidentNoteEntry } from './presidentNotes.ts';
 import { identityAudit, type AuditRcPerson } from './identityAudit.ts';
+import { sniffAttachmentType, ATTACHMENT_EXTENSIONS, whistleBlocksForm, createMailCooldown, createCoalescer } from './writeGuards.ts';
 import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
 import { samePerson, resolveRcName, resolveRcRef, refereeSet, refereeAmong, type PersonRef, type RcPersonLike, type RefereeSet } from '../src/lib/identity.ts';
 
@@ -6225,6 +6226,20 @@ app.get('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
     res.json({ context: asText(rec.context), signer: asText(rec.signer), signed: Boolean(rec.signed), data: rec.signed ? asText(rec.data) : '' });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
+// The survey and signature links are write-once capabilities, and both routes
+// are read → check → update: two overlapping submits (a double tap, an offline
+// replay beside the live send, two phones on the same QR) each read "not yet"
+// and each wrote, the second silently replacing the first — and the survey
+// mailed the commission twice with different answers. One chain per token,
+// re-reading the record once the lock is held, makes the second writer see the
+// first one's write and get its 409. In-process on purpose: the API is a single
+// process (as chainOnKey already assumes for the settings maps and the games),
+// and PocketBase has no conditional update to lean on instead.
+const capabilityWrites = new Map<string, Promise<unknown>>();
+function withCapabilityLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  return chainOnKey(capabilityWrites, key, fn);
+}
+
 app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
   try {
     const rl = checkSignatureRateLimit(clientIp(req));
@@ -6232,14 +6247,17 @@ app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
     const data = asText((req.body ?? {}).data);
     const signer = asText((req.body ?? {}).signer).slice(0, 120);
     if (!data.startsWith('data:image/') || data.length > 2_000_000) { res.status(400).json({ error: 'Invalid signature' }); return; }
-    const rec = await getSignatureRecord(asText(req.params.slug)) as AnyRecord | null;
-    if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
-    if (isSignatureExpired(rec)) { res.status(410).json({ error: 'Signature session expired' }); return; }
-    // Signatures are write-once: once signed, the capability can't overwrite it.
-    if (Boolean(rec.signed)) { res.status(409).json({ error: 'Signature already captured' }); return; }
-    await ensureAdminAuth();
-    await pb.collection('signatures').update(rec.id, { data, signed: true, signer: signer || asText(rec.signer) });
-    res.json({ ok: true });
+    const slug = asText(req.params.slug);
+    await withCapabilityLock(`signature|${slug}`, async () => {
+      const rec = await getSignatureRecord(slug) as AnyRecord | null;
+      if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
+      if (isSignatureExpired(rec)) { res.status(410).json({ error: 'Signature session expired' }); return; }
+      // Signatures are write-once: once signed, the capability can't overwrite it.
+      if (Boolean(rec.signed)) { res.status(409).json({ error: 'Signature already captured' }); return; }
+      await ensureAdminAuth();
+      await pb.collection('signatures').update(rec.id, { data, signed: true, signer: signer || asText(rec.signer) });
+      res.json({ ok: true });
+    });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -6477,12 +6495,7 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
   try {
     const rl = checkSurveyRateLimit(clientIp(req));
     if (!rl.allowed) { denyRateLimited(req, res, 'survey', rl.retryAfterMs); return; }
-    const rec = await getSurveyRecord(asText(req.params.token)) as AnyRecord | null;
-    if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
-    if (isSurveyExpired(rec)) { res.status(410).json({ error: 'Survey link expired' }); return; }
-    // Write-once, like signatures: the capability answers, it doesn't edit.
-    if (Boolean(rec.submitted)) { res.status(409).json({ error: 'Survey already submitted' }); return; }
-
+    const token = asText(req.params.token);
     const body = (req.body ?? {}) as AnyRecord;
     const lang = asText(body.lang) === 'EN' ? 'EN' : 'DE';
     // Only the question ids we ship, capped in count and length — the answers
@@ -6498,20 +6511,31 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
       if (value) answers[key] = value;
     }
 
-    await ensureAdminAuth();
-    // Always named. The page's "Anonym absenden" box is gone (16.09.2026): it
-    // blanked the name while match, date and RC stayed, which with one
-    // referee per role per match identified them anyway — a promise the form
-    // could not keep, and the commission asked for the name outright. A stale
-    // cached page may still send `anonymous`; it is ignored, the page it came
-    // from no longer makes the promise. Rows from before keep their blank
-    // name and their flag, and the chair's list still shows them as (anonym).
-    await pb.collection(SURVEY_COLLECTION).update(rec.id, {
-      referee_name: asText(rec.referee_name),
-      anonymous: false, lang, answers,
-      submitted: true, submitted_at: new Date().toISOString(),
+    // Read, checked and written under the token's lock (withCapabilityLock);
+    // the mail goes after it is released, and only by the request that wrote.
+    const written = await withCapabilityLock(`survey|${token}`, async (): Promise<AnyRecord | null> => {
+      const rec = await getSurveyRecord(token) as AnyRecord | null;
+      if (!rec) { res.status(404).json({ error: 'Not found' }); return null; }
+      if (isSurveyExpired(rec)) { res.status(410).json({ error: 'Survey link expired' }); return null; }
+      // Write-once, like signatures: the capability answers, it doesn't edit.
+      if (Boolean(rec.submitted)) { res.status(409).json({ error: 'Survey already submitted' }); return null; }
+      await ensureAdminAuth();
+      // Always named. The page's "Anonym absenden" box is gone (16.09.2026): it
+      // blanked the name while match, date and RC stayed, which with one
+      // referee per role per match identified them anyway — a promise the form
+      // could not keep, and the commission asked for the name outright. A stale
+      // cached page may still send `anonymous`; it is ignored, the page it came
+      // from no longer makes the promise. Rows from before keep their blank
+      // name and their flag, and the chair's list still shows them as (anonym).
+      await pb.collection(SURVEY_COLLECTION).update(rec.id, {
+        referee_name: asText(rec.referee_name),
+        anonymous: false, lang, answers,
+        submitted: true, submitted_at: new Date().toISOString(),
+      });
+      return rec;
     });
-    await sendSurveyNotification({ ...rec, anonymous: false }, answers, lang);
+    if (!written) return;
+    await sendSurveyNotification({ ...written, anonymous: false }, answers, lang);
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -6706,8 +6730,27 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
     const authorName = rcAuth?.name || asText(verifyAdminSession(req).email) || 'Admin';
     const key = presidentNotesKey(seasonOfDate(asText(game?.match_date)));
 
+    // An admin writes blind — mayReadPresidentNote does not let them read the
+    // note first — so an admin write over a note the COACH wrote destroyed the
+    // coach's confidential words unseen: an empty box deleted them, any text
+    // replaced them. An admin may still start a note on a report that has
+    // none, and rewrite or clear the one they wrote themselves; the coach's own
+    // note is theirs and the chair's alone. The owner is asked by identity,
+    // not by session kind: an admin-flagged coach writing on their own report
+    // is the coach.
+    const me = rcAuth ?? await sessionRcIdentity(req);
+    // The chair reads every note (mayReadPresidentNote), so she never writes
+    // blind and is not held back by this.
+    const isFiler = Boolean(me && rcRefMatches(record.rc_id, record.rc_name, me)) || isSurveyReader(req);
+    let refused = false;
+
     await withSettingLock(key, async () => {
       const notes = parseNoteMap((await getSettingRecord(key))?.value);
+      const current = notes[record.id];
+      if (!isFiler && current && presidentNoteBelongsToAnother(current, authorName)) {
+        refused = true;
+        return;
+      }
       if (note) {
         // The labels for the chair's list, and beside them the ids — the
         // match number a human reads, the coach's roster id a rename finds
@@ -6719,6 +6762,10 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
       }
       await setSetting(key, JSON.stringify(notes));
     });
+    if (refused) {
+      res.status(409).json({ error: 'Auf diesem Bericht liegt schon die vertrauliche Notiz des Referee Coaches an das RC-Präsidium. Sie kann nur von ihm selbst geändert werden.' });
+      return;
+    }
     res.json({ ok: true, note });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -7155,22 +7202,33 @@ app.get('/api/admin/games/manual', requireAdminSession, async (req: Request, res
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-// Deleting a game takes what was filed on it along: the feedbacks (each with
-// its observation, coachee entry and chair's note — deleteFeedbackCascade),
-// any observation left without a feedback, the parked drafts and the 4.4.10
-// notes about it. Meant for a throwaway fixture: a test game with a test
-// observation on it used to leave that observation counting toward somebody's
-// season, filed under a game that no longer existed.
+// Deleting a game takes what was filed on it along: the observations, the
+// parked drafts and the 4.4.10 notes about it. Meant for a throwaway fixture: a
+// test game with a test observation on it used to leave that observation
+// counting toward somebody's season, filed under a game that no longer existed.
+// The filed FORMS go too only on a Testspiel; on a VolleyManager fixture they
+// stay in the chair's folders, detached (see detachFeedback).
 app.delete('/api/admin/games/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const id = String(req.params.id);
     const q = escapeFilterValue(id);
+    const game = await withCollection(collectionCandidates.games, (c) =>
+      c.getOne<AnyRecord>(id, { fields: 'id,match_no' }));
+    // A Testspiel is a throwaway by definition — it counts nowhere (Luca,
+    // 17.09.2026) — so its forms still go with it. A VolleyManager fixture's
+    // forms are real and are kept, detached (detachFeedback). Same test as the
+    // list this Delete button sits on (isManualRow above).
+    const isManual = (await getManualGameIds()).has(id) || normalizeName(game.match_no).startsWith('test-');
     const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (c) =>
       c.getFullList<AnyRecord>({ filter: `game = "${q}"`, fields: 'id' }));
-    for (const fb of feedbacks) await deleteFeedbackCascade(fb.id);
+    for (const fb of feedbacks) {
+      if (isManual) await deleteFeedbackCascade(fb.id);
+      else await detachFeedback(fb.id, 'game');
+    }
     const swept = {
-      feedbacks: feedbacks.length,
+      feedbacks: isManual ? feedbacks.length : 0,
+      keptForms: isManual ? 0 : feedbacks.length,
       observations: await deleteWhere(collectionCandidates.observations, `game = "${q}"`, 'observation'),
       drafts: await deleteWhere([PARKED_DRAFTS_COLLECTION], `game_id = "${q}"`, 'parked draft'),
       notes: await deleteWhere(collectionCandidates.rcGameNotes, `game = "${q}" || game_id = "${q}"`, 'rc game note'),
@@ -8480,6 +8538,32 @@ function notifyChair(opts: Parameters<typeof sendRcGameNoteNotification>[0]): vo
   void sendRcGameNoteNotification(opts);
 }
 
+// Every rewrite of a Rückmeldung mailed the commission inbox, and alternating
+// two texts defeated the only dedupe (words unchanged), so one coach could fill
+// that inbox from the official sender. The mails now COALESCE per note: the
+// first goes at once, anything inside the window waits for its end and only
+// the latest version is sent — and not at all when it reads like the mail
+// before it. Nothing the chair should see is dropped (a correction she never
+// reads is worse than a second mail), a loop of rewrites just costs one mail
+// per window. In memory, like the locks: a restart inside a window forgets a
+// queued mail, the stored note is unaffected and the chair's Notizen list
+// shows it.
+const RC_GAME_NOTE_MAX = 5000;
+const RC_NOTE_MAIL_WINDOW_MS = 10 * 60 * 1000;
+type RcNoteMail = Parameters<typeof sendRcGameNoteNotification>[0];
+const rcNoteMails = createCoalescer<RcNoteMail>({
+  cooldownMs: RC_NOTE_MAIL_WINDOW_MS,
+  send: notifyChair,
+  same: (a, b) => a.note === b.note && Boolean(a.rolesSwapped) === Boolean(b.rolesSwapped),
+});
+
+// One Rückmeldung per coach per game is a read-then-create; two overlapping
+// sends (the outbox replaying while the live send is still in flight, or two
+// devices) each found no note and each created one. Serialised per coach and
+// game — a single API process, the same assumption chainOnKey makes for the
+// settings maps and the game closures.
+const rcNoteWrites = new Map<string, Promise<unknown>>();
+
 app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     const subject = rcAuthByReq.get(req);
@@ -8491,6 +8575,10 @@ app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: Expre
     const submissionKey = asText(body.submissionKey);
     if (!gameId) { res.status(400).json({ error: 'gameId fehlt.' }); return; }
     if (!note) { res.status(400).json({ error: 'Die Rückmeldung darf nicht leer sein.' }); return; }
+    if (note.length > RC_GAME_NOTE_MAX) {
+      res.status(422).json({ error: `Die Rückmeldung ist zu lang (höchstens ${RC_GAME_NOTE_MAX} Zeichen).` });
+      return;
+    }
 
     // The game, the role and the coachee are re-derived here and never read from
     // the body: the client knows all three, but a client is not where the answer
@@ -8506,54 +8594,60 @@ app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: Expre
     // a retry the server already committed, or a genuine second thought a week
     // later — rewrites their own note rather than filing a second one, which is
     // also what makes the "still to do" list on Home settle after a flaky send.
-    const existing = await listRcGameNotes();
-    const previous = existing.find((n) => n.gameId === gameId && rcRefMatches(n.rcId, n.rcName, subject));
-    const context = { matchNo: game.matchNo, league: game.league, gameDate: game.gameDate, teams: game.teams };
-    // Infoschreiben 7.3: the pair may have agreed to swap 1. and 2. SR, in which
-    // case the roles the roster gives are the wrong way round. Swapping the two
-    // derived values is safe in a way that accepting roles from the body is not
-    // — it is a closed operation over the pair the server itself computed, so a
-    // client can reorder the two slots but cannot invent a role or a person.
-    const whistled = rolesSwapped
-      ? { rc: game.coacheeRole, coachee: game.rcRole }
-      : { rc: game.rcRole, coachee: game.coacheeRole };
-    if (previous) {
-      const updated = await withCollection(collectionCandidates.rcGameNotes, (collection) =>
-        collection.update<AnyRecord>(previous.id, {
-          note, submitted_at: new Date().toISOString(), submission_key: submissionKey,
-          rc_role: whistled.rc, coachee_role: whistled.coachee, roles_swapped: rolesSwapped,
+    // The lookup and the write run under one lock per coach and game (see
+    // rcNoteWrites), so a concurrent twin finds the note the first one made.
+    const lockKey = `${gameId}|${subject.rcId || subject.name}`;
+    const mailKey = lockKey;
+    await chainOnKey(rcNoteWrites, lockKey, async () => {
+      const existing = await listRcGameNotes();
+      const previous = existing.find((n) => n.gameId === gameId && rcRefMatches(n.rcId, n.rcName, subject));
+      const context = { matchNo: game.matchNo, league: game.league, gameDate: game.gameDate, teams: game.teams };
+      // Infoschreiben 7.3: the pair may have agreed to swap 1. and 2. SR, in which
+      // case the roles the roster gives are the wrong way round. Swapping the two
+      // derived values is safe in a way that accepting roles from the body is not
+      // — it is a closed operation over the pair the server itself computed, so a
+      // client can reorder the two slots but cannot invent a role or a person.
+      const whistled = rolesSwapped
+        ? { rc: game.coacheeRole, coachee: game.rcRole }
+        : { rc: game.rcRole, coachee: game.coacheeRole };
+      if (previous) {
+        const updated = await withCollection(collectionCandidates.rcGameNotes, (collection) =>
+          collection.update<AnyRecord>(previous.id, {
+            note, submitted_at: new Date().toISOString(), submission_key: submissionKey,
+            rc_role: whistled.rc, coachee_role: whistled.coachee, roles_swapped: rolesSwapped,
+          }),
+        );
+        res.json({ ...mapRcGameNote(updated), ...context });
+        // A rewrite is mailed too, marked as one. The chair may already have read
+        // the earlier version, and a correction she never sees is worse than a
+        // second mail. Only when the words actually changed, so the resend that
+        // settles a dropped connection does not arrive as a second Rückmeldung.
+        if (note !== previous.note || rolesSwapped !== previous.rolesSwapped) {
+          rcNoteMails.offer(mailKey, { note, game, rcName: subject.name, updated: true, rolesSwapped });
+        }
+        return;
+      }
+
+      const created = await withCollection(collectionCandidates.rcGameNotes, (collection) =>
+        collection.create<AnyRecord>({
+          game: gameId,
+          game_id: gameId,
+          rc_id: subject.rcId,
+          rc_name: subject.name,
+          rc_role: whistled.rc,
+          coachee_id: game.coacheeId,
+          coachee_name: game.coacheeName,
+          coachee_role: whistled.coachee,
+          roles_swapped: rolesSwapped,
+          note,
+          submitted_at: new Date().toISOString(),
+          season: seasonOfGame(game.gameDate),
+          submission_key: submissionKey,
         }),
       );
-      res.json({ ...mapRcGameNote(updated), ...context });
-      // A rewrite is mailed too, marked as one. The chair may already have read
-      // the earlier version, and a correction she never sees is worse than a
-      // second mail. Only when the words actually changed, so the resend that
-      // settles a dropped connection does not arrive as a second Rückmeldung.
-      if (note !== previous.note || rolesSwapped !== previous.rolesSwapped) {
-        notifyChair({ note, game, rcName: subject.name, updated: true, rolesSwapped });
-      }
-      return;
-    }
-
-    const created = await withCollection(collectionCandidates.rcGameNotes, (collection) =>
-      collection.create<AnyRecord>({
-        game: gameId,
-        game_id: gameId,
-        rc_id: subject.rcId,
-        rc_name: subject.name,
-        rc_role: whistled.rc,
-        coachee_id: game.coacheeId,
-        coachee_name: game.coacheeName,
-        coachee_role: whistled.coachee,
-        roles_swapped: rolesSwapped,
-        note,
-        submitted_at: new Date().toISOString(),
-        season: seasonOfGame(game.gameDate),
-        submission_key: submissionKey,
-      }),
-    );
-    res.json({ ...mapRcGameNote(created), ...context });
-    notifyChair({ note, game, rcName: subject.name, updated: false, rolesSwapped });
+      res.json({ ...mapRcGameNote(created), ...context });
+      rcNoteMails.offer(mailKey, { note, game, rcName: subject.name, updated: false, rolesSwapped });
+    });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
@@ -8762,11 +8856,11 @@ app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: Expr
   }
 });
 
-// Deleting a coachee takes their filed forms and observations along — each
-// feedback through deleteFeedbackCascade, so the game's role reopens and the
-// chair's note goes too — and any observation left without a feedback. The
-// console says how many before asking; the ZIP under Formulare is the way to
-// keep a real person's forms before removing the row.
+// Deleting a coachee takes their observations along, but NOT their filed forms:
+// those stay in the chair's folders, detached from the row (detachFeedback),
+// with the chair's note on them and their game's role still closed — the form
+// exists. The console says how many of each before asking. A form that should
+// go is deleted by the chair from her folders.
 app.delete('/api/coachees/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
@@ -8774,10 +8868,10 @@ app.delete('/api/coachees/:id', requireAdminSession, async (req: Request, res: E
     const q = escapeFilterValue(id);
     const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (c) =>
       c.getFullList<AnyRecord>({ filter: `coachee = "${q}"`, fields: 'id' }));
-    for (const fb of feedbacks) await deleteFeedbackCascade(fb.id);
+    for (const fb of feedbacks) await detachFeedback(fb.id, 'coachee');
     const observations = await deleteWhere(collectionCandidates.observations, `coachee = "${q}"`, 'observation');
     await withCollection(collectionCandidates.coachees, (collection) => collection.delete(id));
-    log.info('coachee.delete', 'coachee deleted by the console, with what was filed on them', { coacheeId: id, feedbacks: feedbacks.length, observations }, reqCtx(req));
+    log.info('coachee.delete', 'coachee deleted by the console; forms kept in the chair\'s folders, observations removed', { coacheeId: id, keptForms: feedbacks.length, observations }, reqCtx(req));
     res.status(204).send();
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
@@ -9977,6 +10071,71 @@ async function deleteFeedbackCascade(feedbackId: string): Promise<boolean> {
   return true;
 }
 
+// A filed form OUTLIVES what it hangs off. The chair keeps every form for two
+// years (Infoschreiben 4.4) and the folders are hers alone; deleting a coachee
+// row or a VolleyManager fixture used to run deleteFeedbackCascade on each of
+// its forms — row and PDF gone, no bin — while the console told the admin to
+// save them first as a ZIP the admin is not allowed to download. Now the form
+// stays: the link to the deleted row is cleared, and what the folder needs to
+// name and date it (the match, the person) is copied onto the form first, under
+// feedback_json.detached, which server/forms.ts reads when the relation is
+// empty. Whether a form should go is the chair's call, from her folders —
+// DELETE /api/referee-coaches/:id still runs the full cascade.
+//
+// What does NOT survive is what counts: the observation (the season target and
+// the statistics read it) goes with the deleted row, as before, and so does the
+// coachee's history entry for a deleted game. The chair's private note stays on
+// the form it was written about.
+const DETACHED_GAME_FIELDS = [
+  'match_no', 'match_date', 'league', 'location', 'home_team', 'away_team',
+  'first_referee', 'second_referee', 'first_referee_id', 'second_referee_id', 'game_result',
+] as const;
+
+async function detachFeedback(feedbackId: string, from: 'game' | 'coachee'): Promise<void> {
+  const rec = await withCollection(collectionCandidates.refereeCoaches, (c) =>
+    c.getOne<AnyRecord>(feedbackId, { expand: 'game,coachee' }));
+  const expand = (rec.expand ?? {}) as Record<string, AnyRecord | undefined>;
+  const json = rec.feedback_json && typeof rec.feedback_json === 'object' && !Array.isArray(rec.feedback_json)
+    ? rec.feedback_json as Record<string, unknown> : {} as Record<string, unknown>;
+  const prior = json.detached && typeof json.detached === 'object' ? json.detached as Record<string, unknown> : {};
+  const detached: Record<string, unknown> = { ...prior, at: new Date().toISOString() };
+  if (from === 'game' && expand.game) {
+    const game: Record<string, string> = {};
+    for (const field of DETACHED_GAME_FIELDS) game[field] = asText(expand.game[field]);
+    detached.game = game;
+  }
+  // A form whose GAME is deleted lets go of its coachee too. Left linked, it
+  // sat on the coach's Home under that coachee in every season (no game date
+  // to scope it by), with blank match labels; it is an archive document now,
+  // and the chair's folder is where it lives. A form whose COACHEE is deleted
+  // keeps its game: the visit happened, the role stays closed.
+  if (expand.coachee) {
+    detached.coachee = {
+      full_name: asText(expand.coachee.full_name ?? expand.coachee.name),
+      referee_id: asText(expand.coachee.referee_id),
+    };
+  }
+  const patch: Record<string, unknown> = { coachee: '', feedback_json: { ...json, detached } };
+  if (from === 'game') patch.game = '';
+  await withCollection(collectionCandidates.refereeCoaches, (c) => c.update(feedbackId, patch));
+
+  // The coachee outlives a deleted game, and their history entry for it would
+  // count a visit whose observation just went.
+  const coacheeId = asText(rec.coachee);
+  if (from === 'game' && coacheeId) {
+    try {
+      const coachee = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(coacheeId));
+      const entries = Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries as AnyRecord[] : [];
+      const kept = entries.filter((e) => asText((e as AnyRecord).referee_coaches_id) !== feedbackId);
+      if (kept.length !== entries.length) {
+        await withCollection(collectionCandidates.coachees, (c) => c.update(coacheeId, { feedback_entries: kept }));
+      }
+    } catch (e) {
+      if (!isRecordNotFound(e)) log.error('feedback.detach', 'coachee entry cleanup failed', { feedbackId, coacheeId, error: String(e) });
+    }
+  }
+}
+
 /** Every record of `collection` matching `filter`, deleted one by one; the
  *  count, and a log line per failure rather than one abort for all. */
 async function deleteWhere(collection: string[], filter: string, what: string): Promise<number> {
@@ -10020,20 +10179,8 @@ app.delete('/api/referee-coaches/:id', requireFormCurator, async (req: Request, 
 // A scanned paper form may be a phone photo, not a PDF (the upload accepts
 // ".pdf,image/*"). Declaring a JPEG as application/pdf makes mail clients
 // refuse to preview the coachee's own feedback, so read the type off the bytes.
-function sniffAttachmentType(buffer: Buffer): string {
-  if (buffer.length >= 4 && buffer.toString('latin1', 0, 4) === '%PDF') return 'application/pdf';
-  if (buffer.length >= 4 && buffer.toString('latin1', 1, 4) === 'PNG') return 'image/png';
-  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
-  if (buffer.length >= 12 && buffer.toString('latin1', 0, 4) === 'RIFF' && buffer.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
-  if (buffer.length >= 6 && buffer.toString('latin1', 0, 4) === 'GIF8') return 'image/gif';
-  if (buffer.length >= 12 && buffer.toString('latin1', 4, 12) === 'ftypheic') return 'image/heic';
-  return 'application/octet-stream';
-}
-
-const ATTACHMENT_EXTENSIONS: Record<string, string> = {
-  'application/pdf': 'pdf', 'image/png': 'png', 'image/jpeg': 'jpg',
-  'image/webp': 'webp', 'image/gif': 'gif', 'image/heic': 'heic',
-};
+// sniffAttachmentType and ATTACHMENT_EXTENSIONS live in server/writeGuards.ts,
+// where a spec pins which bytes pass.
 
 // Keep the extension honest too — a .pdf name on JPEG bytes fails the same way
 // the wrong MIME type does.
@@ -10124,6 +10271,15 @@ async function findRecentSubmission(gameId: string, role: string): Promise<strin
   }
 }
 
+// A reopened report is mailed again in full — PDF, enclosures, the referee in
+// To — and it skips both duplicate checks by design, so nothing else stopped a
+// loop of "corrections" from filling a referee's inbox with SVRZ mail. The
+// first correction goes at once (the typo spotted a minute after sending);
+// each further one of the SAME report waits out this window. Refused BEFORE
+// anything is written, so a 429 leaves the filed report exactly as it was.
+const REPORT_RESEND_COOLDOWN_MS = 5 * 60 * 1000;
+const reportResends = createMailCooldown(REPORT_RESEND_COOLDOWN_MS);
+
 app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: ExpressResponse) => {
   const { gameId, role, formData, pdfBase64, pdfFilename, tipsAndTricks, submissionKey, replaceId } = req.body ?? {};
 
@@ -10152,6 +10308,18 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
   const pdfBuffer = Buffer.from(String(pdfBase64), 'base64');
   if (pdfBuffer.length > 3 * 1024 * 1024) {
     res.status(400).json({ error: 'PDF exceeds 3MB size limit.' });
+    return;
+  }
+  // Only the types the report can legitimately be. Falling through to
+  // application/octet-stream let an insider mail arbitrary bytes from the
+  // official address under a name of their choosing. Checked HERE, before the
+  // lock and before anything is written: this refusal used to come after the
+  // feedback row was created, so a rejected photo left a PDF-less orphan that
+  // then 409'd the corrected resubmit for 30 minutes — and on a reopened
+  // report it had already overwritten the filed grades.
+  const attachmentType = sniffAttachmentType(pdfBuffer);
+  if (!(attachmentType in ATTACHMENT_EXTENSIONS)) {
+    res.status(422).json({ error: 'Der Anhang ist kein PDF oder Bild.' });
     return;
   }
 
@@ -10260,6 +10428,15 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         res.status(403).json({ error: 'Dieses Feedback stammt von einem anderen Referee Coach.' });
         return;
       }
+      const wait = reportResends.left(String(replacing.id));
+      if (wait > 0) {
+        res.set('Retry-After', String(Math.ceil(wait / 1000)));
+        res.status(429).json({
+          error: `Dieser Bericht wurde eben erst korrigiert und neu verschickt. Die nächste Korrektur ist in ${Math.ceil(wait / 60000)} Min. möglich.`,
+          retryAfterMs: wait,
+        });
+        return;
+      }
     }
 
     const closedRoles: string[] = Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [];
@@ -10320,6 +10497,32 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     const claim = { name: claimedName, sv: asText((req.body ?? {}).refereeId) };
     const gameSeason = seasonOfDate(asText(game.match_date));
     const coacheeIndex = await getCoacheeIndex();
+
+    // 4.4.10 SR-Spiel, enforced here and not only by what Home offers. A coach
+    // who stood on the OTHER whistle beside this coachee files a Rückmeldung,
+    // not an observation: assign-rc already refuses them the game, which is
+    // exactly why an RC-Spiel stays unassigned and used to pass the ownership
+    // check above — filing an observation, a history entry, a mail, a count
+    // toward the season target and a line on the Spesenabrechnung for a game
+    // the coach refereed themselves. The pair test is listMyRcGames' own
+    // (whistleBlocksForm), so the refusal and the Home block that offers the
+    // Rückmeldung can never disagree. A colleague in the stand is untouched;
+    // an admin session carries no coach identity and is not asked.
+    if (rcAuth) {
+      const self = rcAuth.rcId
+        ? (await getActiveRcPeople().catch(() => [] as ActiveRcPerson[])).find((p) => p.id === rcAuth.rcId)
+        : undefined;
+      const season = seasonOfGame(game.match_date);
+      if (whistleBlocksForm(String(role), refereeSlotQueries(game), coachAsReferee(rcAuth.name, self),
+        (slot) => !!coacheeIndex.find(season, slot).row)) {
+        res.status(422).json({
+          error: 'Du hast dieses Spiel selbst gepfiffen (SR-Spiel, 4.4.10): Für die Schiedsrichterin oder den Schiedsrichter neben dir gibt es kein Feedbackformular. Bitte auf der Startseite unter «Eigene SR-Spiele» eine Rückmeldung erfassen.',
+          code: 'sr_spiel',
+        });
+        return;
+      }
+    }
+
     if (!claimNamesSlot(claim, { name: refereeName, sv: slotRefereeId })
       && !claimNamesRow(coacheeIndex, gameSeason, claim, { name: refereeName, sv: slotRefereeId, matchNo: asText(game.match_no) })) {
       res.status(422).json({
@@ -10442,14 +10645,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     // the follow-up writes fails the whole set is undone before answering: an
     // abandoned half-record survives every outbox retry, so without this each
     // attempt leaves behind one more PDF-less feedback and observation.
-    const attachmentType = sniffAttachmentType(pdfBuffer);
-    // Only the types the report can legitimately be. Falling through to
-    // application/octet-stream let an insider mail arbitrary bytes from the
-    // official address under a name of their choosing.
-    if (!(attachmentType in ATTACHMENT_EXTENSIONS)) {
-      res.status(422).json({ error: 'Der Anhang ist kein PDF oder Bild.' });
-      return;
-    }
+    // (The attachment type was settled in Phase 1, before this row existed.)
     const attachmentName = attachmentFilename(String(pdfFilename || 'feedback.pdf'), attachmentType);
     const priorEntries = (coachee && Array.isArray(coachee.feedback_entries) ? coachee.feedback_entries : [])
       // A corrected report is the same report: its old entry goes, or the
@@ -10566,6 +10762,43 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         log.warn('feedback.submit', 'partial rollback — feedback row kept so a replay 409s instead of duplicating', { feedbackId: created.id });
       }
       throw writeError;
+    }
+
+    // A corrected report that is now about SOMEBODY ELSE. The coachee above is
+    // re-resolved from the game's slot as it stands today, so when a sync has
+    // since put another referee in that slot (and the coach corrected the name
+    // to match) the report moved to the new person — and the old one kept its
+    // history entry and its observation, both pointing at a visit that is no
+    // longer about them. Both then read as observed. The old half is removed
+    // here, the way deleteFeedbackCascade removes it, and only after the new
+    // half is safely written: a failure above leaves the filed report as it
+    // was, with the old coachee still attached to it.
+    const formerCoacheeId = replacing ? asText(replacing.coachee) : '';
+    if (formerCoacheeId && formerCoacheeId !== (coachee ? String(coachee.id) : '')) {
+      try {
+        let former: AnyRecord | null = null;
+        try { former = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(formerCoacheeId)); }
+        catch (e) { if (!isRecordNotFound(e)) throw e; }
+        if (former) {
+          const entries = Array.isArray(former.feedback_entries) ? former.feedback_entries as AnyRecord[] : [];
+          const kept = entries.filter((e) => asText((e as AnyRecord).referee_coaches_id) !== String(created.id));
+          if (kept.length !== entries.length) {
+            await withCollection(collectionCandidates.coachees, (c) => c.update(formerCoacheeId, { feedback_entries: kept }));
+          }
+        }
+        await deleteWhere(
+          collectionCandidates.observations,
+          `coachee = "${escapeFilterValue(formerCoacheeId)}" && game = "${escapeFilterValue(String(game.id))}" && coachee_function = "${escapeFilterValue(String(mapCoacheeFunction(role)))}"`,
+          'former coachee observation',
+        );
+        log.info('feedback.submit', 'corrected report moved to another referee — the former coachee\'s entry and observation removed', {
+          feedbackId: created.id, game: asText(game.match_no) || game.id, role: String(role), from: formerCoacheeId, to: coachee ? String(coachee.id) : '',
+        });
+      } catch (e) {
+        log.error('feedback.submit', 'former coachee cleanup failed after a corrected report changed referee', {
+          feedbackId: created.id, coacheeId: formerCoacheeId, error: String(e),
+        });
+      }
     }
 
     const writeMs = Date.now() - writeStarted;
@@ -10761,6 +10994,9 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     }
 
     const emailMs = Date.now() - emailStarted;
+    // Only a correction that actually went out starts the window: a failed
+    // mail is one the coach must be able to retry at once.
+    if (replacing && emailSent) reportResends.mark(String(created.id));
 
     // Phase 4 — Closure. closedRoles was read inside the game lock, so the
     // other role's closure cannot have landed in between.
@@ -11413,6 +11649,13 @@ async function markRemindersSent(plans: ReminderPlan[], stamp: (plan: ReminderPl
 // same template, the same recipients, the same rules about who is a coachee,
 // and it stamps the daily job's own dedupe key so tomorrow's run does not send
 // it a second time.
+// Throttled, because it mails the game's referees from the association's own
+// address and nothing else stood between a loop and their inbox: the daily
+// job's dedupe mark was written here but never read. One manual reminder per
+// game per sender per window; the daily job keeps its own once-per-day key.
+const MANUAL_REMINDER_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const manualReminders = createMailCooldown(MANUAL_REMINDER_COOLDOWN_MS);
+
 app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
@@ -11427,6 +11670,12 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
     }
     if (!rcRefPresent(game.assigned_rc_id, game.assigned_rc)) {
       res.status(400).json({ error: 'Für ein Spiel ohne Referee Coach gibt es keine Erinnerung.' });
+      return;
+    }
+    // "Your game tomorrow" about a game already played is noise at best.
+    const kickoff = Date.parse(asText(game.match_date));
+    if (Number.isFinite(kickoff) && kickoff < Date.now()) {
+      res.status(422).json({ error: 'Dieses Spiel hat schon stattgefunden — eine Erinnerung gibt es nur vor dem Spiel.' });
       return;
     }
 
@@ -11457,20 +11706,40 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
       return;
     }
 
-    const delivered: ReminderPlan[] = [];
-    for (const plan of plans) {
-      await sendMailResilient({
-        from: MAIL_FROM,
-        to: testMode ? testRecipient : plan.to,
-        // No cc in test mode: the copy list carries real addresses too.
-        cc: !testMode && plan.cc.length ? plan.cc : undefined,
-        replyTo: plan.replyTo || undefined,
-        subject: testMode ? `[TEST → ${plan.to.join(', ')}] ${plan.subject}` : plan.subject,
-        html: plan.html,
-        text: plan.text,
-        attachments: emailAttachments(),
+    const cooldownKey = `${gameId}|${rcAuth?.rcId || rcAuth?.name || 'admin'}`;
+    const wait = manualReminders.left(cooldownKey);
+    if (wait > 0) {
+      res.set('Retry-After', String(Math.ceil(wait / 1000)));
+      res.status(429).json({
+        error: `Die Erinnerung für dieses Spiel ist eben erst verschickt worden. Erneut möglich in ${wait >= 3600000 ? `${Math.ceil(wait / 3600000)} Std.` : `${Math.ceil(wait / 60000)} Min.`}`,
+        retryAfterMs: wait,
       });
-      delivered.push(plan);
+      return;
+    }
+    // Reserved in the same tick as the check — no await between them — so a
+    // burst of parallel requests cannot all pass it; released again if nothing
+    // went out. Test copies go to the tester and are not reserved: trying the
+    // button out is what test mode is for.
+    if (!testMode) manualReminders.mark(cooldownKey);
+    const delivered: ReminderPlan[] = [];
+    try {
+      for (const plan of plans) {
+        await sendMailResilient({
+          from: MAIL_FROM,
+          to: testMode ? testRecipient : plan.to,
+          // No cc in test mode: the copy list carries real addresses too.
+          cc: !testMode && plan.cc.length ? plan.cc : undefined,
+          replyTo: plan.replyTo || undefined,
+          subject: testMode ? `[TEST → ${plan.to.join(', ')}] ${plan.subject}` : plan.subject,
+          html: plan.html,
+          text: plan.text,
+          attachments: emailAttachments(),
+        });
+        delivered.push(plan);
+      }
+    } catch (sendError) {
+      if (delivered.length === 0) manualReminders.clear(cooldownKey);
+      throw sendError;
     }
     // Stamped with the game's own day, which is the key the 10:00 run computes
     // for it — see runMatchReminders. Skipped in test mode: marking a game

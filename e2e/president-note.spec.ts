@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { RC, stubSignedInApp, openFileMenu } from './support/app';
-import { presidentNoteEntry } from '../server/presidentNotes';
+import { presidentNoteEntry, presidentNoteBelongsToAnother } from '../server/presidentNotes';
 
 /**
  * The private note a coach leaves for the RC chair on an observation they have
@@ -140,6 +140,20 @@ test.describe('what an entry carries', () => {
       game: null, coachee: undefined, authorName: 'Admin', now: new Date(0),
     });
     expect(entry).toMatchObject({ note: 'still here', gameId: '', matchNo: '', teams: '', refereeId: '', rcName: 'Bea Beispiel', rcId: '' });
+  });
+});
+
+// An admin writes blind — they cannot read the note first — so an admin write
+// over the coach's confidential note used to replace or erase it unseen. The
+// route now refuses when the entry is somebody else's words
+// (server/index.ts, PUT /api/feedback/:id/president-note).
+test.describe('who may overwrite an entry', () => {
+  test("an admin may not replace or clear the coach's note, only their own", () => {
+    expect(presidentNoteBelongsToAnother(undefined, 'Admin')).toBe(false);
+    expect(presidentNoteBelongsToAnother({ authorName: RC.name }, 'Admin')).toBe(true);
+    expect(presidentNoteBelongsToAnother({ authorName: 'Admin' }, 'Admin')).toBe(false);
+    // An entry with no recorded author is treated as the coach's.
+    expect(presidentNoteBelongsToAnother({ authorName: '' }, 'Admin')).toBe(true);
   });
 });
 

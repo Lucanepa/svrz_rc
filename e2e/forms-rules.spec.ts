@@ -125,3 +125,35 @@ test('a report on somebody who is not a coachee owes no note to the president', 
   // and the route stamps it in after grouping.
   expect(formsEntryOf(formsRowOf(filed())).hasPresidentNote).toBe(false);
 });
+
+test('a form whose game or coachee was deleted keeps its folder, its name and its date', () => {
+  // Deleting a coachee or a VolleyManager fixture no longer deletes the forms
+  // (server/index.ts detachFeedback): the relation is cleared and what named
+  // and dated the form is copied under feedback_json.detached first.
+  const live = filed({ coachee: { referee_id: '4711' } });
+  const detached: Rec = {
+    ...filed({ game: null, coachee: null }),
+    game: '', coachee: '',
+    feedback_json: {
+      meta: { srName: 'typed differently' },
+      detached: {
+        at: '2026-09-28T10:00:00Z',
+        game: { match_no: '2345678', match_date: '2026-03-14 19:30:00.000Z', league: '3L', home_team: 'A', away_team: 'B', first_referee: 'Hans Muster', first_referee_id: '' },
+        coachee: { full_name: 'Hans Muster', referee_id: '4711' },
+      },
+    },
+  };
+  const row = formsRowOf(detached);
+  expect(row.name).toBe('Hans Muster');
+  expect(row.refereeId).toBe('4711');
+  const entry = formsEntryOf(row);
+  expect(entry).toMatchObject({ date: '2026-03-14', season: formsEntryOf(formsRowOf(live)).season, matchNo: '2345678', league: '3L' });
+  // No id travels in the copy: the game is gone, and the folder row says so.
+  expect(entry.gameId).toBe('');
+  expect(formsEntryName(row)).toBe('2026-03-14_Hans-Muster_1SR_2345678.pdf');
+  // Same person, same folder as the forms whose rows still exist.
+  expect(groupForms([formsRowOf(live), row])).toHaveLength(1);
+  // A live relation always wins over the copy.
+  const both: Rec = { ...live, feedback_json: { ...(live.feedback_json as Record<string, unknown>), detached: { coachee: { full_name: 'Old Name' } } } };
+  expect(formsRowOf(both).name).toBe('Hans Muster');
+});

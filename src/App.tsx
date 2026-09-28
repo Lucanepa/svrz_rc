@@ -4006,6 +4006,9 @@ export default function App() {
       if (!e.reachedServer) return { outcome: 'retry', error: 'offline' };
       if (e.status === 409) return { outcome: 'duplicate' };          // already recorded
       if (e.status === 401 || (e.status ?? 500) >= 500) return { outcome: 'retry', error: e.message }; // re-auth / transient
+      // A corrected report sent again inside the server's re-send window: the
+      // correction is fine, it only has to wait a few minutes.
+      if (e.status === 429) return { outcome: 'retry', error: e.message };
       return { outcome: 'failed', error: e.message };                 // 400/403/422 — permanent
     }
   };
@@ -10341,6 +10344,9 @@ export default function App() {
                 id="rc-note"
                 value={rcNoteText}
                 onChange={(e) => setRcNoteText(e.target.value)}
+                // The server's own cap (RC_GAME_NOTE_MAX), so the box stops
+                // where the route would refuse.
+                maxLength={5000}
                 rows={7}
                 autoFocus
                 placeholder={formData.lang === 'DE'

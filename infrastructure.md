@@ -519,6 +519,9 @@ reachable without a session.
 - `POST /api/vm/auth-check`: validate upstream auth/session.
 - `GET /api/survey/:token`: **public** — prefill data for the post-visit survey page. No login; the token is the capability, so no name or match number rides in the URL.
 - `POST /api/survey/:token`: **public** — submit the survey. Write-once (409 if already answered), own per-IP rate-limit bucket.
+- `POST /api/signature/start`: open a cross-device signature session (RC session). Rate-limited per coach, 30 per 5 min.
+- `GET|POST /api/signature/:slug`: **public** — the slug is the capability. An unsigned session lives 24 h, a signed one 7 days (it is only read while the coach's dialog polls); expired rows are deleted by the daily 03:30 job alongside the log prune (no VolleyManager involved, so no window). Both read the collection's `created` autodate, which `setup-schema.mjs` now ensures on `signatures` even where the collection predates it.
+- `GET /api/events`: live-update stream (SSE). 200 streams in total and 8 per coach; a coach deactivated while connected has their streams ended within one heartbeat (25 s).
 - `GET /api/survey-responses`: read the responses. Gated on `requireSurveyReader` — the chair's own console password, **not** admin rights (an admin session gets 403) and **not** the `is_rc_president` flag, which grants nothing. Not under `/api/admin/` for that reason, and not `/api/survey/responses`, which the `:token` route above would swallow.
 - `GET /api/rc-game-notes`: read every filed 4.4.10 Rückmeldung. Same `requireSurveyReader` gate as the survey answers and `/api/president-notes`. A coach reads their own note back through `/api/rc-games`, never this.
 - `POST /api/rc-game-notes`: file (or rewrite) one Rückmeldung. RC session; the game, the role and the coachee are re-derived server-side, so a coach who was not on that whistle gets 403. Body is redacted in the activity log.
@@ -538,7 +541,7 @@ reachable without a session.
 - `GET /api/games/calendar-status`: game statuses (`outstanding|completed|none`).
 - `GET /api/ical/me`: the calling RC's subscription links (`url`, `webcalUrl`, `downloadUrl`). RC session required; an admin-only session gets 403, because the feed belongs to a person and an admin console session is not one.
 - `GET /api/ical/:token.ics`: **public** — the RC's assigned games as iCalendar, past and future. No login is possible for a calendar client, so the token in the path is the whole credential: an HMAC of the RC's id under `ADMIN_SESSION_SECRET`, stable per person, and only honoured for RCs that are still active. `?lang=de|en` picks the event language, `?download=1` flips the response to an attachment. The request log redacts the token. Rendered per request but memoised for 5 min, so a badly-behaved poller cannot pull the games collection repeatedly.
-- `POST /api/feedback/submit`: main workflow submit (save + PDF + email + closure).
+- `POST /api/feedback/submit`: main workflow submit (save + PDF + email + closure). The only route with the 32 MB JSON parser, and it is only mounted once the session cookie verifies (HMAC + expiry, checked before the body is read) — an anonymous POST gets a 401 without a byte buffered. The park and notebook routes' larger parsers are gated the same way.
 - `GET /api/drafts/parked`: this coach's parked (unfinished) drafts — metadata and payload, newest first. Owner comes from the session; nothing parked is an empty list, never a 404.
 - `PUT|POST /api/drafts/parked/:gameId`: park (upsert) the draft set for one game, both roles in one call. POST is accepted as well as PUT because the send that survives a page going away (`sendBeacon` / `fetch` with `keepalive`) can only POST — it caps the body near 64 KiB, so it fits a draft with no signatures yet. Own rate-limit bucket keyed by RC id, and its own 2 MB body limit — checked ahead of the JSON parser, since a draft carries up to four signature PNGs as data URLs.
 - `DELETE /api/drafts/parked/:gameId`: unpark one game, both roles. Removing nothing is a success.
@@ -749,6 +752,25 @@ grep '"evt":"auth' logs/svrz-*.jsonl | tail -50      # every login / reset decis
 Passwords, PINs, OTP codes, tokens and cookies are redacted at the log-store
 boundary (`redact()`), on both sides — boolean flags under those key names are
 kept, since they carry no secret and are usually the diagnostic bit.
+Capability tokens in URLs (`/api/ical|survey|signature/<token>`,
+`#/sign|survey/<token>`) are stripped by VALUE from every string that reaches
+the store (`server/logguard.ts`), whatever key they travel under — a 429 logging
+`path`, a click logging an anchor's `href`.
+
+Bounds on what anyone can write (all in `server/logguard.ts` / `server/index.ts`):
+
+- Every entry field is capped in `record()` — `t` must be a date of at most 40
+  characters, `sid`/`did` 64, `evt` 60 — so no field can carry a quarter
+  megabyte into the ring and the JSONL.
+- A body logged by shape keeps at most 20 key names of 60 characters each.
+- Requests with **no verified session** are logged under a per-IP budget of 600
+  per 5 minutes; past it, one `log.throttled` line and nothing more until the
+  window resets (a 5xx is still logged). Signed-in callers are never budgeted.
+- A client batch is filed under its claimed `user` only if the session names
+  that very person (an active RC with that full name, or the console login);
+  otherwise it is `unverified:<name>`. The error-alert mail shows such names as
+  "(unverified)", and unverified classes may take at most 5 of the digest's 60
+  slots — a server or verified error always gets in, evicting one.
 
 Env: `LOG_DIR` (default `./logs`, `/app/logs` in the container via a bind
 mount), `LOG_LEVEL` (default `debug`), `LOG_RING_MAX` (20000),
@@ -1176,6 +1198,16 @@ Superseded copies of `svrz-api.env` are consolidated into
 `svrz-api.env-history-<date>.tar.gz` (0600) rather than left as loose `.bak-*`
 files. They are still plaintext secrets on disk; `gpg` is available on the host
 if that is ever worth hardening properly.
+
+**None of this may reach the API image.** The build context is the whole host
+tree (`context: ../..`, `COPY . .`), which is also where `backups/` lives.
+`.dockerignore` excludes `backups`, `*.zip`, `*.tar.gz`, `svrz-api.env*`, the
+seed data JSON and spreadsheet exports; before 2026-09-28 it did not, and every
+image carried up to 14 full database snapshots in `/app/backups`. Old images and
+build cache built before that still do — on lenovoserver, once after the next
+deploy: `docker image prune -f && docker builder prune -f`. Anything added to
+the host tree that holds data must be added to `.dockerignore` in the same
+change.
 
 ## Data Import Status (Current Snapshot)
 

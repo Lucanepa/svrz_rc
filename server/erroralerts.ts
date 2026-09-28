@@ -15,6 +15,7 @@
 //   • it never throws into record(), and never alerts about its own failures.
 
 import { onEntry, type LogEntry } from './logstore.ts';
+import { digestAdmission, isUnverifiedEntry, UNVERIFIED_PREFIX } from './logguard.ts';
 import { entryGroup, readNotes, type MuteRule } from './logquery.ts';
 // The same palette and typeface the coaching mails use — an alert is still an
 // SVRZ mail, and before this it arrived in indigo and a system font stack.
@@ -47,10 +48,16 @@ type Pending = {
   last: LogEntry;
   users: Set<string>;
   sessions: Set<string>;
+  /** Opened by a client line nobody vouches for (see isUnverifiedEntry). */
+  unverified: boolean;
 };
 
 const MAX_GROUPS_PER_MAIL = 12;
 const MAX_PENDING_GROUPS = 60;
+// /api/client-logs takes error lines from anyone, and each new `evt` is a new
+// class — so anonymous classes get this many of the slots above and no more.
+// A server or verified error is always admitted, pushing one of them out.
+const MAX_UNVERIFIED_GROUPS = 5;
 
 // The mail is written in English. Every other mail this app sends goes to a
 // referee or a coach and is German; this one goes to whoever operates the
@@ -130,16 +137,16 @@ export function installErrorAlerts(opts: Options): void {
   // The log files a name the ingest endpoint could not tie to a session as
   // `unverified:<name>` — /api/client-logs takes no session on purpose (a
   // beacon fires after logout), so an anonymous POST must not be able to file
-  // lines under a real coach's name. That marker is a property of the ingest,
-  // not of the person, and reading it in an alert only ever raised the wrong
-  // question: for months half of every coach's lines carried it simply because
-  // the browser shipped the batch without its cookie. The entry keeps it — the
-  // Protokoll can still be searched for it — the mail shows the person.
-  const UNVERIFIED = 'unverified:';
+  // lines under a real coach's name. This mail used to strip the marker, on
+  // the grounds that half of every coach's lines carried it only because the
+  // browser shipped the batch without its cookie. That was fixed in the
+  // logger (credentials: 'include'), and stripping it had made this mail the
+  // one place an anonymous POST could put text in front of the operator under
+  // a real coach's name. So the claim is shown as a claim.
   function people(users: Set<string>): string[] {
     const names = new Set<string>();
     for (const u of users) {
-      const name = u.startsWith(UNVERIFIED) ? u.slice(UNVERIFIED.length) : u;
+      const name = u.startsWith(UNVERIFIED_PREFIX) ? `${u.slice(UNVERIFIED_PREFIX.length)} (unverified)` : u;
       if (name) names.add(name);
     }
     return [...names];
@@ -183,6 +190,7 @@ export function installErrorAlerts(opts: Options): void {
       `<div style="margin:0 0 8px">`,
       `${g.count > 1 ? `${chip(`${g.count}×`, '#ffffff', C.ink)}&nbsp;` : ''}`,
       `${chip(source, e.src === 'client' ? C.ink : C.mute, C.page)}&nbsp;`,
+      g.unverified ? `${chip('unverified', C.red, C.page)}&nbsp;` : '',
       `<span style="font:600 12px/1.6 ${MONO};color:${C.mute}">${esc(e.evt)}</span>`,
       `</div>`,
       `<div style="font:500 15px/1.45 ${FONT};color:${C.ink};word-break:break-word">${esc(e.msg || '(no message)')}</div>`,
@@ -211,7 +219,7 @@ export function installErrorAlerts(opts: Options): void {
     for (const g of shown) {
       const e = g.last;
       lines.push(
-        `── ${g.count}× ${e.src === 'client' ? 'App' : 'Server'} · ${e.evt}`,
+        `── ${g.count}× ${e.src === 'client' ? 'App' : 'Server'}${g.unverified ? ' (unverified sender)' : ''} · ${e.evt}`,
         `   ${e.msg || '(no message)'}`,
         `   ${when(g.first.t, e.t)}`,
       );
@@ -316,6 +324,8 @@ export function installErrorAlerts(opts: Options): void {
     if (existing) {
       existing.count++;
       existing.last = entry;
+      // A class a verified line also hit is no longer only an anonymous claim.
+      if (existing.unverified && !isUnverifiedEntry(entry)) existing.unverified = false;
       if (entry.user) existing.users.add(entry.user);
       if (entry.sid) existing.sessions.add(entry.sid);
       schedule(debounceMs);
@@ -324,6 +334,22 @@ export function installErrorAlerts(opts: Options): void {
 
     const cool = cooling.get(group);
     if (cool && Date.now() < cool.until) { cool.swallowed++; return; }
+
+    // Admission BEFORE the cooldown is armed. It used to be armed first, so a
+    // class that found the digest full was never mailed AND was then held back
+    // for an hour as if it had been.
+    const unverified = isUnverifiedEntry(entry);
+    const admission = digestAdmission(pending, unverified, {
+      maxGroups: MAX_PENDING_GROUPS, maxUnverifiedGroups: MAX_UNVERIFIED_GROUPS,
+    });
+    if (!admission.admit) return;
+    if (admission.evict) {
+      // The evicted class was never mailed, so it leaves no cooldown behind:
+      // if it is real it comes back and is counted then.
+      pending.delete(admission.evict);
+      cooling.delete(admission.evict);
+    }
+
     // One entry per failure class, and a long-lived process meets a lot of
     // distinct classes. Drop the expired ones once the map gets big rather than
     // holding every message shape the app has ever produced.
@@ -332,16 +358,15 @@ export function installErrorAlerts(opts: Options): void {
     }
     cooling.set(group, { until: Date.now() + cooldownMs, swallowed: 0 });
 
-    if (pending.size < MAX_PENDING_GROUPS) {
-      pending.set(group, {
-        group,
-        count: 1,
-        first: entry,
-        last: entry,
-        users: new Set(entry.user ? [entry.user] : []),
-        sessions: new Set(entry.sid ? [entry.sid] : []),
-      });
-    }
+    pending.set(group, {
+      group,
+      count: 1,
+      first: entry,
+      last: entry,
+      users: new Set(entry.user ? [entry.user] : []),
+      sessions: new Set(entry.sid ? [entry.sid] : []),
+      unverified,
+    });
     schedule(debounceMs);
   });
 

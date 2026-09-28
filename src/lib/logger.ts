@@ -222,7 +222,10 @@ function describeElement(el: Element | null): Record<string, unknown> | undefine
     // Values are never logged; a password field isn't even described by text.
     text: isSecret ? '[password field]' : confidential ? '[redacted]' : description,
     disabled: 'disabled' in target ? Boolean((target as HTMLButtonElement).disabled) : undefined,
-    href: tag === 'a' ? (target as HTMLAnchorElement).getAttribute('href') || undefined : undefined,
+    // Scrubbed like every other URL this logger writes: the calendar dialog's
+    // anchors carry the iCal feed token (webcal://…/api/ical/<token>.ics), and
+    // a click on one filed it raw into a Protokoll every admin reads.
+    href: tag === 'a' ? scrubTokens((target as HTMLAnchorElement).getAttribute('href') || '') || undefined : undefined,
   };
 }
 

@@ -18,3 +18,27 @@ logs
 # "actual secret values" by its own instructions.
 infrastructure.private.md
 _shots
+# The host tree IS the build context (docker-compose: context ../..), and it is
+# where backup-pb.sh rotates the nightly PocketBase snapshots — every feedback,
+# PDF, president note and credential hash. Without these lines `COPY . .` baked
+# up to 14 of them into /app/backups of every image, and a record deleted since
+# lived on in every layer and dangling image built after it.
+backups
+**/backups
+**/*.zip
+**/*.tar.gz
+**/*.tgz
+# Superseded env files are archived as svrz-api.env-history-<date>.tar.gz and
+# svrz-api.env.bak-*; neither ends in .env, so the patterns above missed them.
+**/svrz-api.env*
+# Seed DATA (real names and e-mails); the two tracked .mjs scripts stay in.
+deploy/hetzner/seed/*.json
+# Register / roster exports dropped into the tree for an import. The server
+# never reads a spreadsheet from disk — imports arrive as uploads.
+**/*.xlsx
+**/*.csv
+# Local-only output and agent worktrees (rsync skips .claude, but a build run
+# from a laptop checkout would not).
+.claude
+test-results
+playwright-report

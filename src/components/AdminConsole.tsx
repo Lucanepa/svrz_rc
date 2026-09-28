@@ -2635,11 +2635,15 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
               {!loading && !settingsLoading && rcs.map((r) => editId === r.id ? (
                 <tr key={r.id}>
                   <td className="py-2 pr-3">
-                    <div className="flex gap-1.5">
-                      <input className={`${input} w-full`} placeholder={t.firstName} value={editForm.first_name || ''} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
-                      <input className={`${input} w-full`} placeholder={t.lastName} value={editForm.last_name || ''} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
-                      <input className={`${input} w-24 shrink-0`} placeholder={t.svNumber} value={editForm.sv_number || ''} onChange={(e) => setEditForm({ ...editForm, sv_number: e.target.value })} />
-                      <input className={`${input} w-full`} placeholder={t.aliases} value={editForm.name_aliases || ''} onChange={(e) => setEditForm({ ...editForm, name_aliases: e.target.value })} />
+                    {/* Two rows of two. Four inputs in one flex line fought
+                        over ~300px: `input` already carries w-full, so the SV
+                        box's w-24 lost and the name boxes shrank to slivers —
+                        the names were there, just unreadable. */}
+                    <div className="grid grid-cols-2 gap-1.5 min-w-[280px]">
+                      <input className={input} placeholder={t.firstName} value={editForm.first_name || ''} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
+                      <input className={input} placeholder={t.lastName} value={editForm.last_name || ''} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
+                      <input className={input} placeholder={t.svNumber} value={editForm.sv_number || ''} onChange={(e) => setEditForm({ ...editForm, sv_number: e.target.value })} />
+                      <input className={input} placeholder={t.aliases} value={editForm.name_aliases || ''} onChange={(e) => setEditForm({ ...editForm, name_aliases: e.target.value })} />
                     </div>
                   </td>
                   <td className="py-2 pr-3"><input className={`${input} w-full`} value={editForm.email || ''} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} /></td>

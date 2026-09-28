@@ -1745,8 +1745,11 @@ function fmtTimeDe(value: string): string {
   return `${p.hour}:${p.minute}`;
 }
 
-// Shared with buildRemindersFor, which needs it to join two referees' first
-// names for a combined salutation.
+// The LAST resort for a first name: the first word of a full name. It
+// truncates every two-word given name — "Thanh Ut Nguyen" was told to meet
+// "Thanh" — so a caller that knows the person passes the stored first_name
+// instead (emailVars' *FirstName fields); this only answers for a name no
+// record stands behind.
 function firstNameOf(n: string): string {
   return n.trim().split(/\s+/)[0] || '';
 }
@@ -1761,24 +1764,29 @@ function emailVars(o: {
   // their own — only the reminder ever passes this. '' everywhere else, so
   // {{kollege}}/{{colleague}} simply render empty rather than leaking braces.
   colleagueName?: string;
+  // The stored first names, where the caller has the record. Each falls back
+  // to the first word of the matching full name (firstNameOf).
+  refereeFirstName?: string; rcFirstName?: string; colleagueFirstName?: string;
 }): Record<string, string> {
-  const first = firstNameOf;
   const colleague = o.colleagueName || '';
+  const refereeFirst = o.refereeFirstName?.trim() || firstNameOf(o.refereeName);
+  const rcFirst = o.rcFirstName?.trim() || firstNameOf(o.rcName);
+  const colleagueFirst = o.colleagueFirstName?.trim() || firstNameOf(colleague);
   return {
-    vorname: first(o.refereeName), name: o.refereeName,
-    coach: o.rcName, coachVorname: first(o.rcName),
+    vorname: refereeFirst, name: o.refereeName,
+    coach: o.rcName, coachVorname: rcFirst,
     datum: o.date, uhrzeit: o.time,
     heim: o.homeTeam, gast: o.awayTeam, liga: o.league, halle: o.location,
     spielNr: o.matchNo, rolle: o.role,
-    kollege: colleague, kollegeVorname: first(colleague),
+    kollege: colleague, kollegeVorname: colleagueFirst,
     // The English names — one per German name, so the English half of a mail
     // can be written in English placeholders (the console offers these chips
     // when it is switched to English) — plus the older aliases, kept so a
     // template written with them keeps working.
-    firstName: first(o.refereeName), coachFirstName: first(o.rcName),
+    firstName: refereeFirst, coachFirstName: rcFirst,
     date: o.date, time: o.time, home: o.homeTeam, away: o.awayTeam, league: o.league, venue: o.location,
     matchNo: o.matchNo, role: o.role,
-    colleague, colleagueFirstName: first(colleague),
+    colleague, colleagueFirstName: colleagueFirst,
     coachee: o.refereeName, rc: o.rcName, location: o.location, homeTeam: o.homeTeam, awayTeam: o.awayTeam,
     match: `${o.homeTeam} – ${o.awayTeam}`,
   };
@@ -6181,14 +6189,14 @@ function registerMayStandIn(game: AnyRecord, manualIds: Set<string>): boolean {
 async function refereeRegisterContact(
   name: string,
   svNumber = '',
-): Promise<{ email: string; name: string; ambiguous: boolean }> {
+): Promise<{ email: string; name: string; firstName: string; ambiguous: boolean }> {
   const rows = await listRefereeRecords();
   const wantedId = asText(svNumber);
   if (wantedId) {
     const byId = rows.find((r) => asText(r.sv_number) === wantedId);
     if (byId) {
       const person = refereeFromRecord(byId);
-      return { email: singleAddress(person.email), name: person.name || name, ambiguous: false };
+      return { email: singleAddress(person.email), name: person.name || name, firstName: refereeText(byId, 'first_name'), ambiguous: false };
     }
   }
   // No number, or one the register does not hold: the name, through the one
@@ -6197,11 +6205,11 @@ async function refereeRegisterContact(
   // exactly one licence. Two is the ambiguity the caller reports; none is
   // nobody.
   const numbers = registerNumbers(rows)(name);
-  if (numbers.length !== 1) return { email: '', name: '', ambiguous: numbers.length > 1 };
+  if (numbers.length !== 1) return { email: '', name: '', firstName: '', ambiguous: numbers.length > 1 };
   const hit = rows.find((r) => asText(r.sv_number) === numbers[0]);
-  if (!hit) return { email: '', name: '', ambiguous: false };
+  if (!hit) return { email: '', name: '', firstName: '', ambiguous: false };
   const person = refereeFromRecord(hit);
-  return { email: singleAddress(person.email), name: person.name || name, ambiguous: false };
+  return { email: singleAddress(person.email), name: person.name || name, firstName: refereeText(hit, 'first_name'), ambiguous: false };
 }
 
 /** Writes the SV-Nr. onto every coachee whose name resolves to exactly one
@@ -10926,6 +10934,8 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     let coachee: AnyRecord | null = null;
     let coacheeCollection: ReturnType<typeof pb.collection> | null = null;
     let coacheeEmail = '';
+    // The salutation's first name, from the record the mail is addressed by.
+    let refereeFirstName = '';
     // A Testspiel is on every season's list whatever its date, so its referee
     // may legitimately resolve to a row from another season; a real fixture may
     // not — see findCoacheeRecord.
@@ -10944,6 +10954,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       coachee = found.coachee;
       coacheeCollection = found.collection;
       coacheeEmail = singleAddress(coachee.email);
+      refereeFirstName = asText(coachee.first_name);
       if (!coacheeEmail) {
         res.status(400).json({
           error: asText(coachee.email)
@@ -10962,7 +10973,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       const viaRegister = registerMayStandIn(game, manualIds);
       const fromRegister = viaRegister
         ? await refereeRegisterContact(refereeName, slotRefereeId)
-        : { email: '', name: '', ambiguous: false };
+        : { email: '', name: '', firstName: '', ambiguous: false };
       if (!fromRegister.email) {
         // Named by what the game IS, so the coach knows which list to fix.
         const what = isTestGame ? 'Testspiel' : isVmMarkedRow(game) ? 'Im VolleyManager markiertes Spiel' : 'Spiel';
@@ -10976,6 +10987,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         return;
       }
       coacheeEmail = fromRegister.email;
+      refereeFirstName = fromRegister.firstName;
       log.info('feedback.submit', `${isTestGame ? 'test game' : 'VM-marked game'} filed against the referee register`, {
         game: asText(game.match_no) || game.id, referee: refereeName,
       });
@@ -11187,11 +11199,13 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     try {
       // Resolve RC email
       let rcEmail = '';
+      let rcFirstName = '';
       try {
         const rcPerson = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
           collection.getOne<AnyRecord>(refereeCoachPersonId),
         );
         rcEmail = singleAddress(rcPerson.email);
+        rcFirstName = asText(rcPerson.first_name);
       } catch {
         // RC person fetch failed — continue without RC email
       }
@@ -11237,6 +11251,8 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           homeTeam: asText(game.home_team),
           awayTeam: asText(game.away_team),
           role: String(role),
+          refereeFirstName,
+          rcFirstName,
         }),
         rows: [
           ['Spiel Nr.|Match no.', matchNo],
@@ -11835,7 +11851,7 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
     // addressed. ONE mail per game, not one per slot (Luca, 21.09.2026): every
     // coachee on it goes in To:, a referee who isn't rides in Cc instead of
     // getting a separate mail of their own.
-    type Slot = { roleLabel: '1. SR' | '2. SR'; email: string; name: string; isCoachee: boolean };
+    type Slot = { roleLabel: '1. SR' | '2. SR'; email: string; name: string; firstName: string; isCoachee: boolean };
     const slots: Slot[] = [];
     // Nobody referees both ends of one match. A game naming the same person
     // twice is a typo — or a test fixture filled in quickly — and sending them
@@ -11856,6 +11872,7 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
       });
       let email = coachee ? singleAddress(coachee.email) : '';
       let recipientName = coachee ? asText(coachee.full_name) || refereeName : refereeName;
+      let recipientFirst = coachee ? asText(coachee.first_name) : '';
       // The same fallback the feedback submit uses, for the same games and
       // reasons (registerMayStandIn): a test game's whole purpose is to walk
       // the flow through, and a VM-marked game is on the list without needing
@@ -11863,10 +11880,11 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
       // the one game that can never produce one.
       const fromRegister = !email && viaRegister
         ? await refereeRegisterContact(refereeName, refereeId)
-        : { email: '', name: '', ambiguous: false };
+        : { email: '', name: '', firstName: '', ambiguous: false };
       if (fromRegister.email) {
         email = fromRegister.email;
         recipientName = fromRegister.name || refereeName;
+        recipientFirst = fromRegister.firstName;
       }
       if (!email) {
         // Silence here is how this job hides: it once reported "0 sent, 0
@@ -11886,7 +11904,7 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
         });
         continue;
       }
-      slots.push({ roleLabel, email, name: recipientName, isCoachee: !!coachee });
+      slots.push({ roleLabel, email, name: recipientName, firstName: recipientFirst || firstNameOf(recipientName), isCoachee: !!coachee });
     }
     if (slots.length === 0) continue;
 
@@ -11925,14 +11943,16 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
       awayTeam: asText(game.away_team),
       role: primary.map((s) => s.roleLabel).join(' + '),
       colleagueName: colleague?.name ?? '',
+      rcFirstName: holder?.firstName,
+      colleagueFirstName: colleague?.firstName,
     });
     // Overridden after emailVars(), not passed into it: the DE and EN
     // salutations need different conjunctions ("und" vs "and") for the same
     // two names, and emailVars() only produces one joined value shared by
     // both halves of the mail — {{vorname}} feeds the German paragraph,
     // {{firstName}} the English one, so each gets its own join here.
-    vars.vorname = primaryNames.map(firstNameOf).join(' und ');
-    vars.firstName = primaryNames.map(firstNameOf).join(' and ');
+    vars.vorname = primary.map((s) => s.firstName).join(' und ');
+    vars.firstName = primary.map((s) => s.firstName).join(' and ');
     vars.name = joinedName;
     vars.coachee = joinedName;
     const built = buildTemplatedEmail({

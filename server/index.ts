@@ -15,6 +15,7 @@ import {
   type AnnotationStatus,
 } from './logquery.ts';
 import { installErrorAlerts } from './erroralerts.ts';
+import { boundedKeys, clientLogUser, clientTimestamp } from './logguard.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
 import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, type ExpenseVisit } from './expenses.ts';
 import { computeBreakdowns, computeStatistics, coacheeSummaries, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
@@ -190,6 +191,36 @@ app.use(cors({
 const generousJson = express.json({ limit: '32mb' });
 const modestJson = express.json({ limit: '256kb' });
 const BIG_BODY_PATH_RE = /^\/api\/feedback\/submit\/?$/i;
+
+// The larger parsers are for signed-in callers only, and that is checked HERE,
+// before a byte is buffered. The route's own requireRcSession runs after the
+// body is parsed, so on its own it answered an anonymous 32 MB POST with a 401
+// only once the whole thing had been read into memory, JSON.parse'd on the one
+// event loop every coach shares, and stringified again for the request log — a
+// few of those in parallel stall or crash the API for everybody.
+//
+// Signature and expiry only (verifyRcSession / verifyConsoleSession are an HMAC,
+// no PocketBase round-trip): whether the named coach is still active is the
+// route's question, asked once the body is in. An app session that has not
+// picked a name yet is refused too — every one of these routes 401s it anyway.
+function mayPostLargeBody(req: Request, allowConsole: boolean): boolean {
+  const rc = verifyRcSession(req);
+  if (rc.ok && rc.rcId) return true;
+  return allowConsole && verifyAdminSession(req).ok;
+}
+
+function refuseLargeBody(req: Request, res: ExpressResponse): void {
+  // This answers before the request logger runs, so the line is written here —
+  // under the same per-IP budget as every other anonymous line, or refusing a
+  // flood would log the flood.
+  if (unauthLogAllowed(req)) {
+    log.warn('body.unauthenticated', `${req.method} ${redactIcalToken(req.path)} refused before reading the body`, {
+      bytes: Number(req.headers['content-length'] || 0) || undefined,
+    }, { ip: clientIp(req) });
+  }
+  res.status(401).json({ error: 'Unauthorized' });
+}
+
 app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
   if (CLIENT_LOG_PATH_RE.test(req.path)) { next(); return; }
   // Parking a draft carries up to four signature PNGs as data URLs (two roles,
@@ -199,6 +230,8 @@ app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
   // so an oversized park is refused before a byte of it is buffered or parsed
   // and the answer names the cause instead of body-parser's generic 413.
   if (PARK_BODY_PATH_RE.test(req.path)) {
+    // parkOwner refuses the console session, so only an app session gets here.
+    if (!mayPostLargeBody(req, false)) { refuseLargeBody(req, res); return; }
     if (Number(req.headers['content-length'] || 0) > PARK_MAX_BYTES) {
       res.status(413).json({ error: 'Der Entwurf ist zu gross zum Parken.' });
       return;
@@ -207,6 +240,8 @@ app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
     return;
   }
   if (NOTEBOOK_BODY_PATH_RE.test(req.path)) {
+    // notebookOwner refuses the console session as well.
+    if (!mayPostLargeBody(req, false)) { refuseLargeBody(req, res); return; }
     if (Number(req.headers['content-length'] || 0) > NOTEBOOK_MAX_BYTES) {
       // This gate answers before the request-log middleware runs, so without
       // its own line the refusal would be invisible in the Protokoll.
@@ -217,7 +252,13 @@ app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
     notebookJson(req, res, next);
     return;
   }
-  (BIG_BODY_PATH_RE.test(req.path) ? generousJson : modestJson)(req, res, next);
+  if (BIG_BODY_PATH_RE.test(req.path)) {
+    // requireRcSession lets the console session through on this route.
+    if (!mayPostLargeBody(req, true)) { refuseLargeBody(req, res); return; }
+    generousJson(req, res, next);
+    return;
+  }
+  modestJson(req, res, next);
 });
 
 // body-parser rejects an oversized body by throwing, which the generic handler
@@ -261,7 +302,9 @@ function bodySummary(body: unknown): unknown {
   let size = 0;
   try { size = JSON.stringify(body).length; } catch { size = -1; }
   if (size >= 0 && size <= 4_000) return body;
-  return { _summary: true, bytes: size, keys };
+  // The key names are the caller's: bounded, or one anonymous POST of sixty
+  // 2,000-character keys writes 120 kB per line (see server/logguard.ts).
+  return { _summary: true, bytes: size, ...boundedKeys(keys) };
 }
 
 // Matched before the generous JSON parser is mounted, so keep it next to it.
@@ -332,7 +375,39 @@ function logBody(path: string, body: unknown): unknown {
   if (!CONFIDENTIAL_BODY_PATHS.some((re) => re.test(path))) return bodySummary(body);
   if (body == null || typeof body !== 'object') return undefined;
   const keys = Object.keys(body as Record<string, unknown>);
-  return keys.length ? { _confidential: true, keys } : undefined;
+  return keys.length ? { _confidential: true, ...boundedKeys(keys) } : undefined;
+}
+
+// ── Anonymous log budget ──────────────────────────────────────────────
+// Every request is logged before any route decides who is asking, so a caller
+// with no session could write two lines per request, as fast as it can send
+// them, into the ring the admin console reads and the JSONL on pb_data's disk.
+// A signed-in caller is not budgeted — their trail is the one worth having
+// whole. An anonymous IP gets UNAUTH_LOG_PER_WINDOW requests' worth of lines
+// per window (far above a login page's worth of honest traffic, even behind a
+// hall's shared NAT), then one line saying the rest was not written. A 5xx is
+// still logged regardless: that is our failure, not their noise.
+const unauthLogRl: RateLimitStore = new Map();
+const UNAUTH_LOG_PER_WINDOW = 600;
+const UNAUTH_LOG_WINDOW_MS = 5 * 60 * 1000;
+const unauthLogNoted = new Map<string, number>();
+
+function hasVerifiedSession(req: Request): boolean {
+  return verifyRcSession(req).ok || verifyConsoleSession(req).ok;
+}
+
+function unauthLogAllowed(req: Request): boolean {
+  if (hasVerifiedSession(req)) return true;
+  const ip = clientIp(req);
+  if (checkRateLimit(unauthLogRl, ip, UNAUTH_LOG_PER_WINDOW, UNAUTH_LOG_WINDOW_MS).allowed) return true;
+  const resetAt = unauthLogRl.get(ip)?.resetAt ?? 0;
+  if (unauthLogNoted.get(ip) !== resetAt) {
+    unauthLogNoted.set(ip, resetAt);
+    log.warn('log.throttled', `anonymous request log budget spent for ${ip} — further lines dropped until ${new Date(resetAt).toISOString()}`, {
+      perWindow: UNAUTH_LOG_PER_WINDOW, windowMs: UNAUTH_LOG_WINDOW_MS,
+    }, { ip });
+  }
+  return false;
 }
 
 // A calendar token never expires and is the only credential its feed has, so
@@ -354,8 +429,10 @@ function redactIcalToken(url: string): string {
 
 app.use((req: Request, res: ExpressResponse, next: () => void) => {
   const ctx = reqCtx(req);
-  const sid = asText(req.headers['x-svrz-session']) || undefined;
-  const did = asText(req.headers['x-svrz-device']) || undefined;
+  // Sliced like the client-log batch's own sid/did: a header is up to ~16 kB
+  // of whatever the caller wrote, and it lands on both req.in and req.out.
+  const sid = asText(req.headers['x-svrz-session']).slice(0, 64) || undefined;
+  const did = asText(req.headers['x-svrz-device']).slice(0, 64) || undefined;
   if (sid) ctx.sid = sid;
   // The logging endpoints must not log themselves: the ingest fires on every
   // batch, and the admin console polls the reader every few seconds — each
@@ -363,6 +440,7 @@ app.use((req: Request, res: ExpressResponse, next: () => void) => {
   const noisy = req.path === '/api/client-logs'
     || req.path.startsWith('/api/admin/logs')
     || req.path.startsWith('/api/admin/error-logs');
+  const budgeted = !noisy && unauthLogAllowed(req);
 
   // What a failing request actually told the caller. safeError() logs the cause
   // behind a 500, but a 400/403/409/413 is produced by a plain
@@ -375,7 +453,7 @@ app.use((req: Request, res: ExpressResponse, next: () => void) => {
     if (res.statusCode >= 400) failureBody = payload;
     return sendJson(payload);
   }) as typeof res.json;
-  if (!noisy) {
+  if (budgeted) {
     log.info('req.in', `${req.method} ${redactIcalToken(req.originalUrl)}`, {
       method: req.method,
       path: redactIcalToken(req.path),
@@ -389,6 +467,7 @@ app.use((req: Request, res: ExpressResponse, next: () => void) => {
   }
   res.on('finish', () => {
     if (noisy) return;
+    if (!budgeted && res.statusCode < 500) return;
     const ms = Date.now() - ctx.startedAt;
     const lvl: LogLevel = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
     log[lvl]('req.out', `${req.method} ${redactIcalToken(req.originalUrl)} → ${res.statusCode} (${ms}ms)`, {
@@ -635,7 +714,9 @@ function peekGateRateLimit(ip: string, scope = 'gate') {
 // to see from the outside.
 function denyRateLimited(req: Request, res: ExpressResponse, bucket: string, retryAfterMs: number, extra?: Record<string, unknown>): void {
   const ctx = reqCtx(req);
-  log.warn('ratelimit.deny', `${bucket} limit hit for ${ctx.ip}`, { bucket, retryAfterMs, path: req.path, ...extra }, { reqId: ctx.reqId, ip: ctx.ip, sid: ctx.sid });
+  // redactIcalToken like the request logger: the survey POST is a caller, and
+  // its path IS the referee's capability token.
+  log.warn('ratelimit.deny', `${bucket} limit hit for ${ctx.ip}`, { bucket, retryAfterMs, path: redactIcalToken(req.path), ...extra }, { reqId: ctx.reqId, ip: ctx.ip, sid: ctx.sid });
   res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
   res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs });
 }
@@ -740,10 +821,13 @@ setInterval(() => {
   // Every bucket, not just the login ones: clientLogRl is fed by an
   // unauthenticated endpoint that any scanner can reach, so a forgotten map
   // grows one entry per source IP for the life of the process.
-  for (const store of [gateAttempts, signatureAttempts, sharedLoginGlobal, surveyAttempts, clientLogRl, clientLogGlobalRl, parkAttempts, notebookAttempts]) {
+  for (const store of [gateAttempts, signatureAttempts, signatureStartAttempts, sharedLoginGlobal, surveyAttempts, clientLogRl, clientLogGlobalRl, parkAttempts, notebookAttempts, unauthLogRl]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
+  }
+  for (const [ip, resetAt] of unauthLogNoted) {
+    if (now >= resetAt) unauthLogNoted.delete(ip);
   }
   for (const [key, entry] of credChallenges) {
     if (now > entry.expiresAt) credChallenges.delete(key);
@@ -4064,20 +4148,57 @@ async function runVmAuthCheckUnlocked(debug = false) {
 // realtime feed behind that one function, and nothing else changes.
 type LiveEvent = { type: string } & Record<string, unknown>;
 const liveClients = new Set<ExpressResponse>();
+// Whose each stream is: the RC id off the session, or '' for the console
+// session (requireRcSession lets it through without an identity).
+const liveOwners = new Map<ExpressResponse, string>();
 // A ceiling, so a client that reconnects in a loop cannot pin memory. Far above
 // what ~15 coaches with a few tabs each will ever open.
 const LIVE_CLIENT_LIMIT = 200;
+// And one per coach, because the global ceiling alone was one coach's to spend:
+// a script holding 200 streams on one cookie turned every colleague's live
+// updates into 503s. A phone, a laptop and a few tabs each is well inside this.
+const LIVE_CLIENT_LIMIT_PER_RC = 8;
 const LIVE_HEARTBEAT_MS = 25_000;
+
+function endLiveClient(client: ExpressResponse): void {
+  liveClients.delete(client);
+  liveOwners.delete(client);
+  try { client.end(); } catch { /* already gone */ }
+}
+
+// The session is checked once, at connect — so a coach deactivated after that
+// kept receiving every frame until the socket happened to drop. Once per
+// heartbeat, re-read the active roster (the same 10-minute cache
+// requireRcSession reads, which the rc-people admin routes invalidate) and end
+// the streams of anyone no longer on it. Their EventSource reconnects, and the
+// reconnect meets requireRcSession's 401. A roster that cannot be read ends
+// nothing: PocketBase being down is not a deactivation.
+const liveRosterSweep = setInterval(() => {
+  if (liveOwners.size === 0) return;
+  void getActiveRcPeople().then((people) => {
+    const active = new Set(people.map((p) => p.id));
+    for (const [client, rcId] of liveOwners) {
+      if (rcId && !active.has(rcId)) endLiveClient(client);
+    }
+  }).catch(() => { /* keep the streams; the next sweep tries again */ });
+}, LIVE_HEARTBEAT_MS);
+liveRosterSweep.unref?.();
 
 function publishLive(event: LiveEvent) {
   if (liveClients.size === 0) return;
   const frame = `data: ${JSON.stringify(event)}\n\n`;
   for (const client of liveClients) {
+    // rcKnownIds is the roster as last read, synchronously — the sweep above
+    // ends such a stream within a heartbeat, this keeps the frames in between
+    // from reaching it. An empty set means "not read yet", never "nobody".
+    const owner = liveOwners.get(client);
+    if (owner && rcKnownIds.size > 0 && !rcKnownIds.has(owner)) continue;
     try {
       client.write(frame);
     } catch {
       // A dead socket is not news — 'close' takes it out of the set.
       liveClients.delete(client);
+      liveOwners.delete(client);
     }
   }
 }
@@ -4086,6 +4207,18 @@ app.get('/api/events', requireRcSession, (req: Request, res: ExpressResponse) =>
   if (liveClients.size >= LIVE_CLIENT_LIMIT) {
     res.status(503).json({ error: 'Too many live connections.' });
     return;
+  }
+  const owner = rcAuthByReq.get(req)?.rcId || '';
+  if (owner) {
+    let mine = 0;
+    for (const rcId of liveOwners.values()) if (rcId === owner) mine++;
+    if (mine >= LIVE_CLIENT_LIMIT_PER_RC) {
+      // A 503 ends an EventSource for good rather than retrying into a loop;
+      // that tab falls back to the poll, which is the floor anyway.
+      log.warn('live.limit', 'per-coach live stream limit reached', { open: mine, limit: LIVE_CLIENT_LIMIT_PER_RC }, reqCtx(req));
+      res.status(503).json({ error: 'Too many live connections.' });
+      return;
+    }
   }
   // no-transform and X-Accel-Buffering stop a proxy from holding the stream
   // back until it has "enough" to forward — which turns live into an hour late.
@@ -4103,6 +4236,7 @@ app.get('/api/events', requireRcSession, (req: Request, res: ExpressResponse) =>
   // connection, and the poll covers the gap either way.
   res.write('retry: 5000\n\n');
   liveClients.add(res);
+  liveOwners.set(res, owner);
 
   // Cloudflare drops an idle stream at ~100s. The heartbeat also tells a phone
   // coming out of the background whether its connection actually survived.
@@ -4113,6 +4247,7 @@ app.get('/api/events', requireRcSession, (req: Request, res: ExpressResponse) =>
   req.on('close', () => {
     clearInterval(heartbeat);
     liveClients.delete(res);
+    liveOwners.delete(res);
   });
 });
 
@@ -4432,7 +4567,7 @@ function boundedLogData(value: unknown): Record<string, unknown> | undefined {
 app.post('/api/client-logs',
   express.text({ type: 'text/plain', limit: CLIENT_LOG_BODY_LIMIT }),
   express.json({ limit: CLIENT_LOG_BODY_LIMIT }),
-  (req: Request, res: ExpressResponse) => {
+  async (req: Request, res: ExpressResponse) => {
   const ip = clientIp(req);
   const globalRl = checkRateLimit(clientLogGlobalRl, 'global', CLIENT_LOG_GLOBAL_PER_WINDOW, CLIENT_LOG_WINDOW_MS);
   if (!globalRl.allowed) {
@@ -4462,10 +4597,20 @@ app.post('/api/client-logs',
   // before login there is nothing to authenticate with. So `user` is whatever
   // the caller typed — and unmarked, an anonymous POST could file lines in the
   // admin's Protokoll under a real coach's name. Mark it when no session backs it.
+  //
+  // Verified means the session names THIS person, not merely that a session
+  // exists: a valid cookie used to be enough, so any coach could file lines as
+  // any other, and a deactivated coach's cookie (it verifies until its 30-day
+  // expiry) still counted. resolveRcSession re-checks the active roster (from
+  // the 10-minute cache); a roster that cannot be read leaves the name
+  // unverified rather than failing the batch.
   const claimedUser = asText(body.user).slice(0, 120);
-  const user = claimedUser
-    ? (verifyRcSession(req).ok ? claimedUser : `unverified:${claimedUser}`)
-    : undefined;
+  let rcName: string | null = null;
+  if (claimedUser) {
+    try { rcName = (await resolveRcSession(req))?.person.fullName ?? null; } catch { rcName = null; }
+  }
+  const consoleSession = claimedUser ? verifyConsoleSession(req) : null;
+  const user = clientLogUser(claimedUser, { rcName, consoleEmail: consoleSession?.ok ? consoleSession.email : null });
   for (const raw of entries) {
     const e = (raw ?? {}) as Record<string, unknown>;
     const lvl = asText(e.lvl);
@@ -4476,7 +4621,9 @@ app.post('/api/client-logs',
       msg: asText(e.msg).slice(0, 2_000) || undefined,
       // The browser's own timestamp, so ordering survives batching and offline
       // buffering; falls back to arrival time.
-      t: asText(e.t) || undefined,
+      // Only a short string that parses as a date: this field was stored
+      // whole, and a 250 kB `t` per entry walked past every other bound here.
+      t: clientTimestamp(e.t),
       // Bounded before it enters the ring and the file sink: msg and evt are
       // already sliced, but `data` was passed through whole, so one unauthenticated
       // caller could inflate every entry to the batch/body limit and fill the log
@@ -6202,13 +6349,58 @@ async function getSignatureRecord(slug: string) {
     return await pb.collection('signatures').getFirstListItem(`slug = "${escapeFilterValue(slug)}"`);
   } catch { return null; }
 }
+// A SIGNED session is read only while the coach's signature dialog polls it —
+// seconds to minutes — and the image then lives in the form. It used to stay
+// readable forever: a slug found later in a chat history (the link goes out
+// through the share sheet) handed out the handwritten signature for good. A
+// week covers a coach whose phone was offline when the referee signed.
+const SIGNATURE_SIGNED_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 d
 function isSignatureExpired(rec: AnyRecord): boolean {
-  if (Boolean(rec.signed)) return false; // signed records stay readable
   const created = Date.parse(asText(rec.created));
-  return Number.isFinite(created) && (Date.now() - created) > SIGNATURE_TTL_MS;
+  if (!Number.isFinite(created)) return false;
+  return (Date.now() - created) > (Boolean(rec.signed) ? SIGNATURE_SIGNED_TTL_MS : SIGNATURE_TTL_MS);
 }
+
+// Starting a session is a PocketBase row per call, and nothing else bounded
+// it: one looping session could grow the collection without end. Keyed by
+// coach (the console session, which has no RC id, by IP), for the reason the
+// park bucket is — a hall is one NAT. A coach opens two of these per form.
+const signatureStartAttempts: RateLimitStore = new Map();
+const SIGNATURE_START_WINDOW_MS = 5 * 60 * 1000;
+const SIGNATURE_START_MAX = 30;
+
+/**
+ * The daily sweep: delete every session past its life — unsigned after a day,
+ * signed after a week — so the rows the TTLs above refuse to serve do not also
+ * sit in PocketBase forever. Runs with the 03:30 log prune; it touches only
+ * this collection and never VolleyManager, so it has no window to respect.
+ * Paged, and bounded per run, so a backlog clears over a few nights rather than
+ * in one long request.
+ */
+async function pruneSignatureSessions(): Promise<number> {
+  await ensureAdminAuth();
+  const pbStamp = (ms: number) => new Date(ms).toISOString().replace('T', ' ');
+  const unsignedBefore = pbStamp(Date.now() - SIGNATURE_TTL_MS);
+  const signedBefore = pbStamp(Date.now() - SIGNATURE_SIGNED_TTL_MS);
+  const filter = `(signed = false && created < "${unsignedBefore}") || (signed = true && created < "${signedBefore}")`;
+  let removed = 0;
+  for (let round = 0; round < 20; round++) {
+    const page = await pb.collection('signatures').getList<AnyRecord>(1, 200, { filter, fields: 'id', skipTotal: true });
+    if (!page.items.length) break;
+    for (const row of page.items) {
+      await pb.collection('signatures').delete(asText(row.id));
+      removed++;
+    }
+    if (page.items.length < 200) break;
+  }
+  return removed;
+}
+
 app.post('/api/signature/start', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
+    const key = rcAuthByReq.get(req)?.rcId || `ip:${clientIp(req)}`;
+    const rl = checkRateLimit(signatureStartAttempts, key, SIGNATURE_START_MAX, SIGNATURE_START_WINDOW_MS);
+    if (!rl.allowed) { denyRateLimited(req, res, 'signature-start', rl.retryAfterMs); return; }
     await ensureAdminAuth();
     const slug = randomUUID().replace(/-/g, '');
     const context = asText((req.body ?? {}).context).slice(0, 300);
@@ -12719,7 +12911,12 @@ app.listen(port, () => {
 
   // Daily log-file retention sweep (03:30 local).
   void pruneLogFiles();
-  scheduleDaily('30 3 * * *', 'log prune', () => { void pruneLogFiles(); });
+  scheduleDaily('30 3 * * *', 'log prune', async () => {
+    await pruneLogFiles();
+    // Expired signature sessions go with the logs: same hour, no VolleyManager.
+    const removed = await pruneSignatureSessions();
+    if (removed) log.info('signature.prune', `${removed} expired signature session(s) deleted`, { removed });
+  });
 
   scheduleDaily(REMINDER_CRON, 'match reminder', async () => {
     const r = await runMatchReminders();

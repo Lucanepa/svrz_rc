@@ -14,6 +14,7 @@
 import { appendFile, mkdir, readdir, stat, unlink } from 'node:fs/promises';
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { capField, clientTimestamp, ENTRY_FIELD_MAX, redactCapabilityTokens } from './logguard.ts';
 
 // The real console, captured before anything patches it. `captureConsole()`
 // below routes every console.* call in the process INTO this store, so a stray
@@ -80,8 +81,13 @@ const MAX_STRING = 2_000;
 const MAX_DEPTH = 6;
 const MAX_KEYS = 60;
 
+// Also strips the capability tokens (iCal feed, survey, signature slug) out of
+// any URL inside the string. Key names cannot catch those — they travel under
+// `path`, `href`, `url` or inside a message — so it is done by value, here,
+// where every string on its way into the log passes.
 function redactString(value: string): string {
-  return value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}…[+${value.length - MAX_STRING} chars]` : value;
+  const capped = value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}…[+${value.length - MAX_STRING} chars]` : value;
+  return redactCapabilityTokens(capped);
 }
 
 export function redact(value: unknown, depth = 0): unknown {
@@ -209,12 +215,23 @@ export function record(
   echo = true,
 ): LogEntry | null {
   if ((LEVEL_ORDER[input.lvl] ?? 20) < MIN_LEVEL) return null;
+  // Every field bounded here, not only msg and data: `t`, `sid` and `did` can
+  // come from an unauthenticated caller (the client-log batch, a request
+  // header), and a field no cap reaches is one entry's worth of the ring's
+  // memory and the JSONL's disk for whoever writes it. The callers cap too;
+  // this is the floor no call site can forget.
   const entry: LogEntry = {
     ...input,
+    evt: capField(input.evt, ENTRY_FIELD_MAX.evt) || 'log',
+    reqId: capField(input.reqId, ENTRY_FIELD_MAX.reqId),
+    sid: capField(input.sid, ENTRY_FIELD_MAX.sid),
+    did: capField(input.did, ENTRY_FIELD_MAX.did),
+    ip: capField(input.ip, ENTRY_FIELD_MAX.ip),
+    user: capField(input.user, ENTRY_FIELD_MAX.user),
     data: input.data ? (redact(input.data) as Record<string, unknown>) : undefined,
     msg: input.msg ? redactString(input.msg) : undefined,
     seq: ++seq,
-    t: input.t || new Date().toISOString(),
+    t: clientTimestamp(input.t) || new Date().toISOString(),
   };
 
   ring.push(entry);

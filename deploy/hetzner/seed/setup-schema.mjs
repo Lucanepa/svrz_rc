@@ -234,7 +234,11 @@ await ensure('rc_visit_feedback', [
 await ensure('app_settings', [T('key'),T('value')]);
 // Cross-device signing sessions (#/sign/<slug>). Without it the signature pad
 // can never open, so no feedback can be completed.
-await ensure('signatures', [T('slug'),T('context'),T('signer'),T('data'),B('signed')]);
+// `created` is what expires a session (24 h unsigned, 7 d signed) and what the
+// API's daily prune deletes by. A collection made before AUTODATE existed has
+// no such column, and every session in it would then live forever — so make
+// sure of it here rather than only on create.
+await ensureFields(await ensure('signatures', [T('slug'),T('context'),T('signer'),T('data'),B('signed')]), AUTODATE);
 // The opt-in server copy of an UNFINISHED observation. Every other copy of a
 // draft is device-local (src/lib/formDraft.ts, IndexedDB), which is right until
 // the phone is lost, stolen, wiped or simply dead — and then the work goes with

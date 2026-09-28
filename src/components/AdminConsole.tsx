@@ -369,6 +369,7 @@ const STR = {
     credCodeWhy: 'Eine Passwortänderung wird per E-Mail-Code bestätigt.',
     credChangeCancel: 'Abbrechen',
     credFeedsRevoked: 'Alle Kalender-Abos wurden ungültig — die RC brauchen einen neuen Link (Kalender-Dialog in der App).',
+    credSessionsRevoked: 'Alle RC sind abgemeldet und melden sich mit dem neuen Passwort wieder an.',
     credSaved: (u: string) => `Gespeichert. Ab sofort gilt: ${u} + das neue Passwort.`,
     credFromEnv: 'Noch aus der Server-Konfiguration',
     credNeverSet: 'Nicht gesetzt — dieser Zugang ist geschlossen',
@@ -677,6 +678,7 @@ const STR = {
     credCodeWhy: 'A password change is confirmed with an emailed code.',
     credChangeCancel: 'Cancel',
     credFeedsRevoked: 'Every calendar subscription is now invalid — coaches need a fresh link (calendar dialog in the app).',
+    credSessionsRevoked: 'Every coach is signed out and signs back in with the new password.',
     credSaved: (u: string) => `Saved. From now on: ${u} + the new password.`,
     credFromEnv: 'Still from the server configuration',
     credNeverSet: 'Not set — this door is closed',
@@ -5654,7 +5656,9 @@ function CredentialsAdmin({ t }: { t: T }) {
       const result = await setCredential(slot.slot, username, draft.password, draft.code.trim());
       setDrafts((d) => ({ ...d, [slot.slot]: { username, password: '', code: '' } }));
       setChallenge(null);
-      setSaved(t.credSaved(username) + (result?.feedsRevoked ? ` ${t.credFeedsRevoked}` : ''));
+      setSaved(t.credSaved(username)
+        + (result?.sessionsRevoked ? ` ${t.credSessionsRevoked}` : '')
+        + (result?.feedsRevoked ? ` ${t.credFeedsRevoked}` : ''));
       await reload();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(''); }

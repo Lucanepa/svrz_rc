@@ -8,7 +8,8 @@ import helmet from 'helmet';
 import { createHash, createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scryptSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { crc32 } from 'node:zlib';
-import { log, query as queryLogs, sessions as logSessions, ringStats, ringEntries, pruneLogFiles, record as recordLog, captureConsole, localDate, type LogLevel, type LogSource } from './logstore.ts';
+import { judgeRcSession, rcSessionTimes } from './rcSession.ts';
+import { log, query as queryLogs, sessions as logSessions, ringStats, ringEntries, pruneLogFiles, record as recordLog, captureConsole, printUnlogged, localDate, type LogLevel, type LogSource } from './logstore.ts';
 import {
   readDay, groupEntries, listDays, annotate, listAnnotations,
   listMuteRules, addMuteRule, setMuteRuleEnabled, deleteMuteRule,
@@ -472,7 +473,6 @@ if (!ADMIN_UI_PASSWORD) console.warn('[startup] ADMIN_UI_PASSWORD not set — ad
 // they are — never who they proved to be — so it is attribution (logs,
 // ownership, the "my games" filter) and never authority.
 const RC_COOKIE = 'svrz_rc_session';
-const RC_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 
 // The shared credential. There used to be a hardcoded fallback pair here, and
 // because the env override was never set in production the live team password
@@ -515,6 +515,29 @@ function makeCredential(username: string, password: string, updatedBy: string): 
 // trip. Every write invalidates it, so a rotated password takes effect at once.
 let credentialsCache: { data: CredentialMap; expiresAt: number } | null = null;
 
+// When the team password last changed, in ms — the generation every app
+// session is checked against (see server/rcSession.ts). Held here, in step with
+// the credential store, because verifyRcSession is synchronous and runs on
+// every request: it cannot wait on PocketBase. This process is the only writer
+// of the record, so a value refreshed on every read and every write is current.
+// 0 = not known yet, which skips the check rather than signing everyone out.
+let sharedCredentialSince = 0;
+let sharedCredentialKnown = false;
+let sharedCredentialRefreshAt = 0;
+function noteSharedCredential(data: CredentialMap): void {
+  const t = Date.parse(asText(data.shared?.updatedAt));
+  sharedCredentialSince = Number.isFinite(t) ? t : 0;
+  sharedCredentialKnown = true;
+}
+// Nudged from verifyRcSession until the first successful read — at most every
+// 30 s, and never awaited: the request in hand is judged on what is known.
+function ensureSharedCredentialKnown(): void {
+  if (sharedCredentialKnown || Date.now() < sharedCredentialRefreshAt) return;
+  sharedCredentialRefreshAt = Date.now() + 30_000;
+  credentialsCache = null;
+  void readCredentials().catch(() => { /* retried on the next nudge */ });
+}
+
 async function readCredentials(): Promise<CredentialMap> {
   if (credentialsCache && credentialsCache.expiresAt > Date.now()) return credentialsCache.data;
   let data: CredentialMap = {};
@@ -522,6 +545,7 @@ async function readCredentials(): Promise<CredentialMap> {
     const rec = await getSettingRecord(CREDENTIALS_KEY);
     const parsed = rec ? JSON.parse(asText(rec.value)) : {};
     if (parsed && typeof parsed === 'object') data = parsed as CredentialMap;
+    noteSharedCredential(data);
   } catch (error) {
     // A malformed or unreachable record must not lock everyone out — fall
     // through to the env bootstrap rather than denying every login.
@@ -539,7 +563,12 @@ async function writeCredentials(mutate: (current: CredentialMap) => CredentialMa
       const parsed = rec ? JSON.parse(asText(rec.value)) : {};
       if (parsed && typeof parsed === 'object') current = parsed as CredentialMap;
     } catch { current = {}; }
-    await setSetting(CREDENTIALS_KEY, JSON.stringify(mutate(current)));
+    const next = mutate(current);
+    await setSetting(CREDENTIALS_KEY, JSON.stringify(next));
+    // Before the lock is released and before the handler answers: the very
+    // next request made with an old session must already be judged against
+    // the new generation.
+    noteSharedCredential(next);
   });
   credentialsCache = null;
 }
@@ -606,6 +635,16 @@ function chargeRateLimit(store: RateLimitStore, key: string, units: number): voi
   if (entry && Date.now() < entry.resetAt) entry.count += Math.max(0, units);
 }
 
+// Give back units charged earlier in this request. For a limit meant to bill
+// failures only, where the outcome is not known until after an await: charging
+// up front and refunding a success is the only race-free way to get that. A
+// peek before the await and a charge after it lets every request that arrives
+// during the await pass the same peek.
+function refundRateLimit(store: RateLimitStore, key: string, units = 1): void {
+  const entry = store.get(key);
+  if (entry && Date.now() < entry.resetAt) entry.count = Math.max(0, entry.count - Math.max(0, units));
+}
+
 // Is this bucket over budget, without spending from it? For limits that should
 // only be charged when an attempt actually fails, so honest traffic can never
 // exhaust the allowance meant for guessers.
@@ -626,8 +665,8 @@ const gateAttempts: RateLimitStore = new Map();
 function checkGateRateLimit(ip: string, scope = 'gate') {
   return checkRateLimit(gateAttempts, `${scope}|${ip}`, GATE_RATE_LIMIT_MAX, GATE_RATE_LIMIT_WINDOW_MS);
 }
-function peekGateRateLimit(ip: string, scope = 'gate') {
-  return peekRateLimit(gateAttempts, `${scope}|${ip}`, GATE_RATE_LIMIT_MAX);
+function refundGateRateLimit(ip: string, scope = 'gate') {
+  refundRateLimit(gateAttempts, `${scope}|${ip}`);
 }
 
 // Single exit for every 429: sets Retry-After (so the client can say how long),
@@ -661,7 +700,17 @@ function checkSurveyRateLimit(ip: string) {
 // App-wide backstop for the team login. One secret for everybody means one
 // bucket for everybody, so the cap is generous — high enough not to 429
 // legitimate coaches on a busy match weekend, low enough to blunt a flood.
+//
+// The backstop only closes on addresses that have themselves failed in the
+// window. Closing it on everybody let anyone with a few dozen IPs lock the whole
+// region out of signing in — correct password or not — just by failing a
+// thousand times every quarter of an hour, and doing it forever. An address
+// with a clean record (a coach typing the right password) goes through a
+// tripped backstop; one that has already guessed wrong does not. A flood from
+// many addresses is still throttled to ONE wrong guess per address per window
+// instead of the per-IP ten, which is what the backstop is for.
 const sharedLoginGlobal: RateLimitStore = new Map();
+const sharedLoginIpFailures: RateLimitStore = new Map();
 const SHARED_GLOBAL_MAX = 1000;
 const SHARED_GLOBAL_WINDOW_MS = 15 * 60 * 1000;
 
@@ -670,20 +719,26 @@ const SHARED_GLOBAL_WINDOW_MS = 15 * 60 * 1000;
 // it, because a second, per-person login existed and proved identity. It no
 // longer does, so every app session is a claim and there is nothing left to
 // tell apart.
-type RcSessionToken = { ok: boolean; rcId: string };
-const NO_RC_SESSION: RcSessionToken = { ok: false, rcId: '' };
+//
+// `loginAt` is when the team password was typed for this session. It rides
+// every re-mint (identify) unchanged, which is what caps a session's life —
+// see server/rcSession.ts for both clocks and the rotation rule.
+type RcSessionToken = { ok: boolean; rcId: string; loginAt: number };
+const NO_RC_SESSION: RcSessionToken = { ok: false, rcId: '', loginAt: 0 };
 
-function createRcSessionToken(opts: { rcId?: string; name?: string }): string {
+function createRcSessionToken(opts: { rcId?: string; name?: string; loginAt?: number }): { token: string; exp: number } {
+  const { iat, exp } = rcSessionTimes(Date.now(), opts.loginAt);
   const body = JSON.stringify({
     sub: randomUUID(),
     purpose: 'rc',
     rcId: opts.rcId || '',
     name: opts.name || '',
-    exp: Date.now() + RC_TTL_MS,
+    iat,
+    exp,
   });
   const payload = base64UrlEncode(body);
   const signature = signAdminSessionPayload(payload);
-  return `${payload}.${signature}`;
+  return { token: `${payload}.${signature}`, exp };
 }
 
 function verifyRcSession(req: Request): RcSessionToken {
@@ -699,28 +754,31 @@ function verifyRcSession(req: Request): RcSessionToken {
   }
   try {
     const parsed = JSON.parse(base64UrlDecode(payload)) as {
-      purpose?: unknown; rcId?: unknown; exp?: unknown;
+      purpose?: unknown; rcId?: unknown; exp?: unknown; iat?: unknown;
     };
-    if (parsed.purpose !== 'rc') return NO_RC_SESSION;
-    const exp = Number(parsed.exp);
-    if (!Number.isFinite(exp) || exp < Date.now()) return NO_RC_SESSION;
+    ensureSharedCredentialKnown();
     // A session with no RC on it is the normal state between signing in and
     // choosing a name — authenticated, deliberately nobody. Tokens minted
     // before this carried a mode and a PIN fingerprint; both are ignored now,
     // which keeps everyone signed in across the deploy and can only ever lose
-    // privileges, never grant them.
-    return { ok: true, rcId: asText(parsed.rcId) };
+    // privileges, never grant them. Tokens minted before `iat` run to their
+    // own exp (judgeRcSession).
+    const claims = judgeRcSession(parsed, Date.now(), sharedCredentialSince);
+    return claims.ok ? { ok: true, rcId: claims.rcId, loginAt: claims.loginAt } : NO_RC_SESSION;
   } catch {
     return NO_RC_SESSION;
   }
 }
 
-function setRcSessionCookie(res: ExpressResponse, token: string): void {
-  res.cookie(RC_COOKIE, token, {
+// The cookie lives exactly as long as the token inside it: near the absolute
+// cap that is less than the sliding 30 days, and a cookie outliving its token
+// would only make the browser send a dead one.
+function setRcSessionCookie(res: ExpressResponse, minted: { token: string; exp: number }): void {
+  res.cookie(RC_COOKIE, minted.token, {
     httpOnly: true,
     sameSite: SESSION_SAMESITE,
     secure: true,
-    maxAge: RC_TTL_MS,
+    maxAge: Math.max(0, minted.exp - Date.now()),
     path: '/',
   });
 }
@@ -740,7 +798,7 @@ setInterval(() => {
   // Every bucket, not just the login ones: clientLogRl is fed by an
   // unauthenticated endpoint that any scanner can reach, so a forgotten map
   // grows one entry per source IP for the life of the process.
-  for (const store of [gateAttempts, signatureAttempts, sharedLoginGlobal, surveyAttempts, clientLogRl, clientLogGlobalRl, parkAttempts, notebookAttempts]) {
+  for (const store of [gateAttempts, signatureAttempts, sharedLoginGlobal, sharedLoginIpFailures, logReadRl, surveyAttempts, clientLogRl, clientLogGlobalRl, parkAttempts, notebookAttempts]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
@@ -4365,7 +4423,13 @@ app.post('/api/admin/auth/logout', (_req: Request, res: ExpressResponse) => {
 // Both are checked on every attempt so the answer cannot say which name exists.
 app.post('/api/admin/ui-login', async (req: Request, res: ExpressResponse) => {
   const ctx = reqCtx(req);
-  const rl = peekGateRateLimit(ctx.ip, 'admin-ui');
+  // Charged NOW, refunded below on a success — not peeked now and charged after
+  // the awaits. verifyCredential can wait on PocketBase (whenever the 60 s
+  // credentials cache has lapsed), and every request of a parallel burst that
+  // arrived in that wait passed the same peek before any of them was charged:
+  // a burst of N got N guesses against a budget of ten. The net effect is still
+  // "failures only", which is what keeps an honest sign-in from spending it.
+  const rl = checkGateRateLimit(ctx.ip, 'admin-ui');
   if (!rl.allowed) { denyRateLimited(req, res, 'login:ip', rl.retryAfterMs, { kind: 'admin-ui' }); return; }
   const body = (req.body ?? {}) as Record<string, unknown>;
   // Lower-cased before comparing: a phone keyboard capitalises the first letter
@@ -4377,7 +4441,7 @@ app.post('/api/admin/ui-login', async (req: Request, res: ExpressResponse) => {
   const asPresident = await verifyCredential('president', username, password, PRESIDENT_UI_USERNAME, PRESIDENT_UI_PASSWORD);
   const role: ConsoleRole | null = asAdmin.ok ? 'admin' : asPresident.ok ? 'president' : null;
   if (!role) {
-    checkGateRateLimit(ctx.ip, 'admin-ui'); // charged on failure only
+    // Already charged above; a failure keeps the charge.
     clearAdminSessionCookie(res);
     // `userMatched` is for the admin reading the log after a failed sign-in
     // ("was it the name or the password?"); the CALLER is told neither.
@@ -4388,6 +4452,7 @@ app.post('/api/admin/ui-login', async (req: Request, res: ExpressResponse) => {
     res.status(401).json({ error: 'Invalid credentials.' });
     return;
   }
+  refundGateRateLimit(ctx.ip, 'admin-ui'); // a success is not evidence of an attack
   const who = role === 'president' ? 'president-ui' : 'admin-ui';
   setAdminSessionCookie(res, createAdminSessionToken(who, role));
   tagReqUser(req, who);
@@ -4551,9 +4616,18 @@ function logTokenMatches(candidate: string): boolean {
 function requireLogReader(req: Request, res: ExpressResponse, next: () => void) {
   if (verifyAdminSession(req).ok) { next(); return; }
   const token = bearerToken(req);
-  if (logTokenMatches(token)) { next(); return; }
   const ip = clientIp(req);
-  const rl = checkRateLimit(logReadRl, ip, LOG_READ_FAILS_PER_WINDOW, LOG_READ_WINDOW_MS);
+  // The budget is read BEFORE the token is compared. The other order evaluated
+  // every guess from an address already over budget and only changed which
+  // error a wrong one got — a right one still went through, so the budget cost
+  // a guesser nothing. Over budget now means not even looked at.
+  const budget = peekRateLimit(logReadRl, ip, LOG_READ_FAILS_PER_WINDOW);
+  if (budget.allowed && logTokenMatches(token)) { next(); return; }
+  // Charged on a failure only (an over-budget one included, which is a no-op
+  // on a full bucket), so a correct token never spends from the allowance.
+  const rl = budget.allowed
+    ? checkRateLimit(logReadRl, ip, LOG_READ_FAILS_PER_WINDOW, LOG_READ_WINDOW_MS)
+    : budget;
   log.warn('auth.log-read', 'rejected', {
     hasToken: Boolean(token),
     tokenConfigured: Boolean(LOG_READ_TOKEN),
@@ -4925,9 +4999,6 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
     if ('niveau_table' in body && body.niveau_table && typeof body.niveau_table === 'object') {
       await setSetting('niveau_table', JSON.stringify(sanitizeNiveauTable(body.niveau_table)));
     }
-    // Named keys rather than the values: a listener only needs to know that its
-    // copy is stale, and the settings endpoint is where it goes to find out.
-    publishLive({ type: 'settings.changed', keys: Object.keys(body) });
     if ('default_goal' in body) {
       const n = Math.round(Number(body.default_goal));
       await setSetting('default_goal', Number.isFinite(n) && n > 0 ? String(n) : '');
@@ -4942,6 +5013,12 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
     if ('expense_rates' in body && body.expense_rates && typeof body.expense_rates === 'object') {
       await setSetting(EXPENSE_RATES_KEY, JSON.stringify(sanitizeExpenseRates(body.expense_rates)));
     }
+    // Named keys rather than the values: a listener only needs to know that its
+    // copy is stale, and the settings endpoint is where it goes to find out.
+    // After the LAST write, not in the middle: every listener refetches the
+    // moment this lands, and one published halfway through would read the
+    // goal, cap and rates from before the save and keep them.
+    publishLive({ type: 'settings.changed', keys: Object.keys(body) });
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -5016,9 +5093,15 @@ const credChallengeRl: RateLimitStore = new Map();
 // the code was never coming. The address is a real one again now, which is
 // exactly why it must not be relied on: whether the door out of a lost password
 // works should not depend on how somebody once named a database account.
+//
+// The chair's slot has no fallback at all. CREDENTIAL_2FA_EMAIL is the mailbox
+// the operators read, and falling back to it would hand the chair's code to the
+// very people her slot is walled off from — the guarantee would hold only as
+// long as somebody remembered to set one variable. Unset, her slot refuses.
 function credential2faRecipient(slot: CredentialSlot): string {
-  const perSlot = process.env[`CREDENTIAL_2FA_EMAIL_${slot.toUpperCase()}`] || '';
-  return (perSlot || process.env.CREDENTIAL_2FA_EMAIL || '').trim();
+  const perSlot = (process.env[`CREDENTIAL_2FA_EMAIL_${slot.toUpperCase()}`] || '').trim();
+  if (slot === 'president') return perSlot;
+  return perSlot || (process.env.CREDENTIAL_2FA_EMAIL || '').trim();
 }
 
 /** Keyed by the cookie, not the username: one session's code is useless in another. */
@@ -5034,13 +5117,20 @@ function maskEmail(address: string): string {
 }
 
 async function sendCredentialCodeEmail(to: string, code: string, slotLabel: string): Promise<void> {
-  if (await isEmailTestMode()) {
+  // The env TEST_MODE only — deliberately NOT isEmailTestMode(). That one also
+  // honours the admin console's test_mode switch, and an admin session is
+  // exactly who this code exists to stop: flip the switch, ask for a code, read
+  // it back, flip it off, and the chair's door is open without a mail ever
+  // leaving. The switch keeps its meaning everywhere else; this mail goes to an
+  // operator mailbox, never to a referee, so it has nothing to protect here.
+  if (TEST_MODE) {
     // The code is printed rather than merely suppressed. Test mode turns off
     // every outbound mail, so without this a password change is not "mail-free"
     // — it is impossible, and the one environment where you want to rehearse
-    // rotating a credential is the one where you cannot. Server console only:
-    // never the activity log, which admins read and which ships off the box.
-    console.log(`[cred-2fa] TEST_MODE — not sent to ${to}; code is ${code}`);
+    // rotating a credential is the one where you cannot. printUnlogged, not
+    // console.log: captureConsole() files every console.* line in the activity
+    // log, which admins read and which ships off the box.
+    printUnlogged(`[cred-2fa] TEST_MODE — not sent to ${to}; code is ${code}`);
     return;
   }
   // The code box sits between the two halves rather than after both, so the
@@ -5082,7 +5172,11 @@ app.post('/api/admin/credentials/challenge', requireAdminSession, async (req: Re
     // Said plainly rather than as a 500: the operator needs to know this is a
     // missing setting, and that the env vars are still the way out.
     log.error('auth.credentials', 'no 2FA recipient configured', { slot }, ctx);
-    res.status(503).json({ error: `Kein Empfänger für den Bestätigungscode konfiguriert (CREDENTIAL_2FA_EMAIL_${slot.toUpperCase()} oder CREDENTIAL_2FA_EMAIL).` });
+    res.status(503).json({
+      error: slot === 'president'
+        ? 'Kein Empfänger für den Bestätigungscode konfiguriert (CREDENTIAL_2FA_EMAIL_PRESIDENT). Der Zugang der Präsidentin fällt bewusst nicht auf die Admin-Adresse zurück.'
+        : `Kein Empfänger für den Bestätigungscode konfiguriert (CREDENTIAL_2FA_EMAIL_${slot.toUpperCase()} oder CREDENTIAL_2FA_EMAIL).`,
+    });
     return;
   }
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
@@ -5178,9 +5272,13 @@ app.put('/api/admin/credentials', requireAdminSession, async (req: Request, res:
       try { await revokeAllIcalFeeds(); feedsRevoked = true; }
       catch (revokeErr) { log.error('auth.credentials', 'feed revocation failed', { error: String(revokeErr) }, ctx); }
     }
+    // Every app session opened before this moment is dead from here on, too:
+    // writeCredentials moved the generation verifyRcSession checks against
+    // (server/rcSession.ts). Nothing to do here but say so.
+    const sessionsRevoked = slot === 'shared';
     // The VALUE is never logged — only that it moved, and who moved it.
-    log.info('auth.credentials', 'password changed', { slot, username, by, feedsRevoked }, ctx);
-    res.json({ ok: true, slot, username, feedsRevoked });
+    log.info('auth.credentials', 'password changed', { slot, username, by, feedsRevoked, sessionsRevoked }, ctx);
+    res.json({ ok: true, slot, username, feedsRevoked, sessionsRevoked });
   } catch (error) {
     log.error('auth.credentials', 'could not store the credential', { error }, ctx);
     res.status(500).json({ error: safeError(error) });
@@ -6104,8 +6202,11 @@ app.post('/api/auth/shared/login', async (req: Request, res: ExpressResponse) =>
   // as the personal login, and it matters more here: one secret for everybody
   // means one bucket for everybody, so charging correct logins would let a
   // busy Saturday lock the whole region out.
+  // Only an address that has already failed this window is held to it — see
+  // sharedLoginGlobal for why it no longer closes on everyone.
   const globalRl = peekRateLimit(sharedLoginGlobal, 'global', SHARED_GLOBAL_MAX);
-  if (!globalRl.allowed) { denyRateLimited(req, res, 'login:global', globalRl.retryAfterMs, { kind: 'shared' }); return; }
+  const failedHere = !peekRateLimit(sharedLoginIpFailures, ctx.ip, 1).allowed;
+  if (!globalRl.allowed && failedHere) { denyRateLimited(req, res, 'login:global', globalRl.retryAfterMs, { kind: 'shared' }); return; }
   const username = asText((req.body ?? {}).username).trim();
   const password = asText((req.body ?? {}).password);
   // Both halves are compared every time — no early return on a wrong username,
@@ -6117,6 +6218,10 @@ app.post('/api/auth/shared/login', async (req: Request, res: ExpressResponse) =>
   const passOk = attempt.ok;
   if (!attempt.ok) {
     checkRateLimit(sharedLoginGlobal, 'global', SHARED_GLOBAL_MAX, SHARED_GLOBAL_WINDOW_MS);
+    // Marks the address. The window opens at its FIRST failure and is not
+    // extended by later ones, so a coach who mistyped once is held to the
+    // backstop for a quarter hour at most.
+    checkRateLimit(sharedLoginIpFailures, ctx.ip, 1, SHARED_GLOBAL_WINDOW_MS);
     // Which HALF was wrong, never what was typed. The username field is
     // prefilled and the password is the app's one shared secret, so a mistyped
     // login is most likely the secret landing in the wrong box — and the log is
@@ -6169,7 +6274,9 @@ app.post('/api/auth/rc/identify', async (req: Request, res: ExpressResponse) => 
     }
     tagReqUser(req, person.fullName);
     log.info('auth.identify', 'shared session identified', { rcId: person.id, name: person.fullName }, ctx);
-    setRcSessionCookie(res, createRcSessionToken({ rcId: person.id, name: person.fullName }));
+    // loginAt carried over: picking a name is not typing the password, so it
+    // must not buy the session a new lease on life.
+    setRcSessionCookie(res, createRcSessionToken({ rcId: person.id, name: person.fullName, loginAt: session.loginAt }));
     res.json({ ok: true, rc: { id: person.id, name: person.fullName, firstName: person.firstName } });
   } catch (error) {
     log.error('auth.identify', 'backend failure while identifying', { rcId, error }, ctx);
@@ -9753,7 +9860,38 @@ function icalFileSlug(name: string): string {
   return slug ? `svrz-rc-${slug}` : 'svrz-rc';
 }
 
+// The two things that CHANGE a coach's feed — minting a new secret, and the
+// own-SR-games switch — are POST-only. They used to ride this GET as ?rotate=1
+// and ?sr=0|1, and a GET is what any page on the internet can make a signed-in
+// browser send: an <img src=".../api/ical/me?rotate=1"> carries no Origin, so
+// CORS waves it through, and the session cookie (SameSite=None) rides along.
+// The attacker reads nothing back, but every calendar the coach subscribed
+// silently stops resolving. The POST demands a JSON body, which a cross-site
+// page cannot send without a preflight the CORS policy refuses.
 app.get('/api/ical/me', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  // An app loaded before this change still sends the old shape. Refuse it out
+  // loud rather than answer the read and drop the change: a "new link" button
+  // that quietly keeps the old link would be worse than one that fails.
+  if (asText(req.query.rotate) === '1' || asText(req.query.sr) === '1' || asText(req.query.sr) === '0') {
+    res.status(405).json({ error: 'Bitte die App neu laden (Kalender-Einstellungen werden jetzt per POST gespeichert).' });
+    return;
+  }
+  await answerIcalMe(req, res, { rotate: false });
+});
+
+app.post('/api/ical/me', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  if (!req.is('application/json')) {
+    res.status(415).json({ error: 'Expected application/json.' });
+    return;
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  await answerIcalMe(req, res, {
+    rotate: body.rotate === true,
+    sr: typeof body.sr === 'boolean' ? body.sr : undefined,
+  });
+});
+
+async function answerIcalMe(req: Request, res: ExpressResponse, change: { rotate: boolean; sr?: boolean }): Promise<void> {
   try {
     const session = verifyRcSession(req);
     // A pure admin-console session has no RC record behind it, so there is no
@@ -9763,21 +9901,20 @@ app.get('/api/ical/me', requireRcSession, async (req: Request, res: ExpressRespo
       res.status(403).json({ error: 'Kalender-Abo gibt es nur für angemeldete RC.' });
       return;
     }
-    const lang: IcalLang = asText(req.query.lang).toUpperCase() === 'EN' ? 'EN' : 'DE';
+    const lang: IcalLang = asText(req.query.lang || (req.body ?? {}).lang).toUpperCase() === 'EN' ? 'EN' : 'DE';
     const base = publicApiBase(req);
-    // `rotate=1` is the "my link leaked / I handed my phone on" button: it mints
+    // `rotate` is the "my link leaked / I handed my phone on" button: it mints
     // a new secret, so the URL every previously-subscribed calendar holds stops
     // resolving. Anything else reuses the standing one, which is what keeps a
     // working subscription working.
-    const rotate = asText(req.query.rotate) === '1';
+    const rotate = change.rotate;
     if (rotate) log.info('ical.rotate', 'feed link regenerated', { rcId: person.id, name: person.fullName }, reqCtx(req));
-    // Set on the same GET that reads, exactly as rotate=1 does. The switch is
+    // Set on the same POST that answers, exactly as rotate does. The switch is
     // stored, not encoded in the URL, so a calendar already subscribed picks
     // the change up on its next refresh instead of needing to be re-added.
-    const srParam = asText(req.query.sr);
-    if (srParam === '1' || srParam === '0') {
-      await setIcalSrPref(person.id, srParam === '1');
-      log.info('ical.pref', 'own SR games in feed', { rcId: person.id, sr: srParam === '1' }, reqCtx(req));
+    if (change.sr !== undefined) {
+      await setIcalSrPref(person.id, change.sr);
+      log.info('ical.pref', 'own SR games in feed', { rcId: person.id, sr: change.sr }, reqCtx(req));
     }
     const srOn = await wantsOwnSrGames(person.id);
     const games = await getCachedGamesForRc(person, srOn);
@@ -9800,7 +9937,7 @@ app.get('/api/ical/me', requireRcSession, async (req: Request, res: ExpressRespo
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
-});
+}
 
 // Public by design — a calendar client cannot log in. The token is the whole
 // gate, which is why it is unguessable and why the request log redacts it.
@@ -12716,6 +12853,11 @@ app.listen(port, () => {
   });
   console.log(`[scheduler] games sync cron: "${VM_SYNC_CRON}" (${VM_SYNC_TIMEZONE})`);
   console.log(`[scheduler] match reminder cron: "${REMINDER_CRON}" (${VM_SYNC_TIMEZONE})`);
+
+  // Learn the team password's generation before the first app request needs
+  // it, so a session killed by a rotation stays dead across a restart. If
+  // PocketBase is not up yet, verifyRcSession keeps nudging until it is.
+  ensureSharedCredentialKnown();
 
   // Daily log-file retention sweep (03:30 local).
   void pruneLogFiles();

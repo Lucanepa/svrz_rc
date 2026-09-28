@@ -427,6 +427,22 @@ Three layers, plus capability tokens:
    session gets coach-level access and nothing more. Re-callable, which is how
    "switch RC" works.
 
+   **Lifetime (since 2026-09-28, `server/rcSession.ts`).** The token carries
+   `iat`, the moment the team password was typed, and identify re-mints the
+   token with that `iat` **carried over** — it used to mint a fresh 30 days,
+   so re-identifying once a month kept a session forever. `exp` still slides
+   30 days per mint, but never past `iat` + **90 days**; after that the coach
+   types the team password again. The cookie's max-age follows the token's
+   `exp`. And a session whose `iat` predates the team password's last change
+   (`auth_credentials.shared.updatedAt`) is dead: **rotating the team password
+   in the console now signs every coach out** (the console says so), which is
+   what takes a leaked password's users back out. Changing the admin or chair
+   password signs nobody out. Tokens from before this carry no `iat`: they run
+   to their own `exp`, their login is taken as their mint time (`exp` − 30 d),
+   and they die with the next rotation — the deploy itself logs nobody out. If
+   PocketBase cannot be read at startup the generation check is skipped (not
+   failed closed) until the first successful read.
+
    There used to be a second kind (`mode: 'personal'`, a per-RC e-mail and
    password) and it was the only thing that could prove identity, which is why
    `is_admin` and `is_rc_president` hung off it. It is gone; both privileges now
@@ -458,7 +474,10 @@ Three layers, plus capability tokens:
 
    **Changing one takes a second factor.** `POST /api/admin/credentials/challenge`
    mails a 6-digit code to `CREDENTIAL_2FA_EMAIL_<SLOT>` if set, else
-   `CREDENTIAL_2FA_EMAIL`. There is deliberately no fallback to
+   `CREDENTIAL_2FA_EMAIL` — **except the chair's slot, which has no fallback**:
+   `CREDENTIAL_2FA_EMAIL_PRESIDENT` is required, and unset the challenge
+   answers 503 naming it (since 2026-09-28; the fallback would have mailed her
+   code to the operators, whom her slot is walled off from). There is deliberately no fallback to
    `POCKETBASE_ADMIN_EMAIL`: that address is incidental to how the database
    account was named, and while it was `rc-admin@svrz.local` the old fallback
    silently mailed codes into a mailbox that did not exist — reporting success
@@ -467,8 +486,13 @@ Three layers, plus capability tokens:
    The code is bound to the console cookie that asked for it **and** to the one
    slot it was issued for, is single-use, expires in 10 minutes and dies after 5
    wrong guesses. Reading which usernames are live needs only the admin session;
-   changing one does not. Under `TEST_MODE` the code is printed to the server
-   console instead of mailed, so a test deployment can still rotate a password.
+   changing one does not. Under the **env** `TEST_MODE` the code is printed to
+   the container's stdout instead of mailed (via `printUnlogged`, which bypasses
+   `captureConsole()` — never the activity log), so a test deployment can still
+   rotate a password. The admin console's test-mode switch does **not** do
+   this: with it on, the code is still mailed. Otherwise an admin session could
+   flip the switch, ask for a code and read it back out of the Protokoll, which
+   is the exact thing the second factor exists to stop.
    If mail is down, the env vars remain the escape hatch.
 4. **Capability tokens** in the URL for the two pages that have no session at
    all: `#/sign/<slug>` (signature capture) and `#/survey/<token>` (post-visit
@@ -483,7 +507,8 @@ Three layers, plus capability tokens:
    random secret in `app_settings` (`ical_secrets`), minted on demand and never
    by the public lookup. Rotating the team password drops the whole map, so
    every feed handed out under the old password dies with it; a coach can also
-   rotate only their own from the calendar dialog. Both cost every subscribed
+   rotate only their own from the calendar dialog (a JSON `POST /api/ical/me`,
+   never a GET — see the endpoint list). Both cost every subscribed
    calendar a re-subscribe, which is the price of being able to take a leaked
    link back at all.
 
@@ -505,6 +530,19 @@ Middleware:
 
 Nothing outside the four capability-token routes and `/api/client-logs` is
 reachable without a session.
+
+Sign-in rate limits (in memory, reset on restart):
+
+- **Console** (`/api/admin/ui-login`): 10 failures per IP per 5 min. Charged
+  **before** the credential check and refunded on success — a peek-then-charge
+  let a parallel burst through while the check awaited PocketBase.
+- **Team login** (`/api/auth/shared/login`): 10 attempts per IP per 5 min, plus
+  an app-wide backstop of 1000 failures per 15 min. Since 2026-09-28 a tripped
+  backstop only turns away addresses that have **themselves failed** in the
+  last 15 min; an address with a clean record (a coach typing the right
+  password) still gets in. Before, anyone with a few dozen IPs could lock the
+  whole region out indefinitely. A flood is still cut to one wrong guess per
+  address per window.
 
 ## API Endpoints (What They Do)
 
@@ -536,7 +574,8 @@ reachable without a session.
 - `GET /api/observations`: paginated observations list with filters.
 - `GET /api/observations/summary`: aggregated KPIs.
 - `GET /api/games/calendar-status`: game statuses (`outstanding|completed|none`).
-- `GET /api/ical/me`: the calling RC's subscription links (`url`, `webcalUrl`, `downloadUrl`). RC session required; an admin-only session gets 403, because the feed belongs to a person and an admin console session is not one.
+- `GET /api/ical/me`: the calling RC's subscription links (`url`, `webcalUrl`, `downloadUrl`). RC session required; an admin-only session gets 403, because the feed belongs to a person and an admin console session is not one. **Read-only**: the old `?rotate=1` / `?sr=0|1` now answer 405 ("reload the app").
+- `POST /api/ical/me`: the same answer, after a change — body `{ lang, rotate?: true, sr?: boolean }`, `Content-Type: application/json` required (415 otherwise). Rotation and the own-SR-games switch moved here on 2026-09-28: on a GET, any website could trigger them with an `<img>` (no Origin header, so CORS let it through; the SameSite=None cookie rode along) and silently break a coach's subscriptions. A JSON POST from another site needs a preflight, which CORS refuses.
 - `GET /api/ical/:token.ics`: **public** — the RC's assigned games as iCalendar, past and future. No login is possible for a calendar client, so the token in the path is the whole credential: an HMAC of the RC's id under `ADMIN_SESSION_SECRET`, stable per person, and only honoured for RCs that are still active. `?lang=de|en` picks the event language, `?download=1` flips the response to an attachment. The request log redacts the token. Rendered per request but memoised for 5 min, so a badly-behaved poller cannot pull the games collection repeatedly.
 - `POST /api/feedback/submit`: main workflow submit (save + PDF + email + closure).
 - `GET /api/drafts/parked`: this coach's parked (unfinished) drafts — metadata and payload, newest first. Owner comes from the session; nothing parked is an empty list, never a 404.
@@ -794,6 +833,8 @@ redeploy. The forensic half — the daily JSONL files, 30 days back — is serve
 `server/logquery.ts` behind a **bearer token** (`LOG_READ_TOKEN`, ≥24 random
 characters; an admin console session is also accepted). Set it in
 `deploy/hetzner/svrz-api.env`. Unset, the routes answer only a browser session.
+30 wrong tokens per IP per 15 min, and an address over that budget has its
+token **not compared at all** (429) — a right guess from it fails too.
 
 ```bash
 API=https://svrz-rc-api.openvolley.app

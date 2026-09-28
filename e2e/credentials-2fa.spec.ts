@@ -68,7 +68,7 @@ test('the code travels with the change, and a short one cannot be sent', async (
   await page.route('**/api/admin/credentials', async (r) => {
     if (r.request().method() === 'GET') return r.fulfill({ json: SLOTS });
     put = r.request().postDataJSON();
-    return r.fulfill({ json: { ok: true, slot: 'shared', username: 'Referee-Coaching', feedsRevoked: true } });
+    return r.fulfill({ json: { ok: true, slot: 'shared', username: 'Referee-Coaching', feedsRevoked: true, sessionsRevoked: true } });
   });
   await page.goto('/admin/settings');
 
@@ -91,4 +91,7 @@ test('the code travels with the change, and a short one cannot be sent', async (
   // Rotating the team password invalidates every calendar subscription, and the
   // admin is told so — coaches have to be sent a fresh link.
   await expect(page.getByText(/Kalender-Abos|calendar subscription/)).toBeVisible();
+  // …and it signs every coach out: a session opened under the old password is
+  // exactly what a rotation after a leak has to end.
+  await expect(page.getByText(/abgemeldet|signed out/)).toBeVisible();
 });

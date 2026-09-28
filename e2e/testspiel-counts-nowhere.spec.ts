@@ -16,11 +16,13 @@ const SRC = readFileSync(join(HERE, '..', 'server', 'index.ts'), 'utf8');
 const EXPENSES = readFileSync(join(HERE, '..', 'server', 'expenses.ts'), 'utf8');
 
 test('the Home counters skip a Testspiel, whoever stands on it', () => {
-  expect(SRC).toContain('manualIds: Set<string> = new Set(),\n): Map<string, RcWorkload> {');
-  expect(SRC).toMatch(/if \(registerOnlyGames\.has\(String\(game\.id\)\)\) continue;[\s\S]{0,400}if \(manualIds\.has\(String\(game\.id\)\)\) continue;\n\s+if \(fbGameIds\.has\(game\.id\)\) load\.done\+\+;/);
+  // One rule decides done/outstanding/planned for the overview, the
+  // statistics and the Spesenabrechnung alike (rcWorkloadRule, expenses.ts).
+  expect(EXPENSES).toContain('if (!args.inSeason(g) || manualIds.has(id)) return false;');
+  expect(SRC).toContain('rcWorkloadRule({ games: allGames, feedbacks: allFeedbacks, inSeason, now, manualIds, hasCoacheeSlot })');
   // Both callers hand the manual set over — the overview and the statistics.
-  expect(SRC).toContain('workloadByRc(people, allGames, allFeedbacks, inSeason, new Date(), await getManualGameIds())');
-  expect(SRC).toContain('workloadByRc(raw.people, raw.games, raw.feedbacks, inSeason, now, raw.manual)');
+  expect(SRC).toContain('workloadByRc(people, allGames, allFeedbacks, inSeason, new Date(), await getManualGameIds(), await makeCoacheeSlotTest())');
+  expect(SRC).toContain('workloadByRc(raw.people, raw.games, raw.feedbacks, inSeason, now, raw.manual, raw.hasCoacheeSlot)');
 });
 
 test('the statistics never see a Testspiel observation', () => {
@@ -29,8 +31,11 @@ test('the statistics never see a Testspiel observation', () => {
 
 test('the Spesenabrechnung lists no Testspiel — not marked, not paid, not there', () => {
   expect(SRC).toContain("if (!game || !inSeason(game) || manualIds.has(String(game.id))) continue;");
-  expect(EXPENSES).not.toContain('Testspiel');
-  expect(EXPENSES).not.toContain('isManual');
+  // The sheet has no Testspiel branch of its own: the only mention is the
+  // rule's comment saying it counts nowhere.
+  const code = EXPENSES.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  expect(code).not.toContain('Testspiel');
+  expect(code).not.toContain('isManual');
 });
 
 test('a report filed on a Testspiel writes nothing onto a real coachee', () => {

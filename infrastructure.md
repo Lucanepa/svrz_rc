@@ -1058,6 +1058,14 @@ The retired `lucanepa.github.io/svrz_rc/` still publishes `legacy/` via
 service worker that clears the old precache and unregisters itself. See
 `legacy/README.md`.
 
+On the new host, `public/_redirects` sends `/svrz_rc` and `/svrz_rc/*` to `/`
+with a 301 — **always `/`, never `/:splat`**. A splat keeps its leading slash,
+so `/svrz_rc//evil.example` became `Location: //evil.example`, a
+protocol-relative open redirect (audit 2026-09-28). The old app routed in the
+`#hash`, which the browser carries across the 301, so nothing real is lost.
+`e2e/redirects-config.spec.ts` rejects any redirect whose destination starts
+with `/:splat` or `//`.
+
 ### URL routing (since 2026-09-13)
 
 Routes live in the **path**, and `src/lib/routes.ts` is the only place that
@@ -1108,6 +1116,27 @@ bounced a correct PIN back to the login screen.
 `lax` after cutover). It is an env knob because the code ships before the DNS and
 Tunnel change: `lax` against a cross-site API logs everyone out. Cross-origin
 still means CORS applies — `CORS_ALLOWED_ORIGINS` must list the app origin.
+Cross-origin also means a response header the client reads must be listed in
+the `exposedHeaders` of the `cors()` options in `server/index.ts`: today
+`Content-Disposition` (the saved file name) and `X-Archive-Count` (forms in an
+archive ZIP — unexposed, the console reported 0 for every download).
+
+### Offline API cache and session changes
+
+The service worker keeps API GETs in the Cache Storage bucket `svrz-api-get`
+(NetworkFirst, 6 s timeout, 30 days, 300 entries — `vite.config.ts`). Since the
+2026-09-28 audit it **never stores** the console's or the chair's reads —
+`/api/admin/*` (auth/status included), `/api/survey-responses`,
+`/api/president-notes`, `/api/rc-game-notes`, `/api/forms/*`,
+`/api/feedback-archive`, `/api/feedback/<id>/file|president-note` — and it
+honours `Cache-Control: no-store` (Workbox ignores that header on its own).
+The bucket is emptied on every login/logout **and** whenever `/api/auth/me` or
+`/api/admin/auth/status` names a different owner than the one recorded in
+`localStorage.svrz_api_cache_owner` — including "nobody", i.e. an expired
+cookie. A failed logout leaves a flag (`svrz_pending_logout` for the app
+cookie, `svrz_pending_admin_logout` for the console cookie); while it is set
+the client refuses that session and retries the POST until the server answers
+2xx (`settlePendingLogout` in `src/lib/pocketbase.ts`, `e2e/logout-owed.spec.ts`).
 
 ## Deploy trap: a 404 fallback cached under an asset URL
 

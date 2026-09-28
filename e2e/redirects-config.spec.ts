@@ -80,7 +80,22 @@ test('no rule exists for the two roots that keep their token in the fragment', (
 
 test('the old GitHub Pages subpath still redirects, and still comes first', () => {
   const dynamic = RULES.filter(([from]) => from.includes('*'));
-  expect(dynamic[0]).toEqual(['/svrz_rc/*', '/:splat', '301']);
+  expect(dynamic[0]).toEqual(['/svrz_rc/*', '/', '301']);
+  expect(RULES).toContainEqual(['/svrz_rc', '/', '301']);
+});
+
+/**
+ * A splat keeps its leading slash: `/svrz_rc/*  /:splat` turned
+ * /svrz_rc//evil.example into `Location: //evil.example`, which a browser
+ * follows off-site (audit 2026-09-28). No redirect may put caller-controlled
+ * path at the START of its destination; a rewrite (200) never leaves the host.
+ */
+test('no redirect builds its destination from the start of a splat', () => {
+  for (const [from, to, status] of RULES) {
+    if (status === '200') continue;
+    expect(/^\/:splat/.test(to), `${from} -> ${to} can become a protocol-relative Location`).toBe(false);
+    expect(to.startsWith('//'), `${from} -> ${to} leaves the host`).toBe(false);
+  }
 });
 
 /**

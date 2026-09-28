@@ -1088,7 +1088,13 @@ export default function AdminConsole() {
     catch { setError(t.wrongCreds); setPassword(''); }
     finally { setSubmitting(false); }
   };
-  const logout = async () => { try { await logoutAdmin(); } catch { /* ignore */ } setAuthed(false); };
+  // A logout the server never saw leaves the cookie alive; logoutAdmin keeps a
+  // pending flag for exactly that, and getAdminAuthStatus refuses the session
+  // until the retry lands — so showing the login form here is the truth.
+  const logout = async () => {
+    try { await logoutAdmin(); } catch { /* owed — retried on the next load, console stays shut */ }
+    setAuthed(false); setRole(null);
+  };
 
   if (checking) return <div className="min-h-screen flex items-center justify-center bg-stone-100"><Loader2 className="h-6 w-6 animate-spin text-stone-300" /></div>;
 

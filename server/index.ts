@@ -16,7 +16,7 @@ import {
 } from './logquery.ts';
 import { installErrorAlerts } from './erroralerts.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
-import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, type ExpenseVisit } from './expenses.ts';
+import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, rcWorkloadRule, resolvePaidCap, type ExpenseVisit, type RcGameSets } from './expenses.ts';
 import { computeBreakdowns, computeStatistics, coacheeSummaries, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
 import { archiveSlug, formsRowOf, formsEntryName, groupForms, folderKeys, type FormsRow } from './forms.ts';
 import type { StatFilters, StatRole } from '../src/lib/statistics.ts';
@@ -37,7 +37,7 @@ import {
 // not a 403: it is a clean 200 with the wrong rows.
 import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
-import { fetchBoerseOffers, planReconcile, gameHolder, type BoerseOfferRow } from './boerse.ts';
+import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, type BoerseOfferRow } from './boerse.ts';
 import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch } from './gamesSync.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
 import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan } from './dataHygiene.ts';
@@ -3532,6 +3532,8 @@ type BoerseSyncStatus = {
   created?: number;
   updated?: number;
   withdrawn?: number;
+  /** Rows closed because their game fell behind the lookback window. */
+  expired?: number;
   matchedGames?: number;
   unmatchedOffers?: number;
   refereesCorrected?: number;
@@ -3609,19 +3611,21 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
   boerseEmptyStreak = result.offers.length === 0 ? boerseEmptyStreak + 1 : 0;
 
   const stored = await withCollection(collectionCandidates.boerseOffers, (c) =>
-    c.getFullList<AnyRecord>({ fields: 'id,vm_offer_id,status,withdrawn_at' }));
+    c.getFullList<AnyRecord>({ fields: 'id,vm_offer_id,status,withdrawn_at,game_starts_at' }));
 
   const plan = planReconcile({
     fetched: result.offers,
     stored: stored.map((r) => ({
       id: String(r.id), vm_offer_id: asText(r.vm_offer_id),
       status: asText(r.status), withdrawn_at: asText(r.withdrawn_at),
+      game_starts_at: asText(r.game_starts_at),
     })),
     emptyStreak: boerseEmptyStreak,
+    cutoff: result.cutoff,
   });
 
   const now = new Date().toISOString();
-  let created = 0; let updated = 0; let withdrawn = 0;
+  let created = 0; let updated = 0; let withdrawn = 0; let expired = 0;
   const createdRows: Array<{ id: string; row: BoerseOfferRow }> = [];
   for (const row of plan.creates) {
     const rec = await withCollection(collectionCandidates.boerseOffers, (c) =>
@@ -3638,6 +3642,13 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
     await withCollection(collectionCandidates.boerseOffers, (c) => c.update(id, { withdrawn_at: now }));
     withdrawn += 1;
   }
+  // The game is behind the window: the offer is closed on the date alone, so
+  // it leaves the live set (and the guard's ratio) instead of being "unseen"
+  // on every later run.
+  for (const id of plan.expires) {
+    await withCollection(collectionCandidates.boerseOffers, (c) => c.update(id, { withdrawn_at: now }));
+    expired += 1;
+  }
 
   // Crew correction + the match_no join counter, in one pass over the games the
   // börse named. `unmatchedOffers` is the day-one alarm for the one thing no
@@ -3651,8 +3662,12 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
     byMatch.set(o.match_no, list);
   }
   let matchedGames = 0; let refereesCorrected = 0;
+  // A Testspiel's referees are typed by hand and are not VolleyManager's to
+  // correct, even when it carries a real fixture number — the games sync
+  // skips it the same way (upsertGame).
+  const manualIds = await getManualGameIds();
   for (const [matchNo, offers] of byMatch) {
-    const game = await findGameByMatchNo(matchNo);
+    const game = await findGameByMatchNo(matchNo, { excludeIds: manualIds });
     if (!game) continue;
     matchedGames += 1;
 
@@ -3670,7 +3685,7 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
   // Mail the coach whose game just landed in the börse. AFTER the crew pass, so
   // the verdict the mail quotes is computed from the corrected names rather than
   // the ones this very run replaced.
-  const alerted = await alertBoerseOffers(createdRows);
+  const alerted = await alertBoerseOffers(createdRows, manualIds);
 
   const joinVia: Record<string, number> = {};
   for (const o of result.offers) joinVia[o.join_via] = (joinVia[o.join_via] ?? 0) + 1;
@@ -3681,7 +3696,7 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
     ok: true,
     offers: result.offers.length,
     open: result.offers.filter((o) => o.status === 'open').length,
-    created, updated, withdrawn,
+    created, updated, withdrawn, expired,
     matchedGames,
     unmatchedOffers: byMatch.size - matchedGames,
     refereesCorrected,
@@ -3692,7 +3707,7 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
   };
   await recordBoerseStatus(status);
   if (plan.blocked) log.warn('boerse.blocked', `börse reconcile held back: ${plan.blocked}`, { reason });
-  log.info('boerse.sync', `börse: ${result.offers.length} offers (${status.open} open), ${created}+/${updated}~/${withdrawn}−, ${matchedGames} games matched`, { reason });
+  log.info('boerse.sync', `börse: ${result.offers.length} offers (${status.open} open), ${created}+/${updated}~/${withdrawn}−${expired ? `/${expired} expired` : ''}, ${matchedGames} games matched`, { reason });
   publishLive({ type: 'boerse.synced', open: status.open, matched: matchedGames });
   return status;
 }
@@ -3713,7 +3728,7 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
  * the row. Losing a poll to an SMTP hiccup would trade the thing that works for
  * the thing that is only convenient.
  */
-async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRow }>): Promise<number> {
+async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRow }>, manualIds: Set<string>): Promise<number> {
   if (created.length === 0) return 0;
   let sent = 0;
   const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
@@ -3724,7 +3739,8 @@ async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRo
   for (const { id, row } of created) {
     try {
       if (row.status !== 'open' || !row.match_no) continue;
-      const game = await findGameByMatchNo(row.match_no);
+      // Never a Testspiel that happens to carry the offered fixture's number.
+      const game = await findGameByMatchNo(row.match_no, { excludeIds: manualIds });
       if (!game) continue;
 
       // Whoever holds the game, by the one holder rule (server/boerse.ts):
@@ -3816,9 +3832,22 @@ async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRo
   return sent;
 }
 
-/** runBoerseSync, but a thrown fetch is recorded rather than escaping. */
+/** runBoerseSync, but a thrown fetch is recorded rather than escaping.
+ *
+ *  Every automatic run — the hourly tick AND the one-off run after boot —
+ *  stays out of wiedisync's hour. The skip used to live in the interval's
+ *  callback only, so a deploy or restart between 03:58 and 04:59 UTC polled
+ *  90 s later and moved the shared account to RefAdmin:Referee inside their
+ *  window. An admin's "Jetzt abrufen" is a person choosing to, and runs. */
 async function runBoerseSyncSafely(reason: string): Promise<BoerseSyncStatus> {
   const prev = await readBoerseStatus();
+  if (boersePollMustSkip(reason, new Date())) {
+    log.info('boerse.skip', `börse poll (${reason}) skipped — 04:00 UTC belongs to wiedisync`, { reason });
+    return {
+      lastAttemptAt: new Date().toISOString(), lastSuccessAt: prev?.lastSuccessAt ?? '', ok: false,
+      skipped: '04:00 UTC belongs to wiedisync',
+    };
+  }
   try {
     return await runBoerseSync(reason);
   } catch (error) {
@@ -4878,8 +4907,9 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
     // mandate is what a coach owes, this is where the SVRZ stops paying. Kept
     // editable for the same reason the mandate is: the figure is the
     // commission's to change, not a deploy.
-    const paidCapRec = await getSettingRecord('paid_cap');
-    const paid_cap = paidCapRec ? Number(asText(paidCapRec.value)) || null : null;
+    // Never saved = the Infoschreiben's 12; cleared = no ceiling (null). The
+    // same reading the Spesenabrechnung takes (readPaidCap).
+    const paid_cap = await readPaidCap();
     // Edits to the official SR-Niveau table, by level key. Only the rows an
     // admin actually changed are stored; the rest come from the table shipped
     // in the client, so a corrected transcription reaches everyone untouched.
@@ -4935,8 +4965,8 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
     if ('paid_cap' in body) {
       const n = Math.round(Number(body.paid_cap));
       // Blank clears it, and a cleared cap means "no ceiling" rather than zero —
-      // the app then says nothing about payment, which is the honest state when
-      // nobody has set the figure.
+      // for the Übersicht and the Spesenabrechnung alike (resolvePaidCap). A
+      // setting never saved is the Infoschreiben's 12, not "no ceiling".
       await setSetting('paid_cap', Number.isFinite(n) && n > 0 ? String(n) : '');
     }
     if ('expense_rates' in body && body.expense_rates && typeof body.expense_rates === 'object') {
@@ -7419,9 +7449,15 @@ function surnameFirst(rec: AnyRecord | undefined, fallback: string): string {
   return last ? `${last} ${first}`.trim() : fallback;
 }
 
-/** Every filed observation of the season, as sheet rows, by coach id. Read
- *  once for the whole roster: the ZIP wants everyone and the table one row is
- *  a special case of it. */
+/** Every filed observation of the season on a game the Übersicht counts as
+ *  the coach's DONE, as sheet rows, by coach id. The paid games are exactly
+ *  the done games (rcWorkloadRule): a report on a game assigned to someone
+ *  else, or one filed only against the referee register, is not a paid
+ *  visit — the sheet used to pay both while Vergütet counted neither. The
+ *  register report on the other referee of a done game stays on the sheet as
+ *  its "b" line (listed, paid once, as any second referee). Read once for
+ *  the whole roster: the ZIP wants everyone and the table one row is a
+ *  special case of it. */
 async function collectExpenseVisits(
   people: AnyRecord[],
   season: number,
@@ -7436,10 +7472,14 @@ async function collectExpenseVisits(
   // visit, with "Testspiel" in the Bemerkung column for the treasurer to
   // strike by hand; the commission's answer was that a test is reimbursed
   // nowhere (Luca, 17.09.2026). The manual set is what says which game is one.
-  const [inSeason, manualIds] = await Promise.all([seasonFilterExceptManual(season), getManualGameIds()]);
-  const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
-    collection.getFullList<AnyRecord>({ sort: 'submitted_at', expand: 'game,coachee' }),
-  );
+  const [inSeason, manualIds, hasCoacheeSlot] = await Promise.all([seasonFilterExceptManual(season), getManualGameIds(), makeCoacheeSlotTest()]);
+  const [feedbacks, games] = await Promise.all([
+    withCollection(collectionCandidates.refereeCoaches, (collection) =>
+      collection.getFullList<AnyRecord>({ sort: 'submitted_at', expand: 'game,coachee' })),
+    withCollection(collectionCandidates.games, (collection) =>
+      collection.getFullList<AnyRecord>({ sort: '-match_date', fields: WORKLOAD_GAME_FIELDS })),
+  ]);
+  const doneByRc = rcGameSetsByRc(people, games, feedbacks, inSeason, new Date(), manualIds, hasCoacheeSlot);
   const out = new Map<string, ExpenseVisit[]>();
   const identities = people.map((p) => ({
     id: String(p.id),
@@ -7451,6 +7491,7 @@ async function collectExpenseVisits(
     if (!game || !inSeason(game) || manualIds.has(String(game.id))) continue;
     const owner = identities.find((p) => rcRefMatches(fb.rc_id, fb.rc_name, p.self));
     if (!owner) continue;
+    if (!doneByRc.get(owner.id)?.done.has(String(game.id))) continue;
     const meta = ((fb.feedback_json as { meta?: Record<string, unknown> } | undefined)?.meta ?? {}) as Record<string, unknown>;
     const coachee = expanded?.coachee;
     // The level and group AS OBSERVED — the form's own copy — before the
@@ -7503,10 +7544,11 @@ async function expenseStatementFor(person: AnyRecord, season: number, visits: Ex
   };
 }
 
+/** The season's ceiling, as GET /api/settings hands it to the Übersicht —
+ *  resolvePaidCap reads both, so the sheet and the Vergütet column agree. */
 async function readPaidCap(): Promise<number | null> {
   const rec = await getSettingRecord('paid_cap');
-  const n = rec ? Number(asText(rec.value)) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : null;
+  return resolvePaidCap(rec ? asText(rec.value) : undefined);
 }
 
 // One coach's Spesenabrechnung as a PDF.
@@ -7597,62 +7639,62 @@ app.put('/api/admin/rc-paid/:rcId', requireAdminSession, async (req: Request, re
 });
 
 // The Übersicht's three counters per coach — done, outstanding, planned — over
-// the games assigned to them. Shared with the statistics, so both tabs owe
-// the same number to the same rule.
+// the games assigned to them. Shared with the statistics and the
+// Spesenabrechnung, so all three owe the same number to the same rule: the
+// rule itself is rcWorkloadRule (server/expenses.ts, tested there); this only
+// hands it the roster's identity test and the coachee-slot test.
 type RcWorkload = { done: number; outstanding: number; planned: number };
+function rcGameSetsByRc(
+  people: AnyRecord[],
+  allGames: AnyRecord[],
+  allFeedbacks: AnyRecord[],
+  inSeason: (game: AnyRecord) => boolean,
+  now: Date,
+  manualIds: Set<string>,
+  hasCoacheeSlot: (game: AnyRecord) => boolean,
+): Map<string, RcGameSets> {
+  // Each coach reads the filed reports through rcRefMatches, the same rule
+  // the games are read by, so a half-migrated table still counts every
+  // feedback exactly once and a row whose id names a colleague on the roster
+  // is never counted for a namesake.
+  const forRc = rcWorkloadRule({ games: allGames, feedbacks: allFeedbacks, inSeason, now, manualIds, hasCoacheeSlot });
+  const out = new Map<string, RcGameSets>();
+  for (const p of people) {
+    const self: RcAuthInfo = { rcId: String(p.id), name: `${asText(p.first_name)} ${asText(p.last_name)}`.trim() };
+    out.set(String(p.id), forRc((rcId, rcName) => rcRefMatches(rcId, rcName, self)));
+  }
+  return out;
+}
+
 function workloadByRc(
   people: AnyRecord[],
   allGames: AnyRecord[],
   allFeedbacks: AnyRecord[],
   inSeason: (game: AnyRecord) => boolean,
   now: Date,
-  manualIds: Set<string> = new Set(),
+  manualIds: Set<string>,
+  hasCoacheeSlot: (game: AnyRecord) => boolean,
 ): Map<string, RcWorkload> {
-  // The filed reports a coachee is on, with whoever filed them — the rc_id
-  // once backfilled, the name written beside it before that. Each coach
-  // below reads them through rcRefMatches, the same rule the games are read
-  // by, so a half-migrated table still counts every feedback exactly once
-  // and a row whose id names a colleague on the roster is never counted for
-  // a namesake.
-  const filed: { gameId: string; rcId: unknown; rcName: unknown }[] = [];
-  // A report filed against the referee register — a Testspiel, or a marked
-  // game whose referee is nobody's coachee — has no coachee and, by the
-  // submit's own contract, counts toward nothing. It must not make its game
-  // "done" (a test send showed as "2 of 10 done" on Home, 16.09.2026), and
-  // must not leave it "outstanding" either: such a game drops out of the
-  // workload, unless a coachee's report on its other role keeps it in.
-  const registerOnlyGames = new Set<string>();
-  const coacheeFiledGames = new Set<string>();
-  for (const fb of allFeedbacks) {
-    const gameId = String(fb.game || '');
-    if (!asText(fb.coachee)) { registerOnlyGames.add(gameId); continue; }
-    coacheeFiledGames.add(gameId);
-    filed.push({ gameId, rcId: fb.rc_id, rcName: fb.rc_name });
-  }
-  for (const id of coacheeFiledGames) registerOnlyGames.delete(id);
   const out = new Map<string, RcWorkload>();
-  for (const p of people) {
-    const fullName = `${asText(p.first_name)} ${asText(p.last_name)}`.trim();
-    const self: RcAuthInfo = { rcId: String(p.id), name: fullName };
-    const fbGameIds = new Set<string>(
-      filed.filter((fb) => rcRefMatches(fb.rcId, fb.rcName, self)).map((fb) => fb.gameId),
-    );
-    const load: RcWorkload = { done: 0, outstanding: 0, planned: 0 };
-    for (const game of allGames) {
-      if (!rcRefMatches(game.assigned_rc_id, game.assigned_rc, self)) continue;
-      if (!inSeason(game)) continue;
-      if (registerOnlyGames.has(String(game.id))) continue;
-      // A Testspiel counts nowhere — not as done, not as outstanding, not as
-      // planned (Luca, 17.09.2026), whoever stands on it.
-      if (manualIds.has(String(game.id))) continue;
-      if (fbGameIds.has(game.id)) load.done++;
-      else if (new Date(asText(game.match_date)) < now) load.outstanding++;
-      else load.planned++;
-    }
-    out.set(String(p.id), load);
+  for (const [id, sets] of rcGameSetsByRc(people, allGames, allFeedbacks, inSeason, now, manualIds, hasCoacheeSlot)) {
+    out.set(id, { done: sets.done.size, outstanding: sets.outstanding.size, planned: sets.planned.size });
   }
   return out;
 }
+
+/** Whether any whistle slot of a game is a coachee of the game's own season —
+ *  what keeps a game in the workload after a report on its OTHER referee was
+ *  filed against the register (rcWorkloadRule). */
+async function makeCoacheeSlotTest(coacheeIndex?: CoacheeIndex): Promise<(game: AnyRecord) => boolean> {
+  const coachees = coacheeIndex ?? await getCoacheeIndex();
+  return (game: AnyRecord) => {
+    const season = seasonOfGame(game.match_date);
+    return refereeSlotQueries(game).some((q) => coachees.has(season, q));
+  };
+}
+
+/** The fields rcWorkloadRule and the coachee-slot test read off a game. */
+const WORKLOAD_GAME_FIELDS = 'id,match_no,match_date,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id';
 
 app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
@@ -7685,7 +7727,7 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date',
-        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game',
+        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game',
       }),
     );
     // 3. All feedback records
@@ -7695,7 +7737,7 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
       }),
     );
 
-    const workload = workloadByRc(people, allGames, allFeedbacks, inSeason, new Date(), await getManualGameIds());
+    const workload = workloadByRc(people, allGames, allFeedbacks, inSeason, new Date(), await getManualGameIds(), await makeCoacheeSlotTest());
 
     const [paidMap, attended] = await Promise.all([readRcPaid(season), readRcMeeting(season)]);
     const result = people.map((p) => {
@@ -7723,7 +7765,7 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
 // server/statistics.ts. The raw rows are read once and kept for a minute — the
 // page re-queries on every filter change, and each query is then one pass over
 // cached rows rather than four getFullLists. Only counts and sums leave here.
-type StatRaw = { feedbacks: AnyRecord[]; games: AnyRecord[]; coachees: AnyRecord[]; people: AnyRecord[]; manual: Set<string> };
+type StatRaw = { feedbacks: AnyRecord[]; games: AnyRecord[]; coachees: AnyRecord[]; people: AnyRecord[]; manual: Set<string>; hasCoacheeSlot: (game: AnyRecord) => boolean };
 let statRawCache: { at: number; data: Promise<StatRaw> } | null = null;
 const STAT_RAW_TTL_MS = 60_000;
 
@@ -7737,12 +7779,13 @@ async function loadStatRaw(): Promise<StatRaw> {
       withCollection(collectionCandidates.refereeCoaches, (c) =>
         c.getFullList<AnyRecord>({ sort: 'submitted_at', expand: 'game,coachee' })),
       withCollection(collectionCandidates.games, (c) =>
-        c.getFullList<AnyRecord>({ sort: '-match_date', fields: 'id,match_date,assigned_rc,assigned_rc_id' })),
+        c.getFullList<AnyRecord>({ sort: '-match_date', fields: WORKLOAD_GAME_FIELDS })),
       listCoacheesWithFallbackSort(),
       activeRcRecords(),
       getManualGameIds(),
     ]);
-    return { feedbacks, games, coachees, people, manual };
+    const hasCoacheeSlot = await makeCoacheeSlotTest(await getCoacheeIndex(coachees));
+    return { feedbacks, games, coachees, people, manual, hasCoacheeSlot };
   })();
   statRawCache = { at: Date.now(), data };
   data.catch(() => { statRawCache = null; });
@@ -7767,7 +7810,7 @@ function buildStatInput(raw: StatRaw, s: number, goalOf: (rcId: string) => numbe
     name: `${asText(p.first_name)} ${asText(p.last_name)}`.trim(),
   }));
   const inSeason = seasonWindowFilter(s, raw.manual);
-  const workload = workloadByRc(raw.people, raw.games, raw.feedbacks, inSeason, now, raw.manual);
+  const workload = workloadByRc(raw.people, raw.games, raw.feedbacks, inSeason, now, raw.manual, raw.hasCoacheeSlot);
   const rcs: StatRcInput[] = identities.map((rc) => {
     const load = workload.get(rc.id);
     return { id: rc.id, name: rc.name, goal: goalOf(rc.id), planned: load?.planned ?? 0, outstanding: load?.outstanding ?? 0 };
@@ -11357,7 +11400,7 @@ async function runMatchReminders(): Promise<{ sent: number; skipped: number; sup
   try { already = sentRec ? JSON.parse(asText(sentRec.value)) as string[] : []; } catch { already = []; }
   const seen = new Set(already);
   const stamp = getTomorrowDate();
-  const fresh: string[] = [];
+  const fresh: ReminderPlan[] = [];
   let sent = 0, skipped = 0;
   for (const p of plans) {
     const key = `${stamp}:${p.gameId}:${p.role}`;
@@ -11376,17 +11419,17 @@ async function runMatchReminders(): Promise<{ sent: number; skipped: number; sup
         text: p.text,
         attachments: emailAttachments(),
       });
-      fresh.push(key);
+      fresh.push(p);
       sent++;
     } catch (err) {
       log.error('reminder.send', 'send failed', { error: err instanceof Error ? err.message : String(err) });
     }
   }
-  if (fresh.length) {
-    // Keep only current/future stamps so the setting can't grow without bound.
-    const keep = [...already, ...fresh].filter((k) => k.slice(0, 10) >= stamp);
-    await setSetting('reminder_sent', JSON.stringify(keep));
-  }
+  // Through the same locked read-merge-write the manual reminder uses: the
+  // copy read above is minutes old by now (one SMTP round-trip per mail), and
+  // writing it back whole erased any key a coach stamped by hand meanwhile —
+  // that reminder then went out a second time the next morning.
+  await markRemindersSent(fresh, () => stamp);
   return { sent, skipped, suppressed: false, due: plans.length };
 }
 
@@ -12764,12 +12807,9 @@ app.listen(port, () => {
   // this one VolleyManager account from another host and cannot be locked
   // against (infrastructure.md → "The shared VolleyManager account").
   if (BOERSE_ENABLED) {
+    // The 04:00 UTC skip is inside runBoerseSyncSafely, so it holds for the
+    // startup run below as well as for this tick.
     scheduleEvery(BOERSE_POLL_MINUTES * 60_000, 'börse poll', async () => {
-      const hourUtc = new Date().getUTCHours();
-      if (hourUtc === 4) {
-        log.info('boerse.skip', 'börse poll skipped — 04:00 UTC belongs to wiedisync');
-        return;
-      }
       await runBoerseSyncSafely('cron');
     });
     // One run shortly after boot, so a redeploy does not leave an hour-long hole

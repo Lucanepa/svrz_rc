@@ -20,6 +20,7 @@
 import { PDFDocument, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { INTER_REGULAR_B64, INTER_BOLD_B64 } from '../src/lib/pdfFonts.ts';
+import { PAID_CAP } from '../src/types.ts';
 
 export type ExpenseVisit = {
   gameId: string;
@@ -67,6 +68,82 @@ export type ExpensePlan = {
 };
 
 const OVER_CAP_NOTE = 'über der Obergrenze';
+
+// ---------------------------------------------------------------- the one rule
+
+/** The paid_cap setting as both the Übersicht and the sheet read it. No row
+ *  at all (a fresh install, never saved) is Infoschreiben 6.2's 12 — the
+ *  number the console and Home have always shown in that state. A row the
+ *  admin cleared ('' — "Leer = keine Obergrenze") is no ceiling, for both.
+ *  The sheet used to read "no row" as no ceiling while the screen read it as
+ *  12: "Vergütet 12" above a PDF that paid 15. */
+export function resolvePaidCap(stored: unknown, fallback: number = PAID_CAP): number | null {
+  if (stored === undefined || stored === null) return fallback;
+  const n = Number(String(stored).trim() || NaN);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
+type Row = Record<string, unknown>;
+const txt = (v: unknown) => (v == null ? '' : String(v).trim());
+
+/** Which of one coach's games are done, outstanding and planned. */
+export type RcGameSets = { done: Set<string>; outstanding: Set<string>; planned: Set<string> };
+
+/** The Übersicht's counters and the Spesenabrechnung's paid visits, from ONE
+ *  rule — Vergütet is min(done, cap), and the sheet pays exactly the games
+ *  counted done. Built once over the season's games and feedbacks; the
+ *  returned function answers per coach, `isSelf(rcId, rcName)` being the
+ *  caller's identity test (rcRefMatches, which reads a roster cache and so
+ *  stays out of this file).
+ *
+ *  - Only games assigned to the coach count, and only in the season window.
+ *  - A Testspiel (manual game) counts nowhere (Luca, 17.09.2026).
+ *  - DONE is a coachee report the coach filed on the game. A report filed
+ *    against the referee register (no coachee) counts toward nothing — it
+ *    never makes a game done, and so is never paid on its own.
+ *  - A game that has ONLY register reports, and no slot that is a coachee of
+ *    the game's season, drops out altogether (a Testspiel-like marked game
+ *    whose referee is nobody's coachee). A game with a coachee slot stays in
+ *    until the coachee's report is filed: a report on the OTHER referee must
+ *    not hide the one still owed (it did — the game fell out of Ausstehend
+ *    the moment the 2. SR's register report went in). */
+export function rcWorkloadRule(args: {
+  games: Row[];
+  feedbacks: Row[];
+  inSeason: (game: Row) => boolean;
+  now: Date;
+  manualIds?: Set<string>;
+  hasCoacheeSlot: (game: Row) => boolean;
+}): (isSelf: (rcId: unknown, rcName: unknown) => boolean) => RcGameSets {
+  const manualIds = args.manualIds ?? new Set<string>();
+  const filed: { gameId: string; rcId: unknown; rcName: unknown }[] = [];
+  const registerOnly = new Set<string>();
+  const coacheeFiled = new Set<string>();
+  for (const fb of args.feedbacks) {
+    const gameId = txt(fb.game);
+    if (!txt(fb.coachee)) { registerOnly.add(gameId); continue; }
+    coacheeFiled.add(gameId);
+    filed.push({ gameId, rcId: fb.rc_id, rcName: fb.rc_name });
+  }
+  for (const id of coacheeFiled) registerOnly.delete(id);
+  const games = args.games.filter((g) => {
+    const id = txt(g.id);
+    if (!args.inSeason(g) || manualIds.has(id)) return false;
+    return !(registerOnly.has(id) && !args.hasCoacheeSlot(g));
+  });
+  return (isSelf) => {
+    const own = new Set(filed.filter((f) => isSelf(f.rcId, f.rcName)).map((f) => f.gameId));
+    const sets: RcGameSets = { done: new Set(), outstanding: new Set(), planned: new Set() };
+    for (const game of games) {
+      if (!isSelf(game.assigned_rc_id, game.assigned_rc)) continue;
+      const id = txt(game.id);
+      if (own.has(id)) sets.done.add(id);
+      else if (new Date(txt(game.match_date)) < args.now) sets.outstanding.add(id);
+      else sets.planned.add(id);
+    }
+    return sets;
+  };
+}
 
 /** Number the visits and decide which are paid. Games in date order; the
  *  observations of one game share a number and are lettered. */

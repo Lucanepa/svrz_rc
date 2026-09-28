@@ -11,7 +11,7 @@
 // normal logout (rcLogout → disableDemo). The active flag lives in
 // sessionStorage: a reload keeps you in the demo, closing the tab ends it.
 
-import { SECTIONS_1SR_DE } from '../types';
+import { SECTIONS_1SR_DE, PAID_CAP } from '../types';
 import { dayLabel } from './appTime';
 import { samePerson } from './identity';
 import { attachableDoc, type UsefulDoc } from './usefulDocs';
@@ -485,7 +485,7 @@ export function getSettings(): Promise<{ default_season: number | null; test_mod
   // line in a walkthrough would look like a fault in the demo rather than the
   // deliberate absence of a server.
   const justNow = new Date(Date.now() - 9 * 60_000).toISOString();
-  return ok({ default_season: seasonStartYear(), test_mode: false, groups: ['RD', 'LD'], coachee_targets: {}, rc_mandates: {}, default_goal: null, paid_cap: null, freshness: { games: justNow, boerse: justNow } });
+  return ok({ default_season: seasonStartYear(), test_mode: false, groups: ['RD', 'LD'], coachee_targets: {}, rc_mandates: {}, default_goal: null, paid_cap: PAID_CAP, freshness: { games: justNow, boerse: justNow } });
 }
 
 // The president's notes need a server to be private to anyone, so the demo

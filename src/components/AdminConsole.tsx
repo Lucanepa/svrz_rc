@@ -201,7 +201,7 @@ const STR = {
     firstName: 'Vorname', lastName: 'Nachname', svNumber: 'SV-Nummer', aliases: 'Frühere Namen', level: 'Niveau', stage: 'Niveau', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
     noCoachees: (s: string) => `Keine Coachees für ${s} — importiere eine xlsx.`,
-    delCoachee: (n: string) => `Coachee „${n}" löschen?`, delCoacheeTakes: (f: number, o: number) => `Mit dem Coachee gehen ${f} Formular${f === 1 ? '' : 'e'} und ${o} Beobachtung${o === 1 ? '' : 'en'} — vorher unter Formulare als ZIP sichern, wenn sie bleiben sollen.`, delCoacheeOk: (n: string) => `Coachee „${n}" gelöscht.`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
+    delCoachee: (n: string) => `Coachee „${n}" löschen?`, delCoacheeTakes: (f: number, o: number) => `${o} Beobachtung${o === 1 ? '' : 'en'} ${o === 1 ? 'geht' : 'gehen'} mit dem Coachee.${f > 0 ? ` ${f === 1 ? 'Das abgeschickte Formular bleibt' : `Die ${f} abgeschickten Formulare bleiben`} in den Formularen des RC-Präsidiums erhalten; löschen kann sie nur das Präsidium.` : ''}`, delCoacheeOk: (n: string) => `Coachee „${n}" gelöscht.`, addRc: 'Referee Coach hinzufügen', rcCount: (n: number) => `${n} Referee Coaches`,
     noRcs: 'Keine Referee Coaches.', loadFailed: 'Laden fehlgeschlagen.',
     delGroup: (n: string) => `Gruppe „${n}" löschen?`,
     delGroupNote: 'Coachees behalten den Eintrag, bis er dort geändert wird.',
@@ -301,6 +301,8 @@ const STR = {
     mgFixture: 'Spiel aus VolleyManager',
     mgFixtureHint: 'Kein Testspiel — ein Suchtreffer. Löschen entfernt das Spiel samt allen darauf erfassten Feedbacks.',
     mgConfirmDelete: (n: string) => `Spiel „${n}" wirklich löschen?`,
+    mgDeleteKeepsForms: 'Ein Spiel aus VolleyManager: Beobachtungen, Entwürfe und SR-Spiel-Rückmeldungen dazu gehen mit, abgeschickte Formulare bleiben in den Formularen des RC-Präsidiums erhalten.',
+    mgDeleteTakesForms: 'Ein Testspiel: alles, was darauf erfasst wurde, geht mit — auch abgeschickte Formulare.',
     mgDeleteOk: (n: string) => `Spiel „${n}" gelöscht.`,
     shortcutToggle: 'Admin-Link in der Toolbar zeigen (nur Anzeige — gibt keine Rechte)',
     games: 'Spiele', overview: 'Übersicht', stats: 'Statistik',
@@ -512,7 +514,7 @@ const STR = {
     firstName: 'First name', lastName: 'Last name', svNumber: 'SV number', aliases: 'Former names', level: 'Level', stage: 'Niveau', group: 'Group', email: 'Email', phone: 'Phone',
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
     noCoachees: (s: string) => `No coachees for ${s} — import an xlsx.`,
-    delCoachee: (n: string) => `Delete coachee "${n}"?`, delCoacheeTakes: (f: number, o: number) => `${f} filed form${f === 1 ? '' : 's'} and ${o} observation${o === 1 ? '' : 's'} go with the coachee — save them as a ZIP under Forms first if they should stay.`, delCoacheeOk: (n: string) => `Coachee "${n}" deleted.`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
+    delCoachee: (n: string) => `Delete coachee "${n}"?`, delCoacheeTakes: (f: number, o: number) => `${o} observation${o === 1 ? '' : 's'} ${o === 1 ? 'goes' : 'go'} with the coachee.${f > 0 ? ` ${f === 1 ? 'The filed form stays' : `The ${f} filed forms stay`} in the RC presidency's Forms; only the presidency can delete ${f === 1 ? 'it' : 'them'}.` : ''}`, delCoacheeOk: (n: string) => `Coachee "${n}" deleted.`, addRc: 'Add referee coach', rcCount: (n: number) => `${n} referee coaches`,
     noRcs: 'No referee coaches.', loadFailed: 'Could not load.',
     delGroup: (n: string) => `Delete group "${n}"?`,
     delGroupNote: 'Coachees keep the value until it is changed on them.',
@@ -610,6 +612,8 @@ const STR = {
     mgFixture: 'VolleyManager fixture',
     mgFixtureHint: 'Not a test game — a search hit. Deleting removes the game with every feedback filed on it.',
     mgConfirmDelete: (n: string) => `Delete game "${n}"?`,
+    mgDeleteKeepsForms: 'A VolleyManager game: its observations, drafts and SR-game notes go with it; filed forms stay in the RC presidency\'s Forms.',
+    mgDeleteTakesForms: 'A test game: everything filed on it goes with it, filed forms included.',
     mgDeleteOk: (n: string) => `Game "${n}" deleted.`,
     shortcutToggle: 'Show the admin link in their toolbar (display only — grants nothing)',
     games: 'Games', overview: 'Overview', stats: 'Statistics',
@@ -4536,8 +4540,11 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   };
-  const remove = async (id: string, label: string) => {
-    if (!(await confirmDialog({ title: t.mgConfirmDelete(label), message: t.undoWarn, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
+  const remove = async (id: string, label: string, isManual: boolean) => {
+    // Said before asking: the server keeps a real fixture's filed forms (they
+    // are the chair's to keep for two years) and deletes a test game's.
+    const message = `${isManual ? t.mgDeleteTakesForms : t.mgDeleteKeepsForms} ${t.undoWarn}`;
+    if (!(await confirmDialog({ title: t.mgConfirmDelete(label), message, confirmLabel: t.deleteLabel, tone: 'danger', lang }))) return;
     setBusy(true); setErr('');
     // The failure keeps its inline `err` line; the toast only marks the success.
     try { await deleteGame(id); if (made?.id === id) setMade(null); await reload(q); toast.success(t.mgDeleteOk(label), { lang }); }
@@ -4652,7 +4659,7 @@ function ManualGameAdmin({ t, lang, active }: { t: T; lang: Lang; active: boolea
                   </p>
                 </div>
                 <button
-                  onClick={() => void remove(g.id, label)}
+                  onClick={() => void remove(g.id, label, g.isManual === true)}
                   disabled={busy}
                   className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
                 >

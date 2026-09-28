@@ -63,3 +63,16 @@ export function presidentNoteEntry(input: {
     updatedAt: input.now.toISOString(),
   };
 }
+
+/** Whether an existing note is somebody else's words to a writer who is NOT
+ *  the coach that filed the report — i.e. an admin writing blind (an admin
+ *  cannot read the note first). Such a write must neither replace nor clear
+ *  it: the coach's confidential note to the chair would be gone before she
+ *  read it. An entry the same writer authored is theirs to change; an entry
+ *  with no recorded author (never written by this code) is treated as the
+ *  coach's, since erring that way loses nothing. */
+export function presidentNoteBelongsToAnother(current: Pick<PresidentNoteEntry, 'authorName'> | undefined, writer: string): boolean {
+  if (!current) return false;
+  const author = txt(current.authorName);
+  return !author || author !== txt(writer);
+}

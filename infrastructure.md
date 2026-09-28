@@ -854,7 +854,8 @@ protection is disjoint windows and the table below.
 | **Mon 04:00** | `vm_sync` (`vm-sync-check.mjs`) | wiedisync | `VM_ROLE_CLUB` `4cdade68…`, + `SPIELPLANER` `ed24d37c…` for contacts |
 | **daily 04:30** | `svrz_sync` (`svrz-scheduling-sync.mjs`) | wiedisync | same |
 | **every 30 min** | `vm_sync` watchdog retry | wiedisync | same |
-| **every 5 min** | Einsatzliste push, for a game ~60 min out | wiedisync | club — ⚠ takes NO claim |
+| **every 5 min** | Einsatzliste push, for a game ~60 min out | wiedisync | club — claims (since 2026-09-12) |
+| on demand, kickoff −3h…+3h | **match-sheet Einsatzliste read** (`vm-nomination-list.js`, when a coach/scorer opens the match sheet) — one login + one read, ≤8 s, cached 60 s, never waits: busy account → RSVP fallback | wiedisync | club — claims `vm-nomination:read` (since 2026-09-28) |
 | **daily 23:00 / 00:00 UTC** | games sync (`0 1 * * *` Europe/Zurich) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
 | on demand | game push (booking confirmed) | wiedisync | club |
 | on demand | **team-roster assign** (`POST /kscw/admin/vm-team-assign`, `/admin/vm-teams`) — ~1 min, in-process | wiedisync | club — claims `vm_team_assign` |

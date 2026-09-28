@@ -295,6 +295,15 @@ function describeConsoleArgs(args: unknown[]): { msg: string; data?: Record<stri
   };
 }
 
+/** Print to the process's stdout and NOWHERE else — not the ring, not the
+ *  daily file, not the error alerts. For the rare line that must be visible to
+ *  whoever runs the process but must never reach a reader of the activity log
+ *  (the test-mode credential code: admins read that log, and it ships off the
+ *  box). A plain console.log would be captured by `captureConsole()` below. */
+export function printUnlogged(...args: unknown[]): void {
+  nativeConsole.log(...args);
+}
+
 /** Route console.* into the store. Idempotent; call once at startup. */
 export function captureConsole(): void {
   if (consoleCaptured) return;

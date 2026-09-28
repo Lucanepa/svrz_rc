@@ -815,10 +815,20 @@ export async function getIcalSubscription(
   /** undefined = read the stored setting; true/false = set it, then read back. */
   srGames?: boolean,
 ): Promise<IcalSubscription> {
+  // A plain read is a GET; anything that changes the feed is a JSON POST. The
+  // server refuses a change on the GET: a GET is what any other site can make
+  // this browser send, and a JSON POST is not (see the route).
+  const changes = rotate || srGames !== undefined;
   const response = await fetch(
-    apiUrl(`/api/ical/me?lang=${lang.toLowerCase()}${rotate ? '&rotate=1' : ''}`
-      + (srGames === undefined ? '' : `&sr=${srGames ? '1' : '0'}`)),
-    { credentials: 'include' },
+    apiUrl(`/api/ical/me?lang=${lang.toLowerCase()}`),
+    changes
+      ? {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lang: lang.toLowerCase(), rotate, ...(srGames === undefined ? {} : { sr: srGames }) }),
+      }
+      : { credentials: 'include' },
   );
   if (!response.ok) {
     throw new Error(await response.text());
@@ -1758,12 +1768,13 @@ export async function requestCredentialCode(slot: string): Promise<{ sentTo: str
   return r.json() as Promise<{ sentTo: string }>;
 }
 
-// Step two. `feedsRevoked` comes back true when the team password moved, which
-// also invalidates every calendar subscription URL — worth saying out loud,
-// because coaches will need a new link.
+// Step two. `feedsRevoked` and `sessionsRevoked` come back true when the team
+// password moved, which also invalidates every calendar subscription URL and
+// signs every coach out — worth saying out loud, because coaches will need a
+// new link and the new password.
 export async function setCredential(
   slot: string, username: string, password: string, code: string,
-): Promise<{ feedsRevoked?: boolean }> {
+): Promise<{ feedsRevoked?: boolean; sessionsRevoked?: boolean }> {
   const r = await fetch(apiUrl('/api/admin/credentials'), {
     credentials: 'include',
     method: 'PUT',
@@ -1771,7 +1782,7 @@ export async function setCredential(
     body: JSON.stringify({ slot, username, password, code }),
   });
   if (!r.ok) throw await apiError(r, 'Could not save the password');
-  return r.json() as Promise<{ feedsRevoked?: boolean }>;
+  return r.json() as Promise<{ feedsRevoked?: boolean; sessionsRevoked?: boolean }>;
 }
 
 // ── Parked drafts (the opt-in server copy of unfinished work) ─────────

@@ -53,7 +53,15 @@
 # The app used to live under the /svrz_rc/ subpath on GitHub Pages. Anyone who
 # pastes an old link with the new host keeps working instead of hitting a 404.
 # The #hash (survey and sign tokens live there) is preserved by the browser.
-/svrz_rc/*       /:splat      301
+#
+# Always to "/", never to "/:splat" (audit 2026-09-28). The splat keeps its
+# leading slash, so /svrz_rc//evil.example became `Location: //evil.example` —
+# protocol-relative, i.e. an open redirect off this host. Nothing is lost: the
+# old app routed in the #hash, so every real link under /svrz_rc/ was the shell
+# itself (/svrz_rc/, /svrz_rc/index.html), and main.tsx rewrites the #/… it
+# carries into the path.
+/svrz_rc         /            301
+/svrz_rc/*       /            301
 
 /coachees/*      /            200
 /games/*         /            200

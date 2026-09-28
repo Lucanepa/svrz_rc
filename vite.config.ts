@@ -154,19 +154,44 @@ export default defineConfig(() => {
               // own cache; storing a second copy here would double the space
               // for nothing and push real API responses out of a 300-entry
               // cache.
+              //
+              // The console's and the chair's reads are never stored (audit
+              // 2026-09-28). A browser profile outlives a session: a tab closed
+              // without "Abmelden", or an 8 h console cookie that simply ran
+              // out, left 30 days of survey answers, president notes and the
+              // ZIP of every filed form in Cache Storage, readable in DevTools
+              // and replayed as a signed-in console the next time the API was
+              // slow. None of it is what an RC reads offline at a game, so it
+              // costs the offline feature nothing:
+              //   /api/admin/*                      — the whole console, auth/status included
+              //   /api/survey-responses, /api/president-notes, /api/rc-game-notes
+              //   /api/forms/*, /api/feedback-archive — the filed-forms database and its ZIPs
+              //   /api/feedback/<id>/file | /president-note — a filed PDF, the chair's note on it
+              // The function is serialised into sw.js on its own, so the list
+              // has to live inside it — it cannot reference a constant out here.
               urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/')
                 && url.pathname !== '/api/events'
                 && !url.pathname.startsWith('/api/docs/')
                 // A notebook list answered from a 30-day cache after a 6 s
                 // timeout is a list from another evening; offline review is
                 // served from IndexedDB, and the server answers no-store.
-                && !url.pathname.startsWith('/api/notebook'),
+                && !url.pathname.startsWith('/api/notebook')
+                && !/^\/api\/(admin(\/|$)|survey-responses|president-notes|rc-game-notes|forms(\/|$)|feedback-archive)/.test(url.pathname)
+                && !/^\/api\/feedback\/[^/]+\/(file|president-note)$/.test(url.pathname),
               method: 'GET',
               handler: 'NetworkFirst',
               options: {
                 cacheName: 'svrz-api-get',
                 networkTimeoutSeconds: 6,
                 cacheableResponse: { statuses: [200] },
+                // Workbox does not read Cache-Control at all, so a response the
+                // server marked no-store (logs, the filed-form PDF, the
+                // notebook) was stored for 30 days anyway. Honour it here; the
+                // RC's everyday reads carry no such header and still cache.
+                plugins: [{
+                  cacheWillUpdate: async ({ response }: { response: Response }) =>
+                    /no-store/i.test(response.headers.get('Cache-Control') || '') ? null : response,
+                }],
                 expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 30 },
                 matchOptions: { ignoreVary: true },
               },

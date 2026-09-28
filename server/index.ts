@@ -170,7 +170,10 @@ app.use(cors({
   // name a filed report is saved under — "2026-09-22_Urs-Ackermann_2SR_406965.pdf" —
   // and without this line the client read nothing and fell back to the same
   // "feedback.pdf" for every report ever sent.
-  exposedHeaders: ['Content-Disposition'],
+  // X-Archive-Count is how many forms went into a ZIP from /api/feedback-archive
+  // or /api/forms/archive; unexposed, the console reported "0 forms" for every
+  // archive it downloaded.
+  exposedHeaders: ['Content-Disposition', 'X-Archive-Count'],
   // The app stamps X-Svrz-Session/Device on API calls (log correlation), which
   // makes every request preflighted. A long max-age lets the browser cache that
   // OPTIONS instead of sending one per request.

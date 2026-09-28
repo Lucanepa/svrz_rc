@@ -237,13 +237,40 @@ export async function clearApiCache(): Promise<void> {
   } catch { /* cache API unavailable — nothing to clear */ }
 }
 
+// Who the cached responses belong to, per half of the app. The explicit
+// logins and logouts above clear the cache, but a session can also end without
+// any of them: the cookie expires, the tab is closed, someone else signs in on
+// the same profile. So every answer to "who am I" is compared with the one the
+// cache was filled under, and a different one — including "nobody" — empties
+// it. A first answer on a device (nothing recorded yet) only records: clearing
+// then would wipe an RC's offline data on the first load after this shipped,
+// which may well be an offline one.
+const CACHE_OWNER_KEY = 'svrz_api_cache_owner';
+
+async function noteCacheOwner(part: 'app' | 'console', owner: string): Promise<void> {
+  let owners: Record<string, string> = {};
+  try { owners = JSON.parse(localStorage.getItem(CACHE_OWNER_KEY) || '{}') as Record<string, string>; } catch { /* unreadable — start over */ }
+  const previous = owners[part];
+  if (previous === owner) return;
+  owners[part] = owner;
+  try { localStorage.setItem(CACHE_OWNER_KEY, JSON.stringify(owners)); } catch { /* private mode — the cache dies with the session anyway */ }
+  if (previous !== undefined) await clearApiCache();
+}
+
 export async function getAuthMe(): Promise<AuthMe> {
   if (isDemoMode()) return demo.getAuthMe();
+  // A console logout that never reached the server left its cookie alive, and
+  // /auth/me reports admin off that cookie alone. Try the revocation first,
+  // and while it is still owed, answer as if the admin half were gone.
+  if (hasPendingAdminLogout()) await settlePendingLogout();
   const response = await fetch(apiUrl('/api/auth/me'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  return response.json() as Promise<AuthMe>;
+  let me = await response.json() as AuthMe;
+  if (hasPendingAdminLogout() && (me.admin || me.surveyReader)) me = { ...me, admin: null, surveyReader: false };
+  await noteCacheOwner('app', JSON.stringify([me.rc?.id ?? '', me.admin?.email ?? '', Boolean(me.surveyReader)]));
+  return me;
 }
 
 // Set when a logout could not reach the server. The session is a signed
@@ -263,13 +290,38 @@ function setPendingLogout(pending: boolean): void {
   } catch { /* private mode — the in-flight logout below is all we have */ }
 }
 
-/** Retry a logout that never reached the server. Safe to call at any time. */
-export async function settlePendingLogout(): Promise<void> {
-  if (!hasPendingLogout()) return;
+// The same for the console's cookie, which is a second, separate cookie (8 h,
+// signed, stateless — only the server's Set-Cookie ends it). A failed console
+// logout used to show the login form while the cookie lived on, so the next
+// reload of /admin — or the RC app, which opens for `rc || admin` — walked
+// straight back in. While this is set, getAdminAuthStatus answers "not signed
+// in" and getAuthMe drops the admin half, until the server confirms.
+const PENDING_ADMIN_LOGOUT_KEY = 'svrz_pending_admin_logout';
+
+export function hasPendingAdminLogout(): boolean {
+  try { return localStorage.getItem(PENDING_ADMIN_LOGOUT_KEY) === '1'; } catch { return false; }
+}
+function setPendingAdminLogout(pending: boolean): void {
   try {
-    const response = await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' });
-    if (response.ok) setPendingLogout(false);
-  } catch { /* still offline — stay logged out locally and try again later */ }
+    if (pending) localStorage.setItem(PENDING_ADMIN_LOGOUT_KEY, '1');
+    else localStorage.removeItem(PENDING_ADMIN_LOGOUT_KEY);
+  } catch { /* private mode — the in-flight logout below is all we have */ }
+}
+
+/** Retry the logouts that never reached the server. Safe to call at any time. */
+export async function settlePendingLogout(): Promise<void> {
+  if (hasPendingLogout()) {
+    try {
+      const response = await fetch(apiUrl('/api/auth/rc/logout'), { credentials: 'include', method: 'POST' });
+      if (response.ok) setPendingLogout(false);
+    } catch { /* still offline — stay logged out locally and try again later */ }
+  }
+  if (hasPendingAdminLogout()) {
+    try {
+      const response = await fetch(apiUrl('/api/admin/auth/logout'), { credentials: 'include', method: 'POST' });
+      if (response.ok) setPendingAdminLogout(false);
+    } catch { /* still offline — the console stays shut until this lands */ }
+  }
 }
 
 export async function rcLogout(): Promise<void> {
@@ -395,14 +447,28 @@ export async function runBoerseSync(waitMs = 3 * 60_000): Promise<BoerseSyncStat
 
 export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
   if (isDemoMode()) return demo.getAdminAuthStatus();
+  // A console logout is still owed: revoke it first, and until the server has
+  // confirmed, the answer is "not signed in" whatever the cookie says.
+  if (hasPendingAdminLogout()) {
+    await settlePendingLogout();
+    if (hasPendingAdminLogout()) {
+      await noteCacheOwner('console', '');
+      return { authenticated: false, email: '', role: null };
+    }
+  }
   const response = await fetch(apiUrl('/api/admin/auth/status'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  return response.json() as Promise<AdminAuthStatus>;
+  const status = await response.json() as AdminAuthStatus;
+  await noteCacheOwner('console', status.authenticated ? `${status.role ?? 'admin'}:${status.email}` : '');
+  return status;
 }
 
 export async function logoutAdmin(): Promise<void> {
+  // Flag first, clear it only on a 2xx: an offline "Abmelden" must not leave
+  // the console one reload away (see PENDING_ADMIN_LOGOUT_KEY).
+  setPendingAdminLogout(true);
   await clearApiCache();
   const response = await fetch(apiUrl('/api/admin/auth/logout'), {
     credentials: 'include',
@@ -411,6 +477,7 @@ export async function logoutAdmin(): Promise<void> {
   if (!response.ok) {
     throw new Error(await response.text());
   }
+  setPendingAdminLogout(false);
 }
 
 export async function listCoachees(): Promise<Coachee[]> {
@@ -1023,6 +1090,10 @@ export async function adminUiLogin(username: string, password: string): Promise<
     body: JSON.stringify({ username, password }),
   });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Login failed');
+  // A fresh console cookie replaces the one a failed logout still owed, and
+  // the new holder's data must not come out of the previous one's cache.
+  setPendingAdminLogout(false);
+  await clearApiCache();
   return ((await r.json().catch(() => ({}))) as { role?: 'admin' | 'president' }).role || 'admin';
 }
 

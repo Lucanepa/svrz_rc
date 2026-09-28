@@ -315,7 +315,9 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     // the endpoint only clears a cookie that then wasn't there.
     void (async () => {
       await rcLogout();
-      if (isAdminSession) await logoutAdmin().catch(() => { /* the RC session is already gone */ });
+      // Offline, this throws with the admin logout still owed: logoutAdmin has
+      // flagged it, so getAuthMe drops the admin half until the retry lands.
+      if (isAdminSession) await logoutAdmin().catch(() => { /* owed — settlePendingLogout retries it */ });
     })().finally(() => {
       setLogUser(null);
       setAuthed(false);

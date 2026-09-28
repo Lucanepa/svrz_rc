@@ -13398,7 +13398,9 @@ app.listen(port, () => {
       log.warn('scheduler.pattern', `games refresh: "${raw}" is not an hour — ignored`, { raw });
       continue;
     }
-    scheduleDaily(`0 ${hour} * * *`, `games refresh ${hour}:00`, async () => {
+    // :15, not :00 — wiedisync's vm_sync watchdog retries at :00 and :30 UTC on
+    // a Monday their sync is failing, and this holds the shared account for minutes.
+    scheduleDaily(`15 ${hour} * * *`, `games refresh ${hour}:15`, async () => {
       // Same job as the nightly one: it is idempotent, and a narrower "today
       // only" variant would be a second code path to keep in step with the
       // first for no gain — the sync already costs one VolleyManager session.

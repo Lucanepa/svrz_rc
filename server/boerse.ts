@@ -172,6 +172,9 @@ export type FetchResult = {
   ignored: number;
   error: string;
   httpStatus?: number;
+  /** The window's edge this run read to (ISO): offers for games before it
+   *  were never looked at, so their absence says nothing (planReconcile). */
+  cutoff?: string;
 };
 
 const failed = (error: string, httpStatus?: number): FetchResult =>
@@ -353,7 +356,7 @@ export async function fetchBoerseOffers(opts: {
       return failed(`incomplete: stopped at ${offset} of ${total} without reaching the cutoff`);
     }
 
-    return { ok: true, offers, total, ignored, error: '' };
+    return { ok: true, offers, total, ignored, error: '', cutoff };
   } catch (error) {
     return failed(error instanceof Error ? error.message : String(error));
   } finally {
@@ -367,15 +370,40 @@ export async function fetchBoerseOffers(opts: {
   }
 }
 
+// ── When not to poll ─────────────────────────────────────────────────
+
+/** The hour of the shared VolleyManager account that belongs to wiedisync:
+ *  their Monday 04:00 UTC `vm_sync` and daily 04:30 `svrz_sync`
+ *  (infrastructure.md → "The shared VolleyManager account"). UTC, not Zürich:
+ *  their crons carry no timezone. */
+export const BOERSE_QUIET_HOUR_UTC = 4;
+
+/** Whether a börse run for `reason` must stand down at `now`. Every automatic
+ *  run does in wiedisync's hour — the hourly tick and the startup run alike;
+ *  only an admin's manual run ('manual') goes ahead, a person choosing to. */
+export function boersePollMustSkip(reason: string, now: Date): boolean {
+  return reason !== 'manual' && now.getUTCHours() === BOERSE_QUIET_HOUR_UTC;
+}
+
 // ── Reconcile ────────────────────────────────────────────────────────
 
-export type StoredOffer = { id: string; vm_offer_id: string; status: string; withdrawn_at: string };
+export type StoredOffer = { id: string; vm_offer_id: string; status: string; withdrawn_at: string; game_starts_at?: string };
 
 export type ReconcilePlan = {
   creates: BoerseOfferRow[];
   updates: Array<{ id: string; row: BoerseOfferRow }>;
   withdraws: string[];
+  /** Live rows whose game fell behind the window's edge: closed, never
+   *  counted as withdrawals — the poll did not look that far back. */
+  expires: string[];
   blocked: string;
+};
+
+const startsBefore = (startsAt: string | undefined, cutoff: string | undefined): boolean => {
+  if (!startsAt || !cutoff) return false;
+  const a = Date.parse(startsAt);
+  const b = Date.parse(cutoff);
+  return Number.isFinite(a) && Number.isFinite(b) && a < b;
 };
 
 /**
@@ -389,44 +417,57 @@ export type ReconcilePlan = {
  * caller says it has now seen that twice. And a reconcile that would withdraw
  * most of what we hold is refused outright: a mass all-clear should be a human
  * decision, not a quiet consequence of one odd response.
+ *
+ * Only what the poll could have seen can be withdrawn by its absence. The
+ * fetch reads back to `cutoff` (LOOKBACK_DAYS) and no further, so a live row
+ * whose game is older than that is EXPIRED, not withdrawn: closed on the date
+ * alone, whatever this response held, and left out of the ratio. Counted as
+ * withdrawals they tripped the mass all-clear guard after a missed poll or a
+ * busy weekend — and since a blocked run stamps nothing, the same rows were
+ * "unseen" again every hour and the block never lifted.
  */
 export function planReconcile(opts: {
   fetched: BoerseOfferRow[];
   stored: StoredOffer[];
   emptyStreak: number;
   maxWithdrawRatio?: number;
+  /** The fetch's window edge (FetchResult.cutoff). */
+  cutoff?: string;
 }): ReconcilePlan {
   const { fetched, stored } = opts;
-  const empty = { creates: [], updates: [], withdraws: [], blocked: '' };
+  const seen = new Set(fetched.map((row) => row.vm_offer_id));
+  const expires = stored
+    .filter((s) => !s.withdrawn_at && !seen.has(s.vm_offer_id) && startsBefore(s.game_starts_at, opts.cutoff))
+    .map((s) => s.id);
+  const expired = new Set(expires);
+  const live = stored.filter((s) => !s.withdrawn_at && !expired.has(s.id));
+  const empty = { creates: [], updates: [], withdraws: [], expires, blocked: '' };
 
-  if (fetched.length === 0 && opts.emptyStreak < 2 && stored.some((s) => !s.withdrawn_at)) {
+  if (fetched.length === 0 && opts.emptyStreak < 2 && live.length > 0) {
     return { ...empty, blocked: 'zero rows once — not clearing the board until a second run agrees' };
   }
 
   const byVmId = new Map(stored.map((s) => [s.vm_offer_id, s]));
-  const seen = new Set<string>();
   const creates: BoerseOfferRow[] = [];
   const updates: Array<{ id: string; row: BoerseOfferRow }> = [];
 
   for (const row of fetched) {
-    seen.add(row.vm_offer_id);
     const existing = byVmId.get(row.vm_offer_id);
     if (existing) updates.push({ id: existing.id, row });
     else creates.push(row);
   }
 
-  const live = stored.filter((s) => !s.withdrawn_at);
   const withdraws = live.filter((s) => !seen.has(s.vm_offer_id)).map((s) => s.id);
 
   const ratio = opts.maxWithdrawRatio ?? 0.3;
   if (live.length >= 10 && withdraws.length > Math.ceil(live.length * ratio)) {
     return {
-      creates, updates, withdraws: [],
+      creates, updates, withdraws: [], expires,
       blocked: `would withdraw ${withdraws.length} of ${live.length} live offers — refusing a mass all-clear`,
     };
   }
 
-  return { creates, updates, withdraws, blocked: '' };
+  return { creates, updates, withdraws, expires, blocked: '' };
 }
 
 // ── Who holds the game ───────────────────────────────────────────────

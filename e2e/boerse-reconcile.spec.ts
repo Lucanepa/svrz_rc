@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { planReconcile, toOfferRow, type BoerseOfferRow, type StoredOffer } from '../server/boerse';
+import { planReconcile, toOfferRow, boersePollMustSkip, type BoerseOfferRow, type StoredOffer } from '../server/boerse';
 
 /**
  * The half of the SR-Börse sync that can turn every warning off at once.
@@ -135,5 +135,82 @@ test.describe('reading one VolleyManager row', () => {
   test("VM spells this one status with an underscore, and it survives the trip", () => {
     const row = toOfferRow(vmRow('head-one', [], 'not_applied'));
     expect(row?.status).toBe('not_applied');
+  });
+});
+
+// The fetch reads back to a cutoff (LOOKBACK_DAYS) and stops. An offer whose
+// game has fallen behind it was never looked at, so its absence is not a
+// withdrawal — and counted as one, it tripped the mass all-clear guard, which
+// then stayed tripped hour after hour because a blocked run stamps nothing.
+test.describe('offers that aged out of the window', () => {
+  const cutoff = '2026-09-20T10:00:00.000Z';
+  const old = (i: number) => stored(`row-old-${i}`, `old-${i}`, { game_starts_at: '2026-09-19 18:00:00.000Z' });
+  const fresh = (i: number) => stored(`row-new-${i}`, `new-${i}`, { game_starts_at: '2026-09-25 18:00:00.000Z' });
+
+  test('are expired, not withdrawn, and do not trip the guard', () => {
+    // 10 live, 6 aged out together (a weekend cluster after a missed poll).
+    const plan = planReconcile({
+      fetched: [0, 1, 2, 3].map((i) => offer(`new-${i}`)),
+      stored: [...[0, 1, 2, 3, 4, 5].map(old), ...[0, 1, 2, 3].map(fresh)],
+      emptyStreak: 0,
+      cutoff,
+    });
+    expect(plan.blocked).toBe('');
+    expect(plan.withdraws).toEqual([]);
+    expect(plan.expires.sort()).toEqual([0, 1, 2, 3, 4, 5].map((i) => `row-old-${i}`).sort());
+  });
+
+  test('a real withdrawal inside the window still goes through beside them', () => {
+    const plan = planReconcile({
+      fetched: [0, 1, 2].map((i) => offer(`new-${i}`)),
+      stored: [...[0, 1, 2, 3, 4, 5].map(old), ...[0, 1, 2, 3].map(fresh)],
+      emptyStreak: 0,
+      cutoff,
+    });
+    expect(plan.withdraws).toEqual(['row-new-3']);
+    expect(plan.expires).toHaveLength(6);
+    expect(plan.blocked).toBe('');
+  });
+
+  test('the guard still holds for offers the poll could have seen', () => {
+    const plan = planReconcile({
+      fetched: [offer('new-0')],
+      stored: [...[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(fresh), old(0)],
+      emptyStreak: 0,
+      cutoff,
+    });
+    expect(plan.withdraws).toEqual([]);
+    expect(plan.blocked).toContain('refusing');
+    // Ageing is decided on the date alone, so it goes ahead even when blocked.
+    expect(plan.expires).toEqual(['row-old-0']);
+  });
+
+  test('without a cutoff (or a date) nothing is expired — the old behaviour', () => {
+    const plan = planReconcile({ fetched: [offer('a')], stored: [stored('row-a', 'a'), stored('row-b', 'b')], emptyStreak: 0 });
+    expect(plan.expires).toEqual([]);
+    expect(plan.withdraws).toEqual(['row-b']);
+  });
+
+  test('one empty answer still holds the live board, but aged rows expire', () => {
+    const plan = planReconcile({ fetched: [], stored: [old(0), fresh(0)], emptyStreak: 0, cutoff });
+    expect(plan.withdraws).toEqual([]);
+    expect(plan.expires).toEqual(['row-old-0']);
+    expect(plan.blocked).toContain('second run');
+  });
+});
+
+// wiedisync owns 04:00–04:59 UTC on the shared account. Every automatic run
+// stands down in it — the startup run too, which used to ignore the skip.
+test.describe('the 04:00 UTC hour', () => {
+  test('automatic runs skip it, a manual run does not', () => {
+    const inHour = new Date('2026-01-12T04:00:30Z');
+    expect(boersePollMustSkip('cron', inHour)).toBe(true);
+    expect(boersePollMustSkip('startup', inHour)).toBe(true);
+    expect(boersePollMustSkip('startup', new Date('2026-07-12T04:59:59Z'))).toBe(true);
+    expect(boersePollMustSkip('manual', inHour)).toBe(false);
+  });
+  test('the hours either side are open', () => {
+    expect(boersePollMustSkip('startup', new Date('2026-01-12T03:59:59Z'))).toBe(false);
+    expect(boersePollMustSkip('cron', new Date('2026-01-12T05:00:00Z'))).toBe(false);
   });
 });

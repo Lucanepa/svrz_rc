@@ -1561,7 +1561,7 @@ export async function getSettings(): Promise<Settings> {
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
-export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number; paid_cap?: number; niveau_table?: NiveauMatrix; expense_rates?: ExpenseRates }): Promise<void> {
+export async function putSettings(payload: { default_season?: number; test_mode?: boolean; groups?: string[]; coachee_targets?: CoacheeTargetMap; rc_mandates?: RcMandateMap; default_goal?: number; paid_cap?: number | null; niveau_table?: NiveauMatrix; expense_rates?: ExpenseRates }): Promise<void> {
   const r = await fetch(apiUrl('/api/admin/settings'), {
     method: 'PUT', credentials: 'include',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

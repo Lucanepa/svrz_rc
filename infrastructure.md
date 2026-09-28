@@ -856,7 +856,7 @@ inside it. Two codebases use it:
 
 | project | what runs | where |
 |---|---|---|
-| **svrz_rc** (this repo) | games sync, contact sync, auth check | API container, lenovoserver |
+| **svrz_rc** (this repo) | games sync (01:00 + 12:00/16:00 Zürich), hourly SR-Börse poll, contact sync, auth check | API container, lenovoserver |
 | **wiedisync** | `vm_sync`, `svrz_sync`, game/nomination pushes | Directus, hetzner |
 | kscw-website | **nothing** — it only *links* to volleyball.ch, holds no credentials. Keep it that way. |
 
@@ -878,10 +878,21 @@ protection is disjoint windows and the table below.
 | **every 30 min** | `vm_sync` watchdog retry | wiedisync | same |
 | **every 5 min** | Einsatzliste push, for a game ~60 min out | wiedisync | club — claims (since 2026-09-12) |
 | on demand, kickoff −3h…+3h | **match-sheet Einsatzliste read** (`vm-nomination-list.js`, when a coach/scorer opens the match sheet) — one login + one read, ≤8 s, cached 60 s, never waits: busy account → RSVP fallback | wiedisync | club — claims `vm-nomination:read` (since 2026-09-28) |
-| **daily 23:00 / 00:00 UTC** | games sync (`0 1 * * *` Europe/Zurich) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
+| **daily 23:00 / 00:00 UTC** | games sync (`0 1 * * *` Europe/Zurich, `VM_SYNC_CRON`) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
+| **daily 10:00 + 14:00 UTC** (summer) / **11:00 + 15:00 UTC** (winter) | games refresh — the same sync again at 12:00 and 16:00 Europe/Zurich (`VM_SYNC_REFRESH_HOURS`, default `12,16`), minutes per run | svrz_rc | `RefereeDelegate` `e693b8cf…` |
+| **hourly, round the clock, EXCEPT 04:00–04:59 UTC** | SR-Börse poll (`VM_BOERSE_POLL_MINUTES`, default 60) — interval counted from boot, so the minute moves with each deploy; plus one run 90 s after boot, which obeys the same skip (since 2026-09-28) | svrz_rc | `RefAdmin:Referee` for seconds, then restores the role it found |
 | on demand | game push (booking confirmed) | wiedisync | club |
 | on demand | **team-roster assign** (`POST /kscw/admin/vm-team-assign`, `/admin/vm-teams`) — ~1 min, in-process | wiedisync | club — claims `vm_team_assign` |
 | on demand | manual import, contact sync, auth check | svrz_rc | RefereeDelegate / club |
+| on demand | admin "Börse jetzt abrufen" (`POST /api/admin/boerse/sync`) — a person's choice, NOT held back in 04:00 UTC | svrz_rc | `RefAdmin:Referee`, restored |
+
+⚠ **Known overlap, accepted.** wiedisync's `vm_sync` watchdog retries every 30
+min (at :00 and :30 UTC) *while their Monday `vm_sync` is failing*. Our
+12:00/16:00 Zürich refresh starts at :00, and the hourly börse poll can land on
+:00 or :30 depending on when the API last booted. Both can meet a watchdog retry
+on a Monday their sync is failing. The refresh holds `RefereeDelegate` for
+minutes, so that is the one to move (e.g. `VM_SYNC_REFRESH_HOURS` plus a :15
+minute) if their watchdog is ever seen reading wrong rows.
 
 **Why 01:00 Zürich (fixed 2026-09-10).** The hour has to clear two unrelated
 things. wiedisync: 05:00 Zürich — where this used to sit — is 03:00 UTC in summer

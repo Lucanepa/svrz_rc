@@ -1387,7 +1387,7 @@ export default function App() {
   const [defaultGoal, setDefaultGoal] = useState<number>(OBSERVATION_GOAL);
   // Infoschreiben 6.2's ceiling. Distinct from the Pensum above it: that is what
   // a coach owes, this is where the season stops paying.
-  const [paidCap, setPaidCap] = useState<number>(PAID_CAP);
+  const [paidCap, setPaidCap] = useState<number | null>(PAID_CAP);
   // When true, ignore Niveau targets and show every game (escape hatch).
   const [showAllLevels, setShowAllLevels] = useState(false);
   // Read admin settings: email test-mode banner + default season + coachee targets.
@@ -1409,7 +1409,8 @@ export default function App() {
       setNiveauTable(resolveNiveauTable(s.niveau_table ?? null));
       setRcMandates(s.rc_mandates ?? {});
       if (s.default_goal) setDefaultGoal(s.default_goal);
-      if (s.paid_cap) setPaidCap(s.paid_cap);
+      // null is a cleared cap — no ceiling, as the Spesenabrechnung reads it.
+      if (s.paid_cap !== undefined) setPaidCap(s.paid_cap);
       if (!s.default_season) return seasonStartYear;
       // The season is no longer pickable in the app — it is set once in the
       // admin console and everyone follows it. A stored preference used to win
@@ -7182,7 +7183,7 @@ export default function App() {
                               counters all season reads as a limit on taking
                               games, which it is not — the RC may coach more,
                               the SVRZ just stops paying. */}
-                          {paidCap > 0 && homeData.done >= paidCap && (
+                          {paidCap != null && paidCap > 0 && homeData.done >= paidCap && (
                             <span className="text-right text-stone-500">
                               {de
                                 ? `Vergütet werden max. ${paidCap} Spiele — weitere sind willkommen.`

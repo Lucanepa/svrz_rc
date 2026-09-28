@@ -900,7 +900,7 @@ export default function AdminConsole() {
   const [defaultGoal, setDefaultGoal] = useState<number>(OBSERVATION_GOAL);
   // Infoschreiben 6.2's ceiling: what the season reimburses, which is not the
   // same number as what a mandate owes.
-  const [paidCap, setPaidCap] = useState<number>(PAID_CAP);
+  const [paidCap, setPaidCap] = useState<number | null>(PAID_CAP);
   const [expenseRates, setExpenseRates] = useState<ExpenseRates>(DEFAULT_EXPENSE_RATES);
   // The SR-Niveau table in force — official values with the admin's edits on top.
   const [niveauTable, setNiveauTable] = useState<NiveauMatrix>(() => resolveNiveauTable(null));
@@ -940,7 +940,8 @@ export default function AdminConsole() {
       .then((s) => {
         setTestMode(Boolean(s.test_mode)); setGroups(s.groups || []); setCoacheeTargets(s.coachee_targets || {});
         setRcMandates(s.rc_mandates || {}); if (s.default_goal) setDefaultGoal(s.default_goal);
-        if (s.paid_cap) setPaidCap(s.paid_cap);
+        // null is a cleared cap — no ceiling, as the Spesenabrechnung reads it.
+        if (s.paid_cap !== undefined) setPaidCap(s.paid_cap);
         if (s.expense_rates) setExpenseRates(s.expense_rates);
         setNiveauTable(resolveNiveauTable(s.niveau_table || null));
         if (s.default_season) setDefaultSeason(s.default_season);
@@ -969,7 +970,7 @@ export default function AdminConsole() {
           setRcMandates(s.rc_mandates || {});
           setNiveauTable(resolveNiveauTable(s.niveau_table || null));
           if (s.default_goal) setDefaultGoal(s.default_goal);
-          if (s.paid_cap) setPaidCap(s.paid_cap);
+          if (s.paid_cap !== undefined) setPaidCap(s.paid_cap);
           if (s.expense_rates) setExpenseRates(s.expense_rates);
           if (s.default_season) setDefaultSeason(s.default_season);
           setTestMode(Boolean(s.test_mode));
@@ -1038,8 +1039,8 @@ export default function AdminConsole() {
       throw e;
     }
   }, []);
-  const savePaidCap = useCallback(async (next: number) => {
-    let previous = 0;
+  const savePaidCap = useCallback(async (next: number | null) => {
+    let previous: number | null = null;
     setPaidCap((current) => { previous = current; return next; });
     try {
       await putSettings({ paid_cap: next });
@@ -5089,7 +5090,10 @@ function OverviewDetail({ t, lang, rcId, rcName, season }: { t: T; lang: Lang; r
   );
 }
 
-function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate }: { t: T; lang: Lang; paidCap: number; season: number; settingsLoading: boolean; meetingDate: string }) {
+/** Vergütet: the done games up to the ceiling; every one with no ceiling. */
+const paidOf = (done: number, cap: number | null) => (cap == null ? done : Math.min(done, cap));
+
+function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate }: { t: T; lang: Lang; paidCap: number | null; season: number; settingsLoading: boolean; meetingDate: string }) {
   const [rows, setRows] = useState<RcOverviewEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -5171,7 +5175,7 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate 
       // The order the table on screen uses, so the export can be checked
       // against it line by line (it sorted by given name — Anna Zünd first).
       .sort((a, b) => bySurname({ full_name: a.fullName }, { full_name: b.fullName }))
-      .map((r) => [r.fullName, r.done, r.planned, r.outstanding, Math.min(r.done, paidCap), r.paidAt ? dayLabel(r.paidAt, { year: true }) : ''].map(cell).join(';'));
+      .map((r) => [r.fullName, r.done, r.planned, r.outstanding, paidOf(r.done, paidCap), r.paidAt ? dayLabel(r.paidAt, { year: true }) : ''].map(cell).join(';'));
     const csv = '\ufeff' + [head.map(cell).join(';'), ...body].join('\r\n') + '\r\n';
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
@@ -5250,8 +5254,8 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate 
                       {/* What the season actually pays. Equal to Erledigt until a
                           coach passes the ceiling, and then deliberately not. */}
                       <td className="py-2 text-right tabular-nums text-stone-600 whitespace-nowrap">
-                        {Math.min(r.done, paidCap)}
-                        {r.done > paidCap && <span className="text-stone-400"> / {r.done}</span>}
+                        {paidOf(r.done, paidCap)}
+                        {paidCap != null && r.done > paidCap && <span className="text-stone-400"> / {r.done}</span>}
                         {/* The tick says the claim was settled; the action to
                             set it sits in the opened row, where there is room
                             to say when and by whom. */}
@@ -5284,7 +5288,7 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate 
                                   {r.paidAt ? <Check size={13} /> : <Coins size={13} />}
                                   {r.paidAt
                                     ? <>{t.ovPaidOn} {dayLabel(r.paidAt, { year: true })}{r.paidBy ? ` ${t.ovPaidBy} ${r.paidBy}` : ''}</>
-                                    : `${t.ovPaid}: ${Math.min(r.done, paidCap)}`}
+                                    : `${t.ovPaid}: ${paidOf(r.done, paidCap)}`}
                                 </span>
                                 <button
                                   type="button"
@@ -5763,14 +5767,15 @@ function DefaultGoalCard({ t, defaultGoal, onDefaultGoal, loading }: { t: T; def
 // Under the Übersicht table whose Vergütet column it caps; the Pensum (what is
 // owed) lives with the RCs — one is owed, the other is paid, and each sits
 // where its number shows.
-function PaidCapCard({ t, paidCap, onPaidCap, loading }: { t: T; paidCap: number; onPaidCap: (n: number) => Promise<void>; loading: boolean }) {
-  const [cap, setCap] = useState<string>(String(paidCap));
+function PaidCapCard({ t, paidCap, onPaidCap, loading }: { t: T; paidCap: number | null; onPaidCap: (n: number | null) => Promise<void>; loading: boolean }) {
+  const [cap, setCap] = useState<string>(paidCap == null ? '' : String(paidCap));
   const capTouched = useRef(false);
-  useEffect(() => { if (!capTouched.current) setCap(String(paidCap)); }, [paidCap]);
+  useEffect(() => { if (!capTouched.current) setCap(paidCap == null ? '' : String(paidCap)); }, [paidCap]);
   const [capSaved, setCapSaved] = useState(false);
   const saveCap = async () => {
-    const n = Math.round(Number(cap));
-    if (!Number.isFinite(n) || n <= 0) { setCap(String(paidCap)); return; }
+    // Blank is "keine Obergrenze", as the hint says — the one way to clear it.
+    const n = cap.trim() ? Math.round(Number(cap)) : null;
+    if (n != null && (!Number.isFinite(n) || n <= 0)) { setCap(paidCap == null ? '' : String(paidCap)); return; }
     await onPaidCap(n);
     setCapSaved(true); setTimeout(() => setCapSaved(false), 2500);
   };

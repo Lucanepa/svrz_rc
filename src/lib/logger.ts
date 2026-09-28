@@ -11,6 +11,8 @@
 //  • never records the contents of a password/PIN/code field;
 //  • bounded: ring buffer in memory, batched network, drops rather than grows.
 
+import { connection } from './connection';
+
 export type ClientLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export type ClientLogEntry = {
@@ -344,9 +346,11 @@ function installFetchLogging(): void {
     if (url.includes('/api/client-logs')) return originalFetch(input as RequestInfo, init);
     const traced = input instanceof Request ? init : withTraceHeaders(url, init);
     const started = performance.now();
+    const conn = connection.start(method, url);
     try {
       const res = await originalFetch(input as RequestInfo, traced);
       const ms = Math.round(performance.now() - started);
+      conn.answered(ms);
       const lvl: ClientLevel = res.status >= 500 ? 'error' : res.status >= 400 ? 'warn' : 'debug';
       logEvent(lvl, 'net.fetch', `${method} ${scrubTokens(url)} → ${res.status} (${ms}ms)`, {
         method, url: scrubTokens(url), status: res.status, ms, ok: res.ok,
@@ -372,8 +376,15 @@ function installFetchLogging(): void {
       // Anything already excused is written now. A failure that would go out
       // as an outage waits LEAVE_GRACE_MS, so a navigation that has not fired
       // pagehide yet gets the chance to claim it (see the constant).
-      if (classifyFetchFailure(ms, error).lvl === 'error') setTimeout(write, LEAVE_GRACE_MS);
-      else write();
+      // The banner follows the same verdict, so a page that is only reloading
+      // never tells the coach their network is down.
+      const settle = () => {
+        const { evt } = classifyFetchFailure(ms, error);
+        const aborted = error instanceof Error && error.name === 'AbortError';
+        if (evt === 'net.fail' && !aborted) conn.failed(); else conn.dropped();
+      };
+      if (classifyFetchFailure(ms, error).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
+      else { write(); settle(); }
       throw error;
     }
   };

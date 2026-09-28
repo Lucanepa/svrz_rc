@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, createContext, useContext, type ReactNode } from 'react';
 import { foldName } from '../lib/coacheeName';
-import { Lock, Loader2, ArrowLeft, Eye, EyeOff, User, Languages, Search, Check, ChevronDown } from 'lucide-react';
+import { Lock, Loader2, ArrowLeft, Eye, EyeOff, User, Languages, Search, Check, ChevronDown, WifiOff, RotateCw } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import {
   getAuthMe, rcLogout, logoutAdmin, hasPendingLogout, settlePendingLogout,
@@ -12,6 +12,11 @@ import { Skeleton } from './Skeleton';
 import { getStoredLang, setStoredLang, getStoredRcId, setStoredRcId, type Lang } from '../lib/prefs';
 
 type ApiError = Error & { status?: number; retryAfterMs?: number };
+
+/** How long the session probe waits before it calls the server unreachable.
+ *  Well past the service worker's 6 s cache fallback, so a device with a
+ *  cached session opens on it instead of on an error. */
+const PROBE_GIVE_UP_MS = 20_000;
 
 // Every string on the gate, in both languages. The gate is where the language
 // gets chosen, so it cannot lean on the app's own translations — those live
@@ -43,7 +48,10 @@ const STR = {
     rateLimitMins: (m: number) => `Zu viele Versuche. Bitte in ca. ${m} Minuten erneut probieren.`,
     unavailable: 'Server vorübergehend nicht erreichbar. Bitte in einer Minute erneut probieren.',
     serverError: 'Serverfehler. Bitte versuche es später erneut.',
-    offlineNetwork: 'Verbindungsfehler. Bitte versuche es später erneut.',
+    offlineNetwork: 'Keine Verbindung zum Server – das liegt am Netz, nicht an deiner Eingabe. Bitte WLAN oder Mobilnetz prüfen und nochmals versuchen.',
+    noServerTitle: 'Keine Verbindung zum Server',
+    noServerBody: 'Dein Netz erreicht den Server gerade nicht. Das ist kein Fehler der App und du bist nicht abgemeldet – bitte WLAN oder Mobilnetz prüfen.',
+    toLogin: 'Trotzdem zur Anmeldung',
     offline: 'Keine Internetverbindung. Bitte prüfe dein Netz und versuche es erneut.',
     cookieBlocked: 'Anmeldung unvollständig: Der Browser hat die Sitzung nicht gespeichert. '
       + 'Bitte im Datenschutz die Option „Cross-Site-Tracking verhindern" für diese Seite deaktivieren '
@@ -75,7 +83,10 @@ const STR = {
     rateLimitMins: (m: number) => `Too many attempts. Please try again in about ${m} minutes.`,
     unavailable: 'Server temporarily unreachable. Please try again in a minute.',
     serverError: 'Server error. Please try again later.',
-    offlineNetwork: 'Connection error. Please try again later.',
+    offlineNetwork: 'No connection to the server – this is the network, not your input. Please check Wi-Fi or mobile data and try again.',
+    noServerTitle: 'No connection to the server',
+    noServerBody: 'Your network is not reaching the server right now. This is not an app error and you are not signed out – please check Wi-Fi or mobile data.',
+    toLogin: 'Go to sign-in anyway',
     offline: 'No internet connection. Please check your network and try again.',
     cookieBlocked: 'Sign-in incomplete: the browser did not store the session. '
       + 'Please turn off "Prevent cross-site tracking" for this site in your privacy settings, '
@@ -150,6 +161,10 @@ type View = 'shared' | 'identify';
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [authed, setAuthed] = useState(false);
   const [checking, setChecking] = useState(true);
+  // The probe got no answer at all: say so, rather than showing a login form
+  // that could not reach the server either. Bumping probeRun asks again.
+  const [probeFailed, setProbeFailed] = useState(false);
+  const [probeRun, setProbeRun] = useState(0);
   const [view, setView] = useState<View>('shared');
   const [lang, setLang] = useState<Lang>(() => getStoredLang() ?? (navigator.language?.toLowerCase().startsWith('en') ? 'EN' : 'DE'));
   const t = STR[lang];
@@ -222,14 +237,22 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setChecking(false);
       return;
     }
-    // Guard the status probe with a timeout so an unreachable API degrades to
-    // the login screen instead of an infinite blank page.
+    // Guard the status probe with a timeout so an unreachable API ends in a
+    // "no connection" screen instead of an infinite spinner. This used to be
+    // 6 s and fall back to the LOGIN screen — the same 6 s the service
+    // worker waits before answering from its cache, so on a slow network the
+    // two raced and a signed-in coach saw the login form flash up (28.09.2026).
+    // Now the cache gets its turn first, the connection banner explains the
+    // wait from 3 s on, and only a real silence ends here.
+    setProbeFailed(false);
     const timeout = setTimeout(() => {
-      clientLog.warn('auth.probe', 'auth/me did not answer within 6s — falling back to the login screen');
+      clientLog.warn('auth.probe', `auth/me did not answer within ${PROBE_GIVE_UP_MS / 1000}s — showing the no-connection screen`);
+      setProbeFailed(true);
       setChecking(false);
-    }, 6000);
+    }, PROBE_GIVE_UP_MS);
     getAuthMe()
       .then((me) => {
+        setProbeFailed(false);
         clientLog.info('auth.probe', me.rc || me.admin ? 'existing session' : me.needsIdentity ? 'session without an RC' : 'no session', {
           rc: me.rc?.name, admin: Boolean(me.admin), shared: Boolean(me.shared),
         });
@@ -239,13 +262,19 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         // asking for it again would be a lie about what is missing.
         if (me.needsIdentity) { setView('identify'); void loadRoster(); }
       })
-      .catch((error) => { clientLog.warn('auth.probe', 'auth/me failed — showing the login screen', { error }); })
+      .catch((error) => {
+        // No response at all (fetch rejects with a TypeError) is the network;
+        // anything the server answered still means "sign in".
+        const noResponse = error instanceof TypeError;
+        clientLog.warn('auth.probe', noResponse ? 'auth/me got no response — showing the no-connection screen' : 'auth/me failed — showing the login screen', { error });
+        if (noResponse) setProbeFailed(true);
+      })
       .finally(() => {
         clearTimeout(timeout);
         setChecking(false);
       });
     return () => clearTimeout(timeout);
-  }, [adoptSession, loadRoster]);
+  }, [adoptSession, loadRoster, probeRun]);
 
   const handleSharedSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -335,9 +364,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   };
 
   if (checking) {
-    // The very first thing anyone sees, and it can sit here for up to six
-    // seconds against a slow network — worth the branded spinner rather than a
-    // bare grey ring that reads as "nothing is happening".
+    // The very first thing anyone sees, and on a slow network it can sit here
+    // for a while (the connection banner says why from 3 s on) — worth the
+    // branded spinner rather than a bare grey ring that reads as "nothing is
+    // happening".
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-stone-50 to-stone-100">
         <AppSpinner label={t.loading} />
@@ -349,6 +379,32 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       <RcAuthContext.Provider value={{ rcId, rcName, rcFirstName, isAdminSession, sharedSession, adminShortcut, switchRc, logout }}>
         {children}
       </RcAuthContext.Provider>
+    );
+  }
+
+  if (probeFailed) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-stone-100 via-stone-50 to-stone-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm rounded-3xl border border-stone-200/70 bg-white p-8 text-center shadow-card-lg" data-testid="no-connection">
+          <WifiOff className="mx-auto h-8 w-8 text-red-600" />
+          <p className="mt-3 text-base font-semibold text-stone-900">{t.noServerTitle}</p>
+          <p className="mt-1.5 text-sm text-stone-600">{t.noServerBody}</p>
+          <button
+            type="button"
+            onClick={() => { setChecking(true); setProbeRun((n) => n + 1); }}
+            className={`${primaryButtonClass} mt-5`}
+          >
+            <RotateCw className="h-4 w-4" /> {t.retry}
+          </button>
+          <button
+            type="button"
+            onClick={() => setProbeFailed(false)}
+            className="mt-3 text-xs text-stone-400 underline hover:text-stone-600"
+          >
+            {t.toLogin}
+          </button>
+        </div>
+      </div>
     );
   }
 

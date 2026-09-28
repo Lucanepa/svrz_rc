@@ -12,6 +12,8 @@ import { UiHost } from './components/ui';
 import { enableDemo, isDemoMode } from './lib/demo';
 import { canonicalizeLegacyHash, routeRoot } from './lib/routes';
 import { installLogging, clientLog, noteReloadingPage, scrubTokens } from './lib/logger';
+import { connection, installConnectionWatch } from './lib/connection';
+import ConnectionBanner from './components/ConnectionBanner.tsx';
 import {
   decideSwReload, recentSwReloads, noteSwReload, retryDelayMs, SW_RELOAD_STATE_KEY,
 } from './lib/swReload';
@@ -51,6 +53,10 @@ installLogging({
   // The demo is a promise of zero backend calls; shipping logs would break it.
   ship: !isDemoMode(),
 });
+installConnectionWatch();
+// Each change of what the banner says goes into the session replay, so "the
+// app was broken" can be checked against what the coach was actually told.
+connection.subscribe(() => clientLog.info('net.state', `connection: ${connection.get()}`, { online: navigator.onLine }));
 
 // Whether a service worker was already in charge when the page loaded. Without
 // this, the first-ever install reloads the page under a user who is mid-login.
@@ -251,6 +257,9 @@ createRoot(document.getElementById('root')!).render(
         signature and survey alike — needs the host on screen, and none of them
         should have to render it itself. */}
     <UiHost />
+    {/* Every route, the login screen included: a slow network looks like a
+        broken app from any of them. Not in the demo, which has no network. */}
+    {!isDemoMode() && <ConnectionBanner />}
     </>
     </ErrorBoundary>
   </StrictMode>,

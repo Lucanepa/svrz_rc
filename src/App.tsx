@@ -107,6 +107,7 @@ import { runOfflineCheck, type OfflineReport } from './lib/offlineReady';
 import { useDocTextSearch, DOC_TEXT_MIN_QUERY, type DocTextSearch } from './lib/useDocTextSearch';
 import type { DocTextResult } from './lib/docText';
 import { clientLog } from './lib/logger';
+import { isNoResponseMessage } from './lib/connection';
 
 // Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
 // "ITA" — never a fabricated or TBD value (the red TBD is a UI-only concept).
@@ -881,7 +882,17 @@ function localizeRuntimeError(message: string, lang: FeedbackFormData['lang']): 
       EN: 'Set VM_USERNAME and VM_PASSWORD in environment variables.',
     },
   };
-  return map[normalized]?.[lang] || message;
+  if (map[normalized]) return map[normalized][lang];
+  // A request that got no response surfaces as the browser's own words —
+  // "Failed to fetch" (Chrome), "Load failed" (Safari), "NetworkError when
+  // attempting to fetch resource." (Firefox). Shown raw in red they read as an
+  // app bug; they are the network, so say that.
+  if (isNoResponseMessage(normalized)) {
+    return lang === 'DE'
+      ? 'Keine Verbindung zum Server – das liegt am Netz, nicht an der App. Bitte WLAN oder Mobilnetz prüfen.'
+      : 'No connection to the server – this is the network, not the app. Please check Wi-Fi or mobile data.';
+  }
+  return message;
 }
 
 function toDateString(d: Date): string {

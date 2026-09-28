@@ -191,6 +191,23 @@ export default defineConfig(() => {
                 plugins: [{
                   cacheWillUpdate: async ({ response }: { response: Response }) =>
                     /no-store/i.test(response.headers.get('Cache-Control') || '') ? null : response,
+                }, {
+                  // NetworkFirst reads the cache only when the network failed
+                  // or ran past the timeout — so every cached answer is news
+                  // the coach should get: "your network, not the app". Named
+                  // to the page (src/lib/connection.ts, SW_CACHE_CHANNEL)
+                  // rather than stamped on the response: a header added here
+                  // would sit behind CORS on the cross-origin API.
+                  cachedResponseWillBeUsed: async ({ request, cachedResponse }: { request: Request; cachedResponse?: Response }) => {
+                    if (cachedResponse && typeof BroadcastChannel !== 'undefined') {
+                      try {
+                        const channel = new BroadcastChannel('svrz-sw-cache');
+                        channel.postMessage({ url: request.url });
+                        channel.close();
+                      } catch { /* the page's timing fallback still catches it */ }
+                    }
+                    return cachedResponse;
+                  },
                 }],
                 expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 30 },
                 matchOptions: { ignoreVary: true },

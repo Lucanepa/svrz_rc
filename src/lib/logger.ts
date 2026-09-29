@@ -330,11 +330,34 @@ export function noteBackOnPage(): void { if (!reloading) leaving = false; }
  *  reloaded is gone. */
 export function resetPageLifecycle(): void { leaving = false; reloading = false; }
 
-export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving): { evt: string; lvl: ClientLevel } {
+/** Requests the app sends on its own clock, as a backup, whose failure it
+ *  already swallows on purpose: parkNow() in App.tsx says nothing when the
+ *  park gets no response ("the next park catches up"), and the coach is never
+ *  told. On 29.09.2026 at 21:21 one such PUT died after 32.6 s on a phone
+ *  that still reported itself online, and the alert mail went out. It cannot have
+ *  been the server: the API sits behind a Cloudflare Tunnel, so a hung or dead
+ *  origin comes back as a 502/524, never as no response at all. What cuts an
+ *  upload off half-way with nothing in reply is the handset's own connection.
+ *
+ *  A real outage is not hidden by this: every foreground request still fails
+ *  loud, and a server that answers badly is a status, logged on its own. */
+const BACKGROUND_REQUESTS: ReadonlyArray<{ method: RegExp; path: RegExp }> = [
+  // The parked-draft write (PUT, or the POST a page-leaving send has to use).
+  // Not the list GET, and not the DELETE: those answer something the coach did.
+  { method: /^(PUT|POST)$/, path: /\/api\/drafts\/parked\/[^/?#]+\/?(?:[?#]|$)/i },
+];
+
+export function isBackgroundRequest(method: string, url: string): boolean {
+  const m = (method || 'GET').toUpperCase();
+  return BACKGROUND_REQUESTS.some((r) => r.method.test(m) && r.path.test(url));
+}
+
+export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving, isBackground = false): { evt: string; lvl: ClientLevel } {
   const name = error instanceof Error ? error.name : '';
   if (name === 'AbortError') return { evt: 'net.fail', lvl: 'error' };
   if (isLeaving) return { evt: 'net.fail.unload', lvl: 'warn' };
   if (ms < INSTANT_FAIL_MS) return { evt: 'net.fail.instant', lvl: 'warn' };
+  if (isBackground) return { evt: 'net.fail.background', lvl: 'warn' };
   return { evt: 'net.fail', lvl: 'error' };
 }
 
@@ -367,8 +390,9 @@ function installFetchLogging(): void {
       // a survey that failed to load filed its capability token — which answers
       // the questionnaire AS the referee, and re-links an anonymous answer to
       // the person who gave it — into a Protokoll every admin reads.
+      const background = isBackgroundRequest(method, url);
       const write = () => {
-        const { evt, lvl } = classifyFetchFailure(ms, error);
+        const { evt, lvl } = classifyFetchFailure(ms, error, leaving, background);
         clientLog[lvl](evt, `${method} ${scrubTokens(url)} failed after ${ms}ms (no response)`, {
           method, url: scrubTokens(url), ms, error, online: navigator.onLine,
         });
@@ -379,11 +403,11 @@ function installFetchLogging(): void {
       // The banner follows the same verdict, so a page that is only reloading
       // never tells the coach their network is down.
       const settle = () => {
-        const { evt } = classifyFetchFailure(ms, error);
+        const { evt } = classifyFetchFailure(ms, error, leaving, background);
         const aborted = error instanceof Error && error.name === 'AbortError';
         if (evt === 'net.fail' && !aborted) conn.failed(); else conn.dropped();
       };
-      if (classifyFetchFailure(ms, error).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
+      if (classifyFetchFailure(ms, error, leaving, background).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
       else { write(); settle(); }
       throw error;
     }

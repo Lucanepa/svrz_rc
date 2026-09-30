@@ -27,6 +27,10 @@ export type PadSyncStatus = {
   message: string;          // the server's own sentence on a refusal, else ''
   serverOnly: boolean;      // no IndexedDB on this device — the server is the only copy
   dirty: number;            // pages not yet acknowledged
+  /** The boot's first pull has answered (or could not be made). Until then an
+   *  empty list is only the local cache — empty on a wiped device or a new
+   *  sign-in — and not proof that the coach has no pages. */
+  loaded: boolean;
 };
 
 type Config = {
@@ -54,7 +58,7 @@ let pushing: Promise<void> | null = null;
 let pushBackoffMs = 0;
 let nextPushAt = 0;
 let lastPullAt = 0;
-let status: PadSyncStatus = { local: 'idle', server: 'idle', at: 0, message: '', serverOnly: false, dirty: 0 };
+let status: PadSyncStatus = { local: 'idle', server: 'idle', at: 0, message: '', serverOnly: false, dirty: 0, loaded: false };
 
 const now = () => Date.now();
 const owner = () => (config ? config.getOwner() : '');
@@ -79,6 +83,7 @@ function setStatus(patch: Partial<PadSyncStatus>): void {
 async function boot(o: string): Promise<void> {
   cache.clear(); inkCache.clear(); inkStale.clear(); pending.clear();
   booted = o;
+  setStatus({ loaded: false });
   storeOk = await notebookStoreAvailable();
   if (storeOk) {
     try { await pruneNotebook(now()); } catch { /* a purge that fails is retried at the next boot */ }
@@ -89,7 +94,9 @@ async function boot(o: string): Promise<void> {
   if (booted !== o) return;   // the owner changed under us
   emitPages();
   setStatus({ local: 'idle', server: 'idle' });
-  await pullIndex({ force: true });
+  // pullIndex returns quietly when offline, without an owner or on an error,
+  // so this is reached on every outcome — never left waiting for good.
+  try { await pullIndex({ force: true }); } finally { if (booted === o) setStatus({ loaded: true }); }
   await flushNow();
 }
 
@@ -358,6 +365,7 @@ export function configure(c: Config): void {
   config = c;
   const o = c.getOwner();
   if (o && o !== 'admin' && o !== 'anon') void boot(o);
+  else setStatus({ loaded: true });   // no notebook to pull for this session
 }
 
 /** The owner changed (a coach hand-off): what was pending goes to the store
@@ -368,7 +376,7 @@ export function reset(): void {
   pushBackoffMs = 0; nextPushAt = 0; lastPullAt = 0;
   const o = owner();
   if (o && o !== 'admin' && o !== 'anon' && o !== booted) void boot(o);
-  else if (!o || o === 'admin' || o === 'anon') { cache.clear(); inkCache.clear(); inkStale.clear(); booted = ''; if (config) config.onPages([]); }
+  else if (!o || o === 'admin' || o === 'anon') { cache.clear(); inkCache.clear(); inkStale.clear(); booted = ''; if (config) config.onPages([]); setStatus({ loaded: true }); }
 }
 
 export function stop(): void {

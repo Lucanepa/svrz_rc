@@ -89,8 +89,11 @@ export default function SurveyPage() {
       <div className="w-full max-w-xl mt-6 mb-10">
         <div className="flex flex-col items-center mb-5">
           <SvrzLogo className="h-9 w-auto" />
-          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400 mt-3 text-center">
-            <Both entry={form.eyebrow} />
+          {/* The shipped eyebrow until the session says which one the
+              commission configured: held empty at its height instead, so the
+              line does not swap text once the answer lands. */}
+          <p className="min-h-[1rem] text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400 mt-3 text-center">
+            {state !== 'loading' && <Both entry={form.eyebrow} />}
           </p>
         </div>
 

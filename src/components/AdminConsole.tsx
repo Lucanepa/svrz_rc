@@ -965,6 +965,13 @@ export default function AdminConsole() {
   // Guards the subscription below: while one of our own saves is in flight the
   // pushed copy is older than what is on screen.
   const settingsSavesInFlight = useRef(0);
+  // The in-flight count is read when an event arrives, but the answer to the
+  // read it starts can land after a save has begun — and that answer predates
+  // the save, so it would overwrite the optimistic value. Every save bumps the
+  // generation; an answer is applied only if no save started since it was
+  // asked for, none is in flight, and no newer read has been asked for.
+  const settingsGen = useRef(0);
+  const settingsFresh = useFreshest();
   // The console is its own React root, so it subscribes to /api/events for
   // itself. Two admins editing the Niveau matrix at the same time each worked
   // from the copy they had loaded, and the second save silently won.
@@ -973,8 +980,11 @@ export default function AdminConsole() {
     return subscribeLive((event) => {
       if (event.type !== 'settings.changed') return;
       if (settingsSavesInFlight.current > 0) return;
+      const gen = settingsGen.current;
+      const ticket = settingsFresh.take();
       getSettings()
         .then((s) => {
+          if (!settingsFresh.isCurrent(ticket) || gen !== settingsGen.current || settingsSavesInFlight.current > 0) return;
           setGroups(s.groups || []);
           setCoacheeTargets(s.coachee_targets || {});
           setRcMandates(s.rc_mandates || {});
@@ -987,7 +997,7 @@ export default function AdminConsole() {
         })
         .catch(() => { /* the next save or reload brings it back */ });
     });
-  }, [authed, role]);
+  }, [authed, role, settingsFresh]);
   // Optimistic with a rollback, like the test-mode toggle next to them. Left
   // silent, a rejected save (expired admin session, 500) showed the new mandate
   // or target as stored while the RC's season goal quietly stayed as it was.
@@ -996,6 +1006,7 @@ export default function AdminConsole() {
     let previous: CoacheeTargetMap = {};
     setCoacheeTargets((current) => { previous = current; return next; });
     setSettingsError('');
+    settingsGen.current += 1;
     settingsSavesInFlight.current += 1;
     try { await putSettings({ coachee_targets: next }); }
     catch (e) { setCoacheeTargets(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
@@ -1009,6 +1020,7 @@ export default function AdminConsole() {
     let previous: NiveauMatrix = {};
     setNiveauTable((current) => { previous = current; return next; });
     setSettingsError('');
+    settingsGen.current += 1;
     settingsSavesInFlight.current += 1;
     try { await putSettings({ niveau_table: niveauOverrides(next) }); return true; }
     catch (e) { setNiveauTable(previous); setSettingsError(e instanceof Error ? e.message : String(e)); return false; }
@@ -1018,6 +1030,7 @@ export default function AdminConsole() {
     let previous: RcMandateMap = {};
     setRcMandates((current) => { previous = current; return next; });
     setSettingsError('');
+    settingsGen.current += 1;
     settingsSavesInFlight.current += 1;
     try { await putSettings({ rc_mandates: next }); }
     catch (e) { setRcMandates(previous); setSettingsError(e instanceof Error ? e.message : String(e)); }
@@ -1029,36 +1042,42 @@ export default function AdminConsole() {
   const saveDefaultGoal = useCallback(async (next: number) => {
     let previous = 0;
     setDefaultGoal((current) => { previous = current; return next; });
+    settingsGen.current += 1;
+    settingsSavesInFlight.current += 1;
     try {
       await putSettings({ default_goal: next });
     } catch (e) {
       setDefaultGoal(previous);
       setSettingsError(e instanceof Error ? e.message : String(e));
       throw e;
-    }
+    } finally { settingsSavesInFlight.current -= 1; }
   }, []);
 
   const saveExpenseRates = useCallback(async (next: ExpenseRates) => {
     let previous = DEFAULT_EXPENSE_RATES;
     setExpenseRates((current) => { previous = current; return next; });
+    settingsGen.current += 1;
+    settingsSavesInFlight.current += 1;
     try {
       await putSettings({ expense_rates: next });
     } catch (e) {
       setExpenseRates(previous);
       setSettingsError(e instanceof Error ? e.message : String(e));
       throw e;
-    }
+    } finally { settingsSavesInFlight.current -= 1; }
   }, []);
   const savePaidCap = useCallback(async (next: number | null) => {
     let previous: number | null = null;
     setPaidCap((current) => { previous = current; return next; });
+    settingsGen.current += 1;
+    settingsSavesInFlight.current += 1;
     try {
       await putSettings({ paid_cap: next });
     } catch (e) {
       setPaidCap(previous);
       setSettingsError(e instanceof Error ? e.message : String(e));
       throw e;
-    }
+    } finally { settingsSavesInFlight.current -= 1; }
   }, []);
 
   // Tab ↔ URL. pushState, so each tab is a Back step; popstate handles
@@ -1793,10 +1812,14 @@ function AuditList({ label, count, children }: { label: string; count: number; c
  * rows those cannot decide. The report re-reads after every write, so the
  * counts say what is left, not what was.
  */
-function DataQualityCard({ t, lang, season, active, registerPeople, hasRegister, onLinked }: {
+function DataQualityCard({ t, lang, season, active, settled, registerPeople, hasRegister, onLinked }: {
   t: T;
   lang: Lang;
   season: number;
+  /** Whether the season above is the stored one. Until the settings answer
+   *  it is the calendar's guess, and a report for it would draw one season's
+   *  counts under the label of another for as long as the settings take. */
+  settled: boolean;
   /** Whether the tab is on screen. The report is six reads on the server
    *  and every tab is mounted at once, so it is not asked for until the tab
    *  is looked at — the same deal GamesAdmin makes with the coachee list. */
@@ -1848,7 +1871,7 @@ function DataQualityCard({ t, lang, season, active, registerPeople, hasRegister,
     } catch (e) { if (fresh.isCurrent(ticket)) setErr(t.dqFail(e instanceof Error ? e.message : String(e))); }
     finally { if (fresh.isCurrent(ticket)) setLoading(false); }
   }, [season, fresh, t]);
-  useEffect(() => { if (active) void load(); }, [active, load]);
+  useEffect(() => { if (active && settled) void load(); }, [active, settled, load]);
 
   const run = async (which: string, action: () => Promise<string>) => {
     setBusy(which); setNote(''); setErr('');
@@ -1943,6 +1966,9 @@ function DataQualityCard({ t, lang, season, active, registerPeople, hasRegister,
       </div>
       <p className="text-xs text-stone-400">{t.dqHint}</p>
       {err && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{err}</p>}
+      {/* The tiles' shape while the first report is out, so the card does not
+          open as a title and three buttons and then grow. */}
+      {!a && loading && !err && <div className="mt-3"><SkeletonRows rows={3} /></div>}
       {a && (
         <div className="mt-3 flex flex-wrap gap-2">
           <AuditCount label={t.dqUnlinked} n={a.coacheesUnlinked.length} />
@@ -2097,6 +2123,10 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
   useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
   const [all, setAll] = useState<Coachee[]>([]);
   const [loading, setLoading] = useState(true);
+  // Whether the list has answered once. Only that first wait hides the rows:
+  // every write reloads, and blanking the list then closed an open edit row
+  // or target editor for the length of the refetch.
+  const [loaded, setLoaded] = useState(false);
   const [notice, setNotice] = useState('');
   const [importing, setImporting] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -2150,14 +2180,14 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
       const rows = await listCoachees();
       if (list.isCurrent(ticket)) setAll(rows);
     } catch (e) { if (list.isCurrent(ticket)) setNotice(String(e)); }
-    finally { if (list.isCurrent(ticket)) setLoading(false); }
+    finally { if (list.isCurrent(ticket)) { setLoading(false); setLoaded(true); } }
   }, [list]);
   useEffect(() => { void reload(); }, [reload]);
   // The rows are filtered by season, and the season comes from settings, which
   // arrive after the coachees do. Rendering in between showed last season's
   // list under this season's heading for as long as that took — the local
   // fallback (`CUR_SEASON`) is August's guess, not the stored answer.
-  const settling = loading || (settingsLoading && !seasonTouched.current);
+  const settling = !loaded || (settingsLoading && !seasonTouched.current);
   const seasonRows = all.filter((c) => (typeof c.season === 'number' ? c.season === season : false)).sort(bySurname);
   // Without a number a coachee is matched to their games by name, and the
   // spelling then decides — the badge counts them, and pressed, shows only
@@ -2226,6 +2256,14 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
 
   const missingEmail = rows.filter((c) => !c.email).length;
 
+  // The tab is drawn whole, once its three first reads are in: the list, the
+  // register (without it every SV-Nr. field says "no register imported" and
+  // the register writes start disabled, both wrong until it answers) and the
+  // stored season. Only the first load waits — `loaded` is never reset and
+  // the register is never nulled again, so a write cannot blank the tab and
+  // a half-typed add form with it.
+  const tabReady = loaded && roster !== null && !(settingsLoading && !seasonTouched.current);
+
   // Every coachee of the season with the season's figures beside the roster
   // columns. The figures come from the server; an API that predates them
   // (404) still gets the roster columns, and says so.
@@ -2253,6 +2291,8 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
       setExporting(null);
     }
   };
+
+  if (!tabReady) return <Card><SkeletonRows rows={8} /></Card>;
 
   return (
     <>
@@ -2326,6 +2366,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
         lang={lang}
         season={season}
         active={active}
+        settled={!(settingsLoading && !seasonTouched.current)}
         registerPeople={registerPeople}
         hasRegister={roster?.source === 'roster' && (roster?.people.length ?? 0) > 0}
         onLinked={() => void reload()}
@@ -2364,6 +2405,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
       <Card>
         <div className="flex flex-wrap items-center gap-2 mb-2">
           <p className="text-xs text-stone-400">{settling ? t.loading : t.count(seasonRows.length, seasonLabel(season))}</p>
+          {!settling && loading && <Loader2 size={12} className="animate-spin text-stone-400" />}
           {/* Pressed, the list shows only these; pressed again, everyone. */}
           {!settling && unlinked.length > 0 && (
             <button
@@ -2453,6 +2495,10 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
 function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates }: { t: T; lang: Lang; mandates: RcMandateMap; defaultGoal: number; settingsLoading: boolean; onMandates: (next: RcMandateMap) => void }) {
   const [rcs, setRcs] = useState<RcPerson[]>([]);
   const [loading, setLoading] = useState(true);
+  // Whether the list has answered once, well or badly. Only that first wait
+  // shows the skeleton: every write reloads, and swapping the rows out then
+  // closed an open edit row for the length of the refetch.
+  const [loaded, setLoaded] = useState(false);
   const [form, setForm] = useState({ first_name: '', last_name: '', sv_number: '', name_aliases: '', email: '', phone: '' });
   const [editId, setEditId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<RcPerson>({ id: '' });
@@ -2465,6 +2511,12 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
   // see the comment on the button in App.tsx. Ticking somebody here shows them
   // a link; the console behind it still asks for the admin password.
   const [shortcutRcs, setShortcutRcs] = useState<string[]>([]);
+  // Read once, beside the list rather than inside its reload: a re-read after
+  // every write could land on top of a toggle in flight. A toggle made before
+  // the first read answers wins over it — the read predates the toggle, and
+  // the next toggle's full-list PUT would otherwise drop it on the server.
+  const [shortcutsLoaded, setShortcutsLoaded] = useState(false);
+  const shortcutTouched = useRef(false);
   const guard = async (action: () => Promise<void>) => {
     setNotice('');
     try { await action(); }
@@ -2483,11 +2535,20 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
     } catch (e) {
       if (!roster.isCurrent(ticket)) return;
       setLoadFailed(true); setNotice(e instanceof Error ? e.message : String(e));
-    } finally { if (roster.isCurrent(ticket)) setLoading(false); }
+    } finally { if (roster.isCurrent(ticket)) { setLoading(false); setLoaded(true); } }
   }, [roster]);
   useEffect(() => { void reload(); }, [reload]);
-  useEffect(() => { getAdminShortcutRcs().then(setShortcutRcs).catch(() => setShortcutRcs([])); }, []);
+  useEffect(() => {
+    getAdminShortcutRcs()
+      .then((ids) => { if (!shortcutTouched.current) setShortcutRcs(ids); })
+      .catch(() => { if (!shortcutTouched.current) setShortcutRcs([]); })
+      .finally(() => setShortcutsLoaded(true));
+  }, []);
+  // The rows, their shortcut icons and their season goals appear together:
+  // each row draws all three, and they come from three reads.
+  const settling = !loaded || !shortcutsLoaded || settingsLoading;
   const toggleShortcut = async (r: RcPerson) => {
+    shortcutTouched.current = true;
     const next = shortcutRcs.includes(r.id) ? shortcutRcs.filter((x) => x !== r.id) : [...shortcutRcs, r.id];
     const previous = shortcutRcs;
     setShortcutRcs(next); // optimistic; a rejected save rolls back and says so
@@ -2584,11 +2645,11 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
       <Card>
         {/* Each row prints a season goal, and a goal is a mandate times the
             default — both of which arrive with the settings, after this list. */}
-        <p className="text-xs text-stone-400 mb-2">{loading || settingsLoading ? t.loading : t.rcCount(rcs.length)}</p>
+        <p className="text-xs text-stone-400 mb-2">{settling ? t.loading : t.rcCount(rcs.length)}{!settling && loading && <Loader2 size={12} className="ml-1.5 inline-block align-[-2px] animate-spin" />}</p>
         {/* Phones: one card per coach. The table needs ~720px, so on a phone it
             clipped the e-mail and pushed the actions off-screen entirely. */}
         <div className="sm:hidden space-y-2">
-          {!loading && !settingsLoading && rcs.map((r) => editId === r.id ? (
+          {!settling && rcs.map((r) => editId === r.id ? (
             <div key={r.id} className="rounded-xl border border-stone-200 p-3 space-y-2">
               <div className="grid grid-cols-2 gap-2">
                 <input className={input} placeholder={t.firstName} value={editForm.first_name || ''} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
@@ -2636,7 +2697,7 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
               </tr>
             </thead>
             <tbody className="divide-y divide-stone-100">
-              {!loading && !settingsLoading && rcs.map((r) => editId === r.id ? (
+              {!settling && rcs.map((r) => editId === r.id ? (
                 <tr key={r.id}>
                   <td className="py-2 pr-3">
                     {/* Two rows of two. Four inputs in one flex line fought
@@ -2685,8 +2746,8 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
           </table>
         </div>
         {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}
-        {(loading || settingsLoading) && <SkeletonRows rows={6} />}
-        {!loading && !settingsLoading && rcs.length === 0 && (
+        {settling && <SkeletonRows rows={6} />}
+        {!settling && rcs.length === 0 && (
           <p className="py-8 text-center text-sm text-stone-400">{loadFailed ? t.loadFailed : t.noRcs}</p>
         )}
       </Card>
@@ -4768,7 +4829,7 @@ function BoerseCard({ lang }: { lang: Lang }) {
       </div>
 
       {!loaded ? (
-        <p className="mt-2 text-xs text-stone-400">{de ? 'Wird geladen…' : 'Loading…'}</p>
+        <Skeleton className="mt-2 h-4 w-64" />
       ) : !st ? (
         <p className="mt-2 text-xs text-stone-500">{de ? 'Noch kein Lauf aufgezeichnet.' : 'No run recorded yet.'}</p>
       ) : (
@@ -5145,13 +5206,14 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate 
   const toggleMeeting = async (r: RcOverviewEntry) => {
     const on = !r.meetingAttended;
     setMeetingBusy(r.id);
-    const previous = rows;
     setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, meetingAttended: on } : x)));
     try {
       await setRcMeeting(r.id, season, on);
       toast.success(on ? t.ovMeetingOk : t.ovMeetingOff, { lang });
     } catch (e) {
-      setRows(previous);
+      // This row's field only: a toggle on another row may have been stored
+      // while this save was out, and a whole-table snapshot would erase it.
+      setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, meetingAttended: r.meetingAttended } : x)));
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setMeetingBusy(null);
@@ -5171,14 +5233,14 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate 
   const togglePaid = async (r: RcOverviewEntry) => {
     const on = !r.paidAt;
     setPaidBusy(r.id);
-    const previous = rows;
     setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, paidAt: on ? new Date().toISOString() : null } : x)));
     try {
       const saved = await setRcPaid(r.id, season, on);
       setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, paidAt: saved.paidAt, paidBy: saved.paidBy } : x)));
       toast.success(on ? t.ovPaidOk : t.ovUnpaidOk, { lang });
     } catch (e) {
-      setRows(previous);
+      // As toggleMeeting: roll back only what this save changed.
+      setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, paidAt: r.paidAt, paidBy: r.paidBy } : x)));
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setPaidBusy(null);
@@ -5374,15 +5436,27 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
+  // Only the first load swaps the list for a skeleton. assign() reloads after
+  // every pick, and unmounting the list then threw the scroller back to the
+  // top after each RC was chosen.
+  const loadedOnce = useRef(false);
+  // A reload per assign, and an admin can pick a second game while the first
+  // one's reload is out — nothing ordered the answers, so the older list could
+  // land last and undo the newer pick on screen.
+  const fresh = useFreshest();
   const reload = useCallback(async () => {
-    setLoading(true);
+    const ticket = fresh.take();
+    if (!loadedOnce.current) setLoading(true);
     try {
       const [g, p] = await Promise.all([loadEligibleGames(), listRefereeCoachPeople()]);
+      if (!fresh.isCurrent(ticket)) return;
       setGames(Array.isArray(g) ? g : []);
       setPeople(Array.isArray(p) ? p : []);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setLoading(false); }
-  }, []);
+      setError('');
+    } catch (e) { if (fresh.isCurrent(ticket)) setError(e instanceof Error ? e.message : String(e)); }
+    // Unconditional: a superseded first load must not leave the skeleton up.
+    finally { loadedOnce.current = true; setLoading(false); }
+  }, [fresh]);
   useEffect(() => { void reload(); }, [reload]);
 
   // Read once, and only once this tab is actually on screen — the same deal
@@ -5393,11 +5467,15 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
   // the roster does not change while a coach is being picked. A list that fails
   // to load costs the amber marks and nothing else — the games still assign.
   const [coacheesAsked, setCoacheesAsked] = useState(false);
+  // Part of the first-load gate, so the amber chips do not pop into rows
+  // already drawn plain. A failed read still releases it.
+  const [coacheesLoaded, setCoacheesLoaded] = useState(false);
   useEffect(() => {
     if (!active || coacheesAsked) return;
     setCoacheesAsked(true);
-    void listCoachees().then(setCoachees).catch(() => setCoachees([]));
+    void listCoachees().then(setCoachees).catch(() => setCoachees([])).finally(() => setCoacheesLoaded(true));
   }, [active, coacheesAsked]);
+  const firstLoad = loading || settingsLoading || !coacheesLoaded;
   // Who stands on a slot, by the id the server resolved for the game
   // (firstCoacheeId / secondCoacheeId) — the same answer the coach app's
   // lists draw their amber chips from, so the two cannot disagree on a
@@ -5416,7 +5494,6 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
 
   const assign = async (game: EligibleGame, rcId: string) => {
     setError(''); setBusy(game.id);
-    const previous = games;
     // Both halves go to the server: the id is what decides whose the game
     // is, the name is what an API older than the id reads. '' on both is the
     // give-back.
@@ -5424,8 +5501,11 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
     // Optimistic, then reconciled by the reload. A rejected assign rolls the
     // row back and says why rather than leaving a name that never landed.
     setGames((cur) => cur.map((x) => (x.id === game.id ? { ...x, assignedRc: rcName, assignedRcId: rcId } : x)));
+    // Only this row rolls back — `game` is it as it was when clicked. A
+    // snapshot of the whole list would also undo any other row's pick or
+    // star made while this save was out.
     try { await assignRcToGame(game.id, { assignedRc: rcName, assignedRcId: rcId }); await reload(); }
-    catch (e) { setGames(previous); setError(e instanceof Error ? e.message : String(e)); }
+    catch (e) { setGames((cur) => cur.map((x) => (x.id === game.id ? game : x))); setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(''); }
   };
 
@@ -5437,6 +5517,8 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
     if (game.vmFlagged) return;
     const next = !game.starred;
     setError('');
+    // Retires any reload already out: its list was read before this star.
+    fresh.take();
     setGames((cur) => cur.map((x) => (x.id === game.id ? { ...x, starred: next } : x)));
     try { await setGameStarred(game.id, next); }
     catch (e) {
@@ -5494,11 +5576,11 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
       {/* The list is cut to a season, so the season is on the tab — and the
           list is not drawn until the settings have said which one, or it
           would flash the calendar's guess and re-cut itself a moment later. */}
-      {!(loading || settingsLoading) && (
+      {!firstLoad && (
         <p className="mt-2 text-xs text-stone-400">{t.gamesCount(shown.length, seasonLabel(season))}</p>
       )}
-      {loading || settingsLoading ? (
-        <div className="mt-3 flex items-center gap-2 text-sm text-stone-400"><Loader2 size={15} className="animate-spin" /></div>
+      {firstLoad ? (
+        <div className="mt-3"><SkeletonRows rows={6} /></div>
       ) : shown.length === 0 ? (
         <p className="mt-3 text-sm text-stone-400">{t.gamesNone}</p>
       ) : (
@@ -5768,7 +5850,10 @@ function DefaultGoalCard({ t, defaultGoal, onDefaultGoal, loading }: { t: T; def
   const goalTouched = useRef(false);
   useEffect(() => { if (!goalTouched.current) setGoal(String(defaultGoal)); }, [defaultGoal]);
   const [goalSaved, setGoalSaved] = useState(false);
+  // Not before the settings answer: the field still holds the built-in
+  // default, and saving it would overwrite the stored goal.
   const saveGoal = async () => {
+    if (loading) return;
     const n = Math.round(Number(goal));
     if (!Number.isFinite(n) || n <= 0) { setGoal(String(defaultGoal)); return; }
     await onDefaultGoal(n);
@@ -5788,7 +5873,7 @@ function DefaultGoalCard({ t, defaultGoal, onDefaultGoal, loading }: { t: T; def
           onChange={(e) => { goalTouched.current = true; setGoal(e.target.value); }}
           onKeyDown={(e) => { if (e.key === 'Enter') void saveGoal(); }}
         />
-        <button onClick={() => void saveGoal()} className={btnPrimary}><Check size={15} /> {t.save}</button>
+        <button onClick={() => void saveGoal()} disabled={loading} className={btnPrimary}><Check size={15} /> {t.save}</button>
         {goalSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
       </div>
     </Card>
@@ -5803,7 +5888,9 @@ function PaidCapCard({ t, paidCap, onPaidCap, loading }: { t: T; paidCap: number
   const capTouched = useRef(false);
   useEffect(() => { if (!capTouched.current) setCap(paidCap == null ? '' : String(paidCap)); }, [paidCap]);
   const [capSaved, setCapSaved] = useState(false);
+  // As saveGoal: nothing to save until the stored cap has been read.
   const saveCap = async () => {
+    if (loading) return;
     // Blank is "keine Obergrenze", as the hint says — the one way to clear it.
     const n = cap.trim() ? Math.round(Number(cap)) : null;
     if (n != null && (!Number.isFinite(n) || n <= 0)) { setCap(paidCap == null ? '' : String(paidCap)); return; }
@@ -5822,7 +5909,7 @@ function PaidCapCard({ t, paidCap, onPaidCap, loading }: { t: T; paidCap: number
           onChange={(e) => { capTouched.current = true; setCap(e.target.value); }}
           onKeyDown={(e) => { if (e.key === 'Enter') void saveCap(); }}
         />
-        <button onClick={() => void saveCap()} className={btnPrimary}><Check size={15} /> {t.save}</button>
+        <button onClick={() => void saveCap()} disabled={loading} className={btnPrimary}><Check size={15} /> {t.save}</button>
         {capSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
       </div>
     </Card>
@@ -5840,7 +5927,9 @@ function ExpenseRatesCard({ t, expenseRates, onExpenseRates, loading }: { t: T; 
     if (!ratesTouched.current) setRates({ visit: String(expenseRates.visit), meeting: String(expenseRates.meeting), meetingDate: expenseRates.meetingDate });
   }, [expenseRates]);
   const [ratesSaved, setRatesSaved] = useState(false);
+  // As saveGoal: nothing to save until the stored rates have been read.
   const saveRates = async () => {
+    if (loading) return;
     const money = (v: string, fallback: number) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : fallback; };
     await onExpenseRates({
       visit: money(rates.visit, expenseRates.visit),
@@ -5873,7 +5962,7 @@ function ExpenseRatesCard({ t, expenseRates, onExpenseRates, loading }: { t: T; 
             className="h-9 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
             value={rates.meetingDate} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, meetingDate: e.target.value })); }} />
         </label>
-        <button onClick={() => void saveRates()} className={btnPrimary}><Check size={15} /> {t.save}</button>
+        <button onClick={() => void saveRates()} disabled={loading} className={btnPrimary}><Check size={15} /> {t.save}</button>
         {ratesSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
       </div>
     </Card>
@@ -5908,7 +5997,18 @@ function GroupsCard({ t, lang, groups, onGroups, loading }: { t: T; lang: Lang; 
     try { await putSettings({ groups: next }); return true; }
     catch (e) { onGroups(previous); setGroupsError(e instanceof Error ? e.message : String(e)); return false; }
   };
-  const addGroup = () => { const v = ng.trim(); if (!v || groups.includes(v)) return; setNg(''); void saveGroups([...groups, v].sort()); };
+  // Not while the settings are still out: `groups` is [] until they answer,
+  // and the PUT replaces the stored catalogue — an add then wiped every other
+  // group. Built from the ref, like the two writers below. (A failed settings
+  // read still unlocks with [], which only a loaded-ok flag could guard.)
+  const addGroup = () => {
+    if (loading) return;
+    const v = ng.trim();
+    const cur = groupsRef.current;
+    if (!v || cur.includes(v)) return;
+    setNg('');
+    void saveGroups([...cur, v].sort());
+  };
   // Filtered by NAME, not by the index: the dialog is awaited, and the list can
   // be re-sorted under an open dialog the same way it can under an open edit row
   // (see saveEditGroup). Names are unique here — addGroup and the rename both
@@ -5947,8 +6047,8 @@ function GroupsCard({ t, lang, groups, onGroups, loading }: { t: T; lang: Lang; 
       <h2 className="text-sm font-semibold text-stone-700 mb-1">{t.groups}</h2>
       <p className="text-xs text-stone-400 mb-3">{t.groupsHint}</p>
       <div className="flex gap-2 mb-3">
-        <input className={input} placeholder={t.newGroup} value={ng} onChange={(e) => setNg(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addGroup(); }} />
-        <button onClick={addGroup} className={btnPrimary}><Plus size={15} /> {t.add}</button>
+        <input className={input} placeholder={t.newGroup} value={ng} disabled={loading} onChange={(e) => setNg(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addGroup(); }} />
+        <button onClick={addGroup} disabled={loading} className={btnPrimary}><Plus size={15} /> {t.add}</button>
       </div>
       <div className="divide-y divide-stone-100">
         {groups.map((g, i) => gi === i ? (
@@ -6004,7 +6104,9 @@ function SettingsAdmin({ t, defaultSeason, settingsLoading }: { t: T; defaultSea
   useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
   const [saved, setSaved] = useState(false);
   const loading = settingsLoading;
-  const save = async () => { await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
+  // Not before the settings answer, or the calendar's guess is stored as the
+  // default season.
+  const save = async () => { if (loading) return; await putSettings({ default_season: season }); setSaved(true); setTimeout(() => setSaved(false), 2500); };
   return (
     <>
       <Card>
@@ -6012,7 +6114,7 @@ function SettingsAdmin({ t, defaultSeason, settingsLoading }: { t: T; defaultSea
         <p className="text-xs text-stone-400 mb-3">{t.defaultSeasonHint}</p>
         <div className="flex items-center gap-2">
           <select value={season} disabled={loading} onChange={(e) => setSeason(Number(e.target.value))} className="h-9 rounded-lg border border-stone-300 bg-white text-sm px-3">{[...new Set([season, ...SEASONS])].sort().map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
-          <button onClick={save} className={btnPrimary}><Check size={15} /> {t.save}</button>
+          <button onClick={save} disabled={loading} className={btnPrimary}><Check size={15} /> {t.save}</button>
           {saved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}
         </div>
       </Card>

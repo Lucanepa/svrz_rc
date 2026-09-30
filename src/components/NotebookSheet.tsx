@@ -105,7 +105,12 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const pressedBackdrop = useRef(false);
 
   const current = pages.find((p) => p.pageId === currentId) || null;
-  const showVirtual = !!virtual || (pages.length === 0 && !current);
+  // Before the boot's first pull has answered, an empty list is only the
+  // local cache — empty on a wiped device or a new sign-in. A blank writable
+  // "Seite 1 von 1" in that window committed a new page next to the real
+  // ones, so the page area waits. A page the coach asked for still shows.
+  const pagesPending = !status.loaded && pages.length === 0 && !virtual;
+  const showVirtual = !!virtual || (pages.length === 0 && !current && !pagesPending);
   const virtualKind: PageKind = virtual ? virtual.kind : 'text';
   const virtualBg: PageBackground = virtual ? virtual.bg : '';
   const activeKind: PageKind = current ? current.kind : virtualKind;
@@ -517,10 +522,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                 {pages.map(pill)}
               </div>
               <div className="shrink-0 flex items-center gap-1.5">
-                <button type="button" onClick={() => newPage('text')} className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
+                <button type="button" onClick={() => newPage('text')} disabled={pagesPending} className="disabled:opacity-40 h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
                   <Plus size={13} /><Pencil size={12} /> {tp.padTextPageShort}
                 </button>
-                <button type="button" onClick={() => newPage('ink')} className="h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
+                <button type="button" onClick={() => newPage('ink')} disabled={pagesPending} className="disabled:opacity-40 h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
                   <Plus size={13} /><PenLine size={12} /> {tp.padInkPageShort}
                 </button>
               </div>
@@ -561,7 +566,11 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
 
             {/* body */}
             <div className="flex-1 min-h-0 flex flex-col" data-log-redact>
-              {activeKind === 'text' ? (
+              {pagesPending ? (
+                <div className="flex-1 min-h-[40vh] flex items-center justify-center bg-white">
+                  <AppSpinner size={64} />
+                </div>
+              ) : activeKind === 'text' ? (
                 <div ref={surfaceRef} className="relative flex-1 min-h-0 flex flex-col">
                   <div className="px-3 py-1.5 border-b border-stone-100 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
                     <RichToolbar de={de} onCommand={format} onBullet={() => handleText(appendBullet(currentText))} onNumber={() => handleText(appendNumbered(currentText))}>

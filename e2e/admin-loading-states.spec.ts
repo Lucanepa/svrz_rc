@@ -72,18 +72,22 @@ test('the coachee list waits for the season it is filtered by', async ({ page })
   const settings = await gated(page, '**/api/settings', SETTINGS);
 
   await page.goto('/admin');
-  // Anchored on a control that does not depend on any fetch, so the absence
-  // checks below cannot pass merely because nothing has rendered yet.
-  await expect(page.getByLabel(/xlsx importieren|Import xlsx/)).toBeAttached();
+  // Anchored on the console's own tab bar, which depends on no fetch, so the
+  // absence checks below cannot pass merely because nothing has rendered yet.
+  await expect(page.getByRole('button', { name: /^(Coachees)$/ }).first()).toBeVisible();
 
   // The local guess for "current season" is August's, not the stored answer, so
   // showing rows now means showing last season's people under this season's
-  // heading — which is what happened.
+  // heading — which is what happened. The tab waits as a whole (asked
+  // 2026-09-30: chrome first and data later is the flash to avoid), so its
+  // controls are not there yet either.
   await expect(page.getByText('Season, Last')).toHaveCount(0);
   await expect(page.getByText('Season, This')).toHaveCount(0);
+  await expect(page.getByLabel(/xlsx importieren|Import xlsx/)).toHaveCount(0);
 
   settings.open();
   await expect(page.getByText('Season, This')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByLabel(/xlsx importieren|Import xlsx/)).toBeAttached();
   await expect(page.getByText('Season, Last')).toHaveCount(0);
 });
 

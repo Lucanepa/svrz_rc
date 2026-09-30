@@ -2442,9 +2442,14 @@ export default function App() {
     setLoadingGames(true);
     setBackendNotice('');
     try {
+      const seq = gamesPatchSeq.current;
       const games = await loadEligibleGames();
       if (!isCurrentLoad('games', gen)) return;
+      // Applied even when a take or hand-back landed meanwhile — at boot or
+      // after a filing, dropping it would leave the list empty or stale — and
+      // then read once more, so the patch is back on screen from the server.
       setEligibleGames(games);
+      if (gamesPatchSeq.current !== seq) void syncGamesQuietly();
       // A pending draft resume gets to choose the game; auto-selecting the first
       // one here would claim the selection before the restore lands on top.
       if (games.length > 0 && !selectedGameIdRef.current && !autoResumeRef.current) {
@@ -2549,9 +2554,14 @@ export default function App() {
     }
   };
 
+  // Whose dashboard, for which season, is on screen. A failed background
+  // refresh (a 5xx or 401 while the backend restarts, which the SW read-cache
+  // does not cover) keeps those numbers; only a failed load for another coach
+  // or season clears them.
+  const homeKeyRef = useRef<string | null>(null);
   const loadHome = async (overviewInFlight?: Promise<RcOverviewEntry[]>, seasonOverride?: number) => {
     const myName = rcAuth.rcName;
-    if (!myName) { setHomeData(null); return; }
+    if (!myName) { homeKeyRef.current = null; setHomeData(null); return; }
     const gen = beginLoad('home');
     const season = seasonOverride ?? seasonStartYear;
     // This request also covers the RC detail view for the logged-in coach —
@@ -2619,12 +2629,13 @@ export default function App() {
         missingGames,
         doneList,
       });
+      homeKeyRef.current = `${myName}|${season}`;
       // Same payload the RC detail view needs — hand it over so opening that
       // tab is instant instead of triggering an identical fetch.
       setrcCoachSummaryData(summary);
       setRcSummaryKey(`${myName}|${season}`);
     } catch {
-      if (isCurrentLoad('home', gen)) setHomeData(null);
+      if (isCurrentLoad('home', gen) && homeKeyRef.current !== `${myName}|${season}`) setHomeData(null);
       // The claim above covers the RC detail view too; holding it after a
       // failure would block that view from ever loading this session.
       if (rcSummaryAttemptRef.current === `${myName}|${season}`) rcSummaryAttemptRef.current = null;
@@ -2727,16 +2738,36 @@ export default function App() {
   // Refetch the games in the background: no skeleton, no cleared notice, no
   // change to what is selected. Used by the freshness poll below and after a
   // rejected assignment, where the list on screen is provably behind.
+  //
+  // Latest-wins against the local patches: a take, a hand-back or a pushed
+  // assignment bumps `gamesPatchSeq`, and a list that was read before one of
+  // those landed is dropped rather than put over it (a desktop click in an
+  // unfocused window fires the focus sync right before the PATCH, and the far
+  // bigger list answer can arrive after it). A request that arrives while one
+  // is in flight is not dropped either — the one in flight may have been
+  // served before the import it is about — it runs again once that one is
+  // done, so the follow-up reads committed data.
   const gamesSyncInFlight = useRef(false);
+  const gamesSyncAgain = useRef(false);
+  const gamesPatchSeq = useRef(0);
   const syncGamesQuietly = async () => {
-    if (gamesSyncInFlight.current || !hasPocketBaseConfig()) return;
+    if (!hasPocketBaseConfig()) return;
+    if (gamesSyncInFlight.current) { gamesSyncAgain.current = true; return; }
     gamesSyncInFlight.current = true;
     try {
-      setEligibleGames(await loadEligibleGames());
+      const seq = gamesPatchSeq.current;
+      const gen = reqGen.current.games ?? 0;
+      const games = await loadEligibleGames();
+      if (gamesPatchSeq.current === seq && (reqGen.current.games ?? 0) === gen) setEligibleGames(games);
+      else gamesSyncAgain.current = true;
     } catch {
       // A failed background refresh is not news — the list simply stays as it is.
     } finally {
       gamesSyncInFlight.current = false;
+      if (gamesSyncAgain.current) {
+        gamesSyncAgain.current = false;
+        void liveHandlersRef.current.syncGamesQuietly();
+      }
     }
   };
 
@@ -2748,6 +2779,7 @@ export default function App() {
       // what an API older than the id reads.
       const rcId = rcAuth.rcId ?? '';
       await assignRcToGame(gameId, { assignedRc: rcName, assignedRcId: rcId });
+      gamesPatchSeq.current++;
       setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: rcName, assignedRcId: rcId } : g));
       refreshAfterAssignment(previous, { id: rcId, name: rcName });
       return true;
@@ -2938,6 +2970,7 @@ export default function App() {
     const previous = eligibleGames.find((g) => g.id === gameId);
     try {
       await assignRcToGame(gameId, { assignedRc: '', assignedRcId: '' });
+      gamesPatchSeq.current++;
       setEligibleGames((prev) => prev.map((g) => g.id === gameId ? { ...g, assignedRc: '', assignedRcId: '' } : g));
       setrcCoachSummaryData((prev) => prev.map((cs) => ({
         ...cs,
@@ -2976,6 +3009,7 @@ export default function App() {
         // The id decides whose the game is now; an event from an API older
         // than the field carries none, and the row then reads as the name says.
         const holder = { assignedRc: event.assignedRc, assignedRcId: event.assignedRcId };
+        gamesPatchSeq.current++;
         setEligibleGames((prev) => prev.map((g) => (g.id === event.gameId ? { ...g, ...holder } : g)));
         // Counters and "next appointments" are per coach, so they only move when
         // the game changed hands to or from this one.
@@ -3267,6 +3301,13 @@ export default function App() {
     // observation from that list would target the wrong person's game.
     const gen = beginLoad('coacheeGames');
     setLoadingCoacheeGames(true);
+    // The panel opens on the tap, with its loader, instead of after both
+    // requests have answered: the "Spiele" button has no busy state of its
+    // own, and a view switch after the awaits pulled a coach who had already
+    // moved on back to this panel. A late answer now only fills the data.
+    setCoacheeGames([]);
+    setCoacheeFeedbacks([]);
+    setFeedbackSubView('coacheeGames');
     setShowAllPastGames(false);
     setBackendNotice('');
     try {
@@ -3277,9 +3318,10 @@ export default function App() {
       if (!isCurrentLoad('coacheeGames', gen)) return;
       setCoacheeGames(games);
       setCoacheeFeedbacks(feedbacks);
-      setFeedbackSubView('coacheeGames');
     } catch (error) {
       if (!isCurrentLoad('coacheeGames', gen)) return;
+      // Back to the list — but only if the coach is still on this panel.
+      setFeedbackSubView((v) => (v === 'coacheeGames' ? 'coachees' : v));
       const reason = error instanceof Error ? error.message : String(error);
       setBackendNotice(localizeRuntimeError(reason, formData.lang));
     } finally {
@@ -3370,6 +3412,7 @@ export default function App() {
         secondReferee: expandedGame.second_referee || '',
         feedbackClosedRoles: withRoleClosed(),
       };
+      gamesPatchSeq.current++;
       setEligibleGames((prev) => (prev.some((item) => item.id === mappedGame.id)
         ? prev.map((item) => (item.id === mappedGame.id
           ? { ...item, feedbackClosedRoles: withRoleClosed(item.feedbackClosedRoles) }
@@ -4377,6 +4420,17 @@ export default function App() {
   // game is the only way back to it (Luca, 22.09.2026). Keyed so it runs once
   // per half, and never over a record already on screen or one being corrected.
   const filedLookupRef = useRef('');
+  // Which half's lookup has answered. Until it has, the form shows a spinner
+  // instead of the empty locked form with its "abgeschlossen" notice, which
+  // the filed record then replaced a moment later. A failed lookup settles
+  // too, and leaves the locked form, as before.
+  const [filedSettled, setFiledSettled] = useState('');
+  const filedPending = landingSettled && feedbackSubView === 'feedbackForm'
+    && !!selectedGameId && isGameRoleClosed && !openFeedbackId && !reopenedId && !isDemoMode()
+    && filedSettled !== `${selectedGameId}:${formData.role}`;
+  // The form is not shown yet: a deep link that has not landed (see the
+  // render), or a filed half whose record is still being fetched.
+  const formLoadPending = (!landingSettled && (booting || outboxOwnerId !== 'anon')) || filedPending;
   useEffect(() => {
     // Only for a coach who is LOOKING at that form. The app keeps a game
     // selected in the background — the list auto-selects one — and opening a
@@ -4396,7 +4450,8 @@ export default function App() {
       })
       // Nothing to say: the banner already tells the coach the role is filed,
       // and a lookup that fails leaves exactly that behind.
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => { if (filedLookupRef.current === key) setFiledSettled(key); });
   }, [landingSettled, feedbackSubView, selectedGameId, formData.role, isGameRoleClosed, openFeedbackId, reopenedId]);
 
 
@@ -4737,6 +4792,10 @@ export default function App() {
   const resumeDraftForGame = async (gameId: string, preferRole?: '1. SR' | '2. SR') => {
     try {
       const found = await getGameDrafts(outboxOwnerId, gameId);
+      // Latest-wins: handleSelectGame claims draftLoadingRef for each game it
+      // opens, so a read for a game the coach has since left must neither put
+      // its draft over the new one nor release the new game's autosave guard.
+      if (draftLoadingRef.current !== gameId) return;
       const editing = found.filter((d) => d.status === 'editing' && (d.schema ?? 1) <= DRAFT_SCHEMA);
       // No draft is the normal case: leave the fresh-game reset handleSelectGame
       // already performed exactly as it is.
@@ -4745,7 +4804,7 @@ export default function App() {
       // a sibling that is queued or filed to tell that apart from one never started.
       resumeDraft(found, preferRole);
       toast.success(t.draftRestored, { lang: formData.lang });
-    } catch { draftLoadingRef.current = ''; }
+    } catch { if (draftLoadingRef.current === gameId) draftLoadingRef.current = ''; }
   };
 
   const discardDraft = async (gameId: string) => {
@@ -5834,6 +5893,14 @@ export default function App() {
     return { listGames: kept, pastHidden: filteredGames.length - kept.length };
   }, [filteredGames, showPastGames, gameFilterDateFrom, gameFilterDateTo]);
   const gamesPage = clampPage(listGames.length);
+  // Whether filteredGames has everything it reads: the roster (who is a
+  // coachee, their targets and planned observations) and the admin's season,
+  // not just the fixtures. Until the first of each has landed the list would
+  // show unfiltered and then shrink and reorder under the coach's finger.
+  // Not the whole of `booting`: that also waits for Home, the overview and
+  // the calendar, which this list does not read. After boot it is always
+  // true, so a refresh keeps the old list on screen.
+  const gamesInputsReady = !booting || (!loadingGames && !loadingCoachees && seasonSettled);
 
   /** One game, drawn the same way wherever a game is listed.
    *
@@ -6430,7 +6497,7 @@ export default function App() {
           <ArrowLeft size={18} />
           <span>{formData.lang === 'DE' ? 'Zurück' : 'Back'}</span>
         </button>
-        {feedbackSubView === 'feedbackForm' && (
+        {feedbackSubView === 'feedbackForm' && !formLoadPending && (
           <>
         {/* The documents in one menu, so the toolbar is one row: the PDF as
             it looks now, the PDF the referee was sent, and the draft file.
@@ -7168,6 +7235,11 @@ export default function App() {
                     <h2 className="text-xl font-bold text-stone-900">{de ? `Hallo ${firstName} 👋` : `Hello ${firstName} 👋`}</h2>
                     {/* The half mandate is named here rather than squeezed into
                         the goal tile, where "(5 ½)" would read as five and a half. */}
+                    {/* The season and the Pensum are the settings' to say; until
+                        those have answered, the label is only the local guess
+                        and would change beside the boot spinner. (`!booting`
+                        for a build without an API, where they never do.) */}
+                    {(seasonSettled || !booting) ? (
                     <p className="text-sm text-stone-500">
                       {de ? `Deine Coaching-Übersicht ${seasonLabel}` : `Your ${seasonLabel} coaching overview`}
                       {' '}<InfoHint id="goal" lang={formData.lang} />
@@ -7176,6 +7248,7 @@ export default function App() {
                       {myMandate !== undefined && myGoal !== defaultGoal
                         && (de ? ` · Pensum ${myGoal}` : ` · target ${myGoal}`)}
                     </p>
+                    ) : <Skeleton className="mt-1 h-4 w-48" />}
                   </div>
 
                   {(homeLoading || booting) && !homeData ? (
@@ -7651,7 +7724,9 @@ export default function App() {
                     visits see one pill or none. */}
                 {/* "Ohne Geplante" joins them: whether somebody already has
                     an observation booked is asked on nearly every visit too. */}
-                {(plannedObsByCoachee.size > 0 || !listFilterHidePlanned || coacheeQuickFilters.starred || coacheeFilterStarred || coacheeQuickFilters.focus || showAllLevels) && (
+                {/* Not above the boot loader: which pills there are depends on
+                    the games and settings still in flight. */}
+                {!booting && (plannedObsByCoachee.size > 0 || !listFilterHidePlanned || coacheeQuickFilters.starred || coacheeFilterStarred || coacheeQuickFilters.focus || showAllLevels) && (
                   <div className="mb-3 flex items-stretch gap-1.5 sm:justify-end">
                     {(plannedObsByCoachee.size > 0 || !listFilterHidePlanned) && (
                       <QuickToggle
@@ -7948,8 +8023,13 @@ export default function App() {
             {/* Coachees table */}
             {listTab === 'coachees' && (
               <div className="border border-stone-200 rounded">
-                {coachees.length === 0 && (booting || loadingCoachees) ? (
+                {booting || (coachees.length === 0 && loadingCoachees) ? (
                   // Still loading — a skeleton, never the "nothing found" state.
+                  // The whole first batch, not just /api/coachees: which rows
+                  // are listed and what they say reads the games and the
+                  // settings too, and those used to land after the roster
+                  // and drop or grow rows under the coach's finger. After
+                  // boot a refresh keeps the old list on screen.
                   <ListLoading label={t.loading} first={booting} rows={8} />
                 ) : listedCoachees.length === 0 ? (
                   <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><Users size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noCoachees}</p></div>
@@ -8219,7 +8299,7 @@ export default function App() {
                     </div>
                   </>
                 )}
-                {listedCoachees.length > LIST_PAGE_SIZE && (
+                {!booting && listedCoachees.length > LIST_PAGE_SIZE && (
                   <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
                     <span>{listedCoachees.length} {formData.lang === 'DE' ? 'Einträge' : 'entries'}</span>
                     <div className="flex items-center gap-2">
@@ -8235,7 +8315,7 @@ export default function App() {
             {/* Games: view toggle */}
             {listTab === 'games' && (
               <>
-                  {(plannedObsByCoachee.size > 0 || !gameFilterHidePlanned || filterAvailability.starred || gameFilterStarred || filterAvailability.focus || showAllLevels) && (
+                  {gamesInputsReady && (plannedObsByCoachee.size > 0 || !gameFilterHidePlanned || filterAvailability.starred || gameFilterStarred || filterAvailability.focus || showAllLevels) && (
                   <div className="mb-3 flex items-stretch gap-1.5 sm:justify-end">
                     {(plannedObsByCoachee.size > 0 || !gameFilterHidePlanned) && (
                       <QuickToggle
@@ -8283,7 +8363,7 @@ export default function App() {
                   {/* Played games, behind one button at the top. Shown while
                       there is something to reveal, and while it is revealed —
                       it has to be reachable to be closed again. */}
-                  {(pastHidden > 0 || showPastGames) && (
+                  {gamesInputsReady && (pastHidden > 0 || showPastGames) && (
                     <button
                       onClick={() => { setShowPastGames((v) => !v); setListPage(0); }}
                       className="mb-2 inline-flex items-center gap-1.5 text-xs font-medium text-stone-500 transition-colors hover:text-stone-800"
@@ -8294,7 +8374,7 @@ export default function App() {
                         : (formData.lang === 'DE' ? `Vergangene Spiele anzeigen (${pastHidden})` : `Show past games (${pastHidden})`)}
                     </button>
                   )}
-                  {!gameFilterRcAssigned && (() => {
+                  {gamesInputsReady && !gameFilterRcAssigned && (() => {
                     const takenCount = eligibleGames.filter((g) => {
                       if (!g.assignedRc) return false;
                       return inSeasonOrManual(g);
@@ -8308,7 +8388,7 @@ export default function App() {
                     ) : null;
                   })()}
                   <div className="border border-stone-200 rounded">
-                    {eligibleGames.length === 0 && (booting || loadingGames) ? (
+                    {(!gamesInputsReady || (eligibleGames.length === 0 && loadingGames)) ? (
                       <ListLoading label={t.loading} first={booting} rows={8} />
                     ) : listGames.length === 0 ? (
                       <div className="flex flex-col items-center justify-center gap-3 py-14 px-4 text-center"><div className="flex h-14 w-14 items-center justify-center rounded-full bg-stone-100 text-stone-400"><CalendarDays size={26} strokeWidth={1.75} /></div><p className="text-sm font-medium text-stone-500">{t.noGames}</p></div>
@@ -8399,7 +8479,7 @@ export default function App() {
                         </div>
                       </>
                     )}
-                    {listGames.length > LIST_PAGE_SIZE && (
+                    {gamesInputsReady && listGames.length > LIST_PAGE_SIZE && (
                       <div className="flex items-center justify-between px-3 py-2 text-xs text-stone-500 border-t border-stone-200">
                         <span>{listGames.length} {formData.lang === 'DE' ? 'Spiele' : 'games'}</span>
                         <div className="flex items-center gap-2">
@@ -8414,6 +8494,11 @@ export default function App() {
 
                 {/* Games calendar view */}
                 {gameViewMode === 'calendar' && (() => {
+                  // The same first-load gate as the list: an empty month grid
+                  // whose dots fill in and then move again reads as data.
+                  if (!gamesInputsReady || (eligibleGames.length === 0 && loadingGames)) {
+                    return <ListLoading label={t.loading} first={booting} rows={6} framed />;
+                  }
                   const year = calendarMonth.getFullYear();
                   const month = calendarMonth.getMonth();
                   const firstDay = new Date(year, month, 1);
@@ -8714,8 +8799,11 @@ export default function App() {
         <div className="bg-white p-3 sm:p-6 shadow-xl border border-stone-200 no-print">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-stone-800">
-              {selectedCoacheeName || '-'}
-              {(() => {
+              {/* A /games/<SV-Nr.> link lands here before openDeepLink has
+                  found the coachee: a placeholder, not a "-" heading over
+                  "no games". */}
+              {landingSettled ? (selectedCoacheeName || '-') : <Skeleton className="inline-block h-5 w-40 align-middle" />}
+              {landingSettled && (() => {
                 const vc = coachees.find((c) => c.id === selectedCoacheeId);
                 if (!vc && !selectedCoacheeLevel) return null;
                 // The group beside the Niveau, the way the games list and Home
@@ -8738,7 +8826,7 @@ export default function App() {
             </button>
           </div>
           <div className="border border-stone-200 rounded">
-            {loadingCoacheeGames ? (
+            {(!landingSettled || loadingCoacheeGames) ? (
               <ListLoading label={t.loading} first={booting} rows={5} />
             ) : coacheeGames.length === 0 ? (
               <p className="text-sm text-stone-500 p-4">{t.noCoacheeGames}</p>
@@ -9079,7 +9167,13 @@ export default function App() {
         </div>
       )}
 
-      {feedbackSubView === 'feedbackForm' && (
+      {/* A /form or /feedbacks link paints this branch before the draft boot
+          or openDeepLink has said which game and record it is: a spinner,
+          not a blank header over editable controls. The draft boot never runs
+          for an anonymous owner, and would leave it spinning for good. */}
+      {feedbackSubView === 'feedbackForm' && (formLoadPending ? (
+        <div className="py-20 flex justify-center no-print"><AppSpinner size={132} label={t.loading} /></div>
+      ) : (
       <>
       {/* Where the coach finds out whether their work is safe. Silence here is
           the one thing this feature cannot afford: the whole point is that
@@ -9993,7 +10087,7 @@ export default function App() {
         <p className={cn(sheetWidth, 'mx-auto mt-2 text-sm text-red-700 no-print')}>{backendNotice}</p>
       )}
       </>
-      )}
+      ))}
 
       {/* Confirm Modal */}
       {showConfirmModal && (

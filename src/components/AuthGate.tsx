@@ -244,6 +244,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     // two raced and a signed-in coach saw the login form flash up (28.09.2026).
     // Now the cache gets its turn first, the connection banner explains the
     // wait from 3 s on, and only a real silence ends here.
+    // A retry re-runs this effect while the previous probe may still be out.
+    // That one's answer is stale: its failure or its finally must not end the
+    // live run's spinner or pick its screen. A late yes is still a yes, though.
+    let stale = false;
     setProbeFailed(false);
     const timeout = setTimeout(() => {
       clientLog.warn('auth.probe', `auth/me did not answer within ${PROBE_GIVE_UP_MS / 1000}s — showing the no-connection screen`);
@@ -252,6 +256,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     }, PROBE_GIVE_UP_MS);
     getAuthMe()
       .then((me) => {
+        if (stale) {
+          if (me.rc || me.admin) adoptSession(me);
+          return;
+        }
         setProbeFailed(false);
         clientLog.info('auth.probe', me.rc || me.admin ? 'existing session' : me.needsIdentity ? 'session without an RC' : 'no session', {
           rc: me.rc?.name, admin: Boolean(me.admin), shared: Boolean(me.shared),
@@ -263,6 +271,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         if (me.needsIdentity) { setView('identify'); void loadRoster(); }
       })
       .catch((error) => {
+        if (stale) return;
         // No response at all (fetch rejects with a TypeError) is the network;
         // anything the server answered still means "sign in".
         const noResponse = error instanceof TypeError;
@@ -270,10 +279,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         if (noResponse) setProbeFailed(true);
       })
       .finally(() => {
+        if (stale) return;
         clearTimeout(timeout);
         setChecking(false);
       });
-    return () => clearTimeout(timeout);
+    return () => { stale = true; clearTimeout(timeout); };
   }, [adoptSession, loadRoster, probeRun]);
 
   const handleSharedSubmit = async (e: React.FormEvent) => {

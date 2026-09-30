@@ -162,7 +162,16 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     return () => { cancelled = true; };
   }, [settingsLoading, armed, effectiveSeason, filters, compare]);
 
-  const view = useMemo(() => (data ? withRcFirstNames(data, people ?? []) : null), [data, people]);
+  // Held until the RC records are in as well: drawn from the statistics
+  // alone, every name showed as the first word of the full one and then
+  // relabelled when the people landed. `people` falls back to [] on a failed
+  // read, so this never waits forever.
+  const view = useMemo(() => (data && people ? withRcFirstNames(data, people) : null), [data, people]);
+  // The first load, gated on the data rather than on `loading`: that flag is
+  // false until the request actually starts — the first frame after opening
+  // the tab, and the whole settings round-trip on a direct link — and the
+  // page showed nothing under its header in between.
+  const firstPending = !view && !error;
   const stats = view?.stats ?? null;
   const options = view?.options ?? null;
   const rcNames = useMemo(() => Object.fromEntries((options?.rcs ?? []).map((r) => [r.id, r.name])), [options]);
@@ -883,6 +892,13 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
 
         {/* Filters — one row of labelled controls; every section below follows them.
             Level and group are in the bar at the bottom of the page. */}
+        {/* Not drawn on the first load: the season would be the calendar's
+            guess and the RC select would offer only "Alle". */}
+        {firstPending ? (
+          <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-[8rem_minmax(0,1fr)_8rem_auto] gap-3 items-end" aria-hidden="true">
+            {Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-9 rounded-lg" />)}
+          </div>
+        ) : (
         <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-[8rem_minmax(0,1fr)_8rem_auto] gap-3 items-end" data-testid="stats-filters">
           {filterField(t.season, (
             <select className={select} value={effectiveSeason} onChange={(e) => setSeason(Number(e.target.value))} data-testid="stats-season">
@@ -906,9 +922,10 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
             <input type="checkbox" checked={compare} onChange={(e) => setCompare(e.target.checked)} /> {t.compare}
           </label>
         </div>
+        )}
 
         {error && <p className="mt-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
-        {loading && !stats && (
+        {firstPending && (
           // The page's own shape — a row of tiles, then two chart blocks —
           // until the numbers arrive.
           <div className="mt-4 space-y-3" role="status" aria-busy="true" aria-label={t.loading} data-testid="stats-skeleton">

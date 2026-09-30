@@ -6,6 +6,11 @@ import { QRCodeSVG } from 'qrcode.react';
 // Lazy chunks go through importFresh: after a deploy the old page's chunk
 // URLs 404, and a reader that cannot load must reload the page or say so —
 // not crash the app to the error screen (16.09.2026).
+// The Saison tab carries the chart pieces of the statistics dashboard; loaded
+// when the tab is opened, not with the app.
+const SeasonTab = lazy(() => importFresh(() => import('./components/SeasonProgress')).catch((error: unknown) => ({
+  default: () => <StaleBuildNotice inline message={error instanceof Error ? error.message : String(error)} />,
+})));
 const PdfReader = lazy(() => importFresh(() => import('./components/PdfReader')).catch((error: unknown) => ({
   // Rendered in the reader's place with the reader's props: a notice with the
   // way out, instead of a rejection the root boundary turns into a crash.
@@ -78,7 +83,7 @@ import { subscribeLive } from './lib/liveEvents';
 import { richToPlain, richToDisplayHtml, sanitizeRich, appendToRich } from './lib/richText';
 import { importFresh } from './lib/freshImport';
 import StaleBuildNotice from './components/StaleBuildNotice';
-import { NotebookPen } from 'lucide-react';
+import { NotebookPen, BarChart3 } from 'lucide-react';
 import NotebookSheet, { type InsertContext } from './components/NotebookSheet';
 import { RichSurface, RichToolbar, RichView, appendBullet } from './components/RichText';
 import * as notebookSync from './lib/notebookSync';
@@ -1273,7 +1278,7 @@ export default function App() {
   // Legacy in-app database panel: no control switches to it any more, so it
   // stays out of the URL scheme.
   const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>(initialRoute.subView);
-  const [listTab, setListTab] = useState<'home' | 'coachees' | 'games'>(() => landingTab(initialRoute.listTab));
+  const [listTab, setListTab] = useState<'home' | 'coachees' | 'games' | 'season'>(() => landingTab(initialRoute.listTab));
   // `doneList` powers the "already observed" list at the bottom of Home; each
   // entry keeps its coachee id so the row can open the filed feedback, and the
   // record's own id and match number when the server sent them (an older one
@@ -6120,7 +6125,7 @@ export default function App() {
           className="no-print fixed inset-x-0 bottom-0 z-40 border-t border-stone-200 bg-white/95 backdrop-blur lg:inset-x-auto lg:left-0 lg:top-0 lg:w-56 lg:border-t-0 lg:border-r"
           style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
         >
-          <div className={cn("mx-auto max-w-5xl grid gap-1.5 px-2 py-2 lg:flex lg:flex-col lg:gap-1 lg:px-3 lg:pt-8", homelessAdmin ? "grid-cols-3" : "grid-cols-4")}>
+          <div className={cn("mx-auto max-w-5xl grid gap-1.5 px-2 py-2 lg:flex lg:flex-col lg:gap-1 lg:px-3 lg:pt-8", homelessAdmin ? "grid-cols-4" : "grid-cols-5")}>
             {/* Hidden rather than left to bounce off the redirect: a tab that
                 answers a click by highlighting a different one is worse than
                 no tab. See homelessAdmin. */}
@@ -6161,6 +6166,18 @@ export default function App() {
             >
               <CalendarDays size={20} />
               {t.gamePool}
+            </button>
+            <button
+              onClick={() => setListTab('season')}
+              className={cn(
+                "h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1 lg:h-10 lg:flex-row lg:justify-start lg:gap-2.5 lg:px-3 lg:text-sm lg:text-left",
+                listTab === 'season'
+                  ? "bg-slate-900 text-white"
+                  : "text-stone-600 hover:bg-stone-100"
+              )}
+            >
+              <BarChart3 size={20} />
+              {formData.lang === 'DE' ? 'Saison' : 'Season'}
             </button>
             <button
               onClick={() => setOptionsOpen((o) => !o)}
@@ -6880,6 +6897,12 @@ export default function App() {
                   ))}
                 </div>
               </div>
+            )}
+            {/* The season in numbers — a tab of its own, not more on Home. */}
+            {listTab === 'season' && (
+              <Suspense fallback={<div className="py-10 flex justify-center"><Loader2 size={20} className="animate-spin text-stone-400" /></div>}>
+                <SeasonTab lang={formData.lang} season={seasonStartYear} seasonSettled={seasonSettled || !booting} />
+              </Suspense>
             )}
             {/* Home dashboard */}
             {listTab === 'home' && (() => {

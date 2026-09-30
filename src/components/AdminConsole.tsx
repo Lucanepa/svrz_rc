@@ -53,6 +53,7 @@ import { CrewChip, GameFlagChips, MatchResult, roleObserved, type GameMarks } fr
 import { BoerseNote, boerseRowClass, inBoerse } from './BoerseNote';
 import { GameList, GameRow, MetaChip, SectionHead, type RowTone } from './GameRow';
 import { Skeleton, SkeletonRows } from './Skeleton';
+import { SeasonProgressView } from './SeasonProgress';
 import { dayLabel, dayTimeLabel, clockLabel, dayKey, todayKey, instantOf } from '../lib/appTime';
 import { inSeasonOrManual, currentSeason, seasonLabel } from '../lib/season';
 import { importFresh } from '../lib/freshImport';
@@ -5565,6 +5566,9 @@ function PlanningAdmin({ lang, season, settingsLoading, active, onOpenGame }: {
 
   return (
     <>
+      {/* The season in numbers — the same view, from the same computation, as
+          every coach's Saison tab; here without the charts. */}
+      {report.progress && <Card testId="planning-progress"><SeasonProgressView progress={report.progress} lang={lang} compact /></Card>}
       <Card testId="planning-checks">
         <div className="flex items-center gap-2">
           <h2 className="text-base font-bold text-stone-900">{L.checksTitle}</h2>

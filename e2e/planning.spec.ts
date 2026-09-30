@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { computePlanning, type PlanningGameInput, type PlanningCoacheeInput } from '../server/planning';
+import { computePlanning, seasonProgress, type PlanningGameInput, type PlanningCoacheeInput } from '../server/planning';
 import { stubSignedInApp, GAME } from './support/app';
 
 // Admin → Planung (asked 2026-09-30): the chair's board. Per coachee of the
@@ -109,4 +109,51 @@ test('the board shows one loading state, then the coachees, and a game opens in 
   await expect(page).toHaveURL(/\/admin\/games/);
   await expect(page.getByPlaceholder(/Spiel, Team, Liga|Search game, team/)).toHaveValue(GAME.matchNo);
   await expect(page.getByText(GAME.homeTeam).first()).toBeVisible();
+});
+
+test('the season in numbers: filed and booked by Zürich month, coverage per group, no names', () => {
+  const coachees = [
+    coachee({ id: 'a', name: 'A', groups: 'Varia', observed: 1 }),
+    coachee({ id: 'b', name: 'B', groups: 'Varia' }),
+    coachee({ id: 'c', name: 'C', groups: 'Beförderung?', stage: 'inactive' }),
+  ];
+  const games = [
+    // Filed on the last evening of September, 23:30 in Zürich — 21:30 UTC.
+    game({ id: 'f', matchNo: '1', rc: 'Anna', date: '2026-09-30T21:30:00.000Z', closedRoles: ['1. SR'], feedbackRoles: ['1. SR'], slots: [{ role: '1. SR', name: 'A', coacheeId: 'a' }, { role: '2. SR', name: '', coacheeId: '' }] }),
+    game({ id: 'p', matchNo: '2', rc: 'Beat', date: '2026-11-03T19:00:00.000Z', slots: [{ role: '1. SR', name: 'B', coacheeId: 'b' }, { role: '2. SR', name: '', coacheeId: '' }] }),
+    game({ id: 'last', matchNo: '3', date: '2027-04-10T18:00:00.000Z', slots: [{ role: '1. SR', name: 'X', coacheeId: '' }, { role: '2. SR', name: '', coacheeId: '' }] }),
+  ];
+  const p = seasonProgress(plan(coachees, games), games, 20, NOW);
+  expect(p.visits).toEqual({ done: 1, planned: 1, goal: 20 });
+  expect(p.coachees).toEqual({ active: 2, observed: 1, booked: 1, waiting: 0, furtherWanted: 0 });
+  expect(p.byMonth).toEqual([{ month: '2026-09', done: 1, planned: 0 }, { month: '2026-11', done: 0, planned: 1 }]);
+  // The inactive coachee is nobody's coverage.
+  expect(p.byGroup).toEqual([{ group: 'Varia', active: 2, observed: 1 }]);
+  expect(p.lastGameDate).toBe('2027-04-10T18:00:00.000Z');
+  expect(p.daysLeft).toBeGreaterThan(170);
+  expect(JSON.stringify(p)).not.toMatch(/"(A|B|Anna|Beat)"/);
+});
+
+test('every coach has a Saison tab of its own, and Home is unchanged', async ({ page }) => {
+  await stubSignedInApp(page);
+  const progress = {
+    season: 2026,
+    coachees: { active: 40, observed: 12, booked: 20, waiting: 8, furtherWanted: 3 },
+    visits: { done: 14, planned: 22, goal: 120 },
+    byMonth: [{ month: '2026-09', done: 6, planned: 0 }, { month: '2026-10', done: 8, planned: 10 }],
+    byGroup: [{ group: 'Varia', active: 20, observed: 6 }],
+    lastGameDate: '2027-04-10T18:00:00.000Z',
+    daysLeft: 192,
+  };
+  await page.route('**/api/season-progress*', (r) => r.fulfill({ json: progress }));
+  await page.goto('/home');
+  await expect(page.getByTestId('season-progress')).toHaveCount(0);
+  await page.getByRole('button', { name: /^(Saison|Season)$/ }).first().click();
+  await expect(page).toHaveURL(/\/season$/);
+  await expect(page.getByTestId('season-progress')).toBeVisible();
+  await expect(page.getByTestId('season-progress')).toContainText('14');
+  await expect(page.getByTestId('season-progress')).toContainText('192');
+  // A reload lands on the tab again (the edge knows the route).
+  await page.reload();
+  await expect(page.getByTestId('season-progress')).toBeVisible();
 });

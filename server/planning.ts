@@ -12,6 +12,8 @@
  * calling it, so the rules below can be pinned without a database.
  */
 
+import { dayKey } from '../src/lib/appTime.ts';
+
 export type PlanningRole = '1. SR' | '2. SR';
 
 export type PlanningGameInput = {
@@ -194,5 +196,74 @@ export function computePlanning(input: {
       done: count('done'),
       checks: checks.length,
     },
+  };
+}
+
+/**
+ * The season in numbers, for every coach (the app's Saison tab) and as the
+ * header of the chair's board — the same figures on both sides, computed from
+ * the same report. Aggregates only: no referee, no coach, no grade, so it is
+ * safe for any signed-in coach to see.
+ */
+export type SeasonProgress = {
+  season: number;
+  coachees: { active: number; observed: number; booked: number; waiting: number; furtherWanted: number };
+  /** Observations: filed reports, open bookings, and the coaches' Pensum summed. */
+  visits: { done: number; planned: number; goal: number };
+  /** Per month of the season, filed and booked observations by game date. */
+  byMonth: { month: string; done: number; planned: number }[];
+  /** Coverage per group: active coachees, and how many have been observed. */
+  byGroup: { group: string; active: number; observed: number }[];
+  /** The last fixture of the season on the list, and the days until it. */
+  lastGameDate: string;
+  daysLeft: number | null;
+};
+
+export function seasonProgress(report: PlanningReport, games: PlanningGameInput[], goal: number, now: string): SeasonProgress {
+  const active = report.coachees.filter((c) => c.status !== 'inactive');
+  // The Zürich month: a 23:30 kick-off on the last day is that month's game,
+  // not the next one's, whatever the UTC date says.
+  const monthOf = (date: string) => dayKey(date).slice(0, 7);
+  const months = new Map<string, { done: number; planned: number }>();
+  const bump = (month: string, key: 'done' | 'planned') => {
+    if (!month) return;
+    const m = months.get(month) ?? { done: 0, planned: 0 };
+    m[key] += 1;
+    months.set(month, m);
+  };
+  let done = 0;
+  for (const g of games) {
+    for (let i = 0; i < g.feedbackRoles.length; i += 1) { done += 1; bump(monthOf(g.date), 'done'); }
+  }
+  let planned = 0;
+  for (const c of report.coachees) {
+    for (const b of c.bookings) { planned += 1; bump(monthOf(b.date), 'planned'); }
+  }
+  const groups = new Map<string, { active: number; observed: number }>();
+  for (const c of active) {
+    const names = c.groups.split(',').map((g) => g.trim()).filter(Boolean);
+    for (const name of names.length ? names : ['']) {
+      const g = groups.get(name) ?? { active: 0, observed: 0 };
+      g.active += 1;
+      if (c.observed > 0) g.observed += 1;
+      groups.set(name, g);
+    }
+  }
+  const lastGameDate = games.reduce((last, g) => (g.date > last ? g.date : last), '');
+  const left = lastGameDate ? Math.ceil((Date.parse(lastGameDate) - Date.parse(now)) / (24 * 60 * 60 * 1000)) : null;
+  return {
+    season: report.season,
+    coachees: {
+      active: active.length,
+      observed: active.filter((c) => c.observed > 0).length,
+      booked: active.filter((c) => c.bookings.length > 0).length,
+      waiting: active.filter((c) => c.status === 'needs-visit').length,
+      furtherWanted: active.filter((c) => c.status === 'further-wanted').length,
+    },
+    visits: { done, planned, goal },
+    byMonth: [...months.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([month, m]) => ({ month, ...m })),
+    byGroup: [...groups.entries()].sort((a, b) => b[1].active - a[1].active || a[0].localeCompare(b[0], 'de')).map(([group, g]) => ({ group, ...g })),
+    lastGameDate,
+    daysLeft: left == null || !Number.isFinite(left) ? null : Math.max(0, left),
   };
 }

@@ -1341,7 +1341,39 @@ export type PlanningCoachee = {
 };
 export type PlanningCheckKind = 'rc-game-held' | 'double-booking' | 'offered-slot' | 'overdue' | 'no-coachee' | 'closed-mismatch';
 export type PlanningCheck = { kind: PlanningCheckKind; games: PlanningBooking[]; who: string; detail?: string };
+/** The season in numbers (server/planning.ts → seasonProgress). Aggregates
+ *  only — no names — shown to every coach in the Saison tab and as the head
+ *  of the chair's Planung board. */
+export type SeasonProgress = {
+  season: number;
+  coachees: { active: number; observed: number; booked: number; waiting: number; furtherWanted: number };
+  visits: { done: number; planned: number; goal: number };
+  byMonth: { month: string; done: number; planned: number }[];
+  byGroup: { group: string; active: number; observed: number }[];
+  lastGameDate: string;
+  daysLeft: number | null;
+};
+
+export async function getSeasonProgress(season: number): Promise<SeasonProgress> {
+  if (isDemoMode()) {
+    // The demo makes no backend calls; a plausible autumn is enough to show the tab.
+    return {
+      season,
+      coachees: { active: 24, observed: 9, booked: 11, waiting: 4, furtherWanted: 2 },
+      visits: { done: 11, planned: 13, goal: 60 },
+      byMonth: [{ month: `${season}-09`, done: 4, planned: 0 }, { month: `${season}-10`, done: 7, planned: 5 }, { month: `${season}-11`, done: 0, planned: 6 }, { month: `${season}-12`, done: 0, planned: 2 }],
+      byGroup: [{ group: 'Beförderung?', active: 8, observed: 4 }, { group: 'Varia', active: 10, observed: 3 }, { group: 'Neu-SR', active: 6, observed: 2 }],
+      lastGameDate: `${season + 1}-04-25T18:00:00.000Z`,
+      daysLeft: 180,
+    };
+  }
+  const r = await fetch(apiUrl(`/api/season-progress?season=${encodeURIComponent(String(season))}`), { credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not load the season');
+  return r.json() as Promise<SeasonProgress>;
+}
+
 export type PlanningReport = {
+  progress?: SeasonProgress;
   season: number;
   coachees: PlanningCoachee[];
   checks: PlanningCheck[];
@@ -1358,6 +1390,7 @@ export async function getPlanning(season: number): Promise<PlanningReport> {
     coachees: d.coachees ?? [],
     checks: d.checks ?? [],
     totals: d.totals ?? { coachees: 0, booked: 0, needsVisit: 0, furtherWanted: 0, done: 0, checks: 0 },
+    progress: d.progress,
   };
 }
 

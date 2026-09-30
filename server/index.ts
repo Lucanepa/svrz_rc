@@ -7707,6 +7707,12 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
           rcId = rcAuth.rcId;
         }
       } else if (!givingBack) {
+        // 4.4.10 is not a coach's choice to override, so it holds for the
+        // console too (a deliberate second look is; that stays allowed here).
+        const current = await withCollection(collectionCandidates.games, (collection) => collection.getOne<AnyRecord>(gameId));
+        if ((await makeRcGameTest())(current)) {
+          return { status: 422, body: { error: 'RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung, sondern eine Rückmeldung des RC (4.4.10).' } };
+        }
         // Admin assigning on someone's behalf: the id the picker sent, when it
         // names a coach on the roster — the row is then written under that
         // coach's own spelling — and otherwise the name they picked, resolved

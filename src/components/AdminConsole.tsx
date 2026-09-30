@@ -336,6 +336,8 @@ const STR = {
     gamesUnassigned: 'Nur ohne RC',
     gamesPast: 'Auch vergangene',
     gamesRcSent: 'Bericht gesendet',
+    gamesRcGameHeld: 'RC-Spiel: Hier gibt es keine Beobachtung, sondern eine Rückmeldung des RC (4.4.10). Bitte das Spiel freigeben (–).',
+    gamesRcGameNoAssign: 'RC-Spiel: kann nicht zugewiesen werden (4.4.10).',
     gamesRcLocked: 'Bericht bereits gesendet — der Referee Coach kann nicht mehr geändert werden.',
     gamesMore: (n: number) => `Weitere ${n} Spiele anzeigen`,
     gamesFlag: 'Vormerken', gamesFlagged: 'Vorgemerkt', gamesFlaggedVm: 'Vorgemerkt (VM)',
@@ -647,6 +649,8 @@ const STR = {
     gamesUnassigned: 'Unassigned only',
     gamesPast: 'Include past',
     gamesRcSent: 'Report sent',
+    gamesRcGameHeld: 'RC game: no observation here, the coach gives a Rückmeldung instead (4.4.10). Please release the game (–).',
+    gamesRcGameNoAssign: 'RC game: cannot be assigned (4.4.10).',
     gamesRcLocked: 'Report already sent — the referee coach can no longer be changed.',
     gamesMore: (n: number) => `Show ${n} more games`,
     gamesFlag: 'Flag', gamesFlagged: 'Flagged', gamesFlaggedVm: 'Flagged (VM)',
@@ -5583,14 +5587,20 @@ function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: 
                   // A report already went out under this coach: moving the
                   // game would put it under somebody else's name.
                   disabled={busy === g.id || sent}
-                  title={sent ? t.gamesRcLocked : undefined}
+                  title={sent ? t.gamesRcLocked : g.isRcGame ? t.gamesRcGameNoAssign : undefined}
                   onChange={(e) => void assign(g, e.target.value)}
                 >
                   <option value="">–</option>
                   {stored && <option value={stored} disabled>{g.assignedRc}</option>}
-                  {people.map((p) => <option key={p.id} value={p.id}>{p.fullName}</option>)}
+                  {/* 4.4.10 holds for the console too: an RC-Spiel gets no
+                      observation, so nobody can be picked — only "–", the
+                      release, for a game held from before the rule. */}
+                  {people.map((p) => <option key={p.id} value={p.id} disabled={g.isRcGame && p.id !== holder?.id}>{p.fullName}</option>)}
                 </select>
                 {sent && <span data-testid="rc-locked" className="text-xs text-stone-500">{t.gamesRcSent}</span>}
+                {!sent && g.isRcGame && g.assignedRc && (
+                  <span data-testid="rc-game-held" className="basis-full text-xs text-amber-700">{t.gamesRcGameHeld}</span>
+                )}
                 </>
                   );
                 })()}

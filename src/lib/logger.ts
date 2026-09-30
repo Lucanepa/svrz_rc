@@ -328,12 +328,27 @@ export function noteBackOnPage(): void { if (!reloading) leaving = false; }
  *  it — a spec that simulates a reload would otherwise downgrade every failure
  *  the next spec measures. Nothing in the app calls this: a page that really
  *  reloaded is gone. */
-export function resetPageLifecycle(): void { leaving = false; reloading = false; }
+export function resetPageLifecycle(): void { leaving = false; reloading = false; lastOfflineAt = -Infinity; }
 
-export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving): { evt: string; lvl: ClientLevel } {
+/** When the browser last said `offline` (performance.now()). A phone that
+ *  loses the network drops every request in flight, and the log already
+ *  says so one line up. At 16:05 on 30.09.2026 a coach's handset went
+ *  offline twice in four seconds; the notebook sync that was running died
+ *  20 ms after it came back and went out by mail as an API outage the server
+ *  never saw. */
+let lastOfflineAt = -Infinity;
+export function noteWentOffline(): void { lastOfflineAt = performance.now(); }
+/** True when the browser was, or went, offline at any point in a request's
+ *  life — at the start, during it, or at the moment it failed. */
+function sawOfflineSince(started: number, onlineAtStart: boolean): boolean {
+  return !onlineAtStart || !navigator.onLine || lastOfflineAt >= started;
+}
+
+export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving, wentOffline = false): { evt: string; lvl: ClientLevel } {
   const name = error instanceof Error ? error.name : '';
   if (name === 'AbortError') return { evt: 'net.fail', lvl: 'error' };
   if (isLeaving) return { evt: 'net.fail.unload', lvl: 'warn' };
+  if (wentOffline) return { evt: 'net.fail.offline', lvl: 'warn' };
   if (ms < INSTANT_FAIL_MS) return { evt: 'net.fail.instant', lvl: 'warn' };
   return { evt: 'net.fail', lvl: 'error' };
 }
@@ -346,6 +361,7 @@ function installFetchLogging(): void {
     if (url.includes('/api/client-logs')) return originalFetch(input as RequestInfo, init);
     const traced = input instanceof Request ? init : withTraceHeaders(url, init);
     const started = performance.now();
+    const onlineAtStart = navigator.onLine;
     const conn = connection.start(method, url);
     try {
       const res = await originalFetch(input as RequestInfo, traced);
@@ -360,6 +376,10 @@ function installFetchLogging(): void {
       return res;
     } catch (error) {
       const ms = Math.round(performance.now() - started);
+      // Asked again when the line is written: the browser can fire `offline`
+      // a beat AFTER the requests it cut off have already rejected, and a
+      // would-be error waits LEAVE_GRACE_MS anyway.
+      const offline = () => sawOfflineSince(started, onlineAtStart);
       // A rejected fetch means the request never got a status: offline, DNS,
       // TLS, or CORS. This is the *only* thing that should ever be reported to
       // the user as "Verbindungsfehler".
@@ -368,7 +388,7 @@ function installFetchLogging(): void {
       // the questionnaire AS the referee, and re-links an anonymous answer to
       // the person who gave it — into a Protokoll every admin reads.
       const write = () => {
-        const { evt, lvl } = classifyFetchFailure(ms, error);
+        const { evt, lvl } = classifyFetchFailure(ms, error, undefined, offline());
         clientLog[lvl](evt, `${method} ${scrubTokens(url)} failed after ${ms}ms (no response)`, {
           method, url: scrubTokens(url), ms, error, online: navigator.onLine,
         });
@@ -379,11 +399,11 @@ function installFetchLogging(): void {
       // The banner follows the same verdict, so a page that is only reloading
       // never tells the coach their network is down.
       const settle = () => {
-        const { evt } = classifyFetchFailure(ms, error);
+        const { evt } = classifyFetchFailure(ms, error, undefined, offline());
         const aborted = error instanceof Error && error.name === 'AbortError';
         if (evt === 'net.fail' && !aborted) conn.failed(); else conn.dropped();
       };
-      if (classifyFetchFailure(ms, error).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
+      if (classifyFetchFailure(ms, error, undefined, offline()).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
       else { write(); settle(); }
       throw error;
     }
@@ -448,7 +468,7 @@ function installErrorLogging(): void {
 
 function installLifecycleLogging(): void {
   window.addEventListener('online', () => clientLog.info('net.online', 'back online'));
-  window.addEventListener('offline', () => clientLog.warn('net.offline', 'went offline'));
+  window.addEventListener('offline', () => { noteWentOffline(); clientLog.warn('net.offline', 'went offline'); });
   // Routes live in the path, and the app moves between them with pushState —
   // which fires no event at all. Back/Forward does (popstate), and the two
   // fragment roots still fire hashchange; both are logged as one kind.

@@ -71,3 +71,24 @@ test.describe('a reload the app started itself', () => {
     expect(classifyFetchFailure(260, new TypeError('Load failed'))).toEqual({ evt: 'net.fail', lvl: 'error' });
   });
 });
+
+/**
+ * 16:05 on 30.09.2026: a coach's phone went offline twice in four seconds and
+ * the notebook sync in flight died 20 ms after it came back — mailed as an
+ * outage the server never saw. The browser had said so itself.
+ */
+test.describe('a request cut off by the device going offline', () => {
+  test('is a warning under the net.fail prefix, however slow', () => {
+    expect(classifyFetchFailure(5016, new TypeError('Failed to fetch'), false, true))
+      .toEqual({ evt: 'net.fail.offline', lvl: 'warn' });
+  });
+
+  test('a failure while the device stayed online is still an error', () => {
+    expect(classifyFetchFailure(5016, new TypeError('Failed to fetch'), false, false).lvl).toBe('error');
+  });
+
+  test("the app's own cancellation is not excused by it", () => {
+    const abort = new DOMException('The user aborted a request.', 'AbortError');
+    expect(classifyFetchFailure(5016, abort, false, true)).toEqual({ evt: 'net.fail', lvl: 'error' });
+  });
+});

@@ -287,16 +287,34 @@ const inOrder = (list: string[]) => (a: StatBucket, b: StatBucket) => {
 
 const STUFE_ORDER = ['N1', 'N2-1', 'N2-2', 'N3-1', 'N3-2', 'N3-3', 'N4-1', 'N4-2', 'N4-3'];
 const LEVEL_ORDER = ['N1', 'N2', 'N3', 'N4'];
-const DIVISION_ORDER = ['NL', '1', '2', '3', '4', '5', ''];
-const CATEGORY_ORDER = ['H', 'D', ''];
-/** Men or women for the Statistik. A U23 game is a men's or a women's game
- *  like any other — the prefix says which (HU23/MU23 men, DU23 women) — so it
- *  is counted under its gender, not as a third kind. A bare "U23" that names
- *  no gender falls under Other. */
+const CATEGORY_ORDER = ['H', 'D'];
+/** Men or women for the Statistik — for every game, cup and youth included:
+ *  the symbol or word in the league says which (♂/Herren, ♀/Damen), and a
+ *  youth prefix does too (HU23/MU20 men, DU23/WU20 women). A league that names
+ *  neither is left out of the split rather than shown as a third kind. */
 function genderOf(league: string): string {
-  const p = parseLeague(league);
-  if (p.category === 'J') return p.juniorColumn === 'JH' ? 'H' : p.juniorColumn === 'JD' ? 'D' : '';
-  return p.category;
+  const s = (league || '').toLowerCase();
+  if (/♂|herren|männer|maenner|\bmen\b/.test(s) || /\b[hm]u\s?\d\d/.test(s)) return 'H';
+  if (/♀|damen|frauen|\bwomen\b/.test(s) || /\b[dwf]u\s?\d\d/.test(s)) return 'D';
+  return '';
+}
+
+/** The league as the Statistik counts it: group- and gender-agnostic, so
+ *  "3L ♀ A" and "3L ♂ C" are both 3L, and every youth category and the two
+ *  cups have one bar each. */
+const LEAGUE_ORDER = ['NL', '1L', '2L', '3L', '4L', '5L', 'U23', 'U20', 'U18', 'U16', 'Züri Cup', 'Swiss Cup'];
+export function leagueClassOf(league: string): string {
+  const raw = (league || '').trim();
+  const s = raw.toLowerCase();
+  if (/z(ü|ue|u)ri\s*-?\s*cup/.test(s)) return 'Züri Cup';
+  if (/mobiliar|swiss\s*-?\s*cup|volley\s*cup/.test(s)) return 'Swiss Cup';
+  const youth = s.match(/u\s?(\d\d)/);
+  if (youth) return `U${youth[1]}`;
+  const division = parseLeague(raw).division;
+  if (division === 'NL') return 'NL';
+  if (division) return `${division}L`;
+  // Unknown: the name without its gender mark and group letter.
+  return raw.replace(/[♂♀]/g, ' ').replace(/\s+[A-Z]$/, '').replace(/\s+/g, ' ').trim();
 }
 
 function median(values: number[]): number | null {
@@ -674,9 +692,8 @@ export function computeStatistics(input: StatisticsInput): SeasonStatisticsCore 
     byGroup: bucketize(observations, (o) => (o.groups.length ? o.groups : ['']), (k) => k, byCount),
     byLevel: bucketize(observations, (o) => [niveauOf(o.level)], (k) => k, inOrder(LEVEL_ORDER)),
     byStufe: bucketize(observations, (o) => [o.level], (k) => k, inOrder(STUFE_ORDER)),
-    byLeague: bucketize(observations, (o) => [o.league], (k) => k, byCount),
-    byCategory: bucketize(observations, (o) => [genderOf(o.league)], (k) => k, inOrder(CATEGORY_ORDER)),
-    byDivision: bucketize(observations, (o) => [parseLeague(o.league).division], (k) => k, inOrder(DIVISION_ORDER)),
+    byLeague: bucketize(observations, (o) => [leagueClassOf(o.league)].filter(Boolean), (k) => k, inOrder(LEAGUE_ORDER)),
+    byCategory: bucketize(observations, (o) => [genderOf(o.league)].filter(Boolean), (k) => k, inOrder(CATEGORY_ORDER)),
     byWeekday: bucketize(observations, (o) => [weekdayOf(o.gameDate)].filter(Boolean), (k) => k, byKey),
     byHour: bucketize(observations, (o) => [hourOf(o.gameDate)].filter(Boolean), (k) => k, byKey),
     histogram,

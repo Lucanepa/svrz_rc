@@ -33,7 +33,7 @@ export const STAT_STR = {
     role: 'Rolle',
     compare: 'Vergleich mit Vorsaison',
     export: 'Export',
-    exportPptx: 'PowerPoint (.pptx)',
+    exportPptx: 'PPT',
     exportPdf: 'PDF',
     exportHint: 'Foliensatz aus den Zahlen oben, mit den gesetzten Filtern.',
     exportLang: 'Sprache der Folien',
@@ -220,7 +220,7 @@ export const STAT_STR = {
     role: 'Role',
     compare: 'Compare with previous season',
     export: 'Export',
-    exportPptx: 'PowerPoint (.pptx)',
+    exportPptx: 'PPT',
     exportPdf: 'PDF',
     exportHint: 'A slide deck from the numbers above, with the filters set.',
     exportLang: 'Slide language',
@@ -403,14 +403,7 @@ export function roleLabel(role: string, lang: Lang): string {
 }
 export function categoryLabel(key: string, lang: Lang): string {
   const de = lang === 'DE';
-  if (key === 'H') return de ? 'Herren' : 'Men';
-  if (key === 'D') return de ? 'Damen' : 'Women';
-  return de ? 'Übrige (Cup, Nachwuchs)' : 'Other (cup, youth)';
-}
-export function divisionLabel(key: string, lang: Lang): string {
-  if (key === 'NL') return 'NL';
-  if (/^[1-5]$/.test(key)) return `${key}L`;
-  return lang === 'DE' ? 'Übrige' : 'Other';
+  return key === 'H' ? (de ? 'Herren' : 'Men') : (de ? 'Damen' : 'Women');
 }
 export function groupKeyLabel(key: string, lang: Lang): string {
   if (!key) return lang === 'DE' ? 'ohne Gruppe' : 'no group';

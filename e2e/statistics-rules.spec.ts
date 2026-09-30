@@ -151,7 +151,7 @@ test('one game with both referees assessed is two observations but one game — 
   expect(stats.byLevel.map((b) => [b.key, b.observations])).toEqual([['N3', 2], ['N4', 1]]);
   expect(stats.byGroup.map((b) => [b.key, b.observations])).toEqual([['Beförderung?', 2], ['Varia', 1]]);
   expect(stats.byCategory.map((b) => [b.key, b.observations])).toEqual([['H', 3]]);
-  expect(stats.byDivision.map((b) => [b.key, b.observations])).toEqual([['3', 3]]);
+  expect(stats.byLeague.map((b) => [b.key, b.observations])).toEqual([['3L', 3]]);
   expect(stats.byWeekday.map((b) => [b.key, b.observations])).toEqual([['5', 2], ['6', 1]]);
   expect(stats.byHour.map((b) => [b.key, b.observations])).toEqual([['15', 1], ['20', 2]]);
   expect(stats.fun.busiestDay).toEqual({ key: '2025-10-03', count: 2 });
@@ -244,15 +244,18 @@ test('words: whitespace-split, markup-free', () => {
   expect(countWords('')).toBe(0);
 });
 
-test('a U23 game counts under its gender — DU23 women, HU23 men — and the league by its number', () => {
-  const leagues = ['DU23 3. Liga', 'HU23 2. Liga', '5L ♀ B', 'U23'];
+test('cup and youth count under their gender, and the league ignores group and gender', () => {
+  const leagues = ['DU23 3. Liga', 'HU23 2. Liga', '5L ♀ B', 'U23', '3L ♀ A', '3L ♂ C', 'Mobiliar Volley Cup ♂', 'Züri Cup ♀', 'MU20'];
   const stats = computeStatistics({
     season: 2025, filters: {}, now: new Date(), rcs: RCS, roster: ROSTER,
     observations: leagues.map((league, i) => obs({ id: `o-${i}`, gameId: `g-${i}`, league })),
   });
-  // A bare "U23" names no gender: Other, never a third kind of its own.
-  expect(stats.byCategory.map((b) => [b.key, b.observations])).toEqual([['H', 1], ['D', 2], ['', 1]]);
-  expect(stats.byDivision.map((b) => [b.key, b.observations])).toEqual([['2', 1], ['3', 1], ['5', 1], ['', 1]]);
+  // Men and women only: a bare "U23" names no gender and is left out of the
+  // split — never an "Other" slice.
+  expect(stats.byCategory.map((b) => [b.key, b.observations])).toEqual([['H', 4], ['D', 4]]);
+  expect(stats.byLeague.map((b) => [b.key, b.observations])).toEqual([
+    ['3L', 2], ['5L', 1], ['U23', 3], ['U20', 1], ['Züri Cup', 1], ['Swiss Cup', 1],
+  ]);
 });
 
 // ── Trend: first visit against the latest ────────────────────────────────────

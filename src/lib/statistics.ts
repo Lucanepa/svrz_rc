@@ -194,11 +194,10 @@ export type SeasonStatisticsCore = {
   byLevel: StatBucket[];
   /** N4-3 … N1, the official rows. */
   byStufe: StatBucket[];
+  /** Group- and gender-agnostic: 2L … 5L, U23, U20, Züri Cup, Swiss Cup. */
   byLeague: StatBucket[];
-  /** H / D / J / '' (unparsed). */
+  /** H / D, cup and youth included; a league naming neither is left out. */
   byCategory: StatBucket[];
-  /** NL, 1 … 5. */
-  byDivision: StatBucket[];
   /** 1 (Monday) … 7 (Sunday). */
   byWeekday: StatBucket[];
   /** Kick-off hour, Europe/Zurich. */

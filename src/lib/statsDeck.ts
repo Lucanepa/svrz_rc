@@ -10,7 +10,7 @@ import {
   type SeasonStatistics, type SeasonStatisticsCore, type StatBreakdowns, type StatBucket, type StatRole, type StatSlice, type TrendAgg,
 } from './statistics';
 import {
-  categoryLabel, criterionLabel, divisionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER,
+  categoryLabel, criterionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER,
   outcomeColor, outcomeLabel, NEUTRAL, SEQ_BLUE, roleLabel, sectionTitle, seasonName, statStrings, type StatStrings,
 } from './statsLabels';
 
@@ -408,10 +408,9 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
     add('leagues', {
       title: t.perLeague,
       figures: [
-        { title: t.perLeague, chart: { kind: 'bars', categories: stats.byLeague.slice(0, 12).map((b) => b.label || '–'), values: stats.byLeague.slice(0, 12).map((b) => b.observations) } },
-        { title: `${categoryLabel('H', lang)} / ${categoryLabel('D', lang)}`, chart: { kind: 'stack', categories: stats.byCategory.map((b) => categoryLabel(b.key, lang)), values: stats.byCategory.map((b) => b.observations), colors: stats.byCategory.map((_, i) => ['#2a78d6', '#e2001a', '#eda100'][i % 3]) } },
+        { title: t.perLeague, chart: { kind: 'bars', categories: stats.byLeague.map((b) => b.label || '–'), values: stats.byLeague.map((b) => b.observations) } },
+        { title: `${categoryLabel('H', lang)} / ${categoryLabel('D', lang)}`, chart: { kind: 'donut', categories: stats.byCategory.map((b) => categoryLabel(b.key, lang)), values: stats.byCategory.map((b) => b.observations), colors: stats.byCategory.map((b) => (b.key === 'H' ? '#2a78d6' : '#e2001a')) } },
       ],
-      table: { head: [t.perLeague, t.observations], rows: stats.byDivision.map((b) => [divisionLabel(b.key, lang), int(b.observations)]) },
     });
   }
 

@@ -15,12 +15,15 @@ import {
   type SeasonStatistics, type TrendAgg, type StatBucket, type StatFilters, type StatRole, type StatisticsResponse,
 } from '../lib/statistics';
 import {
-  categoryLabel, criterionLabel, divisionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER, outcomeColor, outcomeLabel,
+  categoryLabel, criterionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER, outcomeColor, outcomeLabel,
   roleLabel, sectionCount, sectionTitle, seasonName, statStrings, weekdayKeyLabel,
 } from '../lib/statsLabels';
 import { SECTIONS_1SR_DE, SECTIONS_2SR_DE } from '../types';
 import { buildDeck, deckFileName, DECK_CHAPTERS, DEFAULT_DECK_SECTIONS, type DeckFormat, type DeckSection } from '../lib/statsDeck';
-import { BarList, ColumnChart, DivergingBars, GradeLine, GradeScale, HBarChart, SEQ_BLUE, SERIES, Sparkline, StackBar, StatTile, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
+import { BarList, ColumnChart, DivergingBars, Donut, GradeLine, GradeScale, HBarChart, SEQ_BLUE, SERIES, Sparkline, StackBar, StatTile, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
+
+/** Men blue, women red — the colours the split has always had. */
+const GENDER_COLOR: Record<string, string> = { H: '#2a78d6', D: '#e2001a' };
 
 const select = 'h-9 px-2.5 text-sm rounded-lg border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500 max-w-full';
 const btn = 'inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-40 transition-colors';
@@ -315,12 +318,11 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     const outcomeKinds = (['einstufung', 'motivation', 'spielniveau', 'secondBesuch'] as const).filter((kind) => !filtered || sum(stats.outcomes[kind]) > 0);
     // ── Games
     const showGamesBlock = !filtered || T.games > 0;
-    const leagueRows = keep(stats.byLeague.slice(0, 10).map((b) => ({ key: b.key || '-', label: b.label || '–', value: b.observations })));
-    const categoryRows = keep(stats.byCategory.map((b) => ({ key: b.key || '-', label: categoryLabel(b.key, lang), value: b.observations })));
-    const divisionRows = keep(stats.byDivision.map((b) => ({ key: b.key || '-', label: divisionLabel(b.key, lang), value: b.observations })));
+    const leagueRows = keep(stats.byLeague.map((b) => ({ key: b.key || '-', label: b.label || '–', value: b.observations })));
+    const categoryRows = keep(stats.byCategory.map((b) => ({ key: b.key, label: categoryLabel(b.key, lang), value: b.observations })));
     const weekdayRows = keep(stats.byWeekday.map((b) => ({ key: b.key, label: weekdayKeyLabel(b.key, lang), value: b.observations })));
     const hourRows = keep(stats.byHour.map((b) => ({ key: b.key, label: `${b.key}:00`, value: b.observations })));
-    const showLeagues = leagueRows.length + categoryRows.length + divisionRows.length > 0;
+    const showLeagues = leagueRows.length + categoryRows.length > 0;
     const showWhen = weekdayRows.length + hourRows.length > 0;
     const showGames = showGamesBlock || showLeagues || showWhen;
     // ── Writing & process
@@ -596,15 +598,12 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               <Block span="lg:col-span-4" title={t.perLeague} hint={t.observations} testId="stats-leagues">
                 {leagueRows.length > 0 && <BarList rows={leagueRows} />}
                 {categoryRows.length > 0 && (
-                  <div className="mt-4">
+                  <div className="mt-4" data-testid="stats-gender">
                     <SubHead>{categoryLabel('H', lang)} · {categoryLabel('D', lang)}</SubHead>
-                    <StackBar segments={stats.byCategory.map((b, i) => ({ key: b.key || '-', label: categoryLabel(b.key, lang), value: b.observations, color: SERIES[i % SERIES.length] })).filter((x) => !filtered || x.value > 0)} />
-                  </div>
-                )}
-                {divisionRows.length > 0 && (
-                  <div className="mt-4">
-                    <SubHead>{lang === 'DE' ? 'Liga' : 'League'}</SubHead>
-                    <BarList rows={divisionRows} />
+                    <Donut
+                      emptyLabel="–"
+                      slices={categoryRows.map((r) => ({ key: r.key, label: r.label, value: r.value, color: GENDER_COLOR[r.key] }))}
+                    />
                   </div>
                 )}
               </Block>

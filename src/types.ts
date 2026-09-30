@@ -40,6 +40,11 @@ export interface Results {
    *  either or neither. Absent on a report filed before they existed. */
   wantsPromotion?: 'Y' | '';
   wantsCandidate?: 'Y' | '';
+  /** 'Y' when the referee would not sign. The coach records it instead of the
+   *  ink, so the visit can still be filed (and paid out) and the PDF says why
+   *  the line is empty. Meaningless once a referee signature is captured —
+   *  capturing one clears it. Absent on a report filed before it existed. */
+  refereeRefusedSignature?: 'Y' | '';
   /** The language the referee reads: their PDF is built in it, whatever
    *  language the coach works in. Empty or absent means German, the default.
    *  Kept with the results so a draft carries it and the next referee starts

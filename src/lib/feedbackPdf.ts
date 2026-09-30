@@ -110,6 +110,7 @@ const LABELS = {
     improvements: 'Bereiche / Potenzial zur Verbesserung',
     goalsNext: 'Ziele für nächste Spiele',
     refSignature: 'Unterschrift Schiedsrichter',
+    signatureRefused: 'Unterschrift verweigert',
     coachSignature: 'Unterschrift Referee Coach',
     surveyCaption: 'Feedback-\nUmfrage',
     version: 'Stand',
@@ -144,6 +145,7 @@ const LABELS = {
     improvements: 'Areas / potential for improvement',
     goalsNext: 'Goals for next games',
     refSignature: 'Referee signature',
+    signatureRefused: 'Signature refused',
     coachSignature: 'Referee Coach signature',
     surveyCaption: 'Feedback\nsurvey',
     version: 'Version',
@@ -1053,7 +1055,12 @@ function drawSignatures(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
   const columns = sheet.blank
     ? [{ label: t.refSignature, image: '' }, { label: t.coachSignature, image: '' }]
     : [
-        { label: t.refSignature, image: data.signature || '' },
+        {
+          label: t.refSignature,
+          image: data.signature || '',
+          // Said on the line itself, so nobody reads an empty box as forgotten.
+          note: !data.signature && data.results?.refereeRefusedSignature === 'Y' ? t.signatureRefused : '',
+        },
         { label: t.coachSignature, image: data.rcSignature || '' },
       ];
   const colW = signW / columns.length;
@@ -1071,6 +1078,9 @@ function drawSignatures(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
       if (scale > 0 && size) {
         doc.addImage(column.image, 'PNG', x + 8, top + h - 14 - size.height * scale, size.width * scale, size.height * scale);
       }
+    } else if ('note' in column && column.note) {
+      sheet.font('italic', 8, MUTED);
+      doc.text(column.note, x + 8, top + h - 18, { baseline: 'bottom' });
     }
     sheet.stroke(FAINT, RULE);
     doc.line(x + 8, top + h - 12, x + colW - 8, top + h - 12);

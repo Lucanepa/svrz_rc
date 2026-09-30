@@ -118,6 +118,25 @@ test.describe('Feedback form UI', () => {
       await expect(page.getByRole('heading', { name: /Save feedback|Feedback speichern/ })).toHaveCount(0);
       await expect(page.getByText(/referee coach’s signature|Unterschrift des Referee Coach/)).toBeVisible();
     });
+
+    // A referee who will not sign must not keep the visit from being filed —
+    // an unfiled report never reaches the Spesen list. The coach records the
+    // refusal instead of the ink; without either, the send still stops.
+    test('a recorded refusal stands in for the referee signature', async ({ page }) => {
+      await fillWholeForm(page);
+      await page.getByRole('button', { name: /^(Remove|Entfernen)$/ }).first().click();
+
+      await sendButton(page).click();
+      await expect(page.getByText(/referee’s signature|Unterschrift des Schiedsrichters/)).toBeVisible();
+
+      const refuse = page.getByRole('button', { name: /^(Referee refuses to sign|SR verweigert Unterschrift)$/ });
+      await refuse.click();
+      await expect(refuse).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByText(/^(Signature refused|Unterschrift verweigert)$/)).toBeVisible();
+
+      await sendButton(page).click();
+      await expect(page.getByRole('heading', { name: /Save feedback|Feedback speichern/ })).toBeVisible();
+    });
   });
 });
 

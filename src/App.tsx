@@ -1933,7 +1933,10 @@ export default function App() {
   const sigSignerName = (target: 'referee' | 'rc') =>
     target === 'rc' ? (formData.meta.rc || '') : formData.meta.srName;
   const updateSignature = (data: string, target: 'referee' | 'rc' = sigTarget) => {
-    setFormData(prev => (target === 'rc' ? { ...prev, rcSignature: data } : { ...prev, signature: data }));
+    setFormData(prev => (target === 'rc'
+      ? { ...prev, rcSignature: data }
+      // Ink from the referee answers the refusal: the two never stand together.
+      : { ...prev, signature: data, results: data ? { ...prev.results, refereeRefusedSignature: '' } : prev.results }));
     // The coach signs the visit, not one of its forms. On a game where both
     // referees are coachees that is one person signing once, not the same
     // signature collected twice — so it reaches the other role's form too.
@@ -4231,10 +4234,12 @@ export default function App() {
     // Both signatures: the referee confirming the feedback was discussed with
     // them, the coach standing behind what it says. Without either, the PDF is
     // an unacknowledged assessment.
-    if (!fd.signature) {
+    // A referee who refuses to sign does not get to hold the report back: the
+    // coach records the refusal instead, and the PDF says so.
+    if (!fd.signature && fd.results.refereeRefusedSignature !== 'Y') {
       return fd.lang === 'DE'
-        ? 'Bitte die Unterschrift des Schiedsrichters einholen.'
-        : 'Please capture the referee’s signature.';
+        ? 'Bitte die Unterschrift des Schiedsrichters einholen — oder «SR verweigert Unterschrift» ankreuzen.'
+        : 'Please capture the referee’s signature — or tick “Referee refuses to sign”.';
     }
     if (!fd.rcSignature) {
       return fd.lang === 'DE'
@@ -9561,9 +9566,30 @@ export default function App() {
                 <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-2">{sig.label}</h4>
                 {sig.image ? (
                   <img src={sig.image} alt={sig.label} className="h-20 max-w-full object-contain" />
+                ) : sig.target === 'referee' && formData.results.refereeRefusedSignature === 'Y' ? (
+                  <div className="h-14 border-b border-stone-400 flex items-end pb-1 text-sm italic text-stone-600">{formData.lang === 'DE' ? 'Unterschrift verweigert' : 'Signature refused'}</div>
                 ) : (
                   <div className="h-14 border-b border-stone-400" />
                 )}
+                {/* The way out when the referee will not sign: without it the
+                    report cannot be filed, so the visit never reaches the
+                    Spesen list. Only offered while there is no ink. */}
+                {sig.target === 'referee' && !sig.image && (() => {
+                  const on = formData.results.refereeRefusedSignature === 'Y';
+                  return (
+                    <button
+                      type="button"
+                      aria-pressed={on}
+                      onClick={() => setFormData(prev => ({ ...prev, results: { ...prev.results, refereeRefusedSignature: prev.results.refereeRefusedSignature === 'Y' ? '' : 'Y' } }))}
+                      className={cn(
+                        "no-print mt-2 min-h-8 px-2 py-1 border border-stone-300 rounded text-[11px] font-bold leading-tight text-left transition-all",
+                        on ? SELECTED_RESULT : "bg-white hover:bg-stone-100"
+                      )}
+                    >
+                      {formData.lang === 'DE' ? 'SR verweigert Unterschrift' : 'Referee refuses to sign'}
+                    </button>
+                  );
+                })()}
               </div>
               <div className="no-print flex flex-col gap-1.5 shrink-0">
                 <button type="button" onClick={() => void openSignatureModal(sig.target)} className="h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700">{formData.lang === 'DE' ? 'Unterschreiben' : 'Sign'}</button>

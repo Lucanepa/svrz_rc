@@ -7696,6 +7696,13 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
           if ((await makeRcGameTest())(current)) {
             return { status: 422, body: { error: 'RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung, sondern eine Rückmeldung des RC (4.4.10).' } };
           }
+          // One open booking per coachee: the lists grey the button out,
+          // this is for the screen that was out of date when it was tapped.
+          const blocking = await openBookingBlocking(current);
+          if (blocking) {
+            const when = blocking.date ? ` (${fmtDateDe(blocking.date)})` : '';
+            return { status: 409, body: { error: `${blocking.name} hat schon eine geplante Beobachtung${when} durch ${blocking.rc || 'einen anderen RC'}. Erst wenn dieser Bericht gesendet oder das Spiel abgegeben ist, kann ein weiteres Spiel übernommen werden.` } };
+          }
           rcName = rcAuth.name; // write the canonical name from the RC record
           rcId = rcAuth.rcId;
         }
@@ -8059,6 +8066,43 @@ async function makeCoacheeSlotTest(coacheeIndex?: CoacheeIndex): Promise<(game: 
     const season = seasonOfGame(game.match_date);
     return refereeSlotQueries(game).some((q) => coachees.has(season, q));
   };
+}
+
+/**
+ * A coachee with an open booking — a game some coach holds, whose report for
+ * that coachee's role has not been sent — is not bookable a second time
+ * (asked 2026-09-30, after two coaches both planned the same coachee). Asked
+ * of the game being taken: the booking on ANOTHER game in its season that
+ * blocks it, or null. A game is blocked only when EVERY coachee on it is
+ * booked elsewhere; one with a free coachee beside a booked one stays
+ * takeable, for the free one. Admin assignments skip this — the console is
+ * where a deliberate second look is set up.
+ */
+async function openBookingBlocking(game: AnyRecord, coacheeIndex?: CoacheeIndex): Promise<{ name: string; rc: string; date: string } | null> {
+  const coachees = coacheeIndex ?? await getCoacheeIndex();
+  const season = seasonOfGame(game.match_date);
+  const slots = refereeSlotQueries(game)
+    .map((q) => ({ q, row: coachees.find(season, q).row }))
+    .filter((x) => x.row);
+  if (slots.length === 0) return null;
+  const held = await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
+    filter: `id != "${escapeFilterValue(String(game.id))}" && (assigned_rc != "" || assigned_rc_id != "")`,
+    fields: 'id,match_date,first_referee,second_referee,first_referee_id,second_referee_id,match_no,assigned_rc,feedback_closed_roles',
+  }));
+  const booked = new Map<string, { rc: string; date: string }>();
+  for (const g of held) {
+    if (seasonOfGame(g.match_date) !== season) continue;
+    const closed = Array.isArray(g.feedback_closed_roles) ? g.feedback_closed_roles as string[] : [];
+    refereeSlotQueries(g).forEach((q, i) => {
+      if (closed.includes(i === 0 ? '1. SR' : '2. SR')) return;
+      const row = coachees.find(season, q).row;
+      if (row && !booked.has(String(row.id))) booked.set(String(row.id), { rc: asText(g.assigned_rc), date: asText(g.match_date) });
+    });
+  }
+  const hits = slots.map((x) => ({ x, hit: booked.get(String(x.row!.id)) }));
+  if (hits.some((h) => !h.hit)) return null;
+  const first = hits[0];
+  return { name: asText(first.x.q.name), rc: first.hit!.rc, date: first.hit!.date };
 }
 
 /** The fields rcWorkloadRule and the coachee-slot test read off a game. */

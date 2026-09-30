@@ -2786,6 +2786,47 @@ export default function App() {
   };
 
   /**
+   * One open booking per coachee (asked 2026-09-30): a game is not takeable
+   * while EVERY coachee on it already has one on another game — a held game
+   * whose report for them has not been sent. A game with a free coachee
+   * beside a booked one stays takeable, for the free one. The server refuses
+   * the same take (409); the admin console is where a deliberate second look
+   * is set up.
+   */
+  const bookingBlocking = (game: EligibleGame): { name: string; rc: string; date: string } | null => {
+    let first: { name: string; rc: string; date: string } | null = null;
+    let any = false;
+    for (const role of ['1. SR', '2. SR'] as const) {
+      const id = roster.idOnSlot(game, role);
+      if (!id) continue;
+      any = true;
+      const booked = plannedObsByCoachee.get(id);
+      if (!booked || booked.game.id === game.id) return null;
+      first ??= { name: roster.onSlot(game, role)?.full_name || getRefereeForRole(game, role), rc: booked.rc, date: booked.game.date };
+    }
+    return any ? first : null;
+  };
+
+  const bookedWhy = (b: { name: string; rc: string; date: string }) => (formData.lang === 'DE'
+    ? `${b.name} hat schon eine geplante Beobachtung (${shortDate(b.date)}) durch ${b.rc}. Erst wenn dieser Bericht gesendet oder das Spiel abgegeben ist, kann ein weiteres Spiel übernommen werden.`
+    : `${b.name} already has an observation booked (${shortDate(b.date)}) by ${b.rc}. Another game can be taken once that report is sent or the game is given back.`);
+
+  /** "Take game", greyed out, for a coachee who is already booked — same
+   *  shape as the taken-by button, so a tap explains itself. */
+  const bookedButton = (b: { name: string; rc: string; date: string }, className: string) => (
+    <button
+      type="button"
+      aria-disabled="true"
+      data-testid="take-booked"
+      title={bookedWhy(b)}
+      onClick={(e) => { e.stopPropagation(); toast.info(bookedWhy(b)); }}
+      className={cn(className, 'cursor-not-allowed border border-stone-200 bg-stone-100 text-stone-400 hover:bg-stone-100')}
+    >
+      {formData.lang === 'DE' ? 'Spiel übernehmen' : 'Take game'}
+    </button>
+  );
+
+  /**
    * "Take game", greyed out, for a game another coach already holds.
    *
    * Greyed and STILL CLICKABLE — `aria-disabled`, not `disabled`, because a
@@ -2838,6 +2879,8 @@ export default function App() {
   };
 
   const requestRcAssignment = (game: EligibleGame, rcName: string) => {
+    const blocking = rcName ? bookingBlocking(game) : null;
+    if (blocking) { toast.info(bookedWhy(blocking)); return; }
     // Clearing an assignment needs no warning — nobody is being observed twice,
     // and nobody is mailed about a coach who is no longer coming.
     const observed = rcName ? observedCoacheesOnGame(game) : [];
@@ -8086,14 +8129,14 @@ export default function App() {
                                         roles: [role],
                                         focus: true,
                                         onOpen: () => handleSelectGame(game, { id: coachee.id }),
-                                        action: !holder ? (
+                                        action: !holder ? (bookingBlocking(game) ? bookedButton(bookingBlocking(game)!, 'h-8 w-full rounded-md px-2.5 text-[11px] font-medium transition-colors sm:w-auto') : (
                                             <button
                                               onClick={() => { if (rcAuth.rcName) requestRcAssignment(game, rcAuth.rcName); }}
                                               className="h-8 w-full rounded-md bg-slate-900 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-slate-800 sm:w-auto"
                                             >
                                               {de ? 'Spiel übernehmen' : 'Take game'}
                                             </button>
-                                          ) : mine ? (
+                                          )) : mine ? (
                                             <div className="flex items-center gap-1">
                                               <button
                                                 onClick={() => handleSelectGame(game, { id: coachee.id })}
@@ -8307,6 +8350,8 @@ export default function App() {
                                       takenByButton(game.assignedRc, 'h-9 px-3 text-sm font-medium rounded-md transition-colors')
                                     ) : game.isRcGame ? (
                                       rcGameButton('h-9 px-3 text-sm font-medium rounded-md transition-colors')
+                                    ) : bookingBlocking(game) ? (
+                                      bookedButton(bookingBlocking(game)!, 'h-9 px-3 text-sm font-medium rounded-md transition-colors')
                                     ) : (
                                       <button
                                         onClick={(e) => {
@@ -8841,7 +8886,7 @@ export default function App() {
                               action: eg ? (
                                 <div className="flex flex-wrap items-center gap-2">
                                   {!holder ? (
-                                    eg.isRcGame ? rcGameButton('h-8 px-3 text-xs font-medium rounded-md transition-colors') : (
+                                    eg.isRcGame ? rcGameButton('h-8 px-3 text-xs font-medium rounded-md transition-colors') : bookingBlocking(eg) ? bookedButton(bookingBlocking(eg)!, 'h-8 px-3 text-xs font-medium rounded-md transition-colors') : (
                                     <button
                                       onClick={() => { if (rcAuth.rcName) requestRcAssignment(eg, rcAuth.rcName); }}
                                       className="h-8 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"

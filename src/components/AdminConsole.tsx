@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle, Coins, BarChart3, FolderOpen, ExternalLink, Search } from 'lucide-react';
+import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle, Coins, BarChart3, FolderOpen, ExternalLink, Search, RefreshCw, ListChecks } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { cn } from '../lib/utils';
 import { adminTabFromPath, adminLogModeFromPath } from '../lib/routes';
@@ -14,7 +14,7 @@ import {
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
   listReferees, importReferees, linkCoacheeReferees, backfillGameRefereeIds, type RefereeRoster, type RosterReferee, type RefereeImportRow, type LinkReport, type BackfillReport, type SvConflict,
-  getIdentityAudit, migrateRcIds, type IdentityAudit, type AuditUnlinkedCoachee, type MigrateRcIdsReport,
+  getIdentityAudit, getPlanning, type PlanningReport, type PlanningBooking, type PlanningStatus, type PlanningCheckKind, migrateRcIds, type IdentityAudit, type AuditUnlinkedCoachee, type MigrateRcIdsReport,
   getSurveyConfig, putSurveyConfig,
   getAdminLogs, getAdminLogSessions, listSurveyResponses, syncCoacheeContacts, listPresidentNotes,
   getErrorLogs, getErrorLogDates, annotateLogEntries,
@@ -877,7 +877,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 // Console tabs live in the URL as /admin/<tab>, so each one is linkable and
 // the Back button steps between them. The Protokoll tab's own two views are
 // one level down: /admin/logs and /admin/logs/history.
-const ADMIN_TABS = ['coachees', 'rcs', 'games', 'overview', 'stats', 'niveau', 'emails', 'form', 'survey', 'notes', 'forms', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'planning', 'games', 'overview', 'stats', 'niveau', 'emails', 'form', 'survey', 'notes', 'forms', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 // /admin/archive was the chair's season-ZIP tab before the forms database
 // absorbed it; a bookmark of it still lands where the ZIP now lives.
@@ -895,6 +895,9 @@ export default function AdminConsole() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [tab, setTab] = useState<AdminTab>(adminTabFromUrl);
+  // A game the Planung tab asked to open: the Games tab searches for it. `n`
+  // counts the asks, so opening the same game twice still re-applies it.
+  const [gamesFocus, setGamesFocus] = useState<{ q: string; n: number }>({ q: '', n: 0 });
   const [logMode, setLogMode] = useState<'live' | 'history'>(() => adminLogModeFromPath(window.location.pathname));
   // Which credential opened this session. null while unknown: a deep link to
   // #/admin/survey must not bounce the one person allowed to be there just
@@ -1185,6 +1188,7 @@ export default function AdminConsole() {
   ] : [
     { id: 'coachees', label: t.coachees, icon: <Users size={15} /> },
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
+    { id: 'planning', label: lang === 'DE' ? 'Planung' : 'Planning', icon: <ListChecks size={15} /> },
     { id: 'games', label: t.games, icon: <CalendarDays size={15} /> },
     { id: 'overview', label: t.overview, icon: <Target size={15} /> },
     { id: 'stats', label: t.stats, icon: <BarChart3 size={15} /> },
@@ -1265,11 +1269,15 @@ export default function AdminConsole() {
           <EmailsAdmin t={t} lang={lang} />
         </div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
+        <div hidden={tab !== 'planning'}>
+          <PlanningAdmin lang={lang} season={defaultSeason} settingsLoading={settingsLoading} active={tab === 'planning'}
+            onOpenGame={(matchNo) => { setGamesFocus((f) => ({ q: matchNo, n: f.n + 1 })); setTab('games'); }} />
+        </div>
         <div hidden={tab !== 'games'}>
           {/* Import status strip first: it turns red exactly when the list
               below looks wrong. Börse and the test-game form are rare work. */}
           <GameImportCard lang={lang} />
-          <GamesAdmin t={t} lang={lang} season={defaultSeason} settingsLoading={settingsLoading} active={tab === 'games'} />
+          <GamesAdmin t={t} lang={lang} season={defaultSeason} settingsLoading={settingsLoading} active={tab === 'games'} focus={gamesFocus} />
           <BoerseCard lang={lang} />
           <ManualGameAdmin t={t} lang={lang} active={tab === 'games'} />
         </div>
@@ -5425,13 +5433,240 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate 
 // FOR THEMSELVES — the server refuses anything else (see /api/games/:id/assign-rc)
 // unless the request carries an admin session. This is that exception, moved
 // out of the coach app and into the console where it is obviously an admin act.
-function GamesAdmin({ t, lang, season, settingsLoading, active }: { t: T; lang: Lang; season: number; settingsLoading: boolean; active: boolean }) {
+/**
+ * Planung — the chair's board (asked 2026-09-30). Which coachees of the season
+ * still need a visit, who has them booked, and the games that break a rule.
+ *
+ * Not a second games list: handing out, moving and releasing stay in the Games
+ * tab, and every game here opens there (onOpenGame). Nor a second Übersicht:
+ * the per-coach load is that tab's. Nor the Datenqualität card's identity
+ * checks. What is left is the coachee's side of the season, and the rule
+ * breaks nobody else lists.
+ */
+const PLANNING_STR = {
+  DE: {
+    title: 'Planung',
+    hint: 'Pro Coachee dieser Saison: beobachtet, gebucht oder noch offen. Zuweisen, verschieben und freigeben im Tab «Spiele».',
+    refresh: 'Aktualisieren',
+    fail: (m: string) => `Planung konnte nicht geladen werden: ${m}`,
+    checksTitle: 'Prüfung',
+    checksNone: 'Keine Hinweise — alle Spiele halten die Regeln ein.',
+    all: 'Alle', search: 'Coachee suchen…',
+    status: { 'needs-visit': 'Noch kein Besuch', 'further-wanted': 'Weiterer Besuch gewünscht', booked: 'Geplant', done: 'Erledigt', inactive: 'Inaktiv' },
+    observed: (n: number) => (n === 1 ? '1 Beobachtung' : `${n} Beobachtungen`),
+    freeGames: (n: number) => (n === 0 ? 'keine freien Spiele' : n === 1 ? '1 freies Spiel' : `${n} freie Spiele`),
+    open: 'Im Tab «Spiele» öffnen',
+    none: 'Keine Coachees in dieser Auswahl.',
+    kinds: {
+      'rc-game-held': ['RC-Spiel mit RC', 'Hier pfeift ein Referee Coach neben dem Coachee — keine Beobachtung, sondern eine Rückmeldung (4.4.10). Spiel freigeben.'],
+      'double-booking': ['Coachee mehrfach gebucht', 'Mehr als eine offene Buchung für denselben Coachee. Neue Buchungen sind gesperrt; bestehende bitte prüfen.'],
+      'offered-slot': ['Coachee bietet das Spiel in der Börse an', 'Der beobachtete SR gibt das Spiel vielleicht ab — mit dem RC klären.'],
+      'overdue': ['Bericht ausstehend', 'Das Spiel ist vorbei, der Bericht wurde noch nicht gesendet.'],
+      'no-coachee': ['Gebucht ohne Coachee', 'Auf dem Spiel pfeift niemand, der diese Saison Coachee ist.'],
+      'closed-mismatch': ['Bericht und Abschluss passen nicht', 'Rolle abgeschlossen ohne Bericht, oder Bericht ohne abgeschlossene Rolle.'],
+    } as Record<PlanningCheckKind, [string, string]>,
+    closedWithout: 'abgeschlossen ohne Bericht', reportOpen: 'Bericht, Rolle offen',
+  },
+  EN: {
+    title: 'Planning',
+    hint: 'Per coachee of this season: observed, booked or still open. Assign, move and release in the Games tab.',
+    refresh: 'Refresh',
+    fail: (m: string) => `Could not load the planning board: ${m}`,
+    checksTitle: 'Checks',
+    checksNone: 'Nothing to flag — every game keeps to the rules.',
+    all: 'All', search: 'Search coachee…',
+    status: { 'needs-visit': 'No visit yet', 'further-wanted': 'Further visit wanted', booked: 'Planned', done: 'Done', inactive: 'Inactive' },
+    observed: (n: number) => (n === 1 ? '1 observation' : `${n} observations`),
+    freeGames: (n: number) => (n === 0 ? 'no free games' : n === 1 ? '1 free game' : `${n} free games`),
+    open: 'Open in the Games tab',
+    none: 'No coachees in this selection.',
+    kinds: {
+      'rc-game-held': ['RC game with an RC', 'A referee coach whistles next to the coachee — no observation, a Rückmeldung instead (4.4.10). Release the game.'],
+      'double-booking': ['Coachee booked more than once', 'More than one open booking for the same coachee. New bookings are blocked; please review the existing ones.'],
+      'offered-slot': ['Coachee is offering the game in the Börse', 'The observed referee may hand the game on — check with the coach.'],
+      'overdue': ['Report outstanding', 'The game is over and the report has not been sent.'],
+      'no-coachee': ['Booked without a coachee', 'Nobody on this game is a coachee this season.'],
+      'closed-mismatch': ['Report and closure disagree', 'Role closed without a report, or a report whose role is still open.'],
+    } as Record<PlanningCheckKind, [string, string]>,
+    closedWithout: 'closed without a report', reportOpen: 'report, role still open',
+  },
+};
+
+const PLANNING_STATUS_CHIP: Record<PlanningStatus, string> = {
+  'needs-visit': 'bg-red-50 text-red-700 border-red-200',
+  'further-wanted': 'bg-amber-50 text-amber-800 border-amber-200',
+  booked: 'bg-blue-50 text-blue-700 border-blue-200',
+  done: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  inactive: 'bg-stone-100 text-stone-500 border-stone-200',
+};
+
+function PlanningAdmin({ lang, season, settingsLoading, active, onOpenGame }: {
+  lang: Lang; season: number; settingsLoading: boolean; active: boolean; onOpenGame: (matchNo: string) => void;
+}) {
+  const L = PLANNING_STR[lang];
+  const [report, setReport] = useState<PlanningReport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+  const [filter, setFilter] = useState<PlanningStatus | ''>('');
+  const [q, setQ] = useState('');
+  const fresh = useFreshest();
+  const load = useCallback(async () => {
+    const ticket = fresh.take();
+    setLoading(true); setErr('');
+    try {
+      const r = await getPlanning(season);
+      if (fresh.isCurrent(ticket)) setReport(r);
+    } catch (e) { if (fresh.isCurrent(ticket)) setErr(L.fail(e instanceof Error ? e.message : String(e))); }
+    finally { if (fresh.isCurrent(ticket)) setLoading(false); }
+  }, [season, fresh, L]);
+  // Asked for once the stored season is known — the guess before it would be
+  // last season's board for a moment — and again whenever the tab is opened,
+  // so it reflects the takes and releases made in the Games tab meanwhile.
+  useEffect(() => { if (active && !settingsLoading) void load(); }, [active, settingsLoading, load]);
+
+  const gameLine = (b: PlanningBooking) => (
+    <button
+      key={`${b.gameId}-${b.role}`}
+      type="button"
+      onClick={() => onOpenGame(b.matchNo)}
+      title={L.open}
+      className="w-full text-left flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-lg px-2 py-1.5 hover:bg-stone-100 transition-colors"
+    >
+      <span className="tabular-nums text-xs font-semibold text-stone-700">{dayLabel(b.date)}</span>
+      <span className="text-xs text-stone-400">#{b.matchNo}</span>
+      <span className="text-xs text-stone-700 min-w-0 truncate">{b.label}</span>
+      <span className="text-xs text-stone-500">· {b.role}</span>
+      {b.rc && <span className="text-xs font-medium text-stone-700">· RC {b.rc}</span>}
+    </button>
+  );
+
+  // One loading state for the whole board until its first answer — not the
+  // headings first and the rows later.
+  if (!report) {
+    return (
+      <Card testId="planning">
+        <h2 className="text-base font-bold text-stone-900">{L.title}</h2>
+        {err ? <p className="mt-3 text-xs text-red-700">{err}</p> : <div className="mt-3"><SkeletonRows rows={8} /></div>}
+      </Card>
+    );
+  }
+
+  const needle = q.trim().toLowerCase();
+  const rows = report.coachees
+    .filter((c) => !filter || c.status === filter)
+    .filter((c) => !needle || c.name.toLowerCase().includes(needle));
+  const counts: [PlanningStatus | '', number][] = [
+    ['', report.totals.coachees],
+    ['needs-visit', report.totals.needsVisit],
+    ['further-wanted', report.totals.furtherWanted],
+    ['booked', report.totals.booked],
+    ['done', report.totals.done],
+  ];
+
+  return (
+    <>
+      <Card testId="planning-checks">
+        <div className="flex items-center gap-2">
+          <h2 className="text-base font-bold text-stone-900">{L.checksTitle}</h2>
+          {report.checks.length > 0 && <span className="rounded-full bg-amber-100 text-amber-800 text-xs font-semibold px-2 py-0.5">{report.checks.length}</span>}
+          <button type="button" onClick={() => void load()} disabled={loading} className={cn(btnGhost, 'ml-auto')}>
+            {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} {L.refresh}
+          </button>
+        </div>
+        {err && <p className="mt-2 text-xs text-red-700">{err}</p>}
+        {report.checks.length === 0 ? (
+          <p className="mt-2 text-sm text-stone-500">{L.checksNone}</p>
+        ) : (
+          <div className="mt-3 space-y-4">
+            {(Object.keys(L.kinds) as PlanningCheckKind[]).map((kind) => {
+              const list = report.checks.filter((c) => c.kind === kind);
+              if (list.length === 0) return null;
+              const [title, why] = L.kinds[kind];
+              return (
+                <section key={kind} data-testid={`planning-check-${kind}`}>
+                  <h3 className="text-sm font-semibold text-stone-800">{title} <span className="text-stone-400 font-normal">({list.length})</span></h3>
+                  <p className="text-xs text-stone-500 mb-1">{why}</p>
+                  <ul className="divide-y divide-stone-100 border border-stone-200 rounded-xl">
+                    {list.map((c, i) => (
+                      <li key={`${kind}-${i}`} className="px-1.5 py-1">
+                        {c.who && (
+                          <p className="px-2 pt-1 text-xs font-semibold text-stone-800">
+                            {c.who}
+                            {c.detail && <span className="ml-1 font-normal text-stone-500">· {c.detail === 'closed-without-report' ? L.closedWithout : L.reportOpen}</span>}
+                          </p>
+                        )}
+                        {c.games.map(gameLine)}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      <Card testId="planning">
+        <h2 className="text-base font-bold text-stone-900">{L.title}</h2>
+        <p className="text-xs text-stone-500 mt-0.5">{L.hint}</p>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {counts.map(([key, n]) => (
+            <button
+              key={key || 'all'}
+              type="button"
+              aria-pressed={filter === key}
+              onClick={() => setFilter(key)}
+              className={cn(
+                'h-8 px-2.5 rounded-lg border text-xs font-medium transition-colors inline-flex items-center gap-1.5',
+                filter === key ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-100',
+              )}
+            >
+              {key ? L.status[key] : L.all}
+              <span className={cn('tabular-nums', filter === key ? 'text-white/80' : 'text-stone-400')}>{n}</span>
+            </button>
+          ))}
+        </div>
+        <input className={cn(input, 'mt-2 max-w-sm')} placeholder={L.search} value={q} onChange={(e) => setQ(e.target.value)} />
+        {rows.length === 0 ? (
+          <p className="mt-4 text-sm text-stone-500">{L.none}</p>
+        ) : (
+          <ul className="mt-3 divide-y divide-stone-100 border border-stone-200 rounded-xl">
+            {rows.map((c) => (
+              <li key={c.id} data-testid="planning-row" className="p-3">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-sm font-semibold text-stone-900">{c.name}</span>
+                  <span className={cn('rounded-full border px-2 py-0.5 text-[11px] font-semibold', PLANNING_STATUS_CHIP[c.status])}>{L.status[c.status]}</span>
+                  <span className="text-xs text-stone-500">{[levelDisplay(c.level, c.stage).text, groupLabel(c.groups, lang)].filter(Boolean).join(' · ')}</span>
+                  <span className="ml-auto text-xs text-stone-500 tabular-nums">{L.observed(c.observed)}</span>
+                </div>
+                {c.bookings.length > 0
+                  ? <div className="mt-1 -mx-2">{c.bookings.map(gameLine)}</div>
+                  : c.status !== 'done' && c.status !== 'inactive' && (
+                    <p className={cn('mt-1 text-xs', c.freeGames === 0 ? 'text-red-600' : 'text-stone-500')}>{L.freeGames(c.freeGames)}</p>
+                  )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </>
+  );
+}
+
+function GamesAdmin({ t, lang, season, settingsLoading, active, focus }: { t: T; lang: Lang; season: number; settingsLoading: boolean; active: boolean; focus?: { q: string; n: number } }) {
   const [games, setGames] = useState<EligibleGame[]>([]);
   const [people, setPeople] = useState<{ id: string; fullName: string }[]>([]);
   const [coachees, setCoachees] = useState<Coachee[]>([]);
   const [q, setQ] = useState('');
   const [unassignedOnly, setUnassignedOnly] = useState(false);
   const [showPast, setShowPast] = useState(false);
+  // Sent from the Planung tab: search for that game. A match number finds a
+  // past game too (see `shown`), so nothing else has to change.
+  useEffect(() => {
+    if (!focus || focus.n === 0) return;
+    setQ(focus.q);
+    setUnassignedOnly(false);
+  }, [focus]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');

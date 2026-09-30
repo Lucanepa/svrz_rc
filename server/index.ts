@@ -17,6 +17,7 @@ import {
 } from './logquery.ts';
 import { installErrorAlerts } from './erroralerts.ts';
 import { boundedKeys, clientLogUser, clientTimestamp } from './logguard.ts';
+import { computePlanning } from './planning.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
 import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, rcWorkloadRule, resolvePaidCap, type ExpenseVisit, type RcGameSets } from './expenses.ts';
 import { computeBreakdowns, computeStatistics, coacheeSummaries, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
@@ -6316,6 +6317,74 @@ app.get('/api/admin/identity-audit', requireAdminSession, async (req: Request, r
       presidentNotes: Object.entries(notes).map(([id, entry]) => ({ id, ...entry })),
     });
     res.json({ ...report, assignByNameLast30d: assignByNameLast30d() });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// The chair's planning board (server/planning.ts): per coachee of the season,
+// observed / booked / waiting, and the games that break a rule. Read-only —
+// every action it links to is the Games tab's, through assign-rc and its rules.
+app.get('/api/admin/planning', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const season = await resolveSeason(req.query.season);
+    const [allCoachees, games, inSeason, feedbacks, boerse, manual] = await Promise.all([
+      listCoacheesWithFallbackSort(),
+      withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
+        fields: 'id,match_no,match_date,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles',
+      })),
+      seasonFilterExceptManual(season),
+      withCollection(collectionCandidates.refereeCoaches, (c) => c.getFullList<AnyRecord>({ fields: 'game,role_assessed' })),
+      getBoerseIndex(),
+      getManualGameIds(),
+    ]);
+    const coachees = allCoachees.filter((c) => coacheeRowSeason(c.season) === season);
+    const [index, summary] = await Promise.all([getCoacheeIndex(allCoachees), getCoacheeObservationSummaryMap({ coachees })]);
+    const isRcGame = await makeRcGameTest(index);
+    const filedRoles = new Map<string, string[]>();
+    for (const f of feedbacks) {
+      const list = filedRoles.get(asText(f.game)) ?? [];
+      list.push(asText(f.role_assessed));
+      filedRoles.set(asText(f.game), list);
+    }
+    const report = computePlanning({
+      season,
+      now: new Date().toISOString(),
+      coachees: coachees.map((c) => {
+        const st = summary.get(String(c.id));
+        return {
+          id: String(c.id), name: asText(c.full_name), groups: asText(c.groups),
+          level: asText(c.referee_level), stage: asText(c.stage),
+          observed: st?.count ?? 0, furtherWanted: st?.hasFurtherObservationNeeded ?? false,
+        };
+      }),
+      games: games.filter(inSeason).map((g) => {
+        const gameSeason = seasonOfGame(g.match_date);
+        const lookup = manual.has(String(g.id)) ? index.findOrNewest : index.find;
+        const queries = refereeSlotQueries(g);
+        const slots = (['1. SR', '2. SR'] as const).map((role, i) => ({
+          role, name: asText(queries[i].name), coacheeId: String(lookup(gameSeason, queries[i]).row?.id ?? ''),
+        }));
+        // An offer counts while it is open AND still names the referee on
+        // that slot: once the swap is through, the slot is no longer offered.
+        const offeredRoles = (boerse.byMatch.get(asText(g.match_no)) ?? [])
+          .filter((o) => o.status === 'open' && !o.withdrawn)
+          .flatMap((o) => {
+            if (o.slot !== '1' && o.slot !== '2') return [];
+            const i = o.slot === '1' ? 0 : 1;
+            const slotSv = asText(queries[i].sv);
+            return !o.personSv || !slotSv || o.personSv === slotSv ? [slots[i].role] : [];
+          });
+        const closed = Array.isArray(g.feedback_closed_roles) ? (g.feedback_closed_roles as unknown[]).map(asText) : [];
+        return {
+          id: String(g.id), matchNo: asText(g.match_no), date: asText(g.match_date),
+          label: `${asText(g.home_team)} – ${asText(g.away_team)}`,
+          rc: asText(g.assigned_rc) || (asText(g.assigned_rc_id) ? '?' : ''),
+          closedRoles: closed, feedbackRoles: filedRoles.get(String(g.id)) ?? [],
+          slots, isRcGame: isRcGame(g), offeredRoles,
+        };
+      }),
+    });
+    res.json(report);
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 

@@ -1333,6 +1333,34 @@ export type IdentityAudit = {
   assignByNameLast30d?: { count: number; since: string };
 };
 
+export type PlanningStatus = 'booked' | 'needs-visit' | 'further-wanted' | 'done' | 'inactive';
+export type PlanningBooking = { gameId: string; matchNo: string; date: string; label: string; rc: string; role: '1. SR' | '2. SR' };
+export type PlanningCoachee = {
+  id: string; name: string; groups: string; level: string; stage: string;
+  observed: number; furtherWanted: boolean; bookings: PlanningBooking[]; freeGames: number; status: PlanningStatus;
+};
+export type PlanningCheckKind = 'rc-game-held' | 'double-booking' | 'offered-slot' | 'overdue' | 'no-coachee' | 'closed-mismatch';
+export type PlanningCheck = { kind: PlanningCheckKind; games: PlanningBooking[]; who: string; detail?: string };
+export type PlanningReport = {
+  season: number;
+  coachees: PlanningCoachee[];
+  checks: PlanningCheck[];
+  totals: { coachees: number; booked: number; needsVisit: number; furtherWanted: number; done: number; checks: number };
+};
+
+/** The chair's planning board (GET /api/admin/planning, server/planning.ts). */
+export async function getPlanning(season: number): Promise<PlanningReport> {
+  const r = await fetch(apiUrl(`/api/admin/planning?season=${encodeURIComponent(String(season))}`), { credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not load the planning board');
+  const d = (await r.json()) as Partial<PlanningReport>;
+  return {
+    season: d.season ?? season,
+    coachees: d.coachees ?? [],
+    checks: d.checks ?? [],
+    totals: d.totals ?? { coachees: 0, booked: 0, needsVisit: 0, furtherWanted: 0, done: 0, checks: 0 },
+  };
+}
+
 export async function getIdentityAudit(season: number): Promise<IdentityAudit> {
   const r = await fetch(apiUrl(`/api/admin/identity-audit?season=${encodeURIComponent(String(season))}`), { credentials: 'include' });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not load the identity audit');

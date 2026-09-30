@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { isRowWanted, isVmMarkedRow, vmFactsPatch, mergeIncomingGame, boerseCrewPatch } from '../server/gamesSync';
+import { isRowWanted, isVmMarkedRow, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, crewChangeAction } from '../server/gamesSync';
+import { readFileSync } from 'node:fs';
 
 // The three decisions the games import makes per VolleyManager row, tested on
 // their own: whether the row is kept at all, what a stored row the sync is NOT
@@ -199,4 +200,35 @@ test.describe('what the börse poll writes onto a whistle slot (boerseCrewPatch)
       { slot: 'LJ', name: 'Line Judge', sv: '90098' },
     ])).toEqual({ first_referee: 'Other One', first_referee_id: '90011' });
   });
+});
+
+// A crew change that takes the last coachee off a game a coach holds (asked
+// 2026-09-30: #408228 stayed booked for weeks after the Börse gave its slot to
+// a referee nobody coaches). More than a week out it is released, closer it is
+// kept and the coach told; only the transition counts.
+test('a held game that loses its last coachee: released a week out, kept and flagged closer', () => {
+  const now = '2026-10-01T10:00:00.000Z';
+  const base = { held: true, now, coacheesBefore: 1, coacheesAfter: 0 };
+  expect(crewChangeAction({ ...base, gameDate: '2026-11-24T19:30:00.000Z' })).toBe('release');
+  expect(crewChangeAction({ ...base, gameDate: '2026-10-05T19:30:00.000Z' })).toBe('notify');
+  // Exactly seven days is still "close": the coach may have planned the evening.
+  expect(crewChangeAction({ ...base, gameDate: '2026-10-08T10:00:00.000Z' })).toBe('notify');
+  // Already played: its report is what matters now.
+  expect(crewChangeAction({ ...base, gameDate: '2026-09-28T19:30:00.000Z' })).toBe('none');
+  // Nothing to do: a free game, a coachee still on it, or one that was already empty.
+  expect(crewChangeAction({ ...base, held: false, gameDate: '2026-11-24T19:30:00.000Z' })).toBe('none');
+  expect(crewChangeAction({ ...base, coacheesAfter: 1, gameDate: '2026-11-24T19:30:00.000Z' })).toBe('none');
+  expect(crewChangeAction({ ...base, coacheesBefore: 0, gameDate: '2026-11-24T19:30:00.000Z' })).toBe('none');
+});
+
+test('both crew writers hand the change to afterCrewChange', () => {
+  const server = readFileSync(new URL('../server/index.ts', import.meta.url), 'utf8');
+  // The börse poll, right after it stores a corrected crew.
+  expect(server).toMatch(/crew corrected on \$\{matchNo\} from the börse[^\n]*\n\s*await afterCrewChange\(game, patch, 'boerse'\)/);
+  // The VolleyManager sync, when an existing game's crew moved.
+  expect(server).toMatch(/if \(crewMoved\) await afterCrewChange\(existing, merged, 'sync', coacheeIndex\)/);
+  // The release re-reads the game under its lock and never takes it from a
+  // coach who changed it meanwhile.
+  const fn = server.slice(server.indexOf('async function afterCrewChange'), server.indexOf('/** runBoerseSync'));
+  expect(fn).toMatch(/withGameLock\(gameId[\s\S]*?sameHolder[\s\S]*?assigned_rc: ''/);
 });

@@ -136,3 +136,31 @@ export function boerseCrewPatch(
   }
   return patch;
 }
+
+/** What a crew change does to a game a coach holds (asked 2026-09-30, after
+ *  #408228 stayed booked for weeks once the Börse swapped its coachee for a
+ *  referee nobody coaches). Only the transition counts — a coachee on an open
+ *  role before, none after — so a game that was already empty is not mailed
+ *  again on every sync.
+ *
+ *  More than a week out, the booking is released: there is nothing left to
+ *  observe, and a coach who keeps an evening for it is better off told and
+ *  free. Closer than that the coach may already have arranged the evening,
+ *  so the game stays theirs and they are told; releasing it is their call.
+ *  A game already played is left alone — its report is what matters now. */
+export const CREW_RELEASE_MIN_DAYS = 7;
+export type CrewChangeAction = 'none' | 'release' | 'notify';
+
+export function crewChangeAction(o: {
+  held: boolean;
+  gameDate: string;
+  now: string;
+  /** Coachees on roles whose report is not sent yet, before and after. */
+  coacheesBefore: number;
+  coacheesAfter: number;
+}): CrewChangeAction {
+  if (!o.held || o.coacheesBefore === 0 || o.coacheesAfter > 0) return 'none';
+  const ahead = Date.parse(o.gameDate) - Date.parse(o.now);
+  if (!Number.isFinite(ahead) || ahead < 0) return 'none';
+  return ahead > CREW_RELEASE_MIN_DAYS * 24 * 60 * 60 * 1000 ? 'release' : 'notify';
+}

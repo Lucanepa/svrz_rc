@@ -11,8 +11,8 @@ import type { Lang } from '../lib/appTime';
 import { dayLabel } from '../lib/appTime';
 import { listRcPeopleFull, loadStatistics, type RcPerson } from '../lib/pocketbase';
 import {
-  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, scoreToLetter, trendAvgDelta, withRcFirstNames, STAT_LETTERS,
-  type SeasonStatistics, type TrendAgg, type StatBucket, type StatFilters, type StatRole, type StatisticsResponse,
+  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, roleProfile, scoreToLetter, strengthTier, trendAvgDelta, withRcFirstNames, STAT_LETTERS,
+  type SeasonStatistics, type TrendAgg, type StatBucket, type StatFilters, type StatRole, type StatSlice, type StatisticsResponse,
 } from '../lib/statistics';
 import {
   categoryLabel, criterionLabel, groupKeyLabel, levelKeyLabel, monthLabel, OUTCOME_ORDER, outcomeColor, outcomeLabel,
@@ -62,6 +62,86 @@ function Block({ title, hint, children, testId, span, aside }: { title: string; 
         {aside}
       </div>
       <div className="flex-1 min-w-0">{children}</div>
+    </div>
+  );
+}
+
+// Stronger = the outcome green, weaker = the brand red; a clear step is the
+// deeper wash. The arrow says the same for anyone who can't tell the two apart.
+const TIER_STYLE: Record<string, { bg: string; fg: string; mark: string }> = {
+  '2': { bg: '#1f7a4d38', fg: '#14532d', mark: '▲▲' },
+  '1': { bg: '#1f7a4d17', fg: '#1f7a4d', mark: '▲' },
+  '-1': { bg: '#e2001a14', fg: '#b00016', mark: '▼' },
+  '-2': { bg: '#e2001a33', fg: '#8a0012', mark: '▼▼' },
+};
+
+/** Criteria down, Niveaus across: each cell is the criterion's average on that
+ *  Niveau, washed by how far it sits from the Niveau's own average. */
+function StrengthGrid({ slices, role, lang, t }: { slices: StatSlice[]; role: StatRole; lang: Lang; t: ReturnType<typeof statStrings> }) {
+  const profiles = slices.map((x) => ({ key: x.key, p: roleProfile(x.stats, role) }));
+  const form = role === '2SR' ? SECTIONS_2SR_DE : SECTIONS_1SR_DE;
+  const sections = form.map((sec, sectionIndex) => ({
+    sectionIndex,
+    items: sec.items.filter((item) => profiles.some(({ p }) => p.criteria.some((c) => c.id === item.id && c.avg !== null))),
+  })).filter((s) => s.items.length > 0);
+  const tierLabel = (tier: number) => (tier === 2 ? t.swClearlyStronger : tier === 1 ? t.swStronger : tier === -1 ? t.swWeaker : t.swClearlyWeaker);
+  const signed = (d: number) => `${d > 0 ? '+' : d < 0 ? '−' : '±'}${fmtDec(Math.abs(d))}`;
+  return (
+    <div>
+      <div className="overflow-x-auto -mx-1">
+        <table className="w-full text-xs border-separate border-spacing-0.5">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wide text-stone-400">
+              <th className="text-left font-medium py-1 px-1 align-bottom">{t.swCriterion}</th>
+              {profiles.map(({ key }) => <th key={key} className="text-center font-medium py-1 px-1 align-bottom w-[3.25rem] sm:w-20">{levelKeyLabel(key, lang)}</th>)}
+            </tr>
+            <tr className="text-stone-600">
+              <td className="py-1 px-1 font-semibold">{t.swAvgRow}</td>
+              {profiles.map(({ key, p }) => (
+                <td key={key} className="py-1 px-1 text-center tabular-nums font-semibold rounded bg-stone-100" title={p.avg === null ? '–' : `${scoreToLetter(p.avg)} · ${t.nObs(p.n)}`}>
+                  {p.avg === null ? <span className="text-stone-400">–</span> : scoreToLetter(p.avg)}
+                </td>
+              ))}
+            </tr>
+          </thead>
+          {sections.map(({ sectionIndex, items }) => (
+            <tbody key={sectionIndex}>
+              <tr><td colSpan={profiles.length + 1} className="pt-2.5 pb-0.5 px-1 text-[11px] font-semibold text-stone-500">{sectionTitle(role, sectionIndex, lang)}</td></tr>
+              {items.map((item) => {
+                const label = criterionLabel(role, item.id, lang);
+                return (
+                  <tr key={item.id} data-testid={`stats-sw-row-${item.id}`}>
+                    <td className="py-1 px-1 text-stone-700 leading-tight max-w-[9rem] sm:max-w-none">{label}</td>
+                    {profiles.map(({ key, p }) => {
+                      const c = p.criteria.find((x) => x.id === item.id);
+                      if (!c || c.avg === null) return <td key={key} className="py-1 px-1 text-center text-stone-300">–</td>;
+                      const tier = strengthTier(c.diff);
+                      const style = tier ? TIER_STYLE[String(tier)] : null;
+                      const title = `${label} · ${levelKeyLabel(key, lang)}: ${scoreToLetter(c.avg)} · ${t.nObs(c.n)}${c.diff !== null ? ` · ${signed(c.diff)} ${t.swVsAvg}` : ' (n < 3)'}${tier ? ` · ${tierLabel(tier)}` : ''}`;
+                      return (
+                        <td key={key} title={title} data-tier={tier ?? undefined}
+                          className={cn('py-1 px-1 text-center tabular-nums whitespace-nowrap rounded', c.diff === null && 'text-stone-400')}
+                          style={style ? { background: style.bg, color: style.fg } : undefined}>
+                          <span className={cn(tier && Math.abs(tier) === 2 ? 'font-bold' : 'font-semibold')}>{scoreToLetter(c.avg)}</span>
+                          {style && <span className="ml-0.5 text-[9px] align-middle">{style.mark}</span>}
+                          {c.diff === null && <span className="hidden sm:inline text-[10px]"> · n={c.n}</span>}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          ))}
+        </table>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-stone-500">
+        {[2, 1, -1, -2].map((tier) => {
+          const s = TIER_STYLE[String(tier)];
+          return <span key={tier} className="inline-flex items-center gap-1"><span className="inline-block px-1 rounded text-[9px]" style={{ background: s.bg, color: s.fg }}>{s.mark}</span>{tierLabel(tier)}</span>;
+        })}
+        <span className="text-stone-400">{t.normalCase} · {t.swThin}</span>
+      </div>
     </div>
   );
 }
@@ -118,6 +198,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [criteriaRole, setCriteriaRole] = useState<StatRole>('1SR');
+  const [swRole, setSwRole] = useState<StatRole>('1SR');
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState<'pptx' | 'pdf' | null>(null);
   // What goes into the deck, and on what page — remembered on this device
@@ -322,7 +403,13 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     const criteriaRoles = (['1SR', '2SR'] as StatRole[]).filter((role) => !filtered || criteriaFor(role).length > 0);
     const shownCriteriaRole: StatRole | null = criteriaRoles.includes(criteriaRole) ? criteriaRole : (criteriaRoles[0] ?? null);
     const gradeMonths = stats.byMonth.map((b) => ({ key: b.key, label: monthLabel(b.key, lang), value: gradeAvg(b.grade), n: b.observations, hint: `${monthLabel(b.key, lang)} ${b.key.slice(0, 4)}` }));
-    const showGrades = showHistogram || showGradeSummary || sectionRows.length > 0 || shownCriteriaRole !== null;
+    // Strengths & weaknesses: every Niveau side by side. The slices drop the
+    // level and group filters, so the grid only shows when neither is on —
+    // otherwise it would quietly answer a different question than the page.
+    const swSlices = !filters.level && !filters.group ? (breakdowns?.level ?? []).filter((x) => x.stats.totals.observations > 0) : [];
+    const swRoles = (['1SR', '2SR'] as StatRole[]).filter((role) => swSlices.some((x) => roleProfile(x.stats, role).criteria.some((c) => c.avg !== null)));
+    const shownSwRole: StatRole | null = swRoles.includes(swRole) ? swRole : (swRoles[0] ?? null);
+    const showGrades = showHistogram || showGradeSummary || sectionRows.length > 0 || shownCriteriaRole !== null || shownSwRole !== null;
     // ── Assessments
     const outcomeKinds = (['einstufung', 'motivation', 'spielniveau', 'secondBesuch'] as const).filter((kind) => !filtered || sum(stats.outcomes[kind]) > 0);
     // ── Games
@@ -512,6 +599,18 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                     <GradeScale rows={rows} nLabel={t.nObs} />
                   </div>
                 ))}
+              </Block>
+              )}
+              {shownSwRole && (
+              <Block span="lg:col-span-12" title={t.swTitle} hint={t.swHint} testId="stats-strengths"
+                aside={swRoles.length > 1 ? (
+                  <div className="inline-flex rounded-lg border border-stone-200 p-0.5 text-xs bg-white">
+                    {swRoles.map((role) => (
+                      <button key={role} type="button" onClick={() => setSwRole(role)} className={cn('px-2.5 h-7 rounded-md', shownSwRole === role ? 'bg-slate-900 text-white' : 'text-stone-600 hover:bg-stone-100')}>{roleLabel(role, lang)}</button>
+                    ))}
+                  </div>
+                ) : <span className="text-xs text-stone-500">{roleLabel(shownSwRole, lang)}</span>}>
+                <StrengthGrid slices={swSlices} role={shownSwRole} lang={lang} t={t} />
               </Block>
               )}
             </Grid>

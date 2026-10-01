@@ -4,7 +4,10 @@ import {
   computeTrend, coacheeSummaries, computeBreakdowns,
   type StatObservation, type StatRcInput, type StatCoacheeInput,
 } from '../server/statistics';
-import { foldHistogram, gradeAvg, isThin, letterScore, scoreToLetter, countWords, STAT_LETTERS } from '../src/lib/statistics';
+import {
+  foldHistogram, gradeAvg, isThin, letterScore, scoreToLetter, countWords, STAT_LETTERS,
+  roleProfile, strengthTier, strengthsAndWeaknesses, type SeasonStatisticsCore,
+} from '../src/lib/statistics';
 
 // The counting rules of Admin → Statistik on their own, without a database:
 // what is an observation, how a game with two referees counts, where the
@@ -356,4 +359,33 @@ test('the server folds each rating before it counts: a C− and a C+ are two Cs'
   const stats = computeStatistics({ season: 2025, filters: {}, now: new Date(), rcs: RCS, roster: ROSTER, observations: [o] });
   // Only plain letters in the histogram the page and the deck read.
   expect(Object.keys(stats.histogram).every((k) => (STAT_LETTERS as readonly string[]).includes(k))).toBe(true);
+});
+
+test('strengths & weaknesses: each criterion against its slice\'s own average, thin ones never marked', () => {
+  // A 1SR average of exactly 8 (C): 4 criteria on 10 observations, one on 2.
+  const g = (obs: number, avg: number) => ({ obs, items: obs, sum: avg * obs });
+  const stats = {
+    byRole: [{ key: '1SR', grade: g(42, 8) }, { key: '2SR', grade: g(0, 0) }],
+    criteria: [
+      { role: '1SR', section: 0, id: 'a', grade: g(10, 10.5) }, // +2.5 → clearly stronger
+      { role: '1SR', section: 0, id: 'b', grade: g(10, 9) },    // +1   → stronger
+      { role: '1SR', section: 1, id: 'c', grade: g(10, 7.5) },  // −0.5 → in line
+      { role: '1SR', section: 1, id: 'd', grade: g(10, 6) },    // −2   → clearly weaker
+      { role: '1SR', section: 1, id: 'e', grade: g(2, 3) },     // thin: shown, never marked
+    ],
+  } as unknown as SeasonStatisticsCore;
+  const p = roleProfile(stats, '1SR');
+  expect(p.avg).toBe(8);
+  expect(p.criteria.map((c) => [c.id, c.diff, strengthTier(c.diff)])).toEqual([
+    ['a', 2.5, 2], ['b', 1, 1], ['c', -0.5, 0], ['d', -2, -2], ['e', null, null],
+  ]);
+  expect(p.criteria.find((c) => c.id === 'e')!.avg).toBe(3);
+  const sw = strengthsAndWeaknesses(p);
+  expect(sw.strong.map((c) => c.id)).toEqual(['a', 'b']);
+  expect(sw.weak.map((c) => c.id)).toEqual(['d']);
+  expect(strengthsAndWeaknesses(p, 1).strong.map((c) => c.id)).toEqual(['a']);
+  // A form nobody filled: no average, nothing to mark.
+  const empty = roleProfile(stats, '2SR');
+  expect(empty.avg).toBeNull();
+  expect(strengthsAndWeaknesses(empty)).toEqual({ strong: [], weak: [] });
 });

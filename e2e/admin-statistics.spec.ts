@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
 import { statsResponse } from './support/statsFixture';
 import { buildDeck, DECK_SECTIONS } from '../src/lib/statsDeck';
-import { rcFirstNamer } from '../src/lib/statistics';
+import { isThin, rcFirstNamer } from '../src/lib/statistics';
 
 // Admin → Statistik: the tab reads one aggregated response per season and
 // filter slice, shows it as tiles, charts and tables, and exports the same
@@ -372,4 +372,43 @@ test('the export menu: sections to pick, and 16:9 or A4', async ({ page }) => {
   expect(await mediaBox()).toBeCloseTo(16 / 9, 2);
   await menu.getByRole('radio', { name: /A4/ }).check();
   expect(await mediaBox()).toBeCloseTo(841.89 / 595.28, 2);
+});
+
+test('strengths & weaknesses: every Niveau side by side, hidden once a level is picked', async ({ page }) => {
+  await stubSignedInApp(page, { admin: true });
+  await openStats(page);
+  const grid = page.getByTestId('stats-strengths');
+  await expect(grid).toBeVisible();
+  const full = statsResponse(2026, {}, true, true);
+  const withObs = full.breakdowns!.level.filter((x) => x.stats.totals.observations > 0);
+  await expect(grid.locator('thead th')).toHaveCount(withObs.length + 1);
+  // The lone N1 visit is shown but too thin to call a strength or a weakness.
+  const n1 = withObs.findIndex((x) => x.key === 'N1');
+  expect(n1).toBeGreaterThanOrEqual(0);
+  const cells = grid.locator('tbody tr[data-testid^="stats-sw-row-"]').first().locator('td');
+  await expect(cells.nth(n1 + 1)).not.toHaveAttribute('data-tier', /.+/);
+  // The 2. SR form is its own grid.
+  await grid.getByRole('button', { name: '2. SR' }).click();
+  await expect(grid.locator('tbody tr[data-testid^="stats-sw-row-2sr"]').first()).toBeVisible();
+
+  // One Niveau picked: the slices would ignore it, so the grid steps aside.
+  const bar = page.getByTestId('stats-groupbar');
+  await bar.getByRole('radio', { name: 'Niveau' }).click();
+  await bar.getByTestId('stats-filter-level').getByRole('button', { name: 'N3' }).click();
+  await expect(page.getByTestId('stats-criteria')).toBeVisible();
+  await expect(grid).toHaveCount(0);
+});
+
+test('the deck: a strengths & weaknesses slide per Niveau, none per group', () => {
+  const full = statsResponse(2026, {}, true, true);
+  const deck = buildDeck(full.stats, { lang: 'DE', includeRcGrades: false, includeLeagues: false, breakdowns: full.breakdowns });
+  const sw = deck.slides.filter((s) => s.subtitle === 'Stärken & Schwächen pro Niveau');
+  const marked = full.breakdowns!.level.filter((x) => x.stats.criteria.some((c) => !isThin(c.grade.obs)));
+  expect(sw.length).toBe(marked.length);
+  expect(sw.length).toBeGreaterThan(0);
+  for (const s of sw) {
+    expect(s.title.startsWith('Niveau ')).toBe(true);
+    expect(s.section).toBe('levelSets');
+    for (const r of s.table!.rows) expect(['Stärken', 'Schwächen']).toContain(r[0]);
+  }
 });

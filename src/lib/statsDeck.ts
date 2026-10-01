@@ -6,7 +6,7 @@
 import type { Lang } from './appTime';
 import { dayLabel } from './appTime';
 import {
-  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, scoreToLetter, STAT_LETTERS,
+  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, roleProfile, scoreToLetter, strengthsAndWeaknesses, STAT_LETTERS,
   type SeasonStatistics, type SeasonStatisticsCore, type StatBreakdowns, type StatBucket, type StatRole, type StatSlice, type TrendAgg,
 } from './statistics';
 import {
@@ -579,6 +579,35 @@ function sliceSets(slices: StatSlice[], dim: 'level' | 'group', t: StatStrings, 
       });
     }
     if (gradeFigures.length) out.push({ title, subtitle: t.secGrades, figures: gradeFigures.slice(0, 3), note: `${t.normalCase} · ${t.thinNote}` });
+    // 2b — strengths & weaknesses (per Niveau only): each criterion against
+    // the Niveau's own average on the same form, the rule the dashboard grid uses.
+    if (dim === 'level') {
+      const swRows: string[][] = [];
+      for (const role of ['1SR', '2SR'] as StatRole[]) {
+        const p = roleProfile(S, role);
+        if (!p.criteria.some((c) => c.diff !== null)) continue;
+        const { strong, weak } = strengthsAndWeaknesses(p);
+        const line = (kind: string, c: { id: string; avg: number | null; n: number; diff: number | null }) =>
+          [kind, roleLabel(role, lang), criterionLabel(role, c.id, lang), gradeText(c.avg, t), gradeText(p.avg, t), String(c.n)];
+        if (strong.length) swRows.push(...strong.map((c) => line(t.swStrengths, c)));
+        else swRows.push([t.swStrengths, roleLabel(role, lang), t.swNone, '', '', '']);
+        if (weak.length) swRows.push(...weak.map((c) => line(t.swWeaknesses, c)));
+        else swRows.push([t.swWeaknesses, roleLabel(role, lang), t.swNone, '', '', '']);
+      }
+      if (swRows.length) {
+        out.push({
+          title,
+          subtitle: t.swTitle,
+          table: {
+            head: ['', t.role, t.criteria, t.gradeCol, t.swAvgRow, 'n'],
+            widths: [0.14, 0.1, 0.44, 0.1, 0.14, 0.08],
+            align: ['l', 'l', 'l', 'r', 'r', 'r'],
+            rows: swRows,
+          },
+          note: t.swDeckHint,
+        });
+      }
+    }
     // 3 — the assessments
     const donuts = outcomeFigures(S, t, lang, true);
     if (donuts.length) out.push({ title, subtitle: t.outcomes, figures: donuts });

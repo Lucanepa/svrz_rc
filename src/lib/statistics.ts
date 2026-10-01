@@ -271,6 +271,49 @@ export type StatOptions = {
 
 export type StatisticsResponse = { stats: SeasonStatistics; options: StatOptions; breakdowns?: StatBreakdowns };
 
+// ── Strengths & weaknesses ───────────────────────────────────────────────────
+// Where a slice's referees (one Niveau, say) are strong or weak: each
+// criterion against that slice's OWN average on the same form, so a level that
+// grades high overall still shows what it does relatively badly. Only an
+// average from MIN_OBS_FOR_AVG observations gets a mark — one evening is not
+// a strength. A step of STRENGTH_BAND (a third of a letter) is a mark, twice
+// that a clear one.
+export const STRENGTH_BAND = 1;
+export type CriterionProfile = { id: string; section: number; avg: number | null; n: number; diff: number | null };
+export type RoleProfile = { role: StatRole; avg: number | null; n: number; criteria: CriterionProfile[] };
+
+export function roleProfile(stats: SeasonStatisticsCore, role: StatRole): RoleProfile {
+  const bucket = stats.byRole.find((b) => b.key === role);
+  const avg = gradeAvg(bucket?.grade);
+  const criteria = stats.criteria.filter((c) => c.role === role).map((c) => {
+    const a = gradeAvg(c.grade);
+    return {
+      id: c.id, section: c.section, avg: a, n: c.grade.obs,
+      diff: a !== null && avg !== null && !isThin(c.grade.obs) ? Math.round((a - avg) * 10) / 10 : null,
+    };
+  });
+  return { role, avg, n: bucket?.grade.obs ?? 0, criteria };
+}
+
+/** -2 clearly weaker … 0 in line … 2 clearly stronger; null = no mark (thin or no grade). */
+export function strengthTier(diff: number | null): -2 | -1 | 0 | 1 | 2 | null {
+  if (diff === null) return null;
+  if (diff >= 2 * STRENGTH_BAND) return 2;
+  if (diff >= STRENGTH_BAND) return 1;
+  if (diff <= -2 * STRENGTH_BAND) return -2;
+  if (diff <= -STRENGTH_BAND) return -1;
+  return 0;
+}
+
+/** The `k` criteria furthest above and below the slice's average — only those
+ *  at least a band away, so a flat profile names no strength at all. */
+export function strengthsAndWeaknesses(p: RoleProfile, k = 3): { strong: CriterionProfile[]; weak: CriterionProfile[] } {
+  const marked = p.criteria.filter((c) => c.diff !== null);
+  const strong = marked.filter((c) => c.diff! >= STRENGTH_BAND).sort((a, b) => b.diff! - a.diff! || b.n - a.n).slice(0, k);
+  const weak = marked.filter((c) => c.diff! <= -STRENGTH_BAND).sort((a, b) => a.diff! - b.diff! || b.n - a.n).slice(0, k);
+  return { strong, weak };
+}
+
 // ── Per-coachee summary (Admin → Coachees → export) ──────────────────────────
 export type CoacheeSummary = {
   coacheeId: string;

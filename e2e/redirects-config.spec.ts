@@ -35,7 +35,7 @@ test('every route the app can emit is one the edge will serve', () => {
 
 test('the routes that carry an id also match their children', () => {
   // /games/<coacheeId>, /form/<gameId>/1sr, /feedbacks/<c>/<o>, /admin/<tab>…
-  for (const prefix of ['coachees', 'games', 'form', 'feedbacks', 'admin', 'guide']) {
+  for (const prefix of ['coachees', 'games', 'form', 'feedbacks', 'admin', 'guide', 'infos']) {
     const wild = RULES.some(([from]) => from === `/${prefix}/*`);
     expect(wild, `/${prefix}/* has no rule in public/_redirects`).toBe(true);
   }

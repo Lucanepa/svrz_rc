@@ -7,6 +7,7 @@ import AdminConsole from './components/AdminConsole.tsx';
 import SignaturePage from './components/SignaturePage.tsx';
 import SurveyPage from './components/SurveyPage.tsx';
 import GuidePage from './components/GuidePage.tsx';
+import InfosPage from './components/InfosPage.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { UiHost } from './components/ui';
 import { enableDemo, isDemoMode } from './lib/demo';
@@ -243,6 +244,10 @@ createRoot(document.getElementById('root')!).render(
       // asking someone to sign in before an explainer about signing in is a
       // circle. It reads and writes nothing.
       <GuidePage />
+    ) : kind === 'infos' ? (
+      // Public: the documents list from Home, for referees who have no login.
+      // Rendered from the same USEFUL_DOCS, so the two cannot drift apart.
+      <InfosPage />
     ) : kind === 'survey' ? (
       // Public and unauthenticated: the coachee who receives the feedback mail
       // is a referee, not an app user — the token in the link is the whole key.

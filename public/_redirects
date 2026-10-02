@@ -48,6 +48,7 @@
 /admin           /            200
 /guide           /            200
 /demo            /            200
+/infos           /            200
 
 # ── dynamic ─────────────────────────────────────────────────────────────────
 # Stays first in this block: first match wins, and this one is more specific.
@@ -70,3 +71,4 @@
 /feedbacks/*     /            200
 /admin/*         /            200
 /guide/*         /            200
+/infos/*         /            200

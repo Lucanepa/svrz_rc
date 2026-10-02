@@ -4528,6 +4528,12 @@ const PROXIED_DOCS: Record<string, string> = {
   'zueri-cup': 'https://www.svrz.ch/_Resources/Persistent/0/6/1/a/061a1b2e822545a409d76335cb0bfb9434da8046/SVRZ%20Cup%20Reglement_25-26.pdf',
   'gbo': 'https://www.svrz.ch/_Resources/Persistent/0/e/5/0/0e50e7cdd5c61ab180d07346e4052539d8573dfb/SVRZ_Geb%C3%BChrenordnung.pdf',
   'sr-datenerfassung': 'https://www.svrz.ch/_Resources/Persistent/7/c/3/0/7c3059181062b783094d64d6bfe60ed30245e101/SR-Datenerfassung_2026.pdf',
+  'zm': 'https://www.svrz.ch/_Resources/Persistent/b/e/3/b/be3b0f05238243789d957a61e99ff1dc0ed7182d/SVRZ-ZM_25-26.pdf',
+  'rechtspflege': 'https://www.svrz.ch/_Resources/Persistent/6/7/2/e/672e4a745bfedca124b92a36e9a925007f685afd/SVRZ_Rechtspflegeordnung.pdf',
+  'geschaeftsreglement': 'https://www.svrz.ch/_Resources/Persistent/e/e/5/3/ee531759f00570db0d3379679c571f6200524101/SVRZ_Gesch%C3%A4ftsreglement.pdf',
+  'statuten': 'https://www.svrz.ch/_Resources/Persistent/e/d/7/7/ed775e0ae049fe6156e639c1004449980a63d1f9/26-07-08%20SVRZ%20Statuten%20signiert.pdf',
+  'nsm-quali': 'https://www.svrz.ch/_Resources/Persistent/e/6/0/2/e60237dbc14332135468954a647046f0c1a25697/Reglement%20zur%20regionalen%20N-SM%20Qualifikation.pdf',
+  'beach': 'https://www.svrz.ch/_Resources/Persistent/3/0/8/2/3082c9d7e9e9a588d5f60911277b9867be7c5623/Beachvolleyballreglement.pdf',
   'sr-konferenz-2026': 'https://www.svrz.ch/_Resources/Persistent/7/a/7/4/7a74c810f484d119adecec6bbf631a48304b0745/20260904-Pr%C3%A4sentation-SRV.pdf',
 };
 

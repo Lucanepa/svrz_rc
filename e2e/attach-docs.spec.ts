@@ -37,7 +37,7 @@ test.describe('Which documents can be enclosed', () => {
     // The blank form is built in the browser, the links and contacts are not
     // files, and the video guide is not something anyone wants in an inbox.
     const ids = ATTACHABLE_DOCS.map((d) => d.id);
-    for (const excluded of ['emptyForm', 'guide', 'readvolley', 'reglemente', 'srInfo', 'rsk', 'coaching']) {
+    for (const excluded of ['emptyForm', 'guide', 'readvolley', 'srInfo', 'rsk', 'coaching']) {
       expect(ids, `${excluded} is not attachable`).not.toContain(excluded);
     }
     // Every PDF of the catalogue with a source is in — none is left out by
@@ -67,8 +67,8 @@ test.describe('Which documents can be enclosed', () => {
   });
 
   test('the budget lets one rulebook through, not both', () => {
-    // The two rulebooks are the only documents that come anywhere near the
-    // limit; the ten megabytes exist so that a strict mailbox does not bounce
+    // The two rulebooks (and the 7 MB statutes scan) are the documents that
+    // come near the limit; the ten megabytes exist so that a strict mailbox does not bounce
     // the whole report over them.
     const de = attachedBytes(['rulesDe']);
     const en = attachedBytes(['rulesEn']);
@@ -77,8 +77,10 @@ test.describe('Which documents can be enclosed', () => {
     expect(en).toBeLessThan(ATTACH_BUDGET_BYTES);
     expect(de + en).toBeGreaterThan(ATTACH_BUDGET_BYTES);
     expect(attachedBytes(['rulesDe', 'rulesEn'])).toBe(de + en);
-    // Every sheet that is not a rulebook fits in one mail together.
-    const sheets = ATTACHABLE_DOCS.filter((d) => d.id !== 'rulesDe' && d.id !== 'rulesEn').map((d) => d.id);
+    // Every sheet that is not one of the big files (the two rulebooks and the
+    // scanned SVRZ statutes) fits in one mail together.
+    const sheets = ATTACHABLE_DOCS.filter((d) => (d.bytes ?? 0) < 5e6).map((d) => d.id);
+    expect(sheets).not.toContain('rulesDe');
     expect(attachedBytes(sheets)).toBeLessThan(ATTACH_BUDGET_BYTES);
   });
 });

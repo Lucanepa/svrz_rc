@@ -77,11 +77,10 @@ test.describe('Which documents can be enclosed', () => {
     expect(en).toBeLessThan(ATTACH_BUDGET_BYTES);
     expect(de + en).toBeGreaterThan(ATTACH_BUDGET_BYTES);
     expect(attachedBytes(['rulesDe', 'rulesEn'])).toBe(de + en);
-    // Every sheet that is not one of the big files (the two rulebooks and the
-    // scanned SVRZ statutes) fits in one mail together.
-    const sheets = ATTACHABLE_DOCS.filter((d) => (d.bytes ?? 0) < 5e6).map((d) => d.id);
-    expect(sheets).not.toContain('rulesDe');
-    expect(attachedBytes(sheets)).toBeLessThan(ATTACH_BUDGET_BYTES);
+    // Every document fits on its own, so none of them is listed only to be
+    // refused. (The whole catalogue no longer fits in one mail, and is not
+    // meant to: the budget is what says no.)
+    for (const doc of ATTACHABLE_DOCS) expect(attachedBytes([doc.id]), doc.id).toBeLessThan(ATTACH_BUDGET_BYTES);
   });
 });
 

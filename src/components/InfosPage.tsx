@@ -18,6 +18,9 @@ import { USEFUL_DOCS, USEFUL_DOC_GROUPS, type UsefulDoc, type UsefulDocGroup } f
  * What it leaves out of the Home card, on purpose:
  *  - the blank form (`kind: 'form'`): it is built in the browser by the app's
  *    PDF code for a coach's observation, and means nothing to a referee;
+ *  - the video guide (`kind: 'video'`), and any link into the app at all: the
+ *    readers are referees, who have no login, and a door they cannot open is
+ *    noise (Luca, 2026-10-02: "do not link to the app");
  *  - the in-app reader and "Save all offline": proxied PDFs go through the
  *    API, and a public page should not hand out a free fetcher. Every entry
  *    links to its canonical `href` instead — the upstream file, or ours under
@@ -32,7 +35,6 @@ const STR = {
     search: 'Dokumente suchen…',
     none: 'Nichts gefunden.',
     other: 'English version',
-    app: 'Zur App (Referee Coaches)',
   },
   EN: {
     kicker: 'SVRZ · Refereeing',
@@ -41,11 +43,10 @@ const STR = {
     search: 'Search documents…',
     none: 'Nothing found.',
     other: 'Deutsche Version',
-    app: 'Open the app (referee coaches)',
   },
 } satisfies Record<Lang, Record<string, string>>;
 
-const PUBLIC_DOCS = USEFUL_DOCS.filter((d) => d.kind !== 'form');
+const PUBLIC_DOCS = USEFUL_DOCS.filter((d) => d.kind !== 'form' && d.kind !== 'video');
 
 function hrefFor(doc: UsefulDoc, code: 'de' | 'en'): string {
   return /^(https?|mailto):/i.test(doc.href)
@@ -176,19 +177,13 @@ export default function InfosPage() {
           })}
         </div>
 
-        <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
+        <div className="mt-8 flex flex-wrap items-center gap-3">
           <button
             onClick={() => choose(lang === 'DE' ? 'EN' : 'DE')}
             className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-white text-stone-600 hover:bg-stone-50 transition-colors"
           >
             {t.other}
           </button>
-          <a
-            href={`${import.meta.env.BASE_URL}`}
-            className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg bg-stone-900 text-white text-xs font-semibold hover:bg-stone-800 transition-colors"
-          >
-            {t.app}
-          </a>
         </div>
 
         <p className="mt-8 text-center text-[11px] text-stone-400">

@@ -34,7 +34,6 @@ const STR = {
     lead: 'Reglemente, Regeln, Leitfäden und Kontakte für Schiedsrichter:innen im SVRZ — an einem Ort.',
     search: 'Dokumente suchen…',
     none: 'Nichts gefunden.',
-    other: 'English version',
   },
   EN: {
     kicker: 'SVRZ · Refereeing',
@@ -42,7 +41,6 @@ const STR = {
     lead: 'Regulations, rules, guides and contacts for referees in the SVRZ — in one place.',
     search: 'Search documents…',
     none: 'Nothing found.',
-    other: 'Deutsche Version',
   },
 } satisfies Record<Lang, Record<string, string>>;
 
@@ -111,7 +109,23 @@ export default function InfosPage() {
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400">{t.kicker}</p>
             <h1 className="mt-1 text-2xl sm:text-3xl font-bold tracking-tight text-stone-900">{t.title}</h1>
           </div>
-          <SvrzLogo className="h-9 sm:h-11 w-auto shrink-0" />
+          <div className="flex flex-col items-end gap-3 shrink-0">
+            <SvrzLogo className="h-9 sm:h-11 w-auto" />
+            {/* At the top, not under 70 cards (Luca, 2026-10-02). */}
+            <div role="group" aria-label="Sprache / Language" className="inline-flex rounded-lg border border-stone-200 bg-white p-0.5">
+              {(['DE', 'EN'] as const).map((l) => (
+                <button
+                  key={l}
+                  type="button"
+                  onClick={() => choose(l)}
+                  aria-pressed={lang === l}
+                  className={`h-7 px-2.5 rounded-md text-xs font-semibold transition-colors ${lang === l ? 'bg-stone-900 text-white' : 'text-stone-500 hover:text-stone-800'}`}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+          </div>
         </header>
 
         <p className="text-sm sm:text-base leading-relaxed text-stone-600 mb-6">{t.lead}</p>
@@ -177,14 +191,6 @@ export default function InfosPage() {
           })}
         </div>
 
-        <div className="mt-8 flex flex-wrap items-center gap-3">
-          <button
-            onClick={() => choose(lang === 'DE' ? 'EN' : 'DE')}
-            className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg border border-stone-200 text-xs font-medium bg-white text-stone-600 hover:bg-stone-50 transition-colors"
-          >
-            {t.other}
-          </button>
-        </div>
 
         <p className="mt-8 text-center text-[11px] text-stone-400">
           SVRZ | SR-Wesen | Referee Coaching | schiricoaching@svrz.ch

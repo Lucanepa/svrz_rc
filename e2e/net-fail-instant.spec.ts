@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import {
-  classifyFetchFailure, INSTANT_FAIL_MS, isResizeObserverLoopNotice,
+  classifyFetchFailure, INSTANT_FAIL_MS, isResizeObserverLoopNotice, isInjectedScriptError,
   noteLeavingPage, noteBackOnPage, noteReloadingPage, resetPageLifecycle,
 } from '../src/lib/logger';
 
@@ -91,4 +91,19 @@ test.describe('a request cut off by the device going offline', () => {
     const abort = new DOMException('The user aborted a request.', 'AbortError');
     expect(classifyFetchFailure(5016, abort, false, true)).toEqual({ evt: 'net.fail', lvl: 'error' });
   });
+});
+
+test('a throw from a script the browser injected is noise, ours never is', () => {
+  // 02.10.2026, one visit to /infos: Firefox for iOS and a wallet probe.
+  expect(isInjectedScriptError('https://svrz-rc.openvolley.app/infos')).toBe(true);
+  expect(isInjectedScriptError('https://svrz-rc.openvolley.app/')).toBe(true);
+  expect(isInjectedScriptError('safari-web-extension://abc/content.js')).toBe(true);
+  expect(isInjectedScriptError('chrome-extension://abc/inject.js')).toBe(true);
+  // Our bundle in a build, and our sources under Vite, stay errors.
+  expect(isInjectedScriptError('https://svrz-rc.openvolley.app/assets/index-Ab12.js')).toBe(false);
+  expect(isInjectedScriptError('http://localhost:5173/src/App.tsx?t=123')).toBe(false);
+  expect(isInjectedScriptError('https://svrz-rc.openvolley.app/assets/pdf.worker-x.mjs')).toBe(false);
+  // No file at all is not evidence either way.
+  expect(isInjectedScriptError('')).toBe(false);
+  expect(isInjectedScriptError(undefined)).toBe(false);
 });

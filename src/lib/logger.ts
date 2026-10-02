@@ -435,11 +435,30 @@ export function isResizeObserverLoopNotice(message: string | undefined): boolean
   return /^ResizeObserver loop (completed with undelivered notifications|limit exceeded)\.?$/i.test((message || '').trim());
 }
 
+/**
+ * A throw from code the browser put into the page, not code we shipped. Our
+ * index.html has no inline script, so an error whose file is the HTML page
+ * itself ("…/infos", line 1) can only come from something injected — Firefox
+ * for iOS's reader helper (`window.__firefox__`), an in-app browser probing
+ * for a crypto wallet (`window.ethereum`) — and an extension's own URL says so
+ * outright. Three of them arrived from one visit to the public /infos page on
+ * 02.10.2026 and read as app failures. Our code always names a script file:
+ * /assets/*.js in a build, /src/*.tsx under Vite. Exported for the test.
+ */
+export function isInjectedScriptError(file: string | undefined): boolean {
+  const f = (file || '').trim();
+  if (!f) return false;
+  if (/^(chrome|moz|safari(-web)?|webkit-masked-url)-?extension:|^webkit-masked-url:/i.test(f)) return true;
+  let path = f;
+  try { path = new URL(f, 'https://x.invalid').pathname; } catch { /* keep the raw string */ }
+  return !/\.(m?js|[jt]sx?)$/i.test(path);
+}
+
 function installErrorLogging(): void {
   window.addEventListener('error', (e) => {
     // Resource load failures (img/script/css) surface here with no `error`.
     if (e.error || e.message) {
-      const level = isOpaqueCrossOriginError(e) || isResizeObserverLoopNotice(e.message) ? 'warn' : 'error';
+      const level = isOpaqueCrossOriginError(e) || isResizeObserverLoopNotice(e.message) || isInjectedScriptError(e.filename) ? 'warn' : 'error';
       const evt = level === 'warn' ? 'js.error.opaque' : 'js.error';
       clientLog[level](evt, e.message || 'window error', { error: e.error, file: e.filename, line: e.lineno, col: e.colno });
     } else {

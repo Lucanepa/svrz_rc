@@ -10576,7 +10576,19 @@ app.get('/api/ical/:token', async (req: Request, res: ExpressResponse) => {
       return;
     }
     const lang: IcalLang = asText(req.query.lang).toUpperCase() === 'EN' ? 'EN' : 'DE';
-    const body = buildRcCalendar(person.fullName, await getCachedGamesForRc(person), lang);
+    const games = await getCachedGamesForRc(person);
+    const body = buildRcCalendar(person.fullName, games, lang);
+    // The token is scrubbed from every log line, so without this a coach saying
+    // "my calendar doesn't show it" could not be tied to any client at all
+    // (2026-10-02: the feed was right, and which app was polling it was the
+    // whole question). Who, how many, and the client's own UA in reqCtx.
+    log.info('ical.serve', 'calendar feed served', {
+      rcId: person.id,
+      name: person.fullName,
+      rc: games.filter((g) => g.kind === 'rc').length,
+      sr: games.filter((g) => g.kind === 'sr').length,
+      ua: asText(req.headers['user-agent']).slice(0, 120),
+    }, reqCtx(req));
     const disposition = asText(req.query.download) === '1' ? 'attachment' : 'inline';
     res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
     res.setHeader('Content-Disposition', `${disposition}; filename="${icalFileSlug(person.fullName)}.ics"`);

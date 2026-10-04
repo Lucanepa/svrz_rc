@@ -275,6 +275,21 @@ export const USEFUL_DOCS: UsefulDoc[] = [
     DE: { title: 'Regeländerungen ab 1.9.2026', note: 'SSK-Erläuterungen zu Aufstellung, Sichtblock und Doppelberührung.' },
     EN: { title: 'Rule changes from 1 Sep 2026', note: 'SSK notes on positions, screening and double contact.' },
   },
+  // Yves Kälin's slides from the Zentralkurs 2026: not a rule change but a
+  // stricter reading of 9.2.2, with the indicators a referee whistles on. The
+  // ZK hands its slides out, it does not publish them, so the file is ours —
+  // the chair asked for it on 4 Oct 2026 with Yves's consent to publish.
+  {
+    id: 'zkRegel922',
+    group: 'rules',
+    kind: 'pdf',
+    href: 'docs/ZK2026-Regel-9.2.2.pdf',
+    path: 'docs/ZK2026-Regel-9.2.2.pdf',
+    bytes: 831720,
+    badge: 'PDF',
+    DE: { title: 'Regel 9.2.2: gehaltene und geworfene Angriffsbälle', note: 'Erklärung vom Zentralkurs 2026: striktere Anwendung, Indikatoren, beidhändige Angriffe.' },
+    EN: { title: 'Rule 9.2.2: held and thrown attack hits', note: 'Explainer from the 2026 central course: stricter application, indicators, two-handed attacks.' },
+  },
   {
     id: 'sanktionen',
     group: 'rules',

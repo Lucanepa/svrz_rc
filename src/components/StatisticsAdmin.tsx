@@ -11,7 +11,7 @@ import type { Lang } from '../lib/appTime';
 import { dayLabel } from '../lib/appTime';
 import { listRcPeopleFull, loadStatistics, type RcPerson } from '../lib/pocketbase';
 import {
-  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, roleProfile, scoreToLetter, strengthTier, trendAvgDelta, withRcFirstNames, STAT_LETTERS,
+  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, roleProfile, scoreToLetter, strengthsAndWeaknesses, strengthTier, trendAvgDelta, withRcFirstNames, STAT_LETTERS,
   type SeasonStatistics, type TrendAgg, type StatBucket, type StatFilters, type StatRole, type StatSlice, type StatisticsResponse,
 } from '../lib/statistics';
 import {
@@ -20,7 +20,7 @@ import {
 } from '../lib/statsLabels';
 import { SECTIONS_1SR_DE, SECTIONS_2SR_DE } from '../types';
 import { buildDeck, deckFileName, DECK_CHAPTERS, DEFAULT_DECK_SECTIONS, type DeckFormat, type DeckSection } from '../lib/statsDeck';
-import { BarList, ColumnChart, DivergingBars, Donut, GradeLine, GradeScale, HBarChart, SEQ_BLUE, SERIES, Sparkline, StackBar, StatTile, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
+import { BarList, ColumnChart, DivergingBars, Donut, GradeLine, GradeScale, HBarChart, SEQ_BLUE, SERIES, Sparkline, StackBar, StatTile, TIER_STYLE, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
 
 /** Men blue, women red — the colours the split has always had. */
 const GENDER_COLOR: Record<string, string> = { H: '#2a78d6', D: '#e2001a' };
@@ -66,81 +66,54 @@ function Block({ title, hint, children, testId, span, aside }: { title: string; 
   );
 }
 
-// Stronger = the outcome green, weaker = the brand red; a clear step is the
-// deeper wash. The arrow says the same for anyone who can't tell the two apart.
-const TIER_STYLE: Record<string, { bg: string; fg: string; mark: string }> = {
-  '2': { bg: '#1f7a4d38', fg: '#14532d', mark: '▲▲' },
-  '1': { bg: '#1f7a4d17', fg: '#1f7a4d', mark: '▲' },
-  '-1': { bg: '#e2001a14', fg: '#b00016', mark: '▼' },
-  '-2': { bg: '#e2001a33', fg: '#8a0012', mark: '▼▼' },
-};
-
-/** Criteria down, Niveaus across: each cell is the criterion's average on that
- *  Niveau, washed by how far it sits from the Niveau's own average. */
-function StrengthGrid({ slices, role, lang, t }: { slices: StatSlice[]; role: StatRole; lang: Lang; t: ReturnType<typeof statStrings> }) {
-  const profiles = slices.map((x) => ({ key: x.key, p: roleProfile(x.stats, role) }));
+/** One Niveau's criteria against that Niveau's OWN average: every criterion
+ *  a dot on the A–E track, the level average a dashed line through all of
+ *  them. Left of the line is graded better; a dot at least a third of a grade
+ *  off it (from 3 observations) is coloured and named in the line on top. */
+function StrengthView({ slice, role, lang, t }: { slice: StatSlice; role: StatRole; lang: Lang; t: ReturnType<typeof statStrings> }) {
+  const p = roleProfile(slice.stats, role);
+  const level = levelKeyLabel(slice.key, lang);
   const form = role === '2SR' ? SECTIONS_2SR_DE : SECTIONS_1SR_DE;
-  const sections = form.map((sec, sectionIndex) => ({
-    sectionIndex,
-    items: sec.items.filter((item) => profiles.some(({ p }) => p.criteria.some((c) => c.id === item.id && c.avg !== null))),
-  })).filter((s) => s.items.length > 0);
   const tierLabel = (tier: number) => (tier === 2 ? t.swClearlyStronger : tier === 1 ? t.swStronger : tier === -1 ? t.swWeaker : t.swClearlyWeaker);
   const signed = (d: number) => `${d > 0 ? '+' : d < 0 ? '−' : '±'}${fmtDec(Math.abs(d))}`;
+  const sections = form.map((sec, sectionIndex) => ({
+    sectionIndex,
+    rows: sec.items.flatMap((item): ScaleRow[] => {
+      const c = p.criteria.find((x) => x.id === item.id);
+      if (!c || c.avg === null) return [];
+      const label = criterionLabel(role, item.id, lang);
+      const tier = strengthTier(c.diff);
+      return [{
+        key: item.id, label, avg: c.avg, n: c.n, tier, testId: `stats-sw-row-${item.id}`,
+        title: `${label}: ${scoreToLetter(c.avg)} · ${t.nObs(c.n)}${c.diff !== null ? ` · ${signed(c.diff)} ${t.swVsAvg}` : ' (n < 3)'}${tier ? ` · ${tierLabel(tier)}` : ''}`,
+      }];
+    }),
+  })).filter((x) => x.rows.length > 0);
+  const marked = p.criteria.some((c) => c.diff !== null);
+  const { strong, weak } = strengthsAndWeaknesses(p, 3);
+  const names = (list: typeof strong) => (list.length ? list.map((c) => criterionLabel(role, c.id, lang)).join(' · ') : t.swNone);
   return (
     <div>
-      <div className="overflow-x-auto -mx-1">
-        <table className="w-full text-xs border-separate border-spacing-0.5">
-          <thead>
-            <tr className="text-[10px] uppercase tracking-wide text-stone-400">
-              <th className="text-left font-medium py-1 px-1 align-bottom">{t.swCriterion}</th>
-              {profiles.map(({ key }) => <th key={key} className="text-center font-medium py-1 px-1 align-bottom w-[3.25rem] sm:w-20">{levelKeyLabel(key, lang)}</th>)}
-            </tr>
-            <tr className="text-stone-600">
-              <td className="py-1 px-1 font-semibold">{t.swAvgRow}</td>
-              {profiles.map(({ key, p }) => (
-                <td key={key} className="py-1 px-1 text-center tabular-nums font-semibold rounded bg-stone-100" title={p.avg === null ? '–' : `${scoreToLetter(p.avg)} · ${t.nObs(p.n)}`}>
-                  {p.avg === null ? <span className="text-stone-400">–</span> : scoreToLetter(p.avg)}
-                </td>
-              ))}
-            </tr>
-          </thead>
-          {sections.map(({ sectionIndex, items }) => (
-            <tbody key={sectionIndex}>
-              <tr><td colSpan={profiles.length + 1} className="pt-2.5 pb-0.5 px-1 text-[11px] font-semibold text-stone-500">{sectionTitle(role, sectionIndex, lang)}</td></tr>
-              {items.map((item) => {
-                const label = criterionLabel(role, item.id, lang);
-                return (
-                  <tr key={item.id} data-testid={`stats-sw-row-${item.id}`}>
-                    <td className="py-1 px-1 text-stone-700 leading-tight max-w-[9rem] sm:max-w-none">{label}</td>
-                    {profiles.map(({ key, p }) => {
-                      const c = p.criteria.find((x) => x.id === item.id);
-                      if (!c || c.avg === null) return <td key={key} className="py-1 px-1 text-center text-stone-300">–</td>;
-                      const tier = strengthTier(c.diff);
-                      const style = tier ? TIER_STYLE[String(tier)] : null;
-                      const title = `${label} · ${levelKeyLabel(key, lang)}: ${scoreToLetter(c.avg)} · ${t.nObs(c.n)}${c.diff !== null ? ` · ${signed(c.diff)} ${t.swVsAvg}` : ' (n < 3)'}${tier ? ` · ${tierLabel(tier)}` : ''}`;
-                      return (
-                        <td key={key} title={title} data-tier={tier ?? undefined}
-                          className={cn('py-1 px-1 text-center tabular-nums whitespace-nowrap rounded', c.diff === null && 'text-stone-400')}
-                          style={style ? { background: style.bg, color: style.fg } : undefined}>
-                          <span className={cn(tier && Math.abs(tier) === 2 ? 'font-bold' : 'font-semibold')}>{scoreToLetter(c.avg)}</span>
-                          {style && <span className="ml-0.5 text-[9px] align-middle">{style.mark}</span>}
-                          {c.diff === null && <span className="hidden sm:inline text-[10px]"> · n={c.n}</span>}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          ))}
-        </table>
+      <div className="mb-3 rounded-lg bg-white border border-stone-200/70 px-3 py-2 text-xs leading-snug space-y-0.5" data-testid="stats-sw-summary">
+        <div className="text-stone-500">{t.swLevelAvg(level)}: <b className="text-stone-800">{p.avg === null ? '–' : scoreToLetter(p.avg)}</b> · {t.nObs(p.n)}</div>
+        {marked ? (<>
+          <div><span className="font-semibold" style={{ color: TIER_STYLE['1'].fg }}>▲ {t.swStrengths}:</span> <span className="text-stone-700">{names(strong)}</span></div>
+          <div><span className="font-semibold" style={{ color: TIER_STYLE['-1'].fg }}>▼ {t.swWeaknesses}:</span> <span className="text-stone-700">{names(weak)}</span></div>
+        </>) : <div className="text-stone-500">{t.swTooThin}</div>}
       </div>
-      <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-stone-500">
+      {sections.map(({ sectionIndex, rows }) => (
+        <div key={sectionIndex} className="mb-4 last:mb-0">
+          <SubHead>{sectionTitle(role, sectionIndex, lang)}</SubHead>
+          <GradeScale wide rows={rows} nLabel={t.nObs} refScore={p.avg} />
+        </div>
+      ))}
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-stone-500">
+        <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 border-l-2 border-dashed border-stone-500" />{t.swLevelAvg(level)}</span>
         {[2, 1, -1, -2].map((tier) => {
-          const s = TIER_STYLE[String(tier)];
-          return <span key={tier} className="inline-flex items-center gap-1"><span className="inline-block px-1 rounded text-[9px]" style={{ background: s.bg, color: s.fg }}>{s.mark}</span>{tierLabel(tier)}</span>;
+          const st = TIER_STYLE[String(tier)];
+          return <span key={tier} className="inline-flex items-center gap-1"><span className="inline-block px-1 rounded text-[9px]" style={{ background: st.bg, color: st.fg }}>{st.mark}</span>{tierLabel(tier)}</span>;
         })}
-        <span className="text-stone-400">{t.normalCase} · {t.swThin}</span>
+        <span className="inline-flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-stone-400 bg-white" />{t.swThin}</span>
       </div>
     </div>
   );
@@ -199,6 +172,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
   const [error, setError] = useState('');
   const [criteriaRole, setCriteriaRole] = useState<StatRole>('1SR');
   const [swRole, setSwRole] = useState<StatRole>('1SR');
+  const [swLevel, setSwLevel] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState<'pptx' | 'pdf' | null>(null);
   // What goes into the deck, and on what page — remembered on this device
@@ -409,6 +383,11 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     const swSlices = !filters.level && !filters.group ? (breakdowns?.level ?? []).filter((x) => x.stats.totals.observations > 0) : [];
     const swRoles = (['1SR', '2SR'] as StatRole[]).filter((role) => swSlices.some((x) => roleProfile(x.stats, role).criteria.some((c) => c.avg !== null)));
     const shownSwRole: StatRole | null = swRoles.includes(swRole) ? swRole : (swRoles[0] ?? null);
+    // One Niveau at a time; until one is picked, the one with the most graded
+    // observations on this form.
+    const swLevels = shownSwRole ? swSlices.filter((x) => roleProfile(x.stats, shownSwRole).criteria.some((c) => c.avg !== null)) : [];
+    const shownSwSlice = swLevels.find((x) => x.key === swLevel)
+      ?? [...swLevels].sort((a, b) => roleProfile(b.stats, shownSwRole!).n - roleProfile(a.stats, shownSwRole!).n)[0] ?? null;
     const showGrades = showHistogram || showGradeSummary || sectionRows.length > 0 || shownCriteriaRole !== null || shownSwRole !== null;
     // ── Assessments
     const outcomeKinds = (['einstufung', 'motivation', 'spielniveau', 'secondBesuch'] as const).filter((kind) => !filtered || sum(stats.outcomes[kind]) > 0);
@@ -449,7 +428,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           <Section title={t.secObservations} hint={t.secObservationsHint} testId="stats-section-observations">
             <Grid>
               {showMonths && (
-              <Block span="lg:col-span-5" title={t.perMonth} hint={`${t.role1} / ${t.role2}`} testId="stats-months">
+              <Block span="lg:col-span-5" title={t.perMonth} hint={t.desc.months} testId="stats-months">
                 {/* Time runs left to right: eight months fit a phone as columns. */}
                 <ColumnChart
                   series={[t.role1, t.role2]}
@@ -459,19 +438,19 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {coverageRows.length > 0 && (
-              <Block span="lg:col-span-3" title={t.coverage} hint={t.coverageHint} testId="stats-coverage">
+              <Block span="lg:col-span-3" title={t.coverage} hint={t.desc.coverage} testId="stats-coverage">
                 {/* Part of the roster by visits: one bar, lighter = fewer visits. */}
                 <StackBar segments={['0', '1', '2', '3+'].map((k, i) => ({ key: k, label: t.visits(k), value: stats.coacheeVisits[k] ?? 0, color: SEQ_BLUE[i] })).filter((x) => !filtered || x.value > 0)} />
                 <p className="mt-3 text-[11px] text-stone-500">{t.coacheesVisited}: <b className="text-stone-700">{fmtInt(T.coachees)} / {fmtInt(T.roster)}</b> · {pctText(pct(T.coachees, T.roster))}</p>
               </Block>
               )}
               {roleRows.length > 0 && (
-              <Block span="lg:col-span-4" title={t.role} hint={t.observations} testId="stats-roles">
+              <Block span="lg:col-span-4" title={t.role} hint={t.desc.roles} testId="stats-roles">
                 <StackBar segments={stats.byRole.map((b, i) => ({ key: b.key, label: roleLabel(b.key, lang), value: b.observations, color: SERIES[i] })).filter((x) => !filtered || x.value > 0)} />
               </Block>
               )}
               {rcRows.length > 0 && (
-              <Block span="lg:col-span-12" title={t.perRc} testId="stats-rcs">
+              <Block span="lg:col-span-12" title={t.perRc} hint={t.desc.rcs} testId="stats-rcs">
                 <div className="overflow-x-auto -mx-1">
                   <table className="w-full text-xs">
                     <thead>
@@ -495,7 +474,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                             <td className="py-1.5 px-1 text-stone-800 leading-tight">
                               {r.label}
                               {/* The columns a phone has no room for, as one line under the name. */}
-                              {r.observations > 0 && <span className="sm:hidden block text-[10px] text-stone-400 tabular-nums">{fmtInt(r.coachees)} {t.coacheesCol} · {fmtInt(r.games)} {t.gamesCol} · {fmtInt(r.sets)} {t.setsCol}</span>}
+                              {r.observations > 0 && <span className="sm:hidden block text-[10px] text-stone-400 tabular-nums">{t.nCoachees(r.coachees)} · {t.nGames(r.games)} · {t.nSets(r.sets)}</span>}
                             </td>
                             <td className="py-1.5 px-1 text-right tabular-nums font-semibold">{fmtInt(r.observations)}</td>
                             <td className="hidden sm:table-cell py-1.5 px-1 text-right tabular-nums">{fmtInt(r.coachees)}</td>
@@ -518,12 +497,12 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {groupRows.length > 0 && (
-              <Block span="lg:col-span-6" title={t.perGroup} hint={t.observations} testId="stats-groups">
+              <Block span="lg:col-span-6" title={t.perGroup} hint={t.desc.groups} testId="stats-groups">
                 <BarList rows={groupRows} />
               </Block>
               )}
               {(levelRows.length > 0 || stufeRows.length > 0) && (
-              <Block span="lg:col-span-6" title={t.perLevel} hint={t.observations} testId="stats-levels">
+              <Block span="lg:col-span-6" title={t.perLevel} hint={t.desc.levels} testId="stats-levels">
                 {levelRows.length > 0 && <BarList rows={levelRows} />}
                 {stufeRows.length > 0 && (
                   <div className={levelRows.length > 0 ? 'mt-4' : undefined}>
@@ -554,7 +533,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {showGradeSummary && (
-              <Block span="lg:col-span-5" title={t.avgGrade} hint={t.normalCase} testId="stats-grade-summary">
+              <Block span="lg:col-span-5" title={t.avgGrade} hint={t.desc.gradeSummary} testId="stats-grade-summary">
                 <div className="grid grid-cols-3 gap-2">
                   <MiniStat label={t.avgGrade} value={avg === null ? '–' : `${scoreToLetter(avg)}${isThin(T.grade.obs) ? ` (n = ${T.grade.obs})` : ''}`} />
                   <MiniStat label={t.shareC} value={pctText(pct(letters.C, lettersAll))} />
@@ -570,12 +549,12 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {gradeMonths.some((p) => p.value !== null) && (
-              <Block span="lg:col-span-12" title={t.gradePerMonth} hint={`${t.normalCase} · ${t.thinNote}`} testId="stats-grade-month">
+              <Block span="lg:col-span-12" title={t.gradePerMonth} hint={t.desc.gradeMonth} testId="stats-grade-month">
                 <GradeLine points={gradeMonths} nLabel={t.nObs} />
               </Block>
               )}
               {sectionRows.length > 0 && (
-              <Block span="lg:col-span-5" title={t.sections} hint={t.normalCase} testId="stats-sections">
+              <Block span="lg:col-span-5" title={t.sections} hint={t.desc.sections} testId="stats-sections">
                 {sectionRows.map(({ role, rows }) => (
                   <div key={role} className="mb-4 last:mb-0">
                     <SubHead>{roleLabel(role, lang)}</SubHead>
@@ -585,7 +564,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {shownCriteriaRole && (
-              <Block span="lg:col-span-7" title={t.criteria} hint={t.normalCase} testId="stats-criteria"
+              <Block span="lg:col-span-7" title={t.criteria} hint={t.desc.criteria} testId="stats-criteria"
                 aside={criteriaRoles.length > 1 ? (
                   <div className="inline-flex rounded-lg border border-stone-200 p-0.5 text-xs bg-white">
                     {criteriaRoles.map((role) => (
@@ -601,16 +580,27 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                 ))}
               </Block>
               )}
-              {shownSwRole && (
+              {shownSwRole && shownSwSlice && (
               <Block span="lg:col-span-12" title={t.swTitle} hint={t.swHint} testId="stats-strengths"
-                aside={swRoles.length > 1 ? (
-                  <div className="inline-flex rounded-lg border border-stone-200 p-0.5 text-xs bg-white">
-                    {swRoles.map((role) => (
-                      <button key={role} type="button" onClick={() => setSwRole(role)} className={cn('px-2.5 h-7 rounded-md', shownSwRole === role ? 'bg-slate-900 text-white' : 'text-stone-600 hover:bg-stone-100')}>{roleLabel(role, lang)}</button>
-                    ))}
+                aside={
+                  <div className="flex flex-wrap gap-1.5">
+                    {swLevels.length > 1 && (
+                      <div className="inline-flex rounded-lg border border-stone-200 p-0.5 text-xs bg-white" data-testid="stats-sw-levels">
+                        {swLevels.map((x) => (
+                          <button key={x.key} type="button" onClick={() => setSwLevel(x.key)} className={cn('px-2.5 h-7 rounded-md', shownSwSlice.key === x.key ? 'bg-slate-900 text-white' : 'text-stone-600 hover:bg-stone-100')}>{levelKeyLabel(x.key, lang)}</button>
+                        ))}
+                      </div>
+                    )}
+                    {swRoles.length > 1 ? (
+                      <div className="inline-flex rounded-lg border border-stone-200 p-0.5 text-xs bg-white">
+                        {swRoles.map((role) => (
+                          <button key={role} type="button" onClick={() => setSwRole(role)} className={cn('px-2.5 h-7 rounded-md', shownSwRole === role ? 'bg-slate-900 text-white' : 'text-stone-600 hover:bg-stone-100')}>{roleLabel(role, lang)}</button>
+                        ))}
+                      </div>
+                    ) : <span className="self-center text-xs text-stone-500">{roleLabel(shownSwRole, lang)}</span>}
                   </div>
-                ) : <span className="text-xs text-stone-500">{roleLabel(shownSwRole, lang)}</span>}>
-                <StrengthGrid slices={swSlices} role={shownSwRole} lang={lang} t={t} />
+                }>
+                <StrengthView slice={shownSwSlice} role={shownSwRole} lang={lang} t={t} />
               </Block>
               )}
             </Grid>
@@ -622,7 +612,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           <Section title={t.trendTitle} hint={t.trendHint} testId="stats-trend">
             {stats.trend.coachees === 0 ? <p className="text-sm text-stone-400">{t.trendNone}</p> : (
             <Grid>
-              <Block span="lg:col-span-4" title={t.trendTitle} hint={t.trendBand} testId="stats-trend-total">
+              <Block span="lg:col-span-4" title={t.trendTitle} hint={t.desc.trendTotal} testId="stats-trend-total">
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <MiniStat label={t.trendCoachees} value={fmtInt(stats.trend.coachees)} />
                   <MiniStat label={t.trendImproved} value={pctText(pct(stats.trend.improved, stats.trend.coachees))} />
@@ -634,12 +624,12 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                 />
               </Block>
               {stats.trend.byLevel.length > 0 && (
-              <Block span="lg:col-span-4" title={`${t.trendTitle} · ${t.byLevel}`} testId="stats-trend-level">
+              <Block span="lg:col-span-4" title={`${t.trendTitle} · ${t.byLevel}`} hint={t.desc.trendLevel} testId="stats-trend-level">
                 <DivergingBars rows={stats.trend.byLevel.map((r) => trendRow(r, levelKeyLabel(r.key, lang)))} colors={{ neg: TREND_COLOR.worse, mid: '#d6d3d1', pos: TREND_COLOR.improved }} labels={{ neg: t.trendWorse, mid: t.trendSame, pos: t.trendImproved }} />
               </Block>
               )}
               {stats.trend.byGroup.length > 0 && (
-              <Block span="lg:col-span-4" title={`${t.trendTitle} · ${t.byGroup}`} testId="stats-trend-group">
+              <Block span="lg:col-span-4" title={`${t.trendTitle} · ${t.byGroup}`} hint={t.desc.trendGroup} testId="stats-trend-group">
                 <DivergingBars rows={stats.trend.byGroup.map((r) => trendRow(r, groupKeyLabel(r.key, lang)))} colors={{ neg: TREND_COLOR.worse, mid: '#d6d3d1', pos: TREND_COLOR.improved }} labels={{ neg: t.trendWorse, mid: t.trendSame, pos: t.trendImproved }} />
               </Block>
               )}
@@ -655,7 +645,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               {/* Einstufung and motivation are the form's ↑ ✓ ↓: centred on ✓,
                   down to the left, up to the right, so the two rows compare. */}
               {outcomeKinds.some((k) => k === 'einstufung' || k === 'motivation') && (
-              <Block title={`${t.einstufung} · ${t.motivation}`} testId="stats-einstufung">
+              <Block title={`${t.einstufung} · ${t.motivation}`} hint={t.desc.einstufung} testId="stats-einstufung">
                 <DivergingBars
                   rows={outcomeKinds.filter((k) => k === 'einstufung' || k === 'motivation').map((kind) => ({
                     key: kind,
@@ -668,12 +658,12 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {outcomeKinds.includes('spielniveau') && (
-              <Block title={t.difficulty} testId="stats-spielniveau">
+              <Block title={t.difficulty} hint={t.desc.spielniveau} testId="stats-spielniveau">
                 <StackBar segments={OUTCOME_ORDER.spielniveau.map((k, i) => ({ key: k, label: outcomeLabel('spielniveau', k, lang), value: stats.outcomes.spielniveau[k] ?? 0, color: [SEQ_BLUE[0], SEQ_BLUE[2], SEQ_BLUE[3]][i] })).filter((x) => !filtered || x.value > 0)} />
               </Block>
               )}
               {outcomeKinds.includes('secondBesuch') && (
-              <Block title={t.secondVisit} testId="stats-secondBesuch">
+              <Block title={t.secondVisit} hint={t.desc.secondBesuch} testId="stats-secondBesuch">
                 <StackBar segments={OUTCOME_ORDER.secondBesuch.map((k) => ({ key: k, label: outcomeLabel('secondBesuch', k, lang), value: stats.outcomes.secondBesuch[k] ?? 0, color: k === 'Y' ? SERIES[0] : '#d6d3d1' })).filter((x) => !filtered || x.value > 0)} />
               </Block>
               )}
@@ -686,7 +676,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           <Section title={t.secGames} hint={t.secGamesHint} testId="stats-section-games">
             <Grid>
               {showGamesBlock && (
-              <Block span="lg:col-span-4" title={t.gamesBlock} testId="stats-games">
+              <Block span="lg:col-span-4" title={t.gamesBlock} hint={t.desc.games} testId="stats-games">
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <MiniStat label={t.sets} value={fmtInt(T.sets)} />
                   <MiniStat label={t.points} value={fmtInt(T.points)} />
@@ -703,7 +693,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {showLeagues && (
-              <Block span="lg:col-span-4" title={t.perLeague} hint={t.observations} testId="stats-leagues">
+              <Block span="lg:col-span-4" title={t.perLeague} hint={t.desc.leagues} testId="stats-leagues">
                 {leagueRows.length > 0 && <BarList rows={leagueRows} />}
                 {categoryRows.length > 0 && (
                   <div className="mt-4" data-testid="stats-gender">
@@ -717,7 +707,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {showWhen && (
-              <Block span="lg:col-span-4" title={`${t.weekday} · ${t.hour}`} hint={t.observations} testId="stats-when">
+              <Block span="lg:col-span-4" title={`${t.weekday} · ${t.hour}`} hint={t.desc.when} testId="stats-when">
                 {weekdayRows.length > 0 && (<>
                   <SubHead>{t.weekday}</SubHead>
                   <div data-testid="stats-weekday"><ColumnChart series={[t.observations]} slotWidth={30} height={150} data={(filtered ? stats.byWeekday.filter((b) => b.observations > 0) : stats.byWeekday).map((b) => ({ key: b.key, label: weekdayKeyLabel(b.key, lang).slice(0, 2), values: [b.observations], hint: weekdayKeyLabel(b.key, lang) }))} /></div>
@@ -739,7 +729,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           <Section title={t.secWriting} hint={t.secWritingHint} testId="stats-section-writing">
             <Grid>
               {hasObs && (
-              <Block span="lg:col-span-4" title={t.writing} testId="stats-writing">
+              <Block span="lg:col-span-4" title={t.writing} hint={t.desc.writing} testId="stats-writing">
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <MiniStat label={t.words} value={fmtInt(T.words)} />
                   <MiniStat label={t.chars} value={fmtInt(T.chars)} />
@@ -762,7 +752,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {hasObs && (
-              <Block span="lg:col-span-4" title={t.process} testId="stats-process">
+              <Block span="lg:col-span-4" title={t.process} hint={t.desc.process} testId="stats-process">
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <MiniStat label={t.filingMedian} value={T.filingMedianDays !== null ? t.days(Math.round(T.filingMedianDays)) : '–'} />
                   <MiniStat label={t.sameDay} value={pctText(pct(T.filedSameDay, T.observations))} />
@@ -776,7 +766,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {showFun && (
-              <Block span="lg:col-span-4" title={t.fun} testId="stats-fun">
+              <Block span="lg:col-span-4" title={t.fun} hint={t.desc.fun} testId="stats-fun">
                 <KV rows={[
                   [t.busiestDay, F.busiestDay ? `${fmtInt(F.busiestDay.count)} · ${dayLabel(F.busiestDay.key, { year: true })}` : '–'],
                   [t.topHall, F.topHall ? `${F.topHall.name} (${fmtInt(F.topHall.count)})` : '–'],
@@ -1073,7 +1063,7 @@ function bucketRow(b: StatBucket, label: string, t: ReturnType<typeof statString
     key: b.key || '-',
     label,
     value: b.observations,
-    sub: a === null ? `${b.coachees} ${t.coacheesCol}` : `${b.coachees} ${t.coacheesCol} · Ø ${scoreToLetter(a)}${thin ? ` (n = ${b.observations})` : ''}`,
-    hint: `${label}: ${b.observations} · ${b.coachees} ${t.coacheesCol} · ${a === null ? '–' : `Ø ${scoreToLetter(a)}${thin ? ` · n = ${b.observations}` : ''}`}`,
+    sub: a === null ? t.nCoachees(b.coachees) : `${t.nCoachees(b.coachees)} · Ø ${scoreToLetter(a)}${thin ? ` (n = ${b.observations})` : ''}`,
+    hint: `${label}: ${b.observations} · ${t.nCoachees(b.coachees)} · ${a === null ? '–' : `Ø ${scoreToLetter(a)}${thin ? ` · n = ${b.observations}` : ''}`}`,
   };
 }

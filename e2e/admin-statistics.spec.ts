@@ -374,29 +374,43 @@ test('the export menu: sections to pick, and 16:9 or A4', async ({ page }) => {
   expect(await mediaBox()).toBeCloseTo(841.89 / 595.28, 2);
 });
 
-test('strengths & weaknesses: every Niveau side by side, hidden once a level is picked', async ({ page }) => {
+test('strengths & weaknesses: one Niveau at a time against its own average, hidden once a level is picked', async ({ page }) => {
   await stubSignedInApp(page, { admin: true });
   await openStats(page);
-  const grid = page.getByTestId('stats-strengths');
-  await expect(grid).toBeVisible();
-  const full = statsResponse(2026, {}, true, true);
-  const withObs = full.breakdowns!.level.filter((x) => x.stats.totals.observations > 0);
-  await expect(grid.locator('thead th')).toHaveCount(withObs.length + 1);
-  // The lone N1 visit is shown but too thin to call a strength or a weakness.
-  const n1 = withObs.findIndex((x) => x.key === 'N1');
-  expect(n1).toBeGreaterThanOrEqual(0);
-  const cells = grid.locator('tbody tr[data-testid^="stats-sw-row-"]').first().locator('td');
-  await expect(cells.nth(n1 + 1)).not.toHaveAttribute('data-tier', /.+/);
-  // The 2. SR form is its own grid.
-  await grid.getByRole('button', { name: '2. SR' }).click();
-  await expect(grid.locator('tbody tr[data-testid^="stats-sw-row-2sr"]').first()).toBeVisible();
+  const block = page.getByTestId('stats-strengths');
+  await expect(block).toBeVisible();
+  // Every Niveau with a graded 1. SR observation gets a button.
+  const levels = block.getByTestId('stats-sw-levels');
+  await expect(levels.getByRole('button')).toHaveText(['N1', 'N2', 'N3', 'N4']);
+  // It opens on the Niveau with the most graded observations — N3, whose
+  // criteria all sit within a third of a grade of its average.
+  await expect(levels.getByRole('button', { name: 'N3' })).toHaveClass(/bg-slate-900/);
+  await expect(block.getByTestId('stats-sw-summary')).toContainText('Stärken: keine deutlichen');
+  await expect(block.getByTestId('stats-sw-summary')).toContainText('Schwächen: keine deutlichen');
 
-  // One Niveau picked: the slices would ignore it, so the grid steps aside.
+  // N4: the marked criteria are coloured and named on top.
+  await levels.getByRole('button', { name: 'N4' }).click();
+  await expect(block.getByTestId('stats-sw-row-1sr-tech-1')).toHaveAttribute('data-tier', /^[12]$/);
+  await expect(block.getByTestId('stats-sw-row-1sr-tech-2')).toHaveAttribute('data-tier', /^-[12]$/);
+  await expect(block.getByTestId('stats-sw-summary')).toContainText('Ø N4');
+
+  // The lone N1 visit is shown but too thin to call a strength or a weakness.
+  await levels.getByRole('button', { name: 'N1' }).click();
+  await expect(block.locator('[data-testid^="stats-sw-row-"]').first()).toBeVisible();
+  await expect(block.locator('[data-testid^="stats-sw-row-"][data-tier]')).toHaveCount(0);
+  await expect(block.getByTestId('stats-sw-summary')).toContainText('nichts markiert');
+
+  // The 2. SR form is its own view, with only the Niveaus it was graded on.
+  await block.getByRole('button', { name: '2. SR' }).click();
+  await expect(levels.getByRole('button')).toHaveText(['N3', 'N4']);
+  await expect(block.locator('[data-testid^="stats-sw-row-2sr"]').first()).toBeVisible();
+
+  // One Niveau picked: the slices would ignore it, so the block steps aside.
   const bar = page.getByTestId('stats-groupbar');
   await bar.getByRole('radio', { name: 'Niveau' }).click();
   await bar.getByTestId('stats-filter-level').getByRole('button', { name: 'N3' }).click();
   await expect(page.getByTestId('stats-criteria')).toBeVisible();
-  await expect(grid).toHaveCount(0);
+  await expect(block).toHaveCount(0);
 });
 
 test('the deck: a strengths & weaknesses slide per Niveau, none per group', () => {

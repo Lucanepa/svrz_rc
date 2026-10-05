@@ -22,6 +22,10 @@ export const GRADE_ORDER = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', '
 export const GRADE_LETTERS = ['A', 'B', 'C', 'D', 'E'];
 export const NORMAL_SCORE = GRADE_SCALE.C;
 
+/** Where a score sits on a horizontal grade track, 0 (A+, left) … 1 (E-,
+ *  right) — the form's order, which every grade track keeps. */
+export const gradeTrackPos = (score: number): number => (15 - score) / 14;
+
 export function gradeToScore(rating: string): number | null {
   const score = GRADE_SCALE[String(rating ?? '').trim().toUpperCase()];
   return typeof score === 'number' ? score : null;

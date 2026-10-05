@@ -3,7 +3,7 @@
 // read. Every mark carries a <title> for the hover, every chart says its n,
 // and the grade charts sit on the 1–15 scale with C marked as the Normalfall.
 import React, { useEffect, useRef, useState } from 'react';
-import { GRADE_SCALE, NORMAL_SCORE, isThin, scoreToLetter } from '../lib/statistics';
+import { GRADE_SCALE, NORMAL_SCORE, gradeTrackPos, isThin, scoreToLetter } from '../lib/statistics';
 import { cn } from '../lib/utils';
 
 // Validated (dataviz six checks, light surface): blue / SVRZ red / yellow are
@@ -369,42 +369,86 @@ export type ScaleRow = { key: string; label: string; avg: number | null; n: numb
   /** A sub-row (a Stufe under its Niveau): indented, lighter. */
   indent?: boolean;
   /** A heading row (the Niveau itself): bold. */
-  strong?: boolean };
+  strong?: boolean;
+  /** Strength against the reference line (strengths & weaknesses): colours
+   *  the dot and washes the row; 0 = in line, null/undefined = not marked. */
+  tier?: Tier | null;
+  /** Replaces the row's hover text. */
+  title?: string;
+  testId?: string };
 
-/** One row per thing graded: a dot on the E-…A+ track, C marked. An average
- *  from fewer than three observations is drawn hollow and carries its n. */
-export function GradeScale({ rows, minLabel, maxLabel, nLabel }: { rows: ScaleRow[]; minLabel?: string; maxLabel?: string; nLabel: (n: number) => string }) {
-  const pos = (score: number) => ((score - 1) / 14) * 100;
-  const ticks = ['E', 'D', 'C', 'B', 'A'].map((l) => ({ l, p: pos(GRADE_SCALE[l]) }));
+export type Tier = -2 | -1 | 0 | 1 | 2;
+// Stronger = the outcome green, weaker = the brand red; a clear step is the
+// deeper wash. The arrow says the same for anyone who can't tell the two apart.
+export const TIER_STYLE: Record<string, { bg: string; fg: string; mark: string }> = {
+  '2': { bg: '#1f7a4d2e', fg: '#14532d', mark: '▲▲' },
+  '1': { bg: '#1f7a4d14', fg: '#1f7a4d', mark: '▲' },
+  '-1': { bg: '#e2001a12', fg: '#b00016', mark: '▼' },
+  '-2': { bg: '#e2001a29', fg: '#8a0012', mark: '▼▼' },
+};
+const IN_LINE = '#a8a29e'; // stone-400
+
+/** One row per thing graded: a dot on the A+…E- track, C marked. A sits on
+ *  the left like on the form. An average from fewer than three observations
+ *  is drawn hollow and carries its n.
+ *  With `refScore` the track measures against that average instead of C (a
+ *  level's own average, say): one dashed line through every row, the dots
+ *  coloured by their tier — left of the line is better. */
+export function GradeScale({ rows, minLabel, maxLabel, nLabel, refScore, wide }: { rows: ScaleRow[]; minLabel?: string; maxLabel?: string; nLabel: (n: number) => string; refScore?: number | null;
+  /** Long labels (the form's criteria) in a full-width block: on a phone the
+   *  label gets its own line above the track, from sm up a wide column. */
+  wide?: boolean }) {
+  const pos = (score: number) => gradeTrackPos(score) * 100;
+  const ticks = ['A', 'B', 'C', 'D', 'E'].map((l) => ({ l, p: pos(GRADE_SCALE[l]) }));
+  const refPos = typeof refScore === 'number' ? pos(refScore) : null;
+  const hasRef = refPos !== null;
+  const cols = wide
+    ? 'grid-cols-[1fr_auto] sm:grid-cols-[minmax(0,22rem)_1fr_auto] gap-x-2'
+    : 'grid-cols-[minmax(0,6.5rem)_1fr_auto] sm:grid-cols-[minmax(0,11rem)_1fr_auto] gap-2';
   return (
     <div>
-      <div className="grid grid-cols-[minmax(0,6.5rem)_1fr_auto] sm:grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-2 text-[10px] text-stone-400 mb-1">
-        <span />
+      <div className={cn('grid items-center text-[10px] text-stone-400 mb-1', cols)}>
+        <span className={wide ? 'hidden sm:block' : undefined} />
         <span className="relative h-3">
           {ticks.map((t) => <span key={t.l} className="absolute -translate-x-1/2" style={{ left: `${t.p}%` }}>{t.l}</span>)}
         </span>
         <span className="min-w-[4.5rem]" />
       </div>
-      <div className="space-y-1.5">
-        {rows.map((r) => (
-          <div key={r.key} className="grid grid-cols-[minmax(0,6.5rem)_1fr_auto] sm:grid-cols-[minmax(0,11rem)_1fr_auto] items-center gap-2 text-xs" data-thin={r.avg !== null && isThin(r.n) ? 'true' : undefined} title={r.avg === null ? `${r.label}: ${nLabel(r.n)}` : `${r.label}: ${scoreToLetter(r.avg)} · ${nLabel(r.n)}${isThin(r.n) ? ` (n < 3)` : ''}`}>
-            <span className={cn('truncate', r.indent ? 'pl-3 text-stone-500' : 'text-stone-700', r.strong && 'font-semibold text-stone-800')}>{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
+      <div className={hasRef ? 'space-y-0.5' : 'space-y-1.5'}>
+        {rows.map((r) => {
+          const thin = r.avg !== null && isThin(r.n);
+          const style = r.tier ? TIER_STYLE[String(r.tier)] : null;
+          // Without a reference the dots are the series blue; against one, the
+          // marked ones carry their tier's colour and the rest stay quiet.
+          const dot = !hasRef ? SERIES[0] : style ? style.fg : IN_LINE;
+          return (
+          <div key={r.key} data-testid={r.testId} data-tier={r.tier ?? undefined}
+            className={cn('grid items-center text-xs', cols, hasRef && 'rounded px-1 -mx-1 py-0.5')}
+            style={style ? { background: style.bg } : undefined}
+            data-thin={thin ? 'true' : undefined}
+            title={r.title ?? (r.avg === null ? `${r.label}: ${nLabel(r.n)}` : `${r.label}: ${scoreToLetter(r.avg)} · ${nLabel(r.n)}${isThin(r.n) ? ` (n < 3)` : ''}`)}>
+            <span className={cn(wide ? 'col-span-2 sm:col-span-1 leading-tight' : 'truncate', r.indent ? 'pl-3 text-stone-500' : 'text-stone-700', r.strong && 'font-semibold text-stone-800')}>{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
             <span className="relative h-4">
               <span className="absolute inset-x-0 top-1/2 h-px bg-stone-200" />
-              <span className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-stone-400" style={{ left: `${pos(NORMAL_SCORE)}%` }} title="C" />
-              {r.avg !== null && (isThin(r.n)
-                ? <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white border-2" style={{ left: `${pos(r.avg)}%`, borderColor: SERIES[0] }} />
-                : <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white" style={{ left: `${pos(r.avg)}%`, background: SERIES[0] }} />)}
+              {hasRef
+                ? <span className={cn('absolute -translate-x-1/2 border-l-2 border-dashed border-stone-500', wide ? 'top-0 bottom-0 sm:-top-1 sm:-bottom-1' : '-top-1 -bottom-1')} style={{ left: `${refPos}%` }} />
+                : <span className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-stone-400" style={{ left: `${pos(NORMAL_SCORE)}%` }} title="C" />}
+              {r.avg !== null && (thin
+                ? <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white border-2" style={{ left: `${pos(r.avg)}%`, borderColor: hasRef ? IN_LINE : SERIES[0] }} />
+                : <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white" style={{ left: `${pos(r.avg)}%`, background: dot }} />)}
             </span>
             <span className="tabular-nums min-w-[4.5rem] text-right whitespace-nowrap">
               {r.avg === null
                 ? <span className="text-stone-400">{nLabel(r.n)}</span>
-                : isThin(r.n)
+                : thin
                   ? <><span className="font-semibold text-stone-600">{scoreToLetter(r.avg)}</span> <span className="text-stone-400">· n = {r.n}</span></>
-                  : <><span className="font-semibold text-stone-800">{scoreToLetter(r.avg)}</span> <span className="text-stone-400">· {r.n}</span></>}
+                  : <><span className="font-semibold text-stone-800">{scoreToLetter(r.avg)}</span>{style
+                    ? <span className="ml-1 text-[10px]" style={{ color: style.fg }}>{style.mark}</span>
+                    : <span className="text-stone-400"> · {r.n}</span>}</>}
             </span>
           </div>
-        ))}
+          );
+        })}
       </div>
       {(minLabel || maxLabel) && (
         <div className="mt-1 flex justify-between text-[10px] text-stone-400"><span>{minLabel}</span><span>{maxLabel}</span></div>

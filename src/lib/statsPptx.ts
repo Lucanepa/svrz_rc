@@ -6,7 +6,7 @@
 import type PptxGenJS from 'pptxgenjs';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
 import type { Deck, DeckChart, DeckFormat, DeckSlide, DeckTable, DeckTile } from './statsDeck';
-import { isThin, scoreToLetter, GRADE_SCALE, NORMAL_SCORE } from './statistics';
+import { gradeTrackPos, isThin, scoreToLetter, GRADE_SCALE, NORMAL_SCORE } from './statistics';
 
 // 16:9 — 10" × 5.625", or A4 landscape — 11.69" × 8.27". Set per export by
 // setLayout(); everything below reads these.
@@ -100,8 +100,8 @@ function addDivider(slide: Slide, s: DeckSlide) {
   slide.addShape('rect', { x: MARGIN, y: mid + 1.15, w: 0.65, h: 0.06, fill: { color: ACCENT }, line: { color: ACCENT, width: 0 } });
 }
 
-/** The dashboard's dot scale: one row per thing graded, a dot on an E–A track
- *  with C marked; the letter and n beside it. Drawn as shapes, so the only
+/** The dashboard's dot scale: one row per thing graded, a dot on an A–E track
+ *  (A left, like the form) with C marked; the letter and n beside it. Drawn as shapes, so the only
  *  scale anyone sees is the five letters. */
 function addGradeScale(slide: Slide, chart: Extract<DeckChart, { kind: 'grade' }>, x: number, y: number, w: number, h: number) {
   const rows = chart.categories.length;
@@ -109,9 +109,9 @@ function addGradeScale(slide: Slide, chart: Extract<DeckChart, { kind: 'grade' }
   const valueW = 0.85;
   const trackX = x + labelW;
   const trackW = w - labelW - valueW;
-  const pos = (score: number) => trackX + ((score - 1) / 14) * trackW;
+  const pos = (score: number) => trackX + gradeTrackPos(score) * trackW;
   const rowH = Math.min(0.34, (h - 0.25) / Math.max(1, rows));
-  for (const l of ['E', 'D', 'C', 'B', 'A']) {
+  for (const l of ['A', 'B', 'C', 'D', 'E']) {
     slide.addText(l, { x: pos(GRADE_SCALE[l]) - 0.15, y, w: 0.3, h: 0.2, fontFace: FONT, fontSize: 7.5, color: MUTED, align: 'center', valign: 'middle' });
   }
   chart.categories.forEach((label, i) => {

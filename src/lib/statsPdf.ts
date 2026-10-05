@@ -7,7 +7,7 @@ import logoDataUrl from '../assets/svrz-logo.png?inline';
 import { INTER_DISPLAY_BOLD_B64, INTER_DISPLAY_REGULAR_B64 } from './pdfFontsDisplay';
 import { pdfSafeText } from './feedbackPdf';
 import type { Deck, DeckChart, DeckFormat, DeckSlide, DeckTable, DeckTile } from './statsDeck';
-import { isThin, scoreToLetter, GRADE_SCALE, NORMAL_SCORE } from './statistics';
+import { gradeTrackPos, isThin, scoreToLetter, GRADE_SCALE, NORMAL_SCORE } from './statistics';
 
 // The page: A4 landscape for print, or the same width at 16:9 for a screen.
 // Set per export by setPage(); everything below reads these.
@@ -251,8 +251,8 @@ function drawChart(s: Sheet, heading: string, chart: DeckChart, x: number, y: nu
     const valueW = 62;
     const trackX = x + labelW;
     const trackW = w - labelW - valueW;
-    const pos = (score: number) => trackX + ((score - 1) / 14) * trackW;
-    for (const l of ['E', 'D', 'C', 'B', 'A']) s.text(l, pos(GRADE_SCALE[l]), top + 6, { size: 6.5, color: MUTED, align: 'center' });
+    const pos = (score: number) => trackX + gradeTrackPos(score) * trackW;
+    for (const l of ['A', 'B', 'C', 'D', 'E']) s.text(l, pos(GRADE_SCALE[l]), top + 6, { size: 6.5, color: MUTED, align: 'center' });
     const rowsTop = top + 12;
     chart.categories.forEach((label, i) => {
       const ry = rowsTop + i * rowH + rowH / 2;

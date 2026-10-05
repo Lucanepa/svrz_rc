@@ -49,6 +49,7 @@ import { confirmDialog, toast } from './ui';
 import CoacheeFileAdmin from './CoacheeFileAdmin';
 import RcMeetingsAdmin, { fmtMeetingDate } from './RcMeetingsAdmin';
 import BudgetCard, { chf } from './BudgetCard';
+import FinanceChair from './FinanceChair';
 import { computeBudget, normalizeBudget } from '../lib/budget';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame, type rcCoachSummary, type rcCoachSummaryGame } from '../types';
 import LevelText from './LevelText';
@@ -884,7 +885,7 @@ async function parseXlsx(file: File): Promise<ImportRow[]> {
 // Console tabs live in the URL as /admin/<tab>, so each one is linkable and
 // the Back button steps between them. The Protokoll tab's own two views are
 // one level down: /admin/logs and /admin/logs/history.
-const ADMIN_TABS = ['coachees', 'rcs', 'planning', 'games', 'overview', 'stats', 'niveau', 'emails', 'form', 'survey', 'notes', 'forms', 'logs', 'settings'] as const;
+const ADMIN_TABS = ['coachees', 'rcs', 'planning', 'games', 'overview', 'stats', 'niveau', 'emails', 'form', 'survey', 'notes', 'forms', 'finance', 'logs', 'settings'] as const;
 type AdminTab = (typeof ADMIN_TABS)[number];
 // /admin/archive was the chair's season-ZIP tab before the forms database
 // absorbed it; a bookmark of it still lands where the ZIP now lives.
@@ -949,7 +950,9 @@ export default function AdminConsole() {
   // into the other half lands on that role's own first tab rather than on a
   // page whose every request would 401.
   useEffect(() => {
-    if (role === 'president' && tab !== 'survey' && tab !== 'notes' && tab !== 'forms') setTab('survey');
+    if (role === 'president' && tab !== 'survey' && tab !== 'notes' && tab !== 'forms' && tab !== 'finance') setTab('survey');
+    // The admin's budget lives on Finanzen & Betrieb ('overview'), the chair's on 'finance'.
+    if (role === 'admin' && tab === 'finance') setTab('overview');
     if (role === 'admin' && (tab === 'survey' || tab === 'notes' || tab === 'forms')) setTab('coachees');
     // 'form' edits the questionnaire and is admin-only, even though its
     // subject — the survey — belongs to the chair's half of the console.
@@ -1196,6 +1199,8 @@ export default function AdminConsole() {
     { id: 'survey', label: t.survey, icon: <MessageSquare size={15} /> },
     { id: 'notes', label: t.notes, icon: <Lock size={15} /> },
     { id: 'forms', label: t.forms, icon: <FolderOpen size={15} /> },
+    // The budget is hers as well as the admin's (2026-10-05: "budget si").
+    { id: 'finance', label: lang === 'DE' ? 'Finanzen' : 'Finance', icon: <Coins size={15} /> },
   ] : [
     { id: 'coachees', label: t.coachees, icon: <Users size={15} /> },
     { id: 'rcs', label: t.rcs, icon: <ShieldCheck size={15} /> },
@@ -1306,6 +1311,7 @@ export default function AdminConsole() {
         </>}
         {isPresident && <div hidden={tab !== 'survey'}><SurveyAdmin t={t} lang={lang} /></div>}
         {isPresident && <div hidden={tab !== 'notes'}><PresidentNotesAdmin t={t} lang={lang} /></div>}
+        {isPresident && <div hidden={tab !== 'finance'}><FinanceChair lang={lang} /></div>}
         {isPresident && (
           <div hidden={tab !== 'forms'}>
             <FormsAdmin t={t} lang={lang} active={tab === 'forms'} />

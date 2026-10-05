@@ -816,6 +816,26 @@ export async function getBudget(season: number): Promise<BudgetSettings> {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not load the budget');
   return normalizeBudget(await r.json());
 }
+export type FinanceData = {
+  season: number; cap: number | null; visitRate: number;
+  rows: Array<{ id: string; fullName: string; done: number; outstanding: number; planned: number; paidAt: string | null }>;
+  meetings: Array<{ id: string; title: string; date: string; rate: number; attended: string[] }>;
+  budget: BudgetSettings;
+};
+/** Admin or chair: everything the budget needs, in one read (/api/finance). */
+/** Without a season, the server's default season — the chair's console never
+ *  loads the settings that would name one. */
+export async function getFinance(season?: number): Promise<FinanceData> {
+  const r = await fetch(apiUrl(season == null ? '/api/finance' : `/api/finance?season=${season}`), { credentials: 'include', cache: 'no-store' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not load the finances');
+  const body = await r.json();
+  return {
+    season: body.season, cap: body.cap ?? null, visitRate: Number(body.visitRate) || 0,
+    rows: Array.isArray(body.rows) ? body.rows : [],
+    meetings: Array.isArray(body.meetings) ? body.meetings : [],
+    budget: normalizeBudget(body.budget),
+  };
+}
 export async function putBudget(season: number, settings: BudgetSettings): Promise<BudgetSettings> {
   const r = await fetch(apiUrl('/api/admin/budget'), {
     method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },

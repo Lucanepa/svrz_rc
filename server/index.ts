@@ -8661,7 +8661,16 @@ app.get('/api/admin/rc-expenses', requireAdminSession, async (req: Request, res:
 // the same rows the Übersicht table shows, so the two cannot disagree.
 const budgetKey = (season: number) => `budget_${season}`;
 
-app.get('/api/admin/budget', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+/** The budget is the admin's AND the chair's (Jasmin, 2026-10-05: "budget
+ *  si"). The one /api/admin route the chair may use — the path is kept so the
+ *  console's calls and the service worker's exclusion of /api/admin stay as
+ *  they are. */
+function requireFinanceReader(req: Request, res: ExpressResponse, next: () => void) {
+  if (verifyAdminSession(req).ok || verifyPresidentSession(req).ok) { next(); return; }
+  res.status(401).json({ error: 'Unauthorized' });
+}
+
+app.get('/api/admin/budget', requireFinanceReader, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const season = await resolveSeason(req.query.season);
@@ -8669,7 +8678,7 @@ app.get('/api/admin/budget', requireAdminSession, async (req: Request, res: Expr
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-app.put('/api/admin/budget', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+app.put('/api/admin/budget', requireFinanceReader, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -8822,69 +8831,105 @@ async function openBookingBlocking(game: AnyRecord, coacheeIndex?: CoacheeIndex)
 /** The fields rcWorkloadRule and the coachee-slot test read off a game. */
 const WORKLOAD_GAME_FIELDS = 'id,match_no,match_date,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id';
 
+type OverviewRow = {
+  id: string; fullName: string; done: number; outstanding: number; planned: number;
+  paidAt: string | null; paidBy?: string; meetingsAttended?: string[];
+};
+
+/** The Übersicht's rows for a season — every active coach's done / outstanding
+ *  / planned and payout mark, or only the asking coach's when `rcAuth` is set.
+ *  One place, so the table, the Home dashboard and the finance view
+ *  (/api/finance) count alike. */
+async function seasonOverviewRows(season: number, rcAuth?: { rcId: string; name: string }): Promise<OverviewRow[]> {
+  // rcRefMatches reads the known ids synchronously off the roster cache.
+  // A coach's session fills it on the way in (resolveRcSession); the
+  // console's does not, and on a cold process — right after the
+  // copy-then-build restart — an Übersicht opened first would read an
+  // empty set, under which a feedback stamped with a colleague's id falls
+  // to the name and is counted as done for a namesake too. The same read
+  // collectExpenseVisits and loadStatRaw make, for the same reason.
+  await getActiveRcPeople();
+  const inSeason = await seasonFilterExceptManual(season);
+  // 1. RC people
+  const allPeople = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
+    collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }),
+  );
+  // Every other coach's workload is an ADMIN surface. It used to be hidden
+  // client-side while the endpoint still handed the whole table to anyone
+  // holding a session -- one `curl` away, and one flipped boolean away in a
+  // devtools console. Cut here, so a plain RC is served only their own row
+  // (the Home dashboard is all that still reads this as a coach).
+  // rcAuthByReq is absent for admin sessions, by the convention above.
+  const people = rcAuth
+    ? allPeople.filter((p) => rcRefMatches(p.id, `${asText(p.first_name)} ${asText(p.last_name)}`.trim(), rcAuth))
+    : allPeople;
+  // 2. All games
+  const allGames = await withCollection(collectionCandidates.games, (collection) =>
+    collection.getFullList<AnyRecord>({
+      sort: '-match_date',
+      fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game',
+    }),
+  );
+  // 3. All feedback records
+  const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
+    collection.getFullList<AnyRecord>({
+      fields: 'id,rc_name,rc_id,game,coachee,submitted_at',
+    }),
+  );
+
+  const workload = workloadByRc(people, allGames, allFeedbacks, inSeason, new Date(), await getManualGameIds(), await makeCoacheeSlotTest());
+
+  const [paidMap, seasonMeetings] = await Promise.all([readRcPaid(season), readRcMeetings().then((l) => meetingsOfSeason(l, season))]);
+  const result = people.map((p) => {
+    const fullName = `${asText(p.first_name)} ${asText(p.last_name)}`.trim();
+    const { done, outstanding, planned } = workload.get(String(p.id))!;
+
+    // The payout mark rides along for the console. A coach's own row gets
+    // the date too (it is their money); who recorded it is admin business.
+    const paid = paidMap[String(p.id)];
+    return {
+      id: String(p.id), fullName, done, outstanding, planned,
+      paidAt: paid ? paid.at : null,
+      // The ids of the season's meetings this coach sat in — one tick each.
+      ...(rcAuth ? {} : { paidBy: paid ? paid.by : '', meetingsAttended: seasonMeetings.filter((m) => m.attended.includes(String(p.id))).map((m) => m.id) }),
+    };
+  });
+  return result;
+}
+
 app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    // rcRefMatches reads the known ids synchronously off the roster cache.
-    // A coach's session fills it on the way in (resolveRcSession); the
-    // console's does not, and on a cold process — right after the
-    // copy-then-build restart — an Übersicht opened first would read an
-    // empty set, under which a feedback stamped with a colleague's id falls
-    // to the name and is counted as done for a namesake too. The same read
-    // collectExpenseVisits and loadStatRaw make, for the same reason.
-    await getActiveRcPeople();
     const season = await resolveSeason(req.query.season);
-    const inSeason = await seasonFilterExceptManual(season);
-    // 1. RC people
-    const allPeople = await withCollection(collectionCandidates.refereeCoachPeople, (collection) =>
-      collection.getFullList<AnyRecord>({ sort: 'last_name', filter: 'active = true' }),
-    );
-    // Every other coach's workload is an ADMIN surface. It used to be hidden
-    // client-side while the endpoint still handed the whole table to anyone
-    // holding a session -- one `curl` away, and one flipped boolean away in a
-    // devtools console. Cut here, so a plain RC is served only their own row
-    // (the Home dashboard is all that still reads this as a coach).
-    // rcAuthByReq is absent for admin sessions, by the convention above.
-    const rcAuth = rcAuthByReq.get(req);
-    const people = rcAuth
-      ? allPeople.filter((p) => rcRefMatches(p.id, `${asText(p.first_name)} ${asText(p.last_name)}`.trim(), rcAuth))
-      : allPeople;
-    // 2. All games
-    const allGames = await withCollection(collectionCandidates.games, (collection) =>
-      collection.getFullList<AnyRecord>({
-        sort: '-match_date',
-        fields: 'id,match_no,league,match_date,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game',
-      }),
-    );
-    // 3. All feedback records
-    const allFeedbacks = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
-      collection.getFullList<AnyRecord>({
-        fields: 'id,rc_name,rc_id,game,coachee,submitted_at',
-      }),
-    );
-
-    const workload = workloadByRc(people, allGames, allFeedbacks, inSeason, new Date(), await getManualGameIds(), await makeCoacheeSlotTest());
-
-    const [paidMap, seasonMeetings] = await Promise.all([readRcPaid(season), readRcMeetings().then((l) => meetingsOfSeason(l, season))]);
-    const result = people.map((p) => {
-      const fullName = `${asText(p.first_name)} ${asText(p.last_name)}`.trim();
-      const { done, outstanding, planned } = workload.get(String(p.id))!;
-
-      // The payout mark rides along for the console. A coach's own row gets
-      // the date too (it is their money); who recorded it is admin business.
-      const paid = paidMap[String(p.id)];
-      return {
-        id: p.id, fullName, done, outstanding, planned,
-        paidAt: paid ? paid.at : null,
-        // The ids of the season's meetings this coach sat in — one tick each.
-        ...(rcAuth ? {} : { paidBy: paid ? paid.by : '', meetingsAttended: seasonMeetings.filter((m) => m.attended.includes(String(p.id))).map((m) => m.id) }),
-      };
-    });
-
-    res.json(result);
+    res.json(await seasonOverviewRows(season, rcAuthByReq.get(req)));
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
+});
+
+// Admin → Finanzen & Betrieb has these from four reads; the chair's own half
+// of the console (Finanzen) gets them from this one — her login opens no
+// coach route, and opening rc-overview to her would hand out more than the
+// money. Admin or chair (Jasmin, 2026-10-05: "budget si").
+app.get('/api/finance', requireFinanceReader, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const season = await resolveSeason(req.query.season);
+    const [rows, cap, rates, meetings, budget] = await Promise.all([
+      seasonOverviewRows(season),
+      readPaidCap(),
+      readExpenseRates(),
+      readRcMeetings().then((l) => meetingsOfSeason(l, season)),
+      getSettingRecord(budgetKey(season)).then((r) => normalizeBudget(r?.value)),
+    ]);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      season, cap, visitRate: rates.visit,
+      rows: rows.map((r) => ({ id: r.id, fullName: r.fullName, done: r.done, outstanding: r.outstanding, planned: r.planned, paidAt: r.paidAt })),
+      meetings: meetings.map((m) => ({ id: m.id, title: m.title, date: m.date, rate: m.rate, attended: m.attended })),
+      budget,
+    });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
 // ── Statistik ────────────────────────────────────────────────────────────────

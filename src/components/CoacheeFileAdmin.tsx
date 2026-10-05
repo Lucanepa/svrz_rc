@@ -11,8 +11,10 @@ import {
  * and their PIN, to hand out by hand — no mail tells coachees for now (Luca,
  * 2026-10-05; the chair wants to wait for Swiss Volley's acceptance). A PIN
  * is minted when a report is filed; "Fehlende PINs erzeugen" mints them for
- * the reports filed before. There is deliberately no switch here for the PIN
- * mail: turning it on is a database write, not a click.
+ * the reports filed before. The PIN mail's switch is drawn but greyed out and
+ * locked, noting that SVRZ / RC must approve it first (Luca, 2026-10-05), so
+ * it cannot be turned on by mistake — and no server route sets it either.
+ * Turning it on is a code change.
  */
 
 type Lang = 'DE' | 'EN';
@@ -23,6 +25,8 @@ const STR = {
     badge: 'Keine E-Mails an Coachees',
     hint: 'Coachees sehen unter /dossier alle Berichte, die sie erhalten haben — mit SV-Nr. und persönlichem 6-stelligem PIN. Jede:r mit SV-Nr. erhält beim ersten Bericht automatisch einen PIN. Es wird nichts an Coachees versendet: PINs gibst du selbst weiter.',
     mailOn: 'Achtung: Der PIN-Versand ist in der Datenbank eingeschaltet.',
+    mailToggle: 'PIN per E-Mail an Coachees senden',
+    mailLocked: 'Gesperrt — muss zuerst von SVRZ / RC genehmigt werden.',
     backfill: (n: number) => `Fehlende PINs erzeugen (${n})`,
     backfillDone: (n: number) => `${n} PIN${n === 1 ? '' : 's'} erzeugt.`,
     search: 'Name oder SV-Nr.…',
@@ -48,6 +52,8 @@ const STR = {
     badge: 'No e-mails to coachees',
     hint: 'Coachees see every report they received at /dossier — with their SV no. and a personal 6-digit PIN. Everyone with an SV no. gets a PIN automatically with their first report. Nothing is sent to coachees: you pass the PINs on yourself.',
     mailOn: 'Warning: the PIN mail is switched on in the database.',
+    mailToggle: 'Send the PIN to coachees by e-mail',
+    mailLocked: 'Locked — to be approved by SVRZ / RC first.',
     backfill: (n: number) => `Create missing PINs (${n})`,
     backfillDone: (n: number) => `${n} PIN${n === 1 ? '' : 's'} created.`,
     search: 'Name or SV no.…',
@@ -140,6 +146,15 @@ export default function CoacheeFileAdmin({ lang }: { lang: Lang }) {
         <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-amber-100 text-amber-800">{t.badge}</span>
       </div>
       <p className="text-xs text-stone-500 mb-3">{t.hint}</p>
+      {/* Drawn so it is clear the mail exists, and locked so it cannot be
+          turned on by mistake: SVRZ / RC approval comes first. */}
+      <label data-testid="coachee-file-mail-toggle" className="mb-3 flex items-start gap-3 cursor-not-allowed opacity-60" title={t.mailLocked}>
+        <input type="checkbox" className="mt-0.5 h-4 w-4" checked={!!meta?.enabled} disabled readOnly aria-describedby="coachee-file-mail-locked" />
+        <span>
+          <span className="block text-sm font-medium text-stone-700">{t.mailToggle}</span>
+          <span id="coachee-file-mail-locked" className="block text-xs text-stone-500">{t.mailLocked}</span>
+        </span>
+      </label>
       {meta?.enabled && (
         <p className="mb-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{t.mailOn}</p>
       )}

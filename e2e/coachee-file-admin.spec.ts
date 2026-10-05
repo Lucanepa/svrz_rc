@@ -3,7 +3,7 @@ import { stubSignedInApp } from './support/app';
 
 // Admin → E-Mails → Coaching-Dossier: everyone with a file and their PIN, to
 // hand out by hand. Nothing here can turn on a mail to coachees (Luca,
-// 2026-10-05) — there is no switch to click.
+// 2026-10-05) — the switch is drawn but locked until SVRZ / RC approve.
 
 const TEMPLATE = { subject: 'S', heading: '', intro: 'I', outro: 'O' };
 const PEOPLE = [
@@ -25,12 +25,18 @@ test.beforeEach(async ({ page }) => {
   }));
 });
 
-test('lists the people with their PINs, and offers no mail switch', async ({ page }) => {
+test('lists the people with their PINs; the mail switch is locked pending approval', async ({ page }) => {
   await page.route('**/api/admin/coachee-file/pins', (r) => r.fulfill({ json: { people: PEOPLE } }));
   await page.goto('/admin/emails');
   const card = page.getByTestId('coachee-file-admin');
   await expect(card.getByText('Keine E-Mails an Coachees')).toBeVisible();
-  await expect(card.getByRole('checkbox')).toHaveCount(0);
+  // Drawn, off, and impossible to turn on: SVRZ / RC approval comes first.
+  const toggle = card.getByRole('checkbox', { name: 'PIN per E-Mail an Coachees senden' });
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).not.toBeChecked();
+  await expect(card.getByText('Gesperrt — muss zuerst von SVRZ / RC genehmigt werden.')).toBeVisible();
+  await toggle.click({ force: true });
+  await expect(toggle).not.toBeChecked();
   const rows = card.getByTestId('coachee-file-person');
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(0)).toContainText('Hans Muster');

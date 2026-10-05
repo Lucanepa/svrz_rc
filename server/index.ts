@@ -22,6 +22,11 @@ import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, 
 import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, rcWorkloadRule, resolvePaidCap, type ExpenseVisit, type RcGameSets } from './expenses.ts';
 import { computeBreakdowns, computeStatistics, coacheeSummaries, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
 import { archiveSlug, formsRowOf, formsEntryName, groupForms, folderKeys, type FormsRow } from './forms.ts';
+import {
+  normalizeSvNumber, normalizePin, mintPin, parsePinMap, signFileSession, verifyFileSession, sessionStillValid,
+  formRefereeId, fileEntries, fileOwnerName, PIN_LENGTH, SESSION_TTL_MS,
+  type PinEntry, type PinMap, type FileSession,
+} from './coacheeFile.ts';
 import type { StatFilters, StatRole } from '../src/lib/statistics.ts';
 import { goalForMandate, OBSERVATION_GOAL } from '../src/types.ts';
 import { splitCoacheeGroups } from '../src/lib/coacheeGroup.ts';
@@ -358,6 +363,8 @@ const notebookJson = express.json({ limit: NOTEBOOK_MAX_BYTES });
 const CONFIDENTIAL_BODY_PATHS = [
   /^\/api\/feedback\/[^/]+\/president-note$/i,
   /^\/api\/survey\/[^/]+$/i,
+  // The coachee file's login carries an SV-Nr. and its PIN.
+  /^\/api\/coachee-file\/login\/?$/i,
   // A 4.4.10 Rückmeldung carries the same promise as the note above it: it
   // reaches the chair and no one else. The admin Protokoll is read by people
   // that promise excludes, so the body is reduced to shape here too.
@@ -884,7 +891,7 @@ setInterval(() => {
   // Every bucket, not just the login ones: clientLogRl is fed by an
   // unauthenticated endpoint that any scanner can reach, so a forgotten map
   // grows one entry per source IP for the life of the process.
-  for (const store of [gateAttempts, signatureAttempts, signatureStartAttempts, sharedLoginGlobal, sharedLoginIpFailures, logReadRl, surveyAttempts, clientLogRl, clientLogGlobalRl, parkAttempts, notebookAttempts, unauthLogRl]) {
+  for (const store of [gateAttempts, signatureAttempts, signatureStartAttempts, sharedLoginGlobal, sharedLoginIpFailures, logReadRl, surveyAttempts, clientLogRl, clientLogGlobalRl, parkAttempts, notebookAttempts, unauthLogRl, coacheeFileSvFails, coacheeFileSvDayFails, coacheeFileIpFails, coacheeFileGlobalFails]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
@@ -7589,6 +7596,257 @@ app.get('/api/feedback/:id/file', async (req: Request, res: ExpressResponse) => 
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
+// ── The coachee's own file (/dossier) — NOT ROLLED OUT ───────────────
+// A coached referee reads back every report the coaching mailed them, with
+// their SV-Nr. and a personal 6-digit PIN. Rules in server/coacheeFile.ts.
+// `coachee_file_enabled` gates the PIN MAIL, which is the only way a coachee
+// learns a PIN; until the chair says go (Swiss Volley's acceptance first —
+// Jasmin, 2026-10-04) it stays off and only PINs the admin mints in the
+// console exist. The routes below need no switch of their own: without a PIN
+// there is nothing to log in with.
+
+const COACHEE_FILE_ENABLED_KEY = 'coachee_file_enabled';
+const COACHEE_FILE_PINS_KEY = 'coachee_file_pins';
+const COACHEE_FILE_URL = `${MAIL_APP_URL.replace(/\/+$/, '')}/dossier`;
+
+async function isCoacheeFileEnabled(): Promise<boolean> {
+  return asText((await getSettingRecord(COACHEE_FILE_ENABLED_KEY))?.value) === '1';
+}
+
+async function readCoacheePins(): Promise<PinMap> {
+  return parsePinMap((await getSettingRecord(COACHEE_FILE_PINS_KEY))?.value);
+}
+
+/** The person's PIN, minted on first use. `reset` replaces it and bumps the
+ *  generation, which ends every session opened with the old one. */
+function ensureCoacheePin(sv: string, opts: { reset?: boolean } = {}): Promise<PinEntry> {
+  return withSettingLock(COACHEE_FILE_PINS_KEY, async () => {
+    const pins = await readCoacheePins();
+    const current = pins[sv];
+    if (current && !opts.reset) return current;
+    const entry: PinEntry = {
+      pin: mintPin((max) => randomInt(max)),
+      gen: (current?.gen ?? 0) + 1,
+      createdAt: new Date().toISOString(),
+    };
+    pins[sv] = entry;
+    await setSetting(COACHEE_FILE_PINS_KEY, JSON.stringify(pins));
+    return entry;
+  });
+}
+
+const signCoacheeFile = (data: string) => signAdminSessionPayload(data);
+
+// Three budgets, all charged on a WRONG answer only (charge, refund a success —
+// the race-free way, see refundRateLimit):
+//  - per SV-Nr.: the PIN space is a million, so five wrong guesses per quarter
+//    hour and twenty per day leave a guesser at ~1 in 50 000 a day per person;
+//  - per address: one machine cannot walk many SV-Nr. in parallel;
+//  - app-wide: a spread-out attack is slowed for addresses that have failed,
+//    the way the team login's backstop does it.
+const coacheeFileSvFails: RateLimitStore = new Map();
+const coacheeFileSvDayFails: RateLimitStore = new Map();
+const coacheeFileIpFails: RateLimitStore = new Map();
+const coacheeFileGlobalFails: RateLimitStore = new Map();
+const CF_SV_MAX = 5;
+const CF_SV_WINDOW_MS = 15 * 60 * 1000;
+const CF_SV_DAY_MAX = 20;
+const CF_DAY_MS = 24 * 60 * 60 * 1000;
+const CF_IP_MAX = 10;
+const CF_IP_WINDOW_MS = 15 * 60 * 1000;
+const CF_GLOBAL_MAX = 300;
+const CF_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
+
+/** The session the page sent, still valid against the current PIN. */
+async function coacheeFileSession(req: Request): Promise<FileSession | null> {
+  const token = asText(req.headers['x-coachee-file']).slice(0, 512);
+  if (!token) return null;
+  const session = verifyFileSession(token, signCoacheeFile, constantTimeEquals, Date.now());
+  if (!session) return null;
+  return sessionStillValid(session, await readCoacheePins()) ? session : null;
+}
+
+/** Every filed form, with what the coachee page needs to pick theirs. */
+async function loadCoacheeFileRecords(): Promise<Array<AnyRecord & { id: string }>> {
+  return withCollection(collectionCandidates.refereeCoaches, (c) =>
+    c.getFullList<AnyRecord>({ sort: '-submitted_at', expand: 'game,coachee' })) as Promise<Array<AnyRecord & { id: string }>>;
+}
+
+app.post('/api/coachee-file/login', async (req: Request, res: ExpressResponse) => {
+  const ctx = reqCtx(req);
+  try {
+    const sv = normalizeSvNumber((req.body as AnyRecord | undefined)?.sv);
+    const pin = normalizePin((req.body as AnyRecord | undefined)?.pin);
+    // Same words for every wrong answer: an unknown SV-Nr. must not read
+    // differently from a wrong PIN, or the door lists who has a file.
+    const wrong = () => res.status(401).json({ error: 'SV-Nr. oder PIN stimmt nicht. · SV no. or PIN is not correct.' });
+    if (!sv || !pin) { wrong(); return; }
+
+    const ipRl = peekRateLimit(coacheeFileIpFails, ctx.ip, CF_IP_MAX);
+    if (!ipRl.allowed) { denyRateLimited(req, res, 'coachee-file:ip', ipRl.retryAfterMs); return; }
+    const svRl = peekRateLimit(coacheeFileSvFails, sv, CF_SV_MAX);
+    const svDay = peekRateLimit(coacheeFileSvDayFails, sv, CF_SV_DAY_MAX);
+    if (!svRl.allowed || !svDay.allowed) {
+      denyRateLimited(req, res, 'coachee-file:sv', Math.max(svRl.retryAfterMs, svDay.retryAfterMs));
+      return;
+    }
+    const failedHere = !peekRateLimit(coacheeFileIpFails, ctx.ip, 1).allowed;
+    const globalRl = peekRateLimit(coacheeFileGlobalFails, 'global', CF_GLOBAL_MAX);
+    if (!globalRl.allowed && failedHere) { denyRateLimited(req, res, 'coachee-file:global', globalRl.retryAfterMs); return; }
+
+    // Charged before the await, refunded on success.
+    checkRateLimit(coacheeFileIpFails, ctx.ip, Number.MAX_SAFE_INTEGER, CF_IP_WINDOW_MS);
+    checkRateLimit(coacheeFileSvFails, sv, Number.MAX_SAFE_INTEGER, CF_SV_WINDOW_MS);
+    checkRateLimit(coacheeFileSvDayFails, sv, Number.MAX_SAFE_INTEGER, CF_DAY_MS);
+    checkRateLimit(coacheeFileGlobalFails, 'global', Number.MAX_SAFE_INTEGER, CF_GLOBAL_WINDOW_MS);
+
+    const entry = (await readCoacheePins())[sv];
+    // Compared even when there is no entry, so the answer takes the same time.
+    const ok = constantTimeEquals(pin, entry?.pin ?? '\u0000'.repeat(PIN_LENGTH)) && !!entry;
+    if (!ok) {
+      log.warn('coachee-file.login', 'wrong SV-Nr. or PIN', { known: !!entry }, { reqId: ctx.reqId, ip: ctx.ip, sid: ctx.sid });
+      wrong();
+      return;
+    }
+    refundRateLimit(coacheeFileIpFails, ctx.ip);
+    refundRateLimit(coacheeFileSvFails, sv);
+    refundRateLimit(coacheeFileSvDayFails, sv);
+    refundRateLimit(coacheeFileGlobalFails, 'global');
+    const exp = Date.now() + SESSION_TTL_MS;
+    log.info('coachee-file.login', 'coachee opened their file', {}, { reqId: ctx.reqId, ip: ctx.ip, sid: ctx.sid });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ token: signFileSession({ sv, gen: entry.gen, exp }, signCoacheeFile), expiresAt: exp });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.get('/api/coachee-file', async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const session = await coacheeFileSession(req);
+    if (!session) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const [records, manualGameIds] = await Promise.all([loadCoacheeFileRecords(), getManualGameIds()]);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({
+      refereeId: session.sv,
+      name: fileOwnerName(records, session.sv),
+      expiresAt: session.exp,
+      entries: fileEntries(records, session.sv, { toPlain: richTextToPlain, manualGameIds }),
+    });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.get('/api/coachee-file/forms/:id/file', async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    // Who before what, like /api/feedback/:id/file: a stranger gets the same
+    // 401 whether or not the id exists.
+    const session = await coacheeFileSession(req);
+    if (!session) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    let record: AnyRecord;
+    try { record = await getFeedbackForNote(String(req.params.id)); }
+    catch { res.status(404).json({ error: 'Not found' }); return; }
+    // Someone else's report answers exactly like a missing one.
+    if (formRefereeId(record) !== session.sv) { res.status(404).json({ error: 'Not found' }); return; }
+    const row = formsRowOf(record);
+    const fetched = await fetchStoredForm(row, await pb.files.getToken());
+    if (!fetched) { res.status(404).json({ error: 'Zu diesem Bericht ist keine Datei gespeichert.' }); return; }
+    res.setHeader('Content-Type', fetched.type);
+    res.setHeader('Content-Disposition', `inline; filename="${formsEntryName(row)}"`);
+    res.setHeader('Content-Length', String(fetched.data.length));
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(fetched.data);
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// The console side: the switch, and a PIN looked up (or replaced) by SV-Nr. —
+// so the admin can try the page before anyone is told, and later answer "I
+// lost my PIN" without waiting for the next report. Admin only, like the rest
+// of the mail switches; the chair's half of the console has no tab for it.
+app.get('/api/admin/coachee-file', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const [enabled, pins] = await Promise.all([isCoacheeFileEnabled(), readCoacheePins()]);
+    res.json({ enabled, pinCount: Object.keys(pins).length, url: COACHEE_FILE_URL });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.put('/api/admin/coachee-file', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const enabled = (req.body as AnyRecord | undefined)?.enabled === true;
+    await setSetting(COACHEE_FILE_ENABLED_KEY, enabled ? '1' : '0');
+    log.info('coachee-file.switch', enabled ? 'PIN mail switched ON — coachees now receive their PIN' : 'PIN mail switched off', { enabled }, reqCtx(req));
+    res.json({ enabled });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.post('/api/admin/coachee-file/pin', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const sv = normalizeSvNumber((req.body as AnyRecord | undefined)?.sv);
+    if (!sv) { res.status(400).json({ error: 'Ungültige SV-Nr.' }); return; }
+    const reset = (req.body as AnyRecord | undefined)?.reset === true;
+    const records = await loadCoacheeFileRecords();
+    const entries = fileEntries(records, sv, { toPlain: richTextToPlain, manualGameIds: new Set() });
+    const entry = await ensureCoacheePin(sv, { reset });
+    // The PIN itself never goes into the log — only that one was handed out.
+    log.info('coachee-file.pin', reset ? 'PIN replaced in the console' : 'PIN looked up in the console', { reports: entries.length, gen: entry.gen }, reqCtx(req));
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ sv, pin: entry.pin, name: fileOwnerName(records, sv), reports: entries.length, createdAt: entry.createdAt });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+/** The PIN mail: to the referee ALONE, never in the report's message. That
+ *  one goes to the RC in Cc and the commission in Bcc, and a PIN they can read
+ *  would open every colleague's report on this referee to them — the very
+ *  thing the goals hand-over keeps private. Best-effort: a failure here is
+ *  logged and costs nobody the report. */
+async function sendCoacheeFileMail(to: string, opts: { sv: string; pin: string; firstName: string; test: boolean }): Promise<void> {
+  const hello = opts.firstName ? `Hallo ${opts.firstName}` : 'Hallo';
+  const helloEn = opts.firstName ? `Hi ${opts.firstName}` : 'Hi';
+  const intro = `${hello}, alle Coaching-Berichte, die du von uns erhalten hast, findest du jederzeit gesammelt in deinem persönlichen Coaching-Dossier — auch die aus früheren Saisons. Melde dich dort mit deiner SV-Nr. und diesem PIN an:`;
+  const introEn = `${helloEn}, every coaching report you have received from us is collected in your personal coaching file — earlier seasons included. Sign in there with your SV number and this PIN:`;
+  const warn = 'Der PIN gehört nur dir: Diese E-Mail geht an niemanden sonst. Gib ihn nicht weiter. Du erhältst ihn mit jedem Bericht erneut.';
+  const warnEn = 'The PIN is yours alone: this e-mail goes to nobody else. Do not pass it on. It comes again with every report.';
+  const html = emailShell(
+    `<h1 style="margin:0 0 4px;${mailText(20, MAIL_INK, `font-weight:700;line-height:1.3;${MAIL_DISPLAY}`)}">Dein Coaching-Dossier</h1>`
+    + `<p style="margin:0 0 16px;${mailText(14, MAIL_MUTED, `line-height:1.3;${MAIL_DISPLAY}`)}">Your coaching file</p>`
+    + bilingualBlockHtml(intro, introEn)
+    + detailRowsHtml([['SV-Nr.|SV no.', opts.sv]])
+    + emailCodeBox(opts.pin)
+    + `<div style="margin-top:4px;text-align:center;"><a href="${escapeHtml(COACHEE_FILE_URL)}" style="display:inline-block;padding:11px 24px;background:${MAIL_BRAND};color:#ffffff;text-decoration:none;border-radius:10px;${mailText(14, '#ffffff', 'font-weight:600;line-height:1;')}">Dossier öffnen · Open file</a></div>`
+    + `<p style="margin:22px 0 0;${mailText(13, MAIL_INK_SOFT)}">${escapeHtml(warn)}</p>`
+    + `<p style="margin:8px 0 0;${mailText(13, MAIL_MUTED)}">${escapeHtml(warnEn)}</p>`,
+  );
+  await sendMailResilient({
+    from: MAIL_FROM,
+    to,
+    subject: `${opts.test ? '[TEST] ' : ''}Dein Coaching-Dossier · Your coaching file`,
+    text: bilingualText(
+      `${intro}\n\nSV-Nr.: ${opts.sv}\nPIN: ${opts.pin}\n\n${COACHEE_FILE_URL}\n\n${warn}`,
+      `${introEn}\n\nSV no.: ${opts.sv}\nPIN: ${opts.pin}\n\n${COACHEE_FILE_URL}\n\n${warnEn}`,
+    ),
+    html,
+    attachments: emailAttachments(),
+  });
+}
+
+
+/** After a report went out: the PIN mail, if the switch is on and the report
+ *  is about someone with an SV-Nr. Never throws and is not awaited by the
+ *  submit route — the coach is waiting on "Abschliessen", and the report is
+ *  already delivered. */
+async function mailCoacheeFilePin(v: { to: string; sv: string; firstName: string; test: boolean; feedbackId: string }): Promise<void> {
+  try {
+    if (!v.to || !v.sv || !(await isCoacheeFileEnabled())) return;
+    const entry = await ensureCoacheePin(v.sv);
+    await sendCoacheeFileMail(v.to, { sv: v.sv, pin: entry.pin, firstName: v.firstName, test: v.test });
+    log.info('coachee-file.mail', 'PIN mailed to the referee', { feedbackId: v.feedbackId, testMode: v.test });
+  } catch (error) {
+    log.warn('coachee-file.mail', 'PIN mail failed — the report itself went out', { feedbackId: v.feedbackId, error: safeError(error) });
+  }
+}
+
 app.get('/api/president-notes', requireSurveyReader, async (_req: Request, res: ExpressResponse) => {
   try {
     res.json(await readAllPresidentNotes());
@@ -11676,6 +11934,16 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           cc: (mailCc ?? []).length,
           bcc: (mailBcc ?? []).length,
           testMode: isTestMode,
+        });
+        // The coachee file's PIN, in a message of its own to the referee alone
+        // (sendCoacheeFileMail says why). Off until the coachee file is rolled
+        // out — the helper checks the switch.
+        void mailCoacheeFilePin({
+          to: mailTo,
+          sv: normalizeSvNumber(asText(coachee?.referee_id) || slotRefereeId),
+          firstName: refereeFirstName,
+          test: isTestMode,
+          feedbackId: String(created.id),
         });
       }
     } catch (emailErr) {

@@ -50,6 +50,7 @@
 /demo            /            200
 /infos           /            200
 /info            /            200
+/dossier         /            200
 
 # ── dynamic ─────────────────────────────────────────────────────────────────
 # Stays first in this block: first match wins, and this one is more specific.

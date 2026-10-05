@@ -167,6 +167,8 @@ export default defineConfig(() => {
               //   /api/survey-responses, /api/president-notes, /api/rc-game-notes
               //   /api/forms/*, /api/feedback-archive — the filed-forms database and its ZIPs
               //   /api/feedback/<id>/file | /president-note — a filed PDF, the chair's note on it
+              //   /api/coachee-file[/…]             — a referee's own reports, read on a
+              //                                       device that may well be shared
               // The function is serialised into sw.js on its own, so the list
               // has to live inside it — it cannot reference a constant out here.
               urlPattern: ({ url }: { url: URL }) => url.pathname.startsWith('/api/')
@@ -176,7 +178,7 @@ export default defineConfig(() => {
                 // timeout is a list from another evening; offline review is
                 // served from IndexedDB, and the server answers no-store.
                 && !url.pathname.startsWith('/api/notebook')
-                && !/^\/api\/(admin(\/|$)|survey-responses|president-notes|rc-game-notes|forms(\/|$)|feedback-archive)/.test(url.pathname)
+                && !/^\/api\/(admin(\/|$)|survey-responses|president-notes|rc-game-notes|forms(\/|$)|feedback-archive|coachee-file(\/|$))/.test(url.pathname)
                 && !/^\/api\/feedback\/[^/]+\/(file|president-note)$/.test(url.pathname),
               method: 'GET',
               handler: 'NetworkFirst',

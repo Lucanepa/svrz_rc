@@ -1749,6 +1749,60 @@ export async function submitSurvey(token: string, payload: { lang: string; answe
   if (res.status === 409) throw new SurveyAlreadySubmitted('Survey already submitted');
   if (!res.ok) throw new Error('Could not save survey');
 }
+// ── The coachee's own file (/dossier) ─────────────────────────────────
+// Public page, its own short session: the token goes in a header (never a
+// cookie, so it rides on no request the page did not make) and lives in the
+// tab's sessionStorage only. See server/coacheeFile.ts.
+export type CoacheeFileEntry = {
+  id: string; date: string; role: '1. SR' | '2. SR'; matchNo: string; league: string;
+  homeTeam: string; awayTeam: string; rc: string; goals: string; hasFile: boolean; isTest: boolean;
+};
+export type CoacheeFile = { refereeId: string; name: string; expiresAt: number; entries: CoacheeFileEntry[] };
+export class CoacheeFileError extends Error {
+  constructor(message: string, readonly status: number, readonly retryAfterMs = 0) { super(message); }
+}
+export async function coacheeFileLogin(sv: string, pin: string): Promise<{ token: string; expiresAt: number }> {
+  const res = await fetch(apiUrl('/api/coachee-file/login'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sv, pin }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new CoacheeFileError(String(body.error || res.statusText), res.status, Number(body.retryAfterMs) || 0);
+  return body;
+}
+export async function getCoacheeFile(token: string): Promise<CoacheeFile> {
+  const res = await fetch(apiUrl('/api/coachee-file'), { headers: { 'X-Coachee-File': token }, cache: 'no-store' });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new CoacheeFileError(String(body.error || res.statusText), res.status);
+  return body;
+}
+/** One report's PDF, as a blob the page opens or shares. */
+export async function getCoacheeFileForm(token: string, id: string): Promise<{ blob: Blob; name: string }> {
+  const res = await fetch(apiUrl(`/api/coachee-file/forms/${encodeURIComponent(id)}/file`), { headers: { 'X-Coachee-File': token }, cache: 'no-store' });
+  if (!res.ok) throw new CoacheeFileError((await res.json().catch(() => ({}))).error || res.statusText, res.status);
+  const named = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
+  return { blob: await res.blob(), name: named ? named[1] : 'coaching-bericht.pdf' };
+}
+/** Admin: the switch (it gates the PIN mail) and the PIN count. */
+export async function getCoacheeFileAdmin(): Promise<{ enabled: boolean; pinCount: number; url: string }> {
+  const res = await fetch(apiUrl('/api/admin/coachee-file'), { credentials: 'include' });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not load');
+  return res.json();
+}
+export async function setCoacheeFileEnabled(enabled: boolean): Promise<void> {
+  const res = await fetch(apiUrl('/api/admin/coachee-file'), {
+    method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not save');
+}
+/** Admin: a person's PIN by SV-Nr., minted if they have none; `reset` replaces it. */
+export async function coacheeFilePin(sv: string, reset = false): Promise<{ sv: string; pin: string; name: string; reports: number; createdAt: string }> {
+  const res = await fetch(apiUrl('/api/admin/coachee-file/pin'), {
+    method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sv, reset }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not get the PIN');
+  return res.json();
+}
+
 export type SurveyResponse = {
   id: string; referee: string; anonymous: boolean; date: string; matchNo: string;
   rc: string; lang: string; submittedAt: string; answers: Record<string, string>;

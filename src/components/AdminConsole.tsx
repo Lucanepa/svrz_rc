@@ -46,6 +46,7 @@ import { groupLabel } from '../lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName } from '../lib/coacheeName';
 import { coacheeLookup, gameLabel, indexPeople, samePerson } from '../lib/identity';
 import { confirmDialog, toast } from './ui';
+import CoacheeFileAdmin from './CoacheeFileAdmin';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame, type rcCoachSummary, type rcCoachSummaryGame } from '../types';
 import LevelText from './LevelText';
 import StatisticsAdmin from './StatisticsAdmin';
@@ -1268,6 +1269,8 @@ export default function AdminConsole() {
           {/* The mail switches head the tab — the templates below are long. */}
           <TestModeCard t={t} testMode={testMode} onTestMode={setTestMode} loading={settingsLoading} />
           <EmailsAdmin t={t} lang={lang} />
+          {/* Not rolled out — its switch is off and asks before it turns on. */}
+          <CoacheeFileAdmin lang={lang} />
         </div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'planning'}>

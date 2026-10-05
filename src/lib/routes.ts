@@ -114,14 +114,14 @@ export const DEFAULT_ROUTE: AppRoute = {
 };
 
 /** Roots that own the whole document. main.tsx swaps the tree for these. */
-export type Root = 'admin' | 'sign' | 'survey' | 'guide' | 'infos' | 'app';
+export type Root = 'admin' | 'sign' | 'survey' | 'guide' | 'infos' | 'dossier' | 'app';
 
 /** First path segment of every route the app serves from a real URL.
  *  public/_redirects must name each of these; redirects-config.spec.ts checks
  *  that it does, because a route the edge does not know 404s on reload. */
 export const APP_ROUTE_PREFIXES = [
   'home', 'coachees', 'games', 'calendar', 'form', 'feedbacks',
-  'coachee-games', 'admin', 'guide', 'demo', 'season', 'infos', 'info',
+  'coachee-games', 'admin', 'guide', 'demo', 'season', 'infos', 'info', 'dossier',
 ] as const;
 
 /** Roots that still carry their capability in the fragment. Never a path. */
@@ -145,12 +145,14 @@ export function routeRoot(pathname: string, hash: string): Root {
   if (/^\/guide(\/|$)/i.test(pathname)) return 'guide';
   // `/info` too: it is the spelling people actually type.
   if (/^\/infos?(\/|$)/i.test(pathname)) return 'infos';
+  // A coached referee's own reports (CoacheeFilePage) — public, own login.
+  if (/^\/dossier\/?$/i.test(pathname)) return 'dossier';
   return 'app';
 }
 
 /** Paths owned by another root. The app must neither read nor rewrite these,
  *  or it would fight main.tsx mid-navigation. */
-export const isForeignPath = (pathname: string) => /^\/(admin|guide|infos?)(\/|$)/i.test(pathname);
+export const isForeignPath = (pathname: string) => /^\/(admin|guide|infos?|dossier)(\/|$)/i.test(pathname);
 
 /**
  * Rewrite a legacy `#/…` URL to its path form, in place.

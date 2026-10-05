@@ -8,6 +8,7 @@ import SignaturePage from './components/SignaturePage.tsx';
 import SurveyPage from './components/SurveyPage.tsx';
 import GuidePage from './components/GuidePage.tsx';
 import InfosPage from './components/InfosPage.tsx';
+import CoacheeFilePage from './components/CoacheeFilePage.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { UiHost } from './components/ui';
 import { enableDemo, isDemoMode } from './lib/demo';
@@ -248,6 +249,10 @@ createRoot(document.getElementById('root')!).render(
       // Public: the documents list from Home, for referees who have no login.
       // Rendered from the same USEFUL_DOCS, so the two cannot drift apart.
       <InfosPage />
+    ) : kind === 'dossier' ? (
+      // Public, its own door: a coached referee's reports behind their SV-Nr.
+      // and personal PIN. Not rolled out — see server/coacheeFile.ts.
+      <CoacheeFilePage />
     ) : kind === 'survey' ? (
       // Public and unauthenticated: the coachee who receives the feedback mail
       // is a referee, not an app user — the token in the link is the whole key.

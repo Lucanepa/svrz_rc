@@ -48,6 +48,8 @@ import { coacheeLookup, gameLabel, indexPeople, samePerson } from '../lib/identi
 import { confirmDialog, toast } from './ui';
 import CoacheeFileAdmin from './CoacheeFileAdmin';
 import RcMeetingsAdmin, { fmtMeetingDate } from './RcMeetingsAdmin';
+import BudgetCard, { chf } from './BudgetCard';
+import { computeBudget, normalizeBudget } from '../lib/budget';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame, type rcCoachSummary, type rcCoachSummaryGame } from '../types';
 import LevelText from './LevelText';
 import StatisticsAdmin from './StatisticsAdmin';
@@ -308,7 +310,7 @@ const STR = {
     mgDeleteTakesForms: 'Ein Testspiel: alles, was darauf erfasst wurde, geht mit — auch abgeschickte Formulare.',
     mgDeleteOk: (n: string) => `Spiel „${n}" gelöscht.`,
     shortcutToggle: 'Admin-Link in der Toolbar zeigen (nur Anzeige — gibt keine Rechte)',
-    games: 'Spiele', overview: 'Übersicht', stats: 'Statistik',
+    games: 'Spiele', overview: 'Finanzen & Betrieb', stats: 'Statistik',
     niveau: 'Niveau',
     nvHint: 'Auf welche Spiele ein SR dieser Stufe im Fokus steht — pro Kategorie und Rolle. Angeklickt heisst: das Spiel erscheint in der Spielliste des Coachees. Nichts angeklickt heisst: in dieser Kategorie und Rolle keine Fokus-Spiele („x" in der offiziellen Tabelle).',
     nvOfficial: 'Offizielle Tabelle, Stand 9. April 2026',
@@ -404,6 +406,7 @@ const STR = {
     ovCsv: 'Spesen-CSV',
     ovCsvHint: 'Erledigte Beobachtungen pro RC, plus die vergütete Anzahl nach der Obergrenze. Grundlage für die Spesenabrechnung nach Saisonende.',
     ovPaid: 'Vergütet',
+    ovChfHint: 'Was der Coach jetzt abrechnen kann: vergütete Besuche × Ansatz plus besuchte RC-Sitzungen.',
   },
   EN: {
     admin: 'Admin', logout: 'Sign out', login: 'Sign in', adminUser: 'Username', adminPw: 'Admin password',
@@ -621,7 +624,7 @@ const STR = {
     mgDeleteTakesForms: 'A test game: everything filed on it goes with it, filed forms included.',
     mgDeleteOk: (n: string) => `Game "${n}" deleted.`,
     shortcutToggle: 'Show the admin link in their toolbar (display only — grants nothing)',
-    games: 'Games', overview: 'Overview', stats: 'Statistics',
+    games: 'Games', overview: 'Finance & operations', stats: 'Statistics',
     niveau: 'Levels',
     nvHint: 'Which games a referee at this level is focused on — per category and role. Lit means the game shows up in that coachee\'s game list. Nothing lit means no focused games in this category and role (an "x" in the official table).',
     nvOfficial: 'Official table, as of 9 April 2026',
@@ -716,6 +719,7 @@ const STR = {
     ovCsv: 'Expenses CSV',
     ovCsvHint: 'Completed observations per coach, plus the reimbursed count after the ceiling. The basis for the end-of-season expense claim.',
     ovPaid: 'Paid',
+    ovChfHint: 'What the coach can claim now: paid visits × rate plus the RC meetings attended.',
   },
 } as const;
 type T = typeof STR['DE'];
@@ -1291,7 +1295,7 @@ export default function AdminConsole() {
           <ManualGameAdmin t={t} lang={lang} active={tab === 'games'} />
         </div>
         <div hidden={tab !== 'overview'}>
-          <OverviewAdmin t={t} lang={lang} paidCap={paidCap} season={defaultSeason} settingsLoading={settingsLoading} meetings={rcMeetings} onMeetings={setRcMeetings} />
+          <OverviewAdmin t={t} lang={lang} paidCap={paidCap} season={defaultSeason} settingsLoading={settingsLoading} meetings={rcMeetings} onMeetings={setRcMeetings} visitRate={expenseRates.visit} />
           {/* The meetings in a row of their own (Luca, 2026-10-05). */}
           <RcMeetingsAdmin lang={lang} meetings={rcMeetings} onMeetings={setRcMeetings} loading={settingsLoading} />
           <PaidCapCard t={t} paidCap={paidCap} onPaidCap={savePaidCap} loading={settingsLoading} />
@@ -5196,7 +5200,7 @@ function OverviewDetail({ t, lang, rcId, rcName, season }: { t: T; lang: Lang; r
 /** Vergütet: the done games up to the ceiling; every one with no ceiling. */
 const paidOf = (done: number, cap: number | null) => (cap == null ? done : Math.min(done, cap));
 
-function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetings, onMeetings }: { t: T; lang: Lang; paidCap: number | null; season: number; settingsLoading: boolean; meetings: RcMeeting[]; onMeetings: (next: RcMeeting[]) => void }) {
+function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetings, onMeetings, visitRate }: { t: T; lang: Lang; paidCap: number | null; season: number; settingsLoading: boolean; meetings: RcMeeting[]; onMeetings: (next: RcMeeting[]) => void; visitRate: number }) {
   const [rows, setRows] = useState<RcOverviewEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -5284,7 +5288,7 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetings, on
   // table is the claim. Semicolons and a BOM because the file is opened in a
   // German-locale Excel, where a comma-separated file lands in one column.
   const downloadCsv = () => {
-    const head = [t.ovName, t.ovDone, t.ovPlanned, t.ovOutstanding, t.ovPaid, t.ovPaidCol];
+    const head = [t.ovName, t.ovDone, t.ovPlanned, t.ovOutstanding, t.ovPaid, 'CHF', t.ovPaidCol];
     const cell = (v: string | number) => {
       const s = String(v);
       return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -5293,7 +5297,7 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetings, on
       // The order the table on screen uses, so the export can be checked
       // against it line by line (it sorted by given name — Anna Zünd first).
       .sort((a, b) => bySurname({ full_name: a.fullName }, { full_name: b.fullName }))
-      .map((r) => [r.fullName, r.done, r.planned, r.outstanding, paidOf(r.done, paidCap), r.paidAt ? dayLabel(r.paidAt, { year: true }) : ''].map(cell).join(';'));
+      .map((r) => [r.fullName, r.done, r.planned, r.outstanding, paidOf(r.done, paidCap), (costs[r.id]?.claim ?? 0).toFixed(2), r.paidAt ? dayLabel(r.paidAt, { year: true }) : ''].map(cell).join(';'));
     const csv = '\ufeff' + [head.map(cell).join(';'), ...body].join('\r\n') + '\r\n';
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     const a = document.createElement('a');
@@ -5305,7 +5309,18 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetings, on
     URL.revokeObjectURL(url);
   };
 
+  // What each coach can claim now — the same rule as the budget card above
+  // and the expense sheet (src/lib/budget.ts): paid visits + meetings attended.
+  const costs = useMemo(
+    () => computeBudget({ rows, cap: paidCap, visitRate, meetings, settings: normalizeBudget(null) }).perRc,
+    [rows, paidCap, visitRate, meetings],
+  );
+
   return (
+    <>
+    {/* The season's money first (Jasmin, 2026-10-05: "I will see also the
+        financial side"), from the same rows as the table under it. */}
+    <BudgetCard lang={lang} season={season} settingsLoading={settingsLoading} rows={rows} cap={paidCap} visitRate={visitRate} meetings={meetings} />
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <h2 className="text-sm font-semibold text-stone-700">{t.overview}</h2>
@@ -5337,7 +5352,8 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetings, on
                 <th className="py-2 pr-1.5 sm:pr-3 font-semibold text-right">{t.ovDone}</th>
                 <th className="py-2 pr-1.5 sm:pr-3 font-semibold text-right">{t.ovPlanned}</th>
                 <th className="py-2 pr-1.5 sm:pr-3 font-semibold text-right">{t.ovOutstanding}</th>
-                <th className="py-2 font-semibold text-right" title={t.paidCapHint}>{t.ovPaid}</th>
+                <th className="py-2 pr-1.5 sm:pr-3 font-semibold text-right" title={t.paidCapHint}>{t.ovPaid}</th>
+                <th className="py-2 font-semibold text-right" title={t.ovChfHint}>CHF</th>
               </tr>
             </thead>
             <tbody>
@@ -5371,7 +5387,7 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetings, on
                       <td className={cn('py-2 pr-1.5 sm:pr-3 text-right font-semibold', r.outstanding > 0 ? 'text-amber-700' : 'text-stone-400')} title={t.ovOutstandingHint}>{r.outstanding}</td>
                       {/* What the season actually pays. Equal to Erledigt until a
                           coach passes the ceiling, and then deliberately not. */}
-                      <td className="py-2 text-right tabular-nums text-stone-600 whitespace-nowrap">
+                      <td className="py-2 pr-1.5 sm:pr-3 text-right tabular-nums text-stone-600 whitespace-nowrap">
                         {paidOf(r.done, paidCap)}
                         {paidCap != null && r.done > paidCap && <span className="text-stone-400"> / {r.done}</span>}
                         {/* The tick says the claim was settled; the action to
@@ -5385,10 +5401,11 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetings, on
                           />
                         )}
                       </td>
+                      <td className="py-2 pl-1.5 sm:pl-3 text-right tabular-nums text-stone-600 whitespace-nowrap" title={t.ovChfHint}>{chf(costs[r.id]?.claim ?? 0)}</td>
                     </tr>
                     {open && (
                       <tr className="border-b border-stone-100 last:border-0">
-                        <td colSpan={5} className="pb-3 pt-1 pl-1 pr-1 sm:pl-4">
+                        <td colSpan={6} className="pb-3 pt-1 pl-1 pr-1 sm:pl-4">
                           {/* Outer w-0 + min-w-full: the panel fills the table
                               but never widens it — a cell's content counts toward
                               the column widths, and a chip line that does not
@@ -5454,6 +5471,7 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetings, on
         </div>
       )}
     </Card>
+    </>
   );
 }
 

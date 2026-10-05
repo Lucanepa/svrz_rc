@@ -7,6 +7,7 @@ import { sanitizeRich } from './richText';
 import { normalizeAttachedDocs } from './usefulDocs';
 import * as demo from './demo';
 import { isDemoMode } from './demo';
+import { normalizeBudget, type BudgetSettings } from './budget';
 import type { PageAck, PageWire, ServerPage } from './notebook';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
@@ -806,6 +807,22 @@ export async function listUpcomingRcMeetings(): Promise<RcMeetingPublic[]> {
 /** Coach: one meeting as an .ics the phone opens in its calendar. */
 export async function downloadRcMeetingIcs(id: string): Promise<void> {
   await downloadFrom(`/api/rc-meetings/${encodeURIComponent(id)}/ics`, 'rc-sitzung.ics');
+}
+
+// ── Season budget (src/lib/budget.ts) ────────────────────────────────
+export async function getBudget(season: number): Promise<BudgetSettings> {
+  if (isDemoMode()) return normalizeBudget(null);
+  const r = await fetch(apiUrl(`/api/admin/budget?season=${season}`), { credentials: 'include' });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not load the budget');
+  return normalizeBudget(await r.json());
+}
+export async function putBudget(season: number, settings: BudgetSettings): Promise<BudgetSettings> {
+  const r = await fetch(apiUrl('/api/admin/budget'), {
+    method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ season, ...settings }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Could not save the budget');
+  return normalizeBudget(await r.json());
 }
 
 export async function listPresidentNotes(): Promise<PresidentNote[]> {

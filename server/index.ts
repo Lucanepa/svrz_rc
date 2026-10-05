@@ -34,6 +34,7 @@ import {
 import type { StatFilters, StatRole } from '../src/lib/statistics.ts';
 import { goalForMandate, OBSERVATION_GOAL } from '../src/types.ts';
 import { splitCoacheeGroups } from '../src/lib/coacheeGroup.ts';
+import { normalizeBudget } from '../src/lib/budget.ts';
 import { ATTACH_BUDGET_BYTES, attachableDoc, normalizeAttachedDocs, type UsefulDoc } from '../src/lib/usefulDocs.ts';
 
 // Shared with the survey page so the mailed copy can never drift from the form
@@ -8651,6 +8652,33 @@ app.get('/api/admin/rc-expenses', requireAdminSession, async (req: Request, res:
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="spesen-rc-${season}-${String((season + 1) % 100).padStart(2, '0')}.zip"`);
     res.send(zipStore(entries));
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// ── Season budget (Admin → Finanzen & Betrieb) ────────────────────────
+// The budget figure and the extra cost lines, per season, in app_settings
+// `budget_<season>`. The sums are the console's (src/lib/budget.ts), done from
+// the same rows the Übersicht table shows, so the two cannot disagree.
+const budgetKey = (season: number) => `budget_${season}`;
+
+app.get('/api/admin/budget', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const season = await resolveSeason(req.query.season);
+    res.json({ season, ...normalizeBudget((await getSettingRecord(budgetKey(season)))?.value) });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.put('/api/admin/budget', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const season = parseSeason(body.season);
+    if (season == null) { res.status(400).json({ error: 'season required' }); return; }
+    const next = normalizeBudget(body);
+    await withSettingLock(budgetKey(season), () => setSetting(budgetKey(season), JSON.stringify(next)));
+    log.info('admin.budget', 'season budget saved', { season, budget: next.budget, extras: next.extras.length }, reqCtx(req));
+    res.json({ season, ...next });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 

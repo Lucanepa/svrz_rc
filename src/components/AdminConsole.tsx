@@ -1269,7 +1269,7 @@ export default function AdminConsole() {
           {/* The mail switches head the tab — the templates below are long. */}
           <TestModeCard t={t} testMode={testMode} onTestMode={setTestMode} loading={settingsLoading} />
           <EmailsAdmin t={t} lang={lang} />
-          {/* Not rolled out — its switch is off and asks before it turns on. */}
+          {/* PINs to hand out by hand — nothing here mails a coachee. */}
           <CoacheeFileAdmin lang={lang} />
         </div>
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>

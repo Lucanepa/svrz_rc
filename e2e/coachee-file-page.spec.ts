@@ -31,7 +31,7 @@ test.describe('the coachee file page', () => {
     const calls = await stubLogin(page);
     let header = '';
     await page.route('**/api/coachee-file', async (r) => {
-      header = r.request().headers()['x-coachee-file'] || '';
+      header = (await r.request().headerValue('x-coachee-file')) || '';
       await r.fulfill({ json: FILE });
     });
     await page.goto('/dossier');
@@ -42,10 +42,10 @@ test.describe('the coachee file page', () => {
     await page.getByLabel('PIN (6 Ziffern)').fill('482913');
     await page.getByRole('button', { name: 'Anmelden' }).click();
 
-    await expect(page.getByTestId('coachee-file')).toBeVisible();
+    // The container shows as soon as the session exists; the list follows.
+    await expect(page.getByText('Hans Muster')).toBeVisible();
     expect(calls).toEqual([{ sv: '12 345', pin: '482913' }]);
     expect(header).toBe('tok.sig');
-    await expect(page.getByText('Hans Muster')).toBeVisible();
     await expect(page.getByText('SV-Nr. 12345 · 2 Berichte')).toBeVisible();
     const rows = page.getByTestId('coachee-file-entry');
     await expect(rows).toHaveCount(2);
@@ -67,8 +67,8 @@ test.describe('the coachee file page', () => {
       headers: { 'Content-Disposition': 'inline; filename="2026-03-14_Hans-Muster_2SR_312456.pdf"' },
     }));
     await page.goto('/dossier');
-    await page.getByLabel(/SV/).fill('12345');
-    await page.getByLabel(/PIN/).fill('482913');
+    await page.locator('input[name=sv]').fill('12345');
+    await page.locator('input[name=pin]').fill('482913');
     await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();
     const download = page.waitForEvent('download');
     await page.getByTestId('coachee-file-entry').first().getByRole('button').click();
@@ -107,8 +107,8 @@ test.describe('the coachee file page', () => {
     await stubLogin(page);
     await page.route('**/api/coachee-file', (r) => r.fulfill({ json: FILE }));
     await page.goto('/dossier');
-    await page.getByLabel(/SV/).fill('12345');
-    await page.getByLabel(/PIN/).fill('482913');
+    await page.locator('input[name=sv]').fill('12345');
+    await page.locator('input[name=pin]').fill('482913');
     await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();
     await expect(page.getByTestId('coachee-file')).toBeVisible();
     // A reload inside the session keeps it (sessionStorage) …

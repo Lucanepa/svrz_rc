@@ -8,12 +8,16 @@
 // because reports to the same referee pile up in their inbox over the years
 // and an old one is hard to find (Luca, 2026-10-04).
 //
-// NOT ROLLED OUT. The chair asked to wait until Swiss Volley has accepted the
-// tool (Jasmin, 2026-10-04: "Maybe later … This is under the radar"). The one
-// switch is `coachee_file_enabled`, and what it controls is the PIN MAIL —
-// the only way a coachee ever learns a PIN. While it is off no coachee has
-// one, so the page and its login exist but open for nobody except a PIN the
-// admin minted in the console to try it out.
+// LIVE, BUT NO MAIL TO COACHEES. The chair asked to wait until Swiss Volley
+// has accepted the tool (Jasmin, 2026-10-04: "Maybe later … This is under the
+// radar"), and Luca then asked for the whole feature without e-mails to the
+// coachees (2026-10-05). So every referee with an SV-Nr. gets a PIN the moment
+// a report about them is filed (and the console can mint the missing ones for
+// the reports filed before), the page works, and the admin sees every PIN in
+// Admin → E-Mails → Coaching-Dossier to hand out by hand. The PIN MAIL that
+// would tell coachees on their own is written but gated on the app_settings
+// key `coachee_file_enabled`, which nothing in the console can set any more —
+// turning it on is a deliberate database write, never a click.
 //
 // What a coachee sees is exactly what they were already sent: the filed PDF
 // (the report the mail carried) and its "Ziele für nächste Spiele". Never the
@@ -223,4 +227,69 @@ export function fileOwnerName(records: Array<Rec & { id: string }>, sv: string):
     if (name && (!best || date > bestDate)) { best = name; bestDate = date; }
   }
   return best;
+}
+
+// ── The console's PIN list ────────────────────────────────────────────
+
+/** One person with a file: everyone a report carries the SV-Nr. of, plus
+ *  anyone who holds a PIN without one (minted by hand for a number that has
+ *  no report yet). */
+export type RosterRow = {
+  sv: string;
+  name: string;
+  reports: number;
+  /** The newest report's game date, YYYY-MM-DD; '' without one. */
+  lastDate: string;
+  pin: string;
+  pinCreatedAt: string;
+};
+
+export function fileRoster(records: Array<Rec & { id: string }>, pins: PinMap): RosterRow[] {
+  const bySv = new Map<string, Array<Rec & { id: string }>>();
+  for (const rec of records) {
+    const sv = formRefereeId(rec);
+    if (!sv) continue;
+    const list = bySv.get(sv);
+    if (list) list.push(rec); else bySv.set(sv, [rec]);
+  }
+  for (const sv of Object.keys(pins)) if (!bySv.has(sv)) bySv.set(sv, []);
+  const out: RosterRow[] = [];
+  for (const [sv, list] of bySv) {
+    let lastDate = '';
+    for (const rec of list) {
+      const expand = (rec.expand ?? {}) as Record<string, Rec | undefined>;
+      const detached = (((rec.feedback_json as Rec | undefined)?.detached ?? {}) as Rec);
+      const game = expand.game ?? (detached.game as Rec | undefined) ?? {};
+      const d = text(game.match_date).slice(0, 10);
+      if (d > lastDate) lastDate = d;
+    }
+    out.push({
+      sv,
+      name: fileOwnerName(list, sv),
+      reports: list.length,
+      lastDate,
+      pin: pins[sv]?.pin ?? '',
+      pinCreatedAt: pins[sv]?.createdAt ?? '',
+    });
+  }
+  // Surname order like every other list in the console; numbers for the nameless.
+  out.sort((a, b) => surname(a.name).localeCompare(surname(b.name), 'de') || a.sv.localeCompare(b.sv));
+  return out;
+}
+
+/** The SV-Nr. that have a report but no PIN yet — what "create the missing
+ *  PINs" mints. */
+export function svWithoutPin(records: Array<Rec & { id: string }>, pins: PinMap): string[] {
+  const out = new Set<string>();
+  for (const rec of records) {
+    const sv = formRefereeId(rec);
+    if (sv && !pins[sv]) out.add(sv);
+  }
+  return [...out].sort();
+}
+
+function surname(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return parts.join(' ') || '￿';
+  return `${parts[parts.length - 1]} ${parts.slice(0, -1).join(' ')}`;
 }

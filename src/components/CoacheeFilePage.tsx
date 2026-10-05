@@ -11,13 +11,11 @@ import {
  * "Mein Coaching-Dossier" — a coached referee's own reports, at /dossier.
  *
  * Public, like the survey page: the readers are referees, who have no login to
- * this app. Its own door instead: the SV-Nr. and a personal 6-digit PIN, which
- * reaches the referee in a mail of its own with every report (server/index.ts
- * sendCoacheeFileMail). The session is short (30 min), sent in a header, and
- * kept in this tab only — a referee may well open this on a shared computer.
- *
- * NOT ROLLED OUT (2026-10-05): the PIN mail is off until the chair says go, so
- * nobody but a PIN minted in the console can sign in. See server/coacheeFile.ts.
+ * this app. Its own door instead: the SV-Nr. and a personal 6-digit PIN,
+ * minted with the referee's first report and handed out by the admin — no
+ * mail tells coachees for now (2026-10-05, see server/coacheeFile.ts). The
+ * session is short (30 min), sent in a header, and kept in this tab only — a
+ * referee may well open this on a shared computer.
  */
 
 const STR = {
@@ -27,7 +25,7 @@ const STR = {
     lead: 'Alle Coaching-Berichte, die du von uns erhalten hast — auch aus früheren Saisons.',
     sv: 'SV-Nr.',
     pin: 'PIN (6 Ziffern)',
-    pinHint: 'Den PIN findest du in der E-Mail „Dein Coaching-Dossier", die du mit jedem Bericht erhältst.',
+    pinHint: 'Deinen persönlichen PIN erhältst du vom SVRZ Referee Coaching. PIN verloren? schiricoaching@svrz.ch',
     signIn: 'Anmelden',
     wrong: 'SV-Nr. oder PIN stimmt nicht.',
     tooMany: (min: number) => `Zu viele Versuche. Bitte in ${min} Minute${min === 1 ? '' : 'n'} erneut versuchen.`,
@@ -50,7 +48,7 @@ const STR = {
     lead: 'Every coaching report you have received from us — earlier seasons included.',
     sv: 'SV no.',
     pin: 'PIN (6 digits)',
-    pinHint: 'Your PIN is in the e-mail "Your coaching file", which comes with every report.',
+    pinHint: 'Your personal PIN comes from SVRZ Referee Coaching. Lost it? schiricoaching@svrz.ch',
     signIn: 'Sign in',
     wrong: 'SV no. or PIN is not correct.',
     tooMany: (min: number) => `Too many attempts. Please try again in ${min} minute${min === 1 ? '' : 's'}.`,

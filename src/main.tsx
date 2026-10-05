@@ -251,7 +251,7 @@ createRoot(document.getElementById('root')!).render(
       <InfosPage />
     ) : kind === 'dossier' ? (
       // Public, its own door: a coached referee's reports behind their SV-Nr.
-      // and personal PIN. Not rolled out — see server/coacheeFile.ts.
+      // and personal PIN, handed out by the admin. See server/coacheeFile.ts.
       <CoacheeFilePage />
     ) : kind === 'survey' ? (
       // Public and unauthenticated: the coachee who receives the feedback mail

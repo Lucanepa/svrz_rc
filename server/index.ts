@@ -24,7 +24,7 @@ import { computeBreakdowns, computeStatistics, coacheeSummaries, observationFrom
 import { archiveSlug, formsRowOf, formsEntryName, groupForms, folderKeys, type FormsRow } from './forms.ts';
 import {
   normalizeSvNumber, normalizePin, mintPin, parsePinMap, signFileSession, verifyFileSession, sessionStillValid,
-  formRefereeId, fileEntries, fileOwnerName, PIN_LENGTH, SESSION_TTL_MS,
+  formRefereeId, fileEntries, fileOwnerName, fileRoster, svWithoutPin, PIN_LENGTH, SESSION_TTL_MS,
   type PinEntry, type PinMap, type FileSession,
 } from './coacheeFile.ts';
 import type { StatFilters, StatRole } from '../src/lib/statistics.ts';
@@ -7596,14 +7596,14 @@ app.get('/api/feedback/:id/file', async (req: Request, res: ExpressResponse) => 
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-// ── The coachee's own file (/dossier) — NOT ROLLED OUT ───────────────
+// ── The coachee's own file (/dossier) — live, no mail to coachees ────
 // A coached referee reads back every report the coaching mailed them, with
 // their SV-Nr. and a personal 6-digit PIN. Rules in server/coacheeFile.ts.
-// `coachee_file_enabled` gates the PIN MAIL, which is the only way a coachee
-// learns a PIN; until the chair says go (Swiss Volley's acceptance first —
-// Jasmin, 2026-10-04) it stays off and only PINs the admin mints in the
-// console exist. The routes below need no switch of their own: without a PIN
-// there is nothing to log in with.
+// A PIN is minted whenever a report about someone with an SV-Nr. is filed;
+// the admin hands PINs out from the console. The PIN MAIL stays gated on
+// `coachee_file_enabled`, which no route sets: Luca asked for the feature
+// without e-mails to the coachees (2026-10-05), and the chair for waiting on
+// Swiss Volley's acceptance (2026-10-04).
 
 const COACHEE_FILE_ENABLED_KEY = 'coachee_file_enabled';
 const COACHEE_FILE_PINS_KEY = 'coachee_file_pins';
@@ -7758,10 +7758,11 @@ app.get('/api/coachee-file/forms/:id/file', async (req: Request, res: ExpressRes
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-// The console side: the switch, and a PIN looked up (or replaced) by SV-Nr. —
-// so the admin can try the page before anyone is told, and later answer "I
-// lost my PIN" without waiting for the next report. Admin only, like the rest
-// of the mail switches; the chair's half of the console has no tab for it.
+// The console side: every person with a file and their PIN, the missing PINs
+// minted in one go, and one PIN looked up (or replaced) by SV-Nr. — the PINs
+// are handed out by hand while no mail tells coachees. Admin only; the
+// chair's half of the console has no tab for it. Read-only on the switch: no
+// route turns the PIN mail on (see the header above).
 app.get('/api/admin/coachee-file', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
@@ -7770,13 +7771,33 @@ app.get('/api/admin/coachee-file', requireAdminSession, async (_req: Request, re
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-app.put('/api/admin/coachee-file', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+app.get('/api/admin/coachee-file/pins', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    const enabled = (req.body as AnyRecord | undefined)?.enabled === true;
-    await setSetting(COACHEE_FILE_ENABLED_KEY, enabled ? '1' : '0');
-    log.info('coachee-file.switch', enabled ? 'PIN mail switched ON — coachees now receive their PIN' : 'PIN mail switched off', { enabled }, reqCtx(req));
-    res.json({ enabled });
+    const [records, pins] = await Promise.all([loadCoacheeFileRecords(), readCoacheePins()]);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ people: fileRoster(records, pins) });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// Mints a PIN for every SV-Nr. that has a report but no PIN — the reports
+// filed before PINs were minted at filing time. One read and one write under
+// the settings lock, so it cannot race a report being filed.
+app.post('/api/admin/coachee-file/pins/backfill', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const records = await loadCoacheeFileRecords();
+    const created = await withSettingLock(COACHEE_FILE_PINS_KEY, async () => {
+      const pins = await readCoacheePins();
+      const missing = svWithoutPin(records, pins);
+      if (missing.length === 0) return 0;
+      const now = new Date().toISOString();
+      for (const sv of missing) pins[sv] = { pin: mintPin((max) => randomInt(max)), gen: 1, createdAt: now };
+      await setSetting(COACHEE_FILE_PINS_KEY, JSON.stringify(pins));
+      return missing.length;
+    });
+    log.info('coachee-file.pin', `missing PINs minted in the console (${created})`, { created }, reqCtx(req));
+    res.json({ created });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -7832,10 +7853,24 @@ async function sendCoacheeFileMail(to: string, opts: { sv: string; pin: string; 
 }
 
 
-/** After a report went out: the PIN mail, if the switch is on and the report
- *  is about someone with an SV-Nr. Never throws and is not awaited by the
- *  submit route — the coach is waiting on "Abschliessen", and the report is
- *  already delivered. */
+/** After a report is filed: the person's PIN, minted if they have none yet,
+ *  so the file opens for them the moment the admin hands it out. */
+async function issueCoacheeFilePin(sv: string, feedbackId: string): Promise<void> {
+  if (!sv) return;
+  try {
+    const before = (await readCoacheePins())[sv];
+    if (before) return;
+    await ensureCoacheePin(sv);
+    log.info('coachee-file.pin', 'PIN minted for a newly filed report', { feedbackId });
+  } catch (error) {
+    log.warn('coachee-file.pin', 'could not mint the PIN — the console can mint it later', { feedbackId, error: safeError(error) });
+  }
+}
+
+/** After a report went out: the PIN mail — only if `coachee_file_enabled` is
+ *  on, which no route sets (see the section header). Never throws and is not
+ *  awaited by the submit route — the coach is waiting on "Abschliessen", and
+ *  the report is already delivered. */
 async function mailCoacheeFilePin(v: { to: string; sv: string; firstName: string; test: boolean; feedbackId: string }): Promise<void> {
   try {
     if (!v.to || !v.sv || !(await isCoacheeFileEnabled())) return;
@@ -11747,6 +11782,10 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
 
     const writeMs = Date.now() - writeStarted;
 
+    // The coachee file: the person's PIN exists from their first report on,
+    // whatever happens to the mail below. Not awaited — the coach is waiting.
+    void issueCoacheeFilePin(normalizeSvNumber(asText(coachee?.referee_id) || slotRefereeId), String(created.id));
+
     // Phase 3 — Email (best-effort)
     const emailStarted = Date.now();
     let emailSent = false;
@@ -11935,9 +11974,9 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           bcc: (mailBcc ?? []).length,
           testMode: isTestMode,
         });
-        // The coachee file's PIN, in a message of its own to the referee alone
-        // (sendCoacheeFileMail says why). Off until the coachee file is rolled
-        // out — the helper checks the switch.
+        // The coachee file's PIN mail, in a message of its own to the referee
+        // alone (sendCoacheeFileMail says why). Gated on a switch no route
+        // sets: no mail to coachees for now (Luca, 2026-10-05).
         void mailCoacheeFilePin({
           to: mailTo,
           sv: normalizeSvNumber(asText(coachee?.referee_id) || slotRefereeId),

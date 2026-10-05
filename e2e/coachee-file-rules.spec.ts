@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
   normalizeSvNumber, normalizePin, isWeakPin, mintPin, parsePinMap,
   signFileSession, verifyFileSession, sessionStillValid,
-  formRefereeId, fileEntries, fileOwnerName,
+  formRefereeId, fileEntries, fileOwnerName, fileRoster, svWithoutPin,
 } from '../server/coacheeFile';
 
 // The coachee file (/dossier) on its own, without a database: who may read
@@ -170,5 +170,30 @@ test.describe('which reports are whose', () => {
     ];
     expect(fileOwnerName(records, '12345')).toBe('Hans Peter Muster');
     expect(fileOwnerName(records, '99999')).toBe('');
+  });
+});
+
+test.describe('the console\'s PIN list', () => {
+  const records = [
+    filed({ id: 'a', game: { match_date: '2025-11-02 18:00:00.000Z' } }),
+    filed({ id: 'b', game: { match_date: '2026-03-14 18:00:00.000Z' } }),
+    filed({ id: 'c', coachee: { referee_id: '55555', full_name: 'Petra Beispiel' } }),
+    filed({ id: 'd', coachee: { referee_id: '', full_name: 'Ohne Nummer' } }),
+  ];
+
+  test('one row per SV-Nr., with report count, last date and PIN; surname order', () => {
+    const rows = fileRoster(records, {
+      '12345': { pin: '482913', gen: 1, createdAt: '2026-10-05T10:00:00Z' },
+      '77777': { pin: '582913', gen: 1, createdAt: '' }, // minted by hand, no report
+    });
+    expect(rows.map((r) => r.sv)).toEqual(['55555', '12345', '77777']);
+    expect(rows[0]).toMatchObject({ name: 'Petra Beispiel', reports: 1, pin: '' });
+    expect(rows[1]).toMatchObject({ name: 'Hans Muster', reports: 2, lastDate: '2026-03-14', pin: '482913' });
+    expect(rows[2]).toMatchObject({ name: '', reports: 0, pin: '582913' });
+  });
+
+  test('the missing PINs are the numbers with a report and no PIN', () => {
+    expect(svWithoutPin(records, { '12345': { pin: '482913', gen: 1, createdAt: '' } })).toEqual(['55555']);
+    expect(svWithoutPin(records, {})).toEqual(['12345', '55555']);
   });
 });

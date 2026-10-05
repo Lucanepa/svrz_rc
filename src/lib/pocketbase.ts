@@ -1782,17 +1782,24 @@ export async function getCoacheeFileForm(token: string, id: string): Promise<{ b
   const named = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
   return { blob: await res.blob(), name: named ? named[1] : 'coaching-bericht.pdf' };
 }
-/** Admin: the switch (it gates the PIN mail) and the PIN count. */
+/** Admin: whether the PIN mail is on (no route sets it) and the PIN count. */
 export async function getCoacheeFileAdmin(): Promise<{ enabled: boolean; pinCount: number; url: string }> {
   const res = await fetch(apiUrl('/api/admin/coachee-file'), { credentials: 'include' });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not load');
   return res.json();
 }
-export async function setCoacheeFileEnabled(enabled: boolean): Promise<void> {
-  const res = await fetch(apiUrl('/api/admin/coachee-file'), {
-    method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
-  });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not save');
+export type CoacheeFilePerson = { sv: string; name: string; reports: number; lastDate: string; pin: string; pinCreatedAt: string };
+/** Admin: everyone with a file, and their PIN ('' while none is minted). */
+export async function listCoacheeFilePins(): Promise<CoacheeFilePerson[]> {
+  const res = await fetch(apiUrl('/api/admin/coachee-file/pins'), { credentials: 'include', cache: 'no-store' });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not load');
+  return (await res.json()).people;
+}
+/** Admin: mint a PIN for everyone with a report and none yet. */
+export async function backfillCoacheeFilePins(): Promise<number> {
+  const res = await fetch(apiUrl('/api/admin/coachee-file/pins/backfill'), { method: 'POST', credentials: 'include' });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not create the PINs');
+  return (await res.json()).created;
 }
 /** Admin: a person's PIN by SV-Nr., minted if they have none; `reset` replaces it. */
 export async function coacheeFilePin(sv: string, reset = false): Promise<{ sv: string; pin: string; name: string; reports: number; createdAt: string }> {

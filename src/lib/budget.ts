@@ -83,7 +83,7 @@ export type BudgetSummary = {
   meetingAttendances: number;
   meetings: number;
   extras: number;
-  /** Visits paid + meetings + extras. */
+  /** Visits completed + meetings + extras. */
   spent: number;
   /** Budget − spent − upcoming visits: what is left to plan with. */
   remaining: number;

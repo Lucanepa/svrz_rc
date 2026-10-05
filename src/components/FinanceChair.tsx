@@ -15,8 +15,8 @@ import { computeBudget } from '../lib/budget';
 type Lang = 'DE' | 'EN';
 
 const STR = {
-  DE: { coach: 'Referee Coach', paid: 'Vergütet', upcoming: 'Geplant & offen', claim: 'CHF', paidOut: 'Ausbezahlt', none: 'Keine Referee Coaches in dieser Saison.' },
-  EN: { coach: 'Referee coach', paid: 'Paid games', upcoming: 'Planned & outstanding', claim: 'CHF', paidOut: 'Paid out', none: 'No referee coaches this season.' },
+  DE: { coach: 'Referee Coach', paid: 'Erledigt', upcoming: 'Geplant & offen', claim: 'CHF', paidOut: 'Ausbezahlt', none: 'Keine Referee Coaches in dieser Saison.' },
+  EN: { coach: 'Referee coach', paid: 'Completed', upcoming: 'Planned & outstanding', claim: 'CHF', paidOut: 'Paid out', none: 'No referee coaches this season.' },
 };
 
 const surnameFirst = (name: string) => {

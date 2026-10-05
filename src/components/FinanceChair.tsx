@@ -16,7 +16,7 @@ type Lang = 'DE' | 'EN';
 
 const STR = {
   DE: { coach: 'Referee Coach', paid: 'Erledigt', upcoming: 'Geplant & offen', claim: 'CHF', paidOut: 'Ausbezahlt', none: 'Keine Referee Coaches in dieser Saison.' },
-  EN: { coach: 'Referee coach', paid: 'Completed', upcoming: 'Planned & outstanding', claim: 'CHF', paidOut: 'Paid out', none: 'No referee coaches this season.' },
+  EN: { coach: 'Referee Coach', paid: 'Completed', upcoming: 'Planned & Outstanding', claim: 'CHF', paidOut: 'Paid Out', none: 'No referee coaches this season.' },
 };
 
 const surnameFirst = (name: string) => {

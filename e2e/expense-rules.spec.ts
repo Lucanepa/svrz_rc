@@ -12,7 +12,7 @@ const visit = (gameId: string, date: string, role: string, refereeName: string) 
   ({ gameId, matchNo: '38' + gameId, date, role, refereeName, group: 'Varia', level: 'N3-2' });
 
 const base: ExpenseStatement = {
-  rcName: 'Canepa Luca', season: 2025, visitRate: 60, paidCap: 12, meeting: null,
+  rcName: 'Canepa Luca', season: 2025, visitRate: 60, paidCap: 12, meetings: [],
   issuedOn: new Date('2026-04-16T10:00:00'),
   visits: [],
 };
@@ -50,7 +50,7 @@ test('games past the cap stay on the sheet, unpaid and marked', () => {
 });
 
 test('the RC-Sitzung is its own line on top of the visits', () => {
-  const plan = planExpenseRows({ ...base, visits: [visit('g1', '2025-09-16T18:00:00Z', '1. SR', 'A B')], meeting: { date: '2026-04-14', rate: 60 } });
+  const plan = planExpenseRows({ ...base, visits: [visit('g1', '2025-09-16T18:00:00Z', '1. SR', 'A B')], meetings: [{ date: '2026-04-14', title: 'RC-Sitzung', rate: 60 }] });
   expect(plan.visitsTotal).toBe(60);
   expect(plan.meetingTotal).toBe(60);
   expect(plan.grandTotal).toBe(120);

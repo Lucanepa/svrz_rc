@@ -205,9 +205,14 @@ test('the opened row hands out the coach\'s expense sheet and records the RC-Sit
     sheets.push(new URL(r.request().url()).pathname + new URL(r.request().url()).search);
     await r.fulfill({ status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="Spesen_2026-27_Nguyen_Thanh_Ut.pdf"' }, body: '%PDF-1.4\n%%EOF' });
   });
+  // The season's meetings come from their own list now — the old single
+  // meeting is carried into it by the server as `legacy-<date>`.
+  await page.route('**/api/admin/rc-meetings?*', (r) => r.fulfill({ json: { season: 2026, meetings: [
+    { id: 'legacy-2027-04-13', title: 'RC-Sitzung', date: '2027-04-13', start: '', end: '', link: '', notes: '', rate: 60, attended: [] },
+  ] } }));
   const meetings: unknown[] = [];
-  await page.route('**/api/admin/rc-meeting/*', async (r) => {
-    meetings.push(r.request().postDataJSON());
+  await page.route('**/api/admin/rc-meetings/*/attendance', async (r) => {
+    meetings.push({ url: new URL(r.request().url()).pathname, ...(r.request().postDataJSON() as object) });
     await r.fulfill({ json: { ok: true, attended: (r.request().postDataJSON() as { attended: boolean }).attended } });
   });
 
@@ -219,10 +224,10 @@ test('the opened row hands out the coach\'s expense sheet and records the RC-Sit
   expect((await download).suggestedFilename()).toBe('Spesen_2026-27_Nguyen_Thanh_Ut.pdf');
   expect(sheets).toEqual(['/api/admin/rc-expenses/rc2?season=2026']);
 
-  // The meeting line names the date from the settings and records attendance for the season.
+  // One tick per meeting of the season, named by its date; it records this coach on that meeting.
   const meeting = page.getByLabel(/RC-Sitzung vom 13\.04\.2027 besucht|Attended the RC meeting of 13\.04\.2027/);
   await expect(meeting).not.toBeChecked();
   await meeting.check();
   await expect(meeting).toBeChecked();
-  expect(meetings).toEqual([{ season: 2026, attended: true }]);
+  expect(meetings).toEqual([{ url: '/api/admin/rc-meetings/legacy-2027-04-13/attendance', rcId: 'rc2', attended: true }]);
 });

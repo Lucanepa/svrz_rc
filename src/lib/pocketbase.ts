@@ -762,14 +762,50 @@ export async function downloadAllRcExpenses(season: number): Promise<void> {
   await downloadFrom(`/api/admin/rc-expenses?season=${season}`, `spesen-rc-${season}.zip`);
 }
 
-// Admin-only: whether a coach sat in the season's RC-Sitzung (a line on the sheet).
-export async function setRcMeeting(rcId: string, season: number, attended: boolean): Promise<void> {
-  if (isDemoMode()) return;
-  const r = await fetch(apiUrl(`/api/admin/rc-meeting/${encodeURIComponent(rcId)}`), {
-    method: 'PUT', credentials: 'include',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season, attended }),
+// ── RC-Sitzungen (server/rcMeetings.ts) ──────────────────────────────
+export type RcMeetingPublic = { id: string; title: string; date: string; start: string; end: string; link: string; notes: string };
+export type RcMeeting = RcMeetingPublic & { rate: number; attended: string[] };
+export type RcMeetingDraft = Omit<RcMeeting, 'id' | 'attended'>;
+
+async function meetingFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const r = await fetch(apiUrl(path), {
+    credentials: 'include', ...init,
+    headers: init.body ? { 'Content-Type': 'application/json' } : undefined,
   });
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  return r.json();
+}
+
+/** Admin: the season's meetings, with rates and attendance. */
+export async function listRcMeetings(season: number): Promise<RcMeeting[]> {
+  if (isDemoMode()) return [];
+  // An older API (or a stub) answers without the field: no meetings, not a crash.
+  const list = (await meetingFetch<{ meetings?: RcMeeting[] }>(`/api/admin/rc-meetings?season=${season}`))?.meetings;
+  return Array.isArray(list) ? list : [];
+}
+export async function createRcMeeting(draft: RcMeetingDraft): Promise<RcMeeting> {
+  return meetingFetch('/api/admin/rc-meetings', { method: 'POST', body: JSON.stringify(draft) });
+}
+export async function updateRcMeeting(id: string, draft: RcMeetingDraft): Promise<RcMeeting> {
+  return meetingFetch(`/api/admin/rc-meetings/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(draft) });
+}
+export async function deleteRcMeeting(id: string): Promise<void> {
+  await meetingFetch(`/api/admin/rc-meetings/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+/** Admin: whether a coach sat in this meeting (a line on their sheet). */
+export async function setRcMeetingAttendance(id: string, rcId: string, attended: boolean): Promise<void> {
+  if (isDemoMode()) return;
+  await meetingFetch(`/api/admin/rc-meetings/${encodeURIComponent(id)}/attendance`, { method: 'PUT', body: JSON.stringify({ rcId, attended }) });
+}
+/** Coach: the meetings not yet over, for Home. */
+export async function listUpcomingRcMeetings(): Promise<RcMeetingPublic[]> {
+  if (isDemoMode()) return [];
+  const list = (await meetingFetch<{ meetings?: RcMeetingPublic[] }>('/api/rc-meetings'))?.meetings;
+  return Array.isArray(list) ? list : [];
+}
+/** Coach: one meeting as an .ics the phone opens in its calendar. */
+export async function downloadRcMeetingIcs(id: string): Promise<void> {
+  await downloadFrom(`/api/rc-meetings/${encodeURIComponent(id)}/ics`, 'rc-sitzung.ics');
 }
 
 export async function listPresidentNotes(): Promise<PresidentNote[]> {

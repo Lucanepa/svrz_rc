@@ -66,6 +66,7 @@ import {
   parsePath, routeToPath, isForeignPath,
   type AppRoute, type FeedbackSubView as RouteSubView,
 } from './lib/routes';
+import RcMeetingsHome from './components/RcMeetingsHome';
 import InfoHint from './components/InfoHint';
 import { inSeasonOrManual as inSeasonWindow, currentSeason, seasonLabel as seasonLabelOf } from './lib/season';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
@@ -7273,6 +7274,10 @@ export default function App() {
                     </p>
                     ) : <Skeleton className="mt-1 h-4 w-48" />}
                   </div>
+
+                  {/* The next RC-Sitzung, for every coach, above the games —
+                      its own fetch, so a slow dashboard does not hold it. */}
+                  <RcMeetingsHome lang={formData.lang} />
 
                   {(homeLoading || booting) && !homeData ? (
                     booting ? (

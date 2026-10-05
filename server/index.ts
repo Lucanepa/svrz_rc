@@ -21,6 +21,10 @@ import { computePlanning, seasonProgress, type PlanningReport, type PlanningGame
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
 import { buildExpenseStatementPdf, expenseStatementFileName, planExpenseRows, rcWorkloadRule, resolvePaidCap, type ExpenseVisit, type RcGameSets } from './expenses.ts';
 import { computeBreakdowns, computeStatistics, coacheeSummaries, observationFromFeedback, statOptions, type StatObservation, type StatRcInput, type StatCoacheeInput } from './statistics.ts';
+import {
+  parseMeetings, legacyMeeting, sanitizeMeeting, sortMeetings, meetingsOfSeason, upcomingMeetings,
+  publicMeeting, attendedMeetings, plusMinutes, type RcMeeting,
+} from './rcMeetings.ts';
 import { archiveSlug, formsRowOf, formsEntryName, groupForms, folderKeys, type FormsRow } from './forms.ts';
 import {
   normalizeSvNumber, normalizePin, mintPin, parsePinMap, signFileSession, verifyFileSession, sessionStillValid,
@@ -5353,7 +5357,10 @@ app.put('/api/admin/settings', requireAdminSession, async (req: Request, res: Ex
       await setSetting('paid_cap', Number.isFinite(n) && n > 0 ? String(n) : '');
     }
     if ('expense_rates' in body && body.expense_rates && typeof body.expense_rates === 'object') {
-      await setSetting(EXPENSE_RATES_KEY, JSON.stringify(sanitizeExpenseRates(body.expense_rates)));
+      // Merged over what is stored: the console no longer edits the meeting
+      // fields (meetings are records now), and a payload without them must not
+      // blank the legacy meeting before it has been carried into rc_meetings.
+      await setSetting(EXPENSE_RATES_KEY, JSON.stringify(sanitizeExpenseRates({ ...(await readExpenseRates()), ...(body.expense_rates as Record<string, unknown>) })));
     }
     // Named keys rather than the values: a listener only needs to know that its
     // copy is stale, and the settings endpoint is where it goes to find out.
@@ -8324,7 +8331,8 @@ async function readExpenseRates(): Promise<ExpenseRates> {
   try { return sanitizeExpenseRates(JSON.parse(asText(rec.value))); } catch { return DEFAULT_EXPENSE_RATES; }
 }
 
-// Who sat in the RC-Sitzung: a set of coach ids per season, like the stars.
+// Who sat in the RC-Sitzung, as it was recorded before meetings became records
+// (a set of coach ids per season). Read only to carry it into `rc_meetings`.
 const rcMeetingKey = (season: number) => `rc_meeting_${season}`;
 async function readRcMeeting(season: number): Promise<Set<string>> {
   const rec = await getSettingRecord(rcMeetingKey(season));
@@ -8335,20 +8343,162 @@ async function readRcMeeting(season: number): Promise<Set<string>> {
   } catch { return new Set(); }
 }
 
-app.put('/api/admin/rc-meeting/:rcId', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+// ── RC-Sitzungen (meetings) ───────────────────────────────────────────
+// Each meeting is a record of its own — title, date, time, video-call link,
+// notes, what attending pays, who attended — in app_settings `rc_meetings`.
+// Rules in server/rcMeetings.ts. Until the list is first written it is read
+// from the single meeting the expenses card used to hold, so nothing recorded
+// before (the date, the rate, the ticks) is lost.
+const RC_MEETINGS_KEY = 'rc_meetings';
+
+async function readRcMeetings(): Promise<RcMeeting[]> {
+  const stored = parseMeetings((await getSettingRecord(RC_MEETINGS_KEY))?.value);
+  if (stored) return stored;
+  const rates = await readExpenseRates();
+  if (!rates.meetingDate) return [];
+  const legacy = legacyMeeting(rates, await readRcMeeting(seasonOfDate(rates.meetingDate)));
+  return legacy ? [legacy] : [];
+}
+
+/** Read, change, write — under the settings lock, so two edits in the console
+ *  cannot each save over the other. The legacy meeting is carried into the
+ *  list by the first write. */
+function editRcMeetings<T>(fn: (list: RcMeeting[]) => { list: RcMeeting[]; result: T }): Promise<T> {
+  return withSettingLock(RC_MEETINGS_KEY, async () => {
+    const { list, result } = fn(await readRcMeetings());
+    await setSetting(RC_MEETINGS_KEY, JSON.stringify(sortMeetings(list)));
+    return result;
+  });
+}
+
+app.get('/api/admin/rc-meetings', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
-    const rcId = String(req.params.rcId);
-    const body = (req.body ?? {}) as { season?: unknown; attended?: unknown };
-    const season = parseSeason(body.season);
-    if (season == null) { res.status(400).json({ error: 'season required' }); return; }
-    const on = Boolean(body.attended);
-    await withSettingLock(rcMeetingKey(season), async () => {
-      const set = await readRcMeeting(season);
-      if (on) set.add(rcId); else set.delete(rcId);
-      await setSetting(rcMeetingKey(season), JSON.stringify([...set]));
+    await ensureAdminAuth();
+    const season = await resolveSeason(req.query.season);
+    res.json({ season, meetings: meetingsOfSeason(await readRcMeetings(), season) });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.post('/api/admin/rc-meetings', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const id = `m${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+    const meeting = sanitizeMeeting({ ...(req.body ?? {}), attended: [] }, id);
+    if (!meeting) { res.status(400).json({ error: 'Datum fehlt oder ist ungültig.' }); return; }
+    await editRcMeetings((list) => ({ list: [...list, meeting], result: null }));
+    log.info('admin.rc_meeting', 'RC-Sitzung created', { id, date: meeting.date }, reqCtx(req));
+    res.status(201).json(meeting);
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.put('/api/admin/rc-meetings/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const id = String(req.params.id);
+    const updated = await editRcMeetings((list) => {
+      const current = list.find((m) => m.id === id);
+      if (!current) return { list, result: null as RcMeeting | null | 'invalid' };
+      // Attendance is its own route: an edit of the details never touches it.
+      const next = sanitizeMeeting({ ...(req.body ?? {}), attended: current.attended }, id);
+      if (!next) return { list, result: 'invalid' as const };
+      return { list: list.map((m) => (m.id === id ? next : m)), result: next };
     });
-    log.info('admin.rc_meeting', on ? 'RC-Sitzung attendance recorded' : 'RC-Sitzung attendance removed', { rcId, season }, reqCtx(req));
+    if (updated === null) { res.status(404).json({ error: 'RC-Sitzung nicht gefunden.' }); return; }
+    if (updated === 'invalid') { res.status(400).json({ error: 'Datum fehlt oder ist ungültig.' }); return; }
+    log.info('admin.rc_meeting', 'RC-Sitzung updated', { id, date: updated.date }, reqCtx(req));
+    res.json(updated);
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.delete('/api/admin/rc-meetings/:id', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const id = String(req.params.id);
+    const removed = await editRcMeetings((list) => {
+      const gone = list.find((m) => m.id === id) ?? null;
+      return { list: list.filter((m) => m.id !== id), result: gone };
+    });
+    if (!removed) { res.status(404).json({ error: 'RC-Sitzung nicht gefunden.' }); return; }
+    log.info('admin.rc_meeting', 'RC-Sitzung deleted', { id, date: removed.date, attended: removed.attended.length }, reqCtx(req));
+    res.json({ ok: true });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// Who sat in it — a line on each attendee's expense sheet.
+app.put('/api/admin/rc-meetings/:id/attendance', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const id = String(req.params.id);
+    const body = (req.body ?? {}) as { rcId?: unknown; attended?: unknown };
+    const rcId = asText(body.rcId);
+    if (!rcId) { res.status(400).json({ error: 'rcId fehlt.' }); return; }
+    const on = Boolean(body.attended);
+    const found = await editRcMeetings((list) => {
+      const current = list.find((m) => m.id === id);
+      if (!current) return { list, result: false };
+      const attended = on ? [...new Set([...current.attended, rcId])] : current.attended.filter((x) => x !== rcId);
+      return { list: list.map((m) => (m.id === id ? { ...m, attended } : m)), result: true };
+    });
+    if (!found) { res.status(404).json({ error: 'RC-Sitzung nicht gefunden.' }); return; }
+    log.info('admin.rc_meeting', on ? 'RC-Sitzung attendance recorded' : 'RC-Sitzung attendance removed', { id, rcId }, reqCtx(req));
     res.json({ ok: true, attended: on });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+/** "Now" on the Zürich wall clock, as the meeting rules compare it. */
+function zurichNow(): { today: string; time: string } {
+  const p = zonedParts(Date.now());
+  return { today: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
+}
+
+// What a coach sees on Home: the meetings not yet over — no rates, no
+// attendance. Every coach, not only those who will attend: the invitation
+// goes to the whole commission.
+app.get('/api/rc-meetings', requireRcSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const { today, time } = zurichNow();
+    res.json({ meetings: upcomingMeetings(await readRcMeetings(), today, time).map(publicMeeting) });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+/** One meeting as a calendar event — the feed's lines and the single .ics. */
+function meetingIcsLines(m: RcMeeting): string[] {
+  const [y, mo, d] = m.date.split('-').map(Number);
+  const lines = ['BEGIN:VEVENT', `UID:meeting-${m.id}@svrz-rc`, `DTSTAMP:${icsStamp(Date.now())}`];
+  if (m.start) {
+    const [h, mi] = m.start.split(':').map(Number);
+    const [eh, emi] = (m.end || plusMinutes(m.start, 60)).split(':').map(Number);
+    lines.push(`DTSTART:${icsStamp(wallClockToInstant(y, mo, d, h, mi, 0))}`);
+    lines.push(`DTEND:${icsStamp(wallClockToInstant(y, mo, d, eh, emi, 0))}`);
+  } else {
+    const next = new Date(Date.UTC(y, mo - 1, d + 1));
+    lines.push(`DTSTART;VALUE=DATE:${m.date.replace(/-/g, '')}`);
+    lines.push(`DTEND;VALUE=DATE:${next.toISOString().slice(0, 10).replace(/-/g, '')}`);
+  }
+  lines.push(`SUMMARY:${icsEscape(m.title)}`);
+  if (m.link) {
+    lines.push(`LOCATION:${icsEscape(m.link)}`);
+    lines.push(`URL:${icsEscape(m.link)}`);
+  }
+  const description = [m.notes, m.link ? `Link: ${m.link}` : ''].filter(Boolean).join('\n\n');
+  if (description) lines.push(`DESCRIPTION:${icsEscape(description)}`);
+  lines.push('CATEGORIES:SVRZ RC-Sitzung', 'STATUS:CONFIRMED', 'TRANSP:OPAQUE', 'END:VEVENT');
+  return lines;
+}
+
+// "Zum Kalender hinzufügen" on Home: one meeting as a file the phone opens in
+// its calendar. A coach subscribed to the feed has it there already.
+app.get('/api/rc-meetings/:id/ics', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const m = (await readRcMeetings()).find((x) => x.id === String(req.params.id).replace(/\.ics$/i, ''));
+    if (!m) { res.status(404).json({ error: 'RC-Sitzung nicht gefunden.' }); return; }
+    const body = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Swiss Volley Region Zürich//Referee Coaching//DE', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', ...meetingIcsLines(m), 'END:VCALENDAR'];
+    res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="rc-sitzung-${m.date}.ics"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(`${body.map(icsFold).join('\r\n')}\r\n`);
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -8441,11 +8591,11 @@ async function activeRcRecords(): Promise<AnyRecord[]> {
 }
 
 /** The sheet for one coach, drawn from the season's data. */
-async function expenseStatementFor(person: AnyRecord, season: number, visits: ExpenseVisit[], rates: ExpenseRates, attended: boolean, paidCap: number | null) {
+async function expenseStatementFor(person: AnyRecord, season: number, visits: ExpenseVisit[], rates: ExpenseRates, meetings: RcMeeting[], paidCap: number | null) {
   const rcName = surnameFirst(person, asText(person.full_name));
   const statement = {
     rcName, season, visits, visitRate: rates.visit, paidCap,
-    meeting: attended ? { date: rates.meetingDate, rate: rates.meeting } : null,
+    meetings: attendedMeetings(meetings, season, String(person.id)),
     issuedOn: new Date(),
   };
   return {
@@ -8469,10 +8619,10 @@ app.get('/api/admin/rc-expenses/:rcId', requireAdminSession, async (req: Request
     const people = await activeRcRecords();
     const person = people.find((p) => String(p.id) === String(req.params.rcId));
     if (!person) { res.status(404).json({ error: 'Referee Coach nicht gefunden.' }); return; }
-    const [visits, rates, attended, paidCap] = await Promise.all([
-      collectExpenseVisits([person], season), readExpenseRates(), readRcMeeting(season), readPaidCap(),
+    const [visits, rates, meetings, paidCap] = await Promise.all([
+      collectExpenseVisits([person], season), readExpenseRates(), readRcMeetings(), readPaidCap(),
     ]);
-    const sheet = await expenseStatementFor(person, season, visits.get(String(person.id)) ?? [], rates, attended.has(String(person.id)), paidCap);
+    const sheet = await expenseStatementFor(person, season, visits.get(String(person.id)) ?? [], rates, meetings, paidCap);
     log.info('admin.rc_expenses', 'expense statement drawn', { rcId: String(person.id), season, rows: sheet.plan.rows.length }, reqCtx(req));
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${sheet.fileName}"`);
@@ -8486,15 +8636,15 @@ app.get('/api/admin/rc-expenses', requireAdminSession, async (req: Request, res:
   try {
     const season = await resolveSeason(req.query.season);
     const people = await activeRcRecords();
-    const [visits, rates, attended, paidCap] = await Promise.all([
-      collectExpenseVisits(people, season), readExpenseRates(), readRcMeeting(season), readPaidCap(),
+    const [visits, rates, meetings, paidCap] = await Promise.all([
+      collectExpenseVisits(people, season), readExpenseRates(), readRcMeetings(), readPaidCap(),
     ]);
     const entries: ZipEntry[] = [];
     for (const person of people) {
       const id = String(person.id);
       const own = visits.get(id) ?? [];
-      if (own.length === 0 && !attended.has(id)) continue;
-      const sheet = await expenseStatementFor(person, season, own, rates, attended.has(id), paidCap);
+      if (own.length === 0 && attendedMeetings(meetings, season, id).length === 0) continue;
+      const sheet = await expenseStatementFor(person, season, own, rates, meetings, paidCap);
       entries.push({ name: sheet.fileName, data: Buffer.from(sheet.bytes) });
     }
     log.info('admin.rc_expenses', 'expense statements drawn for the roster', { season, sheets: entries.length }, reqCtx(req));
@@ -8687,7 +8837,7 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
 
     const workload = workloadByRc(people, allGames, allFeedbacks, inSeason, new Date(), await getManualGameIds(), await makeCoacheeSlotTest());
 
-    const [paidMap, attended] = await Promise.all([readRcPaid(season), readRcMeeting(season)]);
+    const [paidMap, seasonMeetings] = await Promise.all([readRcPaid(season), readRcMeetings().then((l) => meetingsOfSeason(l, season))]);
     const result = people.map((p) => {
       const fullName = `${asText(p.first_name)} ${asText(p.last_name)}`.trim();
       const { done, outstanding, planned } = workload.get(String(p.id))!;
@@ -8698,7 +8848,8 @@ app.get('/api/rc-overview', requireRcSession, async (req: Request, res: ExpressR
       return {
         id: p.id, fullName, done, outstanding, planned,
         paidAt: paid ? paid.at : null,
-        ...(rcAuth ? {} : { paidBy: paid ? paid.by : '', meetingAttended: attended.has(String(p.id)) }),
+        // The ids of the season's meetings this coach sat in — one tick each.
+        ...(rcAuth ? {} : { paidBy: paid ? paid.by : '', meetingsAttended: seasonMeetings.filter((m) => m.attended.includes(String(p.id))).map((m) => m.id) }),
       };
     });
 
@@ -10585,7 +10736,7 @@ async function getGamesAssignedToRc(subject: RcAuthInfo): Promise<CalendarFeedGa
 
 type IcalLang = 'DE' | 'EN';
 
-function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLang): string {
+function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLang, meetings: RcMeeting[] = []): string {
   const de = lang === 'DE';
   const now = icsStamp(Date.now());
   const lines = [
@@ -10648,6 +10799,10 @@ function buildRcCalendar(rcName: string, games: CalendarFeedGame[], lang: IcalLa
     lines.push('TRANSP:OPAQUE');
     lines.push('END:VEVENT');
   }
+
+  // The RC-Sitzungen, in every coach's feed: the invitation is to the whole
+  // commission, and the feed is the calendar a coach already looks at.
+  for (const m of meetings) lines.push(...meetingIcsLines(m));
 
   lines.push('END:VCALENDAR');
   return `${lines.map(icsFold).join('\r\n')}\r\n`;
@@ -10869,8 +11024,13 @@ app.get('/api/ical/:token', async (req: Request, res: ExpressResponse) => {
       return;
     }
     const lang: IcalLang = asText(req.query.lang).toUpperCase() === 'EN' ? 'EN' : 'DE';
-    const games = await getCachedGamesForRc(person);
-    const body = buildRcCalendar(person.fullName, games, lang);
+    const [games, meetings] = await Promise.all([
+      getCachedGamesForRc(person),
+      // A feed without its meetings beats no feed: a settings read that fails
+      // must not take the coach's games down with it.
+      readRcMeetings().catch((error) => { log.warn('ical.meetings', 'RC-Sitzungen left out of the feed', { error: safeError(error) }); return [] as RcMeeting[]; }),
+    ]);
+    const body = buildRcCalendar(person.fullName, games, lang, meetings);
     // The token is scrubbed from every log line, so without this a coach saying
     // "my calendar doesn't show it" could not be tied to any client at all
     // (2026-10-02: the feed was right, and which app was polling it was the
@@ -10880,6 +11040,7 @@ app.get('/api/ical/:token', async (req: Request, res: ExpressResponse) => {
       name: person.fullName,
       rc: games.filter((g) => g.kind === 'rc').length,
       sr: games.filter((g) => g.kind === 'sr').length,
+      meetings: meetings.length,
       ua: asText(req.headers['user-agent']).slice(0, 120),
     }, reqCtx(req));
     const disposition = asText(req.query.download) === '1' ? 'attachment' : 'inline';

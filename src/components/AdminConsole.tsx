@@ -9,7 +9,7 @@ import {
   listRcPeopleFull, createRcPerson, updateRcPerson, deleteRcPerson,
   getCredentials, setCredential, requestCredentialCode, type CredentialSlotInfo,
   getAdminShortcutRcs, setAdminShortcutRcs,
-  loadRcOverview, loadrcCoachSummary, listRefereeCoachPeople, assignRcToGame, setGameStarred, setRcPaid, setRcMeeting,
+  loadRcOverview, loadrcCoachSummary, listRefereeCoachPeople, assignRcToGame, setGameStarred, setRcPaid, setRcMeetingAttendance, listRcMeetings, type RcMeeting,
   downloadRcExpenses, downloadAllRcExpenses, DEFAULT_EXPENSE_RATES, type ExpenseRates,
   getSettings, putSettings, loadEligibleGames,
   getEmailTemplates, putEmailTemplates, placeholdersFor, acceptedPlaceholdersFor, getReminderPreview, createGame, deleteGame, listManualGames,
@@ -47,6 +47,7 @@ import { bySurname, surnameFirstLabel, foldName } from '../lib/coacheeName';
 import { coacheeLookup, gameLabel, indexPeople, samePerson } from '../lib/identity';
 import { confirmDialog, toast } from './ui';
 import CoacheeFileAdmin from './CoacheeFileAdmin';
+import RcMeetingsAdmin, { fmtMeetingDate } from './RcMeetingsAdmin';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame, type rcCoachSummary, type rcCoachSummaryGame } from '../types';
 import LevelText from './LevelText';
 import StatisticsAdmin from './StatisticsAdmin';
@@ -361,10 +362,10 @@ const STR = {
     ovSheetHint: 'Das Blatt der Kommission, aus den erfassten Beobachtungen gezeichnet: ein Einsatz pro Spiel, die RC-Sitzung, das Total, die Unterschrift.',
     ovSheetAllHint: 'Ein PDF pro RC mit mindestens einem Besuch oder Sitzungsbesuch in dieser Saison.',
     ovMeeting: (d: string) => `RC-Sitzung${d ? ` vom ${d}` : ''} besucht`,
-    ovMeetingHint: 'Erscheint als Zeile auf der Spesenabrechnung. Datum und Ansatz stehen unten in der Karte „Spesen“.',
+    ovMeetingHint: 'Erscheint als Zeile auf der Spesenabrechnung. Datum, Zeit und Ansatz stehen in der Karte „RC-Sitzungen“.',
     ovMeetingOk: 'Sitzungsbesuch erfasst.', ovMeetingOff: 'Sitzungsbesuch entfernt.',
     expenses: 'Spesen', expensesHint: 'Was eine Saison zahlt — die Zahlen auf der Spesenabrechnung. Gebührenordnung Art. 14 Abs. 3: pauschal pro Einsatz, Fahrkosten inbegriffen.',
-    expVisit: 'Ansatz pro Besuch (CHF)', expMeeting: 'RC-Sitzung: Ansatz (CHF)', expMeetingDate: 'RC-Sitzung: Datum',
+    expVisit: 'Ansatz pro Besuch (CHF)',
     credentials: 'Passwörter', credentialsHint: 'Diese Passwörter öffnen die App und diese Seite. Sie werden nur als Hash gespeichert — ein gesetztes Passwort kann nicht wieder angezeigt, sondern nur ersetzt werden. Notiere es dir jetzt.',
     credShared: 'Team-Login (App)', credSharedHint: 'Das Passwort, das alle Referee Coaches für die App benutzen.',
     credAdmin: 'Admin (diese Seite)', credAdminHint: 'Öffnet diese Konsole.',
@@ -674,10 +675,10 @@ const STR = {
     ovSheetHint: 'The commission\'s sheet, drawn from the filed observations: one claim per game, the RC meeting, the total, the signature.',
     ovSheetAllHint: 'One PDF per coach with at least one visit or meeting this season.',
     ovMeeting: (d: string) => `Attended the RC meeting${d ? ` of ${d}` : ''}`,
-    ovMeetingHint: 'Shows as a line on the expense sheet. Date and rate are in the “Expenses” card below.',
+    ovMeetingHint: 'Shows as a line on the expense sheet. Date, time and rate are in the “RC meetings” card.',
     ovMeetingOk: 'Meeting attendance recorded.', ovMeetingOff: 'Meeting attendance removed.',
     expenses: 'Expenses', expensesHint: 'What a season pays — the figures on the expense sheet. Fee regulations art. 14 par. 3: a flat rate per assignment, travel included.',
-    expVisit: 'Rate per visit (CHF)', expMeeting: 'RC meeting: rate (CHF)', expMeetingDate: 'RC meeting: date',
+    expVisit: 'Rate per visit (CHF)',
     credentials: 'Passwords', credentialsHint: 'These passwords open the app and this page. Only a hash is stored — a password that has been set cannot be shown again, only replaced. Write it down now.',
     credShared: 'Team login (app)', credSharedHint: 'The password every referee coach uses for the app.',
     credAdmin: 'Admin (this page)', credAdminHint: 'Opens this console.',
@@ -921,6 +922,10 @@ export default function AdminConsole() {
   const [niveauTable, setNiveauTable] = useState<NiveauMatrix>(() => resolveNiveauTable(null));
   const [leagueOptions, setLeagueOptions] = useState<string[]>([]);
   const [defaultSeason, setDefaultSeason] = useState<number>(CUR_SEASON);
+  // The season's RC-Sitzungen: edited in their own card, ticked per coach in
+  // the Übersicht table — one list for both, so a meeting added shows its
+  // tick at once.
+  const [rcMeetings, setRcMeetings] = useState<RcMeeting[]>([]);
   const [lang, setLang] = useState<Lang>(() => {
     try { return (localStorage.getItem('svrz_admin_lang') as Lang) || 'DE'; } catch { return 'DE'; }
   });
@@ -1286,7 +1291,9 @@ export default function AdminConsole() {
           <ManualGameAdmin t={t} lang={lang} active={tab === 'games'} />
         </div>
         <div hidden={tab !== 'overview'}>
-          <OverviewAdmin t={t} lang={lang} paidCap={paidCap} season={defaultSeason} settingsLoading={settingsLoading} meetingDate={expenseRates.meetingDate} />
+          <OverviewAdmin t={t} lang={lang} paidCap={paidCap} season={defaultSeason} settingsLoading={settingsLoading} meetings={rcMeetings} onMeetings={setRcMeetings} />
+          {/* The meetings in a row of their own (Luca, 2026-10-05). */}
+          <RcMeetingsAdmin lang={lang} meetings={rcMeetings} onMeetings={setRcMeetings} loading={settingsLoading} />
           <PaidCapCard t={t} paidCap={paidCap} onPaidCap={savePaidCap} loading={settingsLoading} />
           <ExpenseRatesCard t={t} expenseRates={expenseRates} onExpenseRates={saveExpenseRates} loading={settingsLoading} />
         </div>
@@ -5189,7 +5196,7 @@ function OverviewDetail({ t, lang, rcId, rcName, season }: { t: T; lang: Lang; r
 /** Vergütet: the done games up to the ceiling; every one with no ceiling. */
 const paidOf = (done: number, cap: number | null) => (cap == null ? done : Math.min(done, cap));
 
-function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate }: { t: T; lang: Lang; paidCap: number | null; season: number; settingsLoading: boolean; meetingDate: string }) {
+function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetings, onMeetings }: { t: T; lang: Lang; paidCap: number | null; season: number; settingsLoading: boolean; meetings: RcMeeting[]; onMeetings: (next: RcMeeting[]) => void }) {
   const [rows, setRows] = useState<RcOverviewEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -5215,17 +5222,31 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate 
   // back if the save fails, so a rejected mark never shows as recorded.
   const [paidBusy, setPaidBusy] = useState<string | null>(null);
   const [meetingBusy, setMeetingBusy] = useState<string | null>(null);
-  const toggleMeeting = async (r: RcOverviewEntry) => {
-    const on = !r.meetingAttended;
-    setMeetingBusy(r.id);
-    setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, meetingAttended: on } : x)));
+  // The season's meetings are fetched here, where the season is settled, and
+  // handed up so the RC-Sitzungen card below edits the same list.
+  useEffect(() => {
+    if (settingsLoading) return;
+    let cancelled = false;
+    listRcMeetings(season)
+      .then((list) => { if (!cancelled) onMeetings(list); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { cancelled = true; };
+  }, [season, settingsLoading, onMeetings]);
+  const toggleMeeting = async (r: RcOverviewEntry, m: RcMeeting) => {
+    const had = (r.meetingsAttended ?? []).includes(m.id);
+    const on = !had;
+    const next = (list: string[] | undefined) => (on ? [...(list ?? []), m.id] : (list ?? []).filter((x) => x !== m.id));
+    setMeetingBusy(`${r.id}:${m.id}`);
+    setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, meetingsAttended: next(x.meetingsAttended) } : x)));
     try {
-      await setRcMeeting(r.id, season, on);
+      await setRcMeetingAttendance(m.id, r.id, on);
+      // The card's attendance count follows.
+      onMeetings(meetings.map((x) => (x.id === m.id ? { ...x, attended: on ? [...new Set([...x.attended, r.id])] : x.attended.filter((id) => id !== r.id) } : x)));
       toast.success(on ? t.ovMeetingOk : t.ovMeetingOff, { lang });
     } catch (e) {
       // This row's field only: a toggle on another row may have been stored
       // while this save was out, and a whole-table snapshot would erase it.
-      setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, meetingAttended: r.meetingAttended } : x)));
+      setRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, meetingsAttended: r.meetingsAttended } : x)));
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setMeetingBusy(null);
@@ -5405,16 +5426,19 @@ function OverviewAdmin({ t, lang, paidCap, season, settingsLoading, meetingDate 
                                 >
                                   {sheetBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} {t.ovSheet}
                                 </button>
-                                <label className="inline-flex items-center gap-1.5 text-xs text-stone-600" title={t.ovMeetingHint}>
-                                  <input
-                                    type="checkbox"
-                                    checked={Boolean(r.meetingAttended)}
-                                    disabled={meetingBusy === r.id}
-                                    onChange={() => void toggleMeeting(r)}
-                                    className="h-3.5 w-3.5 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500/40"
-                                  />
-                                  {t.ovMeeting(meetingDate ? dayLabel(meetingDate, { year: true }) : '')}
-                                </label>
+                                {/* One tick per meeting of the season — a line each on the sheet. */}
+                                {meetings.map((m) => (
+                                  <label key={m.id} className="inline-flex items-center gap-1.5 text-xs text-stone-600" title={t.ovMeetingHint}>
+                                    <input
+                                      type="checkbox"
+                                      checked={(r.meetingsAttended ?? []).includes(m.id)}
+                                      disabled={meetingBusy === `${r.id}:${m.id}`}
+                                      onChange={() => void toggleMeeting(r, m)}
+                                      className="h-3.5 w-3.5 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500/40"
+                                    />
+                                    {t.ovMeeting(fmtMeetingDate(m.date, lang))}
+                                  </label>
+                                ))}
                               </div>
                               <OverviewDetail t={t} lang={lang} rcId={r.id} rcName={r.fullName} season={season} />
                             </div>
@@ -6191,18 +6215,6 @@ function ExpenseRatesCard({ t, expenseRates, onExpenseRates, loading }: { t: T; 
           <input type="number" min={0} step="0.05" inputMode="decimal" disabled={loading}
             className="h-9 w-24 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
             value={rates.visit} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, visit: e.target.value })); }} />
-        </label>
-        <label className="text-xs text-stone-500">
-          <span className="block mb-0.5">{t.expMeeting}</span>
-          <input type="number" min={0} step="0.05" inputMode="decimal" disabled={loading}
-            className="h-9 w-24 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
-            value={rates.meeting} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, meeting: e.target.value })); }} />
-        </label>
-        <label className="text-xs text-stone-500">
-          <span className="block mb-0.5">{t.expMeetingDate}</span>
-          <input type="date" disabled={loading}
-            className="h-9 px-3 text-sm rounded-lg border border-stone-300 bg-white text-stone-800 focus:outline-none focus:ring-2 focus:ring-red-500"
-            value={rates.meetingDate} onChange={(e) => { ratesTouched.current = true; setRates((r) => ({ ...r, meetingDate: e.target.value })); }} />
         </label>
         <button onClick={() => void saveRates()} disabled={loading} className={btnPrimary}><Check size={15} /> {t.save}</button>
         {ratesSaved && <span className="text-xs text-green-600 font-medium">{t.saved}</span>}

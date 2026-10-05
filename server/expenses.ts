@@ -46,8 +46,8 @@ export type ExpenseStatement = {
   visitRate: number;
   /** Infoschreiben 6.2 — games a season pays at most; null for no cap. */
   paidCap: number | null;
-  /** The RC-Sitzung line, when the coach attended. */
-  meeting: { date: string; rate: number } | null;
+  /** One line per RC-Sitzung of the season the coach attended (server/rcMeetings.ts). */
+  meetings: Array<{ date: string; title: string; rate: number }>;
   /** The day the sheet is drawn. */
   issuedOn: Date;
 };
@@ -179,7 +179,7 @@ export function planExpenseRows(st: ExpenseStatement): ExpensePlan {
     });
   });
   const visitsTotal = paidGames * st.visitRate;
-  const meetingTotal = st.meeting ? st.meeting.rate : 0;
+  const meetingTotal = Math.round((st.meetings ?? []).reduce((sum, m) => sum + m.rate, 0) * 100) / 100;
   return { rows, paidGames, visitsTotal, meetingTotal, grandTotal: visitsTotal + meetingTotal };
 }
 
@@ -293,7 +293,10 @@ export async function buildExpenseStatementPdf(st: ExpenseStatement, logoPng?: U
   let page = doc.addPage([PAGE_W, PAGE_H]);
   header(page);
   let y = HEAD_Y - ROW_H - 2;
-  const bottomOfRows = MARGIN + 130;
+  // The totals block grows by a line per meeting past the first, and the rows
+  // stop that much higher so the two never overlap.
+  const totalsExtra = Math.max(0, (st.meetings ?? []).length - 1) * ROW_H;
+  const bottomOfRows = MARGIN + 130 + totalsExtra;
 
   for (const row of plan.rows) {
     if (y < bottomOfRows) {
@@ -323,12 +326,15 @@ export async function buildExpenseStatementPdf(st: ExpenseStatement, logoPng?: U
     page.drawText(safe(label), { x: MARGIN, y: ly, size: 9, font, color: INK });
     page.drawText(amount, { x: amountRight - font.widthOfTextAtSize(amount, 9), y: ly, size: 9, font, color: INK });
   };
-  let ty = MARGIN + 92;
+  let ty = MARGIN + 92 + totalsExtra;
   page.drawLine({ start: { x: MARGIN, y: ty + 12 }, end: { x: PAGE_W - MARGIN, y: ty + 12 }, thickness: 0.5, color: RULE });
   line('Total RC-Besuche', chf(plan.visitsTotal), ty, regular);
   ty -= ROW_H;
-  if (st.meeting) {
-    line(`RC-Sitzung v. ${dateShortDe(st.meeting.date)}`, chf(st.meeting.rate), ty, regular);
+  for (const m of st.meetings ?? []) {
+    // The title when it says more than the default, so two meetings on one
+    // sheet can be told apart by more than their dates.
+    const label = m.title && m.title !== 'RC-Sitzung' ? `${m.title} v. ${dateShortDe(m.date)}` : `RC-Sitzung v. ${dateShortDe(m.date)}`;
+    line(label.length > 60 ? `${label.slice(0, 59)}…` : label, chf(m.rate), ty, regular);
     ty -= ROW_H;
   }
   ty -= 6;

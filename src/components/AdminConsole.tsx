@@ -311,7 +311,7 @@ const STR = {
     mgDeleteTakesForms: 'Ein Testspiel: alles, was darauf erfasst wurde, geht mit — auch abgeschickte Formulare.',
     mgDeleteOk: (n: string) => `Spiel „${n}" gelöscht.`,
     shortcutToggle: 'Admin-Link in der Toolbar zeigen (nur Anzeige — gibt keine Rechte)',
-    games: 'Spiele', overview: 'Finance & Operations', stats: 'Statistik',
+    games: 'Spiele', overview: 'Finance & operations', stats: 'Statistik',
     niveau: 'Niveau',
     nvHint: 'Auf welche Spiele ein SR dieser Stufe im Fokus steht — pro Kategorie und Rolle. Angeklickt heisst: das Spiel erscheint in der Spielliste des Coachees. Nichts angeklickt heisst: in dieser Kategorie und Rolle keine Fokus-Spiele („x" in der offiziellen Tabelle).',
     nvOfficial: 'Offizielle Tabelle, Stand 9. April 2026',
@@ -625,7 +625,7 @@ const STR = {
     mgDeleteTakesForms: 'A test game: everything filed on it goes with it, filed forms included.',
     mgDeleteOk: (n: string) => `Game "${n}" deleted.`,
     shortcutToggle: 'Show the admin link in their toolbar (display only — grants nothing)',
-    games: 'Games', overview: 'Finance & Operations', stats: 'Statistics',
+    games: 'Games', overview: 'Finance & operations', stats: 'Statistics',
     niveau: 'Levels',
     nvHint: 'Which games a referee at this level is focused on — per category and role. Lit means the game shows up in that coachee\'s game list. Nothing lit means no focused games in this category and role (an "x" in the official table).',
     nvOfficial: 'Official table, as of 9 April 2026',
@@ -951,7 +951,7 @@ export default function AdminConsole() {
   // page whose every request would 401.
   useEffect(() => {
     if (role === 'president' && tab !== 'survey' && tab !== 'notes' && tab !== 'forms' && tab !== 'finance') setTab('survey');
-    // The admin's budget lives on Finance & Operations ('overview'), the chair's on 'finance'.
+    // The admin's budget lives on Finance & operations ('overview'), the chair's on 'finance'.
     if (role === 'admin' && tab === 'finance') setTab('overview');
     if (role === 'admin' && (tab === 'survey' || tab === 'notes' || tab === 'forms')) setTab('coachees');
     // 'form' edits the questionnaire and is admin-only, even though its

@@ -5,7 +5,7 @@ import { getBudget, putBudget } from '../lib/pocketbase';
 import { computeBudget, normalizeBudget, type BudgetMeeting, type BudgetRow, type BudgetSettings } from '../lib/budget';
 
 /**
- * Admin → Finance & Operations: the season's budget against what it pays — the
+ * Admin → Finance & operations: the season's budget against what it pays — the
  * visits (Vergütet × rate), the games taken but not yet filed, the meetings
  * (attendees × each meeting's rate) and any extras — and what is left. The
  * sums are src/lib/budget.ts over the same rows the table below shows.
@@ -33,18 +33,18 @@ const STR = {
   EN: {
     title: (s: string) => `Budget ${s}`,
     hint: 'What the season has to spend and how much of it is already committed. Planned and outstanding games count already — what is left is what you can still plan with.',
-    remaining: 'Remaining', over: 'Over Budget',
+    remaining: 'Remaining', over: 'Over budget',
     budget: 'Budget', edit: 'Change', save: 'Save', cancel: 'Cancel', remove: 'Remove',
-    visits: 'Visits Completed', upcoming: 'Visits Planned & Outstanding', meetings: 'RC Meetings', extras: 'Extras',
+    visits: 'Visits completed', upcoming: 'Visits planned & outstanding', meetings: 'RC meetings', extras: 'Extras',
     games: (n: number, rate: string) => `${n} game${n === 1 ? '' : 's'} × CHF ${rate}`,
     attendances: (n: number) => `${n} attendance${n === 1 ? '' : 's'} · rate per meeting`,
     noExtras: 'None',
-    addExtra: 'Add Extra', extraLabel: 'Description', extraAmount: 'CHF',
-    delExtra: (l: string) => `Remove the Extra “${l}”?`,
+    addExtra: 'Add extra', extraLabel: 'Description', extraAmount: 'CHF',
+    delExtra: (l: string) => `Remove the extra “${l}”?`,
     delExtraBody: 'Its amount is no longer taken off the budget.',
-    paidOut: 'Paid Out', owed: 'Still to Pay Out',
+    paidOut: 'Paid out', owed: 'Still to pay out',
     saved: 'Budget saved.',
-    legendSpent: 'Spent', legendUpcoming: 'Planned & Outstanding', legendLeft: 'Left',
+    legendSpent: 'Spent', legendUpcoming: 'Planned & outstanding', legendLeft: 'Left',
   },
 };
 

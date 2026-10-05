@@ -1,4 +1,4 @@
-// The season budget (Admin → Finance & Operations) — pure, shared by the server
+// The season budget (Admin → Finance & operations) — pure, shared by the server
 // (which stores the settings) and the console (which does the sums from the
 // same rows the table shows). Spec: e2e/budget-rules.spec.ts.
 //

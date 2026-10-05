@@ -3,7 +3,7 @@ import { stubSignedInApp } from './support/app';
 
 // The chair's own console has a Finanzen tab (Jasmin, 2026-10-05: "budget
 // si"): the same budget card as the admin's, read from /api/finance, and what
-// each coach can claim. The admin keeps theirs on Finance & Operations.
+// each coach can claim. The admin keeps theirs on Finance & operations.
 
 const FINANCE = {
   season: 2026, cap: 12, visitRate: 60,
@@ -36,7 +36,7 @@ test('the chair sees the budget and each coach\'s claim, and may change the budg
   expect(puts[0]).toMatchObject({ season: 2026, budget: 6000 });
 });
 
-test('the admin sent to the chair\'s Finanzen lands on Finance & Operations', async ({ page }) => {
+test('the admin sent to the chair\'s Finanzen lands on Finance & operations', async ({ page }) => {
   await stubSignedInApp(page, { admin: true });
   await page.route('**/api/admin/budget*', (r) => r.fulfill({ json: { season: 2026, budget: 5500, extras: [] } }));
   await page.goto('/admin/finance');

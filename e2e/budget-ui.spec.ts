@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
 
-// Admin → Finanzen & Betrieb: the budget card over the coaches' table, and a
+// Admin → Finance & Operations: the budget card over the coaches' table, and a
 // CHF column per coach.
 
 const OVERVIEW = [
@@ -34,7 +34,7 @@ test('the card adds up visits, committed games, meetings and extras against the 
     await r.fulfill({ json: { season: 2026, ...stored } });
   });
   await page.goto('/admin/overview');
-  await expect(page.getByRole('button', { name: 'Finanzen & Betrieb' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Finance & Operations' })).toBeVisible();
   const card = page.getByTestId('budget-card');
   // 15 paid games × 60 = 900; 2 committed × 60 = 120 (Anna's third taken game
   // is past the cap of 12); 1 meeting × 60 = 60.

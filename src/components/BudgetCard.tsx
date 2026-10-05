@@ -5,7 +5,7 @@ import { getBudget, putBudget } from '../lib/pocketbase';
 import { computeBudget, normalizeBudget, type BudgetMeeting, type BudgetRow, type BudgetSettings } from '../lib/budget';
 
 /**
- * Admin → Finanzen & Betrieb: the season's budget against what it pays — the
+ * Admin → Finance & Operations: the season's budget against what it pays — the
  * visits (Vergütet × rate), the games taken but not yet filed, the meetings
  * (attendees × each meeting's rate) and any extras — and what is left. The
  * sums are src/lib/budget.ts over the same rows the table below shows.

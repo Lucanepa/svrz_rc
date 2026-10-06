@@ -1407,7 +1407,10 @@ export type IdentityAudit = {
 };
 
 export type PlanningStatus = 'booked' | 'needs-visit' | 'further-wanted' | 'done' | 'inactive';
-export type PlanningBooking = { gameId: string; matchNo: string; date: string; label: string; rc: string; role: '1. SR' | '2. SR' };
+/** takenAt / takenVia: when the holder took the game and by which door
+ *  ('rc' | 'console'); '' when unrecorded. Optional — an API older than the
+ *  stamp sends neither. */
+export type PlanningBooking = { gameId: string; matchNo: string; date: string; label: string; rc: string; role: '1. SR' | '2. SR'; takenAt?: string; takenVia?: string };
 export type PlanningCoachee = {
   id: string; name: string; groups: string; level: string; stage: string;
   observed: number; furtherWanted: boolean; bookings: PlanningBooking[]; freeGames: number; status: PlanningStatus;

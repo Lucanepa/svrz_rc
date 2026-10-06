@@ -5518,6 +5518,9 @@ const PLANNING_STR = {
       'closed-mismatch': ['Bericht und Abschluss passen nicht', 'Rolle abgeschlossen ohne Bericht, oder Bericht ohne abgeschlossene Rolle.'],
     } as Record<PlanningCheckKind, [string, string]>,
     closedWithout: 'abgeschlossen ohne Bericht', reportOpen: 'Bericht, Rolle offen',
+    taken: (when: string) => `Übernommen ${when}`,
+    takenVia: { rc: 'vom RC selbst', console: 'über die Konsole' } as Record<string, string>,
+    takenUnknown: 'Übernahme-Zeitpunkt nicht erfasst',
   },
   EN: {
     title: 'Planning',
@@ -5541,6 +5544,9 @@ const PLANNING_STR = {
       'closed-mismatch': ['Report and closure disagree', 'Role closed without a report, or a report whose role is still open.'],
     } as Record<PlanningCheckKind, [string, string]>,
     closedWithout: 'closed without a report', reportOpen: 'report, role still open',
+    taken: (when: string) => `Taken ${when}`,
+    takenVia: { rc: 'by the coach', console: 'via the console' } as Record<string, string>,
+    takenUnknown: 'Time taken not recorded',
   },
 };
 
@@ -5576,7 +5582,19 @@ function PlanningAdmin({ lang, season, settingsLoading, active, onOpenGame }: {
   // so it reflects the takes and releases made in the Games tab meanwhile.
   useEffect(() => { if (active && !settingsLoading) void load(); }, [active, settingsLoading, load]);
 
-  const gameLine = (b: PlanningBooking) => (
+  // On a double booking, when each was taken and through which door — the
+  // order is the answer to "how could this happen": a take from before the
+  // guard (30.09.2026), or an assignment the console made on purpose.
+  const takenLine = (b: PlanningBooking) => {
+    const when = b.takenAt ? dayTimeLabel(b.takenAt) : '';
+    const via = b.takenVia ? L.takenVia[b.takenVia] : '';
+    return (
+      <span data-testid="planning-taken" className="basis-full text-[11px] text-stone-500">
+        {when ? [L.taken(when), via].filter(Boolean).join(' · ') : L.takenUnknown}
+      </span>
+    );
+  };
+  const gameLine = (b: PlanningBooking, withTaken = false) => (
     <button
       key={`${b.gameId}-${b.role}`}
       type="button"
@@ -5589,6 +5607,7 @@ function PlanningAdmin({ lang, season, settingsLoading, active, onOpenGame }: {
       <span className="text-xs text-stone-700 min-w-0 truncate">{b.label}</span>
       <span className="text-xs text-stone-500">· {b.role}</span>
       {b.rc && <span className="text-xs font-medium text-stone-700">· RC {b.rc}</span>}
+      {withTaken && takenLine(b)}
     </button>
   );
 
@@ -5650,7 +5669,7 @@ function PlanningAdmin({ lang, season, settingsLoading, active, onOpenGame }: {
                             {c.detail && <span className="ml-1 font-normal text-stone-500">· {c.detail === 'closed-without-report' ? L.closedWithout : L.reportOpen}</span>}
                           </p>
                         )}
-                        {c.games.map(gameLine)}
+                        {c.games.map((b) => gameLine(b, kind === 'double-booking'))}
                       </li>
                     ))}
                   </ul>
@@ -5695,7 +5714,7 @@ function PlanningAdmin({ lang, season, settingsLoading, active, onOpenGame }: {
                   <span className="ml-auto text-xs text-stone-500 tabular-nums">{L.observed(c.observed)}</span>
                 </div>
                 {c.bookings.length > 0
-                  ? <div className="mt-1 -mx-2">{c.bookings.map(gameLine)}</div>
+                  ? <div className="mt-1 -mx-2">{c.bookings.map((b) => gameLine(b))}</div>
                   : c.status !== 'done' && c.status !== 'inactive' && (
                     <p className={cn('mt-1 text-xs', c.freeGames === 0 ? 'text-red-600' : 'text-stone-500')}>{L.freeGames(c.freeGames)}</p>
                   )}

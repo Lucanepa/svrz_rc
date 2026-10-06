@@ -87,7 +87,7 @@ test('the board shows one loading state, then the coachees, and a game opens in 
     await r.fulfill({ json: plan(
       [coachee({ id: 'c1', name: 'Ref One' }), coachee({ id: 'c2', name: 'Ref Two', observed: 1 })],
       [
-        game({ id: GAME.id, matchNo: GAME.matchNo, rc: 'Anna Muster', slots: [{ role: '1. SR', name: 'Ref One', coacheeId: 'c1' }, { role: '2. SR', name: '', coacheeId: '' }] }),
+        game({ id: GAME.id, matchNo: GAME.matchNo, rc: 'Anna Muster', takenAt: '2026-09-28T12:05:00.000Z', takenVia: 'rc', slots: [{ role: '1. SR', name: 'Ref One', coacheeId: 'c1' }, { role: '2. SR', name: '', coacheeId: '' }] }),
         game({ id: 'x', matchNo: '400999', rc: 'Beat', slots: [{ role: '1. SR', name: 'Ref One', coacheeId: 'c1' }, { role: '2. SR', name: '', coacheeId: '' }] }),
       ],
     ) });
@@ -103,6 +103,12 @@ test('the board shows one loading state, then the coachees, and a game opens in 
   release();
   await expect(page.getByTestId('planning-row')).toHaveCount(2);
   await expect(page.getByTestId('planning-check-double-booking')).toBeVisible();
+  // Each booking of a double says when it was taken (Zürich time) and by
+  // which door — or that nobody recorded it, for a take older than the stamp.
+  const taken = page.getByTestId('planning-check-double-booking').getByTestId('planning-taken');
+  await expect(taken).toHaveCount(2);
+  await expect(taken.filter({ hasText: /28\.09\.2026 14:05/ })).toContainText(/vom RC selbst|by the coach/);
+  await expect(taken.filter({ hasText: /nicht erfasst|not recorded/ })).toHaveCount(1);
 
   // A game line opens the Games tab, searched for that match number.
   await page.getByTestId('planning-row').filter({ hasText: 'Ref One' }).getByRole('button', { name: new RegExp(GAME.matchNo) }).click();

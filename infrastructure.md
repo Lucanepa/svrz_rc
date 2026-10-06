@@ -205,6 +205,19 @@ Stores synced matches from Swiss Volley public data.
 
 Common fields: `match_no`, `league`, `match_date`, `location`, `home_team`, `away_team`, `first_referee`, `second_referee`, `first_line_judge`, `second_line_judge`, `assigned_rc`, `feedback_closed_roles`, `source_payload`.
 
+`assigned_at` / `assigned_via` (since 2026-10-06): when the holder took the game
+(ISO) and by which door — `rc` (a coach, in the app) or `console` (an admin
+assigning on someone's behalf). Written by `PUT /api/games/:id/assign-rc` and
+the manual-game form, cleared with `assigned_rc` on a give-back or a crew-change
+release; the nightly import does not touch them. The planning board prints both
+on every double booking. Games held before the field existed are dated once,
+30 s after the API boots, from the request log (`server/assignedAt.ts`; time
+only — the log cannot tell the console from a coach), which reaches back
+`LOG_RETENTION_DAYS` (30); anything older reads "not recorded". Added by
+`setup-schema.mjs` — **run it on the API host after deploying** (command under
+`parked_drafts` below); until then takes write nothing extra and the board says
+"not recorded", and the backfill retries on the next boot.
+
 ### `boerse_offers`
 
 One row per **offer** in VolleyManager's SR-Börse — not one per game. A game can

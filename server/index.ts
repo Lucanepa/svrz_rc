@@ -16,6 +16,7 @@ import {
   type AnnotationStatus,
 } from './logquery.ts';
 import { installErrorAlerts } from './erroralerts.ts';
+import { latestTakes, type LogLine } from './assignedAt.ts';
 import { boundedKeys, clientLogUser, clientTimestamp } from './logguard.ts';
 import { computePlanning, seasonProgress, type PlanningReport, type PlanningGameInput, type SeasonProgress } from './planning.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
@@ -4044,7 +4045,7 @@ async function afterCrewChange(before: AnyRecord, after: Record<string, unknown>
         const now = await withCollection(collectionCandidates.games, (c) => c.getOne<AnyRecord>(gameId));
         const sameHolder = asText(now.assigned_rc_id) === asText(before.assigned_rc_id) && asText(now.assigned_rc) === asText(before.assigned_rc);
         if (!sameHolder || openCoacheesOn(now, coachees) > 0) return false;
-        await withCollection(collectionCandidates.games, (c) => c.update(gameId, { assigned_rc: '', assigned_rc_id: '' }));
+        await withCollection(collectionCandidates.games, (c) => c.update(gameId, { assigned_rc: '', assigned_rc_id: '', assigned_at: '', assigned_via: '' }));
         icalGamesCache.clear();
         publishLive({ type: 'game.assignment', gameId, matchNo: asText(now.match_no), assignedRc: '', assignedRcId: '' });
         return true;
@@ -6490,7 +6491,7 @@ async function buildPlanning(season: number): Promise<{ report: PlanningReport; 
   const [allCoachees, games, inSeason, feedbacks, boerse, manual, goalOf, people] = await Promise.all([
     listCoacheesWithFallbackSort(),
     withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
-      fields: 'id,match_no,match_date,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles',
+      fields: 'id,match_no,match_date,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,assigned_at,assigned_via,feedback_closed_roles',
     })),
     seasonFilterExceptManual(season),
     withCollection(collectionCandidates.refereeCoaches, (c) => c.getFullList<AnyRecord>({ fields: 'game,role_assessed' })),
@@ -6530,6 +6531,7 @@ async function buildPlanning(season: number): Promise<{ report: PlanningReport; 
       id: String(g.id), matchNo: asText(g.match_no), date: asText(g.match_date),
       label: `${asText(g.home_team)} – ${asText(g.away_team)}`,
       rc: asText(g.assigned_rc) || (asText(g.assigned_rc_id) ? '?' : ''),
+      takenAt: asText(g.assigned_at), takenVia: asText(g.assigned_via),
       closedRoles: closed, feedbackRoles: filedRoles.get(String(g.id)) ?? [],
       slots, isRcGame: isRcGame(g), offeredRoles,
     };
@@ -8031,6 +8033,8 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
       second_referee_id: refereeId(d.second_referee_id, asText(d.second_referee)),
       assigned_rc: rcName,
       assigned_rc_id: rcId,
+      assigned_at: rcName ? new Date().toISOString() : '',
+      assigned_via: rcName ? 'console' : '',
     }));
     await withSettingLock('manual_games', async () => {
       const manual = await getManualGameIds();
@@ -8271,8 +8275,18 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
       const updated = await withCollection(collectionCandidates.games, (collection) =>
         // Giving a game back clears both halves; leaving a stale id behind would
         // keep the game "held" by someone whose name is already gone.
-        collection.update(gameId, { assigned_rc: givingBack ? '' : rcName, assigned_rc_id: givingBack ? '' : rcId }),
+        collection.update(gameId, {
+          assigned_rc: givingBack ? '' : rcName,
+          assigned_rc_id: givingBack ? '' : rcId,
+          assigned_at: givingBack ? '' : new Date().toISOString(),
+          assigned_via: givingBack ? '' : rcAuth ? 'rc' : 'console',
+        }),
       );
+      // The request log has the time but not the door (an admin and a coach
+      // send the same body), so say it here.
+      log.info(givingBack ? 'game.release' : 'game.take', givingBack ? 'game given back' : 'game taken', {
+        gameId, rcId, via: rcAuth ? 'rc' : 'console',
+      }, reqCtx(req));
       // Both sides of a handover change: clearing the lot beats working out who
       // the previous holder was, and the map holds one entry per RC.
       icalGamesCache.clear();
@@ -14211,6 +14225,36 @@ function scheduleDaily(expr: string, label: string, job: () => void | Promise<vo
   arm();
 }
 
+/** Fills `assigned_at` on games held since before it existed, from the
+ *  request log (server/assignedAt.ts). Fill-only and idempotent: a game that
+ *  already carries a time is never touched, so re-running after every deploy
+ *  costs one read. A schema without the field (setup-schema.mjs not yet run)
+ *  answers the filter with a 400 and the fill waits for the next boot. */
+async function backfillAssignedAt(): Promise<void> {
+  await ensureAdminAuth();
+  const held = await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
+    filter: '(assigned_rc != "" || assigned_rc_id != "") && assigned_at = ""',
+    fields: 'id',
+  }));
+  if (held.length === 0) return;
+  const lines: LogLine[] = [];
+  for (const { date } of await listDays()) {
+    for (const evt of ['req.in', 'req.out']) {
+      const day = await readDay({ date, evt, q: 'assign-rc', limit: 2_000, showMuted: true, showSolved: true });
+      lines.push(...day.entries);
+    }
+  }
+  const takes = latestTakes(lines);
+  let filled = 0;
+  for (const g of held) {
+    const at = takes.get(String(g.id));
+    if (!at) continue;
+    await withCollection(collectionCandidates.games, (c) => c.update(String(g.id), { assigned_at: at }));
+    filled++;
+  }
+  log.info('game.assigned-at.backfill', `${filled} of ${held.length} held games dated from the request log`, { filled, held: held.length });
+}
+
 app.listen(port, () => {
   log.info('startup', `API server listening on http://localhost:${port}`, {
     ringStats: ringStats(),
@@ -14225,6 +14269,11 @@ app.listen(port, () => {
   // it, so a session killed by a rotation stays dead across a restart. If
   // PocketBase is not up yet, verifyRcSession keeps nudging until it is.
   ensureSharedCredentialKnown();
+
+  // When the held games were taken, for the planning board's double bookings.
+  setTimeout(() => {
+    backfillAssignedAt().catch((error) => log.warn('game.assigned-at.backfill', `skipped: ${safeError(error)}`));
+  }, 30_000);
 
   // Daily log-file retention sweep (03:30 local).
   void pruneLogFiles();

@@ -24,6 +24,10 @@ export type PlanningGameInput = {
   label: string;
   /** The holder, '' for a free game. */
   rc: string;
+  /** When it was taken (ISO) and by which door ('rc' | 'console'), '' when
+   *  nobody recorded it — games held since before the stamp existed. */
+  takenAt?: string;
+  takenVia?: string;
   closedRoles: string[];
   /** Roles with a feedback row on this game. */
   feedbackRoles: string[];
@@ -46,7 +50,7 @@ export type PlanningCoacheeInput = {
   furtherWanted: boolean;
 };
 
-export type PlanningBooking = { gameId: string; matchNo: string; date: string; label: string; rc: string; role: PlanningRole };
+export type PlanningBooking = { gameId: string; matchNo: string; date: string; label: string; rc: string; role: PlanningRole; takenAt: string; takenVia: string };
 
 export type PlanningStatus = 'booked' | 'needs-visit' | 'further-wanted' | 'done' | 'inactive';
 
@@ -112,7 +116,7 @@ export function computePlanning(input: {
   const nameOf = new Map(input.coachees.map((c) => [c.id, c.name]));
 
   for (const g of input.games) {
-    const booking = (role: PlanningRole): PlanningBooking => ({ gameId: g.id, matchNo: g.matchNo, date: g.date, label: g.label, rc: g.rc, role });
+    const booking = (role: PlanningRole): PlanningBooking => ({ gameId: g.id, matchNo: g.matchNo, date: g.date, label: g.label, rc: g.rc, role, takenAt: g.takenAt ?? '', takenVia: g.takenVia ?? '' });
     const onSlots = g.slots.filter((s) => s.coacheeId && known.has(s.coacheeId));
     const held = g.rc !== '';
 

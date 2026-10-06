@@ -61,7 +61,14 @@ const games = await ensure('games', [
   // already sends with every game, and by the manual-game form off the
   // register. Empty on a game whose convocation carried only a name, and on
   // everything imported before 2026-08-27 — readers fall back to the name.
-  T('first_referee_id'),T('second_referee_id')
+  T('first_referee_id'),T('second_referee_id'),
+  // When the game was last taken, and by which door: 'rc' (a coach taking it
+  // for themselves in the app), 'console' (the admin assigning on someone's
+  // behalf), or '' when backfilled from the request log, which cannot tell
+  // the two apart. Cleared with assigned_rc. The planning board prints both on
+  // a double booking — "how could this happen" is mostly "which came first,
+  // and who set it up". Not part of mapIncomingGame, so the import leaves it.
+  T('assigned_at'),T('assigned_via')
 ]);
 // The SR-Börse: VolleyManager's exchange, where a referee who cannot whistle a
 // game they are convoked for offers THAT SLOT for someone else to take. One row

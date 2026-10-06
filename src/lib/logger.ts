@@ -305,8 +305,16 @@ let leaving = false;
  *  the reload is already running. Nothing clears it — there is nothing left
  *  to come back to. */
 let reloading = false;
+/** When the page was last taken away (performance.now()). `leaving` says
+ *  where the page is NOW; a request needs to know where it has BEEN. A phone
+ *  locked mid-request freezes the tab with the request in it, and when the
+ *  coach comes back the browser rejects it — after `noteBackOnPage` has
+ *  already cleared the flag. At 18:46 on 06.10.2026 the auth check and the
+ *  notebook, both 692 s old, went out by mail as an API outage that way;
+ *  nothing behind Cloudflare even lives that long (it answers 524 at 100 s). */
+let lastLeftAt = -Infinity;
 /** The browser took the page away (`pagehide`, or backgrounding the app). */
-export function noteLeavingPage(): void { leaving = true; }
+export function noteLeavingPage(): void { leaving = true; lastLeftAt = performance.now(); }
 /** Say so before calling location.reload(). Both places the app reloads
  *  itself (a new service worker taking over, and crossing between the admin
  *  console and the app) do; on 10.09.2026 a Home request cancelled by one of
@@ -328,7 +336,7 @@ export function noteBackOnPage(): void { if (!reloading) leaving = false; }
  *  it — a spec that simulates a reload would otherwise downgrade every failure
  *  the next spec measures. Nothing in the app calls this: a page that really
  *  reloaded is gone. */
-export function resetPageLifecycle(): void { leaving = false; reloading = false; lastOfflineAt = -Infinity; }
+export function resetPageLifecycle(): void { leaving = false; reloading = false; lastOfflineAt = -Infinity; lastLeftAt = -Infinity; }
 
 /** When the browser last said `offline` (performance.now()). A phone that
  *  loses the network drops every request in flight, and the log already
@@ -342,6 +350,11 @@ export function noteWentOffline(): void { lastOfflineAt = performance.now(); }
  *  life — at the start, during it, or at the moment it failed. */
 function sawOfflineSince(started: number, onlineAtStart: boolean): boolean {
   return !onlineAtStart || !navigator.onLine || lastOfflineAt >= started;
+}
+/** True when the page is leaving now, or was taken away at any point since
+ *  the request started — even if it has come back since. */
+function leftSince(started: number): boolean {
+  return leaving || lastLeftAt >= started;
 }
 
 export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving, wentOffline = false): { evt: string; lvl: ClientLevel } {
@@ -388,7 +401,7 @@ function installFetchLogging(): void {
       // the questionnaire AS the referee, and re-links an anonymous answer to
       // the person who gave it — into a Protokoll every admin reads.
       const write = () => {
-        const { evt, lvl } = classifyFetchFailure(ms, error, undefined, offline());
+        const { evt, lvl } = classifyFetchFailure(ms, error, leftSince(started), offline());
         clientLog[lvl](evt, `${method} ${scrubTokens(url)} failed after ${ms}ms (no response)`, {
           method, url: scrubTokens(url), ms, error, online: navigator.onLine,
         });
@@ -399,11 +412,11 @@ function installFetchLogging(): void {
       // The banner follows the same verdict, so a page that is only reloading
       // never tells the coach their network is down.
       const settle = () => {
-        const { evt } = classifyFetchFailure(ms, error, undefined, offline());
+        const { evt } = classifyFetchFailure(ms, error, leftSince(started), offline());
         const aborted = error instanceof Error && error.name === 'AbortError';
         if (evt === 'net.fail' && !aborted) conn.failed(); else conn.dropped();
       };
-      if (classifyFetchFailure(ms, error, undefined, offline()).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
+      if (classifyFetchFailure(ms, error, leftSince(started), offline()).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
       else { write(); settle(); }
       throw error;
     }

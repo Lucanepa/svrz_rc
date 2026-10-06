@@ -83,6 +83,21 @@ test('and coming back makes a failure loud again', async ({ page }) => {
   expect(await lastFailure(page)).toMatchObject({ lvl: 'error', evt: 'net.fail' });
 });
 
+test('a request frozen in the background and rejected on return is a warning', async ({ page }) => {
+  // 06.10.2026, 18:46: the auth check and the notebook were in flight when
+  // the phone was locked, and failed 692 s later as the app came back to the
+  // front — after the flag had already been cleared. Mailed as an outage.
+  await page.evaluate(async () => {
+    const pending = fetch('/api/lost-cause').catch(() => {});
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await pending;
+  });
+  expect(await lastFailure(page)).toMatchObject({ lvl: 'warn', evt: 'net.fail.unload' });
+});
+
 test('a page restored from the back/forward cache is not still leaving', async ({ page }) => {
   await page.evaluate(() => {
     window.dispatchEvent(new Event('pagehide'));

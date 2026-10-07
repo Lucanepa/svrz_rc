@@ -105,8 +105,7 @@ function StrengthView({ slice, role, lang, t }: { slice: StatSlice; role: StatRo
       <GradeScaleGrid>
         {sections.map(({ sectionIndex, rows }) => (
           <div key={sectionIndex} className={cn(WIDE_SCALE_ROW, 'mb-4 last:mb-0')}>
-            <div className="col-span-full"><SubHead>{sectionTitle(role, sectionIndex, lang)}</SubHead></div>
-            <GradeScale wide rows={rows} nLabel={t.nObs} refScore={p.avg} />
+            <GradeScale wide heading={sectionTitle(role, sectionIndex, lang)} rows={rows} nLabel={t.nObs} refScore={p.avg} />
           </div>
         ))}
       </GradeScaleGrid>
@@ -380,6 +379,11 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     const criteriaRoles = (['1SR', '2SR'] as StatRole[]).filter((role) => !filtered || criteriaFor(role).length > 0);
     const shownCriteriaRole: StatRole | null = criteriaRoles.includes(criteriaRole) ? criteriaRole : (criteriaRoles[0] ?? null);
     const gradeMonths = stats.byMonth.map((b) => ({ key: b.key, label: monthLabel(b.key, lang), value: gradeAvg(b.grade), n: b.observations, hint: `${monthLabel(b.key, lang)} ${b.key.slice(0, 4)}` }));
+    const showGradeMonth = gradeMonths.some((p) => p.value !== null);
+    // The narrow charts share a row; the ones with the form's long labels each
+    // get a row of their own, so two wide charts never squeeze each other.
+    const narrowGrades = [showHistogram, showGradeSummary, showGradeMonth].filter(Boolean).length;
+    const narrowSpan = narrowGrades === 3 ? 'lg:col-span-4' : narrowGrades === 2 ? 'lg:col-span-6' : 'lg:col-span-12';
     // Strengths & weaknesses: every Niveau side by side. The slices drop the
     // level and group filters, so the grid only shows when neither is on —
     // otherwise it would quietly answer a different question than the page.
@@ -527,7 +531,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
           <Section title={t.secGrades} hint={t.secGradesHint} testId="stats-section-grades">
             <Grid>
               {showHistogram && (
-              <Block span="lg:col-span-7" title={t.histogram} hint={t.histogramHint} testId="stats-histogram">
+              <Block span={narrowSpan} title={t.histogram} hint={t.desc.histogram} testId="stats-histogram">
                 {/* A to E, top to bottom: a C− or a C+ counts as a C. With a
                     filter on, a letter nobody was given is left out. */}
                 <HBarChart
@@ -539,7 +543,7 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               </Block>
               )}
               {showGradeSummary && (
-              <Block span="lg:col-span-5" title={t.avgGrade} hint={t.desc.gradeSummary} testId="stats-grade-summary">
+              <Block span={narrowSpan} title={t.avgGrade} hint={t.desc.gradeSummary} testId="stats-grade-summary">
                 <div className="grid grid-cols-3 gap-2">
                   <MiniStat label={t.avgGrade} value={avg === null ? '–' : `${scoreToLetter(avg)}${isThin(T.grade.obs) ? ` (n = ${T.grade.obs})` : ''}`} />
                   <MiniStat label={t.shareC} value={pctText(pct(letters.C, lettersAll))} />
@@ -554,23 +558,26 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                 <p className="mt-3 text-[11px] text-stone-500">{t.completeness}: <b className="text-stone-700">{pctText(pct(T.ratedItems, T.offeredItems))}</b></p>
               </Block>
               )}
-              {gradeMonths.some((p) => p.value !== null) && (
-              <Block span="lg:col-span-12" title={t.gradePerMonth} hint={t.desc.gradeMonth} testId="stats-grade-month">
+              {showGradeMonth && (
+              <Block span={narrowSpan} title={t.gradePerMonth} hint={t.desc.gradeMonth} testId="stats-grade-month">
                 <GradeLine points={gradeMonths} nLabel={t.nObs} />
               </Block>
               )}
               {sectionRows.length > 0 && (
-              <Block span="lg:col-span-5" title={t.sections} hint={t.desc.sections} testId="stats-sections">
-                {sectionRows.map(({ role, rows }) => (
-                  <div key={role} className="mb-4 last:mb-0">
-                    <SubHead>{roleLabel(role, lang)}</SubHead>
-                    {rows.length ? <GradeScale rows={rows} nLabel={t.nObs} /> : <p className="text-xs text-stone-400">–</p>}
-                  </div>
-                ))}
+              <Block span="lg:col-span-12" title={t.sections} hint={t.desc.sections} testId="stats-sections">
+                <div className="grid gap-y-4 xl:grid-cols-2 xl:gap-x-8">
+                  {sectionRows.map(({ role, rows }) => (
+                    <div key={role}>
+                      {rows.length
+                        ? <GradeScaleGrid><GradeScale wide heading={roleLabel(role, lang)} rows={rows} nLabel={t.nObs} /></GradeScaleGrid>
+                        : <><SubHead>{roleLabel(role, lang)}</SubHead><p className="text-xs text-stone-400">–</p></>}
+                    </div>
+                  ))}
+                </div>
               </Block>
               )}
               {shownCriteriaRole && (
-              <Block span="lg:col-span-7" title={t.criteria} hint={t.desc.criteria} testId="stats-criteria"
+              <Block span="lg:col-span-12" title={t.criteria} hint={t.desc.criteria} testId="stats-criteria"
                 aside={criteriaRoles.length > 1 ? (
                   <div className="inline-flex rounded-lg border border-stone-200 p-0.5 text-xs bg-white">
                     {criteriaRoles.map((role) => (
@@ -578,12 +585,13 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
                     ))}
                   </div>
                 ) : <span className="text-xs text-stone-500">{roleLabel(shownCriteriaRole, lang)}</span>}>
-                {criteriaFor(shownCriteriaRole).map(({ sectionIndex, rows }) => (
-                  <div key={sectionIndex} className="mb-4 last:mb-0">
-                    <SubHead>{sectionTitle(shownCriteriaRole, sectionIndex, lang)}</SubHead>
-                    <GradeScale rows={rows} nLabel={t.nObs} />
-                  </div>
-                ))}
+                <GradeScaleGrid>
+                  {criteriaFor(shownCriteriaRole).map(({ sectionIndex, rows }) => (
+                    <div key={sectionIndex} className={cn(WIDE_SCALE_ROW, 'mb-4 last:mb-0')}>
+                      <GradeScale wide heading={sectionTitle(shownCriteriaRole, sectionIndex, lang)} rows={rows} nLabel={t.nObs} />
+                    </div>
+                  ))}
+                </GradeScaleGrid>
               </Block>
               )}
               {shownSwRole && shownSwSlice && (

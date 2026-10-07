@@ -391,11 +391,15 @@ const IN_LINE = '#a8a29e'; // stone-400
 /** The columns every `wide` GradeScale shares, owned by the grid around all
  *  of them so the tracks line up from one section to the next. From sm up the
  *  label column is as wide as the longest criterion (it wraps only when the
- *  screen cannot hold both), and the track takes what is left — at least
- *  12rem. On a phone each criterion's label gets its own line and the track
- *  with its grade the line below, repeated (asked 2026-10-07: the labels
- *  wrapped at 22rem while the track had room to spare). */
-const WIDE_SCALE_COLS = 'grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[minmax(10rem,max-content)_minmax(12rem,1fr)_auto]';
+ *  screen cannot hold both) and the track stops at 12rem — five letters read
+ *  fine at that width, and a wider track only pushed the grade away from its
+ *  label. On a phone each criterion's label gets its own line and the track
+ *  with its grade the line below, repeated (asked 2026-10-07: first the labels
+ *  wrapped while the track had room to spare, then "full sentences and less
+ *  space for the graph"). */
+// The grade column is sized, not `auto`: an auto column takes the width left
+// over and would drag the grade to the block's far edge, away from its dot.
+const WIDE_SCALE_COLS = 'grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[minmax(10rem,max-content)_minmax(7rem,12rem)_minmax(4.5rem,max-content)]';
 /** A full-width row of a GradeScaleGrid that lines its children up with it. */
 export const WIDE_SCALE_ROW = 'col-span-full grid grid-cols-subgrid';
 export function GradeScaleGrid({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -408,22 +412,29 @@ export function GradeScaleGrid({ children, className }: { children: React.ReactN
  *  With `refScore` the track measures against that average instead of C (a
  *  level's own average, say): one dashed line through every row, the dots
  *  coloured by their tier — left of the line is better. */
-export function GradeScale({ rows, minLabel, maxLabel, nLabel, refScore, wide }: { rows: ScaleRow[]; minLabel?: string; maxLabel?: string; nLabel: (n: number) => string; refScore?: number | null;
+export function GradeScale({ rows, minLabel, maxLabel, nLabel, refScore, wide, heading }: { rows: ScaleRow[]; minLabel?: string; maxLabel?: string; nLabel: (n: number) => string; refScore?: number | null;
   /** Long labels (the form's criteria): rendered as rows of the
    *  GradeScaleGrid it must sit in — on a phone the label gets its own line
    *  above the track, from sm up a column as wide as the longest label. */
-  wide?: boolean }) {
+  wide?: boolean;
+  /** The group's name, on the A–E line instead of a line of its own. */
+  heading?: React.ReactNode }) {
   const pos = (score: number) => gradeTrackPos(score) * 100;
   const ticks = ['A', 'B', 'C', 'D', 'E'].map((l) => ({ l, p: pos(GRADE_SCALE[l]) }));
   const refPos = typeof refScore === 'number' ? pos(refScore) : null;
   const hasRef = refPos !== null;
+  // Labels are never cut: they wrap. Short ones (a role, a Stufe) sit in a
+  // grid per row, so the track is capped the same way here — at 12rem, and at
+  // 40 % of a narrow block — and the rest goes to the label.
   const cols = wide
     ? WIDE_SCALE_ROW
-    : 'grid-cols-[minmax(0,6.5rem)_1fr_auto] sm:grid-cols-[minmax(0,11rem)_1fr_auto] gap-2';
+    : 'grid-cols-[minmax(0,6.5rem)_minmax(0,1fr)_auto] sm:grid-cols-[minmax(0,1fr)_minmax(5rem,min(12rem,40%))_auto] gap-x-2';
   return (
     <div className={wide ? WIDE_SCALE_ROW : undefined}>
-      <div className={cn('grid items-center text-[10px] text-stone-400 mb-1', cols)}>
-        <span className={wide ? 'hidden sm:block' : undefined} />
+      <div className={cn('grid items-end text-[10px] text-stone-400 mb-1', cols)}>
+        {heading
+          ? <span className={cn('text-[11px] font-semibold leading-tight text-stone-500', wide && 'col-span-2 sm:col-span-1 mb-1 sm:mb-0 sm:pr-2')}>{heading}</span>
+          : <span className={wide ? 'hidden sm:block' : undefined} />}
         <span className="relative h-3">
           {ticks.map((t) => <span key={t.l} className="absolute -translate-x-1/2" style={{ left: `${t.p}%` }}>{t.l}</span>)}
         </span>
@@ -442,12 +453,14 @@ export function GradeScale({ rows, minLabel, maxLabel, nLabel, refScore, wide }:
             style={style ? { background: style.bg } : undefined}
             data-thin={thin ? 'true' : undefined}
             title={r.title ?? (r.avg === null ? `${r.label}: ${nLabel(r.n)}` : `${r.label}: ${scoreToLetter(r.avg)} · ${nLabel(r.n)}${isThin(r.n) ? ` (n < 3)` : ''}`)}>
-            <span className={cn(wide ? 'col-span-2 sm:col-span-1 leading-tight sm:pr-2' : 'truncate', r.indent ? 'pl-3 text-stone-500' : 'text-stone-700', r.strong && 'font-semibold text-stone-800')}>{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
-            <span className="relative h-4">
+            <span className={cn('leading-tight', wide && 'col-span-2 sm:col-span-1 sm:pr-2', r.indent ? 'pl-3 text-stone-500' : 'text-stone-700', r.strong && 'font-semibold text-stone-800')}>{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
+            {/* As tall as the row, so the dashed reference runs unbroken past
+                a label on two lines; the dot and the C mark stay centred. */}
+            <span className="relative self-stretch min-h-4">
               <span className="absolute inset-x-0 top-1/2 h-px bg-stone-200" />
               {hasRef
                 ? <span className={cn('absolute -translate-x-1/2 border-l-2 border-dashed border-stone-500', wide ? 'top-0 bottom-0 sm:-top-1 sm:-bottom-1' : '-top-1 -bottom-1')} style={{ left: `${refPos}%` }} />
-                : <span className="absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-stone-400" style={{ left: `${pos(NORMAL_SCORE)}%` }} title="C" />}
+                : <span className="absolute top-1/2 h-4 w-0.5 -translate-x-1/2 -translate-y-1/2 bg-stone-400" style={{ left: `${pos(NORMAL_SCORE)}%` }} title="C" />}
               {r.avg !== null && (thin
                 ? <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white border-2" style={{ left: `${pos(r.avg)}%`, borderColor: hasRef ? IN_LINE : SERIES[0] }} />
                 : <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white" style={{ left: `${pos(r.avg)}%`, background: dot }} />)}

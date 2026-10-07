@@ -20,7 +20,7 @@ import {
 } from '../lib/statsLabels';
 import { SECTIONS_1SR_DE, SECTIONS_2SR_DE } from '../types';
 import { buildDeck, deckFileName, DECK_CHAPTERS, DEFAULT_DECK_SECTIONS, type DeckFormat, type DeckSection } from '../lib/statsDeck';
-import { BarList, ColumnChart, DivergingBars, Donut, GradeLine, GradeScale, HBarChart, SEQ_BLUE, SERIES, Sparkline, StackBar, StatTile, TIER_STYLE, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
+import { BarList, ColumnChart, DivergingBars, Donut, GradeLine, GradeScale, GradeScaleGrid, WIDE_SCALE_ROW, HBarChart, SEQ_BLUE, SERIES, Sparkline, StackBar, StatTile, TIER_STYLE, fmtDec, fmtInt, type BarRow, type ScaleRow } from './StatsCharts';
 
 /** Men blue, women red — the colours the split has always had. */
 const GENDER_COLOR: Record<string, string> = { H: '#2a78d6', D: '#e2001a' };
@@ -101,12 +101,15 @@ function StrengthView({ slice, role, lang, t }: { slice: StatSlice; role: StatRo
           <div><span className="font-semibold" style={{ color: TIER_STYLE['-1'].fg }}>▼ {t.swWeaknesses}:</span> <span className="text-stone-700">{names(weak)}</span></div>
         </>) : <div className="text-stone-500">{t.swTooThin}</div>}
       </div>
-      {sections.map(({ sectionIndex, rows }) => (
-        <div key={sectionIndex} className="mb-4 last:mb-0">
-          <SubHead>{sectionTitle(role, sectionIndex, lang)}</SubHead>
-          <GradeScale wide rows={rows} nLabel={t.nObs} refScore={p.avg} />
-        </div>
-      ))}
+      {/* One grid for every section, so the tracks line up from one to the next. */}
+      <GradeScaleGrid>
+        {sections.map(({ sectionIndex, rows }) => (
+          <div key={sectionIndex} className={cn(WIDE_SCALE_ROW, 'mb-4 last:mb-0')}>
+            <div className="col-span-full"><SubHead>{sectionTitle(role, sectionIndex, lang)}</SubHead></div>
+            <GradeScale wide rows={rows} nLabel={t.nObs} refScore={p.avg} />
+          </div>
+        ))}
+      </GradeScaleGrid>
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-stone-500">
         <span className="inline-flex items-center gap-1.5"><span className="inline-block h-3 border-l-2 border-dashed border-stone-500" />{t.swLevelAvg(level)}</span>
         {[2, 1, -1, -2].map((tier) => {

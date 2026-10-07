@@ -388,6 +388,20 @@ export const TIER_STYLE: Record<string, { bg: string; fg: string; mark: string }
 };
 const IN_LINE = '#a8a29e'; // stone-400
 
+/** The columns every `wide` GradeScale shares, owned by the grid around all
+ *  of them so the tracks line up from one section to the next. From sm up the
+ *  label column is as wide as the longest criterion (it wraps only when the
+ *  screen cannot hold both), and the track takes what is left — at least
+ *  12rem. On a phone each criterion's label gets its own line and the track
+ *  with its grade the line below, repeated (asked 2026-10-07: the labels
+ *  wrapped at 22rem while the track had room to spare). */
+const WIDE_SCALE_COLS = 'grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[minmax(10rem,max-content)_minmax(12rem,1fr)_auto]';
+/** A full-width row of a GradeScaleGrid that lines its children up with it. */
+export const WIDE_SCALE_ROW = 'col-span-full grid grid-cols-subgrid';
+export function GradeScaleGrid({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={cn('grid gap-x-2', WIDE_SCALE_COLS, className)} data-testid="grade-scale-grid">{children}</div>;
+}
+
 /** One row per thing graded: a dot on the A+…E- track, C marked. A sits on
  *  the left like on the form. An average from fewer than three observations
  *  is drawn hollow and carries its n.
@@ -395,18 +409,19 @@ const IN_LINE = '#a8a29e'; // stone-400
  *  level's own average, say): one dashed line through every row, the dots
  *  coloured by their tier — left of the line is better. */
 export function GradeScale({ rows, minLabel, maxLabel, nLabel, refScore, wide }: { rows: ScaleRow[]; minLabel?: string; maxLabel?: string; nLabel: (n: number) => string; refScore?: number | null;
-  /** Long labels (the form's criteria) in a full-width block: on a phone the
-   *  label gets its own line above the track, from sm up a wide column. */
+  /** Long labels (the form's criteria): rendered as rows of the
+   *  GradeScaleGrid it must sit in — on a phone the label gets its own line
+   *  above the track, from sm up a column as wide as the longest label. */
   wide?: boolean }) {
   const pos = (score: number) => gradeTrackPos(score) * 100;
   const ticks = ['A', 'B', 'C', 'D', 'E'].map((l) => ({ l, p: pos(GRADE_SCALE[l]) }));
   const refPos = typeof refScore === 'number' ? pos(refScore) : null;
   const hasRef = refPos !== null;
   const cols = wide
-    ? 'grid-cols-[1fr_auto] sm:grid-cols-[minmax(0,22rem)_1fr_auto] gap-x-2'
+    ? WIDE_SCALE_ROW
     : 'grid-cols-[minmax(0,6.5rem)_1fr_auto] sm:grid-cols-[minmax(0,11rem)_1fr_auto] gap-2';
   return (
-    <div>
+    <div className={wide ? WIDE_SCALE_ROW : undefined}>
       <div className={cn('grid items-center text-[10px] text-stone-400 mb-1', cols)}>
         <span className={wide ? 'hidden sm:block' : undefined} />
         <span className="relative h-3">
@@ -414,7 +429,7 @@ export function GradeScale({ rows, minLabel, maxLabel, nLabel, refScore, wide }:
         </span>
         <span className="min-w-[4.5rem]" />
       </div>
-      <div className={hasRef ? 'space-y-0.5' : 'space-y-1.5'}>
+      <div className={wide ? cn(WIDE_SCALE_ROW, hasRef ? 'gap-y-0.5' : 'gap-y-1.5') : hasRef ? 'space-y-0.5' : 'space-y-1.5'}>
         {rows.map((r) => {
           const thin = r.avg !== null && isThin(r.n);
           const style = r.tier ? TIER_STYLE[String(r.tier)] : null;
@@ -427,7 +442,7 @@ export function GradeScale({ rows, minLabel, maxLabel, nLabel, refScore, wide }:
             style={style ? { background: style.bg } : undefined}
             data-thin={thin ? 'true' : undefined}
             title={r.title ?? (r.avg === null ? `${r.label}: ${nLabel(r.n)}` : `${r.label}: ${scoreToLetter(r.avg)} · ${nLabel(r.n)}${isThin(r.n) ? ` (n < 3)` : ''}`)}>
-            <span className={cn(wide ? 'col-span-2 sm:col-span-1 leading-tight' : 'truncate', r.indent ? 'pl-3 text-stone-500' : 'text-stone-700', r.strong && 'font-semibold text-stone-800')}>{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
+            <span className={cn(wide ? 'col-span-2 sm:col-span-1 leading-tight sm:pr-2' : 'truncate', r.indent ? 'pl-3 text-stone-500' : 'text-stone-700', r.strong && 'font-semibold text-stone-800')}>{r.label}{r.sub && <span className="text-stone-400"> · {r.sub}</span>}</span>
             <span className="relative h-4">
               <span className="absolute inset-x-0 top-1/2 h-px bg-stone-200" />
               {hasRef

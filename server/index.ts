@@ -17,6 +17,7 @@ import {
 } from './logquery.ts';
 import { installErrorAlerts } from './erroralerts.ts';
 import { latestTakes, type LogLine } from './assignedAt.ts';
+import { sameVisit } from '../src/lib/doubleGame.ts';
 import { boundedKeys, clientLogUser, clientTimestamp } from './logguard.ts';
 import { computePlanning, seasonProgress, type PlanningReport, type PlanningGameInput, type SeasonProgress } from './planning.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
@@ -6531,6 +6532,7 @@ async function buildPlanning(season: number): Promise<{ report: PlanningReport; 
       id: String(g.id), matchNo: asText(g.match_no), date: asText(g.match_date),
       label: `${asText(g.home_team)} – ${asText(g.away_team)}`,
       rc: asText(g.assigned_rc) || (asText(g.assigned_rc_id) ? '?' : ''),
+      rcId: asText(g.assigned_rc_id),
       takenAt: asText(g.assigned_at), takenVia: asText(g.assigned_via),
       closedRoles: closed, feedbackRoles: filedRoles.get(String(g.id)) ?? [],
       slots, isRcGame: isRcGame(g), offeredRoles,
@@ -6549,6 +6551,7 @@ async function buildPlanning(season: number): Promise<{ report: PlanningReport; 
       };
     }),
     games: planningGames,
+    knownRcIds: new Set(people.map((p) => p.id)),
   });
   const goal = people.reduce((sum, p) => sum + goalOf(p.id), 0);
   return { report, progress: seasonProgress(report, planningGames, goal, now) };
@@ -8240,7 +8243,9 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
           }
           // One open booking per coachee: the lists grey the button out,
           // this is for the screen that was out of date when it was tapped.
-          const blocking = await openBookingBlocking(current);
+          // The coach's own game on the same day is a double game, not a
+          // second booking (src/lib/doubleGame.ts).
+          const blocking = await openBookingBlocking(current, { id: rcAuth.rcId, name: rcAuth.name });
           if (blocking) {
             const when = blocking.date ? ` (${fmtDateDe(blocking.date)})` : '';
             return { status: 409, body: { error: `${blocking.name} hat schon eine geplante Beobachtung${when} durch ${blocking.rc || 'einen anderen RC'}. Erst wenn dieser Bericht gesendet oder das Spiel abgegeben ist, kann ein weiteres Spiel übernommen werden.` } };
@@ -8813,9 +8818,11 @@ async function makeCoacheeSlotTest(coacheeIndex?: CoacheeIndex): Promise<(game: 
  * blocks it, or null. A game is blocked only when EVERY coachee on it is
  * booked elsewhere; one with a free coachee beside a booked one stays
  * takeable, for the free one. Admin assignments skip this — the console is
- * where a deliberate second look is set up.
+ * where a deliberate second look is set up. The `taker`'s own game on the
+ * same Zürich day books nobody against this one: that is a double game, one
+ * trip (asked 2026-10-07, src/lib/doubleGame.ts).
  */
-async function openBookingBlocking(game: AnyRecord, coacheeIndex?: CoacheeIndex): Promise<{ name: string; rc: string; date: string } | null> {
+async function openBookingBlocking(game: AnyRecord, taker?: PersonRef, coacheeIndex?: CoacheeIndex): Promise<{ name: string; rc: string; date: string } | null> {
   const coachees = coacheeIndex ?? await getCoacheeIndex();
   const season = seasonOfGame(game.match_date);
   const slots = refereeSlotQueries(game)
@@ -8824,11 +8831,18 @@ async function openBookingBlocking(game: AnyRecord, coacheeIndex?: CoacheeIndex)
   if (slots.length === 0) return null;
   const held = await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
     filter: `id != "${escapeFilterValue(String(game.id))}" && (assigned_rc != "" || assigned_rc_id != "")`,
-    fields: 'id,match_date,first_referee,second_referee,first_referee_id,second_referee_id,match_no,assigned_rc,feedback_closed_roles',
+    fields: 'id,match_date,first_referee,second_referee,first_referee_id,second_referee_id,match_no,assigned_rc,assigned_rc_id,feedback_closed_roles',
   }));
   const booked = new Map<string, { rc: string; date: string }>();
   for (const g of held) {
     if (seasonOfGame(g.match_date) !== season) continue;
+    // The taker's own game on this game's day: the same trip, so it books
+    // nobody against this one.
+    if (taker && sameVisit(
+      { rc: { id: asText(g.assigned_rc_id), name: asText(g.assigned_rc) }, date: asText(g.match_date) },
+      { rc: taker, date: asText(game.match_date) },
+      rcKnownIds,
+    )) continue;
     const closed = Array.isArray(g.feedback_closed_roles) ? g.feedback_closed_roles as string[] : [];
     refereeSlotQueries(g).forEach((q, i) => {
       if (closed.includes(i === 0 ? '1. SR' : '2. SR')) return;

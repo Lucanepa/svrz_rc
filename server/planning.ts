@@ -13,6 +13,7 @@
  */
 
 import { dayKey } from '../src/lib/appTime.ts';
+import { visitCount } from '../src/lib/doubleGame.ts';
 
 export type PlanningRole = '1. SR' | '2. SR';
 
@@ -24,6 +25,9 @@ export type PlanningGameInput = {
   label: string;
   /** The holder, '' for a free game. */
   rc: string;
+  /** The holder's roster id, when the row carries one — what decides that two
+   *  games are one coach's double game. */
+  rcId?: string;
   /** When it was taken (ISO) and by which door ('rc' | 'console'), '' when
    *  nobody recorded it — games held since before the stamp existed. */
   takenAt?: string;
@@ -107,6 +111,8 @@ export function computePlanning(input: {
   now: string;
   coachees: PlanningCoacheeInput[];
   games: PlanningGameInput[];
+  /** The roster's ids, for samePerson: an id nobody knows falls to the name. */
+  knownRcIds?: Set<string>;
 }): PlanningReport {
   const now = input.now;
   const bookings = new Map<string, PlanningBooking[]>();
@@ -167,8 +173,14 @@ export function computePlanning(input: {
     }
   }
 
+  // Two bookings are a double booking only when they are two visits: one
+  // coach watching the same referee twice in one hall on one day is a double
+  // game, planned (src/lib/doubleGame.ts).
+  const rcIdOf = new Map(input.games.map((g) => [g.id, g.rcId ?? '']));
   for (const [coacheeId, list] of bookings) {
     if (list.length < 2) continue;
+    const visits = visitCount(list.map((b) => ({ rc: { id: rcIdOf.get(b.gameId) ?? '', name: b.rc }, date: b.date })), input.knownRcIds);
+    if (visits < 2) continue;
     list.sort((a, b) => a.date.localeCompare(b.date));
     checks.push({ kind: 'double-booking', games: list, who: nameOf.get(coacheeId) ?? '' });
   }

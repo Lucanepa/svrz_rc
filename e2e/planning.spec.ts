@@ -78,6 +78,30 @@ test('the checks: RC game held, double booking, offered slot, overdue, held for 
   expect(r.checks.find((c) => c.kind === 'closed-mismatch')?.detail).toBe('closed-without-report');
 });
 
+test('a double game — one coach, one Zürich day — is not a double booking; a second coach or a second day is', () => {
+  const slots1 = [{ role: '1. SR' as const, name: 'Mateja', coacheeId: 'c1' }, { role: '2. SR' as const, name: '', coacheeId: '' }];
+  const slots2 = [{ role: '1. SR' as const, name: 'Other', coacheeId: '' }, { role: '2. SR' as const, name: 'Mateja', coacheeId: 'c1' }];
+  const doubles = (games: PlanningGameInput[]) =>
+    plan([coachee({ id: 'c1', name: 'Mateja' })], games).checks.filter((c) => c.kind === 'double-booking');
+  // Adliswil, 21.11.2026: 14:00 as 1. SR, 17:00 as 2. SR, both Alexandra's.
+  const afternoon = [
+    game({ id: 'a', matchNo: '406018', rc: 'Alexandra', rcId: 'rc-a', date: '2026-11-21T13:00:00.000Z', slots: slots1 }),
+    game({ id: 'b', matchNo: '406282', rc: 'Alexandra', rcId: 'rc-a', date: '2026-11-21T16:00:00.000Z', slots: slots2 }),
+  ];
+  expect(doubles(afternoon)).toEqual([]);
+  // The coachee is still booked — twice, on one visit.
+  expect(plan([coachee({ id: 'c1', name: 'Mateja' })], afternoon).coachees[0].bookings).toHaveLength(2);
+  // A second coach on the same day is the duplicate the check is for.
+  expect(doubles([afternoon[0], { ...afternoon[1], rc: 'Beat', rcId: 'rc-b' }])).toHaveLength(1);
+  // So is the same coach on another day.
+  expect(doubles([afternoon[0], { ...afternoon[1], date: '2026-11-28T16:00:00.000Z' }])).toHaveLength(1);
+  // The day is Zürich's: 23:30 and 00:30 local share a UTC date but not a day.
+  expect(doubles([
+    { ...afternoon[0], date: '2026-11-21T22:30:00.000Z' },
+    { ...afternoon[1], date: '2026-11-21T23:30:00.000Z' },
+  ])).toHaveLength(1);
+});
+
 test('the board shows one loading state, then the coachees, and a game opens in the Games tab', async ({ page }) => {
   await stubSignedInApp(page, { admin: true });
   let release: () => void = () => {};

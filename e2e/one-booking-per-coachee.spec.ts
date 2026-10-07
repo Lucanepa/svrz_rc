@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp, GAME } from './support/app';
+import { stubSignedInApp, GAME, RC } from './support/app';
 
 // One open booking per coachee (asked 2026-09-30): a coach had planned a
 // coachee for the 16th and a second coach still took the same coachee's game
@@ -51,6 +51,29 @@ test('a game with no booked coachee is still taken as before', async ({ page }) 
   await expect.poll(() => assigned.length).toBe(1);
 });
 
+// A double game (asked 2026-10-07): the coach's OWN game on the same Zürich
+// day is one trip — watching the same referee as 1. SR at 14:00 and as 2. SR
+// at 17:00 in one hall is a plan, not a second booking.
+test("the coach's own game earlier the same day does not block the next one", async ({ page }) => {
+  const MINE = { ...GAME, date: '2026-11-21T13:00:00.000Z', assignedRc: RC.name, assignedRcId: RC.id };
+  const LATER = { ...FREE, date: '2026-11-21T16:00:00.000Z' };
+  const assigned = await openGames(page, [MINE, LATER]);
+  await page.getByRole('button', { name: new RegExp(LATER.matchNo) }).first().click();
+  await expect(page.getByTestId('take-booked')).toHaveCount(0);
+  await page.getByRole('button', { name: /^(Take game|Spiel übernehmen)$/ }).click();
+  // Still said out loud — the referee is already planned at 14:00 — and taken
+  // on a confirm, the way any second look is.
+  await page.getByRole('button', { name: /^(Take anyway|Trotzdem übernehmen)$/ }).click();
+  await expect.poll(() => assigned.length).toBe(1);
+});
+
+test("the coach's own game on ANOTHER day still blocks", async ({ page }) => {
+  const MINE = { ...GAME, assignedRc: RC.name, assignedRcId: RC.id };
+  await openGames(page, [MINE, FREE]);
+  await page.getByRole('button', { name: new RegExp(FREE.matchNo) }).first().click();
+  await expect(page.getByTestId('take-booked')).toBeVisible();
+});
+
 // The server half: the tap from a stale screen. Composing it needs PocketBase,
 // so it is pinned from the source, the way the other assign-rc specs do it.
 test('the take endpoint refuses a coach whose coachee is booked elsewhere', async () => {
@@ -60,6 +83,7 @@ test('the take endpoint refuses a coach whose coachee is booked elsewhere', asyn
   const body = server.slice(start, server.indexOf('\napp.', start + 10));
   // Inside the coach's own take (rcAuth), before the write — not the admin path.
   const rcBranch = body.slice(body.indexOf('if (rcAuth) {'), body.indexOf('} else if (!givingBack) {'));
-  expect(rcBranch).toContain('await openBookingBlocking(current)');
+  // Asked as the coach taking it, so their own same-day game is a double game.
+  expect(rcBranch).toContain('await openBookingBlocking(current, { id: rcAuth.rcId, name: rcAuth.name })');
   expect(rcBranch).toMatch(/if \(blocking\) \{[\s\S]*?status: 409/);
 });

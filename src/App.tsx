@@ -95,6 +95,7 @@ import { importBlock } from './lib/notebookImport';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, isPromotionGroup, newSrGroupOptions, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName as normName } from './lib/coacheeName';
+import { sameVisit } from './lib/doubleGame';
 import { coacheeLookup, coacheeUrlToken, gameLabel, gameUrlToken, isMyGame, isMyRecord, resolveCoacheeToken, resolveGameToken, samePerson, svClaimOnSlot, type SlotRole } from './lib/identity';
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, visitRolesFor, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
@@ -2829,7 +2830,8 @@ export default function App() {
    * whose report for them has not been sent. A game with a free coachee
    * beside a booked one stays takeable, for the free one. The server refuses
    * the same take (409); the admin console is where a deliberate second look
-   * is set up.
+   * is set up. The coach's OWN game on the same Zürich day is not a booking
+   * against this one — that is a double game, one trip (src/lib/doubleGame.ts).
    */
   const bookingBlocking = (game: EligibleGame): { name: string; rc: string; date: string } | null => {
     let first: { name: string; rc: string; date: string } | null = null;
@@ -2840,6 +2842,11 @@ export default function App() {
       any = true;
       const booked = plannedObsByCoachee.get(id);
       if (!booked || booked.game.id === game.id) return null;
+      if (sameVisit(
+        { rc: { id: booked.game.assignedRcId ?? '', name: booked.game.assignedRc ?? '' }, date: booked.game.date },
+        { rc: { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' }, date: game.date },
+        rcKnownIds,
+      )) return null;
       first ??= { name: roster.onSlot(game, role)?.full_name || getRefereeForRole(game, role), rc: booked.rc, date: booked.game.date };
     }
     return any ? first : null;

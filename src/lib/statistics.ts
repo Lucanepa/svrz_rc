@@ -167,6 +167,14 @@ export type StatTotals = {
   filedLate: number;
 };
 
+/** A record of one is not a record: "most-visited hall (1)" only says that
+ *  every hall was visited once. Below this the fun facts read N/A — on the
+ *  dashboard and in the PDF/PPTX deck alike (asked 2026-10-07). */
+export const RECORD_MIN = 2;
+export function worthARecord<T extends { count: number }>(record: T | null): T | null {
+  return record && record.count >= RECORD_MIN ? record : null;
+}
+
 export type StatFun = {
   busiestDay: { key: string; count: number } | null;
   topHall: { name: string; count: number } | null;

@@ -11,7 +11,7 @@ import type { Lang } from '../lib/appTime';
 import { dayLabel } from '../lib/appTime';
 import { listRcPeopleFull, loadStatistics, type RcPerson } from '../lib/pocketbase';
 import {
-  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, roleProfile, scoreToLetter, strengthsAndWeaknesses, strengthTier, trendAvgDelta, withRcFirstNames, STAT_LETTERS,
+  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, roleProfile, scoreToLetter, strengthsAndWeaknesses, strengthTier, trendAvgDelta, withRcFirstNames, worthARecord, STAT_LETTERS,
   type SeasonStatistics, type TrendAgg, type StatBucket, type StatFilters, type StatRole, type StatSlice, type StatisticsResponse,
 } from '../lib/statistics';
 import {
@@ -403,7 +403,10 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
     // ── Writing & process
     const hasObs = !filtered || T.observations > 0;
     const F = stats.fun;
-    const showFun = !filtered || !!(F.busiestDay || F.topHall || F.topCoachee || F.topWriter || F.first);
+    const busiestDay = worthARecord(F.busiestDay);
+    const topHall = worthARecord(F.topHall);
+    const topCoachee = worthARecord(F.topCoachee);
+    const showFun = !filtered || !!(busiestDay || topHall || topCoachee || F.topWriter || F.first);
     const showWriting = hasObs || showFun;
 
     return (
@@ -768,9 +771,9 @@ export default function StatisticsAdmin({ lang, defaultSeason, settingsLoading, 
               {showFun && (
               <Block span="lg:col-span-4" title={t.fun} hint={t.desc.fun} testId="stats-fun">
                 <KV rows={[
-                  [t.busiestDay, F.busiestDay ? `${fmtInt(F.busiestDay.count)} · ${dayLabel(F.busiestDay.key, { year: true })}` : '–'],
-                  [t.topHall, F.topHall ? `${F.topHall.name} (${fmtInt(F.topHall.count)})` : '–'],
-                  [t.topCoachee, F.topCoachee ? `${F.topCoachee.name} (${fmtInt(F.topCoachee.count)})` : '–'],
+                  [t.busiestDay, busiestDay ? `${fmtInt(busiestDay.count)} · ${dayLabel(busiestDay.key, { year: true })}` : t.na],
+                  [t.topHall, topHall ? `${topHall.name} (${fmtInt(topHall.count)})` : t.na],
+                  [t.topCoachee, topCoachee ? `${topCoachee.name} (${fmtInt(topCoachee.count)})` : t.na],
                   [t.topWriter, F.topWriter ? `${F.topWriter.name} (${fmtInt(F.topWriter.words)})` : '–'],
                   [t.firstLast, F.first ? `${dayLabel(F.first, { year: true })} – ${F.last ? dayLabel(F.last, { year: true }) : ''}` : '–'],
                 ]} />

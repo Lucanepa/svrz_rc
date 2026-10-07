@@ -426,3 +426,30 @@ test('the deck: a strengths & weaknesses slide per Niveau, none per group', () =
     for (const r of s.table!.rows) expect(['Stärken', 'Schwächen']).toContain(r[0]);
   }
 });
+
+// "Most-visited hall … (1)" only says every hall was visited once: a record
+// of one reads N/A, in the deck as on the page (asked 2026-10-07).
+test('a record of one is no record: N/A, from two on the record itself', () => {
+  const full = statsResponse(2026, {}, true, true);
+  const withRecords = (count: number) => ({
+    ...full.stats,
+    fun: {
+      ...full.stats.fun,
+      busiestDay: { key: '2026-10-03', count },
+      topHall: { name: 'Halle Eins', count },
+      topCoachee: { name: 'Solo Coachee', count },
+    },
+  });
+  const fun = (count: number, lang: 'DE' | 'EN') =>
+    deckText(buildDeck(withRecords(count), { lang, includeRcGrades: false, includeLeagues: false, breakdowns: full.breakdowns, sections: ['fun'] }));
+  for (const [lang, na] of [['EN', 'N/A'], ['DE', 'k. A.']] as const) {
+    const one = fun(1, lang);
+    expect(one).not.toContain('Halle Eins');
+    expect(one).not.toContain('Solo Coachee');
+    expect(one.split(na).length - 1).toBe(3);
+    const two = fun(2, lang);
+    expect(two).toContain('Halle Eins');
+    expect(two).toContain('Solo Coachee');
+    expect(two).not.toContain(na);
+  }
+});

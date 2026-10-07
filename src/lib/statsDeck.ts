@@ -6,7 +6,7 @@
 import type { Lang } from './appTime';
 import { dayLabel } from './appTime';
 import {
-  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, roleProfile, scoreToLetter, strengthsAndWeaknesses, STAT_LETTERS,
+  a4Pages, estimatedHours, foldHistogram, gradeAvg, isThin, pct, roleProfile, scoreToLetter, strengthsAndWeaknesses, worthARecord, STAT_LETTERS,
   type SeasonStatistics, type SeasonStatisticsCore, type StatBreakdowns, type StatBucket, type StatRole, type StatSlice, type TrendAgg,
 } from './statistics';
 import {
@@ -377,12 +377,15 @@ export function buildDeck(stats: SeasonStatistics, opts: DeckOptions): Deck {
 
   // 14 — fun facts
   const F = stats.fun;
+  const busiestDay = worthARecord(F.busiestDay);
+  const topHall = worthARecord(F.topHall);
+  const topCoachee = worthARecord(F.topCoachee);
   add('fun', {
     title: t.fun,
     tiles: [
-      { label: t.busiestDay, value: F.busiestDay ? int(F.busiestDay.count) : '–', sub: F.busiestDay ? dayLabel(F.busiestDay.key, { year: true }) : undefined },
-      { label: t.topHall, value: F.topHall ? int(F.topHall.count) : '–', sub: F.topHall?.name },
-      { label: t.topCoachee, value: F.topCoachee ? int(F.topCoachee.count) : '–', sub: F.topCoachee?.name },
+      { label: t.busiestDay, value: busiestDay ? int(busiestDay.count) : t.na, sub: busiestDay ? dayLabel(busiestDay.key, { year: true }) : undefined },
+      { label: t.topHall, value: topHall ? int(topHall.count) : t.na, sub: topHall?.name },
+      { label: t.topCoachee, value: topCoachee ? int(topCoachee.count) : t.na, sub: topCoachee?.name },
       { label: t.topWriter, value: F.topWriter ? int(F.topWriter.words) : '–', sub: F.topWriter?.name },
       { label: t.firstLast, value: F.first ? dayLabel(F.first, { year: true }) : '–', sub: F.last ? dayLabel(F.last, { year: true }) : undefined },
       { label: t.filingMedian, value: T.filingMedianDays !== null ? t.days(Math.round(T.filingMedianDays)) : '–', sub: `${t.sameDay} ${pctText(pct(T.filedSameDay, T.observations))}` },

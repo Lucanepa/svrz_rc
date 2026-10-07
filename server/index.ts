@@ -76,8 +76,12 @@ import {
 // throws away, and the log that claims to hold everything quietly does not.
 captureConsole();
 
-dotenv.config({ path: '.env.local' });
-dotenv.config();
+// quiet: dotenv 17+ prints "◇ injected env (0) from .env" on every load, on
+// stderr — and with the console captured above, that became an `error` line
+// (and an alert) on every container start. The container's env comes from
+// docker compose; finding nothing in the two files is the normal case.
+dotenv.config({ path: '.env.local', quiet: true });
+dotenv.config({ quiet: true });
 
 // SMTP transport for feedback emails. Port 465 uses implicit TLS; any other
 // port (e.g. 587) connects plaintext then upgrades — requireTLS forces that

@@ -13,6 +13,121 @@
     <meta name="apple-mobile-web-app-title" content="SR-Coaching" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>SR-Coaching · SVRZ</title>
+    <!--
+      The start-failure net (2026-10-10). The app is one module bundle built for
+      current browsers; a browser that cannot run it — too old, script blocked,
+      bundle not loaded — showed a blank white page and told nobody: Manuel's
+      laptop never reached the API once in 30 days, so the log had nothing to
+      say about it. This classic script is the only code on the page that runs
+      everywhere, so it is ES5 on purpose. main.tsx sets __svrzStarted the
+      moment it runs; if that has not happened a few seconds after `load`, the
+      page says so in words and files one `boot.fail` line in the Protokoll.
+    -->
+    <script>
+      (function () {
+        var errors = [];
+        var loadFailed = false;
+        function note(text) { if (errors.length < 5) errors.push(String(text).slice(0, 300)); }
+        // Capture phase: a <script> or stylesheet that fails to load fires its
+        // error on the element and never bubbles to window.
+        window.addEventListener('error', function (e) {
+          var el = e && e.target;
+          if (el && el !== window && (el.src || el.href)) { loadFailed = true; note('failed to load ' + (el.src || el.href)); }
+          else note((e && e.message) || 'error');
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) { note('unhandled rejection: ' + (e && e.reason)); });
+
+        function apiBase() {
+          var base = '%VITE_API_BASE_URL%';
+          // Left as is when the variable is not set at build time.
+          if (base.charAt(0) === '%') base = '';
+          // Same rule as the app's logger: a page on localhost does not file
+          // lines in the live Protokoll.
+          if (base && /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname)) return null;
+          return base.replace(/\/+$/, '');
+        }
+        function stored(name, key) {
+          try {
+            // Inside the try: merely touching storage throws in some privacy modes.
+            var store = window[name];
+            var v = store.getItem(key);
+            if (!v) { v = Math.random().toString(16).slice(2, 18); store.setItem(key, v); }
+            return v;
+          } catch (err) { return undefined; }
+        }
+        function report(reason) {
+          var base = apiBase();
+          if (base === null || !window.XMLHttpRequest) return;
+          var ua = navigator.userAgent || '';
+          var bot = /bot|crawl|spider|slurp|preview|headless|lighthouse|facebookexternalhit/i.test(ua);
+          var body = JSON.stringify({
+            // The logger's own keys, so this line joins the device's history.
+            sid: stored('sessionStorage', 'svrz_log_sid'),
+            did: stored('localStorage', 'svrz_log_did'),
+            entries: [{
+              lvl: bot ? 'warn' : 'error',
+              evt: 'boot.fail',
+              msg: 'the app did not start in this browser (' + reason + ')',
+              t: new Date().toISOString(),
+              data: {
+                reason: reason,
+                ua: ua,
+                // The path only: a query or fragment can carry a token.
+                path: location.pathname,
+                errors: errors,
+                modules: 'noModule' in document.createElement('script'),
+                online: navigator.onLine
+              }
+            }]
+          });
+          try {
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', base + '/api/client-logs', true);
+            // text/plain keeps it a CORS-simple request, like the logger's beacon.
+            xhr.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');
+            xhr.send(body);
+          } catch (err) { /* nothing else to try */ }
+        }
+        function show(network) {
+          var root = document.getElementById('root');
+          if (!root || root.childNodes.length) return;
+          var de = network
+            ? ['Die App konnte nicht geladen werden.', 'Bitte die Internetverbindung prüfen und die Seite neu laden.']
+            : ['Die App kann in diesem Browser nicht starten.', 'Bitte den Browser aktualisieren oder die App in einer aktuellen Version von Chrome, Edge, Firefox oder Safari öffnen.'];
+          var en = network
+            ? ['The app could not be loaded.', 'Please check your internet connection and reload the page.']
+            : ['The app cannot start in this browser.', 'Please update your browser, or open the app in a current version of Chrome, Edge, Firefox or Safari.'];
+          var box = document.createElement('div');
+          box.setAttribute('role', 'alert');
+          box.setAttribute('data-boot-fail', network ? 'network' : 'browser');
+          box.style.cssText = 'max-width:34rem;margin:12vh auto 0;padding:0 16px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;line-height:1.5';
+          function line(tag, text, css) { var n = document.createElement(tag); n.appendChild(document.createTextNode(text)); if (css) n.style.cssText = css; box.appendChild(n); }
+          line('h1', de[0], 'font-size:1.35rem;margin:0 0 .5rem');
+          line('p', de[1], 'margin:0 0 1.25rem');
+          line('h2', en[0], 'font-size:1.1rem;margin:0 0 .4rem;color:#57534e');
+          line('p', en[1], 'margin:0 0 1.5rem;color:#57534e');
+          var again = document.createElement('button');
+          again.type = 'button';
+          again.appendChild(document.createTextNode('Neu laden · Reload'));
+          again.style.cssText = 'padding:.6rem 1.1rem;border:0;border-radius:.5rem;background:#b91c1c;color:#fff;font-size:1rem;cursor:pointer';
+          again.onclick = function () { location.reload(); };
+          box.appendChild(again);
+          // Visible on purpose: what a coach screenshots and sends is what tells
+          // us which browser it was.
+          line('p', 'Browser: ' + (navigator.userAgent || '?'), 'margin:2rem 0 0;font-size:.75rem;color:#a8a29e;word-break:break-all');
+          root.appendChild(box);
+        }
+        function check() {
+          if (window.__svrzStarted) return;
+          var network = loadFailed || navigator.onLine === false;
+          show(network);
+          report(network ? 'not loaded' : 'not supported');
+        }
+        // Module scripts run before `load`, so by then the app has either started
+        // or it is not going to; the grace covers a slow device finishing up.
+        window.addEventListener('load', function () { setTimeout(check, 3000); });
+      })();
+    </script>
   </head>
   <body class="notranslate">
     <div id="root"></div>

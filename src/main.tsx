@@ -21,8 +21,14 @@ import {
 } from './lib/swReload';
 import './index.css';
 
-// FIRST statement, before anything reads a route: an old `#/…` link becomes
-// its path form, in place. Routes lived in the hash until 13.09.2026 and the
+// The start-failure net in index.html waits for this: a browser that cannot
+// run the bundle never gets here, and is told so instead of left on a blank
+// page. Set before anything else can throw, since everything below it is the
+// app — which reports its own failures.
+(window as unknown as { __svrzStarted?: boolean }).__svrzStarted = true;
+
+// First thing that touches the route, before anything reads it: an old `#/…`
+// link becomes its path form, in place. Routes lived in the hash until 13.09.2026 and the
 // hash links are out there for good — in mails already sent, in the retired
 // GitHub Pages kill switch (legacy/index.html forwards location.hash verbatim
 // and can never be updated again), in home-screen icons captured before the

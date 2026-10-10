@@ -76,6 +76,9 @@ export default defineConfig(() => {
         workbox: {
           clientsClaim: true,
           skipWaiting: true,
+          // Phone notifications: the push and notification-click handlers
+          // live in public/push-sw.js, beside the generated worker.
+          importScripts: ['push-sw.js'],
           // The default only precaches js/css/html, which left everything else
           // Vite emits into assets/ out of the shell: the header logo and the
           // Inter woff2 files. That is invisible online — but once the service

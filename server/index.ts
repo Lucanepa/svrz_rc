@@ -3,6 +3,7 @@ import cors from 'cors';
 import PocketBase from 'pocketbase';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
+import webpush from 'web-push';
 import nodemailer from 'nodemailer';
 import helmet from 'helmet';
 import { createHash, createHmac, randomUUID, randomBytes, randomInt, timingSafeEqual, scryptSync } from 'node:crypto';
@@ -1246,6 +1247,8 @@ const collectionCandidates = {
   rcGameNotes: unique([process.env.PB_RC_GAME_NOTES_COLLECTION || 'rc_game_notes', 'rc_game_notes', 'svrz_rc_game_notes']),
   // A coach asking another to hand a coachee over to an earlier game.
   switchRequests: unique([process.env.PB_SWITCH_REQUESTS_COLLECTION || 'rc_switch_requests', 'rc_switch_requests']),
+  // One row per device a coach switched phone notifications on for.
+  pushSubscriptions: unique([process.env.PB_PUSH_SUBSCRIPTIONS_COLLECTION || 'push_subscriptions', 'push_subscriptions']),
   refereeCoaches: unique([
     process.env.PB_REFEREE_COACH_FEEDBACK_COLLECTION || process.env.PB_REFEREE_COACHES_COLLECTION || 'referee_coach_feedbacks',
     'referee_coach_feedbacks',
@@ -4064,6 +4067,7 @@ async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRo
         ),
         attachments: emailAttachments(),
       });
+      if (!testMode) void pushToCoach(coach.id, { title: `SR-Börse: ${teams} (${dateText})`, body: `${headline} — ${row.slot_person_name} · ${slotLabel}`, url: `${MAIL_APP_URL.replace(/\/+$/, '')}/games` });
       await withCollection(collectionCandidates.boerseOffers, (c) =>
         c.update(id, { alerted_at: new Date().toISOString() }));
       sent += 1;
@@ -4251,6 +4255,9 @@ async function sendCoachNotice(n: {
     text: n.text,
     attachments: emailAttachments(),
   });
+  // The same news on the coach's phone. Not in test mode: there the mail went
+  // to the tester, and the coach's lock screen must not hear of it either.
+  if (!n.testMode && n.coachId && n.push) void pushToCoach(n.coachId, n.push);
 }
 
 /** runBoerseSync, but a thrown fetch is recorded rather than escaping.
@@ -8455,6 +8462,181 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
       return { status: 200, body: { ok: true, id: (updated as AnyRecord).id, assignedRc: asText((updated as AnyRecord).assigned_rc) } };
     });
     res.status(outcome.status).json(outcome.body);
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+// ── Phone notifications (web push, asked 2026-10-10) ──────────────────
+// Beside every mail that tells a coach about one of their games — a change,
+// the Börse, a switch request — the same news as a notification on each
+// device the coach switched it on for (Optionen → Benachrichtigungen). Web
+// push needs no app store and no account: Android in Chrome or Firefox, an
+// iPhone (iOS 16.4+) once the app is on the Home screen. The mail stays the
+// record; a notification that does not arrive costs nothing.
+//
+// The VAPID key pair identifies this server to the push services. From the
+// env when set; otherwise made once and kept in app_settings (`vapid_keys`),
+// which is read by key only and already holds the console's password
+// hashes. A new pair would orphan every subscription, so it is never rotated
+// by accident: an existing one always wins.
+
+type VapidKeys = { publicKey: string; privateKey: string; subject: string };
+let vapidCache: VapidKeys | null = null;
+
+async function getVapid(): Promise<VapidKeys | null> {
+  if (vapidCache) return vapidCache;
+  // An https URL, not a person's mailbox: the push services only need to
+  // know who to contact, and the app's address says it.
+  const subject = asText(process.env.VAPID_SUBJECT) || MAIL_APP_URL;
+  const envPublic = asText(process.env.VAPID_PUBLIC_KEY);
+  const envPrivate = asText(process.env.VAPID_PRIVATE_KEY);
+  if (envPublic && envPrivate) return (vapidCache = { publicKey: envPublic, privateKey: envPrivate, subject });
+  try {
+    return await withSettingLock('vapid_keys', async () => {
+      const rec = await getSettingRecord('vapid_keys');
+      if (rec) {
+        const stored = JSON.parse(asText(rec.value)) as { publicKey?: string; privateKey?: string };
+        if (stored.publicKey && stored.privateKey) return (vapidCache = { publicKey: stored.publicKey, privateKey: stored.privateKey, subject });
+      }
+      const made = webpush.generateVAPIDKeys();
+      await setSetting('vapid_keys', JSON.stringify(made));
+      log.info('push.keys', 'VAPID key pair created and stored (app_settings vapid_keys)', {});
+      return (vapidCache = { publicKey: made.publicKey, privateKey: made.privateKey, subject });
+    });
+  } catch (error) {
+    log.warn('push.keys', 'no VAPID keys — phone notifications are off', { error: String(error) });
+    return null;
+  }
+}
+
+type PushPayload = { title: string; body: string; url: string; tag?: string };
+
+/** Send one notification to every device the coach subscribed. Never throws;
+ *  a subscription the push service says is gone (404/410) is deleted. */
+async function pushToCoach(coachId: string, payload: PushPayload): Promise<number> {
+  if (!coachId) return 0;
+  try {
+    const vapid = await getVapid();
+    if (!vapid) return 0;
+    const subs = await withCollection(collectionCandidates.pushSubscriptions, (c) =>
+      c.getFullList<AnyRecord>({ filter: `rc_id = "${escapeFilterValue(coachId)}"` }));
+    if (subs.length === 0) return 0;
+    // A notification is a line, not a mail: the services cap the payload at
+    // about 4 kB, and a lock screen shows two lines of it anyway.
+    const body = JSON.stringify({
+      title: payload.title.slice(0, 120),
+      body: payload.body.slice(0, 300),
+      url: payload.url,
+      tag: payload.tag ?? '',
+    });
+    let sent = 0;
+    for (const s of subs) {
+      try {
+        await webpush.sendNotification(
+          { endpoint: asText(s.endpoint), keys: s.keys as { p256dh: string; auth: string } },
+          body,
+          { vapidDetails: vapid, TTL: 24 * 60 * 60, timeout: 10_000 },
+        );
+        sent += 1;
+        await withCollection(collectionCandidates.pushSubscriptions, (c) => c.update(String(s.id), { last_ok: new Date().toISOString(), failures: 0 }));
+      } catch (error) {
+        const status = Number((error as { statusCode?: number }).statusCode);
+        if (status === 404 || status === 410) {
+          await withCollection(collectionCandidates.pushSubscriptions, (c) => c.delete(String(s.id))).catch(() => {});
+          log.info('push.gone', 'a device unsubscribed itself; subscription removed', { coachId, status });
+        } else {
+          await withCollection(collectionCandidates.pushSubscriptions, (c) => c.update(String(s.id), { failures: Number(s.failures || 0) + 1 })).catch(() => {});
+          log.warn('push.fail', 'a phone notification could not be delivered', { coachId, status: Number.isFinite(status) ? status : undefined, error: String(error).slice(0, 300) });
+        }
+      }
+    }
+    return sent;
+  } catch (error) {
+    log.warn('push.fail', 'phone notifications could not be sent', { coachId, error: String(error) });
+    return 0;
+  }
+}
+
+app.get('/api/push/config', requireRcSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const vapid = await getVapid();
+    if (!vapid) { res.status(503).json({ error: 'Benachrichtigungen sind auf dem Server nicht eingerichtet.' }); return; }
+    res.json({ publicKey: vapid.publicKey });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+/** A browser's PushSubscription as it arrives, checked: an https endpoint and
+ *  the two keys, nothing else stored. */
+function readSubscription(raw: unknown): { endpoint: string; keys: { p256dh: string; auth: string } } | null {
+  const sub = (raw ?? {}) as { endpoint?: unknown; keys?: Record<string, unknown> };
+  const endpoint = asText(sub.endpoint);
+  // The browser's two encryption keys: p256dh (its public key) and the
+  // shared auth secret. Both short base64url strings.
+  const [dh, sec] = [asText(sub.keys?.p256dh), asText(sub.keys?.auth)];
+  const fits = (v: string, max: number) => v !== '' && v.length <= max;
+  if (!/^https:\/\//.test(endpoint) || !fits(endpoint, 1000) || !fits(dh, 200) || !fits(sec, 100)) return null;
+  return { endpoint, keys: { p256dh: dh, auth: sec } };
+}
+
+app.post('/api/push/subscribe', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const rcAuth = rcAuthByReq.get(req);
+    if (!rcAuth?.rcId) { res.status(403).json({ error: 'Benachrichtigungen gibt es für Referee Coaches.' }); return; }
+    const sub = readSubscription((req.body ?? {}).subscription);
+    if (!sub) { res.status(400).json({ error: 'Ungültiges Abonnement.' }); return; }
+    const ua = asText((req.body ?? {}).ua).slice(0, 300);
+    // One row per endpoint: the same browser subscribing again — or a second
+    // coach signing in on a shared tablet — takes the row over.
+    const existing = await withCollection(collectionCandidates.pushSubscriptions, (c) =>
+      c.getFullList<AnyRecord>({ filter: `endpoint = "${escapeFilterValue(sub.endpoint)}"` }));
+    const row = { rc_id: rcAuth.rcId, rc_name: rcAuth.name, endpoint: sub.endpoint, keys: sub.keys, ua, failures: 0 };
+    if (existing[0]) await withCollection(collectionCandidates.pushSubscriptions, (c) => c.update(String(existing[0].id), row));
+    else await withCollection(collectionCandidates.pushSubscriptions, (c) => c.create(row));
+    for (const extra of existing.slice(1)) {
+      await withCollection(collectionCandidates.pushSubscriptions, (c) => c.delete(String(extra.id))).catch(() => {});
+    }
+    log.info('push.subscribe', `phone notifications on for ${rcAuth.name}`, { ua: ua.slice(0, 120) }, reqCtx(req));
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.post('/api/push/unsubscribe', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const rcAuth = rcAuthByReq.get(req);
+    const endpoint = asText((req.body ?? {}).endpoint);
+    if (!endpoint) { res.status(400).json({ error: 'Kein Abonnement angegeben.' }); return; }
+    const rows = await withCollection(collectionCandidates.pushSubscriptions, (c) =>
+      c.getFullList<AnyRecord>({ filter: `endpoint = "${escapeFilterValue(endpoint)}"` }));
+    // Only the coach's own device — or any, from the console.
+    for (const r of rows.filter((r) => !rcAuth || asText(r.rc_id) === rcAuth.rcId)) {
+      await withCollection(collectionCandidates.pushSubscriptions, (c) => c.delete(String(r.id)));
+    }
+    log.info('push.unsubscribe', 'phone notifications off on a device', {}, reqCtx(req));
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.post('/api/push/test', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const rcAuth = rcAuthByReq.get(req);
+    if (!rcAuth?.rcId) { res.status(403).json({ error: 'Benachrichtigungen gibt es für Referee Coaches.' }); return; }
+    const sent = await pushToCoach(rcAuth.rcId, {
+      title: 'SR-Coaching',
+      body: 'Benachrichtigungen funktionieren. · Notifications work.',
+      url: MAIL_APP_URL, tag: 'test',
+    });
+    res.json({ sent });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }

@@ -311,6 +311,15 @@ await ensure('rc_switch_requests', [
   T('requester_id'),T('requester_name'),T('holder_id'),T('holder_name'),
   T('status'),T('expires_at'),T('decided_at'),T('outcome')
 ]);
+// Phone notifications (web push, 2026-10-10): one row per device a coach
+// switched them on for. endpoint is the push service's URL for that browser —
+// the row's identity, taken over by whoever subscribes it next. keys are the
+// browser's p256dh/auth, needed to encrypt; nothing else of the device is kept
+// beyond a trimmed user agent so a coach can tell their devices apart. A row
+// the push service answers 404/410 for is deleted.
+await ensure('push_subscriptions', [
+  T('rc_id'),T('rc_name'),T('endpoint'),J('keys'),T('ua'),T('last_ok'),NUM('failures')
+]);
 console.log('SCHEMA_OK');
 
 // seed RCs (idempotent-ish: skip if any exist)

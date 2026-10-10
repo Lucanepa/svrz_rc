@@ -68,6 +68,8 @@ import {
 } from './lib/routes';
 import RcMeetingsHome from './components/RcMeetingsHome';
 import SwitchRequestsHome from './components/SwitchRequestsHome';
+import PushOption from './components/PushOption';
+import { resyncPush } from './lib/push';
 import { clearSwitchRequests, pendingFor, refreshSwitchRequests, requestSwitch, useSwitchRequests } from './lib/switchRequests';
 import InfoHint from './components/InfoHint';
 import { inSeasonOrManual as inSeasonWindow, currentSeason, seasonLabel as seasonLabelOf } from './lib/season';
@@ -3103,6 +3105,8 @@ export default function App() {
   useEffect(() => {
     if (!rcAuth.rcName) { clearSwitchRequests(); return; }
     void refreshSwitchRequests();
+    // A device with phone notifications on says again whose they are.
+    void resyncPush();
   }, [rcAuth.rcName]);
 
   useEffect(() => {
@@ -6358,6 +6362,7 @@ export default function App() {
                   <span>{formData.lang === 'DE' ? 'Kalender-Abo' : 'Calendar subscription'}</span>
                 </button>
               )}
+              {rcAuth.rcName && !isDemoMode() && <PushOption lang={formData.lang} />}
               {/* Whether this phone holds what the app needs with no signal.
                   Prepared by itself after the first load; tapping prepares it
                   again (e.g. after a new season's games came in). */}

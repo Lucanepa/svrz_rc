@@ -15,7 +15,7 @@
     "start:api": "tsx server/index.ts",
     "test": "playwright test",
     "test:ui": "playwright test --ui",
-    "build:native": "VITE_NATIVE=1 VITE_API_BASE_URL=https://svrz-rc-api.openvolley.app vite build --outDir dist-native",
+    "build:native": "node scripts/build-native.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

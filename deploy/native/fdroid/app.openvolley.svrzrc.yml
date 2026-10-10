@@ -1,0 +1,21 @@
+Categories:
+  - Sports & Health
+License: MIT
+AuthorName: Luca Canepa
+WebSite: https://svrz-rc.openvolley.app
+SourceCode: https://github.com/Lucanepa/svrz_rc
+Name: SVRZ Referee Coaching
+Summary: Referee coaching for Swiss Volley Region Zürich
+Description: |-
+  The app of the referee coaches of Swiss Volley Region Zürich (SVRZ):
+  take the games you want to observe, fill in the observation form at the
+  hall, sign it, and send the report — with or without signal.
+
+  Installed, the app keeps everything it needs on the phone: your games,
+  your coachees, the form, the documents and the last data it loaded, so it
+  starts and works in a gym with no network and sends what you filed once
+  the network is back.
+
+  For SVRZ referee coaches: signing in needs an account from the SVRZ
+  referee commission. The same app runs in the browser at
+  https://svrz-rc.openvolley.app.

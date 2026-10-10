@@ -11,7 +11,7 @@ name: Release the installed app
 # the same release for its APK (src/lib/nativeShell.ts).
 #
 # Secrets (Settings → Secrets and variables → Actions):
-#   TAURI_SIGNING_PRIVATE_KEY           ~/.tauri/svrz-rc-updater.key on Framework13
+#   TAURI_SIGNING_PRIVATE_KEY           ~/.tauri/svrz-rc-updater.key on lenovoserver
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  empty (the key has none)
 #   ANDROID_KEYSTORE_BASE64             base64 of ~/.tauri/svrz-rc-android.jks
 #   ANDROID_KEYSTORE_PASSWORD           the keystore's password

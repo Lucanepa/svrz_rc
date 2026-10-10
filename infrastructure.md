@@ -1258,6 +1258,20 @@ checks the same release and opens the new APK in the browser to install over
 the old one. Unsigned for Windows and macOS: SmartScreen says "unknown
 publisher", macOS wants right-click → *Open* the first time.
 
+**Where coaches get it** (first release 2026-10-10):
+
+- **Android**: F-Droid, from OpenVolley's public repo
+  `https://get.openvolley.app/fdroid/repo` (add it once via the link or QR on
+  https://get.openvolley.app, then install "SVRZ Referee Coaching"), or the
+  `.apk` on the GitHub release. Same file, same key, so either updates the other.
+  Publish with `deploy/native/publish-fdroid.sh <apk>` on lenovoserver — it does
+  OpenVolley's F-Droid steps for this one app and syncs only `fdroid/`.
+  `APP_CERT_SHA256` in it pins the svrz-rc signing certificate.
+- **Windows / macOS / Linux**: the GitHub release (`native-v<version>`). Not
+  in OpenVolley's APT repo: its publish script renames any second package to
+  its own; the AppImage updates itself.
+- **iPhone / iPad**: the PWA. A store app needs the paid Apple account.
+
 **Keys** (both on lenovoserver in `~/.tauri/`, back them up in Bitwarden; losing
 either one means installed apps can no longer take updates):
 

@@ -5,6 +5,7 @@ import { getStoredLang, type Lang } from '../lib/prefs';
 import { infosLangFromPath } from '../lib/routes';
 import { foldText } from '../lib/docText';
 import { USEFUL_DOCS, USEFUL_DOC_GROUPS, type UsefulDoc, type UsefulDocGroup } from '../lib/usefulDocs';
+import { INFOS_AUDIENCES, INFOS_AUDIENCE_ORDER, audienceOf } from '../lib/infosAudience';
 
 /**
  * "Nützliche Infos & Dokumente", on a page anyone can open.
@@ -25,6 +26,10 @@ import { USEFUL_DOCS, USEFUL_DOC_GROUPS, type UsefulDoc, type UsefulDocGroup } f
  *    API, and a public page should not hand out a free fetcher. Every entry
  *    links to its canonical `href` instead — the upstream file, or ours under
  *    /docs/, which Pages serves to anyone already.
+ *
+ * And it is sorted differently: by who it is for, most useful first — new
+ * referees, regional referees, then everyone incl. the national level — with
+ * the topics inside each (src/lib/infosAudience.ts, Luca 2026-10-09).
  */
 
 const STR = {
@@ -69,7 +74,8 @@ export default function InfosPage() {
   const [query, setQuery] = useState('');
   // Open by default, unlike Home: someone following a shared link has not
   // come to click through five folds before seeing anything.
-  const [closed, setClosed] = useState<Set<UsefulDocGroup>>(() => new Set());
+  // Keyed "<audience>/<topic>": the same topic folds once per audience.
+  const [closed, setClosed] = useState<Set<string>>(() => new Set());
   const t = STR[lang];
   const code = lang === 'DE' ? 'de' : 'en';
 
@@ -86,18 +92,23 @@ export default function InfosPage() {
   };
 
   const q = foldText(query.trim());
-  const groups = useMemo(() => {
+  const audiences = useMemo(() => {
     const matches = (doc: UsefulDoc) => !q || foldText(
-      [doc[lang].title, doc[lang].note, doc.badge, USEFUL_DOC_GROUPS[doc.group][lang]].join(' '),
+      [doc[lang].title, doc[lang].note, doc.badge, USEFUL_DOC_GROUPS[doc.group][lang], INFOS_AUDIENCES[audienceOf(doc)][lang].title].join(' '),
     ).includes(q);
-    return (Object.keys(USEFUL_DOC_GROUPS) as UsefulDocGroup[])
-      .map((group) => ({ group, docs: PUBLIC_DOCS.filter((d) => d.group === group && matches(d)) }))
-      .filter((g) => g.docs.length > 0);
+    return INFOS_AUDIENCE_ORDER
+      .map((audience) => ({
+        audience,
+        groups: (Object.keys(USEFUL_DOC_GROUPS) as UsefulDocGroup[])
+          .map((group) => ({ group, docs: PUBLIC_DOCS.filter((d) => audienceOf(d) === audience && d.group === group && matches(d)) }))
+          .filter((g) => g.docs.length > 0),
+      }))
+      .filter((a) => a.groups.length > 0);
   }, [q, lang]);
 
-  const toggle = (group: UsefulDocGroup) => setClosed((prev) => {
+  const toggle = (key: string) => setClosed((prev) => {
     const next = new Set(prev);
-    if (next.has(group)) next.delete(group); else next.add(group);
+    if (next.has(key)) next.delete(key); else next.add(key);
     return next;
   });
 
@@ -142,55 +153,67 @@ export default function InfosPage() {
           />
         </div>
 
-        <div className="rounded-2xl bg-white shadow-card border border-stone-200/70 px-4 sm:px-6 py-2">
-          {groups.length === 0 && <p className="py-6 text-sm text-stone-500 text-center">{t.none}</p>}
-          {groups.map(({ group, docs }) => {
-            const open = !!q || !closed.has(group);
-            return (
-              <section key={group} className="border-b border-stone-200/70 last:border-b-0">
-                <button
-                  type="button"
-                  onClick={() => toggle(group)}
-                  aria-expanded={open}
-                  className="w-full flex items-center gap-3 py-4 text-left"
-                >
-                  <ChevronDown size={16} className={`text-stone-400 transition-transform ${open ? '' : '-rotate-90'}`} />
-                  <span className="flex-1 text-base font-semibold text-stone-800">{USEFUL_DOC_GROUPS[group][lang]}</span>
-                  <span className="text-xs tabular-nums text-stone-400">{docs.length}</span>
-                </button>
-                {open && (
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 pb-4">
-                    {docs.map((doc) => {
-                      const href = hrefFor(doc, code);
-                      const external = !href.startsWith('mailto:');
-                      return (
-                        <a
-                          key={doc.id}
-                          href={href}
-                          {...(external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
-                          className="group flex gap-3 rounded-xl border border-stone-200/80 p-4 hover:border-red-700/30 hover:bg-stone-50/60 transition-colors"
-                        >
-                          <DocIcon kind={doc.kind} />
-                          <span className="min-w-0">
-                            <span className="flex items-center gap-1.5 text-[15px] font-medium text-stone-900">
-                              {doc[lang].title}
-                              {doc.kind === 'web' && <ExternalLink size={12} className="text-stone-400 shrink-0" />}
-                            </span>
-                            <span className="mt-1 block text-sm leading-snug text-stone-500">{doc[lang].note}</span>
-                            <span className="mt-1.5 block text-[11px] font-semibold uppercase tracking-wide text-stone-400 break-all">
-                              {doc.kind === 'mail' ? doc.badge.toLowerCase() : doc.badge}
-                            </span>
-                          </span>
-                        </a>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-            );
-          })}
+        {audiences.length === 0 && (
+          <div className="rounded-2xl bg-white shadow-card border border-stone-200/70 px-4 sm:px-6 py-2">
+            <p className="py-6 text-sm text-stone-500 text-center">{t.none}</p>
+          </div>
+        )}
+        <div className="flex flex-col gap-6">
+          {audiences.map(({ audience, groups }) => (
+            <section key={audience} data-audience={audience} aria-labelledby={`audience-${audience}`}>
+              <h2 id={`audience-${audience}`} className="text-lg sm:text-xl font-bold tracking-tight text-stone-900">{INFOS_AUDIENCES[audience][lang].title}</h2>
+              <p className="mt-1 mb-3 text-sm leading-snug text-stone-500">{INFOS_AUDIENCES[audience][lang].note}</p>
+              <div className="rounded-2xl bg-white shadow-card border border-stone-200/70 px-4 sm:px-6 py-2">
+                {groups.map(({ group, docs }) => {
+                  const key = `${audience}/${group}`;
+                  const open = !!q || !closed.has(key);
+                  return (
+                    <section key={group} className="border-b border-stone-200/70 last:border-b-0">
+                      <button
+                        type="button"
+                        onClick={() => toggle(key)}
+                        aria-expanded={open}
+                        className="w-full flex items-center gap-3 py-4 text-left"
+                      >
+                        <ChevronDown size={16} className={`text-stone-400 transition-transform ${open ? '' : '-rotate-90'}`} />
+                        <span className="flex-1 text-base font-semibold text-stone-800">{USEFUL_DOC_GROUPS[group][lang]}</span>
+                        <span className="text-xs tabular-nums text-stone-400">{docs.length}</span>
+                      </button>
+                      {open && (
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 pb-4">
+                          {docs.map((doc) => {
+                            const href = hrefFor(doc, code);
+                            const external = !href.startsWith('mailto:');
+                            return (
+                              <a
+                                key={doc.id}
+                                href={href}
+                                {...(external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+                                className="group flex gap-3 rounded-xl border border-stone-200/80 p-4 hover:border-red-700/30 hover:bg-stone-50/60 transition-colors"
+                              >
+                                <DocIcon kind={doc.kind} />
+                                <span className="min-w-0">
+                                  <span className="flex items-center gap-1.5 text-[15px] font-medium text-stone-900">
+                                    {doc[lang].title}
+                                    {doc.kind === 'web' && <ExternalLink size={12} className="text-stone-400 shrink-0" />}
+                                  </span>
+                                  <span className="mt-1 block text-sm leading-snug text-stone-500">{doc[lang].note}</span>
+                                  <span className="mt-1.5 block text-[11px] font-semibold uppercase tracking-wide text-stone-400 break-all">
+                                    {doc.kind === 'mail' ? doc.badge.toLowerCase() : doc.badge}
+                                  </span>
+                                </span>
+                              </a>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
         </div>
-
 
         <p className="mt-8 text-center text-[11px] text-stone-400">
           SVRZ | SR-Wesen | Referee Coaching | schiricoaching@svrz.ch

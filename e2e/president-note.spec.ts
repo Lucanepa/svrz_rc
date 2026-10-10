@@ -87,6 +87,23 @@ test('the coach who filed it can read back and save the note', async ({ page }) 
   expect(puts[0]).toEqual({ note: 'escalate please' });
 });
 
+// 10.10.2026: the season's notes outgrew a 5000-character text field and every
+// save answered 500. The chair saw {"error":"Internal server error"} in red.
+// Now she reads words, and what she typed is still in the box to save again.
+test('a save the server refuses says so in words and keeps the text', async ({ page }) => {
+  await stub(page, { signedInAs: RC.name, note: { note: '' } });
+  await page.route('**/api/feedback/*/president-note', async (r) => {
+    if (r.request().method() === 'PUT') { await r.fulfill({ status: 500, json: { error: 'Internal server error' } }); return; }
+    await r.fallback();
+  });
+  await openFiledObservation(page);
+  await noteBox(page).fill('Sehr gute Leistung.');
+  await page.getByRole('button', { name: /Notiz speichern|Save note/ }).click();
+  await expect(page.getByText(/es liegt nicht an dir|it is not you/)).toBeVisible();
+  await expect(page.getByText('{"error"')).toHaveCount(0);
+  await expect(noteBox(page)).toHaveValue('Sehr gute Leistung.');
+});
+
 test('another coach is not offered the box at all', async ({ page }) => {
   // Any RC may open a colleague's filed feedback; only its author may annotate
   // it, so the box must not appear rather than appear and fail on save.

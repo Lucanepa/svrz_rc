@@ -34,6 +34,20 @@ async function ensureFields(collection, fields) {
   return updated;
 }
 
+// PocketBase (0.23+) caps a text field whose `max` is 0 at 5000 characters.
+// Most text here is a name or a date; a few columns grow without bound, and
+// the first to outgrow the cap was the season's president notes, all kept in
+// ONE app_settings row: on 10.10.2026 it reached 4748 characters and every
+// further "Notiz speichern" answered 400 "Failed to update record". Raises,
+// never lowers, so it is as safe to re-run as the rest of this script.
+async function raiseTextMax(name, field, max) {
+  const c = await pb.collections.getOne(name);
+  const f = (c.fields ?? []).find(x => x.name === field);
+  if (!f || (f.max || 0) >= max) return;
+  await pb.collections.update(c.id, { fields: c.fields.map(x => (x.name === field ? { ...x, max } : x)) });
+  console.log('TEXT_MAX_RAISED', `${name}.${field}`, max);
+}
+
 async function ensure(name, fields) {
   let existing = null;
   try { existing = await pb.collections.getOne(name); } catch {}
@@ -245,6 +259,12 @@ await ensure('rc_visit_feedback', [
 // stamp and the president's private notes. Without it every settings write 500s
 // and every read silently answers "unset".
 await ensure('app_settings', [T('key'),T('value')]);
+// The columns that grow: a whole JSON map per setting (president notes, starred
+// and manual games, the reminder log, mail templates), a coach's notes on a
+// coachee, an SR-Spiel Rückmeldung.
+await raiseTextMax('app_settings', 'value', 10_000_000);
+await raiseTextMax('coachees', 'notes', 100_000);
+await raiseTextMax('rc_game_notes', 'note', 100_000);
 // Cross-device signing sessions (#/sign/<slug>). Without it the signature pad
 // can never open, so no feedback can be completed.
 // `created` is what expires a session (24 h unsigned, 7 d signed) and what the

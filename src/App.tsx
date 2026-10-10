@@ -884,9 +884,20 @@ function detectInitialLang(): FeedbackFormData['lang'] {
 }
 
 function localizeRuntimeError(message: string, lang: FeedbackFormData['lang']): string {
-  const normalized = message.trim();
+  let normalized = message.trim();
+  // An API error body arrives as its text, '{"error":"…"}'. The words inside
+  // are what to show, not the braces around them — the president-note box
+  // printed {"error":"Internal server error"} at the chair (10.10.2026).
+  try {
+    const body = JSON.parse(normalized) as { error?: unknown };
+    if (body && typeof body.error === 'string' && body.error.trim()) normalized = body.error.trim();
+  } catch { /* not JSON: the message as it is */ }
   const map: Record<string, { DE: string; EN: string }> = {
     Unauthorized: { DE: 'Nicht autorisiert.', EN: 'Unauthorized.' },
+    'Internal server error': {
+      DE: 'Der Server konnte das gerade nicht ausführen — es liegt nicht an dir, und der Fehler ist gemeldet. Bitte später nochmals versuchen.',
+      EN: 'The server could not do that just now — it is not you, and the error has been reported. Please try again later.',
+    },
     'email and password are required.': { DE: 'E-Mail und Passwort sind erforderlich.', EN: 'Email and password are required.' },
     'Invalid credentials.': { DE: 'Ungültige Anmeldedaten.', EN: 'Invalid credentials.' },
     'gameId, role and formData are required.': { DE: 'gameId, Rolle und formData sind erforderlich.', EN: 'gameId, role and formData are required.' },
@@ -905,7 +916,7 @@ function localizeRuntimeError(message: string, lang: FeedbackFormData['lang']): 
       ? 'Keine Verbindung zum Server – das liegt am Netz, nicht an der App. Bitte WLAN oder Mobilnetz prüfen.'
       : 'No connection to the server – this is the network, not the app. Please check Wi-Fi or mobile data.';
   }
-  return message;
+  return normalized;
 }
 
 function toDateString(d: Date): string {

@@ -95,7 +95,17 @@ export function redact(value: unknown, depth = 0): unknown {
   if (typeof value === 'string') return redactString(value);
   if (typeof value === 'number' || typeof value === 'boolean') return value;
   if (value instanceof Error) {
-    return { name: value.name, message: redactString(value.message), stack: redactString(value.stack || '') };
+    const out: Record<string, unknown> = { name: value.name, message: redactString(value.message), stack: redactString(value.stack || '') };
+    // A PocketBase ClientResponseError says WHY in response.data: per field, a
+    // validation code and message ("Must be no more than 5000 character(s).").
+    // Without it the log read "Failed to update record." and nothing else
+    // (10.10.2026, the president notes outgrowing a text field). PocketBase
+    // names the field and the rule there, never the value.
+    const status = (value as { status?: unknown }).status;
+    const data = (value as { response?: { data?: unknown } }).response?.data;
+    if (typeof status === 'number' && status > 0) out.status = status;
+    if (data && typeof data === 'object' && Object.keys(data).length > 0) out.data = redact(data, depth + 1);
+    return out;
   }
   if (depth >= MAX_DEPTH) return '[depth]';
   if (Array.isArray(value)) return value.slice(0, MAX_KEYS).map((v) => redact(v, depth + 1));

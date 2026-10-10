@@ -67,6 +67,8 @@ import {
   type AppRoute, type FeedbackSubView as RouteSubView,
 } from './lib/routes';
 import RcMeetingsHome from './components/RcMeetingsHome';
+import SwitchRequestsHome from './components/SwitchRequestsHome';
+import { clearSwitchRequests, pendingFor, refreshSwitchRequests, requestSwitch, useSwitchRequests } from './lib/switchRequests';
 import InfoHint from './components/InfoHint';
 import { inSeasonOrManual as inSeasonWindow, currentSeason, seasonLabel as seasonLabelOf } from './lib/season';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
@@ -1513,6 +1515,9 @@ export default function App() {
   const [resultUnlocked, setResultUnlocked] = useState(false);
   const [showJson, setShowJson] = useState(false);
   const [eligibleGames, setEligibleGames] = useState<EligibleGame[]>([]);
+  // Switch requests — the Home card answers them, the games list says when
+  // one is already out for a game (src/lib/switchRequests.ts).
+  const switchLists = useSwitchRequests();
   // Read by the live-event handler, which needs to know who held a game BEFORE
   // the pushed change without making its effect depend on the whole list — that
   // dependency would tear the stream down and rebuild it on every refresh.
@@ -2571,6 +2576,7 @@ export default function App() {
     if (!myName) { homeKeyRef.current = null; setHomeData(null); return; }
     const gen = beginLoad('home');
     const season = seasonOverride ?? seasonStartYear;
+    void refreshSwitchRequests();
     // This request also covers the RC detail view for the logged-in coach —
     // claim it so the detail effect below doesn't fetch the same thing again.
     rcSummaryAttemptRef.current = `${myName}|${season}`;
@@ -2856,20 +2862,98 @@ export default function App() {
     ? `${b.name} hat schon eine geplante Beobachtung (${shortDate(b.date)}) durch ${b.rc}. Erst wenn dieser Bericht gesendet oder das Spiel abgegeben ist, kann ein weiteres Spiel übernommen werden.`
     : `${b.name} already has an observation booked (${shortDate(b.date)}) by ${b.rc}. Another game can be taken once that report is sent or the game is given back.`);
 
+  /**
+   * A switch this coach could ask for on a blocked game (asked 2026-10-10):
+   * a coachee on it whose booking is ANOTHER coach's, on a LATER game — the
+   * holder can hand the coachee over to this earlier one. Not on an RC-Spiel,
+   * and not when too little time is left for an answer (the server closes a
+   * request three hours before kick-off and wants half an hour to answer).
+   */
+  const switchCandidate = (game: EligibleGame): { name: string; rc: string; date: string } | null => {
+    if (game.isRcGame) return null;
+    const at = instantOf(game.date);
+    if (at == null || at - Date.now() < 3.5 * 60 * 60 * 1000) return null;
+    for (const role of ['1. SR', '2. SR'] as const) {
+      const id = roster.idOnSlot(game, role);
+      if (!id) continue;
+      const booked = plannedObsByCoachee.get(id);
+      if (!booked || booked.game.id === game.id || isMyGame(booked.game, rcAuth, rcKnownIds)) continue;
+      const later = instantOf(booked.game.date);
+      if (later == null || later <= at) continue;
+      return { name: roster.onSlot(game, role)?.full_name || getRefereeForRole(game, role), rc: booked.rc, date: booked.game.date };
+    }
+    return null;
+  };
+
+  const askSwitch = async (game: EligibleGame, c: { name: string; rc: string; date: string }) => {
+    const de = formData.lang === 'DE';
+    const ok = await confirmDialog({
+      title: de ? 'Tausch anfragen?' : 'Request a switch?',
+      message: de
+        ? `${c.name} ist schon am ${shortDate(c.date)} bei ${c.rc} geplant. Du fragst ${c.rc}, ${c.name} an dich zu übergeben, damit du dieses frühere Spiel beobachtest. ${c.rc} muss zustimmen — bis dahin bleibt alles, wie es ist.`
+        : `${c.name} is already planned with ${c.rc} on ${shortDate(c.date)}. You ask ${c.rc} to hand ${c.name} over to you, so you observe this earlier game. ${c.rc} has to agree — until then nothing changes.`,
+      confirmLabel: de ? 'Anfrage senden' : 'Send request',
+      cancelLabel: de ? 'Abbrechen' : 'Cancel',
+    });
+    if (!ok) return;
+    try {
+      await requestSwitch(game.id);
+      toast.success(de ? `Anfrage an ${c.rc} gesendet.` : `Request sent to ${c.rc}.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   /** "Take game", greyed out, for a coachee who is already booked — same
-   *  shape as the taken-by button, so a tap explains itself. */
-  const bookedButton = (b: { name: string; rc: string; date: string }, className: string) => (
-    <button
-      type="button"
-      aria-disabled="true"
-      data-testid="take-booked"
-      title={bookedWhy(b)}
-      onClick={(e) => { e.stopPropagation(); toast.info(bookedWhy(b)); }}
-      className={cn(className, 'cursor-not-allowed border border-stone-200 bg-stone-100 text-stone-400 hover:bg-stone-100')}
-    >
-      {formData.lang === 'DE' ? 'Spiel übernehmen' : 'Take game'}
-    </button>
-  );
+   *  shape as the taken-by button, so a tap explains itself. Where the
+   *  booking is another coach's on a later game it becomes "Tausch anfragen",
+   *  and once asked, "Tausch angefragt". */
+  const bookedButton = (game: EligibleGame, b: { name: string; rc: string; date: string }, className: string) => {
+    const de = formData.lang === 'DE';
+    const pending = pendingFor(switchLists, game.id);
+    if (pending) {
+      return (
+        <button
+          type="button"
+          aria-disabled="true"
+          data-testid="take-switch-pending"
+          onClick={(e) => {
+            e.stopPropagation();
+            toast.info(de ? `Tausch bei ${pending.holder} angefragt — die Antwort kommt auf Home.` : `Switch requested from ${pending.holder} — the answer shows on Home.`);
+          }}
+          className={cn(className, 'cursor-default border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-50')}
+        >
+          {de ? 'Tausch angefragt' : 'Switch requested'}
+        </button>
+      );
+    }
+    const candidate = switchCandidate(game);
+    if (candidate) {
+      return (
+        <button
+          type="button"
+          data-testid="take-switch"
+          title={bookedWhy(candidate)}
+          onClick={(e) => { e.stopPropagation(); void askSwitch(game, candidate); }}
+          className={cn(className, 'border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100')}
+        >
+          {de ? 'Tausch anfragen' : 'Request switch'}
+        </button>
+      );
+    }
+    return (
+      <button
+        type="button"
+        aria-disabled="true"
+        data-testid="take-booked"
+        title={bookedWhy(b)}
+        onClick={(e) => { e.stopPropagation(); toast.info(bookedWhy(b)); }}
+        className={cn(className, 'cursor-not-allowed border border-stone-200 bg-stone-100 text-stone-400 hover:bg-stone-100')}
+      >
+        {de ? 'Spiel übernehmen' : 'Take game'}
+      </button>
+    );
+  };
 
   /**
    * "Take game", greyed out, for a game another coach already holds.
@@ -3014,6 +3098,13 @@ export default function App() {
   const isMine = (game: { assignedRc?: string; assignedRcId?: string }) => isMyGame(game, rcAuth, rcKnownIds);
   const liveHandlersRef = useRef({ loadHome, syncGamesQuietly, loadSettings, isMine });
   liveHandlersRef.current = { loadHome, syncGamesQuietly, loadSettings, isMine };
+  // The signed-in coach's switch requests: read on sign-in, forgotten on
+  // sign-out, and kept fresh by the live stream and every Home load after.
+  useEffect(() => {
+    if (!rcAuth.rcName) { clearSwitchRequests(); return; }
+    void refreshSwitchRequests();
+  }, [rcAuth.rcName]);
+
   useEffect(() => {
     if (!rcAuth.rcName) return;
     return subscribeLive((event) => {
@@ -3035,6 +3126,8 @@ export default function App() {
         // No season claim here: if the default moved, the season-change effect
         // is what re-fetches Home, the overview and the calendar for it.
         void live.loadSettings();
+      } else if (event.type === 'switch.changed') {
+        void refreshSwitchRequests();
       }
     }, setLiveConnected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -5739,6 +5832,8 @@ export default function App() {
         // is nobody's coachee books nothing.
         const key = roster.idOnSlot(g, role);
         if (!key) continue;
+        // Handed over to an earlier game by a switch: the other coach's now.
+        if ((g.handedOver ?? []).includes(key)) continue;
         const prev = map.get(key);
         // With several taken games, name the next one to come. A taken game
         // that is already past is still worth showing (its feedback is open),
@@ -7282,6 +7377,10 @@ export default function App() {
                     ) : <Skeleton className="mt-1 h-4 w-48" />}
                   </div>
 
+                  {/* Switch requests to answer, and this coach's own — above
+                      everything else, since one is waiting on an answer. */}
+                  <SwitchRequestsHome lang={formData.lang} onChanged={() => { void loadHome(); void syncGamesQuietly(); }} />
+
                   {/* The next RC-Sitzung, for every coach, above the games —
                       its own fetch, so a slow dashboard does not hold it. */}
                   <RcMeetingsHome lang={formData.lang} />
@@ -8244,7 +8343,7 @@ export default function App() {
                                         roles: [role],
                                         focus: true,
                                         onOpen: () => handleSelectGame(game, { id: coachee.id }),
-                                        action: !holder ? (bookingBlocking(game) ? bookedButton(bookingBlocking(game)!, 'h-8 w-full rounded-md px-2.5 text-[11px] font-medium transition-colors sm:w-auto') : (
+                                        action: !holder ? (bookingBlocking(game) ? bookedButton(game, bookingBlocking(game)!, 'h-8 w-full rounded-md px-2.5 text-[11px] font-medium transition-colors sm:w-auto') : (
                                             <button
                                               onClick={() => { if (rcAuth.rcName) requestRcAssignment(game, rcAuth.rcName); }}
                                               className="h-8 w-full rounded-md bg-slate-900 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-slate-800 sm:w-auto"
@@ -8466,7 +8565,7 @@ export default function App() {
                                     ) : game.isRcGame ? (
                                       rcGameButton('h-9 px-3 text-sm font-medium rounded-md transition-colors')
                                     ) : bookingBlocking(game) ? (
-                                      bookedButton(bookingBlocking(game)!, 'h-9 px-3 text-sm font-medium rounded-md transition-colors')
+                                      bookedButton(game, bookingBlocking(game)!, 'h-9 px-3 text-sm font-medium rounded-md transition-colors')
                                     ) : (
                                       <button
                                         onClick={(e) => {
@@ -9009,7 +9108,7 @@ export default function App() {
                               action: eg ? (
                                 <div className="flex flex-wrap items-center gap-2">
                                   {!holder ? (
-                                    eg.isRcGame ? rcGameButton('h-8 px-3 text-xs font-medium rounded-md transition-colors') : bookingBlocking(eg) ? bookedButton(bookingBlocking(eg)!, 'h-8 px-3 text-xs font-medium rounded-md transition-colors') : (
+                                    eg.isRcGame ? rcGameButton('h-8 px-3 text-xs font-medium rounded-md transition-colors') : bookingBlocking(eg) ? bookedButton(eg, bookingBlocking(eg)!, 'h-8 px-3 text-xs font-medium rounded-md transition-colors') : (
                                     <button
                                       onClick={() => { if (rcAuth.rcName) requestRcAssignment(eg, rcAuth.rcName); }}
                                       className="h-8 px-3 text-xs font-medium rounded-md bg-slate-900 text-white hover:bg-slate-800 transition-colors"

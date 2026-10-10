@@ -41,6 +41,9 @@ export type PlanningGameInput = {
   isRcGame: boolean;
   /** Roles whose referee is offering the game in the Börse right now. */
   offeredRoles: PlanningRole[];
+  /** Coachee row ids the holder handed over to an earlier game (an accepted
+   *  switch request): still on the whistle here, but no longer booked. */
+  handedOver?: string[];
 };
 
 export type PlanningCoacheeInput = {
@@ -133,7 +136,7 @@ export function computePlanning(input: {
         for (const s of onSlots) freeGames.set(s.coacheeId, (freeGames.get(s.coacheeId) ?? 0) + 1);
       }
     } else {
-      const open = onSlots.filter((s) => !g.closedRoles.includes(s.role));
+      const open = onSlots.filter((s) => !g.closedRoles.includes(s.role) && !(g.handedOver ?? []).includes(s.coacheeId));
       for (const s of open) {
         const list = bookings.get(s.coacheeId) ?? [];
         list.push(booking(s.role));

@@ -16,7 +16,9 @@ export type LiveEvent =
   // for the screen. Absent from an older API, when the name is all there is.
   | { type: 'game.assignment'; gameId: string; matchNo: string; assignedRc: string; assignedRcId?: string }
   | { type: 'games.synced'; imported: number; refreshed: number }
-  | { type: 'settings.changed'; keys: string[] };
+  | { type: 'settings.changed'; keys: string[] }
+  // A switch request was made or answered; whoever it concerns re-reads them.
+  | { type: 'switch.changed'; requestId: string; holderId: string; requesterId: string };
 
 type Listener = (event: LiveEvent) => void;
 type StatusListener = (connected: boolean) => void;

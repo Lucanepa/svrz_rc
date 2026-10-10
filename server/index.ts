@@ -53,6 +53,7 @@ import {
 import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
 import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, type BoerseOfferRow } from './boerse.ts';
+import { handedOverIds, pickSwitch, switchExpiry, switchOpen, switchSettlement, type HandOver, type SlotBooking } from './switchRequests.ts';
 import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, CREW_RELEASE_MIN_DAYS, type HeldGameChange, type HeldGameSide, type HeldSlot } from './gamesSync.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
 import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan } from './dataHygiene.ts';
@@ -1243,6 +1244,8 @@ const collectionCandidates = {
   // themselves. Its own collection — see the note in setup-schema.mjs for why
   // it is not a feedback with the grades left empty.
   rcGameNotes: unique([process.env.PB_RC_GAME_NOTES_COLLECTION || 'rc_game_notes', 'rc_game_notes', 'svrz_rc_game_notes']),
+  // A coach asking another to hand a coachee over to an earlier game.
+  switchRequests: unique([process.env.PB_SWITCH_REQUESTS_COLLECTION || 'rc_switch_requests', 'rc_switch_requests']),
   refereeCoaches: unique([
     process.env.PB_REFEREE_COACH_FEEDBACK_COLLECTION || process.env.PB_REFEREE_COACHES_COLLECTION || 'referee_coach_feedbacks',
     'referee_coach_feedbacks',
@@ -3343,7 +3346,7 @@ async function getEligibleGames(subject: RcAuthInfo | null = null) {
       return await withCollection(collectionCandidates.games, (collection) =>
         collection.getFullList<AnyRecord>({
           sort: '-match_date',
-          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result,maps_url',
+          fields: 'id,match_no,league,match_date,location,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_ld_game,is_rsv_game,game_result,maps_url,handed_over',
         }),
       );
     } catch (error) {
@@ -3384,6 +3387,8 @@ async function getEligibleGames(subject: RcAuthInfo | null = null) {
     // Who these people ARE, beside what they are called — see the helper.
     ...slotIdentityFields(coachees, game, manual, levelFor),
     feedbackClosedRoles: Array.isArray(game.feedback_closed_roles) ? game.feedback_closed_roles as string[] : [],
+    // Coachees the holder handed over to an earlier game: on the whistle, not booked.
+    handedOver: [...handedOverIds(game)],
     isRdGame: Boolean(game.is_rd_game),
     isLdGame: Boolean(game.is_ld_game),
     isRsvGame: Boolean(game.is_rsv_game),
@@ -4073,11 +4078,17 @@ async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRo
   return sent;
 }
 
-/** Coachees of the game's season on whistle roles whose report is not sent. */
-function openCoacheesOn(game: AnyRecord, coachees: CoacheeIndex): number {
+/** Coachees of the game's season on whistle roles whose report is not sent,
+ *  and not handed over to an earlier game — leaving out `except`, when given. */
+function openCoacheesOn(game: AnyRecord, coachees: CoacheeIndex, except = ''): number {
   const season = seasonOfGame(game.match_date);
   const closed = Array.isArray(game.feedback_closed_roles) ? (game.feedback_closed_roles as unknown[]).map(asText) : [];
-  return refereeSlotQueries(game).filter((q, i) => !closed.includes(i === 0 ? '1. SR' : '2. SR') && coachees.find(season, q).row).length;
+  const handed = handedOverIds(game);
+  return refereeSlotQueries(game).filter((q, i) => {
+    if (closed.includes(i === 0 ? '1. SR' : '2. SR')) return false;
+    const row = coachees.find(season, q).row;
+    return Boolean(row) && !handed.has(String(row!.id)) && String(row!.id) !== except;
+  }).length;
 }
 
 /** A held game as heldGameChange compares it: kick-off, hall, each whistle
@@ -4086,9 +4097,11 @@ function openCoacheesOn(game: AnyRecord, coachees: CoacheeIndex): number {
 function heldSideOf(game: AnyRecord, coachees: CoacheeIndex, isRcGame: (g: AnyRecord) => boolean): HeldGameSide {
   const season = seasonOfGame(game.match_date);
   const closed = Array.isArray(game.feedback_closed_roles) ? (game.feedback_closed_roles as unknown[]).map(asText) : [];
+  const handed = handedOverIds(game);
   const [first, second] = refereeSlotQueries(game).map((q, i): HeldSlot => {
     const row = coachees.find(season, q).row as AnyRecord | null | undefined;
-    return { name: asText(q.name), sv: asText(q.sv), coacheeId: row ? asText(row.id) : '', open: !closed.includes(i === 0 ? '1. SR' : '2. SR') };
+    const coacheeId = row ? asText(row.id) : '';
+    return { name: asText(q.name), sv: asText(q.sv), coacheeId, open: !closed.includes(i === 0 ? '1. SR' : '2. SR') && !handed.has(coacheeId) };
   });
   return { date: asText(game.match_date), location: asText(game.location), slots: [first, second], rcGame: isRcGame(game) };
 }
@@ -6628,7 +6641,7 @@ async function buildPlanning(season: number): Promise<{ report: PlanningReport; 
   const [allCoachees, games, inSeason, feedbacks, boerse, manual, goalOf, people] = await Promise.all([
     listCoacheesWithFallbackSort(),
     withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
-      fields: 'id,match_no,match_date,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,assigned_at,assigned_via,feedback_closed_roles',
+      fields: 'id,match_no,match_date,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,assigned_at,assigned_via,feedback_closed_roles,handed_over',
     })),
     seasonFilterExceptManual(season),
     withCollection(collectionCandidates.refereeCoaches, (c) => c.getFullList<AnyRecord>({ fields: 'game,role_assessed' })),
@@ -6671,7 +6684,7 @@ async function buildPlanning(season: number): Promise<{ report: PlanningReport; 
       rcId: asText(g.assigned_rc_id),
       takenAt: asText(g.assigned_at), takenVia: asText(g.assigned_via),
       closedRoles: closed, feedbackRoles: filedRoles.get(String(g.id)) ?? [],
-      slots, isRcGame: isRcGame(g), offeredRoles,
+      slots, isRcGame: isRcGame(g), offeredRoles, handedOver: [...handedOverIds(g)],
     };
   });
   const now = new Date().toISOString();
@@ -8447,6 +8460,382 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
   }
 });
 
+// ── Switch requests (asked 2026-10-10) ────────────────────────────────
+// A coach asks the holder of a coachee's LATER booking to hand the coachee
+// over to an EARLIER game — "particularly for new refs", who should hear from
+// a coach soon. Nothing moves until the holder accepts. The rules are in
+// server/switchRequests.ts; rc_switch_requests and games.handed_over in
+// setup-schema.mjs.
+
+type SwitchGameBrief = { id: string; matchNo: string; date: string; teams: string; league: string; location: string };
+
+function switchGameBrief(id: string, matchNo: string, g: AnyRecord | null | undefined): SwitchGameBrief {
+  return {
+    id, matchNo: g ? asText(g.match_no) : matchNo, date: g ? asText(g.match_date) : '',
+    teams: g ? `${asText(g.home_team)} – ${asText(g.away_team)}` : '',
+    league: g ? asText(g.league) : '', location: g ? asText(g.location) : '',
+  };
+}
+
+async function readGameOrNull(id: string): Promise<AnyRecord | null> {
+  if (!id) return null;
+  try { return await withCollection(collectionCandidates.games, (c) => c.getOne<AnyRecord>(id)); } catch { return null; }
+}
+
+function switchView(r: AnyRecord, games: Map<string, AnyRecord>) {
+  return {
+    id: String(r.id), status: asText(r.status),
+    coacheeId: asText(r.coachee_id), coacheeName: asText(r.coachee_name),
+    toGame: switchGameBrief(asText(r.to_game), asText(r.to_match_no), games.get(asText(r.to_game))),
+    fromGame: switchGameBrief(asText(r.from_game), asText(r.from_match_no), games.get(asText(r.from_game))),
+    requester: asText(r.requester_name), requesterId: asText(r.requester_id),
+    holder: asText(r.holder_name), holderId: asText(r.holder_id),
+    expiresAt: asText(r.expires_at), createdAt: asText(r.created), decidedAt: asText(r.decided_at), outcome: asText(r.outcome),
+  };
+}
+
+/** The games a list of requests names, read once each. */
+async function gamesOfRequests(rows: AnyRecord[]): Promise<Map<string, AnyRecord>> {
+  const ids = new Set(rows.flatMap((r) => [asText(r.to_game), asText(r.from_game)]).filter(Boolean));
+  const out = new Map<string, AnyRecord>();
+  for (const id of ids) {
+    const g = await readGameOrNull(id);
+    if (g) out.set(id, g);
+  }
+  return out;
+}
+
+function publishSwitch(r: AnyRecord) {
+  publishLive({ type: 'switch.changed', requestId: String(r.id), holderId: asText(r.holder_id), requesterId: asText(r.requester_id) });
+}
+
+type SwitchMailKind = 'request' | 'accepted' | 'declined' | 'expired' | 'failed';
+
+/** One mail about a request: the ask to the holder, every answer to the
+ *  requester. Never throws — the request is already stored. */
+async function mailSwitch(kind: SwitchMailKind, r: AnyRecord, opts: { keepsLater?: boolean } = {}): Promise<void> {
+  try {
+    const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
+    const toHolder = kind === 'request';
+    const ref = toHolder
+      ? { id: asText(r.holder_id), name: asText(r.holder_name) }
+      : { id: asText(r.requester_id), name: asText(r.requester_name) };
+    const coach = people.find((p) => samePerson(ref, { id: p.id, name: p.fullName }, rcKnownIds));
+    const testMode = await isEmailTestMode();
+    const testRecipient = asText(process.env.FEEDBACK_TEST_RECIPIENT);
+    if (!coach?.email || (testMode && !testRecipient)) return;
+    const games = await gamesOfRequests([r]);
+    const g1 = switchGameBrief(asText(r.to_game), asText(r.to_match_no), games.get(asText(r.to_game)));
+    const g2 = switchGameBrief(asText(r.from_game), asText(r.from_match_no), games.get(asText(r.from_game)));
+    const coachee = asText(r.coachee_name);
+    const requester = asText(r.requester_name);
+    const holder = asText(r.holder_name);
+    const d1 = g1.date ? mailDateText(g1.date) : `#${g1.matchNo}`;
+    const d2 = g2.date ? mailDateText(g2.date) : `#${g2.matchNo}`;
+    const until = asText(r.expires_at) ? mailDateText(asText(r.expires_at)) : '';
+    let subject = ''; let lead: [string, string];
+    switch (kind) {
+      case 'request':
+        subject = `Tauschanfrage: ${coachee} früher beobachten (${d1})`;
+        lead = [
+          `${requester} möchte ${coachee} früher beobachten: am ${d1} (${g1.teams}) statt an deinem Spiel am ${d2} (${g2.teams}). Stimmst du zu, übernimmt ${requester} das frühere Spiel, und ${opts.keepsLater ? `${coachee} wird auf deinem Spiel freigegeben — du behältst es für den anderen Coachee` : 'dein Spiel wird freigegeben'}. Bitte im Tool annehmen oder ablehnen${until ? `, bis ${until}` : ''}. Ohne Antwort bleibt alles, wie es ist.`,
+          `${requester} would like to observe ${coachee} earlier: on ${d1} (${g1.teams}) instead of your game on ${d2} (${g2.teams}). If you agree, ${requester} takes the earlier game and ${opts.keepsLater ? `${coachee} is released from your game — you keep it for the other coachee` : 'your game is released'}. Please accept or decline in the tool${until ? ` by ${until}` : ''}. Without an answer nothing changes.`,
+        ];
+        break;
+      case 'accepted':
+        subject = `Tausch angenommen: ${coachee} am ${d1}`;
+        lead = [
+          `${holder} hat zugestimmt: Das Spiel am ${d1} (${g1.teams}) ist jetzt bei dir, und du beobachtest ${coachee} dort.`,
+          `${holder} agreed: the game on ${d1} (${g1.teams}) is now yours, and you observe ${coachee} there.`,
+        ];
+        break;
+      case 'declined':
+        subject = `Tausch abgelehnt: ${coachee}`;
+        lead = [
+          `${holder} beobachtet ${coachee} wie geplant am ${d2} (${g2.teams}). Deine Anfrage für das Spiel am ${d1} ist abgelehnt.`,
+          `${holder} will observe ${coachee} as planned on ${d2} (${g2.teams}). Your request for the game on ${d1} was declined.`,
+        ];
+        break;
+      case 'expired':
+        subject = `Tauschanfrage verfallen: ${coachee}`;
+        lead = [
+          `${holder} hat nicht rechtzeitig geantwortet; deine Anfrage für das Spiel am ${d1} ist verfallen. Alles bleibt, wie es geplant war.`,
+          `${holder} did not answer in time; your request for the game on ${d1} has lapsed. Everything stays as planned.`,
+        ];
+        break;
+      case 'failed': {
+        subject = `Tausch nicht möglich: ${coachee}`;
+        const why = asText(r.outcome);
+        lead = [`Der Tausch für das Spiel am ${d1} (${g1.teams}) ist nicht möglich: ${why}`, `The switch for the game on ${d1} (${g1.teams}) is not possible: ${why}`];
+        break;
+      }
+    }
+    const name = coach.firstName || coach.fullName;
+    const panel = (g: SwitchGameBrief, label: [string, string]) => [
+      `<div style="margin:12px 0 0;padding:12px 14px;background:${MAIL_PANEL};border:1px solid ${MAIL_LINE};border-radius:10px">`,
+      `<div style="${mailText(12, MAIL_MUTED)}">${escapeHtml(label[0])} · ${escapeHtml(label[1])}</div>`,
+      `<div style="${mailText(15, MAIL_INK, 'font-weight:700;margin-top:2px;')}">${escapeHtml(g.teams || `#${g.matchNo}`)}</div>`,
+      `<div style="${mailText(13, MAIL_INK_SOFT, 'margin-top:4px;')}">${escapeHtml(g.date ? mailDateText(g.date) : '')}${g.league ? ` · ${escapeHtml(g.league)}` : ''} · #${escapeHtml(g.matchNo)}</div>`,
+      g.location ? `<div style="${mailText(13, MAIL_INK_SOFT)}">${escapeHtml(g.location)}</div>` : '',
+      `</div>`,
+    ].join('');
+    const body = [
+      bilingualBlockHtml(`Hallo ${name}`, `Hello ${name}`),
+      bilingualBlockHtml(lead[0], lead[1]),
+      panel(g1, ['Früheres Spiel', 'Earlier game']),
+      panel(g2, ['Bisher geplant', 'Planned so far']),
+    ].join('');
+    await sendCoachNotice({
+      to: [coach.email], cc: [], testMode, testRecipient, subject,
+      html: emailShell(body),
+      text: bilingualText(`${lead[0]}\n\n${MAIL_APP_URL}`, `${lead[1]}\n\n${MAIL_APP_URL}`),
+      coachId: coach.id,
+      push: { title: subject, body: lead[0], url: MAIL_APP_URL },
+    });
+  } catch (error) {
+    log.warn('switch.mail', `could not mail the ${kind} of a switch request`, { requestId: String(r.id), error: String(error) });
+  }
+}
+
+async function updateSwitch(id: string, patch: Record<string, unknown>): Promise<AnyRecord> {
+  return withCollection(collectionCandidates.switchRequests, (c) => c.update<AnyRecord>(id, patch));
+}
+
+/** Coachee row ids on a game's whistle slots, in the game's season. */
+function coacheeIdsOn(game: AnyRecord, coachees: CoacheeIndex): string[] {
+  const season = seasonOfGame(game.match_date);
+  return refereeSlotQueries(game).map((q) => coachees.find(season, q).row).filter(Boolean).map((row) => String(row!.id));
+}
+
+/** Why an accepted request can no longer be carried out, or '' when it can:
+ *  everything the request was made on is read again, under both games' locks. */
+function switchBlocker(r: AnyRecord, g1: AnyRecord | null, g2: AnyRecord | null, coachees: CoacheeIndex, isRcGame: (g: AnyRecord) => boolean): string {
+  const coachee = asText(r.coachee_name);
+  if (!g1) return 'Das frühere Spiel gibt es nicht mehr.';
+  if (rcRefPresent(g1.assigned_rc_id, g1.assigned_rc)) return 'Das frühere Spiel hat inzwischen jemand übernommen.';
+  if (Date.parse(asText(g1.match_date)) < Date.now()) return 'Das frühere Spiel hat schon stattgefunden.';
+  if (isRcGame(g1)) return 'Das frühere Spiel ist inzwischen ein RC-Spiel (4.4.10).';
+  if (!coacheeIdsOn(g1, coachees).includes(asText(r.coachee_id))) return `${coachee} pfeift das frühere Spiel nicht mehr.`;
+  const holderRef = { rcId: asText(r.holder_id), name: asText(r.holder_name) };
+  if (!g2 || !rcRefMatches(g2.assigned_rc_id, g2.assigned_rc, holderRef)) {
+    return 'Die Buchung auf dem späteren Spiel gibt es nicht mehr — das frühere Spiel kann direkt übernommen werden.';
+  }
+  if (handedOverIds(g2).has(asText(r.coachee_id))) return `${coachee} wurde auf dem späteren Spiel schon abgegeben.`;
+  const i = refereeSlotQueries(g2).findIndex((q) => coachees.find(seasonOfGame(g2.match_date), q).row?.id === asText(r.coachee_id));
+  const closed = Array.isArray(g2.feedback_closed_roles) ? (g2.feedback_closed_roles as unknown[]).map(asText) : [];
+  if (i < 0) return `${coachee} steht nicht mehr auf dem späteren Spiel — das frühere Spiel kann direkt übernommen werden.`;
+  if (closed.includes(i === 0 ? '1. SR' : '2. SR')) return `Für ${coachee} wurde auf dem späteren Spiel schon ein Bericht gesendet.`;
+  return '';
+}
+
+app.get('/api/switch-requests', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    await getActiveRcPeople();
+    const rcAuth = rcAuthByReq.get(req);
+    const now = new Date().toISOString();
+    // Pending ones, and the requester's own answers of the last three days —
+    // a mail can be missed; the app should still say what became of it.
+    const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    const rows = await withCollection(collectionCandidates.switchRequests, (c) =>
+      c.getFullList<AnyRecord>({ sort: '-created', filter: `status = "pending" || decided_at >= "${since}"` }));
+    // An admin session has no rcAuth and sees every request on both lists.
+    const mine = (id: unknown, name: unknown) => !rcAuth || rcRefMatches(id, name, rcAuth);
+    const incoming = rows.filter((r) => switchOpen({ status: asText(r.status), expires_at: asText(r.expires_at) }, now) && mine(r.holder_id, r.holder_name));
+    const outgoing = rows.filter((r) => mine(r.requester_id, r.requester_name)
+      && (asText(r.status) !== 'pending' || switchOpen({ status: 'pending', expires_at: asText(r.expires_at) }, now)));
+    const games = await gamesOfRequests([...incoming, ...outgoing]);
+    res.json({ incoming: incoming.map((r) => switchView(r, games)), outgoing: outgoing.map((r) => switchView(r, games)) });
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.post('/api/switch-requests', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const rcAuth = rcAuthByReq.get(req);
+    if (!rcAuth) { res.status(403).json({ error: 'Einen Tausch fragt ein Referee Coach an, nicht die Konsole.' }); return; }
+    const people = await getActiveRcPeople();
+    const gameId = asText((req.body ?? {}).gameId);
+    const requester = { id: rcAuth.rcId, name: rcAuth.name };
+    const outcome = await withGameLock(gameId, async (): Promise<{ status: number; body: Record<string, unknown>; rec?: AnyRecord; keepsLater?: boolean }> => {
+      const game = await readGameOrNull(gameId);
+      if (!game) return { status: 404, body: { error: 'Spiel nicht gefunden.' } };
+      if (rcRefPresent(game.assigned_rc_id, game.assigned_rc)) return { status: 409, body: { error: 'Dieses Spiel hat bereits ein Referee Coach übernommen.' } };
+      if (Array.isArray(game.feedback_closed_roles) && game.feedback_closed_roles.length > 0) {
+        return { status: 409, body: { error: 'Für dieses Spiel wurde bereits ein Bericht gesendet.' } };
+      }
+      const now = new Date().toISOString();
+      const expires = switchExpiry(now, asText(game.match_date));
+      if (!expires) return { status: 422, body: { error: 'Zu kurzfristig: Das Spiel beginnt bald, für eine Anfrage bleibt keine Zeit mehr.' } };
+      const coachees = await getCoacheeIndex();
+      if ((await makeRcGameTest(coachees))(game)) {
+        return { status: 422, body: { error: 'RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung (4.4.10).' } };
+      }
+      const slots = await coacheeBookingsOn(game, requester, coachees);
+      const pick = pickSwitch({ gameDate: asText(game.match_date), slots, requester, knownIds: rcKnownIds });
+      if (!pick.ok) {
+        const why = {
+          'no-coachee': 'Auf diesem Spiel pfeift kein Coachee.',
+          free: 'Dieses Spiel ist frei — du kannst es direkt übernehmen.',
+          own: 'Die Beobachtung ist schon bei dir geplant.',
+          'not-earlier': 'Ein Tausch geht nur für ein früheres Spiel als das bereits geplante.',
+        }[pick.reason as Exclude<typeof pick.reason, ''>];
+        return { status: pick.reason === 'free' ? 409 : 422, body: { error: why, reason: pick.reason } };
+      }
+      const open = await withCollection(collectionCandidates.switchRequests, (c) => c.getFullList<AnyRecord>({
+        filter: `status = "pending" && coachee_id = "${escapeFilterValue(pick.coacheeId)}"`,
+      }));
+      if (open.some((r) => switchOpen({ status: 'pending', expires_at: asText(r.expires_at) }, now))) {
+        return { status: 409, body: { error: `Für ${pick.name} ist bereits ein Tausch angefragt.` } };
+      }
+      const booking = pick.booking!;
+      const holder = people.find((p) => samePerson({ id: booking.rcId, name: booking.rc }, { id: p.id, name: p.fullName }, rcKnownIds));
+      const later = await readGameOrNull(booking.gameId);
+      const rec = await withCollection(collectionCandidates.switchRequests, (c) => c.create<AnyRecord>({
+        coachee_id: pick.coacheeId, coachee_name: pick.name,
+        to_game: gameId, to_match_no: asText(game.match_no),
+        from_game: booking.gameId, from_match_no: booking.matchNo,
+        requester_id: rcAuth.rcId, requester_name: rcAuth.name,
+        holder_id: holder?.id ?? booking.rcId, holder_name: holder?.fullName ?? booking.rc,
+        status: 'pending', expires_at: expires, decided_at: '', outcome: '',
+      }));
+      const keepsLater = later ? openCoacheesOn(later, coachees, pick.coacheeId) > 0 : false;
+      return { status: 201, body: {}, rec, keepsLater };
+    });
+    if (!outcome.rec) { res.status(outcome.status).json(outcome.body); return; }
+    const rec = outcome.rec;
+    log.info('switch.request', `${rcAuth.name} asks ${asText(rec.holder_name)} to hand over ${asText(rec.coachee_name)}`, {
+      requestId: String(rec.id), toGame: asText(rec.to_game), fromGame: asText(rec.from_game), coacheeId: asText(rec.coachee_id),
+    }, reqCtx(req));
+    publishSwitch(rec);
+    void mailSwitch('request', rec, { keepsLater: outcome.keepsLater });
+    res.status(201).json(switchView(rec, await gamesOfRequests([rec])));
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.post('/api/switch-requests/:id/:action', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    await getActiveRcPeople();
+    const rcAuth = rcAuthByReq.get(req);
+    const action = String(req.params.action);
+    if (!['accept', 'decline', 'cancel'].includes(action)) { res.status(404).json({ error: 'Unbekannte Aktion.' }); return; }
+    let r: AnyRecord;
+    try { r = await withCollection(collectionCandidates.switchRequests, (c) => c.getOne<AnyRecord>(String(req.params.id))); }
+    catch { res.status(404).json({ error: 'Anfrage nicht gefunden.' }); return; }
+    const now = new Date().toISOString();
+    if (!switchOpen({ status: asText(r.status), expires_at: asText(r.expires_at) }, now)) {
+      res.status(409).json({ error: 'Diese Anfrage ist nicht mehr offen.' }); return;
+    }
+    // The holder answers; the requester may withdraw. The console may do both.
+    const side = action === 'cancel' ? [r.requester_id, r.requester_name] : [r.holder_id, r.holder_name];
+    if (rcAuth && !rcRefMatches(side[0], side[1], rcAuth)) {
+      res.status(403).json({ error: action === 'cancel' ? 'Nur wer angefragt hat, kann die Anfrage zurückziehen.' : 'Nur der Referee Coach mit der Buchung kann antworten.' });
+      return;
+    }
+    const by = rcAuth?.name ?? 'console';
+
+    if (action !== 'accept') {
+      const status = action === 'decline' ? 'declined' : 'cancelled';
+      const done = await updateSwitch(String(r.id), { status, decided_at: now, outcome: by });
+      log.info(`switch.${status}`, `switch request ${status} by ${by}`, { requestId: String(r.id) }, reqCtx(req));
+      publishSwitch(done);
+      if (status === 'declined') void mailSwitch('declined', done);
+      res.json(switchView(done, await gamesOfRequests([done])));
+      return;
+    }
+
+    const toId = asText(r.to_game);
+    const fromId = asText(r.from_game);
+    const [lockA, lockB] = [toId, fromId].sort();
+    const coachees = await getCoacheeIndex();
+    const isRcGame = await makeRcGameTest(coachees);
+    // Both games under their locks, always in the same order, so a take or a
+    // give-back on either cannot slip in between the read and the write.
+    const result = await withGameLock(lockA, () => withGameLock(lockB, async () => {
+      const g1 = await readGameOrNull(toId);
+      const g2 = await readGameOrNull(fromId);
+      const blocker = switchBlocker(r, g1, g2, coachees, isRcGame);
+      if (blocker) return { blocker, settlement: null as null | 'release' | 'hand-over' };
+      const others = openCoacheesOn(g2!, coachees, asText(r.coachee_id));
+      const settlement = switchSettlement(others);
+      await withCollection(collectionCandidates.games, (c) => c.update(toId, {
+        assigned_rc: asText(r.requester_name), assigned_rc_id: asText(r.requester_id), assigned_at: now, assigned_via: 'switch',
+      }));
+      if (settlement === 'release') {
+        await withCollection(collectionCandidates.games, (c) => c.update(fromId, { assigned_rc: '', assigned_rc_id: '', assigned_at: '', assigned_via: '' }));
+      } else {
+        const list: HandOver[] = Array.isArray(g2!.handed_over) ? g2!.handed_over as HandOver[] : [];
+        const entry: HandOver = {
+          coacheeId: asText(r.coachee_id), toGameId: toId, toRc: asText(r.requester_name), toRcId: asText(r.requester_id), at: now, requestId: String(r.id),
+        };
+        await withCollection(collectionCandidates.games, (c) => c.update(fromId, { handed_over: [...list, entry] }));
+      }
+      return { blocker: '', settlement, g1: g1!, g2: g2! };
+    }));
+
+    if (result.blocker) {
+      const failed = await updateSwitch(String(r.id), { status: 'failed', decided_at: now, outcome: result.blocker });
+      log.info('switch.failed', `switch request could not be carried out: ${result.blocker}`, { requestId: String(r.id) }, reqCtx(req));
+      publishSwitch(failed);
+      void mailSwitch('failed', failed);
+      res.status(409).json({ error: result.blocker });
+      return;
+    }
+    const done = await updateSwitch(String(r.id), { status: 'accepted', decided_at: now, outcome: result.settlement === 'release' ? 'released' : 'handed-over' });
+    icalGamesCache.clear();
+    publishLive({ type: 'game.assignment', gameId: toId, matchNo: asText(r.to_match_no), assignedRc: asText(r.requester_name), assignedRcId: asText(r.requester_id) });
+    if (result.settlement === 'release') {
+      publishLive({ type: 'game.assignment', gameId: fromId, matchNo: asText(r.from_match_no), assignedRc: '', assignedRcId: '' });
+    }
+    log.info('switch.accepted', `${asText(r.coachee_name)} handed over from ${asText(r.from_match_no)} to ${asText(r.to_match_no)} (${result.settlement})`, {
+      requestId: String(r.id), settlement: result.settlement, toGame: toId, fromGame: fromId,
+    }, reqCtx(req));
+    publishSwitch(done);
+    void mailSwitch('accepted', done);
+    res.json(switchView(done, await gamesOfRequests([done])));
+  } catch (error) {
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+/** Every quarter hour: a request nobody answered in time lapses, and one the
+ *  games have overtaken — the earlier game taken by somebody else, or the
+ *  later booking gone, which frees the coachee anyway — is closed and its
+ *  requester told why. */
+async function sweepSwitchRequests(): Promise<void> {
+  const rows = await withCollection(collectionCandidates.switchRequests, (c) =>
+    c.getFullList<AnyRecord>({ filter: 'status = "pending"' }));
+  if (rows.length === 0) return;
+  await getActiveRcPeople();
+  const coachees = await getCoacheeIndex();
+  const isRcGame = await makeRcGameTest(coachees);
+  const now = new Date().toISOString();
+  for (const r of rows) {
+    try {
+      if (!switchOpen({ status: 'pending', expires_at: asText(r.expires_at) }, now)) {
+        const done = await updateSwitch(String(r.id), { status: 'expired', decided_at: now });
+        log.info('switch.expired', 'switch request lapsed unanswered', { requestId: String(r.id) });
+        publishSwitch(done);
+        void mailSwitch('expired', done);
+        continue;
+      }
+      const blocker = switchBlocker(r, await readGameOrNull(asText(r.to_game)), await readGameOrNull(asText(r.from_game)), coachees, isRcGame);
+      if (!blocker) continue;
+      const done = await updateSwitch(String(r.id), { status: 'failed', decided_at: now, outcome: blocker });
+      log.info('switch.failed', `switch request overtaken: ${blocker}`, { requestId: String(r.id) });
+      publishSwitch(done);
+      void mailSwitch('failed', done);
+    } catch (error) {
+      log.warn('switch.sweep', 'could not settle one switch request', { requestId: String(r.id), error: String(error) });
+    }
+  }
+}
+
 // ── RC Overview ──────────────────────────────────────────────────────
 
 /** The season window a list is cut to (seasonWindowFilter), for a request:
@@ -8959,17 +9348,29 @@ async function makeCoacheeSlotTest(coacheeIndex?: CoacheeIndex): Promise<(game: 
  * trip (asked 2026-10-07, src/lib/doubleGame.ts).
  */
 async function openBookingBlocking(game: AnyRecord, taker?: PersonRef, coacheeIndex?: CoacheeIndex): Promise<{ name: string; rc: string; date: string } | null> {
+  const slots = await coacheeBookingsOn(game, taker, coacheeIndex);
+  if (slots.length === 0 || slots.some((s) => !s.booking)) return null;
+  const first = slots[0];
+  return { name: first.name, rc: first.booking!.rc, date: first.booking!.date };
+}
+
+/** Each coachee on the game's whistle slots, with their open booking on
+ *  ANOTHER held game of the season, or null — the facts openBookingBlocking
+ *  decides on, and that a switch request (server/switchRequests.ts) picks its
+ *  coachee from. A role whose report is sent books nobody, nor does one the
+ *  holder handed over to an earlier game. */
+async function coacheeBookingsOn(game: AnyRecord, taker?: PersonRef, coacheeIndex?: CoacheeIndex): Promise<SlotBooking[]> {
   const coachees = coacheeIndex ?? await getCoacheeIndex();
   const season = seasonOfGame(game.match_date);
   const slots = refereeSlotQueries(game)
     .map((q) => ({ q, row: coachees.find(season, q).row }))
     .filter((x) => x.row);
-  if (slots.length === 0) return null;
+  if (slots.length === 0) return [];
   const held = await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
     filter: `id != "${escapeFilterValue(String(game.id))}" && (assigned_rc != "" || assigned_rc_id != "")`,
-    fields: 'id,match_date,first_referee,second_referee,first_referee_id,second_referee_id,match_no,assigned_rc,assigned_rc_id,feedback_closed_roles',
+    fields: 'id,match_date,first_referee,second_referee,first_referee_id,second_referee_id,match_no,assigned_rc,assigned_rc_id,feedback_closed_roles,handed_over',
   }));
-  const booked = new Map<string, { rc: string; date: string }>();
+  const booked = new Map<string, NonNullable<SlotBooking['booking']>>();
   for (const g of held) {
     if (seasonOfGame(g.match_date) !== season) continue;
     // The taker's own game on this game's day: the same trip, so it books
@@ -8980,16 +9381,18 @@ async function openBookingBlocking(game: AnyRecord, taker?: PersonRef, coacheeIn
       rcKnownIds,
     )) continue;
     const closed = Array.isArray(g.feedback_closed_roles) ? g.feedback_closed_roles as string[] : [];
+    const handed = handedOverIds(g);
     refereeSlotQueries(g).forEach((q, i) => {
       if (closed.includes(i === 0 ? '1. SR' : '2. SR')) return;
       const row = coachees.find(season, q).row;
-      if (row && !booked.has(String(row.id))) booked.set(String(row.id), { rc: asText(g.assigned_rc), date: asText(g.match_date) });
+      if (!row || handed.has(String(row.id)) || booked.has(String(row.id))) return;
+      booked.set(String(row.id), {
+        gameId: String(g.id), matchNo: asText(g.match_no), date: asText(g.match_date),
+        rc: asText(g.assigned_rc), rcId: asText(g.assigned_rc_id),
+      });
     });
   }
-  const hits = slots.map((x) => ({ x, hit: booked.get(String(x.row!.id)) }));
-  if (hits.some((h) => !h.hit)) return null;
-  const first = hits[0];
-  return { name: asText(first.x.q.name), rc: first.hit!.rc, date: first.hit!.date };
+  return slots.map((x) => ({ coacheeId: String(x.row!.id), name: asText(x.q.name), booking: booked.get(String(x.row!.id)) ?? null }));
 }
 
 /** The fields rcWorkloadRule and the coachee-slot test read off a game. */
@@ -9275,7 +9678,7 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
     const allGames = await withCollection(collectionCandidates.games, (collection) =>
       collection.getFullList<AnyRecord>({
         sort: '-match_date',
-        fields: 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_rsv_game,is_ld_game,game_result',
+        fields: 'id,match_no,league,match_date,location,maps_url,home_team,away_team,first_referee,second_referee,first_referee_id,second_referee_id,assigned_rc,assigned_rc_id,feedback_closed_roles,is_rd_game,is_rsv_game,is_ld_game,game_result,handed_over',
       }),
     );
     const rcGames = allGames.filter((g) =>
@@ -9460,9 +9863,13 @@ app.get('/api/rc-overview/:rcRef/coachees', requireRcSession, async (req: Reques
         // label built here said "N3" where Home said "N3-TBD".
         ...(row ? { groups: asText(row.groups), refereeLevel: asText(row.referee_level), stage: asText(row.stage) } : {}),
       }));
+      const handed = handedOverIds(game);
       for (const { name: refName, role, coachee, row } of crew) {
         if (!coachee) continue;
         matched = true;
+        // Handed over to an earlier game by a switch: the other coach observes
+        // this one, so it is not on this coach's list for this game.
+        if (row && handed.has(String(row.id))) continue;
         // Under the row's own spelling and id, so the group is the same one
         // the coach's filed feedbacks on this person went into.
         const entry = getOrCreate(asText(row?.full_name || row?.name) || refName, String(row?.id ?? ''), asText(row?.referee_id));
@@ -14489,4 +14896,8 @@ app.listen(port, () => {
     const first = setTimeout(() => { void runBoerseSyncSafely('startup'); }, 90_000);
     first.unref?.();
   }
+
+  // Switch requests: lapse the unanswered, close the overtaken. No
+  // VolleyManager in it, so no hour to stay out of.
+  scheduleEvery(15 * 60_000, 'switch requests', sweepSwitchRequests);
 });

@@ -5519,7 +5519,7 @@ const PLANNING_STR = {
     } as Record<PlanningCheckKind, [string, string]>,
     closedWithout: 'abgeschlossen ohne Bericht', reportOpen: 'Bericht, Rolle offen',
     taken: (when: string) => `Übernommen ${when}`,
-    takenVia: { rc: 'vom RC selbst', console: 'über die Konsole' } as Record<string, string>,
+    takenVia: { rc: 'vom RC selbst', console: 'über die Konsole', switch: 'per Tausch' } as Record<string, string>,
     takenUnknown: 'Übernahme-Zeitpunkt nicht erfasst',
   },
   EN: {
@@ -5545,7 +5545,7 @@ const PLANNING_STR = {
     } as Record<PlanningCheckKind, [string, string]>,
     closedWithout: 'closed without a report', reportOpen: 'report, role still open',
     taken: (when: string) => `Taken ${when}`,
-    takenVia: { rc: 'by the coach', console: 'via the console' } as Record<string, string>,
+    takenVia: { rc: 'by the coach', console: 'via the console', switch: 'by a switch' } as Record<string, string>,
     takenUnknown: 'Time taken not recorded',
   },
 };

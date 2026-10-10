@@ -108,6 +108,9 @@ export interface EligibleGame {
   secondRefereeLevel?: string;
   secondRefereeStage?: string;
   feedbackClosedRoles?: string[];
+  /** Coachee row ids the holder handed over to an earlier game through an
+   *  accepted switch request: still on the whistle here, no longer booked. */
+  handedOver?: string[];
   isRdGame?: boolean;
   isLdGame?: boolean;
   isRsvGame?: boolean;

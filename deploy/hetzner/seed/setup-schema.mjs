@@ -68,7 +68,13 @@ const games = await ensure('games', [
   // the two apart. Cleared with assigned_rc. The planning board prints both on
   // a double booking — "how could this happen" is mostly "which came first,
   // and who set it up". Not part of mapIncomingGame, so the import leaves it.
-  T('assigned_at'),T('assigned_via')
+  T('assigned_at'),T('assigned_via'),
+  // Coachees this held game handed over to an EARLIER game through an accepted
+  // switch request (rc_switch_requests): [{coacheeId, toGameId, toRc, toRcId,
+  // at, requestId}]. The holder keeps the game for the other coachee on it;
+  // the handed-over one's role no longer counts as a booking. Not part of
+  // mapIncomingGame, so the import leaves it.
+  J('handed_over')
 ]);
 // The SR-Börse: VolleyManager's exchange, where a referee who cannot whistle a
 // game they are convoked for offers THAT SLOT for someone else to take. One row
@@ -292,6 +298,18 @@ await ensure('parked_drafts', [
 // written in the hand verification must read `deleted: true` back.
 await ensure('rc_notebook', [
   T('owner_id'),T('page_id'),T('kind'),T('created_at'),T('updated_at'),B('deleted'),NUM('schema'),J('payload')
+]);
+// A coach asking another to hand a coachee over to an EARLIER game (asked
+// 2026-10-10). One row per request; nothing moves until the holder accepts.
+// to_game is the earlier, free game the requester wants; from_game the holder's
+// later booking. status: pending | accepted | declined | cancelled | expired |
+// failed (accepted but no longer possible — `outcome` says why). Times are ISO
+// text like boerse_offers. Rules in server/switchRequests.ts.
+await ensure('rc_switch_requests', [
+  T('coachee_id'),T('coachee_name'),
+  T('to_game'),T('to_match_no'),T('from_game'),T('from_match_no'),
+  T('requester_id'),T('requester_name'),T('holder_id'),T('holder_name'),
+  T('status'),T('expires_at'),T('decided_at'),T('outcome')
 ]);
 console.log('SCHEMA_OK');
 

@@ -285,3 +285,66 @@ export function heldGameChange(o: { held: boolean; now: string; before: HeldGame
   }
   return { action: changes.length ? 'notify' : 'none', changes, purposeLost };
 }
+
+/** What the "no longer in VolleyManager" watch remembers between runs (kept in
+ *  app_settings `vm_missing_games`): the size of the last complete fetch, and
+ *  per held game — by record id — since when and in how many runs in a row
+ *  its number was missing, and when the coach was told. */
+export type MissingGameEntry = { since: string; runs: number; notifiedAt?: string };
+export type MissingGamesState = { lastTotal: number; games: Record<string, MissingGameEntry> };
+
+/** A held game as the watch sees it: the record, its number, its kick-off. */
+export type HeldFixture = { id: string; matchNo: string; date: string };
+
+/** How many complete runs in a row a held game must be absent before the
+ *  coach is told. One run is a blip; two is a pattern. */
+export const MISSING_RUNS_BEFORE_NOTICE = 2;
+
+/** Which held games VolleyManager no longer lists (asked 2026-10-10: "game
+ *  cancelled in VolleyManager" was the one change nobody heard of).
+ *  VolleyManager has no "cancelled" flag the import can read: a cancelled
+ *  game simply stops coming back. Absence is only evidence from a fetch that
+ *  is provably whole — the caller passes `complete` only when every page came
+ *  back (rows = VolleyManager's own total) for the default window — and only
+ *  for a game still to come inside that window. A fetch less than half the
+ *  size of the last complete one is not trusted at all: an upstream hiccup
+ *  must not mail every coach that their game is gone.
+ *
+ *  A game absent from MISSING_RUNS_BEFORE_NOTICE complete runs in a row is
+ *  `notify` (once); one that was notified and is back is `returned`. The
+ *  booking itself is never touched: VolleyManager is where the coach checks. */
+export function missingHeldGames(o: {
+  held: HeldFixture[];
+  fetchedMatchNos: Set<string>;
+  total: number;
+  complete: boolean;
+  window: { from: string; to: string };
+  now: string;
+  state: MissingGamesState;
+}): { state: MissingGamesState; notify: string[]; returned: string[]; skipped: '' | 'incomplete' | 'shrunk' } {
+  const prev = o.state ?? { lastTotal: 0, games: {} };
+  if (!o.complete || o.total <= 0) return { state: prev, notify: [], returned: [], skipped: 'incomplete' };
+  if (prev.lastTotal > 0 && o.total < prev.lastTotal / 2) return { state: prev, notify: [], returned: [], skipped: 'shrunk' };
+  const now = Date.parse(o.now);
+  const from = Date.parse(o.window.from);
+  const to = Date.parse(o.window.to);
+  const games: Record<string, MissingGameEntry> = {};
+  const notify: string[] = [];
+  const returned: string[] = [];
+  for (const g of o.held) {
+    const at = Date.parse(g.date);
+    if (!g.matchNo || !Number.isFinite(at) || at < now || at < from || at > to) continue;
+    const before = prev.games[g.id];
+    if (o.fetchedMatchNos.has(g.matchNo)) {
+      if (before?.notifiedAt) returned.push(g.id);
+      continue;
+    }
+    const entry: MissingGameEntry = { since: before?.since ?? o.now, runs: (before?.runs ?? 0) + 1, ...(before?.notifiedAt ? { notifiedAt: before.notifiedAt } : {}) };
+    if (entry.runs >= MISSING_RUNS_BEFORE_NOTICE && !entry.notifiedAt) {
+      entry.notifiedAt = o.now;
+      notify.push(g.id);
+    }
+    games[g.id] = entry;
+  }
+  return { state: { lastTotal: o.total, games }, notify, returned, skipped: '' };
+}

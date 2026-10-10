@@ -56,7 +56,7 @@ import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
 import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, type BoerseOfferRow } from './boerse.ts';
 import { handedOverIds, pickSwitch, switchExpiry, switchOpen, switchSettlement, type HandOver, type SlotBooking } from './switchRequests.ts';
-import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, CREW_RELEASE_MIN_DAYS, type HeldGameChange, type HeldGameSide, type HeldSlot } from './gamesSync.ts';
+import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, missingHeldGames, CREW_RELEASE_MIN_DAYS, type HeldGameChange, type HeldGameSide, type HeldSlot, type MissingGamesState } from './gamesSync.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
 import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan } from './dataHygiene.ts';
 import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
@@ -3605,7 +3605,7 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
 
   const { from, to } = resolveSyncWindow(windowInput);
   const { jar, csrfToken, windowUniqueId } = await vmLogin(vmUsername, vmPassword);
-  const { items } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
+  const { items, total } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
   const coachees = await getCoacheeIndex();
   // Per row, because a sync window can straddle a season boundary and last
   // season's coachees must not pull this season's games in (or vice versa).
@@ -3660,6 +3660,17 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
     } catch { /* not stored, or the lookup failed — nothing to refresh */ }
   }
 
+  // Held games VolleyManager no longer lists — cancelled, or moved out of
+  // the window. Only from the unattended default window, never a one-day
+  // import from the console, and only when every page came back.
+  const defaultWindow = !asText(windowInput.date) && !asText(windowInput.from) && !asText(windowInput.to);
+  if (defaultWindow) {
+    await watchMissingHeldGames({
+      fetchedMatchNos: new Set(transformed.map((r) => asText(r.match_no)).filter(Boolean)),
+      total, complete: items.length === total, window: { from, to }, manualIds,
+    });
+  }
+
   publishLive({ type: 'games.synced', imported, refreshed });
 
   return {
@@ -3669,6 +3680,74 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
     from,
     to,
   };
+}
+
+const VM_MISSING_KEY = 'vm_missing_games';
+
+/** missingHeldGames (gamesSync.ts) over the held games, and the mail + phone
+ *  notice it asks for. Never throws: the import is done by the time this runs. */
+async function watchMissingHeldGames(o: { fetchedMatchNos: Set<string>; total: number; complete: boolean; window: { from: string; to: string }; manualIds: Set<string> }): Promise<void> {
+  try {
+    const now = new Date().toISOString();
+    const held = (await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
+      filter: `(assigned_rc != "" || assigned_rc_id != "") && match_date >= "${now.slice(0, 16)}"`,
+      fields: 'id,match_no,match_date,home_team,away_team,league,location,assigned_rc,assigned_rc_id',
+    }))).filter((g) => !o.manualIds.has(String(g.id)));
+    let state: MissingGamesState = { lastTotal: 0, games: {} };
+    try {
+      const raw = JSON.parse(asText((await getSettingRecord(VM_MISSING_KEY))?.value) || '{}') as Partial<MissingGamesState>;
+      state = { lastTotal: Number(raw.lastTotal) || 0, games: raw.games && typeof raw.games === 'object' ? raw.games : {} };
+    } catch { /* a fresh start */ }
+    const verdict = missingHeldGames({
+      held: held.map((g) => ({ id: String(g.id), matchNo: asText(g.match_no), date: asText(g.match_date) })),
+      fetchedMatchNos: o.fetchedMatchNos, total: o.total, complete: o.complete, window: o.window, now, state,
+    });
+    if (verdict.skipped) {
+      log.warn('games.missing', `missing-game watch skipped: ${verdict.skipped} fetch`, { total: o.total, lastTotal: state.lastTotal });
+      return;
+    }
+    await withSettingLock(VM_MISSING_KEY, () => setSetting(VM_MISSING_KEY, JSON.stringify(verdict.state)));
+    if (verdict.notify.length + verdict.returned.length === 0) return;
+    const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
+    const testMode = await isEmailTestMode();
+    const testRecipient = asText(process.env.FEEDBACK_TEST_RECIPIENT);
+    const byId = new Map(held.map((g) => [String(g.id), g]));
+    for (const [ids, back] of [[verdict.notify, false], [verdict.returned, true]] as const) {
+      for (const id of ids) {
+        const game = byId.get(id);
+        const coach = game ? gameHolder(game, people) : undefined;
+        if (!game || !coach?.email || (testMode && !testRecipient)) continue;
+        const teams = `${asText(game.home_team)} – ${asText(game.away_team)}`;
+        const dateText = mailDateText(asText(game.match_date));
+        const [lead, leadEn] = back
+          ? ['Das Spiel steht wieder in VolleyManager. Deine Beobachtung bleibt wie geplant.', 'The game is listed in VolleyManager again. Your observation stays as planned.']
+          : ['Ein Spiel, das du übernommen hast, steht nicht mehr in VolleyManager — vermutlich abgesagt, oder auf ein Datum verschoben, das noch nicht freigegeben ist. Bitte prüfe es dort, bevor du hinfährst. Deine Buchung bleibt, bis du sie abgibst.',
+            'A game you have taken is no longer listed in VolleyManager — probably cancelled, or moved to a date not published yet. Please check it there before you set off. Your booking stays until you give it back.'];
+        const subject = `${back ? 'Wieder in VolleyManager' : 'Nicht mehr in VolleyManager'}: ${teams} (${dateText})`;
+        const name = coach.firstName || coach.fullName;
+        const body = [
+          bilingualBlockHtml(`Hallo ${name}`, `Hello ${name}`),
+          bilingualBlockHtml(lead, leadEn),
+          `<div style="margin:18px 0;padding:14px 16px;background:${MAIL_PANEL};border:1px solid ${MAIL_LINE};border-radius:10px">`,
+          `<div style="${mailText(15, MAIL_INK, 'font-weight:700;')}">${escapeHtml(teams)}</div>`,
+          `<div style="${mailText(13, MAIL_INK_SOFT, 'margin-top:4px;')}">${escapeHtml(dateText)} · ${escapeHtml(asText(game.league))} · #${escapeHtml(asText(game.match_no))}</div>`,
+          `</div>`,
+        ].join('');
+        await sendCoachNotice({
+          to: [coach.email], cc: [], testMode, testRecipient, subject,
+          html: emailShell(body),
+          text: bilingualText(`${lead}\n\n${teams}\n${dateText} · #${asText(game.match_no)}`, `${leadEn}\n\n${teams}\n${dateText} · #${asText(game.match_no)}`),
+          coachId: coach.id,
+          push: { title: subject, body: lead, url: `${MAIL_APP_URL.replace(/\/+$/, '')}/home` },
+        });
+        log.info('games.missing', back ? `held game ${asText(game.match_no)} is back in VolleyManager; coach told` : `held game ${asText(game.match_no)} missing from VolleyManager twice; coach told`, {
+          gameId: id, matchNo: asText(game.match_no), rc: coach.fullName, back,
+        });
+      }
+    }
+  } catch (error) {
+    log.warn('games.missing', 'missing-game watch failed', { error: String(error) });
+  }
 }
 
 // The outcome of the last games sync, so a broken one is visible to a human
@@ -13402,6 +13481,9 @@ type ReminderPlan = {
   cc: string[];
   replyTo: string;
   subject: string; text: string; html: string; coachee: string; rc: string; match: string;
+  /** The holding coach's roster id ('' when unresolved): the coach is in Cc
+   *  of the mail, and gets the phone notification beside it. */
+  rcId: string;
   /** How the preview names the game: the number, the day, the league — and
    *  whether tomorrow's mail is for a Testspiel, which the preview could not
    *  say although the lookup rule above knew it. */
@@ -13572,7 +13654,7 @@ async function buildRemindersFor(games: AnyRecord[]): Promise<ReminderPlan[]> {
       role: primary.map((s) => s.roleLabel).join(' + '),
       to, cc, replyTo: rcEmail,
       subject: built.subject, text: built.text, html: built.html,
-      coachee: joinedName, rc: rcName,
+      coachee: joinedName, rc: rcName, rcId: holder?.id ?? '',
       match: `${asText(game.home_team)} – ${asText(game.away_team)}`,
       matchNo: asText(game.match_no), date: asText(game.match_date), league: asText(game.league),
       location: asText(game.location), isManual: isTest,
@@ -13616,6 +13698,14 @@ async function runMatchReminders(): Promise<{ sent: number; skipped: number; sup
       });
       fresh.push(p);
       sent++;
+      // The coach is only in Cc of the referee's mail; the phone says it to
+      // them directly (asked 2026-10-10: every notice also on the phone).
+      void pushToCoach(p.rcId, {
+        title: `Morgen: ${p.match}`,
+        body: `Beobachtung von ${p.coachee}${p.location ? ` · ${p.location}` : ''} · Die Erinnerung an den Schiedsrichter ist verschickt.`,
+        url: `${MAIL_APP_URL.replace(/\/+$/, '')}/home`,
+        tag: `reminder-${p.gameId}`,
+      });
     } catch (err) {
       log.error('reminder.send', 'send failed', { error: err instanceof Error ? err.message : String(err) });
     }

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { isRowWanted, isVmMarkedRow, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, crewChangeAction, heldGameChange, type HeldGameSide } from '../server/gamesSync';
+import { isRowWanted, isVmMarkedRow, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, crewChangeAction, heldGameChange, missingHeldGames, type HeldGameSide, type MissingGamesState } from '../server/gamesSync';
 import { readFileSync } from 'node:fs';
 
 // The three decisions the games import makes per VolleyManager row, tested on
@@ -324,4 +324,61 @@ test.describe('what a coach is told about a game they hold', () => {
     const past = { date: '2026-10-03T15:00:00.000Z' };
     expect(verdict(side(past), side({ ...past, location: 'Saalsporthalle, 8045 Zürich' })).action).toBe('none');
   });
+});
+
+// A held game VolleyManager stops listing — cancelled, or moved to a date not
+// published yet (asked 2026-10-10). VolleyManager has no "cancelled" flag:
+// absence from a provably whole fetch is the only evidence, so the rule is
+// slow on purpose — two complete runs in a row — and refuses a fetch that
+// looks broken. It never touches the booking.
+test.describe('a held game VolleyManager no longer lists', () => {
+  const window = { from: '2026-09-26T00:00:00.000Z', to: '2027-02-07T23:59:59.000Z' };
+  const held = [{ id: 'g1', matchNo: '400001', date: '2026-10-24T15:00:00.000Z' }, { id: 'g2', matchNo: '400002', date: '2026-10-25T15:00:00.000Z' }];
+  const empty: MissingGamesState = { lastTotal: 0, games: {} };
+  const run = (state: MissingGamesState, fetched: string[], over: Partial<Parameters<typeof missingHeldGames>[0]> = {}) => missingHeldGames({
+    held, fetchedMatchNos: new Set(fetched), total: 300, complete: true, window, now: '2026-10-10T05:00:00.000Z', state, ...over,
+  });
+
+  test('missing once is remembered, not told; missing twice in a row is told once', () => {
+    const first = run(empty, ['400002']);
+    expect(first.notify).toEqual([]);
+    expect(first.state.games.g1).toMatchObject({ runs: 1, since: '2026-10-10T05:00:00.000Z' });
+    const second = run(first.state, ['400002'], { now: '2026-10-10T14:15:00.000Z' });
+    expect(second.notify).toEqual(['g1']);
+    expect(second.state.games.g1).toMatchObject({ runs: 2, since: '2026-10-10T05:00:00.000Z', notifiedAt: '2026-10-10T14:15:00.000Z' });
+    // A third run does not tell again.
+    expect(run(second.state, ['400002'], { now: '2026-10-11T05:00:00.000Z' }).notify).toEqual([]);
+  });
+
+  test('a game seen again in between starts over; one that was told and is back is "returned"', () => {
+    const first = run(empty, ['400002']);
+    expect(run(first.state, ['400001', '400002']).state.games.g1).toBeUndefined();
+    const told = run(run(empty, ['400002']).state, ['400002']);
+    const back = run(told.state, ['400001', '400002']);
+    expect(back.returned).toEqual(['g1']);
+    expect(back.state.games.g1).toBeUndefined();
+  });
+
+  test('an incomplete fetch, or one less than half the last, decides nothing', () => {
+    const remembered = run(empty, ['400002']).state;
+    expect(run(remembered, ['400002'], { complete: false })).toMatchObject({ notify: [], skipped: 'incomplete', state: remembered });
+    expect(run(remembered, [], { total: 0 })).toMatchObject({ skipped: 'incomplete' });
+    expect(run(remembered, ['400002'], { total: 120 })).toMatchObject({ notify: [], skipped: 'shrunk', state: remembered });
+  });
+
+  test('only games still to come inside the window are watched', () => {
+    const past = [{ id: 'g0', matchNo: '399999', date: '2026-10-09T15:00:00.000Z' }];
+    const beyond = [{ id: 'g9', matchNo: '409999', date: '2027-03-01T15:00:00.000Z' }];
+    const twice = (h: typeof held) => run(run(empty, [], { held: h }).state, [], { held: h });
+    expect(twice(past).notify).toEqual([]);
+    expect(twice(beyond).notify).toEqual([]);
+  });
+});
+
+test('the watch runs only from the unattended default window, and the reminder pushes to the coach', () => {
+  const server = readFileSync(new URL('../server/index.ts', import.meta.url), 'utf8');
+  expect(server).toMatch(/const defaultWindow = !asText\(windowInput\.date\) && !asText\(windowInput\.from\) && !asText\(windowInput\.to\);\s*if \(defaultWindow\) \{\s*await watchMissingHeldGames\(/);
+  expect(server).toMatch(/complete: items\.length === total/);
+  const reminders = server.slice(server.indexOf('async function runMatchReminders'), server.indexOf('async function markRemindersSent'));
+  expect(reminders).toMatch(/void pushToCoach\(p\.rcId,/);
 });

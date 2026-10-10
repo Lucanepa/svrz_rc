@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { isRowWanted, isVmMarkedRow, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, crewChangeAction } from '../server/gamesSync';
+import { isRowWanted, isVmMarkedRow, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, crewChangeAction, heldGameChange, type HeldGameSide } from '../server/gamesSync';
 import { readFileSync } from 'node:fs';
 
 // The three decisions the games import makes per VolleyManager row, tested on
@@ -221,14 +221,107 @@ test('a held game that loses its last coachee: released a week out, kept and fla
   expect(crewChangeAction({ ...base, coacheesBefore: 0, gameDate: '2026-11-24T19:30:00.000Z' })).toBe('none');
 });
 
-test('both crew writers hand the change to afterCrewChange', () => {
+test('both writers hand a changed held game to afterGameChange', () => {
   const server = readFileSync(new URL('../server/index.ts', import.meta.url), 'utf8');
   // The börse poll, right after it stores a corrected crew.
-  expect(server).toMatch(/crew corrected on \$\{matchNo\} from the börse[^\n]*\n\s*await afterCrewChange\(game, patch, 'boerse'\)/);
-  // The VolleyManager sync, when an existing game's crew moved.
-  expect(server).toMatch(/if \(crewMoved\) await afterCrewChange\(existing, merged, 'sync', coacheeIndex\)/);
+  expect(server).toMatch(/crew corrected on \$\{matchNo\} from the börse[^\n]*\n\s*await afterGameChange\(game, patch, 'boerse'\)/);
+  // The VolleyManager sync, when an existing game's crew, kick-off or hall moved.
+  expect(server).toMatch(/\['first_referee', 'first_referee_id', 'second_referee', 'second_referee_id', 'match_date', 'location'\]/);
+  expect(server).toMatch(/if \(changed\) await afterGameChange\(existing, merged, 'sync', coacheeIndex\)/);
   // The release re-reads the game under its lock and never takes it from a
   // coach who changed it meanwhile.
-  const fn = server.slice(server.indexOf('async function afterCrewChange'), server.indexOf('/** runBoerseSync'));
+  const fn = server.slice(server.indexOf('async function afterGameChange'), server.indexOf('async function sendCoachNotice'));
   expect(fn).toMatch(/withGameLock\(gameId[\s\S]*?sameHolder[\s\S]*?assigned_rc: ''/);
+});
+
+// Everything else that happens to a held game reaches its coach too (asked
+// 2026-10-10: "when games get moved, börse in etc there is always an email …
+// also if … the other ref is an RC, so it becomes an RC game").
+test.describe('what a coach is told about a game they hold', () => {
+  const now = '2026-10-10T10:00:00.000Z';
+  const coachee = (name: string, id: string, sv = '') => ({ name, sv, coacheeId: id, open: true });
+  const referee = (name: string, sv = '') => ({ name, sv, coacheeId: '', open: true });
+  const side = (o: Partial<HeldGameSide> = {}): HeldGameSide => ({
+    date: '2026-10-24T15:00:00.000Z',
+    location: 'Turnhalle Rämibühl, Rämistrasse 56, 8001 Zürich',
+    slots: [coachee('Anna Muster', 'c1', '70001'), referee('Beat Keller', '70002')],
+    rcGame: false,
+    ...o,
+  });
+  const verdict = (before: HeldGameSide, after: HeldGameSide, held = true) => heldGameChange({ held, now, before, after });
+
+  test('nothing changed, or nobody holds it: nothing is said', () => {
+    expect(verdict(side(), side())).toEqual({ action: 'none', changes: [], purposeLost: false });
+    expect(verdict(side(), side({ date: '2026-10-31T15:00:00.000Z' }), false).action).toBe('none');
+  });
+
+  test('a new kick-off is a notice and the booking stays — a second of drift is not', () => {
+    const v = verdict(side(), side({ date: '2026-10-25T13:00:00.000Z' }));
+    expect(v.action).toBe('notify');
+    expect(v.purposeLost).toBe(false);
+    expect(v.changes).toEqual([{ kind: 'moved', from: '2026-10-24T15:00:00.000Z', to: '2026-10-25T13:00:00.000Z' }]);
+    expect(verdict(side(), side({ date: '2026-10-24T15:00:00+00:00' })).action).toBe('none');
+  });
+
+  test('a new hall is a notice; the same hall with its street re-spelled is not', () => {
+    expect(verdict(side(), side({ location: 'Saalsporthalle, Giesshübelstrasse 41, 8045 Zürich' })).changes)
+      .toEqual([{ kind: 'hall', from: 'Turnhalle Rämibühl, Rämistrasse 56, 8001 Zürich', to: 'Saalsporthalle, Giesshübelstrasse 41, 8045 Zürich' }]);
+    expect(verdict(side(), side({ location: 'Turnhalle Rämibühl, Rämistr. 56, 8001 Zürich' })).action).toBe('none');
+    // A hall VolleyManager only now names is not a move.
+    expect(verdict(side({ location: '' }), side()).action).toBe('none');
+  });
+
+  test('one coachee swapped for another: a notice naming both, the booking stays', () => {
+    const v = verdict(side(), side({ slots: [coachee('Carla Beispiel', 'c2', '70003'), referee('Beat Keller', '70002')] }));
+    expect(v.action).toBe('notify');
+    expect(v.changes).toEqual([
+      { kind: 'coachee-left', names: ['Anna Muster'] },
+      { kind: 'coachee-joined', names: ['Carla Beispiel'] },
+    ]);
+  });
+
+  test('one of two coachees leaves: a notice, since the other is still there to observe', () => {
+    const two = side({ slots: [coachee('Anna Muster', 'c1'), coachee('Carla Beispiel', 'c2')] });
+    const v = verdict(two, side({ slots: [coachee('Anna Muster', 'c1'), referee('Dora Fremd')] }));
+    expect(v).toEqual({ action: 'notify', purposeLost: false, changes: [{ kind: 'coachee-left', names: ['Carla Beispiel'] }] });
+  });
+
+  test('the last coachee leaves: released more than a week out, kept and flagged closer', () => {
+    const empty = { slots: [referee('Dora Fremd'), referee('Beat Keller', '70002')] as HeldGameSide['slots'] };
+    expect(verdict(side(), side(empty))).toMatchObject({ action: 'release', purposeLost: true });
+    const close = { date: '2026-10-14T18:00:00.000Z' };
+    expect(verdict(side(close), side({ ...close, ...empty }))).toMatchObject({ action: 'notify', purposeLost: true });
+  });
+
+  test('the other referee replaced by somebody else is told; the same person in the other name order is not', () => {
+    expect(verdict(side(), side({ slots: [coachee('Anna Muster', 'c1', '70001'), referee('Erik Neu', '70009')] })).changes)
+      .toEqual([{ kind: 'referee', slot: '2', from: 'Beat Keller', to: 'Erik Neu' }]);
+    expect(verdict(side({ slots: [coachee('Anna Muster', 'c1'), referee('Beat Keller')] }),
+      side({ slots: [coachee('Anna Muster', 'c1'), referee('Keller Beat')] })).action).toBe('none');
+    // A slot merely filled is the appointments happening, not news.
+    expect(verdict(side({ slots: [coachee('Anna Muster', 'c1'), referee('')] }), side()).action).toBe('none');
+  });
+
+  test('turning into an RC-Spiel is treated like losing the coachee: released a week out, kept closer', () => {
+    const rc = { slots: [coachee('Anna Muster', 'c1', '70001'), referee('Rita Coach', '70100')] as HeldGameSide['slots'], rcGame: true };
+    const v = verdict(side(), side(rc));
+    expect(v.action).toBe('release');
+    expect(v.purposeLost).toBe(true);
+    expect(v.changes).toEqual([
+      { kind: 'referee', slot: '2', from: 'Beat Keller', to: 'Rita Coach' },
+      { kind: 'rc-game' },
+    ]);
+    const close = { date: '2026-10-12T18:00:00.000Z' };
+    expect(verdict(side(close), side({ ...close, ...rc })).action).toBe('notify');
+  });
+
+  test('a report already sent on the coachee\'s role: their leaving is not news', () => {
+    const sent = { slots: [{ ...coachee('Anna Muster', 'c1'), open: false }, referee('Beat Keller')] as HeldGameSide['slots'] };
+    expect(verdict(side(sent), side({ slots: [referee('Dora Fremd'), referee('Beat Keller')] })).action).toBe('none');
+  });
+
+  test('a game already played says nothing', () => {
+    const past = { date: '2026-10-03T15:00:00.000Z' };
+    expect(verdict(side(past), side({ ...past, location: 'Saalsporthalle, 8045 Zürich' })).action).toBe('none');
+  });
 });

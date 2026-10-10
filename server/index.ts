@@ -53,7 +53,7 @@ import {
 import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
 import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, type BoerseOfferRow } from './boerse.ts';
-import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, crewChangeAction, CREW_RELEASE_MIN_DAYS } from './gamesSync.ts';
+import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, CREW_RELEASE_MIN_DAYS, type HeldGameChange, type HeldGameSide, type HeldSlot } from './gamesSync.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
 import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan } from './dataHygiene.ts';
 import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
@@ -61,7 +61,7 @@ import { presidentNoteEntry, presidentNoteBelongsToAnother, type PresidentNoteEn
 import { identityAudit, type AuditRcPerson } from './identityAudit.ts';
 import { sniffAttachmentType, ATTACHMENT_EXTENSIONS, whistleBlocksForm, createMailCooldown, createCoalescer } from './writeGuards.ts';
 import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
-import { samePerson, resolveRcName, resolveRcRef, refereeSet, refereeAmong, type PersonRef, type RcPersonLike, type RefereeSet } from '../src/lib/identity.ts';
+import { nameKeys, samePerson, resolveRcName, resolveRcRef, refereeSet, refereeAmong, type PersonRef, type RcPersonLike, type RefereeSet } from '../src/lib/identity.ts';
 
 // Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
 import {
@@ -2157,11 +2157,12 @@ async function upsertGame(gameData: ReturnType<typeof mapIncomingGame>, manualId
       // survive — the rules are gamesSync.ts's, where they are tested.
       const merged = mergeIncomingGame(existing, gameData);
       const updated = await games.update(existing.id, merged);
-      // A held game whose coachee the new appointments took away: released or
-      // flagged to the coach (afterCrewChange). Only when the crew moved.
-      const crewMoved = ['first_referee', 'first_referee_id', 'second_referee', 'second_referee_id']
+      // A held game whose crew, kick-off or hall the new row changed: the
+      // coach is told, and a booking with nothing left to observe released
+      // (afterGameChange). Only when one of those columns moved.
+      const changed = ['first_referee', 'first_referee_id', 'second_referee', 'second_referee_id', 'match_date', 'location']
         .some((k) => asText(existing![k]) !== asText(merged[k]));
-      if (crewMoved) await afterCrewChange(existing, merged, 'sync', coacheeIndex);
+      if (changed) await afterGameChange(existing, merged, 'sync', coacheeIndex);
       return updated;
     }
     // A manual game typed with the real fixture's number — an admin handing
@@ -3791,7 +3792,7 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
   boerseEmptyStreak = result.offers.length === 0 ? boerseEmptyStreak + 1 : 0;
 
   const stored = await withCollection(collectionCandidates.boerseOffers, (c) =>
-    c.getFullList<AnyRecord>({ fields: 'id,vm_offer_id,status,withdrawn_at,game_starts_at' }));
+    c.getFullList<AnyRecord>({ fields: 'id,vm_offer_id,status,withdrawn_at,game_starts_at,alerted_at,match_no,slot,slot_person_name' }));
 
   const plan = planReconcile({
     fetched: result.offers,
@@ -3859,7 +3860,7 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
       await withCollection(collectionCandidates.games, (c) => c.update(String(game!.id), patch));
       refereesCorrected += 1;
       log.info('boerse.crew', `crew corrected on ${matchNo} from the börse`, { matchNo, patch });
-      await afterCrewChange(game, patch, 'boerse');
+      await afterGameChange(game, patch, 'boerse');
     }
   }
 
@@ -3867,6 +3868,10 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
   // the verdict the mail quotes is computed from the corrected names rather than
   // the ones this very run replaced.
   const alerted = await alertBoerseOffers(createdRows, manualIds);
+  // And the all-clear for offers withdrawn this run that a coach was warned
+  // about — after the crew pass too, so "still on the slot" reads this run's crew.
+  const withdrawnIds = new Set(plan.withdraws);
+  await noticeBoerseWithdrawals(stored.filter((r) => withdrawnIds.has(String(r.id))), manualIds);
 
   const joinVia: Record<string, number> = {};
   for (const o of result.offers) joinVia[o.join_via] = (joinVia[o.join_via] ?? 0) + 1;
@@ -3909,6 +3914,61 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
  * the row. Losing a poll to an SMTP hiccup would trade the thing that works for
  * the thing that is only convenient.
  */
+/** The all-clear after alertBoerseOffers: an offer the coach was warned about
+ *  left the börse while it was still open — nobody took it, so its owner
+ *  whistles after all. Only when the person is still on that slot of the
+ *  stored game (read after this run's crew pass): if they are not, the slot
+ *  changed hands and afterGameChange has already said so. */
+async function noticeBoerseWithdrawals(rows: AnyRecord[], manualIds: Set<string>): Promise<number> {
+  const due = rows.filter((r) => asText(r.alerted_at) && asText(r.status) === 'open' && asText(r.match_no));
+  if (due.length === 0) return 0;
+  const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
+  const testMode = await isEmailTestMode();
+  const testRecipient = asText(process.env.FEEDBACK_TEST_RECIPIENT);
+  if (testMode && !testRecipient) return 0;
+  let sent = 0;
+  for (const row of due) {
+    try {
+      const game = await findGameByMatchNo(asText(row.match_no), { excludeIds: manualIds });
+      if (!game || Date.parse(asText(game.match_date)) < Date.now()) continue;
+      const coach = gameHolder(game, people);
+      if (!coach?.email) continue;
+      const slotKey = asText(row.slot) === '2' ? 'second_referee' : 'first_referee';
+      const person = asText(row.slot_person_name);
+      // Either name order: the börse's singular accessor writes "Nachname
+      // Vorname", the convocations "Vorname Nachname".
+      const stillThere = nameKeys(person).some((k) => nameKeys(asText(game[slotKey])).includes(k));
+      if (!stillThere) continue;
+      const dateText = mailDateText(asText(game.match_date));
+      const teams = `${asText(game.home_team)} – ${asText(game.away_team)}`;
+      const name = coach.firstName || coach.fullName;
+      const lead = `${person} hat das Angebot in der SR-Börse zurückgezogen und pfeift das Spiel weiterhin selbst. Deine Beobachtung bleibt wie geplant.`;
+      const leadEn = `${person} has withdrawn the offer from the SR-Börse and still whistles the game. Your observation stays as planned.`;
+      const body = [
+        bilingualBlockHtml(`Hallo ${name}`, `Hello ${name}`),
+        bilingualBlockHtml(lead, leadEn),
+        `<div style="margin:18px 0;padding:14px 16px;background:${MAIL_PANEL};border:1px solid ${MAIL_LINE};border-radius:10px">`,
+        `<div style="${mailText(15, MAIL_INK, 'font-weight:700;')}">${escapeHtml(teams)}</div>`,
+        `<div style="${mailText(13, MAIL_INK_SOFT, 'margin-top:4px;')}">${escapeHtml(dateText)} · ${escapeHtml(asText(game.league))} · #${escapeHtml(asText(game.match_no))}</div>`,
+        `</div>`,
+      ].join('');
+      const subject = `Nicht mehr in der Börse: ${teams} (${dateText})`;
+      await sendCoachNotice({
+        to: [coach.email], cc: [], testMode, testRecipient, subject,
+        html: emailShell(body),
+        text: bilingualText(`${lead}\n\n${teams}\n${dateText} · #${asText(game.match_no)}`, `${leadEn}\n\n${teams}\n${dateText} · #${asText(game.match_no)}`),
+        coachId: coach.id,
+        push: { title: subject, body: lead, url: `${MAIL_APP_URL.replace(/\/+$/, '')}/games` },
+      });
+      sent += 1;
+      log.info('boerse.withdrawn', `börse all-clear sent to ${coach.fullName} for ${asText(row.match_no)}`, { matchNo: asText(row.match_no), testMode });
+    } catch (error) {
+      log.warn('boerse.withdrawn', 'could not send the all-clear for one offer', { matchNo: asText(row.match_no), error: String(error) });
+    }
+  }
+  return sent;
+}
+
 async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRow }>, manualIds: Set<string>): Promise<number> {
   if (created.length === 0) return 0;
   let sent = 0;
@@ -3981,8 +4041,8 @@ async function alertBoerseOffers(created: Array<{ id: string; row: BoerseOfferRo
         `</div>`,
         bilingualBlockHtml(closing, closingEn),
         bilingualBlockHtml(
-          'Noch ist der Einsatz offen. Diese Nachricht kommt einmal pro Angebot; wird es zurückgezogen, verschwindet die Markierung im Tool von selbst.',
-          'The slot is still open. This message is sent once per offer; if it is withdrawn, the marking in the tool disappears on its own.',
+          'Noch ist der Einsatz offen. Diese Nachricht kommt einmal pro Angebot; wird es zurückgezogen, bekommst du eine kurze Entwarnung und die Markierung im Tool verschwindet.',
+          'The slot is still open. This message is sent once per offer; if it is withdrawn, you get a short all-clear and the marking in the tool disappears.',
         ),
       ].join('');
 
@@ -4020,48 +4080,91 @@ function openCoacheesOn(game: AnyRecord, coachees: CoacheeIndex): number {
   return refereeSlotQueries(game).filter((q, i) => !closed.includes(i === 0 ? '1. SR' : '2. SR') && coachees.find(season, q).row).length;
 }
 
+/** A held game as heldGameChange compares it: kick-off, hall, each whistle
+ *  slot with the coachee row on it (season of the game's own date), and the
+ *  RC-Spiel test. */
+function heldSideOf(game: AnyRecord, coachees: CoacheeIndex, isRcGame: (g: AnyRecord) => boolean): HeldGameSide {
+  const season = seasonOfGame(game.match_date);
+  const closed = Array.isArray(game.feedback_closed_roles) ? (game.feedback_closed_roles as unknown[]).map(asText) : [];
+  const [first, second] = refereeSlotQueries(game).map((q, i): HeldSlot => {
+    const row = coachees.find(season, q).row as AnyRecord | null | undefined;
+    return { name: asText(q.name), sv: asText(q.sv), coacheeId: row ? asText(row.id) : '', open: !closed.includes(i === 0 ? '1. SR' : '2. SR') };
+  });
+  return { date: asText(game.match_date), location: asText(game.location), slots: [first, second], rcGame: isRcGame(game) };
+}
+
+/** Zürich wall time for a mail line — the container runs UTC. */
+function mailDateText(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return iso;
+  const p = zonedParts(t);
+  return `${p.day}.${p.month}.${p.year}, ${p.hour}:${p.minute}`;
+}
+
+/** One change as the mail lists it, German line beside English line. */
+function heldChangeLines(c: HeldGameChange): [string, string] {
+  switch (c.kind) {
+    case 'moved': return [`Neuer Termin: ${mailDateText(c.to)} (bisher ${mailDateText(c.from)})`, `New date: ${mailDateText(c.to)} (was ${mailDateText(c.from)})`];
+    case 'hall': return [`Neue Halle: ${c.to} (bisher ${c.from})`, `New venue: ${c.to} (was ${c.from})`];
+    case 'coachee-left': return [`Nicht mehr auf dem Spiel: ${c.names.join(', ')}`, `No longer on the game: ${c.names.join(', ')}`];
+    case 'coachee-joined': return [`Neu auf dem Spiel (Coachee): ${c.names.join(', ')}`, `New on the game (coachee): ${c.names.join(', ')}`];
+    case 'referee': return [`${c.slot}. SR neu: ${c.to} (bisher ${c.from})`, `${c.slot === '1' ? '1st' : '2nd'} referee now: ${c.to} (was ${c.from})`];
+    case 'rc-game': return [
+      'RC-Spiel: Neben dem Coachee pfeift jetzt ein Referee Coach. Nach 4.4.10 gibt es hier keine Beobachtung, sondern eine Rückmeldung des RC.',
+      'RC game: a referee coach now whistles next to the coachee. Under 4.4.10 there is no observation here; the RC files a note instead.',
+    ];
+  }
+}
+
 /**
- * After a sync rewrote a game's crew: if the coach's booking lost its last
- * coachee, release it (more than a week out) or tell the coach (closer) —
- * crewChangeAction in gamesSync.ts is the rule. Either way the coach is
- * mailed, with the commission in Cc, so nobody finds out in the hall.
+ * After a sync rewrote a game a coach holds — a new crew, kick-off or hall,
+ * from the nightly VolleyManager sync or the hourly börse poll — tell the
+ * coach what changed, in one mail per game and run (heldGameChange in
+ * gamesSync.ts is the rule). When nothing is left to observe (the last open
+ * coachee went, or the game became an RC-Spiel) the booking is released more
+ * than a week out and kept closer, and the commission gets a copy, so nobody
+ * finds out in the hall.
  *
- * Never throws: the crew is already stored, and a sync must not fail over a
+ * Never throws: the game is already stored, and a sync must not fail over a
  * mail. The release runs under the game's lock and re-reads the game, so a
  * coach who gave it back — or took it — a moment ago wins.
  */
-async function afterCrewChange(before: AnyRecord, after: Record<string, unknown>, source: 'boerse' | 'sync', coacheeIndex?: CoacheeIndex): Promise<void> {
+async function afterGameChange(before: AnyRecord, after: Record<string, unknown>, source: 'boerse' | 'sync', coacheeIndex?: CoacheeIndex): Promise<void> {
   try {
     const held = Boolean(asText(before.assigned_rc) || asText(before.assigned_rc_id));
     if (!held) return;
     const coachees = coacheeIndex ?? await getCoacheeIndex();
-    const action = crewChangeAction({
+    const isRcGame = await makeRcGameTest(coachees);
+    const game = { ...before, ...after } as AnyRecord;
+    const verdict = heldGameChange({
       held,
-      gameDate: asText(after.match_date || before.match_date),
       now: new Date().toISOString(),
-      coacheesBefore: openCoacheesOn(before, coachees),
-      coacheesAfter: openCoacheesOn({ ...before, ...after } as AnyRecord, coachees),
+      before: heldSideOf(before, coachees, isRcGame),
+      after: heldSideOf(game, coachees, isRcGame),
     });
-    if (action === 'none') return;
+    if (verdict.action === 'none') return;
     const gameId = String(before.id);
     let released = false;
-    if (action === 'release') {
+    if (verdict.action === 'release') {
       released = await withGameLock(gameId, async () => {
         const now = await withCollection(collectionCandidates.games, (c) => c.getOne<AnyRecord>(gameId));
         const sameHolder = asText(now.assigned_rc_id) === asText(before.assigned_rc_id) && asText(now.assigned_rc) === asText(before.assigned_rc);
-        if (!sameHolder || openCoacheesOn(now, coachees) > 0) return false;
+        if (!sameHolder || (openCoacheesOn(now, coachees) > 0 && !isRcGame(now))) return false;
         await withCollection(collectionCandidates.games, (c) => c.update(gameId, { assigned_rc: '', assigned_rc_id: '', assigned_at: '', assigned_via: '' }));
         icalGamesCache.clear();
         publishLive({ type: 'game.assignment', gameId, matchNo: asText(now.match_no), assignedRc: '', assignedRcId: '' });
         return true;
       });
+      // Somebody changed the booking meanwhile: it is theirs now, and so is
+      // whatever this mail would have said.
       if (!released) return;
     }
-    const game = { ...before, ...after } as AnyRecord;
-    log.info('game.crew.lost-coachee', released
-      ? `booking on ${asText(game.match_no)} released: no coachee left after the ${source} crew change`
-      : `booking on ${asText(game.match_no)} kept (within ${CREW_RELEASE_MIN_DAYS} days): no coachee left after the ${source} crew change`, {
-      gameId, matchNo: asText(game.match_no), rc: asText(before.assigned_rc), released, source,
+    const becameRcGame = verdict.changes.some((c) => c.kind === 'rc-game');
+    const kinds = verdict.changes.map((c) => c.kind).join(',');
+    log.info(verdict.purposeLost ? 'game.crew.lost-coachee' : 'game.changed', verdict.purposeLost
+      ? `booking on ${asText(game.match_no)} ${released ? 'released' : `kept (within ${CREW_RELEASE_MIN_DAYS} days)`}: ${becameRcGame ? 'it became an RC-Spiel' : 'no coachee left'} after the ${source} change`
+      : `coach told of a change on ${asText(game.match_no)} (${kinds}) from the ${source}`, {
+      gameId, matchNo: asText(game.match_no), rc: asText(before.assigned_rc), released, source, changes: verdict.changes,
     });
 
     const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
@@ -4069,43 +4172,72 @@ async function afterCrewChange(before: AnyRecord, after: Record<string, unknown>
     const testMode = await isEmailTestMode();
     const testRecipient = asText(process.env.FEEDBACK_TEST_RECIPIENT);
     const to = coach?.email ? [coach.email] : [];
-    const cc = SURVEY_NOTIFY_EMAILS;
+    // The commission hears of a booking that lost its point; a new kick-off
+    // or hall is between the coach and the game.
+    const cc = verdict.purposeLost ? SURVEY_NOTIFY_EMAILS : [];
     if (to.length + cc.length === 0 || (testMode && !testRecipient)) return;
 
-    const startedAt = new Date(asText(game.match_date)).getTime();
-    const when = Number.isFinite(startedAt) ? zonedParts(startedAt) : null;
-    const dateText = when ? `${when.day}.${when.month}.${when.year}, ${when.hour}:${when.minute}` : asText(game.match_date);
+    const dateText = mailDateText(asText(game.match_date));
     const teams = `${asText(game.home_team)} – ${asText(game.away_team)}`;
     const crew = [asText(game.first_referee) && `1. SR ${asText(game.first_referee)}`, asText(game.second_referee) && `2. SR ${asText(game.second_referee)}`].filter(Boolean).join(' · ');
     const name = coach ? (coach.firstName || coach.fullName) : asText(before.assigned_rc);
-    const lead = released
-      ? 'Auf einem Spiel, das du übernommen hast, pfeift kein Coachee mehr — die Einteilung wurde geändert. Das Spiel wurde deshalb freigegeben; du musst nichts tun.'
-      : `Auf einem Spiel, das du übernommen hast, pfeift kein Coachee mehr — die Einteilung wurde geändert. Das Spiel ist in weniger als ${CREW_RELEASE_MIN_DAYS} Tagen und bleibt bei dir. Wenn du nicht hingehst, gib es bitte im Tool ab.`;
-    const leadEn = released
-      ? 'A game you had taken no longer has a coachee on the whistle — the appointments changed. The game has therefore been released; there is nothing you need to do.'
-      : `A game you had taken no longer has a coachee on the whistle — the appointments changed. It is less than ${CREW_RELEASE_MIN_DAYS} days away and stays yours. If you are not going, please give it back in the tool.`;
+    const why = becameRcGame
+      ? ['pfeift jetzt ein Referee Coach neben dem Coachee (RC-Spiel, 4.4.10) — dort gibt es keine Beobachtung', 'a referee coach now whistles next to the coachee (RC game, 4.4.10), so there is no observation there']
+      : ['pfeift kein Coachee mehr — die Einteilung wurde geändert', 'no coachee is on the whistle any more — the appointments changed'];
+    const [lead, leadEn] = !verdict.purposeLost
+      ? ['Bei einem Spiel, das du übernommen hast, hat sich etwas geändert. Die Beobachtung bleibt bei dir.', 'Something changed on a game you have taken. The observation stays yours.']
+      : released
+        ? [`Auf einem Spiel, das du übernommen hast, ${why[0]}. Das Spiel wurde deshalb freigegeben; du musst nichts tun.`, `On a game you had taken, ${why[1]}. The game has therefore been released; there is nothing you need to do.`]
+        : [`Auf einem Spiel, das du übernommen hast, ${why[0]}. Das Spiel ist in weniger als ${CREW_RELEASE_MIN_DAYS} Tagen und bleibt bei dir. Wenn du nicht hingehst, gib es bitte im Tool ab.`, `On a game you had taken, ${why[1]}. It is less than ${CREW_RELEASE_MIN_DAYS} days away and stays yours. If you are not going, please give it back in the tool.`];
+    const lines = verdict.changes.map(heldChangeLines);
     const body = [
       bilingualBlockHtml(`Hallo ${name}`, `Hello ${name}`),
       bilingualBlockHtml(lead, leadEn),
+      lines.length ? `<ul style="margin:12px 0 0;padding-left:20px">${lines.map(([de, en]) =>
+        `<li style="margin:0 0 8px"><div style="${mailText(14, MAIL_INK, 'font-weight:600;')}">${escapeHtml(de)}</div><div style="${mailText(13, MAIL_MUTED)}">${escapeHtml(en)}</div></li>`).join('')}</ul>` : '',
       `<div style="margin:18px 0;padding:14px 16px;background:${MAIL_PANEL};border:1px solid ${MAIL_LINE};border-radius:10px">`,
       `<div style="${mailText(15, MAIL_INK, 'font-weight:700;')}">${escapeHtml(teams)}</div>`,
       `<div style="${mailText(13, MAIL_INK_SOFT, 'margin-top:4px;')}">${escapeHtml(dateText)} · ${escapeHtml(asText(game.league))} · #${escapeHtml(asText(game.match_no))}</div>`,
+      asText(game.location) ? `<div style="${mailText(13, MAIL_INK_SOFT)}">${escapeHtml(asText(game.location))}</div>` : '',
       crew ? `<div style="${mailText(13, MAIL_INK, 'margin-top:10px;')}">${escapeHtml(crew)}</div>` : '',
       `</div>`,
     ].join('');
-    const subject = `${released ? 'Spiel freigegeben' : 'Kein Coachee mehr'}: ${teams} (${dateText})`;
-    await sendMailResilient({
-      from: MAIL_FROM,
-      to: testMode ? testRecipient : (to.length ? to : cc).join(','),
-      ...(testMode || !to.length || !cc.length ? {} : { cc: cc.join(',') }),
-      subject: testMode ? `[TEST → ${[...to, ...cc].join(', ')}] ${subject}` : subject,
+    const moved = verdict.changes.some((c) => c.kind === 'moved');
+    const subject = `${released ? 'Spiel freigegeben' : verdict.purposeLost ? (becameRcGame ? 'RC-Spiel' : 'Kein Coachee mehr') : moved ? 'Spiel verschoben' : 'Spiel geändert'}: ${teams} (${dateText})`;
+    const listText = (i: 0 | 1) => lines.map((l) => `- ${l[i]}`).join('\n');
+    await sendCoachNotice({
+      to, cc, testMode, testRecipient, subject,
       html: emailShell(body),
-      text: bilingualText(`${lead}\n\n${teams}\n${dateText} · #${asText(game.match_no)}\n${crew}`, `${leadEn}\n\n${teams}\n${dateText} · #${asText(game.match_no)}\n${crew}`),
-      attachments: emailAttachments(),
+      text: bilingualText(
+        `${lead}\n\n${listText(0)}\n\n${teams}\n${dateText} · #${asText(game.match_no)}\n${crew}`,
+        `${leadEn}\n\n${listText(1)}\n\n${teams}\n${dateText} · #${asText(game.match_no)}\n${crew}`,
+      ),
+      coachId: coach?.id ?? '',
+      push: { title: subject, body: lines.map((l) => l[0]).join(' · ') || lead, url: `${MAIL_APP_URL.replace(/\/+$/, '')}/games` },
     });
   } catch (error) {
-    log.warn('game.crew.lost-coachee', 'could not handle a crew change on a held game', { gameId: String(before.id), error: String(error) });
+    log.warn('game.changed', 'could not handle a change on a held game', { gameId: String(before.id), error: String(error) });
   }
+}
+
+/** A mail to a coach about one of their games, with the commission in Cc when
+ *  given. Test mode sends the one copy to the tester, naming who it was for. */
+async function sendCoachNotice(n: {
+  to: string[]; cc: string[]; testMode: boolean; testRecipient: string;
+  subject: string; html: string; text: string;
+  /** The coach's roster id, for the phone notification beside the mail. */
+  coachId: string;
+  push?: { title: string; body: string; url: string };
+}): Promise<void> {
+  await sendMailResilient({
+    from: MAIL_FROM,
+    to: n.testMode ? n.testRecipient : (n.to.length ? n.to : n.cc).join(','),
+    ...(n.testMode || !n.to.length || !n.cc.length ? {} : { cc: n.cc.join(',') }),
+    subject: n.testMode ? `[TEST → ${[...n.to, ...n.cc].join(', ')}] ${n.subject}` : n.subject,
+    html: n.html,
+    text: n.text,
+    attachments: emailAttachments(),
+  });
 }
 
 /** runBoerseSync, but a thrown fetch is recorded rather than escaping.

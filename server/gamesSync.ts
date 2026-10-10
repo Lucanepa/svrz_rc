@@ -1,7 +1,7 @@
 // The rules the games import applies to a VolleyManager row once it is in the
 // collection's shape. Kept out of index.ts so they can be tested without a
 // PocketBase or a VolleyManager session — the sync itself cannot be.
-import { samePerson } from '../src/lib/identity.ts';
+import { nameKeys, samePerson } from '../src/lib/identity.ts';
 
 /** The two whistle slots a game record carries, name column beside id column. */
 const REFEREE_SLOTS = [
@@ -163,4 +163,125 @@ export function crewChangeAction(o: {
   const ahead = Date.parse(o.gameDate) - Date.parse(o.now);
   if (!Number.isFinite(ahead) || ahead < 0) return 'none';
   return ahead > CREW_RELEASE_MIN_DAYS * 24 * 60 * 60 * 1000 ? 'release' : 'notify';
+}
+
+/** One whistle slot of a held game as the change rule sees it: who stands on
+ *  it, and — when that person is a coachee of the game's season — which
+ *  coachee row, and whether their report is still to come. */
+export type HeldSlot = { name: string; sv: string; coacheeId: string; open: boolean };
+
+/** A held game, before or after a sync wrote it. */
+export type HeldGameSide = {
+  date: string;
+  location: string;
+  slots: [HeldSlot, HeldSlot];
+  /** 4.4.10: a referee coach on the whistle next to a coachee. */
+  rcGame: boolean;
+};
+
+/** One thing the coach is told about, in the order the mail lists them. */
+export type HeldGameChange =
+  | { kind: 'moved'; from: string; to: string }
+  | { kind: 'hall'; from: string; to: string }
+  | { kind: 'coachee-left'; names: string[] }
+  | { kind: 'coachee-joined'; names: string[] }
+  | { kind: 'referee'; slot: '1' | '2'; from: string; to: string }
+  | { kind: 'rc-game' };
+
+export type HeldGameVerdict = {
+  action: CrewChangeAction;
+  changes: HeldGameChange[];
+  /** Nothing is left to observe: the last open coachee went, or the game
+   *  became an RC-Spiel. Decides release-or-keep and the commission's copy. */
+  purposeLost: boolean;
+};
+
+/** Two slot occupants are different people: by the SV number when both
+ *  carry one, otherwise by the name in either order — VolleyManager writes
+ *  "Vorname Nachname" on some feeds and "Nachname Vorname" on others, and a
+ *  spelling flip between the nightly sync and the börse poll must not read
+ *  as a new referee. */
+function differentPerson(a: HeldSlot, b: HeldSlot): boolean {
+  if (text(a.sv) && text(b.sv)) return text(a.sv) !== text(b.sv);
+  const ka = nameKeys(a.name);
+  const kb = new Set(nameKeys(b.name));
+  if (ka.length === 0 || kb.size === 0) return ka.length !== kb.size;
+  return !ka.some((k) => kb.has(k));
+}
+
+/** The hall as a person reads it — its name and its town — so VolleyManager
+ *  re-spelling a street address is not a move. */
+function hallKey(location: string): string {
+  const parts = text(location).split(',').map((p) => p.trim().toLowerCase()).filter(Boolean);
+  if (parts.length === 0) return '';
+  return parts.length === 1 ? parts[0] : `${parts[0]}|${parts[parts.length - 1]}`;
+}
+
+const MOVE_TOLERANCE_MS = 60 * 1000;
+
+/** What a sync's rewrite of a game means for the coach who holds it (asked
+ *  2026-10-10: "when games get moved, börse in etc there is always an email
+ *  … in case of any game change/coachee change etc. also if … the other ref
+ *  is an RC, so it becomes an RC game").
+ *
+ *  Told about: a new kick-off (a minute or more), a new hall, a coachee who
+ *  left or joined the open roles, the other referee replaced by somebody
+ *  else (a slot merely filled or emptied is the appointments happening, not
+ *  news), and the game turning into an RC-Spiel. Only transitions — the
+ *  stored row against the written one — so a sync that runs again finds
+ *  nothing to say.
+ *
+ *  Nothing left to observe — the last open coachee gone, or an RC-Spiel,
+ *  where 4.4.10 allows no observation — is crewChangeAction's rule: released
+ *  more than a week out, kept and flagged closer. Anything else is a notice;
+ *  the booking stays. A game already played says nothing: its report is
+ *  what matters now. */
+export function heldGameChange(o: { held: boolean; now: string; before: HeldGameSide; after: HeldGameSide }): HeldGameVerdict {
+  const none: HeldGameVerdict = { action: 'none', changes: [], purposeLost: false };
+  if (!o.held) return none;
+  const now = Date.parse(o.now);
+  const at = Date.parse(o.after.date || o.before.date);
+  if (!Number.isFinite(at) || !Number.isFinite(now) || at < now) return none;
+
+  const changes: HeldGameChange[] = [];
+  const from = Date.parse(o.before.date);
+  if (Number.isFinite(from) && Math.abs(at - from) >= MOVE_TOLERANCE_MS) {
+    changes.push({ kind: 'moved', from: o.before.date, to: o.after.date });
+  }
+  const hallBefore = hallKey(o.before.location);
+  const hallAfter = hallKey(o.after.location);
+  if (hallBefore && hallAfter && hallBefore !== hallAfter) {
+    changes.push({ kind: 'hall', from: text(o.before.location), to: text(o.after.location) });
+  }
+
+  const open = (side: HeldGameSide) => side.slots.filter((s) => s.coacheeId && s.open);
+  const openBefore = open(o.before);
+  const openAfter = open(o.after);
+  const idsAfter = new Set(openAfter.map((s) => s.coacheeId));
+  const idsBefore = new Set(openBefore.map((s) => s.coacheeId));
+  const left = openBefore.filter((s) => !idsAfter.has(s.coacheeId)).map((s) => text(s.name));
+  const joined = openAfter.filter((s) => !idsBefore.has(s.coacheeId)).map((s) => text(s.name));
+  if (left.length) changes.push({ kind: 'coachee-left', names: left });
+  if (joined.length) changes.push({ kind: 'coachee-joined', names: joined });
+
+  o.before.slots.forEach((b, i) => {
+    const a = o.after.slots[i];
+    // A coachee arriving or leaving is said above, by name; this is only the
+    // other referee — somebody named replaced by somebody else named.
+    if (b.coacheeId || a.coacheeId) return;
+    if (!text(b.name) || !text(a.name)) return;
+    if (differentPerson(b, a)) changes.push({ kind: 'referee', slot: i === 0 ? '1' : '2', from: text(b.name), to: text(a.name) });
+  });
+
+  const becameRcGame = !o.before.rcGame && o.after.rcGame;
+  if (becameRcGame) changes.push({ kind: 'rc-game' });
+
+  const purposeLost = (openBefore.length > 0 && openAfter.length === 0) || becameRcGame;
+  if (purposeLost) {
+    const action = crewChangeAction({
+      held: true, gameDate: o.after.date || o.before.date, now: o.now, coacheesBefore: 1, coacheesAfter: 0,
+    });
+    return { action, changes, purposeLost };
+  }
+  return { action: changes.length ? 'notify' : 'none', changes, purposeLost };
 }

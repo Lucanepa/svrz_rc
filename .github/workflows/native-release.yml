@@ -102,9 +102,12 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: android-actions/setup-android@v3
+      # The runner image already carries the Android SDK (ANDROID_HOME) and its
+      # sdkmanager. android-actions/setup-android@v3 installed its own and then
+      # asked for the long-gone `tools` package, failing the first release
+      # (10.10.2026; that APK was attached by hand).
       - name: Android NDK
-        run: sdkmanager "ndk;27.2.12479018"
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018"'
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android

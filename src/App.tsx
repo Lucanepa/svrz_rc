@@ -92,7 +92,7 @@ import type { PadSyncStatus } from './lib/notebookSync';
 import { PAD_STRINGS, fill as padFill } from './lib/notepadStrings';
 import type { NotebookPage, PadField } from './lib/notebook';
 import { importBlock } from './lib/notebookImport';
-import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided } from './lib/matchResult';
+import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided, type SetScore } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, isPromotionGroup, newSrGroupOptions, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName as normName } from './lib/coacheeName';
 import { sameVisit } from './lib/doubleGame';
@@ -11288,14 +11288,20 @@ function ResultField({ label, value, onChange, teams = '', readOnly = false, onU
   // "3:1 (25:20 / …)" the VolleyManager sync writes — every synced game uses
   // the latter, whose set scores the old split-on-"|" parser dropped silently.
   const parsed = parseResult(value);
-  // The set scores are the input; the match score is derived from them, so the
-  // two can no longer contradict each other (a 3:0 with a set the winner lost
-  // used to be typeable). A stored score with no set scores behind it — an old
-  // record — still shows what it says rather than a computed 0:0.
+  // Only the final result is required; set points are optional (2026-10-09).
+  // So the score is typed into its two boxes — until a set is filled in, and
+  // from then on it is counted from the sets, so the two can never contradict
+  // each other (a 3:0 with a set the winner lost used to be typeable).
   const tally = tallyFromSets(parsed.sets);
-  const counted = tally.home + tally.away > 0;
-  const home = counted ? String(tally.home) : parsed.home;
-  const away = counted ? String(tally.away) : parsed.away;
+  const derived = parsed.sets.some(isSetComplete);
+  // While a set is half typed and no score was typed, the string still needs a
+  // first pair — it is what tells the score from the sets — and carries "0:0".
+  // That is a placeholder, not a result anybody entered: the boxes stay empty.
+  const placeholder = parsed.sets.length > 0 && parsed.home === '0' && parsed.away === '0';
+  const home = derived ? String(tally.home) : placeholder ? '' : parsed.home;
+  const away = derived ? String(tally.away) : placeholder ? '' : parsed.away;
+  const write = (h: string, a: string, setsToStore: SetScore[]) =>
+    onChange(setsToStore.length > 0 && !h && !a ? formatResult('0', '0', setsToStore) : formatResult(h, a, setsToStore));
   const decided = isMatchDecided(tally, parsed.sets);
   const completed = parsed.sets.filter(isSetComplete).length;
   // One set to start; finishing a set opens the next, up to the fifth, and the
@@ -11309,23 +11315,33 @@ function ResultField({ label, value, onChange, teams = '', readOnly = false, onU
   }));
   // Only complain once something is actually filled in, and never about the
   // sets still to come — that is the normal state halfway through entry.
-  const pending = /^(Bitte alle|Please enter all|Bitte das Ergebnis|Please enter the result)/;
+  const pending = /^(Bitte alle|Please enter all|Bitte das Endergebnis|Please enter the final result)/;
   // A set is checked the moment both its numbers are there: 12:23 is not a set
   // anybody played, and saying so while it is being typed is the whole point.
-  // The MATCH score is derived from the sets, so before the third set is won it
-  // reads "1:1 is not possible" — true, and useless, and it was the only thing
-  // this field said for the entire time a score was being entered. It is asked
-  // for once the match is actually decided.
+  // A score COUNTED from the sets reads "1:1 is not possible" before the third
+  // set is won — true, and useless, and it was the only thing this field said
+  // for the entire time a score was being entered. So a counted score is asked
+  // for once the match is decided; a typed one once both its boxes are filled.
   const setIssue = findSetError(sets, lang);
-  const error = setIssue?.message ?? (completed > 0 && decided ? validateResult(value, lang) : null);
+  const scoreOnly = !derived && parsed.sets.length === 0 && home !== '' && away !== '';
+  const error = setIssue?.message ?? ((completed > 0 && decided) || scoreOnly ? validateResult(value, lang) : null);
   const bad = !!error && !pending.test(error);
   const c2 = (v: string) => v.replace(/\D/g, '').slice(0, 2);
   const setPoint = (i: number, side: 'h' | 'a', v: string) => {
     const next = sets.map((s, idx) => idx === i ? { ...s, [side]: c2(v) } : s);
     // Trailing blanks are just the rows on offer, not sets that were played.
     while (next.length > 0 && !next[next.length - 1].h && !next[next.length - 1].a) next.pop();
-    const t = tallyFromSets(next);
-    onChange(next.length === 0 ? '' : formatResult(String(t.home), String(t.away), next));
+    if (next.some(isSetComplete)) {
+      const t = tallyFromSets(next);
+      write(String(t.home), String(t.away), next);
+    } else {
+      // No set finished: a typed score stays, a counted one goes with its sets.
+      write(derived ? '' : home, derived ? '' : away, next);
+    }
+  };
+  const setScore = (side: 'home' | 'away', v: string) => {
+    const digit = v.replace(/\D/g, '').slice(0, 1);
+    write(side === 'home' ? digit : home, side === 'away' ? digit : away, parsed.sets);
   };
   // Red on the derived match score only when the match score is what is wrong.
   // A bad set marks the set; making both shout leaves the reader hunting.
@@ -11360,10 +11376,20 @@ function ResultField({ label, value, onChange, teams = '', readOnly = false, onU
               until the cap, and below it they shrink together, so the pair stays
               symmetric at every width rather than only on a wide screen. */}
           {pair && <span className="min-w-0 flex-1 basis-0 max-w-[10rem] truncate text-right text-[10px] font-semibold text-stone-500 print:max-w-none">{pair[0]}</span>}
-          {/* Computed from the sets below, never typed. */}
-          <output className={sbox} aria-label={lang === 'DE' ? 'Sätze Heim' : 'Home sets'}>{home || '–'}</output>
-          <span className="text-stone-400 font-bold">:</span>
-          <output className={sbox} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'}>{away || '–'}</output>
+          {/* Typed while no set is filled in; counted from the sets once one is. */}
+          {derived || readOnly ? (
+            <>
+              <output className={sbox} aria-label={lang === 'DE' ? 'Sätze Heim' : 'Home sets'}>{home || '–'}</output>
+              <span className="text-stone-400 font-bold">:</span>
+              <output className={sbox} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'}>{away || '–'}</output>
+            </>
+          ) : (
+            <>
+              <input inputMode="numeric" maxLength={1} value={home} placeholder="–" onChange={e => setScore('home', e.target.value)} className={cn(sbox, 'text-center outline-none focus:ring-2 focus:ring-red-500 placeholder:text-stone-300')} aria-label={lang === 'DE' ? 'Sätze Heim' : 'Home sets'} />
+              <span className="text-stone-400 font-bold">:</span>
+              <input inputMode="numeric" maxLength={1} value={away} placeholder="–" onChange={e => setScore('away', e.target.value)} className={cn(sbox, 'text-center outline-none focus:ring-2 focus:ring-red-500 placeholder:text-stone-300')} aria-label={lang === 'DE' ? 'Sätze Gast' : 'Away sets'} />
+            </>
+          )}
           {pair && <span className="min-w-0 flex-1 basis-0 max-w-[10rem] truncate text-[10px] font-semibold text-stone-500 print:max-w-none">{pair[1]}</span>}
           {/* A score already on the game may have come from the coach who filed
               the other referee — so it can be wrong, and locking it would leave
@@ -11393,6 +11419,8 @@ function ResultField({ label, value, onChange, teams = '', readOnly = false, onU
           <div className="rounded-md border border-stone-200 bg-stone-50/70 px-1.5 py-1">
             <span className="block text-[8px] uppercase font-semibold text-stone-400 leading-none mb-1 text-center">
               {lang === 'DE' ? 'Sätze' : 'sets'}
+              {/* Only the final result is required; the printed form needs no hint. */}
+              {!readOnly && <span className="no-print">{lang === 'DE' ? ' · freiwillig' : ' · optional'}</span>}
             </span>
             <div className="flex flex-wrap justify-center gap-1">
               {sets.map((s, i) => (

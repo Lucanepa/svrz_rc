@@ -21,9 +21,9 @@ const centreOf = async (page: Page, sel: ReturnType<Page['locator']>) => {
   return box!.x + box!.width / 2;
 };
 
-/** The ":" between the two match-score outputs. */
+/** The ":" between the two match-score boxes. */
 const resultColon = (page: Page) =>
-  page.locator('output[aria-label*="ets"]').first().locator('xpath=following-sibling::span[1]');
+  page.locator(':is(output, input)[aria-label*="ets"]').first().locator('xpath=following-sibling::span[1]');
 
 test.beforeEach(async ({ page }) => {
   await stubSignedInApp(page);
@@ -32,7 +32,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('the score sits on the middle of its cell, not on the middle of the row', async ({ page }) => {
-  const cell = page.locator('output[aria-label*="ets"]').first()
+  const cell = page.locator(':is(output, input)[aria-label*="ets"]').first()
     .locator('xpath=ancestor::div[contains(@class,"border-b")][1]');
   const colon = await centreOf(page, resultColon(page));
   const box = await cell.boundingBox();
@@ -56,12 +56,12 @@ test('and it shares that centre with the sets underneath', async ({ page }) => {
 test('an away team with a much longer name does not drag the score off centre', async ({ page }) => {
   // The real shape from the report: a short home name against a long away one.
   const colon = await centreOf(page, resultColon(page));
-  const cell = page.locator('output[aria-label*="ets"]').first()
+  const cell = page.locator(':is(output, input)[aria-label*="ets"]').first()
     .locator('xpath=ancestor::div[contains(@class,"border-b")][1]');
   const box = await cell.boundingBox();
   // Both names are capped and equal, so the two outputs straddle the centre.
-  const home = await centreOf(page, page.locator('output[aria-label*="ets"]').first());
-  const away = await centreOf(page, page.locator('output[aria-label*="ets"]').nth(1));
+  const home = await centreOf(page, page.locator(':is(output, input)[aria-label*="ets"]').first());
+  const away = await centreOf(page, page.locator(':is(output, input)[aria-label*="ets"]').nth(1));
   expect(colon - home).toBeCloseTo(away - colon, 0);
   expect(Math.abs(colon - (box!.x + box!.width / 2))).toBeLessThanOrEqual(1.5);
 });

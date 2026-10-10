@@ -144,12 +144,16 @@ export function findSetError(sets: SetScore[], lang: 'DE' | 'EN'): { index: numb
  * Null when the result is a result a volleyball match could actually produce.
  * Best-of-5 is the normal case; several junior leagues play best-of-3, where
  * 2:0 / 2:1 is complete and the deciding set is the third.
+ *
+ * Only the final result is required (Luca, 2026-10-09): "3:0" alone is a
+ * complete answer. Set points are optional, but set points that ARE entered
+ * still have to be real sets that add up to that result.
  */
 export function validateResult(value: string, lang: 'DE' | 'EN'): string | null {
   const de = lang === 'DE';
   const { home, away, sets } = parseResult(value);
   if (!home || !away) {
-    return de ? 'Bitte das Ergebnis (Sätze) eintragen.' : 'Please enter the result (sets).';
+    return de ? 'Bitte das Endergebnis eintragen (z. B. 3:0).' : 'Please enter the final result (e.g. 3:0).';
   }
 
   const h = Number(home);
@@ -159,10 +163,20 @@ export function validateResult(value: string, lang: 'DE' | 'EN'): string | null 
   const bestOf5 = won === 3 && lost <= 2;
   const bestOf3 = won === 2 && lost <= 1;
   if (!bestOf5 && !bestOf3) {
+    // With sets entered the score is counted from them, so "1:0 is not
+    // possible" really means the sets stop short of a finished match — and the
+    // way out is either finishing them or not giving any.
+    if (sets.length > 0) {
+      return de
+        ? `Die Satzresultate ergeben erst ${h}:${a}. Alle Sätze eintragen – oder die Sätze leeren und nur das Endergebnis eintragen.`
+        : `The set scores only add up to ${h}:${a}. Enter every set — or clear them and enter just the final result.`;
+    }
     return de
       ? `Ergebnis ${h}:${a} ist nicht möglich: Der Sieger braucht 3 Sätze (Best-of-3: 2).`
       : `A ${h}:${a} result is not possible: the winner needs 3 sets (best-of-3: 2).`;
   }
+
+  if (sets.length === 0) return null;
 
   // Checked before the count: a set caught half-typed ("25:") would otherwise
   // be reported as one set too many, which reads like nonsense.

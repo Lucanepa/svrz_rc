@@ -31,6 +31,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # The server imports the generated Prisma client; the CLI that generates
+      # it is its own package (deploy/postgres), kept out of the app's.
+      - name: Prisma client
+        run: npm run db:tools && npm run db:generate
       - name: Type check
         run: npm run lint
       - name: Build (production)

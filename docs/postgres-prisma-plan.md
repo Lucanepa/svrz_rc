@@ -1,5 +1,10 @@
 # From PocketBase to PostgreSQL + Prisma — plan (2026-10-10)
 
+> **Status, 10.10.2026 evening:** phase 1 built, verified and cut over the same
+> night (Luca: "you can do it tonight"). What changed against the plan below is
+> marked **[built]**; the one deliberate departure is the data layer — see
+> "Data layer".
+
 Luca, 10.10.2026: "let's also migrate … plan prisma + postgres" — not Supabase,
 not Directus, "keep it as simple as it is". PocketBase was updated to 0.40.5 the
 same day and stays in production until the cutover below.
@@ -9,8 +14,8 @@ same day and stays in production until the cutover below.
 | Piece | Version | Notes |
 |---|---|---|
 | PostgreSQL | **18** (18.6, Aug 2026; supported to Nov 2030) | official `postgres:18-alpine` image, pinned to a minor |
-| Prisma ORM | **7.x** (`@prisma/client` 7.10) | pin `prisma` and `@prisma/client` to `~7.10` — npm's `prisma` "latest" tag pointed at an 8.0 release candidate on 10.10 |
-| Admin view | Prisma Studio (`npx prisma studio`) | over an SSH tunnel to lenovoserver, never public — replaces the PocketBase dashboard |
+| Prisma ORM | **7.x** (`@prisma/client` 7.10) | pin `prisma` and `@prisma/client` to `~7.10` — npm's `prisma` "latest" tag pointed at an 8.0 release candidate on 10.10. **[built]** The CLI lives in its own package (`deploy/postgres/package.json`): it bundles Prisma Studio, whose `@types/react` silently turned on JSX type-checking for the whole frontend (25 latent errors) |
+| Admin view | Prisma Studio (`npm run db:studio`) | over an SSH tunnel to lenovoserver, never public — replaces the PocketBase dashboard. **[built]** Postgres is published on 127.0.0.1:55432 for it (Studio binds localhost only) |
 
 ## Why (short)
 
@@ -32,7 +37,16 @@ joins in SQL for Statistik and the overview, which today read whole tables.
 
 ## Target schema
 
-One Prisma model per collection in use, like for like:
+One Prisma model per collection in use, like for like. **[built]** Exactly
+PocketBase's columns and empty values (text `NOT NULL DEFAULT ''`, numbers 0,
+booleans false), JSON as `json` rather than `jsonb` (jsonb reorders keys; the
+stored order is part of what the forms render), `created`/`updated` as
+`timestamptz` (NULL where PocketBase had '' — 959 rows), relations as nullable
+FKs with `ON DELETE SET NULL` (what PocketBase did on delete), a hidden `_seq`
+for PocketBase's insertion order, and unique keys where the data allowed:
+`app_settings.key`, `boerse_offers.vm_offer_id`, `signatures.slug`,
+`rc_visit_feedback.token`, `push_subscriptions.endpoint`. All text fields are
+still text (dates included): every "date" PocketBase held was a text field.
 
 | Collection | API call sites | Notes |
 |---|---|---|
@@ -63,6 +77,36 @@ PocketBase keeps the filed PDFs in `pb_data/storage`. They move to a volume
 URLs, included in the nightly backup and borg like `pb_data` is today.
 
 ## Data layer
+
+**[built] — the departure.** Phase 1 does NOT rewrite the 200-odd calls. It
+answers them: `server/db/records.ts` implements PocketBase's record API
+(`getList`, `getFullList`, `getFirstListItem`, `getOne`, `create`, `update`,
+`delete`, `expand`, `fields`, file uploads) on Prisma, and
+`server/db/filter.ts` translates PocketBase filter and sort strings into Prisma
+`where`/`orderBy` with PocketBase's semantics — each rule observed on a 0.40.5
+copy of production, not assumed (a number is never "empty"; `created < X`
+includes the stamp-less rows; `~` escapes `_`; ties in insertion order; …).
+Why: it makes the move one evening instead of one evening plus three days of
+rewrite with every query at risk at once, and it makes the move PROVABLE —
+the same calls can be run against both stores and compared, which a rewrite
+cannot. The cost is that the string filters stay for now. The typed rewrite
+below is now phase 1b, area by area, deleting the layer as it goes, with no
+further cutover.
+
+Verified before the cutover, on the 17:00 snapshot:
+
+- migration: all 2,763 records identical through the layer — values, key
+  order, record order, JSON key order — and all 13 PDFs byte-identical;
+- `deploy/postgres/compare-backends.ts`: 326 cases (every query shape in the
+  server, coercions, errors, uploads, deletes) answered identically by both,
+  with two deliberate differences (a duplicate on a new unique key is refused;
+  a `field+` modifier is refused instead of silently ignored);
+- the API itself run twice on the same data (main on PocketBase, the branch on
+  Postgres) and 4,574 GET responses compared — every route, as admin, chair
+  and each of the 16 coaches: identical except what is random by design
+  (newly minted feed tokens and push keys, PDF creation stamps).
+
+The original plan for this section, now phase 1b:
 
 `server/db/` — the Prisma client and one module per area. The 183
 `withCollection(...)` calls are rewritten area by area, not shimmed: a
@@ -100,6 +144,10 @@ never a value.
 1. Rehearse on the newest nightly snapshot until the fingerprints match.
 2. Evening window, ~15 minutes, announced to the coaches.
 3. API to maintenance (writes answer 503 with a message; reads keep working).
+   **[built]** Simpler: the API is stopped for the few minutes of the load —
+   the app's outbox holds a filed form and resends it, and the installed app
+   reads its local copy. The script restarts the old API untouched on any
+   failure before the switch (PocketBase never stops until after it).
 4. Final PocketBase snapshot (`backup-pb.sh`), migrate, verify fingerprints.
 5. Deploy the API on Postgres (`prisma migrate deploy` at start), smoke tests,
    open writes.
@@ -124,6 +172,12 @@ in the main checkout (memory: shared checkout).
 
 ## Open points for Luca
 
-- Go-ahead, and an evening for the cutover.
-- Promote the president notes to their own table already in phase 1? Small,
-  and it removes the one-row-per-season design that failed on 10.10.
+- ~~Go-ahead, and an evening for the cutover.~~ 10.10.2026, the same evening.
+- Promote the president notes to their own table — phase 2 (not in the
+  like-for-like move; the 5000-character cap that broke them is gone with
+  PocketBase anyway).
+- Repoint the installed `svrz-rc-backup.service` at `backup-db.sh` (sudo);
+  until then `backup-pb.sh` forwards to it.
+- After the rollback week: stop keeping `pb_data`, delete the `pocketbase`
+  service, `backup-pb*.sh`, `setup-schema.mjs` and the PocketBase SDK (still
+  used for its error class and by the migration scripts).

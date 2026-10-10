@@ -1,6 +1,8 @@
 import express, { Request, Response as ExpressResponse } from 'express';
 import cors from 'cors';
-import PocketBase from 'pocketbase';
+import { collection as dbCollection, type RecordCollection } from './db/records.ts';
+import { assertDatabase } from './db/client.ts';
+import { readStoredFile } from './db/files.ts';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
 import webpush from 'web-push';
@@ -528,6 +530,10 @@ const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS || 1000 * 6
 // If no secret is configured, generate a strong random per-process key so tokens
 // remain unforgeable. Sessions won't survive a restart until ADMIN_SESSION_SECRET is set.
 function resolveSessionSecret(): string {
+  // ⚠ POCKETBASE_ADMIN_PASSWORD outlived PocketBase (moved to Postgres on
+  // 10.10.2026) on purpose: where ADMIN_SESSION_SECRET is unset it is still
+  // this key — and the RC PINs are salted with it. Removing it from the env
+  // logs everyone out and locks every coach out of their PIN.
   const explicit = process.env.ADMIN_SESSION_SECRET || process.env.POCKETBASE_ADMIN_PASSWORD || '';
   if (explicit) return explicit;
   console.error(
@@ -1270,15 +1276,16 @@ const collectionCandidates = {
   ]),
 };
 
-const requiredEnv = ['POCKETBASE_URL', 'POCKETBASE_ADMIN_EMAIL', 'POCKETBASE_ADMIN_PASSWORD'] as const;
+const requiredEnv = ['DATABASE_URL'] as const;
 for (const key of requiredEnv) {
   if (!process.env[key]) {
     console.warn(`[startup] Missing env var: ${key}`);
   }
 }
 
-const pb = new PocketBase(process.env.POCKETBASE_URL || 'http://127.0.0.1:8090');
-pb.autoCancellation(false);
+// The data store: Postgres since 10.10.2026, answering PocketBase-shaped
+// calls (server/db/records.ts) so the queries below did not have to change.
+const db = { collection: dbCollection };
 const VM_BASE = process.env.VM_BASE || '';
 const VM_BATCH_SIZE = 200;
 // 01:00 Zürich. The hour is load-bearing and has to clear two different things.
@@ -2005,39 +2012,18 @@ function emailCodeBox(value: string): string {
 
 async function withCollection<T>(
   candidates: string[],
-  action: (collection: ReturnType<typeof pb.collection>, collectionName: string) => Promise<T>,
+  action: (collection: RecordCollection, collectionName: string) => Promise<T>,
 ): Promise<T> {
-  // The superuser token lives 24 hours, and the crons never asked for a fresh
-  // one: route handlers call ensureAdminAuth() themselves, so the token was
-  // renewed by whoever opened the app — and on a quiet day the first cron
-  // write after the 24-hour mark failed with "Only superusers can perform
-  // this action" (the börse poll, 13.09.2026 10:43 UTC, exactly a day after
-  // the container started). Renewed here, where every PocketBase access
-  // passes, so no caller has to remember. Cheap: a valid token returns at once.
-  await ensureAdminAuth();
+  // The candidate names are PocketBase-era aliases (svrz_games …); only the
+  // first ever exists. A missing one answers PocketBase's own 404, as before.
   let lastError: unknown = null;
   for (const collectionName of candidates) {
     try {
-      return await action(pb.collection(collectionName), collectionName);
+      return await action(db.collection(collectionName), collectionName);
     } catch (error) {
       if (isMissingCollectionError(error)) {
         lastError = error;
         continue;
-      }
-      // Retry once on 429 (Too Many Requests) after a brief delay
-      if (typeof error === 'object' && error !== null && (error as { status?: number }).status === 429) {
-        await sleep(1000);
-        try {
-          return await action(pb.collection(collectionName), collectionName);
-        } catch (retryError) {
-          throw retryError;
-        }
-      }
-      // A token PocketBase no longer accepts — expired between the check above
-      // and the call, or the superuser password was rotated. One fresh login
-      // and one more try; a second refusal is a real error.
-      if (await reauthOnRejection(error)) {
-        return await action(pb.collection(collectionName), collectionName);
       }
       throw error;
     }
@@ -2068,34 +2054,11 @@ function followRedirects(
 
 // VmTraceEntry now comes from server/vmhttp.ts, beside followRedirects.
 
+/** Was: log in to PocketBase as superuser. Postgres needs no per-call login —
+ *  the connection string carries it — so this is a no-op the 100-odd route
+ *  handlers that call it can keep calling until the typed rewrite. */
 async function ensureAdminAuth() {
-  if (pb.authStore.isValid) {
-    return;
-  }
-  const email = process.env.POCKETBASE_ADMIN_EMAIL || '';
-  const password = process.env.POCKETBASE_ADMIN_PASSWORD || '';
-  await pb.collection('_superusers').authWithPassword(email, password);
-}
-
-/**
- * Re-authenticate once when PocketBase rejects the token we hold.
- *
- * `isValid` only checks the JWT's own expiry, and nothing anywhere cleared the
- * store on a 401/403 — so rotating the superuser password (which the security
- * notes tell you to do on exposure) without restarting the container left every
- * call failing until the container restarted or the 14-day token ran out.
- * Returns true if a retry is worth making.
- */
-async function reauthOnRejection(error: unknown): Promise<boolean> {
-  const status = Number((error as { status?: unknown })?.status);
-  if (status !== 401 && status !== 403) return false;
-  pb.authStore.clear();
-  try {
-    await ensureAdminAuth();
-    return true;
-  } catch {
-    return false;
-  }
+  /* nothing to do */
 }
 
 function mapIncomingGame(raw: Record<string, unknown>) {
@@ -4718,42 +4681,15 @@ app.get('/api/events', requireRcSession, (req: Request, res: ExpressResponse) =>
 });
 
 app.get('/api/health', async (_req: Request, res: ExpressResponse) => {
+  // One real read through the same path every request takes, so an uptime
+  // probe goes red when the database does — not only when this process dies.
   try {
-    const pbUrl = asText(process.env.POCKETBASE_URL);
-    let reachable = false;
-    let reachabilityError = '';
-    try {
-      const response = await fetch(`${pbUrl}/api/health`);
-      reachable = response.ok;
-      if (!reachable) {
-        reachabilityError = `PocketBase /api/health returned ${response.status}`;
-      }
-    } catch (error) {
-      reachabilityError = error instanceof Error ? error.message : String(error);
-    }
-
-    if (!reachable) {
-      // Log details server-side; expose only a coarse stage to unauthenticated callers.
-      console.error('[health] connectivity:', pbUrl, reachabilityError);
-      res.status(500).json({ ok: false, error: { stage: 'connectivity' } });
-      return;
-    }
-
-    // One cheap AUTHENTICATED read, not just ensureAdminAuth(). That call
-    // short-circuits on any unexpired token, so a superuser password rotated in
-    // the PocketBase admin UI left every real query failing while this endpoint
-    // — and therefore any uptime probe watching it — stayed green.
-    try {
-      await ensureAdminAuth();
-      await withCollection(['app_settings'], (c) => c.getList(1, 1, { fields: 'id', skipTotal: true }));
-    } catch (probeError) {
-      if (!(await reauthOnRejection(probeError))) throw probeError;
-      await withCollection(['app_settings'], (c) => c.getList(1, 1, { fields: 'id', skipTotal: true }));
-    }
+    await withCollection(['app_settings'], (c) => c.getList(1, 1, { fields: 'id', skipTotal: true }));
     res.json({ ok: true });
   } catch (error) {
-    console.error('[health] auth:', error);
-    res.status(500).json({ ok: false, error: { stage: 'auth' } });
+    // Details stay in the log; unauthenticated callers get a coarse stage.
+    console.error('[health] database:', error);
+    res.status(500).json({ ok: false, error: { stage: 'database' } });
   }
 });
 
@@ -6467,7 +6403,7 @@ app.post('/api/admin/referees/import', requireAdminSession, async (req: Request,
       // after this deploy. Said here rather than as "Missing collection
       // context", which reads like a bug in the console.
       if (isMissingCollectionError(error)) {
-        throw new SchemaOutOfDateError('Die Sammlung „referees" fehlt in PocketBase — bitte setup-schema.mjs neu ausführen.');
+        throw new SchemaOutOfDateError('Die Sammlung „referees" fehlt in der Datenbank — bitte `npx prisma migrate deploy` ausführen.');
       }
       throw error;
     });
@@ -7001,7 +6937,7 @@ async function getSignatureRecord(slug: string) {
   if (!slug || slug.length > 64) return null;
   try {
     await ensureAdminAuth();
-    return await pb.collection('signatures').getFirstListItem(`slug = "${escapeFilterValue(slug)}"`);
+    return await db.collection('signatures').getFirstListItem(`slug = "${escapeFilterValue(slug)}"`);
   } catch { return null; }
 }
 // A SIGNED session is read only while the coach's signature dialog polls it —
@@ -7040,10 +6976,10 @@ async function pruneSignatureSessions(): Promise<number> {
   const filter = `(signed = false && created < "${unsignedBefore}") || (signed = true && created < "${signedBefore}")`;
   let removed = 0;
   for (let round = 0; round < 20; round++) {
-    const page = await pb.collection('signatures').getList<AnyRecord>(1, 200, { filter, fields: 'id', skipTotal: true });
+    const page = await db.collection('signatures').getList<AnyRecord>(1, 200, { filter, fields: 'id', skipTotal: true });
     if (!page.items.length) break;
     for (const row of page.items) {
-      await pb.collection('signatures').delete(asText(row.id));
+      await db.collection('signatures').delete(asText(row.id));
       removed++;
     }
     if (page.items.length < 200) break;
@@ -7060,7 +6996,7 @@ app.post('/api/signature/start', requireRcSession, async (req: Request, res: Exp
     const slug = randomUUID().replace(/-/g, '');
     const context = asText((req.body ?? {}).context).slice(0, 300);
     const signer = asText((req.body ?? {}).signer).slice(0, 120);
-    await pb.collection('signatures').create({ slug, context, signer, data: '', signed: false });
+    await db.collection('signatures').create({ slug, context, signer, data: '', signed: false });
     res.json({ slug });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -7101,7 +7037,7 @@ app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
       // Signatures are write-once: once signed, the capability can't overwrite it.
       if (Boolean(rec.signed)) { res.status(409).json({ error: 'Signature already captured' }); return; }
       await ensureAdminAuth();
-      await pb.collection('signatures').update(rec.id, { data, signed: true, signer: signer || asText(rec.signer) });
+      await db.collection('signatures').update(rec.id, { data, signed: true, signer: signer || asText(rec.signer) });
       res.json({ ok: true });
     });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -7270,7 +7206,7 @@ async function getSurveyRecord(token: string) {
   if (!token || token.length > 64) return null;
   try {
     await ensureAdminAuth();
-    return await pb.collection(SURVEY_COLLECTION).getFirstListItem(`token = "${escapeFilterValue(token)}"`);
+    return await db.collection(SURVEY_COLLECTION).getFirstListItem(`token = "${escapeFilterValue(token)}"`);
   } catch { return null; }
 }
 function isSurveyExpired(rec: AnyRecord): boolean {
@@ -7285,7 +7221,7 @@ function isSurveyExpired(rec: AnyRecord): boolean {
 async function createSurveyToken(v: { referee: string; date: string; matchNo: string; rc: string }): Promise<string> {
   try {
     const token = randomUUID().replace(/-/g, '');
-    await pb.collection(SURVEY_COLLECTION).create({
+    await db.collection(SURVEY_COLLECTION).create({
       token, referee_name: v.referee, match_date: v.date, match_no: v.matchNo,
       rc_name: v.rc, lang: '', anonymous: false, answers: {}, submitted: false,
     });
@@ -7373,7 +7309,7 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
       // cached page may still send `anonymous`; it is ignored, the page it came
       // from no longer makes the promise. Rows from before keep their blank
       // name and their flag, and the chair's list still shows them as (anonym).
-      await pb.collection(SURVEY_COLLECTION).update(rec.id, {
+      await db.collection(SURVEY_COLLECTION).update(rec.id, {
         referee_name: asText(rec.referee_name),
         anonymous: false, lang, answers,
         submitted: true, submitted_at: new Date().toISOString(),
@@ -7392,7 +7328,7 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
 // /api/survey/:token route above as token="responses".
 app.get('/api/survey-responses', requireSurveyReader, async (req: Request, res: ExpressResponse) => {
   try {
-    const rows = await pb.collection(SURVEY_COLLECTION).getFullList<AnyRecord>({
+    const rows = await db.collection(SURVEY_COLLECTION).getFullList<AnyRecord>({
       filter: 'submitted = true', sort: '-submitted_at',
     });
     // The form travels with the responses: the chair's session is not an admin
@@ -7700,15 +7636,12 @@ app.get('/api/feedback-archive', requireArchiveReader, async (req: Request, res:
     const records = await withCollection(collectionCandidates.refereeCoaches, (c) =>
       c.getFullList<AnyRecord>({ sort: 'submitted_at', expand: 'game,coachee' }));
 
-    // A file token, because the collection is not public and the archive is
-    // fetched over HTTP from PocketBase like any other client would.
-    const token = await pb.files.getToken();
     const entries: ZipEntry[] = [];
     const skipped: string[] = [];
     for (const rec of records) {
       const row = formsRowOf(rec);
       if (seasonOfDate(asText(row.game?.match_date)) !== season) continue;
-      const fetched = await fetchStoredForm(row, token);
+      const fetched = await fetchStoredForm(row);
       if (!fetched) { skipped.push(String(rec.id)); continue; }
       entries.push({ name: formsEntryName(row), data: fetched.data });
     }
@@ -7736,17 +7669,15 @@ app.get('/api/feedback-archive', requireArchiveReader, async (req: Request, res:
 // each filed form openable on its own and the whole folder as a ZIP. The
 // sorting rules are pure and live in server/forms.ts; this is the I/O.
 
-/** The stored file behind a filed form, fetched from PocketBase with a file
- *  token — the collection is not public. null when nothing is stored or the
- *  fetch fails; the caller decides whether that is a skip or a 404. */
-async function fetchStoredForm(row: FormsRow, token: string): Promise<{ data: Buffer; type: string } | null> {
+/** The stored file behind a filed form (FILES_DIR, server/db/files.ts). null
+ *  when nothing is stored or it cannot be read; the caller decides whether
+ *  that is a skip or a 404. */
+async function fetchStoredForm(row: FormsRow): Promise<{ data: Buffer; type: string } | null> {
   const file = asText(row.rec.pdf_file);
   if (!file) return null;
   try {
-    const url = pb.files.getURL(row.rec as never, file, { token });
-    const response = await fetch(url);
-    if (!response.ok) return null;
-    const data = Buffer.from(await response.arrayBuffer());
+    const data = await readStoredFile(asText(row.rec.collectionName) || 'referee_coach_feedbacks', asText(row.rec.id), file);
+    if (!data) return null;
     // Typed from the bytes, like the submit route did on the way in: the
     // upstream header is PocketBase's guess from the extension, and a browser
     // told "octet-stream" downloads instead of showing the page.
@@ -7799,11 +7730,10 @@ app.get('/api/forms/archive', requireArchiveReader, async (req: Request, res: Ex
 
     const wanted = new Set(folder.forms.map((f) => f.id));
     const rows = all.filter((r) => wanted.has(r.rec.id));
-    const token = await pb.files.getToken();
     const entries: ZipEntry[] = [];
     const skipped: string[] = [];
     for (const row of rows) {
-      const fetched = await fetchStoredForm(row, token);
+      const fetched = await fetchStoredForm(row);
       if (!fetched) { skipped.push(row.rec.id); continue; }
       entries.push({ name: formsEntryName(row), data: fetched.data });
     }
@@ -7842,7 +7772,7 @@ app.get('/api/feedback/:id/file', async (req: Request, res: ExpressResponse) => 
     catch { res.status(404).json({ error: 'Feedback not found' }); return; }
     if (me && !rcRefMatches(record.rc_id, record.rc_name, me)) { res.status(403).json({ error: 'Forbidden' }); return; }
     const row = formsRowOf(record);
-    const fetched = await fetchStoredForm(row, await pb.files.getToken());
+    const fetched = await fetchStoredForm(row);
     if (!fetched) {
       // Worth a line: a filed feedback without its document is the half-write
       // the submit route's rollback exists to prevent.
@@ -8010,7 +7940,7 @@ app.get('/api/coachee-file/forms/:id/file', async (req: Request, res: ExpressRes
     // Someone else's report answers exactly like a missing one.
     if (formRefereeId(record) !== session.sv) { res.status(404).json({ error: 'Not found' }); return; }
     const row = formsRowOf(record);
-    const fetched = await fetchStoredForm(row, await pb.files.getToken());
+    const fetched = await fetchStoredForm(row);
     if (!fetched) { res.status(404).json({ error: 'Zu diesem Bericht ist keine Datei gespeichert.' }); return; }
     res.setHeader('Content-Type', fetched.type);
     res.setHeader('Content-Disposition', `inline; filename="${formsEntryName(row)}"`);
@@ -12604,7 +12534,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     // is written onto anybody's record, and the mail goes out exactly as it
     // would for a real one.
     let coachee: AnyRecord | null = null;
-    let coacheeCollection: ReturnType<typeof pb.collection> | null = null;
+    let coacheeCollection: RecordCollection | null = null;
     let coacheeEmail = '';
     // The salutation's first name, from the record the mail is addressed by.
     let refereeFirstName = '';
@@ -13415,7 +13345,7 @@ async function findCoacheeRecord(
   // is decided by that list and by the admin console, never by a report
   // happening to name somebody (Luca, 22.09.2026).
   opts: { strictSeason?: boolean } = {},
-): Promise<{ collection: ReturnType<typeof pb.collection>; coachee: AnyRecord }> {
+): Promise<{ collection: RecordCollection; coachee: AnyRecord }> {
   return withCollection(collectionCandidates.coachees, async (collection) => {
     const coachees = index ?? await getCoacheeIndex();
     const query = { sv: refereeId, name: refereeName, matchNo };
@@ -14274,7 +14204,7 @@ function sanitizeParkedDraft(raw: unknown): ParkedDraftPayload | null {
 // The rows this owner holds for one game. Every caller in this section goes
 // through here, so the owner clause cannot be forgotten at one of them.
 async function parkedRowsFor(ownerId: string, gameId: string): Promise<AnyRecord[]> {
-  return pb.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
+  return db.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
     filter: `owner_id = "${escapeFilterValue(ownerId)}" && game_id = "${escapeFilterValue(gameId)}"`,
   });
 }
@@ -14291,7 +14221,7 @@ async function parkedRowsFor(ownerId: string, gameId: string): Promise<AnyRecord
  * whose `owner_id` it had already matched.
  */
 async function pruneParkedDrafts(ownerId: string): Promise<void> {
-  const rows = await pb.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
+  const rows = await db.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
     filter: `owner_id = "${escapeFilterValue(ownerId)}"`,
     // `updated` (the server's autodate), NOT `updated_at` (the device's clock).
     // A tablet whose battery died boots in 1970 and parks a row stamped 1970,
@@ -14311,7 +14241,7 @@ async function pruneParkedDrafts(ownerId: string): Promise<void> {
     // unfinished observation is not a failure to make on a parse error.
     return Number.isFinite(at) && at < cutoff;
   });
-  for (const row of doomed) await pb.collection(PARKED_DRAFTS_COLLECTION).delete(row.id);
+  for (const row of doomed) await db.collection(PARKED_DRAFTS_COLLECTION).delete(row.id);
 }
 
 // The collection is created by deploy/hetzner/seed/setup-schema.mjs, which has
@@ -14321,7 +14251,7 @@ async function pruneParkedDrafts(ownerId: string): Promise<void> {
 // silently succeeded into a missing collection would tell a coach their work is
 // safe when it is nowhere. Say what is wrong, in the words the admin needs.
 function parkSchemaError(): SchemaOutOfDateError {
-  return new SchemaOutOfDateError('Die Sammlung „parked_drafts" fehlt in PocketBase — bitte setup-schema.mjs neu ausführen.');
+  return new SchemaOutOfDateError('Die Sammlung „parked_drafts" fehlt in der Datenbank — bitte `npx prisma migrate deploy` ausführen.');
 }
 
 /** Everything this owner has parked, newest first: metadata and payload. */
@@ -14332,7 +14262,7 @@ app.get('/api/drafts/parked', requireRcSession, async (req: Request, res: Expres
   if (!rl.allowed) { denyRateLimited(req, res, 'park', rl.retryAfterMs); return; }
   try {
     await ensureAdminAuth();
-    const rows = await pb.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
+    const rows = await db.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
       // The owner clause is the whole access control. There is no path by which
       // a caller contributes to this filter.
       filter: `owner_id = "${escapeFilterValue(owner.id)}"`,
@@ -14425,8 +14355,8 @@ async function handleParkDrafts(req: Request, res: ExpressResponse): Promise<voi
         // `existing` was already filtered to this owner, so the id being updated
         // is by construction one of theirs.
         const row = existing.find((r) => asText(r.role) === role);
-        if (row) await pb.collection(PARKED_DRAFTS_COLLECTION).update(row.id, fields);
-        else await pb.collection(PARKED_DRAFTS_COLLECTION).create(fields);
+        if (row) await db.collection(PARKED_DRAFTS_COLLECTION).update(row.id, fields);
+        else await db.collection(PARKED_DRAFTS_COLLECTION).create(fields);
       }
     });
     // Best-effort and deliberately after the answer's data is settled: a coach
@@ -14467,7 +14397,7 @@ app.delete('/api/drafts/parked/:gameId', requireRcSession, async (req: Request, 
       // built from the path, which is the one shape where a mistake in the
       // filter reaches somebody else's work.
       const rows = await parkedRowsFor(owner.id, gameId);
-      for (const row of rows) await pb.collection(PARKED_DRAFTS_COLLECTION).delete(row.id);
+      for (const row of rows) await db.collection(PARKED_DRAFTS_COLLECTION).delete(row.id);
       return rows.length;
     });
     res.json({ ok: true, removed });
@@ -14696,7 +14626,7 @@ function sanitizeNotebookPage(raw: unknown, now: number): NotebookSanitised {
 // The rows this owner holds. Every caller in this section goes through here,
 // so the owner clause cannot be forgotten at one of them.
 async function notebookRowsFor(ownerId: string, fields?: string): Promise<AnyRecord[]> {
-  return pb.collection(NOTEBOOK_COLLECTION).getFullList<AnyRecord>({
+  return db.collection(NOTEBOOK_COLLECTION).getFullList<AnyRecord>({
     filter: `owner_id = "${escapeFilterValue(ownerId)}"`,
     sort: '-created',
     ...(fields ? { fields } : {}),
@@ -14732,7 +14662,7 @@ async function pruneNotebook(ownerId: string): Promise<void> {
     live += 1;
     return live > NOTEBOOK_MAX_PAGES;   // rows come newest first, so the overflow is the oldest
   });
-  for (const row of doomed) await pb.collection(NOTEBOOK_COLLECTION).delete(row.id);
+  for (const row of doomed) await db.collection(NOTEBOOK_COLLECTION).delete(row.id);
 }
 
 async function pruneNotebookThrottled(ownerId: string, req: Request): Promise<void> {
@@ -14747,7 +14677,7 @@ async function pruneNotebookThrottled(ownerId: string, req: Request): Promise<vo
 }
 
 function notebookSchemaError(): SchemaOutOfDateError {
-  return new SchemaOutOfDateError('Die Sammlung „rc_notebook" fehlt in PocketBase — bitte setup-schema.mjs neu ausführen.');
+  return new SchemaOutOfDateError('Die Sammlung „rc_notebook" fehlt in der Datenbank — bitte `npx prisma migrate deploy` ausführen.');
 }
 
 function toNotebookIndexRow(row: AnyRecord) {
@@ -14810,7 +14740,7 @@ app.get('/api/notebook/pages/:pageId', requireRcSession, async (req: Request, re
   if (!NOTEBOOK_PAGE_ID_RE.test(pageId)) { res.status(404).json({ error: 'Seite nicht gefunden.' }); return; }
   try {
     await ensureAdminAuth();
-    const row = await pb.collection(NOTEBOOK_COLLECTION).getFirstListItem<AnyRecord>(
+    const row = await db.collection(NOTEBOOK_COLLECTION).getFirstListItem<AnyRecord>(
       `owner_id = "${escapeFilterValue(owner.id)}" && page_id = "${escapeFilterValue(pageId)}"`,
     );
     if (notebookExpiry(row) <= Date.now()) { res.status(404).json({ error: 'Seite nicht gefunden.' }); return; }
@@ -14895,8 +14825,8 @@ async function handleNotebookPush(req: Request, res: ExpressResponse): Promise<v
         };
         try {
           const written = row
-            ? await pb.collection(NOTEBOOK_COLLECTION).update<AnyRecord>(row.id, fields)
-            : await pb.collection(NOTEBOOK_COLLECTION).create<AnyRecord>(fields);
+            ? await db.collection(NOTEBOOK_COLLECTION).update<AnyRecord>(row.id, fields)
+            : await db.collection(NOTEBOOK_COLLECTION).create<AnyRecord>(fields);
           if (row) Object.assign(row, { updated_at: fields.updated_at, deleted, kind });
           else existing.push(written);
           saved.push({ pageId, savedAt: asText(written.updated) || asText(written.created), updatedAt, createdAt });
@@ -14947,7 +14877,7 @@ app.delete('/api/notebook/pages/:pageId', requireRcSession, async (req: Request,
       const rows = (await notebookRowsFor(owner.id, 'id,page_id,updated_at,deleted')).filter((r) => asText(r.page_id) === pageId && r.deleted !== true);
       for (const row of rows) {
         const at = Math.max(Date.now(), (Date.parse(asText(row.updated_at)) || 0) + 1);
-        await pb.collection(NOTEBOOK_COLLECTION).update(row.id, { deleted: true, payload: {}, updated_at: new Date(at).toISOString() });
+        await db.collection(NOTEBOOK_COLLECTION).update(row.id, { deleted: true, payload: {}, updated_at: new Date(at).toISOString() });
       }
       return rows.length;
     });
@@ -15096,6 +15026,15 @@ async function backfillAssignedAt(): Promise<void> {
     filled++;
   }
   log.info('game.assigned-at.backfill', `${filled} of ${held.length} held games dated from the request log`, { filled, held: held.length });
+}
+
+// The database first: a wrong locale would quietly reorder every list.
+try {
+  const dbInfo = await assertDatabase();
+  log.info('startup.db', 'database ok', dbInfo);
+} catch (error) {
+  log.error('startup.db', `database not usable: ${error instanceof Error ? error.message : String(error)}`, { error });
+  process.exit(1);
 }
 
 app.listen(port, () => {

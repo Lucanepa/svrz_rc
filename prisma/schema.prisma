@@ -1,0 +1,384 @@
+// The svrz_rc database, like for like with the PocketBase collections it
+// replaced on 10.10.2026 (docs/postgres-prisma-plan.md). Column names, types
+// and empty values are PocketBase's on purpose — text is NOT NULL DEFAULT '',
+// numbers 0, booleans false, JSON nullable and stored verbatim (`json`, not
+// `jsonb`: key order and odd escapes survive) — because phase 1 swaps the
+// store under unchanged queries (server/db/records.ts). The field order and
+// types are mirrored in server/db/collections.ts; e2e/db-schema.spec.ts keeps
+// the two in step.
+//
+// ⚠ The database must compare text byte-wise like SQLite did: created with
+// the builtin C.UTF-8 locale (deploy/hetzner/docker-compose.yml); the API
+// refuses to start on anything else (server/db/client.ts).
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../server/db/generated"
+  moduleFormat = "esm"
+  runtime      = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Game {
+  id String @id @db.VarChar(15)
+  match_no String @default("")
+  league String @default("")
+  match_date String @default("")
+  location String @default("")
+  home_team String @default("")
+  away_team String @default("")
+  first_referee String @default("")
+  second_referee String @default("")
+  first_line_judge String @default("")
+  second_line_judge String @default("")
+  assigned_rc String @default("")
+  feedback_closed_roles Json? @db.Json
+  source_payload Json? @db.Json
+  game_result String @default("")
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  is_rsv_game Boolean @default(false)
+  is_rd_game Boolean @default(false)
+  is_ld_game Boolean @default(false)
+  maps_url String @default("")
+  external_id String @default("")
+  assigned_rc_id String @default("")
+  first_referee_id String @default("")
+  second_referee_id String @default("")
+  assigned_at String @default("")
+  assigned_via String @default("")
+  handed_over Json? @db.Json
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  referee_coach_feedbacks_game RefereeCoachFeedback[] @relation("referee_coach_feedbacks_game")
+  observations_game Observation[] @relation("observations_game")
+  rc_game_notes_game RcGameNote[] @relation("rc_game_notes_game")
+  @@index([match_no])
+  @@index([external_id])
+  @@index([match_date])
+  @@index([assigned_rc_id])
+  @@map("games")
+}
+
+model Coachee {
+  id String @id @db.VarChar(15)
+  full_name String @default("")
+  first_name String @default("")
+  last_name String @default("")
+  email String @default("")
+  phone String @default("")
+  referee_level String @default("")
+  stage String @default("")
+  groups String @default("")
+  feedback_entries Json? @db.Json
+  last_feedback_at String @default("")
+  season Float @default(0)
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  notes String @default("")
+  referee_id String @default("")
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  referee_coach_feedbacks_coachee RefereeCoachFeedback[] @relation("referee_coach_feedbacks_coachee")
+  observations_coachee Observation[] @relation("observations_coachee")
+  @@index([full_name])
+  @@index([referee_id])
+  @@index([season])
+  @@map("coachees")
+}
+
+model RefereeCoach {
+  id String @id @db.VarChar(15)
+  first_name String @default("")
+  last_name String @default("")
+  email String @default("")
+  phone String @default("")
+  active Boolean @default(false)
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  pin_hash String @default("")
+  is_admin Boolean @default(false)
+  is_rc_president Boolean @default(false)
+  sv_number String @default("")
+  name_aliases String @default("")
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  observations_referee_coach Observation[] @relation("observations_referee_coach")
+  @@map("referee_coaches")
+}
+
+model RefereeCoachFeedback {
+  id String @id @db.VarChar(15)
+  game String? @db.VarChar(15)
+  game_rec Game? @relation("referee_coach_feedbacks_game", fields: [game], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  coachee String? @db.VarChar(15)
+  coachee_rec Coachee? @relation("referee_coach_feedbacks_coachee", fields: [coachee], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  rc_name String @default("")
+  role_assessed String @default("")
+  feedback_json Json? @db.Json
+  submitted_at String @default("")
+  pdf_file String @default("")
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  rc_id String @default("")
+  submission_key String @default("")
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@index([game])
+  @@index([coachee])
+  @@index([submitted_at])
+  @@index([submission_key])
+  @@map("referee_coach_feedbacks")
+}
+
+model Observation {
+  id String @id @db.VarChar(15)
+  coachee String? @db.VarChar(15)
+  coachee_rec Coachee? @relation("observations_coachee", fields: [coachee], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  referee_coach String? @db.VarChar(15)
+  referee_coach_rec RefereeCoach? @relation("observations_referee_coach", fields: [referee_coach], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  game String? @db.VarChar(15)
+  game_rec Game? @relation("observations_game", fields: [game], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  coachee_function String @default("")
+  grades Json? @db.Json
+  game_level String @default("")
+  promotion String @default("")
+  motivation String @default("")
+  sr_goal String @default("")
+  game_result String @default("")
+  remarks String @default("")
+  second_observation Boolean @default(false)
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@index([game])
+  @@index([coachee])
+  @@index([referee_coach])
+  @@map("observations")
+}
+
+model AppSetting {
+  id String @id @db.VarChar(15)
+  key String @default("")
+  value String @default("")
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@unique([key])
+  @@map("app_settings")
+}
+
+model Signature {
+  id String @id @db.VarChar(15)
+  slug String @default("")
+  context String @default("")
+  signer String @default("")
+  data String @default("")
+  signed Boolean @default(false)
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@unique([slug])
+  @@map("signatures")
+}
+
+model RcVisitFeedback {
+  id String @id @db.VarChar(15)
+  token String @default("")
+  referee_name String @default("")
+  match_date String @default("")
+  match_no String @default("")
+  rc_name String @default("")
+  lang String @default("")
+  anonymous Boolean @default(false)
+  answers Json? @db.Json
+  submitted Boolean @default(false)
+  submitted_at String @default("")
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@unique([token])
+  @@map("rc_visit_feedback")
+}
+
+model Referee {
+  id String @id @db.VarChar(15)
+  sv_number String @default("")
+  first_name String @default("")
+  last_name String @default("")
+  full_name String @default("")
+  email String @default("")
+  phone String @default("")
+  gender String @default("")
+  level String @default("")
+  stage String @default("")
+  lr_level String @default("")
+  license_association String @default("")
+  license_active Boolean @default(false)
+  retired Boolean @default(false)
+  dispensed Boolean @default(false)
+  language String @default("")
+  imported_at String @default("")
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@index([sv_number])
+  @@map("referees")
+}
+
+model ParkedDraft {
+  id String @id @db.VarChar(15)
+  owner_id String @default("")
+  game_id String @default("")
+  role String @default("")
+  updated_at String @default("")
+  schema Float @default(0)
+  payload Json? @db.Json
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@index([owner_id])
+  @@map("parked_drafts")
+}
+
+model RcGameNote {
+  id String @id @db.VarChar(15)
+  game String? @db.VarChar(15)
+  game_rec Game? @relation("rc_game_notes_game", fields: [game], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  game_id String @default("")
+  rc_name String @default("")
+  rc_id String @default("")
+  rc_role String @default("")
+  coachee_name String @default("")
+  coachee_id String @default("")
+  coachee_role String @default("")
+  note String @default("")
+  submitted_at String @default("")
+  season Float @default(0)
+  submission_key String @default("")
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  roles_swapped Boolean @default(false)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@index([game])
+  @@index([game_id])
+  @@index([submission_key])
+  @@map("rc_game_notes")
+}
+
+model BoerseOffer {
+  id String @id @db.VarChar(15)
+  vm_offer_id String @default("")
+  match_no String @default("")
+  game_starts_at String @default("")
+  referee_position String @default("")
+  slot String @default("")
+  status String @default("")
+  slot_person_name String @default("")
+  slot_person_sv String @default("")
+  slot_person_vm_id String @default("")
+  submitted_by_name String @default("")
+  submitted_by_sv String @default("")
+  submitting_type String @default("")
+  submitted_at String @default("")
+  applied_by_name String @default("")
+  applied_by_sv String @default("")
+  applied_at String @default("")
+  join_via String @default("")
+  first_seen String @default("")
+  last_seen String @default("")
+  withdrawn_at String @default("")
+  raw Json? @db.Json
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  alerted_at String @default("")
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@unique([vm_offer_id])
+  @@index([match_no])
+  @@map("boerse_offers")
+}
+
+model RcNotebookPage {
+  id String @id @db.VarChar(15)
+  owner_id String @default("")
+  page_id String @default("")
+  kind String @default("")
+  created_at String @default("")
+  updated_at String @default("")
+  deleted Boolean @default(false)
+  schema Float @default(0)
+  payload Json? @db.Json
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@index([owner_id])
+  @@map("rc_notebook")
+}
+
+model RcSwitchRequest {
+  id String @id @db.VarChar(15)
+  coachee_id String @default("")
+  coachee_name String @default("")
+  to_game String @default("")
+  to_match_no String @default("")
+  from_game String @default("")
+  from_match_no String @default("")
+  requester_id String @default("")
+  requester_name String @default("")
+  holder_id String @default("")
+  holder_name String @default("")
+  status String @default("")
+  expires_at String @default("")
+  decided_at String @default("")
+  outcome String @default("")
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@index([status])
+  @@index([coachee_id])
+  @@map("rc_switch_requests")
+}
+
+model PushSubscription {
+  id String @id @db.VarChar(15)
+  rc_id String @default("")
+  rc_name String @default("")
+  endpoint String @default("")
+  keys Json? @db.Json
+  ua String @default("")
+  last_ok String @default("")
+  failures Float @default(0)
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@unique([endpoint])
+  @@index([rc_id])
+  @@map("push_subscriptions")
+}

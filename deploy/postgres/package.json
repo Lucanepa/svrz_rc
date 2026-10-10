@@ -1,0 +1,9 @@
+{
+  "name": "svrz-rc-db-tools",
+  "private": true,
+  "type": "module",
+  "description": "The Prisma CLI (migrations, client generation, Studio), kept out of the app's own dependencies: it ships Prisma Studio, whose React types would change how the frontend type-checks.",
+  "dependencies": {
+    "prisma": "~7.10.0"
+  }
+}

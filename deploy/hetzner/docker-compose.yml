@@ -1,8 +1,12 @@
-# svrz_rc backend — PocketBase + API.
+# svrz_rc backend — PostgreSQL + API.
 #
 # MOVED 12/13.08.2026 from the Hetzner VPS to lenovoserver, so that the Hetzner box
 # could be handed over to KSC Wiedikon containing nothing personal. The directory is
 # still called deploy/hetzner for continuity; it no longer runs there.
+#
+# 10.10.2026: the data moved from PocketBase to PostgreSQL 18 (Prisma 7) —
+# docs/postgres-prisma-plan.md. PocketBase stays below, behind a profile, for
+# the week its data is the way back; `up` no longer starts it.
 #
 # Cloudflare Tunnel is external and now the "cloudflared-lenovo" tunnel
 # (7203f118-0227-48eb-9847-f8272bd0c879), which serves:
@@ -17,10 +21,48 @@
 # project recreates its container, and both hostnames would 502 with nothing in
 # this repo explaining why.
 #
-# Deploy: cd deploy/hetzner; restore ./pb_data; cp svrz-api.env.example svrz-api.env
-#         (fill secrets); docker compose -p svrz-rc up -d --build
+# Deploy: cd deploy/hetzner; cp svrz-api.env.example svrz-api.env (fill secrets);
+#         put POSTGRES_PASSWORD=<openssl rand -hex 24> in ./.env; restore
+#         ./pg_data and ./files from backup-db.sh's dump (or start empty: the
+#         API applies prisma/migrations itself); docker compose -p svrz-rc up -d --build
 services:
+  postgres:
+    # Pinned to a minor: a major upgrade (19) is a dump and restore, never a
+    # silent image bump.
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: svrz
+      POSTGRES_DB: svrz
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?put POSTGRES_PASSWORD in deploy/hetzner/.env}
+      # ⚠ Text must compare byte by byte, as SQLite did under PocketBase: every
+      # list the app sorts and every "date >= x" filter on text relies on it.
+      # Only read when the cluster is first created; the API checks it at start
+      # (server/db/client.ts) and refuses a database made any other way.
+      POSTGRES_INITDB_ARGS: --locale-provider=builtin --builtin-locale=C.UTF-8 --encoding=UTF8
+    volumes:
+      # Postgres 18 images keep the cluster under /var/lib/postgresql/18/docker.
+      # Bind-mounted beside the old pb_data so borg carries it — but the live
+      # files are not a backup; backup-db.sh's nightly pg_dump is.
+      - ./pg_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U svrz -d svrz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    # The API reaches it as postgres:5432. Published on the host's loopback
+    # ONLY (like the API's 8787), for Prisma Studio and psql run on
+    # lenovoserver itself — reached from elsewhere through an SSH tunnel, never
+    # through a public port.
+    ports:
+      - "127.0.0.1:55432:5432"
+    networks: [svrz]
+
+  # PocketBase, kept for the rollback week after the move to Postgres.
+  # Start it only with `--profile pocketbase` (the rollback, or re-running
+  # deploy/postgres/migrate-from-pb.ts).
   pocketbase:
+    profiles: [pocketbase]
     build:
       context: .
       dockerfile: Dockerfile.pocketbase
@@ -38,6 +80,10 @@ services:
     restart: unless-stopped
     env_file: ./svrz-api.env
     environment:
+      DATABASE_URL: postgresql://svrz:${POSTGRES_PASSWORD:?put POSTGRES_PASSWORD in deploy/hetzner/.env}@postgres:5432/svrz
+      # The filed form PDFs (server/db/files.ts), formerly pb_data/storage.
+      FILES_DIR: /app/files
+      # Read only by the one-off PocketBase → Postgres migration.
       POCKETBASE_URL: http://pocketbase:8090
       PORT: "8787"
       # Activity log (see server/logstore.ts). Bind-mounted so the JSONL files
@@ -50,9 +96,12 @@ services:
       TZ: Europe/Zurich
     volumes:
       - ./logs:/app/logs
+      - ./files:/app/files
     ports:
       - "127.0.0.1:8787:8787"
-    depends_on: [pocketbase]
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks: [svrz, tunnel]
 
 networks:

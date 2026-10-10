@@ -19,7 +19,14 @@ deploy/hetzner/seed/*
 !deploy/hetzner/seed/backfill-rc-sv-numbers.mjs
 deploy/hetzner/svrz-api.env
 deploy/hetzner/pb_data/
+deploy/hetzner/pg_data/
+deploy/hetzner/files/
 deploy/hetzner/.env
+
+# Postgres (10.10.2026): the generated Prisma client (npm run db:generate), the
+# CLI's own install, and the filed PDFs a local API writes (FILES_DIR=files).
+server/db/generated/
+files/
 
 # Activity log written by the API (server/logstore.ts): ./logs locally,
 # deploy/hetzner/logs on the host via the compose bind mount.

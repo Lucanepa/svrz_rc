@@ -6,7 +6,7 @@
 # The host tree (/home/lucanepa/svrz_rc) is a FILE COPY, not a git checkout: never `git pull` there.
 # Copy first, then build — a rebuild on stale files succeeds loudly and ships nothing.
 # Deploy the API BEFORE pushing a main that depends on it (push main = Pages deploy).
-# A new PocketBase collection goes in before this runs: see infrastructure.md ("schema before code").
+# Schema changes ride along as Prisma migrations, applied by the API at start (infrastructure.md, "Database").
 set -euo pipefail
 
 HOST=${DEPLOY_HOST:-lenovoserver}
@@ -26,7 +26,7 @@ git archive HEAD | tar -x -C "$export_dir"
 
 # No --delete: the host keeps secret backups (svrz-api.env.bak-*) and snapshots that exist nowhere else.
 rsync -a \
-  --exclude pb_data/ --exclude logs/ --exclude 'svrz-api.env*' --exclude '.env*' \
+  --exclude pb_data/ --exclude pg_data/ --exclude files/ --exclude logs/ --exclude 'svrz-api.env*' --exclude '.env*' \
   --exclude .git/ --exclude node_modules/ --exclude dist/ --exclude .claude/ \
   "$export_dir/" "$target"
 

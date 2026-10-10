@@ -1,14 +1,22 @@
-# svrz-api (Express + tsx). Build context = repo root.
+# svrz-api (Express + tsx, Postgres through Prisma). Build context = repo root.
 FROM node:24-bookworm-slim
 # No node-gyp toolchain here: better-sqlite3 was the only dependency that needed
 # one, and nothing imported it. Every remaining native package ships a prebuilt
 # binary. Re-add python3/make/g++ only if a dependency starts compiling again.
+# ca-certificates pulls in openssl, which Prisma's schema engine links against.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates && apt-get clean
 WORKDIR /app
+ENV PRISMA_HIDE_UPDATE_MESSAGE=1
 COPY package*.json ./
 RUN npm ci
+# The Prisma CLI is its own package (deploy/postgres/package.json): it applies
+# the migrations at start and generates the client below.
+COPY deploy/postgres/package*.json deploy/postgres/
+RUN npm ci --prefix deploy/postgres --no-audit --no-fund
 COPY . .
+RUN npm run db:generate
 ENV PORT=8787
 EXPOSE 8787
+# start:api applies pending prisma/migrations, then starts the server.
 CMD ["npm", "run", "start:api"]

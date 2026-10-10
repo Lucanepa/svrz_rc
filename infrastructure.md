@@ -2,11 +2,12 @@
 
 ## What This Repo Contains
 
-This project is a React PWA + Node/Express API + PocketBase backend:
+This project is a React PWA + Node/Express API + PostgreSQL backend:
 
-- Frontend app: `src/*` (main UI in `src/App.tsx`, API client in `src/lib/pocketbase.ts`)
-- Backend API: `server/index.ts`
-- Database/storage/auth backend: PocketBase (Docker container)
+- Frontend app: `src/*` (main UI in `src/App.tsx`, API client in `src/lib/pocketbase.ts` — the file name predates the move; it only ever talked to `/api/*`)
+- Backend API: `server/index.ts`, data layer in `server/db/` (Prisma 7)
+- Database: PostgreSQL 18 (Docker container) since 10.10.2026; PocketBase before — see "Database: PostgreSQL + Prisma" below
+- Filed form PDFs: files on a bind mount (`deploy/hetzner/files`), served by the API
 - External upstream data source: Swiss Volley public data (authenticated sync)
 
 Local dev command:
@@ -24,9 +25,9 @@ Vite proxy forwards `/api/*` to `http://localhost:8787` in local development.
 
 ## Architecture (Frontend + Backend + Data)
 
-1. Frontend calls only `/api/*` (no direct PocketBase admin calls in browser).
-2. Backend authenticates against PocketBase admin API.
-3. Backend reads/writes PocketBase collections (`games`, `coachees`, `referee_coaches`, `referee_coach_feedbacks`, `observations`).
+1. Frontend calls only `/api/*` (the browser never talks to the database).
+2. Backend connects to Postgres with `DATABASE_URL` (internal network only).
+3. Backend reads/writes the tables (`games`, `coachees`, `referee_coaches`, `referee_coach_feedbacks`, `observations`, …) through `server/db/records.ts`.
 4. Games can be synced from Swiss Volley public data manually and on schedule.
 5. Feedback submit endpoint saves DB records + uploads PDF + sends email + closes role when applicable.
 
@@ -38,16 +39,15 @@ there is no public ingress IP, reverse proxy, or open port to document here.
 - Host / SSH target, tunnel name, and any private IPs: see `infrastructure.private.md` (gitignored).
 - Deployment manifests: `deploy/hetzner/` (`docker-compose.yml`, Dockerfiles, env example).
 - Public API domain: `https://svrz-rc-api.openvolley.app` (Cloudflare Tunnel → API container on `127.0.0.1:8787`). The former `rc-api.lucanepa.com` hostname stays routed to the same container during the migration; see `docs/cloudflare-migration.md` for when to remove it.
-- PocketBase is **not** publicly exposed: it listens only on the internal Docker network and is reached by the API container at `http://pocketbase:8090`. Admin UI (`/_/`) is private — access it via an SSH/port-forward to the host, never over the internet.
-
-Important: set `POCKETBASE_URL` to the internal service URL (e.g. `http://pocketbase:8090`), without `/_/`.
+- Postgres is **not** publicly exposed: the API reaches it on the internal Docker network as `postgres:5432`, and it is published on the host's loopback only (`127.0.0.1:55432`) for Studio and psql on lenovoserver itself. From anywhere else: an SSH port-forward, never the internet.
 
 ## Runtime Services
 
-Both services run via Docker Compose (`deploy/hetzner/docker-compose.yml`):
+The services run via Docker Compose (`deploy/hetzner/docker-compose.yml`):
 
-- `pocketbase` — built from `Dockerfile.pocketbase`, data persisted in `./pb_data`, reachable only on the internal `svrz` Docker network as `pocketbase:8090`.
-- `svrz-api` — built from `Dockerfile.api`, published on `127.0.0.1:8787` for the Cloudflare Tunnel to route. Reads secrets from `deploy/hetzner/svrz-api.env` (gitignored).
+- `postgres` — `postgres:18.6-alpine`, cluster in `./pg_data`, reachable only on the internal `svrz` network as `postgres:5432`. Password in `deploy/hetzner/.env` (`POSTGRES_PASSWORD`, gitignored), from which compose also builds the API's `DATABASE_URL`.
+- `svrz-api` — built from `Dockerfile.api`, published on `127.0.0.1:8787` for the Cloudflare Tunnel to route. Reads secrets from `deploy/hetzner/svrz-api.env` (gitignored). Applies pending Prisma migrations at every start, then serves. Filed PDFs in `./files` (`FILES_DIR=/app/files`).
+- `pocketbase` — the pre-10.10.2026 store, behind the `pocketbase` profile: `up` no longer starts it. `./pb_data` is kept untouched for the rollback week (below).
 
 Public ingress is the external Cloudflare Tunnel (`svrz-rc-api.openvolley.app` → `http://localhost:8787`); there is no Nginx/Certbot on the host. The tunnel is **dashboard-managed** (Zero Trust → Networks → Tunnels → Public Hostnames) — editing `/etc/cloudflared/config.yml` on the host changes nothing.
 
@@ -64,7 +64,7 @@ SQLite directory.
 docker compose -p svrz-rc ps
 docker compose -p svrz-rc up -d --build
 docker compose -p svrz-rc logs -f svrz-api
-docker compose -p svrz-rc logs -f pocketbase
+docker compose -p svrz-rc logs -f postgres
 docker compose -p svrz-rc restart svrz-api
 ```
 
@@ -76,10 +76,62 @@ same variable when running `npm run dev` here.
 
 Deploying the API means copying this repo over `/home/lucanepa/svrz_rc` on
 lenovoserver and rebuilding there — never `git pull` in that directory, which is
-not a checkout. Copy source only: `deploy/hetzner/pb_data`,
-`deploy/hetzner/logs`, `deploy/hetzner/svrz-api.env*` and every `.env*` are host
-state and must be excluded, and `--delete` must NOT be used (the host keeps
-timestamped secret backups that are not in git).
+not a checkout. Copy source only: `deploy/hetzner/pg_data`, `deploy/hetzner/files`,
+`deploy/hetzner/pb_data`, `deploy/hetzner/logs`, `deploy/hetzner/svrz-api.env*`
+and every `.env*` are host state and must be excluded, and `--delete` must NOT be
+used (the host keeps timestamped secret backups that are not in git).
+
+## Database: PostgreSQL + Prisma (since 10.10.2026)
+
+The data moved from PocketBase to PostgreSQL 18 with Prisma 7 on 10.10.2026
+(plan and reasons: `docs/postgres-prisma-plan.md`). **Phase 1 changed the store,
+not the queries:** the ~200 PocketBase-style calls in `server/index.ts`
+(`getFullList`, `getFirstListItem`, filter strings …) are answered from Postgres
+by `server/db/records.ts`, which reproduces PocketBase's behaviour exactly —
+records with the same keys, key order, empty values (`''`, `0`, `false`,
+`null`), stamp text, ids and errors. The rules, each observed on PocketBase
+0.40.5, are in `server/db/filter.ts`. Phase 1b replaces the calls with direct
+Prisma queries area by area and deletes the layer.
+
+- **Schema**: `prisma/schema.prisma`, one model per former collection, columns
+  like for like (text `NOT NULL DEFAULT ''`, JSON as `json` — not `jsonb`, which
+  would reorder keys). `server/db/collections.ts` mirrors it for the record
+  layer; `e2e/db-schema.spec.ts` fails when the two drift. A hidden `_seq`
+  column keeps PocketBase's insertion order for unsorted lists and sort ties.
+- **Schema changes = migrations**: edit `schema.prisma` and `collections.ts`,
+  then `npx prisma migrate dev` against a local database (CLI below); commit the
+  new `prisma/migrations/*` folder. The API applies pending migrations itself at
+  start (`npm run start:api` = `db:migrate` + server) — `setup-schema.mjs` is
+  PocketBase history.
+- **The CLI is its own package**: `deploy/postgres/package.json`
+  (`npm run db:tools` installs it; `db:generate`, `db:migrate`, `db:studio`).
+  It is not an app dependency on purpose: it ships Prisma Studio, whose React
+  types change how the frontend type-checks.
+- **⚠ Text must compare byte by byte.** The cluster is created with the builtin
+  `C.UTF-8` locale (`POSTGRES_INITDB_ARGS` in compose), as SQLite compared under
+  PocketBase. The API refuses to start on any other database
+  (`server/db/client.ts`) — a language collation would silently reorder lists
+  and break the text-date filters.
+- **⚠ `POCKETBASE_ADMIN_PASSWORD` stays in `svrz-api.env`.** Where
+  `ADMIN_SESSION_SECRET` is unset, it signs every session and salts every RC PIN.
+- **Look at the data** (Prisma Studio, the PocketBase dashboard's successor):
+  on lenovoserver, in a checkout with `npm run db:tools` done,
+  `DATABASE_URL="postgresql://svrz:$(grep ^POSTGRES_PASSWORD= /home/lucanepa/svrz_rc/deploy/hetzner/.env | cut -d= -f2)@127.0.0.1:55432/svrz" npm run db:studio -- --port 5555 --browser none`,
+  then from the laptop `ssh -L 5555:127.0.0.1:5555 lenovoserver` and open
+  `http://localhost:5555`. Studio binds 127.0.0.1 only, so it cannot run inside
+  a container and be reached from outside it.
+- **The move itself**: `deploy/postgres/migrate-from-pb.ts` (truncate-and-load,
+  then every record read back through the record layer and fingerprinted
+  against PocketBase — counts and field paths only, never a value) and
+  `deploy/postgres/compare-backends.ts` (every query shape the server uses, run
+  on both stores side by side; writes, so throwaway copies only).
+- **Rollback (until PocketBase's data is retired, a week after the move)**:
+  the API image from before the move is tagged `svrz-rc-svrz-api:pocketbase`
+  and the previous compose file saved beside the live one as
+  `docker-compose.pocketbase.yml`. Stop the API, `docker compose -p svrz-rc -f
+  docker-compose.pocketbase.yml up -d --no-build` after retagging that image as
+  `svrz-rc-svrz-api:latest`. Anything written to Postgres after the move is not
+  in PocketBase — export it first if it matters.
 
 ## Environment Variables
 
@@ -96,9 +148,9 @@ VITE_API_BASE_URL="" # optional; set for static hosting that needs absolute API 
 ### Backend vars (required)
 
 ```env
-POCKETBASE_URL="http://pocketbase:8090"  # internal Docker service URL
-POCKETBASE_ADMIN_EMAIL="..."
-POCKETBASE_ADMIN_PASSWORD="..."
+DATABASE_URL="postgresql://svrz:<POSTGRES_PASSWORD>@postgres:5432/svrz"  # set by compose
+FILES_DIR="/app/files"                   # set by compose; ./files locally
+POCKETBASE_ADMIN_PASSWORD="..."  # ⚠ keep: session/PIN secret fallback (see the Database section)
 VM_USERNAME="..."   # game sync credentials
 VM_PASSWORD="..."   # game sync credentials
 ```
@@ -197,7 +249,11 @@ SURVEY_NOTIFY_EMAIL="__see_infrastructure.private.md__"
 (`#/survey/<token>`), not a Google Form, so the link is minted per feedback mail
 instead of configured.
 
-## PocketBase Collections (Current Model)
+## Collections (Current Model)
+
+Since 10.10.2026 these are Postgres tables of the same names and fields
+(`prisma/schema.prisma`). Where a section below says "added by
+`setup-schema.mjs`", today that is a Prisma migration.
 
 ### `games`
 
@@ -418,10 +474,10 @@ Four things follow from this:
   API paths stay `/api/coachees/<recordId>/*`. The SV number is a person
   identifier in the path: the client log masks it (`scrubTokens`), Pages
   request logs and Referers cannot be.
-- **Schema before code.** Every new column or collection goes through
-  `deploy/hetzner/seed/setup-schema.mjs` on **lenovoserver** BEFORE the API
-  build — PocketBase silently drops writes to undeclared columns, so a build
-  that ships first writes nothing and reports nothing. Every wire field the
+- **Schema before code.** Since 10.10.2026 a new column is a Prisma migration,
+  which the API applies itself at start — the code and its schema ship
+  together. (Under PocketBase it was `setup-schema.mjs`, run BEFORE the build,
+  because PocketBase silently dropped writes to undeclared columns.) Every wire field the
   identity work added is optional: Pages ahead of the API, or the API ahead
   of Pages, both work, and the client falls to the name for any missing id.
 
@@ -559,7 +615,7 @@ Sign-in rate limits (in memory, reset on restart):
 
 ## API Endpoints (What They Do)
 
-- `GET /api/health`: checks PocketBase reachability + admin auth.
+- `GET /api/health`: one real database read through the record layer; 500 `{ stage: 'database' }` when it fails.
 - `GET /api/eligible-games`: games filtered to coachees by name matching.
 - `GET /api/referee-coach-people`: active RC people list for assignment/selectors.
 - `PUT /api/games/:id/assign-rc`: assign RC to a game.
@@ -1345,9 +1401,22 @@ Two consequences worth knowing:
 
 ## Backups
 
-`deploy/hetzner/pb_data` is a bind mount and the only live copy of every
-feedback, PDF, president's note and credential hash. Two things protect it, and
-they do different jobs.
+Since 10.10.2026: **`deploy/hetzner/backup-db.sh`** — `pg_dump -Fc` from inside
+the postgres container plus a tar of `./files`, both read back before they
+count (the dump is listed and must hold 15+ tables and 100+ games), rotated at
+14, same 02:45 timer, same `~/BACKUP-FAILED-svrz-rc` marker, borg carries them.
+The installed unit still names `backup-pb.sh`, which now only `exec`s
+`backup-db.sh`; repoint the unit (`deploy/hetzner/systemd/`, sudo) and delete
+the wrapper. Restore: `docker exec -i svrz-rc-postgres-1 pg_restore --clean
+--if-exists -U svrz -d svrz < svrz-rc-db-<stamp>.dump` and untar the files into
+`deploy/hetzner/files`.
+
+The rest of this section is the PocketBase era, kept because the last zips are
+the rollback point of the move (`backup-pb.legacy.sh` made them).
+
+`deploy/hetzner/pb_data` was a bind mount and the only live copy of every
+feedback, PDF, president's note and credential hash. Two things protected it, and
+they did different jobs.
 
 **1. A consistent nightly snapshot — `deploy/hetzner/backup-pb.sh`**, scheduled
 by `svrz-rc-backup.timer` at 02:45 (units tracked in `deploy/hetzner/systemd/`).

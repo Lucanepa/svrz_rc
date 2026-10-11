@@ -1,14 +1,14 @@
 // The private note a coach leaves for the RC chair on an observation they
-// have filed — the entry as it is written into app_settings.
+// have filed — one entry of the chair's list.
 //
-// Pure on purpose: server/index.ts owns the store (one settings row per
-// season, keyed by the feedback record id — see "Private notes to the RC
-// president" there), and this is only the shape of one entry, so a spec can
-// pin what an entry carries without a PocketBase behind it.
+// Pure on purpose: server/index.ts owns the store (a president_notes row per
+// observation — see "Private notes to the RC president" there) and builds
+// each entry from that row and its observation, so a spec can pin what an
+// entry carries without a database behind it.
 
-/** One note, as the chair's list reads it. The labels ride along so reading
- *  the list costs one settings read instead of a join per row; the ids beside
- *  them say WHO and WHICH game without going through a spelling. */
+/** One note, as the chair's list reads it: the note, and the labels read off
+ *  its observation; the ids beside them say WHO and WHICH game without going
+ *  through a spelling. */
 export type PresidentNoteEntry = {
   note: string;
   /** The game's record id — what the store joins on, never what a human reads. */

@@ -55,8 +55,9 @@ test('every collection is a Prisma model with the same fields, types and order',
         const target = models.get(f.target!)!.model;
         const rel = model.fields.find((x) => x.name === `${f.name}_rec`);
         expect(rel?.type, `${meta.name}.${f.name}_rec`).toBe(`${target}?`);
-        // PocketBase cleared the link when the target went; it never deleted the row.
-        expect(rel?.attrs).toContain('onDelete: SetNull');
+        // PocketBase cleared the link when the target went; it never deleted the
+        // row. A table born on Postgres may say otherwise, and says so in its meta.
+        expect(rel?.attrs).toContain(f.cascade ? 'onDelete: Cascade' : 'onDelete: SetNull');
       }
       if (f.type === 'autodate' && f.name === 'updated') expect(p.attrs).toContain('@updatedAt');
     }

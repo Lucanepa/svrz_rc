@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle, Coins, BarChart3, FolderOpen, ExternalLink, Search, RefreshCw, ListChecks } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
+import { RichView } from './RichText';
 import { cn } from '../lib/utils';
 import { adminTabFromPath, adminLogModeFromPath } from '../lib/routes';
 import {
@@ -3597,8 +3598,9 @@ function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
             </span>
           </div>
           {/* Confidential to the chair; the server already keeps it out of its
-              own request log, and the click logger must do the same. */}
-          <p data-log-redact className="text-sm text-stone-800 whitespace-pre-wrap">{r.note}</p>
+              own request log, and the click logger must do the same. Rich
+              text: drawn from the restricted subset, never as raw HTML. */}
+          <div data-log-redact><RichView value={r.note} className="text-sm text-stone-800" /></div>
         </div>
       ))}
 

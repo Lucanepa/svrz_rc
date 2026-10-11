@@ -15,6 +15,9 @@ export type FieldMeta = {
   required?: boolean;
   /** For a file: the largest upload PocketBase accepted, in bytes. */
   maxSize?: number;
+  /** For a relation: the row goes WITH its target instead of losing the link.
+   *  Only for tables born after PocketBase, which never deleted a row. */
+  cascade?: boolean;
 };
 
 export type CollectionMeta = {
@@ -343,6 +346,20 @@ export const COLLECTIONS: Record<string, CollectionMeta> = {
       {name: 'ua', type: 'text'},
       {name: 'last_ok', type: 'text'},
       {name: 'failures', type: 'number'},
+      {name: 'created', type: 'autodate'},
+      {name: 'updated', type: 'autodate'},
+    ],
+  },
+  president_notes: {
+    name: 'president_notes',
+    // Born on Postgres (11.10.2026): no PocketBase id ever existed.
+    id: 'pg_president_notes',
+    delegate: 'presidentNote',
+    fields: [
+      {name: 'id', type: 'text'},
+      {name: 'feedback', type: 'relation', target: 'referee_coach_feedbacks', cascade: true},
+      {name: 'note', type: 'text'},
+      {name: 'author_name', type: 'text'},
       {name: 'created', type: 'autodate'},
       {name: 'updated', type: 'autodate'},
     ],

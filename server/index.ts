@@ -41,6 +41,7 @@ import type { StatFilters, StatRole } from '../src/lib/statistics.ts';
 import { goalForMandate, OBSERVATION_GOAL } from '../src/types.ts';
 import { splitCoacheeGroups } from '../src/lib/coacheeGroup.ts';
 import { normalizeBudget } from '../src/lib/budget.ts';
+import { richToPlain, sanitizeRich } from '../src/lib/richText.ts';
 import { ATTACH_BUDGET_BYTES, attachableDoc, normalizeAttachedDocs, type UsefulDoc } from '../src/lib/usefulDocs.ts';
 
 // Shared with the survey page so the mailed copy can never drift from the form
@@ -5894,21 +5895,8 @@ async function renameRcReferences(oldName: string, newName: string, rcId: string
     await withCollection(collectionCandidates.rcGameNotes, (c) =>
       c.update(rcNote.id, { rc_name: newName, rc_id: rcId }));
   }
-  // The chair's notes live in one settings row per season; each is rewritten
-  // whole under its lock, the way a save writes it.
-  const noteRows = await withCollection(['app_settings'], (c) =>
-    c.getFullList<AnyRecord>({ filter: `key ~ "${PRESIDENT_NOTES_PREFIX}"` }));
-  for (const row of noteRows) {
-    const key = asText(row.key);
-    if (!Object.values(parseNoteMap(row.value)).some((n) => mine(n.rcId, n.rcName))) continue;
-    await withSettingLock(key, async () => {
-      const current = parseNoteMap((await getSettingRecord(key))?.value);
-      for (const entry of Object.values(current)) {
-        if (mine(entry.rcId, entry.rcName)) { entry.rcName = newName; entry.rcId = rcId; }
-      }
-      await setSetting(key, JSON.stringify(current));
-    });
-  }
+  // The chair's notes need nothing: their list reads the coach off the
+  // observation, which the loop above has just renamed.
   icalGamesCache.clear();
 }
 
@@ -7367,71 +7355,69 @@ app.get('/api/survey-responses', requireSurveyReader, async (req: Request, res: 
 //
 // Kept OUT of feedback_json on purpose. That object is what the PDF is drawn
 // from and what the coachee receives, so a note living in it would be one
-// refactor away from being mailed to the person it is about. Here it is a
-// separate app_settings map (same key/value store as coachee_targets and
-// rc_mandates — no schema change), keyed by the feedback record id and carrying
-// the game/coachee labels the president's list needs, so reading the list costs
-// one settings read instead of a join per row.
+// refactor away from being mailed to the person it is about. And out of the
+// feedback ROW too: it is a row of its own in president_notes, one per
+// observation (prisma/schema.prisma, PresidentNote), so no endpoint that hands
+// out feedback records can carry it along. The database deletes it with its
+// observation.
 //
-// One row per season rather than one row for all time: every save rewrites the
-// whole value, and a single row would keep growing for as long as the tool is
-// used. The season comes from the game, so a note always lands in the season it
-// was played in.
-const PRESIDENT_NOTES_PREFIX = 'president_notes_';
-const PRESIDENT_NOTE_MAX = 5000;
+// Until 11.10.2026 every note of a season sat in one app_settings row as JSON,
+// rewritten whole on every save — the cheap shape under PocketBase, where a new
+// collection meant a schema run, and the reason a season's notes outgrew a
+// 5000-character field. The labels the chair's list shows (game, coachee,
+// coach) are now read live from the observation, so a renamed coach or a
+// corrected game needs no second write here.
+//
+// Rich text: the restricted subset in src/lib/richText.ts, sanitised here.
+const PRESIDENT_NOTE_MAX = 50_000;
 
-const presidentNotesKey = (season: number) => `${PRESIDENT_NOTES_PREFIX}${season}`;
-
-function parseNoteMap(value: unknown): Record<string, PresidentNoteEntry> {
-  try {
-    const parsed = JSON.parse(asText(value));
-    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
-      ? parsed as Record<string, PresidentNoteEntry>
-      : {};
-  } catch { return {}; }
+/** The note row on one observation, or null. */
+async function presidentNoteRow(feedbackId: string): Promise<AnyRecord | null> {
+  const rows = await withCollection(['president_notes'], (c) =>
+    c.getFullList<AnyRecord>({ filter: `feedback = "${escapeFilterValue(feedbackId)}"` }));
+  return rows[0] ?? null;
 }
 
-async function readPresidentNotes(season: number): Promise<Record<string, PresidentNoteEntry>> {
-  const rec = await getSettingRecord(presidentNotesKey(season));
-  return rec ? parseNoteMap(rec.value) : {};
-}
-
-/** Every season's notes, newest first — what the president's list shows. */
+/** Every note with the labels the chair's list shows, newest first. */
 async function readAllPresidentNotes(): Promise<Array<PresidentNoteEntry & { id: string }>> {
-  const rows = await withCollection(['app_settings'], (c) =>
-    c.getFullList<AnyRecord>({ filter: `key ~ "${PRESIDENT_NOTES_PREFIX}"` }));
-  return rows
-    .flatMap((row) => Object.entries(parseNoteMap(row.value)).map(([id, entry]) => ({ id, ...entry })))
-    .sort((a, b) => asText(b.updatedAt).localeCompare(asText(a.updatedAt)));
+  const rows = await withCollection(['president_notes'], (c) => c.getFullList<AnyRecord>({ sort: '-updated' }));
+  const ids = [...new Set(rows.map((r) => asText(r.feedback)).filter(Boolean))];
+  if (ids.length === 0) return [];
+  const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (c) => c.getFullList<AnyRecord>({
+    filter: ids.map((id) => `id = "${escapeFilterValue(id)}"`).join(' || '),
+    expand: 'game,coachee',
+  }));
+  const byId = new Map(feedbacks.map((f) => [String(f.id), f]));
+  return rows.flatMap((row) => {
+    const record = byId.get(asText(row.feedback));
+    if (!record) return [];
+    const expand = (record.expand ?? {}) as Record<string, AnyRecord | undefined>;
+    const updated = new Date(asText(row.updated).replace(' ', 'T'));
+    return [{
+      id: String(record.id),
+      ...presidentNoteEntry({
+        note: asText(row.note), record, game: expand.game, coachee: expand.coachee,
+        authorName: asText(row.author_name), now: Number.isNaN(updated.getTime()) ? new Date(0) : updated,
+      }),
+    }];
+  });
 }
 
-/** Just the feedback ids that carry a president's note, across every season —
- *  the cheap membership test the "is this report actually complete" badges
- *  need (Formulare, Home, the calendar dot), without the note text itself. */
+/** One season's notes, keyed by observation id: the season its game was played in. */
+async function readPresidentNotes(season: number): Promise<Record<string, PresidentNoteEntry>> {
+  const out: Record<string, PresidentNoteEntry> = {};
+  for (const { id, ...entry } of await readAllPresidentNotes()) {
+    if (seasonOfDate(entry.gameDate) === season) out[id] = entry;
+  }
+  return out;
+}
+
+/** Just the observation ids that carry a president's note, across every
+ *  season — the cheap membership test the "is this report actually complete"
+ *  badges need (Formulare, Home, the calendar dot), without the note text. */
 async function getPresidentNotedIds(): Promise<Set<string>> {
-  const rows = await withCollection(['app_settings'], (c) =>
-    c.getFullList<AnyRecord>({ filter: `key ~ "${PRESIDENT_NOTES_PREFIX}"` }));
-  const ids = new Set<string>();
-  for (const row of rows) {
-    for (const id of Object.keys(parseNoteMap(row.value))) ids.add(id);
-  }
-  return ids;
-}
-
-/** Drop a feedback's note wherever it lives — used when the feedback is deleted. */
-async function deletePresidentNote(feedbackId: string): Promise<void> {
-  const rows = await withCollection(['app_settings'], (c) =>
-    c.getFullList<AnyRecord>({ filter: `key ~ "${PRESIDENT_NOTES_PREFIX}"` }));
-  for (const row of rows) {
-    const key = asText(row.key);
-    const notes = parseNoteMap(row.value);
-    if (!notes[feedbackId]) continue;
-    await withSettingLock(key, async () => {
-      const current = parseNoteMap((await getSettingRecord(key))?.value);
-      delete current[feedbackId];
-      await setSetting(key, JSON.stringify(current));
-    });
-  }
+  const rows = await withCollection(['president_notes'], (c) => c.getFullList<AnyRecord>({ fields: 'feedback' }));
+  return new Set(rows.map((r) => asText(r.feedback)).filter(Boolean));
 }
 
 // Who the session actually is, even when it is an admin one. requireRcSession
@@ -7487,9 +7473,7 @@ app.get('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
-    const gameDate = asText(((record.expand ?? {}) as Record<string, AnyRecord | undefined>).game?.match_date);
-    const notes = await readPresidentNotes(seasonOfDate(gameDate));
-    res.json({ note: notes[record.id]?.note ?? '' });
+    res.json({ note: asText((await presidentNoteRow(record.id))?.note) });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -7501,16 +7485,16 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
     catch { res.status(404).json({ error: 'Feedback not found' }); return; }
     if (!(await mayWritePresidentNote(req, record))) { res.status(403).json({ error: 'Forbidden' }); return; }
 
-    const note = asText((req.body ?? {}).note).trim().slice(0, PRESIDENT_NOTE_MAX);
-    const expand = (record.expand ?? {}) as Record<string, AnyRecord | undefined>;
-    const game = expand.game;
-    const coachee = expand.coachee;
+    // Sanitised to the rich-text subset (anything else becomes escaped text),
+    // cut before sanitising so a cut can never leave half a tag behind. A box
+    // holding only formatting and no words is an empty note.
+    const sanitized = sanitizeRich(asText((req.body ?? {}).note).slice(0, PRESIDENT_NOTE_MAX)).trim();
+    const note = richToPlain(sanitized).trim() ? sanitized : '';
     // An admin may write on a feedback another coach filed, so the note records
     // who wrote it separately from who filed the observation — the president
     // would otherwise read an admin's words as the coach's.
     const rcAuth = rcAuthByReq.get(req);
     const authorName = rcAuth?.name || asText(verifyAdminSession(req).email) || 'Admin';
-    const key = presidentNotesKey(seasonOfDate(asText(game?.match_date)));
 
     // An admin writes blind — mayReadPresidentNote does not let them read the
     // note first — so an admin write over a note the COACH wrote destroyed the
@@ -7526,23 +7510,26 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
     const isFiler = Boolean(me && rcRefMatches(record.rc_id, record.rc_name, me)) || isSurveyReader(req);
     let refused = false;
 
-    await withSettingLock(key, async () => {
-      const notes = parseNoteMap((await getSettingRecord(key))?.value);
-      const current = notes[record.id];
-      if (!isFiler && current && presidentNoteBelongsToAnother(current, authorName)) {
+    // One writer per observation at a time: the check below and the write
+    // after it must not interleave with another save of the same note. The
+    // settings lock is a plain keyed chain; the prefix keeps it off every
+    // real settings key.
+    await withSettingLock(`president_note:${record.id}`, async () => {
+      const current = await presidentNoteRow(record.id);
+      if (!isFiler && current && presidentNoteBelongsToAnother({ authorName: asText(current.author_name) }, authorName)) {
         refused = true;
         return;
       }
       if (note) {
-        // The labels for the chair's list, and beside them the ids — the
-        // match number a human reads, the coach's roster id a rename finds
-        // the entry by, the coachee's SV number (server/presidentNotes.ts).
-        notes[record.id] = presidentNoteEntry({ note, record, game, coachee, authorName, now: new Date() });
-      } else {
+        if (current) {
+          await withCollection(['president_notes'], (c) => c.update(current.id, { note, author_name: authorName }));
+        } else {
+          await withCollection(['president_notes'], (c) => c.create({ feedback: record.id, note, author_name: authorName }));
+        }
+      } else if (current) {
         // Clearing the box removes the note rather than filing an empty one.
-        delete notes[record.id];
+        await withCollection(['president_notes'], (c) => c.delete(current.id));
       }
-      await setSetting(key, JSON.stringify(notes));
     });
     if (refused) {
       res.status(409).json({ error: 'Auf diesem Bericht liegt schon die vertrauliche Notiz des Referee Coaches an das RC-Präsidium. Sie kann nur von ihm selbst geändert werden.' });
@@ -12049,10 +12036,8 @@ async function deleteFeedbackCascade(feedbackId: string): Promise<boolean> {
     } catch (e) { log.error('feedback.delete', 'observation cleanup failed', { feedbackId, gameId, coacheeId, error: String(e) }); }
   }
 
-  // The private note hangs off this feedback by id; left behind it would show
-  // the president a note about a game that no longer exists, forever.
-  try { await deletePresidentNote(feedbackId); }
-  catch (noteErr) { log.error('feedback.delete', 'president-note cleanup failed', { feedbackId, error: String(noteErr) }); }
+  // The private note went with the feedback row: president_notes.feedback
+  // cascades in the database, so no note outlives its observation.
   return true;
 }
 
@@ -13174,38 +13159,14 @@ app.post('/api/admin/migrate-rc-ids', requireAdminSession, async (_req: Request,
     // 500 that hides what was written.
     const rcNotes = await backfill(collectionCandidates.rcGameNotes, 'rc_id', 'rc_name')
       .catch((error: unknown) => { if (isMissingCollectionError(error)) return undefined; throw error; });
-    // The chair's notes, the same way: an entry written before the id was
-    // stored carries the coach's name only, and the audit lists it as one
-    // this button fixes — so it has to. One settings row per season, each
-    // rewritten whole under its lock, the way a save and a rename write it.
+    // The chair's notes carry no coach of their own any more: their list reads
+    // the observation's, which the feedback pass above has just stamped. Still
+    // reported in the same shape, so the console's summary line reads as before.
     const presidentNotes = await (async () => {
-      let total = 0, filled = 0, already = 0, unresolved = 0, blank = 0;
-      const rows = await withCollection(['app_settings'], (c) =>
-        c.getFullList<AnyRecord>({ filter: `key ~ "${PRESIDENT_NOTES_PREFIX}"` }));
-      for (const row of rows) {
-        const key = asText(row.key);
-        const stamps = new Map<string, string>();
-        for (const [id, entry] of Object.entries(parseNoteMap(row.value))) {
-          total++;
-          if (asText(entry.rcId)) { already++; continue; }
-          if (!asText(entry.rcName)) { blank++; continue; }
-          const resolved = resolveRcName(asText(entry.rcName), people);
-          if (!resolved) { unresolved++; continue; }
-          stamps.set(id, resolved);
-        }
-        if (stamps.size === 0) continue;
-        await withSettingLock(key, async () => {
-          const current = parseNoteMap((await getSettingRecord(key))?.value);
-          for (const [id, rcId] of stamps) {
-            const entry = current[id];
-            if (!entry || asText(entry.rcId)) continue;
-            entry.rcId = rcId;
-            filled++;
-          }
-          await setSetting(key, JSON.stringify(current));
-        });
-      }
-      return { total, filled, already, unresolved, blank };
+      const notes = await readAllPresidentNotes();
+      const already = notes.filter((n) => asText(n.rcId)).length;
+      const blank = notes.filter((n) => !asText(n.rcId) && !asText(n.rcName)).length;
+      return { total: notes.length, filled: 0, already, unresolved: notes.length - already - blank, blank };
     })();
     // The calendar feed caches per RC and is now filtered by id.
     icalGamesCache.clear();

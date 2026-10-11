@@ -64,8 +64,9 @@ async function stub(
   });
 }
 
+// The form's rich-text editor: a contenteditable textbox named by its placeholder.
 const noteBox = (page: import('@playwright/test').Page) =>
-  page.getByPlaceholder(/RC-Vorsitzende wissen sollte|RC president should know/);
+  page.getByRole('textbox', { name: /RC-Vorsitzende wissen sollte|RC president should know/ });
 
 /** Home → completed observations → reopen the filed one. */
 async function openFiledObservation(page: import('@playwright/test').Page) {
@@ -79,12 +80,22 @@ test('the coach who filed it can read back and save the note', async ({ page }) 
   await openFiledObservation(page);
 
   await expect(noteBox(page)).toBeVisible();
-  await expect(noteBox(page)).toHaveValue('earlier note');
+  await expect(noteBox(page)).toHaveText('earlier note');
 
   await noteBox(page).fill('escalate please');
   await page.getByRole('button', { name: /Notiz speichern|Save note/ }).click();
   await expect.poll(() => puts.length).toBe(1);
   expect(puts[0]).toEqual({ note: 'escalate please' });
+});
+
+// 11.10.2026: the note is rich text, like the form's remarks — bold, colour,
+// bullets — so a formatted note reads back formatted, not as tags.
+test('a formatted note reads back formatted', async ({ page }) => {
+  await stub(page, { signedInAs: RC.name, note: { note: '<b>Wichtig:</b> nochmals beobachten' } });
+  await openFiledObservation(page);
+
+  await expect(noteBox(page)).toHaveText('Wichtig: nochmals beobachten');
+  await expect(noteBox(page).locator('b')).toHaveText('Wichtig:');
 });
 
 // 10.10.2026: the season's notes outgrew a 5000-character text field and every
@@ -101,7 +112,7 @@ test('a save the server refuses says so in words and keeps the text', async ({ p
   await page.getByRole('button', { name: /Notiz speichern|Save note/ }).click();
   await expect(page.getByText(/es liegt nicht an dir|it is not you/)).toBeVisible();
   await expect(page.getByText('{"error"')).toHaveCount(0);
-  await expect(noteBox(page)).toHaveValue('Sehr gute Leistung.');
+  await expect(noteBox(page)).toHaveText('Sehr gute Leistung.');
 });
 
 test('another coach is not offered the box at all', async ({ page }) => {
@@ -119,17 +130,17 @@ test('a note that cannot be read is never silently overwritten', async ({ page }
   await stub(page, { signedInAs: RC.name, note: { status: 500 }, onPut: (b) => puts.push(b) });
   await openFiledObservation(page);
 
-  // The box stays shut and says why: enabling it empty would let a save wipe a
-  // note that exists and merely could not be fetched.
-  await expect(noteBox(page)).toBeDisabled();
+  // No editor and a dead save button, and the error says why: an editor open
+  // and empty would let a save wipe a note that exists and merely could not
+  // be fetched.
+  await expect(noteBox(page)).toHaveCount(0);
   await expect(page.getByRole('button', { name: /Notiz speichern|Save note/ })).toBeDisabled();
   expect(puts).toHaveLength(0);
 });
 
-// What the store keeps beside the words. The chair's list reads its labels
-// off the entry (one settings read, no join per row), and beside them the
-// ids: the match number a human reads, the coach's roster id a rename finds
-// the entry by however the name was spelled, the coachee's SV number.
+// What an entry of the chair's list carries beside the words, read off the
+// note's observation: the labels, and beside them the ids — the match number
+// a human reads, the coach's roster id, the coachee's SV number.
 test.describe('what an entry carries', () => {
   test('the match number and the ids, beside the labels', () => {
     const entry = presidentNoteEntry({

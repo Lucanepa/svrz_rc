@@ -131,6 +131,7 @@ model RefereeCoachFeedback {
   /// PocketBase listed rows in SQLite rowid order when no sort was given and
   /// broke sort ties the same way; this keeps that order (never returned).
   seq Int @default(autoincrement()) @map("_seq")
+  president_notes_feedback PresidentNote? @relation("president_notes_feedback")
   @@index([game])
   @@index([coachee])
   @@index([submitted_at])
@@ -381,4 +382,24 @@ model PushSubscription {
   @@unique([endpoint])
   @@index([rc_id])
   @@map("push_subscriptions")
+}
+
+/// The coach's confidential note to the RC chair on one observation. Its own
+/// table, one row per observation, so that no endpoint handing out feedback
+/// records can carry it along; it goes when its observation goes (Cascade,
+/// unlike every PocketBase-era link). Rich text: the restricted subset in
+/// src/lib/richText.ts, sanitised by the server on the way in.
+model PresidentNote {
+  id String @id @db.VarChar(15)
+  feedback String? @unique @db.VarChar(15)
+  feedback_rec RefereeCoachFeedback? @relation("president_notes_feedback", fields: [feedback], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  note String @default("")
+  /// Who wrote it: an admin may write on an observation another coach filed.
+  author_name String @default("")
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@map("president_notes")
 }

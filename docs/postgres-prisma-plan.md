@@ -66,7 +66,7 @@ still text (dates included): every "date" PocketBase held was a text field.
 **Phase 1 keeps the settings maps as they are** (`app_settings` rows with a
 `jsonb` value) so the cutover is like-for-like. **Phase 2 promotes the ones
 that grow** into tables: `president_notes_<season>` → `president_notes` (one row
-per form: the design that hit the cap), `starred_games`/`manual_games` → columns
+per form: the design that hit the cap — **done 11.10.2026**), `starred_games`/`manual_games` → columns
 on games, `reminder_sent` → `reminder_log`, `rc_meetings` → a table,
 `vm_missing_games` → columns on games.
 
@@ -174,9 +174,12 @@ in the main checkout (memory: shared checkout).
 
 - ~~Go-ahead, and an evening for the cutover.~~ Switched 11.10.2026, 22:26
   (11 s down; 2,766 records and 13 PDFs verified, 293 reads identical).
-- Promote the president notes to their own table — phase 2 (not in the
-  like-for-like move; the 5000-character cap that broke them is gone with
-  PocketBase anyway).
+- ~~Promote the president notes to their own table.~~ Done 11.10.2026
+  (migration `20261011230000_president_notes`): one `president_notes` row per
+  observation, unique and cascading on `feedback`, rich text sanitised by the
+  server; the labels are read live from the observation. The old season rows
+  (`president_notes_<season>` in app_settings) are left in place, unread,
+  until the move is confirmed — remove them in a later migration.
 - Repoint the installed `svrz-rc-backup.service` at `backup-db.sh` (sudo);
   until then `backup-pb.sh` forwards to it.
 - ~~After the rollback week: retire PocketBase.~~ Done the night of the move,

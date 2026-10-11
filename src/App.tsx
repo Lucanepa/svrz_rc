@@ -10205,13 +10205,25 @@ export default function App() {
               ? 'Nur die RC-Vorsitzende sieht diese Notiz. Sie wird weder im Feedback gespeichert noch dem Schiedsrichter gesendet.'
               : 'Only the RC president sees this note. It is not part of the feedback and is never sent to the referee.'}
           </p>
-          <textarea
-            className="w-full min-h-[7rem] text-sm leading-relaxed resize-none outline-none bg-amber-50/40 border border-amber-200 rounded p-3 placeholder:text-stone-300"
-            placeholder={formData.lang === 'DE' ? 'Was die RC-Vorsitzende wissen sollte…' : 'What the RC president should know…'}
-            value={presidentNote}
-            disabled={!presidentNoteLoaded}
-            onChange={(e) => setPresidentNote(e.target.value)}
-          />
+          {/* The form's own long-form editor: bold, colour, bullets and the
+              full-screen view, in the same restricted subset the server
+              sanitises. Not drawn until the saved note has arrived — an
+              editor typed into early would be overwritten by it. */}
+          {presidentNoteLoaded ? (
+            <ExpandableTextarea
+              value={presidentNote}
+              onChange={setPresidentNote}
+              label={formData.lang === 'DE' ? 'Vertrauliche Notiz an die RC-Vorsitzende' : 'Private note to the RC president'}
+              placeholder={formData.lang === 'DE' ? 'Was die RC-Vorsitzende wissen sollte…' : 'What the RC president should know…'}
+              lang={formData.lang}
+              minHeight="7rem"
+              className="text-sm bg-amber-50/40 border-amber-200 p-3"
+            />
+          ) : (
+            <div aria-hidden="true" className="w-full min-h-[7rem] text-sm bg-amber-50/40 border border-amber-200 rounded p-3 text-stone-300">
+              {formData.lang === 'DE' ? 'Was die RC-Vorsitzende wissen sollte…' : 'What the RC president should know…'}
+            </div>
+          )}
           <div className="mt-3 flex items-center gap-3">
             <button
               type="button"

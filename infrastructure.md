@@ -976,7 +976,7 @@ inside it. Two codebases use it:
 | project | what runs | where |
 |---|---|---|
 | **svrz_rc** (this repo) | games sync (01:00 + 12:15/16:15 Zürich), hourly SR-Börse poll, contact sync, auth check | API container, lenovoserver |
-| **wiedisync** | `vm_sync`, `svrz_sync`, game/nomination pushes | Directus, hetzner |
+| **wiedisync** | `vm_sync`, `svrz_sync`, game/nomination pushes, result reports, sheet reads | Directus **prod container only**, hetzner — since 2026-10-11 the dev container never logs in (wiedisync `external-accounts.js`, fail-closed) |
 | kscw-website | **nothing** — it only *links* to volleyball.ch, holds no credentials. Keep it that way. |
 
 VM keeps the active role **per account, not per session**, and it persists across

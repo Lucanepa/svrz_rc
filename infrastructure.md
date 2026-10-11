@@ -47,7 +47,7 @@ The services run via Docker Compose (`deploy/hetzner/docker-compose.yml`):
 
 - `postgres` — `postgres:18.6-alpine`, cluster in `./pg_data`, reachable only on the internal `svrz` network as `postgres:5432`. Password in `deploy/hetzner/.env` (`POSTGRES_PASSWORD`, gitignored), from which compose also builds the API's `DATABASE_URL`.
 - `svrz-api` — built from `Dockerfile.api`, published on `127.0.0.1:8787` for the Cloudflare Tunnel to route. Reads secrets from `deploy/hetzner/svrz-api.env` (gitignored). Applies pending Prisma migrations at every start, then serves. Filed PDFs in `./files` (`FILES_DIR=/app/files`).
-- `pocketbase` — the pre-10.10.2026 store, behind the `pocketbase` profile: `up` no longer starts it. `./pb_data` is kept untouched for the rollback week (below).
+- PocketBase, the store before 11.10.2026, is retired: no service, no `pb_data`. Its last snapshot is `backups/pocketbase-final-2026-10-11.zip` (below).
 
 Public ingress is the external Cloudflare Tunnel (`svrz-rc-api.openvolley.app` → `http://localhost:8787`); there is no Nginx/Certbot on the host. The tunnel is **dashboard-managed** (Zero Trust → Networks → Tunnels → Public Hostnames) — editing `/etc/cloudflared/config.yml` on the host changes nothing.
 
@@ -77,7 +77,7 @@ same variable when running `npm run dev` here.
 Deploying the API means copying this repo over `/home/lucanepa/svrz_rc` on
 lenovoserver and rebuilding there — never `git pull` in that directory, which is
 not a checkout. Copy source only: `deploy/hetzner/pg_data`, `deploy/hetzner/files`,
-`deploy/hetzner/pb_data`, `deploy/hetzner/logs`, `deploy/hetzner/svrz-api.env*`
+`deploy/hetzner/logs`, `deploy/hetzner/svrz-api.env*`
 and every `.env*` are host state and must be excluded, and `--delete` must NOT be
 used (the host keeps timestamped secret backups that are not in git).
 
@@ -120,18 +120,19 @@ Prisma queries area by area and deletes the layer.
   then from the laptop `ssh -L 5555:127.0.0.1:5555 lenovoserver` and open
   `http://localhost:5555`. Studio binds 127.0.0.1 only, so it cannot run inside
   a container and be reached from outside it.
-- **The move itself**: `deploy/postgres/migrate-from-pb.ts` (truncate-and-load,
-  then every record read back through the record layer and fingerprinted
-  against PocketBase — counts and field paths only, never a value) and
-  `deploy/postgres/compare-backends.ts` (every query shape the server uses, run
-  on both stores side by side; writes, so throwaway copies only).
-- **Rollback (until PocketBase's data is retired, a week after the move)**:
-  the API image from before the move is tagged `svrz-rc-svrz-api:pocketbase`
-  and the previous compose file saved beside the live one as
-  `docker-compose.pocketbase.yml`. Stop the API, `docker compose -p svrz-rc -f
-  docker-compose.pocketbase.yml up -d --no-build` after retagging that image as
-  `svrz-rc-svrz-api:latest`. Anything written to Postgres after the move is not
-  in PocketBase — export it first if it matters.
+- **The move itself** (11.10.2026, 22:26, 11 s down): every record copied,
+  read back through the record layer and fingerprinted against PocketBase
+  (2,766 records, 13 PDFs), then a read-only side-by-side check of every query
+  shape the server uses. The tools (`deploy/postgres/migrate-from-pb.ts`,
+  `compare-backends.ts`) and `setup-schema.mjs` were removed with PocketBase;
+  they are in git history before the commit that retired it.
+- **No rollback to PocketBase any more.** It was retired the night of the move,
+  at Luca's request, without the planned week. What is left is its last
+  snapshot, `backups/pocketbase-final-2026-10-11.zip` (a PocketBase 0.40.5
+  backup: `pb_data` with `data.db` and the stored files), outside every
+  rotation. To read it: open `data.db` with `sqlite3`, or unzip into an empty
+  `pb_data` and serve it with PocketBase 0.40.5, built from
+  `deploy/hetzner/Dockerfile.pocketbase` as it was in git history.
 
 ## Environment Variables
 

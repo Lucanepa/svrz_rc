@@ -4,9 +4,9 @@ import { COLLECTIONS } from '../server/db/collections';
 
 // The PocketBase filter strings the server still writes, as Prisma `where`
 // objects with PocketBase's own semantics (server/db/filter.ts). Each rule
-// here was observed on a PocketBase 0.40.5 copy of production on 10.10.2026;
-// deploy/postgres/compare-backends.ts checks the same rules end to end against
-// both databases. These pin the translation without either.
+// here was observed on a PocketBase 0.40.5 copy of production on 10.10.2026,
+// and checked end to end against both databases before the move (the tool is
+// in git history). These pin the translation without either.
 
 const games = COLLECTIONS.games;
 const coachees = COLLECTIONS.coachees;

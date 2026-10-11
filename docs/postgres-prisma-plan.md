@@ -172,12 +172,16 @@ in the main checkout (memory: shared checkout).
 
 ## Open points for Luca
 
-- ~~Go-ahead, and an evening for the cutover.~~ 10.10.2026, the same evening.
+- ~~Go-ahead, and an evening for the cutover.~~ Switched 11.10.2026, 22:26
+  (11 s down; 2,766 records and 13 PDFs verified, 293 reads identical).
 - Promote the president notes to their own table — phase 2 (not in the
   like-for-like move; the 5000-character cap that broke them is gone with
   PocketBase anyway).
 - Repoint the installed `svrz-rc-backup.service` at `backup-db.sh` (sudo);
   until then `backup-pb.sh` forwards to it.
-- After the rollback week: stop keeping `pb_data`, delete the `pocketbase`
-  service, `backup-pb*.sh`, `setup-schema.mjs` and the PocketBase SDK (still
-  used for its error class and by the migration scripts).
+- ~~After the rollback week: retire PocketBase.~~ Done the night of the move,
+  at Luca's request: service, `pb_data`, `setup-schema.mjs`, the migration and
+  comparison tools. One archive kept (`backups/pocketbase-final-2026-10-11.zip`).
+  Left: `backup-pb.sh` until the unit is repointed, and the PocketBase SDK,
+  whose `ClientResponseError` the record layer still throws — it goes with
+  phase 1b.

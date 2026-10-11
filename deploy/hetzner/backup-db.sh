@@ -66,8 +66,8 @@ log "verified $(du -h "$OUT_DIR/$FILES" | cut -f1) $FILES ($(tar -tzf "$OUT_DIR/
 
 # --- 3. Rotate --------------------------------------------------------------
 # Local copies are the near-term recovery point; borg carries the long tail
-# (30 daily / 4 weekly / 6 monthly, offsite). The PocketBase-era zips are left
-# alone: the last of them is the rollback point of the move.
+# (30 daily / 4 weekly / 6 monthly, offsite). pocketbase-final-*.zip, the last
+# snapshot before the move, matches neither pattern and is never rotated.
 for pattern in 'svrz-rc-db-*.dump' 'svrz-rc-files-*.tar.gz'; do
   mapfile -t old < <(ls -1t "$OUT_DIR"/$pattern 2>/dev/null | tail -n "+$((KEEP + 1))")
   for f in "${old[@]:-}"; do

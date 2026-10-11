@@ -47,8 +47,10 @@ const JUNIOR = {
   observation_status: { needsObservation: true, count: 0 },
 };
 
+// Late in the season on purpose: the list shows upcoming games only, and the
+// first date here (10.10.2026) took every game off it the day after.
 const base = {
-  date: '2026-10-10T18:00:00Z', location: 'Sporthalle Utogrund',
+  date: '2027-03-13T18:00:00Z', location: 'Sporthalle Utogrund',
   secondReferee: '', assignedRc: '', starred: false,
   feedbackClosedRoles: [] as string[], game_result: '',
 };

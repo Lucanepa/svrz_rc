@@ -206,6 +206,45 @@ test.describe('the SV-Nr. field on a coachee', () => {
     await expect(page.getByText(/{"error"/)).toHaveCount(0);
   });
 
+  // 01.10.2026: the chair pressed "Hinzufügen" 31 times against one refusal
+  // she never saw — it stood at the top of the card, and every press put the
+  // same words back. Now it stands under the button, the button waits for a
+  // change, and the refusal offers the row that already holds the number.
+  test('a refused add says why under the button and offers the existing entry', async ({ page }) => {
+    await openCoacheeTab(page);
+    let posts = 0;
+    await page.route('**/api/coachees', (r) => {
+      if (r.request().method() !== 'POST') return r.fallback();
+      posts += 1;
+      return r.fulfill({
+        status: 409,
+        json: { error: 'Die SV-Nr. 90003 ist in der Saison 2026/27 bereits „Rita Zwahlen" zugeordnet.', holderId: 'c1', holderName: 'Rita Zwahlen' },
+      });
+    });
+    const form = page.locator('div.grid').filter({ has: page.locator('#coachee-sv') });
+    await form.getByPlaceholder(/^(Vorname|First name)$/).fill('Rita');
+    await form.getByPlaceholder(/^(Nachname|Last name)$/).fill('Zwahlen');
+    await page.locator('#coachee-sv').fill('zwahlen');
+    await form.getByRole('button', { name: /Rita Zwahlen/ }).click();
+    const addButton = form.getByRole('button', { name: /^\s*(Hinzufügen|Add)$/ });
+    await addButton.click();
+
+    const note = page.getByTestId('coachee-refusal');
+    await expect(note).toContainText(/bereits „Rita Zwahlen" zugeordnet/);
+    await expect(note).toContainText(/dieselbe Person|same person/);
+    // The same entry would be refused again: the button waits for a change.
+    await expect(addButton).toBeDisabled();
+    expect(posts).toBe(1);
+
+    await note.getByRole('button', { name: /Eintrag „Rita Zwahlen" zeigen|Show the entry "Rita Zwahlen"/ }).click();
+    await expect(page.locator('[data-coachee-row="c1"]')).toHaveClass(/ring-amber-300/);
+
+    // Changed, the form may pass: the note goes and the button comes back.
+    await form.getByPlaceholder(/^(Telefon|Phone)$/).fill('079 000 00 00');
+    await expect(note).toHaveCount(0);
+    await expect(addButton).toBeEnabled();
+  });
+
   test('the badge counts the coachees still matched by name, and pressed, shows only them', async ({ page }) => {
     await openCoacheeTab(page);
     const badge = page.getByRole('button', { name: /1 Coachee ohne SV-Nr\.|1 coachee without an SV number/ });
@@ -284,6 +323,8 @@ test.describe('refereeLinkProblem — what a hand-link may write', () => {
     expect(problem?.status).toBe(409);
     expect(problem?.error).toContain('Rita Zwahlen');
     expect(problem?.error).toContain('2026/27');
+    // The row itself, for the console's "show the entry".
+    expect(problem?.holder).toEqual({ id: 'c1', name: 'Rita Zwahlen' });
   });
 
   test('the row\'s own number, and a row of another season, are no conflict', () => {

@@ -496,13 +496,30 @@ export async function listCoachees(): Promise<Coachee[]> {
 // row of the season already holds — comes back as a sentence in `error`.
 // It used to be thrown as the raw response text, which put the JSON
 // envelope on screen around the sentence the server took care to write.
-async function writeError(response: Response, fallback: string): Promise<Error> {
+// A 409 also names the row that holds the number, so the console can take
+// the admin to it: the usual reason is that the person is on the list already.
+export class WriteError extends Error {
+  status: number;
+  holder?: { id: string; name: string };
+  constructor(message: string, status: number, holder?: { id: string; name: string }) {
+    super(message);
+    this.status = status;
+    this.holder = holder;
+  }
+}
+
+async function writeError(response: Response, fallback: string): Promise<WriteError> {
   const text = await response.text();
   try {
-    const parsed = JSON.parse(text) as { error?: unknown };
-    if (typeof parsed.error === 'string' && parsed.error) return new Error(parsed.error);
+    const parsed = JSON.parse(text) as { error?: unknown; holderId?: unknown; holderName?: unknown };
+    if (typeof parsed.error === 'string' && parsed.error) {
+      const holder = typeof parsed.holderId === 'string' && parsed.holderId
+        ? { id: parsed.holderId, name: typeof parsed.holderName === 'string' ? parsed.holderName : '' }
+        : undefined;
+      return new WriteError(parsed.error, response.status, holder);
+    }
   } catch { /* not JSON — the text itself is the message */ }
-  return new Error(text || fallback);
+  return new WriteError(text || fallback, response.status);
 }
 
 export async function createCoachee(payload: Partial<Coachee>) {

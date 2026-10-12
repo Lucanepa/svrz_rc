@@ -61,7 +61,7 @@ import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, type 
 import { handedOverIds, pickSwitch, switchExpiry, switchOpen, switchSettlement, type HandOver, type SlotBooking } from './switchRequests.ts';
 import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, missingHeldGames, CREW_RELEASE_MIN_DAYS, type HeldGameChange, type HeldGameSide, type HeldSlot, type MissingGamesState } from './gamesSync.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
-import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan } from './dataHygiene.ts';
+import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan, type LinkProblem } from './dataHygiene.ts';
 import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
 import { presidentNoteEntry, presidentNoteBelongsToAnother, type PresidentNoteEntry } from './presidentNotes.ts';
 import { identityAudit, type AuditRcPerson } from './identityAudit.ts';
@@ -10687,10 +10687,18 @@ app.get('/api/coachees', requireRcSession, async (_req: Request, res: ExpressRes
  *  dataHygiene.ts's (a licence in the register, no other row of the season
  *  on it); this reads the two lists it is checked against. '' is always
  *  allowed — it unlinks — and costs no read. */
-async function refereeLinkCheck(sv: string, season: number | null, rowId: string): Promise<{ status: 400 | 409; error: string } | null> {
+async function refereeLinkCheck(sv: string, season: number | null, rowId: string): Promise<LinkProblem | null> {
   if (!sv) return null;
   const [register, coachees] = await Promise.all([getRefereeRegister(), listCoacheesWithFallbackSort()]);
   return refereeLinkProblem({ sv, season, rowId }, register, coachees);
+}
+
+/** The refusal as sent: the sentence, and on a 409 the row that holds the
+ *  number, so the console can take the admin to it. */
+function linkProblemBody(problem: LinkProblem) {
+  return problem.holder
+    ? { error: problem.error, holderId: problem.holder.id, holderName: problem.holder.name }
+    : { error: problem.error };
 }
 
 app.post('/api/coachees', requireAdminSession, async (req: Request, res: ExpressResponse) => {
@@ -10703,7 +10711,7 @@ app.post('/api/coachees', requireAdminSession, async (req: Request, res: Express
     // become an identity.
     const refereeId = asText(data.referee_id);
     const problem = await refereeLinkCheck(refereeId, season, '');
-    if (problem) { res.status(problem.status).json({ error: problem.error }); return; }
+    if (problem) { res.status(problem.status).json(linkProblemBody(problem)); return; }
     const created = await withCollection(collectionCandidates.coachees, (collection) =>
       collection.create({
         full_name: asText(data.full_name),
@@ -10763,7 +10771,7 @@ app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: Expr
         const changed = refereeId !== asText(current.referee_id) || season !== coacheeRowSeason(current.season);
         if (changed) {
           const problem = await refereeLinkCheck(refereeId, season, id);
-          if (problem) { res.status(problem.status).json({ error: problem.error }); return; }
+          if (problem) { res.status(problem.status).json(linkProblemBody(problem)); return; }
         }
       }
     }

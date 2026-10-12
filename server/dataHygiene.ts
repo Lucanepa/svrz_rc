@@ -27,7 +27,10 @@ export function coacheeDisplayName(row: AnyRecord): string {
   return text(row.full_name) || `${text(row.first_name)} ${text(row.last_name)}`.trim();
 }
 
-export type LinkProblem = { status: 400 | 409; error: string };
+/** `holder` is the row that already holds the number (409 only): the
+ *  console offers to show it, because the usual reason for the refusal is
+ *  that the person being added is on the list already. */
+export type LinkProblem = { status: 400 | 409; error: string; holder?: { id: string; name: string } };
 
 /**
  * Whether `sv` may be written onto the coachee row `rowId` of `season`, and
@@ -56,7 +59,11 @@ export function refereeLinkProblem(
     String(c.id) !== link.rowId && text(c.referee_id) === sv && coacheeRowSeason(c.season) === link.season);
   if (other) {
     const season = link.season == null ? '' : ` in der Saison ${seasonLabel(link.season)}`;
-    return { status: 409, error: `Die SV-Nr. ${sv} ist${season} bereits „${coacheeDisplayName(other)}" zugeordnet.` };
+    return {
+      status: 409,
+      error: `Die SV-Nr. ${sv} ist${season} bereits „${coacheeDisplayName(other)}" zugeordnet.`,
+      holder: { id: String(other.id), name: coacheeDisplayName(other) },
+    };
   }
   return null;
 }

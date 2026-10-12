@@ -29,6 +29,7 @@ import {
   type Coachee, type RefereeCoachPerson, type RcPerson, type ImportRow, type EmailTemplate, type EmailTemplateKind, type EmailTemplates, type ReminderPreview, type ManualGame,
   type LogEntry, type LogSession, type SurveyResponse,
   type StoredLogEntry, type LogGroup, type LogMuteRule, type LogDay,
+  WriteError,
 } from '../lib/pocketbase';
 import {
   levelKey, levelDisplay, hasNiveauRules, summarizeTarget, isTargetActive,
@@ -265,6 +266,9 @@ const STR = {
     svMissing: (n: number) => `${n} ${n === 1 ? 'Coachee' : 'Coachees'} ohne SV-Nr.`,
     svNone: 'ohne SV-Nr.',
     svMissingHint: 'Ohne Nummer wird nach dem Namen gesucht — die Schreibweise entscheidet dann.',
+    svHeldHint: 'Ist es dieselbe Person, hat sie schon einen Eintrag in der Liste — nicht nochmals anlegen. Sonst im Feld SV-Nummer die richtige Person wählen.',
+    svHeldShow: (n: string) => `Eintrag „${n}" zeigen`,
+    refusedSame: 'Erst etwas ändern — dieselbe Eingabe würde wieder abgelehnt.',
     // The "Datenqualität" card: everything a name still decides, counted
     // and listed, with the three buttons that write the ids.
     dqTitle: 'Datenqualität',
@@ -581,6 +585,9 @@ const STR = {
     svMissing: (n: number) => `${n} ${n === 1 ? 'coachee' : 'coachees'} without an SV number`,
     svNone: 'no SV number',
     svMissingHint: 'Without a number the match is by name — the spelling then decides.',
+    svHeldHint: 'If it is the same person, they already have an entry on the list — do not add them again. Otherwise pick the right person in the SV number field.',
+    svHeldShow: (n: string) => `Show the entry "${n}"`,
+    refusedSame: 'Change something first — the same entry would be refused again.',
     dqTitle: 'Data quality',
     dqHint: 'What still runs on a name instead of a number — the SV number for referees, the id for referee coaches, the match number for games. The goal is 0 everywhere.',
     dqRefresh: 'Check again',
@@ -1751,6 +1758,36 @@ function RefereeRosterAdmin({ t, roster, onRoster, onLinked }: {
   );
 }
 
+/** A refused add or edit of a coachee, and the form it refused (`sent`). */
+type Refusal = { message: string; status: number; holder?: { id: string; name: string }; sent: string };
+
+const refusalOf = (e: unknown, sent: string): Refusal => (e instanceof WriteError
+  ? { message: e.message, status: e.status, holder: e.holder, sent }
+  : { message: e instanceof Error ? e.message : String(e), status: 0, sent });
+
+/** A refusal the server will give again for the same input (a 4xx), as
+ *  against a failure worth retrying as is (offline, a 500). */
+const refusedForGood = (r: Refusal | null) => Boolean(r && r.status >= 400 && r.status < 500);
+
+/** A refused add or edit, under the button that sent it. 01.10.2026: the
+ *  chair pressed "Hinzufügen" 31 times in two minutes against one refusal —
+ *  it stood at the top of the card in small type, and every press put the
+ *  same words back, so nothing seemed to happen. With a holder (409) it
+ *  offers that row: the usual reason is that the person is on the list. */
+function RefusalNote({ refusal, t, onShow }: { refusal: Refusal; t: T; onShow: (id: string) => void }) {
+  return (
+    <div role="alert" data-testid="coachee-refusal" className="col-span-full rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800">
+      <p className="text-sm font-medium">{refusal.message}</p>
+      {(refusal.holder || refusal.status === 409) && <p className="mt-1 text-xs text-red-700">{t.svHeldHint}</p>}
+      {refusal.holder && (
+        <button type="button" onClick={() => onShow(refusal.holder.id)} className="mt-1.5 text-xs font-semibold text-red-800 underline underline-offset-2 hover:text-red-900">
+          {t.svHeldShow(refusal.holder.name)}
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** The SV-Nr. on a coachee: a pick off the register, never a typed number.
  *  A typo would create a phantom identity every game then fails to match,
  *  so the field offers the register's rows and hands back a number only for
@@ -2182,6 +2219,19 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
   const [svConflicts, setSvConflicts] = useState<SvConflict[]>([]);
   // Only the rows still matched by name, when the badge is pressed.
   const [onlyUnlinked, setOnlyUnlinked] = useState(false);
+  // A refused add or edit, shown under its own button (RefusalNote) for as
+  // long as the form is the one refused: changed, it may well pass.
+  const [addRefusal, setAddRefusal] = useState<Refusal | null>(null);
+  const [editRefusal, setEditRefusal] = useState<Refusal | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  // The row a refusal's "show" button took the admin to, marked for a moment.
+  const [shownId, setShownId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!shownId) return;
+    const timer = window.setTimeout(() => setShownId(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [shownId]);
 
   // The register, read once for the tab: the SV-Nr. pickers offer its rows,
   // and the register card below imports into it. Held here rather than in
@@ -2232,8 +2282,41 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
     try { await action(); }
     catch (e) { setNotice(e instanceof Error ? e.message : String(e)); }
   };
-  const add = async () => { const full_name = `${form.first_name} ${form.last_name}`.trim(); if (!full_name) return; await guard(async () => { await createCoachee({ ...form, full_name, season } as Partial<Coachee>); setForm(EMPTY_FORM); setSvText(''); await reload(); }); };
-  const saveEdit = async (id: string) => { const full_name = `${editForm.first_name} ${editForm.last_name}`.trim(); await guard(async () => { await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>); setEditId(null); await reload(); }); };
+  const addSent = JSON.stringify(form);
+  const addRefused = addRefusal?.sent === addSent ? addRefusal : null;
+  const add = async () => {
+    const full_name = `${form.first_name} ${form.last_name}`.trim();
+    if (!full_name || adding) return;
+    setAdding(true);
+    setAddRefusal(null);
+    try {
+      await createCoachee({ ...form, full_name, season } as Partial<Coachee>);
+      setForm(EMPTY_FORM); setSvText('');
+      await reload();
+    } catch (e) { setAddRefusal(refusalOf(e, addSent)); }
+    finally { setAdding(false); }
+  };
+  const editSent = `${editId}:${JSON.stringify(editForm)}`;
+  const editRefused = editRefusal?.sent === editSent ? editRefusal : null;
+  const saveEdit = async (id: string) => {
+    const full_name = `${editForm.first_name} ${editForm.last_name}`.trim();
+    if (savingEdit) return;
+    setSavingEdit(true);
+    setEditRefusal(null);
+    try {
+      await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>);
+      setEditId(null);
+      await reload();
+    } catch (e) { setEditRefusal(refusalOf(e, editSent)); }
+    finally { setSavingEdit(false); }
+  };
+  // The row that holds the number, scrolled to and marked. The badge's
+  // filter would hide it (it has a number), so the whole list comes back.
+  const showRow = (id: string) => {
+    setOnlyUnlinked(false);
+    setShownId(id);
+    requestAnimationFrame(() => document.querySelector(`[data-coachee-row="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }));
+  };
   const startEdit = (c: Coachee) => {
     setEditId(c.id);
     setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', email: c.email || '', phone: c.phone || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '', referee_id: c.referee_id || '' });
@@ -2429,7 +2512,13 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
           {/* Beside the SV-Nr. field, not under it: its list opens downward
               over whatever sits there, and a click meant for this button
               would pick a referee instead. */}
-          <button onClick={add} disabled={!form.first_name && !form.last_name} className={cn(btnPrimary, 'justify-center col-span-2 sm:col-span-7 sm:justify-self-end')}><Plus size={15} /> {t.add}</button>
+          <button
+            onClick={add}
+            disabled={adding || (!form.first_name && !form.last_name) || refusedForGood(addRefused)}
+            title={refusedForGood(addRefused) ? t.refusedSame : undefined}
+            className={cn(btnPrimary, 'justify-center col-span-2 sm:col-span-7 sm:justify-self-end')}
+          >{adding ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />} {t.add}</button>
+          {addRefused && <RefusalNote refusal={addRefused} t={t} onShow={showRow} />}
         </div>
       </Card>
       <Card>
@@ -2454,7 +2543,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
           {/* Held whole: a row list filtered by a season that is still being
               read is last season's people under this season's heading. */}
           {!settling && rows.map((c) => editId === c.id ? (
-            <div key={c.id} className="py-2 grid grid-cols-2 gap-2 sm:grid-cols-12 items-center">
+            <div key={c.id} data-coachee-row={c.id} className="py-2 grid grid-cols-2 gap-2 sm:grid-cols-12 items-center">
               <input className={cn(input, 'sm:col-span-3')} value={editForm.first_name} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
               <input className={cn(input, 'sm:col-span-3')} value={editForm.last_name} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
               <input type="email" className={cn(input, 'col-span-2 sm:col-span-3')} placeholder={t.email} value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
@@ -2472,10 +2561,11 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
                 <SvField id={`coachee-sv-${c.id}`} text={editSvText} sv={editForm.referee_id} people={registerPeople} t={t}
                   onChange={(pick) => { setEditSvText(pick.name); setEditForm({ ...editForm, referee_id: pick.svNumber }); }} />
               </div>
-              <div className="flex gap-1.5 col-span-2 sm:col-span-7 sm:justify-self-end"><button onClick={() => saveEdit(c.id)} className={btnPrimary} aria-label={t.save} title={t.save}><Check size={15} /></button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
+              <div className="flex gap-1.5 col-span-2 sm:col-span-7 sm:justify-self-end"><button onClick={() => saveEdit(c.id)} disabled={savingEdit || refusedForGood(editRefused)} className={btnPrimary} aria-label={t.save} title={refusedForGood(editRefused) ? t.refusedSame : t.save}>{savingEdit ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}</button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
+              {editRefused && <RefusalNote refusal={editRefused} t={t} onShow={showRow} />}
             </div>
           ) : (
-            <div key={c.id} className="py-2">
+            <div key={c.id} data-coachee-row={c.id} className={cn('py-2 transition-colors', shownId === c.id && 'bg-amber-50 ring-2 ring-amber-300 rounded-lg px-2')}>
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-stone-800 truncate">{surnameFirstLabel(c)}</p>

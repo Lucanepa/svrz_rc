@@ -48,7 +48,7 @@ import { groupLabel } from '../lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName } from '../lib/coacheeName';
 import { coacheeLookup, gameLabel, indexPeople, samePerson } from '../lib/identity';
 import { confirmDialog, toast } from './ui';
-import CoacheeFileAdmin from './CoacheeFileAdmin';
+import CoacheeFileAdmin, { CoacheePinLine, useDossierPins } from './CoacheeFileAdmin';
 import RcMeetingsAdmin, { fmtMeetingDate } from './RcMeetingsAdmin';
 import BudgetCard, { chf } from './BudgetCard';
 import FinanceChair from './FinanceChair';
@@ -2227,6 +2227,9 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
   const [savingEdit, setSavingEdit] = useState(false);
   // The row a refusal's "show" button took the admin to, marked for a moment.
   const [shownId, setShownId] = useState<string | null>(null);
+  // Each row's /dossier PIN (Luca, 2026-10-12), the same map Admin → E-Mails
+  // lists; re-read whenever the tab opens.
+  const { pins: dossierPins, mint: mintDossierPin } = useDossierPins(active);
   useEffect(() => {
     if (!shownId) return;
     const timer = window.setTimeout(() => setShownId(null), 4000);
@@ -2582,6 +2585,9 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
                         unlike the address, feedback does not need it. */}
                     {c.phone && <span className="text-stone-400"> · {c.phone}</span>}
                   </p>
+                  {dossierPins && c.referee_id && (
+                    <CoacheePinLine lang={lang} sv={c.referee_id} name={c.full_name || c.first_name || ''} pins={dossierPins} onMint={mintDossierPin} />
+                  )}
                 </div>
                 <button onClick={() => setTargetEditId(targetEditId === c.id ? null : c.id)} className={cn(btnGhost, targetEditId === c.id && 'bg-stone-100')} title={t.target}><Target size={13} /></button>
                 <button onClick={() => startEdit(c)} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>

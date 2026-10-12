@@ -15,6 +15,9 @@ import {
  * locked, noting that SVRZ / RC must approve it first (Luca, 2026-10-05), so
  * it cannot be turned on by mistake — and no server route sets it either.
  * Turning it on is a code change.
+ *
+ * Admin → Coachees draws each coachee's PIN under their row from the same
+ * map (CoacheePinLine below, Luca 2026-10-12).
  */
 
 type Lang = 'DE' | 'EN';
@@ -46,6 +49,11 @@ const STR = {
     show: 'PIN anzeigen',
     sv: 'SV-Nr.',
     open: 'Seite öffnen',
+    pinLabel: 'PIN',
+    noPinYet: 'kein PIN',
+    pinTitle: 'PIN für das Coaching-Dossier (/dossier)',
+    create: 'PIN erstellen',
+    created: 'PIN erstellt. Es wurde nichts versendet.',
   },
   EN: {
     title: 'Coaching file for coachees',
@@ -74,6 +82,11 @@ const STR = {
     show: 'Show PIN',
     sv: 'SV no.',
     open: 'Open page',
+    pinLabel: 'PIN',
+    noPinYet: 'no PIN',
+    pinTitle: 'PIN for the coaching file (/dossier)',
+    create: 'Create PIN',
+    created: 'PIN created. Nothing was sent.',
   },
 };
 
@@ -85,6 +98,84 @@ const fmtDate = (iso: string) => {
 };
 
 const fold = (s: string) => s.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+
+/** An SV-Nr. the way the server keys the PINs (normalizeSvNumber in
+ *  server/coacheeFile.ts): spaces and dots forgiven, leading zeros dropped,
+ *  '' for anything that cannot be one. */
+export function svKey(raw: string | undefined): string {
+  const digits = String(raw ?? '').trim().replace(/[\s.'’-]/g, '');
+  return /^\d{3,9}$/.test(digits) ? digits.replace(/^0+(?=\d)/, '') : '';
+}
+
+export type DossierPins = { url: string; bySv: Map<string, string> };
+
+/** Admin → Coachees: the dossier PINs by SV-Nr., read whenever the tab opens.
+ *  `pins` stays null until read and when the answer is not the roster — the
+ *  rows then draw no PIN line rather than a "no PIN" that may be wrong. */
+export function useDossierPins(active: boolean) {
+  const [pins, setPins] = useState<DossierPins | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const [meta, people] = await Promise.all([getCoacheeFileAdmin(), listCoacheeFilePins()]);
+      if (!Array.isArray(people)) return;
+      setPins({ url: meta?.url || '', bySv: new Map(people.filter((p) => p.pin).map((p) => [p.sv, p.pin])) });
+    } catch { /* no line; Admin → E-Mails shows why */ }
+  }, []);
+  useEffect(() => { if (active) void load(); }, [active, load]);
+  const mint = useCallback(async (sv: string) => {
+    const r = await coacheeFilePin(sv, false);
+    setPins((cur) => cur && { ...cur, bySv: new Map(cur.bySv).set(r.sv, r.pin) });
+  }, []);
+  return { pins, mint };
+}
+
+/** One coachee's dossier PIN under their row in Admin → Coachees: the PIN
+ *  with the ready-to-send text, or a button that creates it. A PIN normally
+ *  comes with the first report; creating one earlier sends nothing either. */
+export function CoacheePinLine({ lang, sv, name, pins, onMint }: {
+  lang: Lang; sv: string; name: string; pins: DossierPins; onMint: (sv: string) => Promise<void>;
+}) {
+  const t = STR[lang];
+  const [busy, setBusy] = useState(false);
+  const key = svKey(sv);
+  if (!key) return null;
+  const pin = pins.bySv.get(key) || '';
+  const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e), { lang });
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(t.shareText(pins.url, key, pin, name));
+      toast.success(t.copied, { lang });
+    } catch (e) { fail(e); }
+  };
+  const create = async () => {
+    setBusy(true);
+    try { await onMint(key); toast.success(t.created, { lang }); } catch (e) { fail(e); } finally { setBusy(false); }
+  };
+  // Redacted: a click here must not copy the PIN into the activity log.
+  return (
+    <p data-log-redact data-testid="coachee-pin" title={t.pinTitle} className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-stone-400">
+      <KeyRound size={11} className="shrink-0" />
+      {pin ? (
+        <>
+          <span>{t.pinLabel}</span>
+          <span className="font-mono font-semibold tracking-[0.15em] text-stone-700">{pin}</span>
+          <button type="button" onClick={() => void copy()} aria-label={t.copy} title={t.copy}
+            className="inline-flex items-center justify-center h-6 w-6 rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-600 transition-colors">
+            <Copy size={12} />
+          </button>
+        </>
+      ) : (
+        <>
+          <span>{t.noPinYet}</span>
+          <button type="button" disabled={busy} onClick={() => void create()}
+            className="inline-flex items-center gap-1 h-6 px-2 rounded-md border border-stone-200 text-[11px] font-medium text-stone-600 hover:bg-stone-100 disabled:opacity-50 transition-colors">
+            {busy && <Loader2 size={11} className="animate-spin" />}{t.create}
+          </button>
+        </>
+      )}
+    </p>
+  );
+}
 
 export default function CoacheeFileAdmin({ lang }: { lang: Lang }) {
   const t = STR[lang];

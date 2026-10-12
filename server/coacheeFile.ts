@@ -14,7 +14,8 @@
 // coachees (2026-10-05). So every referee with an SV-Nr. gets a PIN the moment
 // a report about them is filed (and the console can mint the missing ones for
 // the reports filed before), the page works, and the admin sees every PIN in
-// Admin → E-Mails → Coaching-Dossier to hand out by hand. The PIN MAIL that
+// Admin → E-Mails → Coaching-Dossier, and each coachee's under their row in
+// Admin → Coachees, to hand out by hand. The PIN MAIL that
 // would tell coachees on their own is written but gated on the app_settings
 // key `coachee_file_enabled`, which nothing in the console can set any more —
 // turning it on is a deliberate database write, never a click.

@@ -54,7 +54,7 @@ test('the XLSX is read for its numbers, and the coachees it links are reported',
     });
   });
 
-  await page.goto('/admin');
+  await page.goto('/admin/settings');
   await page.getByLabel(/Register importieren|Import register/).setInputFiles({
     name: 'Schiedsrichter-verwalten.xlsx',
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -259,10 +259,12 @@ test.describe('the SV-Nr. field on a coachee', () => {
 
 // The two register writes on their own. They moved from the register card
 // to the Datenqualität card beside it (admin-identity-audit.spec.ts) — same
-// buttons, same sentences, one card for everything that is left to link.
+// buttons, same sentences, one card for everything that is left to link —
+// and both cards under Einstellungen → Coachee-Daten since 2026-10-12.
 test.describe('the two register buttons', () => {
   test('"Coachees jetzt verknüpfen" runs the link on its own and reports', async ({ page }) => {
     await openCoacheeTab(page);
+    await page.goto('/admin/settings');
     let calls = 0;
     await page.route('**/api/admin/coachees/link-referees', (r) => {
       calls += 1;
@@ -276,6 +278,7 @@ test.describe('the two register buttons', () => {
 
   test('"SV-Nr. auf Spielen nachtragen" runs the games backfill and reports', async ({ page }) => {
     await openCoacheeTab(page);
+    await page.goto('/admin/settings');
     let calls = 0;
     await page.route('**/api/admin/games/backfill-referee-ids', (r) => {
       calls += 1;

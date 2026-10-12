@@ -24,7 +24,8 @@ async function importFile(page: import('@playwright/test').Page, buf: Buffer, re
     posted.push(r.request().postDataJSON());
     await r.fulfill({ json: reply });
   });
-  await page.goto('/admin');
+  // Einstellungen → Coachee-Daten since 2026-10-12, no longer the list's tab.
+  await page.goto('/admin/settings');
   // By its label, not by "the xlsx input": the console has two of those now —
   // this one and the referee register's.
   await page.getByLabel(/xlsx importieren|Import xlsx/).setInputFiles({

@@ -83,11 +83,11 @@ test('the coachee list waits for the season it is filtered by', async ({ page })
   // controls are not there yet either.
   await expect(page.getByText('Season, Last')).toHaveCount(0);
   await expect(page.getByText('Season, This')).toHaveCount(0);
-  await expect(page.getByLabel(/xlsx importieren|Import xlsx/)).toHaveCount(0);
+  await expect(page.getByTestId('coachees-export-xlsx')).toHaveCount(0);
 
   settings.open();
   await expect(page.getByText('Season, This')).toBeVisible({ timeout: 15000 });
-  await expect(page.getByLabel(/xlsx importieren|Import xlsx/)).toBeAttached();
+  await expect(page.getByTestId('coachees-export-xlsx')).toBeAttached();
   await expect(page.getByText('Season, Last')).toHaveCount(0);
 });
 
@@ -104,7 +104,7 @@ test('the console asks once, not on every render', async ({ page }) => {
   await page.route('**/api/admin/logs?*', (r) => { logCalls += 1; return r.fulfill({ json: { entries: [], total: 0, lastSeq: 0, stats: {} } }); });
 
   await page.goto('/admin');
-  await expect(page.getByLabel(/xlsx importieren|Import xlsx/)).toBeAttached();
+  await expect(page.getByTestId('coachees-export-xlsx')).toBeAttached();
   await page.waitForTimeout(800);
   const settled = coacheeCalls;
   await page.waitForTimeout(1500);

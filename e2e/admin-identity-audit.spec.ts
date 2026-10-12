@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { stubSignedInApp, GAME } from './support/app';
 
-// The "Datenqualität" card on the console's Coachees tab: what the server's
+// The "Datenqualität" card under Einstellungen → Coachee-Daten: what the server's
 // identity audit lists (GET /api/admin/identity-audit — the classifier is
 // pinned in identity-rules.spec.ts), the three writes that put the ids where
 // they are missing, and the hand-link for the rows those cannot decide. The
@@ -58,7 +58,7 @@ const CLEAN = {
   assignByNameLast30d: { count: 0, since: '2026-09-01T06:00:00.000Z' },
 };
 
-async function openCoacheeTab(page: Page, audit: Record<string, unknown> = AUDIT) {
+async function openDataQuality(page: Page, audit: Record<string, unknown> = AUDIT) {
   await stubSignedInApp(page, { admin: true });
   await page.route('**/api/coachees*', (r) => r.fulfill({ json: COACHEES }));
   await page.route('**/api/admin/referees', (r) => {
@@ -66,7 +66,8 @@ async function openCoacheeTab(page: Page, audit: Record<string, unknown> = AUDIT
     return r.fulfill({ json: REGISTER });
   });
   await page.route('**/api/admin/identity-audit*', (r) => r.fulfill({ json: audit }));
-  await page.goto('/admin');
+  // Einstellungen → Coachee-Daten since 2026-10-12, no longer the list's tab.
+  await page.goto('/admin/settings');
   await expect(page.getByTestId('data-quality')).toBeVisible();
 }
 
@@ -74,7 +75,7 @@ async function openCoacheeTab(page: Page, audit: Record<string, unknown> = AUDIT
 const tile = (page: Page, label: RegExp) => page.getByTestId('audit-count').filter({ hasText: label });
 
 test('the report renders: a tile per count, green at zero and amber above, and the lists behind them', async ({ page }) => {
-  await openCoacheeTab(page);
+  await openDataQuality(page);
   const card = page.getByTestId('data-quality');
 
   // The season is asked for — the card follows the tab's selector.
@@ -135,7 +136,7 @@ test('the report renders: a tile per count, green at zero and amber above, and t
 });
 
 test('a clean report is all green and says so; no list is drawn', async ({ page }) => {
-  await openCoacheeTab(page, CLEAN);
+  await openDataQuality(page, CLEAN);
   const card = page.getByTestId('data-quality');
   await expect(card.getByText(/Alles verknüpft|Everything linked/)).toBeVisible();
   for (const t of await page.getByTestId('audit-count').all()) await expect(t).toHaveClass(/green/);
@@ -146,14 +147,14 @@ test('"nothing to do" never stands beside an amber tile', async ({ page }) => {
   // Every list empty, but the slots without a number are the backfill's to
   // do and the takes without an id say a client still sends names: the
   // tiles are amber, and the green line would contradict them.
-  await openCoacheeTab(page, { ...CLEAN, gameSlotsNoSv: 400, gameSlotsNoSvInRegister: 380, assignByNameLast30d: { count: 3, since: '2026-09-01T06:00:00.000Z' } });
+  await openDataQuality(page, { ...CLEAN, gameSlotsNoSv: 400, gameSlotsNoSvInRegister: 380, assignByNameLast30d: { count: 3, since: '2026-09-01T06:00:00.000Z' } });
   const card = page.getByTestId('data-quality');
   await expect(tile(page, /SR-Einträge ohne SV-Nr|Referee slots without SV number/)).toHaveClass(/amber/);
   await expect(card.getByText(/Alles verknüpft|Everything linked/)).toHaveCount(0);
 });
 
 test('the three buttons post to their endpoints and report; the audit re-reads after each', async ({ page }) => {
-  await openCoacheeTab(page);
+  await openDataQuality(page);
   const posted: string[] = [];
   const stubPost = (path: string, json: Record<string, unknown>) => page.route(`**${path}`, (r) => {
     if (r.request().method() !== 'POST') return r.fallback();
@@ -196,7 +197,7 @@ test('the three buttons post to their endpoints and report; the audit re-reads a
 });
 
 test('the link on a row PUTs referee_id, and the counts drop', async ({ page }) => {
-  await openCoacheeTab(page);
+  await openDataQuality(page);
   const bodies: Record<string, unknown>[] = [];
   // After the write the server's answer changes: the row is linked, the
   // audit lists nobody, and the list's own badge has nobody to count.
@@ -210,8 +211,13 @@ test('the link on a row PUTs referee_id, and the counts drop', async ({ page }) 
   }));
   await page.route('**/api/admin/identity-audit*', (r) => r.fulfill({ json: bodies.length ? CLEAN : AUDIT }));
 
+  // The card sits under Einstellungen, the list's badge on the Coachees tab:
+  // the tab re-reads its rows whenever it opens.
+  const navTo = (name: RegExp) => page.getByRole('button', { name }).filter({ visible: true }).first().click();
   const badge = page.getByRole('button', { name: /1 Coachee ohne SV-Nr\.|1 coachee without an SV number/ });
+  await navTo(/^Coachees$/);
   await expect(badge).toBeVisible();
+  await navTo(/^(Einstellungen|Settings)$/);
   const unlinked = tile(page, /Coachees nicht verknüpft|Coachees not linked/);
   await expect(unlinked).toContainText('1');
 
@@ -223,11 +229,13 @@ test('the link on a row PUTs referee_id, and the counts drop', async ({ page }) 
   expect(bodies[0]).toEqual({ referee_id: '90004' });
   await expect(unlinked).toContainText('0');
   await expect(unlinked).toHaveClass(/green/);
+  await navTo(/^Coachees$/);
+  await expect(page.getByText('Müller, Jürg')).toBeVisible();
   await expect(badge).toHaveCount(0);
 });
 
 test('an ambiguous row offers each candidate as a click and pre-selects none', async ({ page }) => {
-  await openCoacheeTab(page, {
+  await openDataQuality(page, {
     ...CLEAN,
     coacheesUnlinked: [
       { id: 'c2', name: 'Doppel Name', season: 2026, reason: 'ambiguous', candidates: [{ sv: '90005', name: 'Doppel Name' }, { sv: '90006', name: 'Doppel Name' }] },
@@ -256,7 +264,7 @@ test('a decision on one row survives a write on another', async ({ page }) => {
       { id: 'c3', name: 'Doppel Name', season: 2026, reason: 'ambiguous', candidates: [{ sv: '90005', name: 'Doppel Name' }, { sv: '90006', name: 'Doppel Name' }] },
     ],
   };
-  await openCoacheeTab(page, twoRows);
+  await openDataQuality(page, twoRows);
   await page.route('**/api/coachees/c2', (r) => {
     if (r.request().method() !== 'PUT') return r.fallback();
     return r.fulfill({ json: { id: 'c2' } });
@@ -275,7 +283,7 @@ test('a decision on one row survives a write on another', async ({ page }) => {
 });
 
 test('the server\'s refusal of a link is shown as its sentence', async ({ page }) => {
-  await openCoacheeTab(page);
+  await openDataQuality(page);
   await page.route('**/api/coachees/c2', (r) => {
     if (r.request().method() !== 'PUT') return r.fallback();
     return r.fulfill({ status: 409, json: { error: 'Die SV-Nr. 90004 ist in der Saison 2026/27 bereits „Jürg Alt" zugeordnet.' } });

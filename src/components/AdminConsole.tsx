@@ -206,6 +206,8 @@ const STR = {
     reminderNone: 'Für morgen stehen keine Erinnerungen an.',
     exportXlsx: 'Export xlsx', exportPdf: 'Export PDF', exportNoFigures: 'Die Auswertung pro Coachee ist auf dem Server noch nicht verfügbar — exportiert werden die Stammdaten.', exportFail: (e: string) => `Export fehlgeschlagen: ${e}`,
     importXlsx: 'xlsx importieren', importHint: (s: string) => `Import setzt die Saison ${s}. Bestehende (gleicher Name + Saison) werden aktualisiert.`,
+    coacheeData: 'Coachee-Daten', coacheeImportTitle: 'Coachee-Liste importieren', coacheeDataSeason: 'Saison',
+    coacheeDataMoved: 'Import, Kontakte aus VolleyManager, SV-Register und Datenqualität: unter Einstellungen.', coacheeDataOpen: 'Öffnen',
     firstName: 'Vorname', lastName: 'Nachname', svNumber: 'SV-Nummer', aliases: 'Frühere Namen', level: 'Niveau', stage: 'Niveau', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
     noCoachees: (s: string) => `Keine Coachees für ${s} — importiere eine xlsx.`,
@@ -525,6 +527,8 @@ const STR = {
     reminderNone: 'No reminders due for tomorrow.',
     exportXlsx: 'Export xlsx', exportPdf: 'Export PDF', exportNoFigures: 'The per-coachee figures are not on the server yet; the roster columns were exported.', exportFail: (e: string) => `Export failed: ${e}`,
     importXlsx: 'Import xlsx', importHint: (s: string) => `Import targets season ${s}. Existing (same name + season) are updated.`,
+    coacheeData: 'Coachee data', coacheeImportTitle: 'Import the coachee list', coacheeDataSeason: 'Season',
+    coacheeDataMoved: 'Import, VolleyManager contacts, SV register and data quality: under Settings.', coacheeDataOpen: 'Open',
     firstName: 'First name', lastName: 'Last name', svNumber: 'SV number', aliases: 'Former names', level: 'Level', stage: 'Niveau', group: 'Group', email: 'Email', phone: 'Phone',
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
     noCoachees: (s: string) => `No coachees for ${s} — import an xlsx.`,
@@ -1280,7 +1284,8 @@ export default function AdminConsole() {
             tab owns. */}
         {!isPresident && <>
         <div hidden={tab !== 'coachees'}>
-          <CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} settingsLoading={settingsLoading} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} active={tab === 'coachees'} />
+          <CoacheesAdmin t={t} lang={lang} groups={groups} defaultSeason={defaultSeason} settingsLoading={settingsLoading} targets={coacheeTargets} onTargets={saveTargets} leagueOptions={leagueOptions} niveauTable={niveauTable} active={tab === 'coachees'}
+            onOpenData={() => { setTab('settings'); window.setTimeout(() => document.getElementById('coachee-data')?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 0); }} />
           <GroupsCard t={t} lang={lang} groups={groups} onGroups={setGroups} loading={settingsLoading} />
         </div>
         <div hidden={tab !== 'rcs'}>
@@ -1330,6 +1335,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'logs'}><LogsAdmin t={t} lang={lang} active={tab === 'logs'} mode={logMode} onMode={setLogMode} /></div>
         <div hidden={tab !== 'settings'}>
           <SettingsAdmin t={t} defaultSeason={defaultSeason} settingsLoading={settingsLoading} />
+          <CoacheeDataAdmin t={t} lang={lang} defaultSeason={defaultSeason} settingsLoading={settingsLoading} active={tab === 'settings'} />
           <CredentialsAdmin t={t} />
         </div>
         </>}
@@ -2183,7 +2189,164 @@ function DataQualityCard({ t, lang, season, active, settled, registerPeople, has
   );
 }
 
-function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, targets, onTargets, leagueOptions, niveauTable, active }: { t: T; lang: Lang; groups: string[]; defaultSeason: number; settingsLoading: boolean; targets: CoacheeTargetMap; onTargets: (next: CoacheeTargetMap) => void; leagueOptions: string[]; niveauTable: NiveauMatrix; active: boolean }) {
+/**
+ * Einstellungen → Coachee-Daten: what fills the coachee list rather than
+ * reads it — the season's XLSX import, the contacts from VolleyManager, the
+ * SV register and the data-quality check. Out of the Coachees tab since
+ * 2026-10-12 (Luca: "not pertaining to coachee list"); that tab re-reads its
+ * rows and the register whenever it opens, so it shows what was written here.
+ */
+function CoacheeDataAdmin({ t, lang, defaultSeason, settingsLoading, active }: { t: T; lang: Lang; defaultSeason: number; settingsLoading: boolean; active: boolean }) {
+  // Its own season, like the list's: the import, the sync and the check all
+  // work on one season, the stored one unless picked here.
+  const [season, setSeason] = useState(defaultSeason);
+  const seasonTouched = useRef(false);
+  useEffect(() => { if (!seasonTouched.current) setSeason(defaultSeason); }, [defaultSeason]);
+  const settled = !(settingsLoading && !seasonTouched.current);
+
+  // The rows, for the "no address" count and to reload after a write. Read
+  // only while the tab is open — every tab is mounted at once.
+  const [all, setAll] = useState<Coachee[]>([]);
+  const list = useFreshest();
+  const reload = useCallback(async () => {
+    const ticket = list.take();
+    try { const rows = await listCoachees(); if (list.isCurrent(ticket)) setAll(rows); }
+    catch { /* the count stays away; the Coachees tab says why */ }
+  }, [list]);
+  useEffect(() => { if (active) void reload(); }, [active, reload]);
+
+  const [roster, setRoster] = useState<RefereeRoster | null>(null);
+  const reloadRoster = useCallback(async () => {
+    try { setRoster(await listReferees()); } catch { setRoster({ people: [] }); }
+  }, []);
+  useEffect(() => { if (active) void reloadRoster(); }, [active, reloadRoster]);
+  // Only rows with a number — see the same filter in CoacheesAdmin.
+  const registerPeople = useMemo<PickPerson[]>(() => (roster?.people ?? [])
+    .filter((p) => p.id)
+    .map((p) => ({ id: `sv:${p.id}`, name: p.name, email: p.email, svNumber: p.id })), [roster]);
+
+  const [notice, setNotice] = useState('');
+  const [importNote, setImportNote] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState('');
+  const [syncMissing, setSyncMissing] = useState<string[]>([]);
+  const [syncAmbiguous, setSyncAmbiguous] = useState<string[]>([]);
+  const [overwriteContacts, setOverwriteContacts] = useState(false);
+  // The register link's report from the last import or sync — the names it
+  // would not decide, listed once under the sync card whichever button ran.
+  const [linkReport, setLinkReport] = useState<LinkReport | null>(null);
+  // Rows whose stored SV-Nr. the last import's sheet contradicted — kept as
+  // stored, and said here, because a typo in the sheet's column must not
+  // undo a hand link in silence.
+  const [svConflicts, setSvConflicts] = useState<SvConflict[]>([]);
+
+  // The link's counts, said in a toast where the button was pressed, and
+  // its lists kept on the card: a name the register holds twice needs a
+  // person to decide, and that is worth more than a number in a sentence.
+  const showLink = (r: Partial<LinkReport>) => {
+    if (typeof r.linked !== 'number') return; // an API one version behind
+    const report = { linked: r.linked, alreadyLinked: r.alreadyLinked ?? 0, unmatched: r.unmatched ?? [], ambiguousNames: r.ambiguousNames ?? [] };
+    setLinkReport(report);
+    toast.success(t.linkToast(report.linked, report.unmatched.length, report.ambiguousNames.length), { lang });
+  };
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    setImporting(true); setNotice(''); setImportNote('');
+    try { const parsed = await parseXlsx(file); if (!parsed.length) { setNotice(t.noRows); return; } const res = await importCoachees(parsed, season); setImportNote(t.importResult(seasonLabel(season), res.created, res.updated, res.total)); setSvConflicts(res.svConflicts ?? []); showLink(res); await reload(); }
+    catch (err) { setNotice(t.importFail(String(err))); } finally { setImporting(false); e.target.value = ''; }
+  };
+  const syncContacts = async () => {
+    setSyncing(true); setNotice(''); setSyncNote('');
+    try {
+      const r = await syncCoacheeContacts(season, overwriteContacts);
+      setSyncNote(t.syncResult(r.updated, r.alreadySet, r.notFound, r.refereesFetched));
+      setSyncMissing(r.missing);
+      setSyncAmbiguous(r.ambiguous ?? []);
+      showLink(r);
+      await reload();
+    // The message, not String(err): that prefixed every failure with a bare
+    // "Error:" in front of the sentence the server took care to write.
+    } catch (err) { setNotice(t.syncFail(err instanceof Error ? err.message : String(err))); } finally { setSyncing(false); }
+  };
+
+  const seasonRows = all.filter((c) => c.season === season);
+  const missingEmail = seasonRows.filter((c) => !c.email).length;
+
+  return (
+    <section id="coachee-data" data-testid="coachee-data" className="scroll-mt-20">
+      <h2 className="px-1 mb-2 text-xs font-semibold uppercase tracking-wide text-stone-500">{t.coacheeData}</h2>
+      <Card>
+        <div className="flex flex-wrap items-center gap-2 mb-1">
+          <h2 className="text-sm font-semibold text-stone-700">{t.coacheeImportTitle}</h2>
+          <select value={season} onChange={(e) => { seasonTouched.current = true; setSeason(Number(e.target.value)); }} aria-label={t.coacheeDataSeason} className="ml-auto h-9 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5">{[...new Set([season, ...SEASONS])].sort().map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
+          <label className={`${btnPrimary} cursor-pointer ${importing ? 'opacity-60 pointer-events-none' : ''}`}>{importing ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}<span>{t.importXlsx}</span><input type="file" accept=".xlsx" className="hidden" onChange={onFile} /></label>
+        </div>
+        <p className="text-xs text-stone-400">{t.importHint(seasonLabel(season))}</p>
+        {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}
+        {importNote && <p className="text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2 mt-2">{importNote}</p>}
+        {svConflicts.length > 0 && (
+          <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+            {t.importSvConflicts}: {svConflicts.map((c) => `${c.name} (${c.stored} ≠ ${c.sheet})`).join(', ')}
+          </p>
+        )}
+
+        {/* Step 2 of the import: the XLSX has no email column, and without an
+            address the feedback submit fails at the very end. */}
+        <div className="mt-3 pt-3 border-t border-stone-100">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold text-stone-700">{t.syncTitle}</h3>
+              <p className="text-xs text-stone-400">{t.syncHint}</p>
+            </div>
+            <button onClick={() => void syncContacts()} disabled={syncing} className={cn(btnPrimary, 'ml-auto')}>
+              {syncing ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
+              <span>{t.syncBtn}</span>
+            </button>
+          </div>
+          <label className="mt-2 flex items-center gap-2 text-xs text-stone-500">
+            <input type="checkbox" checked={overwriteContacts} onChange={(e) => setOverwriteContacts(e.target.checked)} className="accent-red-600" />
+            {t.syncOverwrite}
+          </label>
+          {missingEmail > 0 && <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">{t.syncMissingEmail(missingEmail, seasonRows.length)}</p>}
+          {syncNote && <p className="mt-2 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{syncNote}</p>}
+          {/* Ambiguous first, and in amber: it is the one outcome that needs a
+              person to decide, where "not found" is merely a gap to fill. */}
+          {syncAmbiguous.length > 0 && (
+            <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+              {t.syncAmbiguous}: {syncAmbiguous.join(', ')}
+            </p>
+          )}
+          {syncMissing.length > 0 && (
+            <p className="mt-2 text-xs text-stone-500">{t.syncNotFoundList}: {syncMissing.join(', ')}</p>
+          )}
+          {/* The register link that ran after the import or the sync. */}
+          {linkReport && linkReport.ambiguousNames.length > 0 && (
+            <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+              {t.rosterAmbiguous}: {linkReport.ambiguousNames.join(', ')}
+            </p>
+          )}
+          {linkReport && linkReport.unmatched.length > 0 && (
+            <p className="mt-2 text-xs text-stone-500">{t.rosterUnmatched}: {linkReport.unmatched.join(', ')}</p>
+          )}
+        </div>
+      </Card>
+      <RefereeRosterAdmin t={t} roster={roster} onRoster={reloadRoster} onLinked={() => void reload()} />
+      <DataQualityCard
+        t={t}
+        lang={lang}
+        season={season}
+        active={active}
+        settled={settled}
+        registerPeople={registerPeople}
+        hasRegister={roster?.source === 'roster' && (roster?.people.length ?? 0) > 0}
+        onLinked={() => void reload()}
+      />
+    </section>
+  );
+}
+
+function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, targets, onTargets, leagueOptions, niveauTable, active, onOpenData }: { t: T; lang: Lang; groups: string[]; defaultSeason: number; settingsLoading: boolean; targets: CoacheeTargetMap; onTargets: (next: CoacheeTargetMap) => void; leagueOptions: string[]; niveauTable: NiveauMatrix; active: boolean; onOpenData: () => void }) {
   const [targetEditId, setTargetEditId] = useState<string | null>(null);
   const [season, setSeason] = useState(defaultSeason);
   const seasonTouched = useRef(false);
@@ -2195,12 +2358,6 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
   // or target editor for the length of the refetch.
   const [loaded, setLoaded] = useState(false);
   const [notice, setNotice] = useState('');
-  const [importing, setImporting] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncNote, setSyncNote] = useState('');
-  const [syncMissing, setSyncMissing] = useState<string[]>([]);
-  const [syncAmbiguous, setSyncAmbiguous] = useState<string[]>([]);
-  const [overwriteContacts, setOverwriteContacts] = useState(false);
   const EMPTY_FORM = { first_name: '', last_name: '', email: '', phone: '', referee_level: '', stage: '', groups: '', referee_id: '' };
   const [form, setForm] = useState(EMPTY_FORM);
   const [editId, setEditId] = useState<string | null>(null);
@@ -2210,13 +2367,6 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
   // them so the text never travels to the server with the row.
   const [svText, setSvText] = useState('');
   const [editSvText, setEditSvText] = useState('');
-  // The register link's report from the last import or sync — the names it
-  // would not decide, listed once under the sync card whichever button ran.
-  const [linkReport, setLinkReport] = useState<LinkReport | null>(null);
-  // Rows whose stored SV-Nr. the last import's sheet contradicted — kept as
-  // stored, and said here, because a typo in the sheet's column must not
-  // undo a hand link in silence.
-  const [svConflicts, setSvConflicts] = useState<SvConflict[]>([]);
   // Only the rows still matched by name, when the badge is pressed.
   const [onlyUnlinked, setOnlyUnlinked] = useState(false);
   // A refused add or edit, shown under its own button (RefusalNote) for as
@@ -2236,15 +2386,14 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
     return () => window.clearTimeout(timer);
   }, [shownId]);
 
-  // The register, read once for the tab: the SV-Nr. pickers offer its rows,
-  // and the register card below imports into it. Held here rather than in
-  // that card so the pickers and the card cannot show two different
-  // registers, and so one import re-reads it for both.
+  // The register the SV-Nr. pickers offer, re-read whenever the tab opens:
+  // it is imported under Einstellungen → Coachee-Daten (CoacheeDataAdmin),
+  // and a picker must not offer the register from before that import.
   const [roster, setRoster] = useState<RefereeRoster | null>(null);
   const reloadRoster = useCallback(async () => {
     try { setRoster(await listReferees()); } catch { setRoster({ people: [] }); }
   }, []);
-  useEffect(() => { void reloadRoster(); }, [reloadRoster]);
+  useEffect(() => { if (active) void reloadRoster(); }, [active, reloadRoster]);
   // Only rows with a number: the VolleyManager fallback the server serves
   // before the first import knows names and addresses but no numbers, and
   // a pick without a number would be no link.
@@ -2265,7 +2414,9 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
     } catch (e) { if (list.isCurrent(ticket)) setNotice(String(e)); }
     finally { if (list.isCurrent(ticket)) { setLoading(false); setLoaded(true); } }
   }, [list]);
-  useEffect(() => { void reload(); }, [reload]);
+  // Re-read whenever the tab opens: the import, the contacts sync and the
+  // links all write these rows from Einstellungen → Coachee-Daten.
+  useEffect(() => { if (active) void reload(); }, [active, reload]);
   // The rows are filtered by season, and the season comes from settings, which
   // arrive after the coachees do. Rendering in between showed last season's
   // list under this season's heading for as long as that took — the local
@@ -2325,15 +2476,6 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
     setEditForm({ first_name: c.first_name || '', last_name: c.last_name || '', email: c.email || '', phone: c.phone || '', referee_level: c.referee_level || '', stage: c.stage || '', groups: c.groups || '', referee_id: c.referee_id || '' });
     setEditSvText(registerNameOf(c.referee_id));
   };
-  // The link's counts, said in a toast where the button was pressed, and
-  // its lists kept on the card: a name the register holds twice needs a
-  // person to decide, and that is worth more than a number in a sentence.
-  const showLink = (r: Partial<LinkReport>) => {
-    if (typeof r.linked !== 'number') return; // an API one version behind
-    const report = { linked: r.linked, alreadyLinked: r.alreadyLinked ?? 0, unmatched: r.unmatched ?? [], ambiguousNames: r.ambiguousNames ?? [] };
-    setLinkReport(report);
-    toast.success(t.linkToast(report.linked, report.unmatched.length, report.ambiguousNames.length), { lang });
-  };
   const remove = async (c: Coachee) => {
     // What goes with the row, said before the question: a coachee with filed
     // forms is a very different deletion from a row typed in by mistake.
@@ -2348,30 +2490,6 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
     await guard(async () => { await deleteCoachee(c.id); await reload(); done = true; });
     if (done) toast.success(t.delCoacheeOk(c.full_name), { lang });
   };
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    setImporting(true); setNotice('');
-    try { const parsed = await parseXlsx(file); if (!parsed.length) { setNotice(t.noRows); return; } const res = await importCoachees(parsed, season); setNotice(t.importResult(seasonLabel(season), res.created, res.updated, res.total)); setSvConflicts(res.svConflicts ?? []); showLink(res); await reload(); }
-    catch (err) { setNotice(t.importFail(String(err))); } finally { setImporting(false); e.target.value = ''; }
-  };
-  const syncContacts = async () => {
-    setSyncing(true); setNotice(''); setSyncNote('');
-    try {
-      const r = await syncCoacheeContacts(season, overwriteContacts);
-      setSyncNote([
-        t.syncResult(r.updated, r.alreadySet, r.notFound, r.refereesFetched),
-      ].filter(Boolean).join(' '));
-      setSyncMissing(r.missing);
-      setSyncAmbiguous(r.ambiguous ?? []);
-      showLink(r);
-      await reload();
-    // The message, not String(err): that prefixed every failure with a bare
-    // "Error:" in front of the sentence the server took care to write.
-    } catch (err) { setNotice(t.syncFail(err instanceof Error ? err.message : String(err))); } finally { setSyncing(false); }
-  };
-
-  const missingEmail = rows.filter((c) => !c.email).length;
-
   // The tab is drawn whole, once its three first reads are in: the list, the
   // register (without it every SV-Nr. field says "no register imported" and
   // the register writes start disabled, both wrong until it answers) and the
@@ -2416,77 +2534,20 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
         <div className="flex flex-wrap items-center gap-2 mb-1">
           <h2 className="text-sm font-semibold text-stone-700">{t.coachees}</h2>
           <select value={season} onChange={(e) => { seasonTouched.current = true; setSeason(Number(e.target.value)); }} className="ml-auto h-9 rounded-lg border border-stone-200 bg-stone-50 text-stone-700 text-xs font-medium px-2.5">{[...new Set([season, ...SEASONS])].sort().map((y) => <option key={y} value={y}>{seasonLabel(y)}</option>)}</select>
-          <label className={`${btnPrimary} cursor-pointer ${importing ? 'opacity-60 pointer-events-none' : ''}`}>{importing ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}<span>{t.importXlsx}</span><input type="file" accept=".xlsx" className="hidden" onChange={onFile} /></label>
           <button type="button" onClick={() => void exportCoachees('xlsx')} disabled={exporting !== null || seasonRows.length === 0} className={cn(btnGhost, 'h-9')} data-testid="coachees-export-xlsx">{exporting === 'xlsx' ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}<span>{t.exportXlsx}</span></button>
           <button type="button" onClick={() => void exportCoachees('pdf')} disabled={exporting !== null || seasonRows.length === 0} className={cn(btnGhost, 'h-9')} data-testid="coachees-export-pdf">{exporting === 'pdf' ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}<span>{t.exportPdf}</span></button>
         </div>
-        <p className="text-xs text-stone-400">{t.importHint(seasonLabel(season))}</p>
+        {/* What fills this list — the import, the contacts, the register and
+            the data-quality check — lives under Einstellungen (Luca,
+            2026-10-12): this tab is the list. */}
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-stone-400">
+          <span>{t.coacheeDataMoved}</span>
+          <button type="button" onClick={onOpenData} className="inline-flex items-center gap-1 font-medium text-red-700 hover:underline" data-testid="coachee-data-open">
+            {t.coacheeDataOpen} <ExternalLink size={11} />
+          </button>
+        </p>
         {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}
-        {svConflicts.length > 0 && (
-          <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-            {t.importSvConflicts}: {svConflicts.map((c) => `${c.name} (${c.stored} ≠ ${c.sheet})`).join(', ')}
-          </p>
-        )}
-
-        {/* Step 2 of the import: the XLSX has no email column, and without an
-            address the feedback submit fails at the very end. */}
-        <div className="mt-3 pt-3 border-t border-stone-100">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-stone-700">{t.syncTitle}</h3>
-              <p className="text-xs text-stone-400">{t.syncHint}</p>
-            </div>
-            <button onClick={() => void syncContacts()} disabled={syncing} className={cn(btnPrimary, 'ml-auto')}>
-              {syncing ? <Loader2 size={15} className="animate-spin" /> : <RotateCcw size={15} />}
-              <span>{t.syncBtn}</span>
-            </button>
-          </div>
-          <label className="mt-2 flex items-center gap-2 text-xs text-stone-500">
-            <input type="checkbox" checked={overwriteContacts} onChange={(e) => setOverwriteContacts(e.target.checked)} className="accent-red-600" />
-            {t.syncOverwrite}
-          </label>
-          {missingEmail > 0 && <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">{t.syncMissingEmail(missingEmail, rows.length)}</p>}
-          {syncNote && <p className="mt-2 text-xs text-green-700 bg-green-50 border border-green-100 rounded-lg px-3 py-2">{syncNote}</p>}
-          {/* Ambiguous first, and in amber: it is the one outcome that needs a
-              person to decide, where "not found" is merely a gap to fill. */}
-          {syncAmbiguous.length > 0 && (
-            <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-              {t.syncAmbiguous}: {syncAmbiguous.join(', ')}
-            </p>
-          )}
-          {syncMissing.length > 0 && (
-            <p className="mt-2 text-xs text-stone-500">{t.syncNotFoundList}: {syncMissing.join(', ')}</p>
-          )}
-          {/* The register link that ran after the import or the sync. */}
-          {linkReport && linkReport.ambiguousNames.length > 0 && (
-            <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-              {t.rosterAmbiguous}: {linkReport.ambiguousNames.join(', ')}
-            </p>
-          )}
-          {linkReport && linkReport.unmatched.length > 0 && (
-            <p className="mt-2 text-xs text-stone-500">{t.rosterUnmatched}: {linkReport.unmatched.join(', ')}</p>
-          )}
-        </div>
       </Card>
-      {/* The roster the coachee list is a subset of. It sits under the coachee
-          import because that is the order the work happens in — register first,
-          then who is being coached this season out of it — and because the
-          import's second half writes into the coachees above. */}
-      <RefereeRosterAdmin t={t} roster={roster} onRoster={reloadRoster} onLinked={() => void reload()} />
-      {/* What the register import and the link left undecided, and the
-          three writes — after the register, because that is what they
-          read from, and before the list, because the list's amber rows
-          are what they drive to zero. */}
-      <DataQualityCard
-        t={t}
-        lang={lang}
-        season={season}
-        active={active}
-        settled={!(settingsLoading && !seasonTouched.current)}
-        registerPeople={registerPeople}
-        hasRegister={roster?.source === 'roster' && (roster?.people.length ?? 0) > 0}
-        onLinked={() => void reload()}
-      />
       <Card>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
           <input className={cn(input, 'sm:col-span-3')} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />

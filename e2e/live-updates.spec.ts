@@ -20,10 +20,13 @@ test('a game taken elsewhere leaves the list on a pushed event, with no refetch'
     listFetches += 1;
     return r.fulfill({ json: [{ ...GAME, id: 'g1', assignedRc: '', assignedRcId: '' }] });
   });
-  // Held back a moment: without it the push can land before the first render,
-  // and the test would be asserting on a row that never appeared.
+  // Held back until the app is at rest: a push that lands before the first
+  // render asserts on a row that never appeared, and one that lands while the
+  // boot is still reading would be credited with the boot's own fetches.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
   await page.route('**/api/events', async (r) => {
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    await released;
     // The holder's id rides beside the name, the way the API sends it now;
     // the client reads whose the game is off the id (identity-client.spec.ts
     // pins that) and the row leaves the list either way.
@@ -34,7 +37,17 @@ test('a game taken elsewhere leaves the list on a pushed event, with no refetch'
 
   await page.goto('/games');
   await expect(page.getByText(GAME.homeTeam)).toBeVisible();
+  // At rest: after the first load the offline warm-up (App.tsx, once per
+  // session) reads the list once more, and how soon depends on the machine —
+  // 12.10.2026 it landed after the row on every local run. The baseline is
+  // taken once a full second passes with no fetch.
+  await expect.poll(async () => {
+    const before = listFetches;
+    await page.waitForTimeout(1000);
+    return listFetches === before;
+  }, { timeout: 10_000 }).toBe(true);
   const afterFirstLoad = listFetches;
+  release();
 
   // Held by somebody else now, so it is not on offer — and the row went without
   // the list being fetched again: the event carried the answer.

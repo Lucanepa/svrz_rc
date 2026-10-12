@@ -67,10 +67,10 @@ import {
   type AppRoute, type FeedbackSubView as RouteSubView,
 } from './lib/routes';
 import RcMeetingsHome from './components/RcMeetingsHome';
-import SwitchRequestsHome from './components/SwitchRequestsHome';
+import SwitchRequestsHome, { SwitchRequestsTab } from './components/SwitchRequestsHome';
 import PushOption from './components/PushOption';
 import { resyncPush } from './lib/push';
-import { answerSwitch, clearSwitchRequests, pendingFor, refreshSwitchRequests, requestSwitch, useSwitchRequests, type SwitchRequestView } from './lib/switchRequests';
+import { answerSwitch, clearSwitchRequests, isOpenRequest, pendingFor, refreshSwitchRequests, requestSwitch, useSwitchRequests, type SwitchRequestView } from './lib/switchRequests';
 import InfoHint from './components/InfoHint';
 import { inSeasonOrManual as inSeasonWindow, currentSeason, seasonLabel as seasonLabelOf } from './lib/season';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
@@ -1297,7 +1297,7 @@ export default function App() {
   // Legacy in-app database panel: no control switches to it any more, so it
   // stays out of the URL scheme.
   const [feedbackSubView, setFeedbackSubView] = useState<FeedbackSubView>(initialRoute.subView);
-  const [listTab, setListTab] = useState<'home' | 'coachees' | 'games' | 'season'>(() => landingTab(initialRoute.listTab));
+  const [listTab, setListTab] = useState<AppRoute['listTab']>(() => landingTab(initialRoute.listTab));
   // `doneList` powers the "already observed" list at the bottom of Home; each
   // entry keeps its coachee id so the row can open the filed feedback, and the
   // record's own id and match number when the server sent them (an older one
@@ -1533,6 +1533,7 @@ export default function App() {
   // Switch requests — the Home card answers them, the games list says when
   // one is already out for a game (src/lib/switchRequests.ts).
   const switchLists = useSwitchRequests();
+  const switchesToAnswer = switchLists.incoming.filter((r) => isOpenRequest(r)).length;
   // Read by the live-event handler, which needs to know who held a game BEFORE
   // the pushed change without making its effect depend on the whole list — that
   // dependency would tear the stream down and rebuild it on every refresh.
@@ -3274,6 +3275,7 @@ export default function App() {
       if (document.visibilityState !== 'visible') return;
       if (listTab === 'games') void syncGamesQuietly();
       else if (listTab === 'home') void loadHome();
+      else if (listTab === 'switches') void refreshSwitchRequests();
     };
     // Coming back to the window is the moment worth reacting to; the interval is
     // the fallback for a screen nobody touches.
@@ -6359,7 +6361,7 @@ export default function App() {
           className="no-print fixed inset-x-0 bottom-0 z-40 border-t border-stone-200 bg-white/95 backdrop-blur lg:inset-x-auto lg:left-0 lg:top-0 lg:w-56 lg:border-t-0 lg:border-r"
           style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
         >
-          <div className={cn("mx-auto max-w-5xl grid gap-1.5 px-2 py-2 lg:flex lg:flex-col lg:gap-1 lg:px-3 lg:pt-8", homelessAdmin ? "grid-cols-4" : "grid-cols-5")}>
+          <div className={cn("mx-auto max-w-5xl grid gap-1 px-1.5 py-2 sm:gap-1.5 sm:px-2 lg:flex lg:flex-col lg:gap-1 lg:px-3 lg:pt-8", homelessAdmin ? "grid-cols-5" : "grid-cols-6")}>
             {/* Hidden rather than left to bounce off the redirect: a tab that
                 answers a click by highlighting a different one is worse than
                 no tab. See homelessAdmin. */}
@@ -6412,6 +6414,29 @@ export default function App() {
             >
               <BarChart3 size={20} />
               {formData.lang === 'DE' ? 'Saison' : 'Season'}
+            </button>
+            {/* Switch requests, every one (asked 2026-10-12: its own tab; Home
+                keeps the open ones). The count is what waits for THIS coach's
+                answer — the one thing here with a deadline. */}
+            <button
+              onClick={() => setListTab('switches')}
+              data-testid="nav-switches"
+              className={cn(
+                "relative h-14 w-full px-1 text-xs font-medium rounded-xl transition-colors flex flex-col items-center justify-center text-center gap-1 lg:h-10 lg:flex-row lg:justify-start lg:gap-2.5 lg:px-3 lg:text-sm lg:text-left",
+                listTab === 'switches'
+                  ? "bg-slate-900 text-white"
+                  : "text-stone-600 hover:bg-stone-100"
+              )}
+            >
+              <ArrowLeftRight size={20} />
+              {formData.lang === 'DE' ? 'Tausch' : 'Switches'}
+              {switchesToAnswer > 0 && (
+                <span
+                  data-testid="nav-switches-badge"
+                  aria-label={formData.lang === 'DE' ? `${switchesToAnswer} wartet auf deine Antwort` : `${switchesToAnswer} waiting for your answer`}
+                  className="absolute right-1.5 top-1 min-w-[1.1rem] rounded-full bg-red-600 px-1 text-[10px] font-semibold leading-[1.1rem] text-white lg:static lg:ml-auto"
+                >{switchesToAnswer}</span>
+              )}
             </button>
             <button
               onClick={() => setOptionsOpen((o) => !o)}
@@ -7133,6 +7158,9 @@ export default function App() {
                 </div>
               </div>
             )}
+            {listTab === 'switches' && (
+              <SwitchRequestsTab lang={formData.lang} onChanged={() => { void loadHome(); void syncGamesQuietly(); }} />
+            )}
             {/* The season in numbers — a tab of its own, not more on Home. */}
             {listTab === 'season' && (
               <Suspense fallback={<div className="py-10 flex justify-center"><Loader2 size={20} className="animate-spin text-stone-400" /></div>}>
@@ -7511,7 +7539,7 @@ export default function App() {
 
                   {/* Switch requests to answer, and this coach's own — above
                       everything else, since one is waiting on an answer. */}
-                  <SwitchRequestsHome lang={formData.lang} onChanged={() => { void loadHome(); void syncGamesQuietly(); }} />
+                  <SwitchRequestsHome lang={formData.lang} onChanged={() => { void loadHome(); void syncGamesQuietly(); }} onShowAll={() => setListTab('switches')} />
 
                   {/* The next RC-Sitzung, for every coach, above the games —
                       its own fetch, so a slow dashboard does not hold it. */}

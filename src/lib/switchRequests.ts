@@ -4,9 +4,10 @@ import { isDemoMode } from './demo';
 
 // Switch requests (asked 2026-10-10): a coach asks the holder of a coachee's
 // LATER booking to hand the coachee over to an EARLIER game. Nothing moves
-// until the holder accepts. One small store, because two places read the same
-// list — the Home card that answers them, and the games list that turns
-// "Tausch anfragen" into "Tausch angefragt" — and the live stream refreshes it.
+// until the holder accepts. One small store, because three places read the
+// same list — Home (the open ones), the Tausch tab (all of them, 12.10.2026),
+// and the games list that turns "Tausch anfragen" into "Tausch angefragt" —
+// and the live stream refreshes it.
 
 export type SwitchGame = { id: string; matchNo: string; date: string; teams: string; league: string; location: string };
 
@@ -65,7 +66,10 @@ export function refreshSwitchRequests(): Promise<void> {
   if (isDemoMode()) return Promise.resolve();
   inFlight ??= (async () => {
     try {
-      const r = await fetch(apiUrl('/api/switch-requests'), { credentials: 'include' });
+      // Every request the coach is part of, decided ones too, for the tab;
+      // Home and the games list keep to the open ones (isOpenRequest). An
+      // API older than `all` answers the open ones and the last three days.
+      const r = await fetch(apiUrl('/api/switch-requests?all=1'), { credentials: 'include' });
       if (!r.ok) return;
       // Only a body of the right shape: an API older than the endpoint answers
       // something else, and a list that is not one would take Home down.
@@ -109,7 +113,13 @@ export async function answerSwitch(id: string, action: 'accept' | 'decline' | 'c
   return await r.json() as SwitchRequestView;
 }
 
+/** Still waiting for an answer: pending, and not past its expiry — the
+ *  sweep that marks a lapsed one `expired` runs only every 15 minutes. */
+export function isOpenRequest(r: SwitchRequestView, now = Date.now()): boolean {
+  return r.status === 'pending' && Date.parse(r.expiresAt) > now;
+}
+
 /** The pending request this coach made for a game, if any. */
 export function pendingFor(lists: SwitchLists, gameId: string): SwitchRequestView | undefined {
-  return lists.outgoing.find((r) => r.status === 'pending' && r.toGame.id === gameId);
+  return lists.outgoing.find((r) => isOpenRequest(r) && r.toGame.id === gameId);
 }

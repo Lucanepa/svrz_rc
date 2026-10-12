@@ -45,6 +45,7 @@
 /feedbacks       /            200
 /coachee-games   /            200
 /season          /            200
+/switches        /            200
 /admin           /            200
 /guide           /            200
 /demo            /            200

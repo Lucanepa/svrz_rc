@@ -96,14 +96,54 @@ test('the holder answers on Home', async ({ page }) => {
   await expect(page.getByTestId('switch-incoming')).toHaveCount(0);
 });
 
-test('what became of an own request shows on Home', async ({ page }) => {
+// 12.10.2026: "this also please in its own nav tab" — "in home only pending".
+// Home keeps what is still open; the Tausch tab lists every request, decided
+// ones on both sides included, and the nav counts what waits for an answer.
+test('Home shows only the open requests; the Tausch tab shows what became of every one', async ({ page }) => {
+  const asked = request({ id: 'sw-in', requester: 'Carlos Castro', requesterId: 'rc-other', holder: RC.name, holderId: RC.id });
+  const lists = {
+    incoming: [asked, request({ id: 'sw-in-old', status: 'accepted', requester: 'Bea Beispiel', requesterId: 'rc-bea', holder: RC.name, holderId: RC.id, decidedAt: '2026-10-30T09:00:00.000Z' })],
+    outgoing: [request({ id: 'sw-out' }), request({ id: 'sw-out-old', status: 'declined', decidedAt: '2026-11-01T09:00:00.000Z' })],
+  };
+  const urls: string[] = [];
   await stubSignedInApp(page);
-  await page.route('**/api/switch-requests**', (r) => r.fulfill({ json: { incoming: [], outgoing: [request({ status: 'declined', decidedAt: '2026-11-01T09:00:00.000Z' })] } }));
+  await page.route('**/api/switch-requests**', (r) => { urls.push(r.request().url()); return r.fulfill({ json: lists }); });
   await page.clock.setFixedTime(new Date('2026-11-01T10:00:00Z'));
   await page.goto('/home');
-  const row = page.getByTestId('switch-outgoing');
-  await expect(row).toHaveAttribute('data-status', 'declined');
-  await expect(row).toContainText(/Carlos Castro (declined|hat abgelehnt)/);
+
+  const home = page.getByTestId('switch-requests-home');
+  await expect(home.getByTestId('switch-incoming')).toHaveCount(1);
+  await expect(home.getByTestId('switch-outgoing')).toHaveCount(1);
+  await expect(home.getByTestId('switch-outgoing')).toHaveAttribute('data-status', 'pending');
+  // The whole history is asked for; Home picks the open ones out of it.
+  expect(urls.some((u) => u.includes('all=1'))).toBe(true);
+  // One request waits for this coach's answer.
+  await expect(page.getByTestId('nav-switches-badge')).toHaveText('1');
+
+  await home.getByRole('button', { name: /^(Alle|All)/ }).click();
+  await expect(page).toHaveURL(/\/switches$/);
+  const tab = page.getByTestId('switch-requests-tab');
+  await expect(tab.getByTestId('switch-incoming')).toHaveCount(1);
+  await expect(tab.getByTestId('switch-outgoing')).toHaveCount(2);
+  await expect(tab.locator('[data-testid="switch-outgoing"][data-status="declined"]')).toContainText(/Carlos Castro (declined|hat abgelehnt)/);
+  // Asked of this coach and answered: who asked, and what became of it.
+  await expect(tab.getByTestId('switch-answered')).toContainText(/Bea Beispiel/);
+  await expect(tab.getByTestId('switch-answered')).toContainText(/Angenommen|Accepted/);
+  // Nothing decided is on Home.
+  await page.goto('/home');
+  await expect(page.locator('[data-testid="switch-outgoing"][data-status="declined"]')).toHaveCount(0);
+});
+
+test('/switches opens the tab, and says so when there is nothing yet', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.route('**/api/switch-requests**', (r) => r.fulfill({ json: { incoming: [], outgoing: [] } }));
+  await page.goto('/switches');
+  await expect(page.getByTestId('switch-requests-tab')).toBeVisible();
+  await expect(page.getByTestId('switch-requests-empty')).toBeVisible();
+  await expect(page.getByTestId('nav-switches-badge')).toHaveCount(0);
+  // Nothing open: Home has no switch section at all.
+  await page.getByRole('button', { name: /^(Start|Home)$/ }).click();
+  await expect(page.getByTestId('switch-requests-home')).toHaveCount(0);
 });
 
 // 12.10.2026: "let me take back the request". "Tausch angefragt" takes it back,
@@ -163,5 +203,6 @@ test('"Zurückziehen" on Home asks first, then withdraws', async ({ page }) => {
   await row.getByRole('button', { name: /^(Withdraw|Zurückziehen)$/ }).click();
   await page.getByRole('dialog').getByRole('button', { name: /^(Withdraw|Zurückziehen)$/ }).click();
   await expect.poll(() => posted).toEqual(['/api/switch-requests/sw1/cancel']);
-  await expect(row).toHaveAttribute('data-status', 'cancelled');
+  // Withdrawn is decided, and Home keeps only the open ones: it moves to the tab.
+  await expect(row).toHaveCount(0);
 });

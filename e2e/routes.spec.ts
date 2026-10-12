@@ -166,6 +166,11 @@ test.describe('URL → state', () => {
     expect(parsePath('/games', '?view=calendar&month=nonsense', false).month).toBeNull();
   });
 
+  test('the Tausch tab is its own route, both ways', () => {
+    expect(parsePath('/switches', '', false)).toEqual({ ...DEFAULT_ROUTE, listTab: 'switches' });
+    expect(routeToPath({ ...DEFAULT_ROUTE, listTab: 'switches' })).toBe('/switches');
+  });
+
   test('an unknown path is the landing view, never a blank screen', () => {
     expect(parsePath('/nonsense', '', false)).toEqual(DEFAULT_ROUTE);
   });

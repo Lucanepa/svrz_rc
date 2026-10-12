@@ -64,7 +64,7 @@ export type FeedbackSubView = 'coachees' | 'coacheeGames' | 'calendar' | 'feedba
 
 export type AppRoute = {
   subView: FeedbackSubView;
-  listTab: 'home' | 'coachees' | 'games' | 'season';
+  listTab: 'home' | 'coachees' | 'games' | 'season' | 'switches';
   /** Whom the route is about, when it is about somebody. This is what makes a
    *  coachee's own list and a filed observation addressable: with the id in the
    *  URL the app can fetch what it needs instead of relying on a selection that
@@ -121,7 +121,7 @@ export type Root = 'admin' | 'sign' | 'survey' | 'guide' | 'infos' | 'dossier' |
  *  that it does, because a route the edge does not know 404s on reload. */
 export const APP_ROUTE_PREFIXES = [
   'home', 'coachees', 'games', 'calendar', 'form', 'feedbacks',
-  'coachee-games', 'admin', 'guide', 'demo', 'season', 'infos', 'info', 'dossier',
+  'coachee-games', 'admin', 'guide', 'demo', 'season', 'switches', 'infos', 'info', 'dossier',
 ] as const;
 
 /** Roots that still carry their capability in the fragment. Never a path. */
@@ -271,6 +271,10 @@ export function parsePath(pathname: string, search: string, restorable: boolean)
     // on Home).
     case 'season':
       return { ...DEFAULT_ROUTE, listTab: 'season' };
+    // Every switch request the coach was part of (asked 2026-10-12: its own
+    // tab; Home keeps only the open ones).
+    case 'switches':
+      return { ...DEFAULT_ROUTE, listTab: 'switches' };
     default:
       return { ...DEFAULT_ROUTE };
   }

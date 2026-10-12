@@ -8852,12 +8852,17 @@ app.get('/api/switch-requests', requireRcSession, async (req: Request, res: Expr
     const now = new Date().toISOString();
     // Pending ones, and the requester's own answers of the last three days —
     // a mail can be missed; the app should still say what became of it.
+    // `?all=1` (the Tausch tab, 12.10.2026): every request the coach is part
+    // of, answered ones on both sides included. Without it the answer is what
+    // it was, for an installed app that predates the tab.
+    const all = req.query.all === '1';
     const since = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
     const rows = await withCollection(collectionCandidates.switchRequests, (c) =>
-      c.getFullList<AnyRecord>({ sort: '-created', filter: `status = "pending" || decided_at >= "${since}"` }));
+      c.getFullList<AnyRecord>(all ? { sort: '-created' } : { sort: '-created', filter: `status = "pending" || decided_at >= "${since}"` }));
     // An admin session has no rcAuth and sees every request on both lists.
     const mine = (id: unknown, name: unknown) => !rcAuth || rcRefMatches(id, name, rcAuth);
-    const incoming = rows.filter((r) => switchOpen({ status: asText(r.status), expires_at: asText(r.expires_at) }, now) && mine(r.holder_id, r.holder_name));
+    const incoming = rows.filter((r) => mine(r.holder_id, r.holder_name)
+      && (all || switchOpen({ status: asText(r.status), expires_at: asText(r.expires_at) }, now)));
     const outgoing = rows.filter((r) => mine(r.requester_id, r.requester_name)
       && (asText(r.status) !== 'pending' || switchOpen({ status: 'pending', expires_at: asText(r.expires_at) }, now)));
     const games = await gamesOfRequests([...incoming, ...outgoing]);

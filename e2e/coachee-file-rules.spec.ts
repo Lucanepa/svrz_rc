@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
   normalizeSvNumber, normalizePin, isWeakPin, mintPin, parsePinMap,
   signFileSession, verifyFileSession, sessionStillValid,
-  formRefereeId, fileEntries, fileOwnerName, fileRoster, svWithoutPin,
+  formRefereeId, fileEntries, fileOwnerName, fileRoster, svWithoutPin, formRatings,
 } from '../server/coacheeFile';
 
 // The coachee file (/dossier) on its own, without a database: who may read
@@ -161,6 +161,25 @@ test.describe('which reports are whose', () => {
     expect(list[1].hasFile).toBe(false);
     expect(list[2]).toMatchObject({ goals: 'Pfiff klarer', isTest: false, rc: 'Anna Coach' });
     expect(fileEntries(records, 'nonsense', { toPlain: plain, manualGameIds: new Set() })).toEqual([]);
+  });
+
+  test('each report carries its season and its grades, folded into the letters', () => {
+    const rec = filed({ id: 'g', game: { id: 'g1', match_date: '2026-03-14 18:30:00.000Z' } });
+    (rec.feedback_json as Record<string, unknown>).sections = [
+      { title: 'Vorbereitung', items: [{ id: '1sr-prep-1', rating: 'C+' }, { id: '1sr-prep-2', rating: 'N/A' }, { id: '1sr-prep-3', rating: '' }] },
+      { title: 'Technik', items: [{ id: '1sr-tech-1', rating: 'b-' }, { id: '', rating: 'A' }, { id: '1sr-tech-2', rating: 'E-' }] },
+    ];
+    // A C+ counts as a C, a B- as a B; N/A, blanks and id-less items are no grade.
+    expect(formRatings(rec)).toEqual([
+      { id: '1sr-prep-1', section: 0, score: 8 },
+      { id: '1sr-tech-1', section: 1, score: 11 },
+      { id: '1sr-tech-2', section: 1, score: 2 },
+    ]);
+    const [entry] = fileEntries([rec], '12345', { toPlain: plain, manualGameIds: new Set() });
+    // March belongs to the season that started the September before.
+    expect(entry).toMatchObject({ season: 2025, ratings: formRatings(rec) });
+    const autumn = filed({ game: { match_date: '2026-10-03 17:00:00.000Z' } });
+    expect(fileEntries([autumn], '12345', { toPlain: plain, manualGameIds: new Set() })[0]).toMatchObject({ season: 2026, ratings: [] });
   });
 
   test('the greeting uses the newest roster spelling', () => {

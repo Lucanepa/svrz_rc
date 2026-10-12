@@ -1,11 +1,19 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { FileText, Loader2, LogOut, Lock } from 'lucide-react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { BarChart3, Download, ExternalLink, Eye, EyeOff, FileText, Loader2, LogOut, Lock, X } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { getStoredLang, type Lang } from '../lib/prefs';
 import {
   coacheeFileLogin, getCoacheeFile, getCoacheeFileForm, CoacheeFileError,
   type CoacheeFile, type CoacheeFileEntry,
 } from '../lib/pocketbase';
+import { importFresh } from '../lib/freshImport';
+import StaleBuildNotice from './StaleBuildNotice';
+import CoacheeFileStats from './CoacheeFileStats';
+
+// pdf.js is a megabyte: loaded when a report is first opened, not with the page.
+const PdfReader = lazy(() => importFresh(() => import('./PdfReader')).catch((error: unknown) => ({
+  default: (props: { onClose: () => void }) => <StaleBuildNotice message={error instanceof Error ? error.message : String(error)} onClose={props.onClose} />,
+})));
 
 /**
  * "Mein Coaching-Dossier" — a coached referee's own reports, at /dossier.
@@ -16,6 +24,10 @@ import {
  * mail tells coachees for now (2026-10-05, see server/coacheeFile.ts). The
  * session is short (30 min), sent in a header, and kept in this tab only — a
  * referee may well open this on a shared computer.
+ *
+ * Two tabs: the reports, each readable right here (the app's own PDF reader,
+ * fed from memory — never Cache Storage), in a new browser tab, or saved; and
+ * the referee's own statistics (CoacheeFileStats).
  */
 
 const STR = {
@@ -26,6 +38,8 @@ const STR = {
     sv: 'SV-Nr.',
     pin: 'PIN (6 Ziffern)',
     pinHint: 'Deinen persönlichen PIN erhältst du vom SVRZ Referee Coaching. PIN verloren? schiricoaching@svrz.ch',
+    showPin: 'PIN anzeigen',
+    hidePin: 'PIN verbergen',
     signIn: 'Anmelden',
     wrong: 'SV-Nr. oder PIN stimmt nicht.',
     tooMany: (min: number) => `Zu viele Versuche. Bitte in ${min} Minute${min === 1 ? '' : 'n'} erneut versuchen.`,
@@ -34,7 +48,16 @@ const STR = {
     signOut: 'Abmelden',
     reports: (n: number) => `${n} Bericht${n === 1 ? '' : 'e'}`,
     none: 'Zu deiner SV-Nr. sind noch keine Berichte abgelegt.',
-    open: 'Bericht öffnen',
+    open: 'Ansehen',
+    openLong: 'Bericht ansehen',
+    download: 'Herunterladen',
+    downloadLong: 'Bericht herunterladen',
+    newTab: 'In neuem Tab öffnen',
+    close: 'Schliessen',
+    report: 'Bericht',
+    imageFailed: 'Dieses Bild kann der Browser nicht anzeigen. Lade es herunter, um es zu öffnen.',
+    tabReports: 'Berichte',
+    tabStats: 'Statistik',
     noFile: 'Keine Datei gespeichert',
     goals: 'Ziele für nächste Spiele',
     coach: 'Referee Coach',
@@ -49,6 +72,8 @@ const STR = {
     sv: 'SV no.',
     pin: 'PIN (6 digits)',
     pinHint: 'Your personal PIN comes from SVRZ Referee Coaching. Lost it? schiricoaching@svrz.ch',
+    showPin: 'Show PIN',
+    hidePin: 'Hide PIN',
     signIn: 'Sign in',
     wrong: 'SV no. or PIN is not correct.',
     tooMany: (min: number) => `Too many attempts. Please try again in ${min} minute${min === 1 ? '' : 's'}.`,
@@ -57,7 +82,16 @@ const STR = {
     signOut: 'Sign out',
     reports: (n: number) => `${n} report${n === 1 ? '' : 's'}`,
     none: 'No reports are filed under your SV no. yet.',
-    open: 'Open report',
+    open: 'View',
+    openLong: 'View report',
+    download: 'Download',
+    downloadLong: 'Download report',
+    newTab: 'Open in a new tab',
+    close: 'Close',
+    report: 'Report',
+    imageFailed: 'This browser cannot show this image. Download it to open it.',
+    tabReports: 'Reports',
+    tabStats: 'Statistics',
     noFile: 'No file stored',
     goals: 'Goals for the next games',
     coach: 'Referee coach',
@@ -92,8 +126,8 @@ const fmtDate = (iso: string) => {
 };
 
 /** Share sheet on a phone, a download elsewhere — what the coach app does
- *  with a filed PDF (shareFeedbackFile). A new tab opened after an await is
- *  what popup blockers exist to stop. */
+ *  with a filed PDF (shareFeedbackFile). On a phone the sheet is where
+ *  "Save to Files" lives. */
 async function deliver(blob: Blob, name: string, title: string): Promise<void> {
   const file = new File([blob], name, { type: blob.type || 'application/pdf' });
   if (navigator.canShare && navigator.share && navigator.canShare({ files: [file] })) {
@@ -119,20 +153,43 @@ export default function CoacheeFilePage() {
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [showPin, setShowPin] = useState(false);
+  /** `<entry id>:view` or `<entry id>:download` while that one is fetching. */
   const [opening, setOpening] = useState('');
+  const [tab, setTab] = useState<'reports' | 'stats'>('reports');
+  /** The report on screen: its bytes stay in memory, never in Cache Storage. */
+  const [viewer, setViewer] = useState<{ entry: CoacheeFileEntry; blob: Blob; name: string; url: string } | null>(null);
+  // Fetched documents for this session, so viewing and then saving one is a
+  // single download. Dropped with the session.
+  const forms = useRef(new Map<string, { blob: Blob; name: string }>());
+  // Object URLs handed to an image or a new tab. A tab opened from one may
+  // still be reading it, so they live until the session ends, not the viewer.
+  const objectUrls = useRef(new Set<string>());
 
   useEffect(() => {
     document.documentElement.lang = lang === 'DE' ? 'de' : 'en';
     document.title = `${t.title} · SVRZ`;
   }, [lang, t.title]);
 
+  const dropDocuments = useCallback(() => {
+    forms.current.clear();
+    for (const url of objectUrls.current) URL.revokeObjectURL(url);
+    objectUrls.current.clear();
+  }, []);
+
   const signOut = useCallback((message = '') => {
     writeSession(null);
     setSession(null);
     setFile(null);
     setPin('');
+    setShowPin(false);
+    setViewer(null);
+    setTab('reports');
+    dropDocuments();
     setError(message);
-  }, []);
+  }, [dropDocuments]);
+
+  useEffect(() => dropDocuments, [dropDocuments]);
 
   // Load the file whenever a session exists; a 401 (expired, or the PIN was
   // replaced in the console) sends the reader back to the door.
@@ -177,19 +234,46 @@ export default function CoacheeFilePage() {
     }
   };
 
-  const open = async (entry: CoacheeFileEntry) => {
+  const objectUrl = (blob: Blob) => {
+    const url = URL.createObjectURL(blob);
+    objectUrls.current.add(url);
+    return url;
+  };
+
+  const fetchForm = async (entry: CoacheeFileEntry) => {
+    const kept = forms.current.get(entry.id);
+    if (kept) return kept;
+    const got = await getCoacheeFileForm(session!.token, entry.id);
+    forms.current.set(entry.id, got);
+    return got;
+  };
+
+  const reportTitle = (entry: CoacheeFileEntry) => `${t.report} ${fmtDate(entry.date)} · ${entry.role}`;
+
+  const act = async (entry: CoacheeFileEntry, action: 'view' | 'download') => {
     if (!session) return;
-    setOpening(entry.id);
+    setOpening(`${entry.id}:${action}`);
     setError('');
     try {
-      const { blob, name } = await getCoacheeFileForm(session.token, entry.id);
-      await deliver(blob, name, `${t.title} · ${fmtDate(entry.date)}`);
+      const { blob, name } = await fetchForm(entry);
+      if (action === 'download') await deliver(blob, name, `${t.title} · ${fmtDate(entry.date)}`);
+      else setViewer({ entry, blob, name, url: blob.type.startsWith('image/') ? objectUrl(blob) : '' });
     } catch (e) {
       if (e instanceof CoacheeFileError && e.status === 401) signOut(t.expired);
       else setError(t.failed);
     } finally {
       setOpening('');
     }
+  };
+
+  // The bytes are in hand, so this runs inside the click — no popup blocker
+  // stops a tab opened synchronously.
+  const openInNewTab = () => {
+    if (!viewer) return;
+    window.open(viewer.url || objectUrl(viewer.blob), '_blank', 'noopener');
+  };
+  const saveViewed = () => {
+    if (viewer) void deliver(viewer.blob, viewer.name, `${t.title} · ${fmtDate(viewer.entry.date)}`);
   };
 
   const card = 'bg-white rounded-2xl shadow-card border border-stone-200/70';
@@ -232,15 +316,25 @@ export default function CoacheeFilePage() {
                 value={sv} onChange={(e) => setSv(e.target.value)} required maxLength={12}
               />
             </label>
-            <label className="block">
-              <span className="block text-sm font-medium text-stone-700 mb-1.5">{t.pin}</span>
-              <input
-                className={`${input} font-mono tracking-[0.4em]`} name="pin" type="password" inputMode="numeric"
-                autoComplete="current-password" pattern="[0-9 ]*"
-                value={pin} onChange={(e) => setPin(e.target.value)} required maxLength={7}
-              />
-              <span className="mt-1.5 block text-xs text-stone-500">{t.pinHint}</span>
-            </label>
+            <div>
+              <label htmlFor="coachee-file-pin" className="block text-sm font-medium text-stone-700 mb-1.5">{t.pin}</label>
+              <div className="relative">
+                <input
+                  id="coachee-file-pin" aria-describedby="coachee-file-pin-hint"
+                  className={`${input} pr-12 font-mono tracking-[0.4em]`} name="pin" type={showPin ? 'text' : 'password'} inputMode="numeric"
+                  autoComplete="current-password" pattern="[0-9 ]*" spellCheck={false} autoCapitalize="off"
+                  value={pin} onChange={(e) => setPin(e.target.value)} required maxLength={7}
+                />
+                <button
+                  type="button" onClick={() => setShowPin((v) => !v)} aria-pressed={showPin} aria-controls="coachee-file-pin"
+                  aria-label={showPin ? t.hidePin : t.showPin} title={showPin ? t.hidePin : t.showPin}
+                  className="absolute inset-y-0 right-0 w-11 inline-flex items-center justify-center rounded-r-xl text-stone-400 hover:text-stone-700 focus:outline-none focus-visible:text-stone-800"
+                >
+                  {showPin ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+              <span id="coachee-file-pin-hint" className="mt-1.5 block text-xs text-stone-500">{t.pinHint}</span>
+            </div>
             {error && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{error}</p>}
             <button
               type="submit" disabled={busy}
@@ -279,11 +373,24 @@ export default function CoacheeFilePage() {
             )}
 
             {file && file.entries.length > 0 && (
-              <ol className="space-y-3" data-log-redact>
-                {file.entries.map((entry) => (
-                  <li key={entry.id} className={`${card} p-4 sm:p-5`} data-testid="coachee-file-entry">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
+              <>
+                <div role="tablist" aria-label={t.title} className="mb-4 grid grid-cols-2 sm:inline-grid sm:w-auto w-full rounded-xl border border-stone-200 bg-white p-1">
+                  {(['reports', 'stats'] as const).map((k) => (
+                    <button
+                      key={k} type="button" role="tab" id={`dossier-tab-${k}`} aria-selected={tab === k} aria-controls={`dossier-panel-${k}`}
+                      onClick={() => setTab(k)}
+                      className={`h-9 px-4 inline-flex items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-colors ${tab === k ? 'bg-stone-900 text-white' : 'text-stone-600 hover:text-stone-900'}`}
+                    >
+                      {k === 'reports' ? <FileText size={15} /> : <BarChart3 size={15} />}
+                      {k === 'reports' ? t.tabReports : t.tabStats}
+                    </button>
+                  ))}
+                </div>
+
+                {tab === 'reports' && (
+                  <ol className="space-y-3" data-log-redact role="tabpanel" id="dossier-panel-reports" aria-labelledby="dossier-tab-reports">
+                    {file.entries.map((entry) => (
+                      <li key={entry.id} className={`${card} p-4 sm:p-5`} data-testid="coachee-file-entry">
                         <p className="text-[15px] font-semibold text-stone-900">
                           {fmtDate(entry.date)}
                           <span className="ml-2 text-sm font-medium text-stone-500">{entry.role}</span>
@@ -293,33 +400,120 @@ export default function CoacheeFilePage() {
                         <p className="mt-0.5 text-xs text-stone-500">
                           {[entry.league, entry.matchNo && `${t.match} ${entry.matchNo}`, entry.rc && `${t.coach}: ${entry.rc}`].filter(Boolean).join(' · ')}
                         </p>
-                      </div>
-                      {entry.hasFile ? (
-                        <button
-                          type="button" onClick={() => void open(entry)} disabled={opening === entry.id} aria-label={t.open}
-                          className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-700 disabled:bg-stone-300 transition-colors shrink-0"
-                        >
-                          {opening === entry.id ? <Loader2 size={15} className="animate-spin" /> : <FileText size={15} />}
-                          <span className="hidden sm:inline">{t.open}</span>
-                        </button>
-                      ) : (
-                        <span className="text-xs text-stone-400 shrink-0">{t.noFile}</span>
-                      )}
-                    </div>
-                    {entry.goals && (
-                      <div className="mt-3 rounded-xl bg-stone-50 border-l-[3px] border-red-600 px-3 py-2.5">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-500">{t.goals}</p>
-                        <p className="mt-1 text-sm text-stone-700 whitespace-pre-line">{entry.goals}</p>
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ol>
+                        {entry.goals && (
+                          <div className="mt-3 rounded-xl bg-stone-50 border-l-[3px] border-red-600 px-3 py-2.5">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-stone-500">{t.goals}</p>
+                            <p className="mt-1 text-sm text-stone-700 whitespace-pre-line">{entry.goals}</p>
+                          </div>
+                        )}
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {entry.hasFile ? (
+                            <>
+                              <button
+                                type="button" onClick={() => void act(entry, 'view')} disabled={!!opening} aria-label={t.openLong}
+                                className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-700 disabled:bg-stone-300 transition-colors"
+                              >
+                                {opening === `${entry.id}:view` ? <Loader2 size={15} className="animate-spin" /> : <Eye size={15} />}
+                                {t.open}
+                              </button>
+                              <button
+                                type="button" onClick={() => void act(entry, 'download')} disabled={!!opening} aria-label={t.downloadLong}
+                                className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg border border-stone-200 bg-white text-sm font-medium text-stone-700 hover:bg-stone-100 disabled:text-stone-300 transition-colors"
+                              >
+                                {opening === `${entry.id}:download` ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                                {t.download}
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-xs text-stone-400">{t.noFile}</span>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+
+                {tab === 'stats' && (
+                  <div role="tabpanel" id="dossier-panel-stats" aria-labelledby="dossier-tab-stats">
+                    <CoacheeFileStats entries={file.entries} lang={lang} />
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
 
         <p className="mt-8 text-center text-[11px] text-stone-400">{t.footer}</p>
+      </div>
+
+      {viewer && (() => {
+        const title = reportTitle(viewer.entry);
+        const close = () => setViewer(null);
+        const actions = (
+          <>
+            <button type="button" onClick={saveViewed} aria-label={t.downloadLong} title={t.download} className="inline-flex items-center gap-1.5 h-8 px-1.5 sm:px-2 rounded text-xs font-medium hover:bg-stone-700">
+              <Download size={15} /> <span className="hidden sm:inline">{t.download}</span>
+            </button>
+            <button type="button" onClick={openInNewTab} aria-label={t.newTab} title={t.newTab} className="p-1.5 rounded hover:bg-stone-700">
+              <ExternalLink size={15} />
+            </button>
+          </>
+        );
+        const fallback = (
+          <button type="button" onClick={saveViewed} className="inline-flex items-center gap-2 mt-3 text-sm text-red-400 hover:text-red-300 underline">
+            <Download size={14} /> {t.downloadLong}
+          </button>
+        );
+        if (viewer.blob.type.startsWith('image/')) {
+          return <ImageViewer url={viewer.url} title={title} onClose={close} actions={actions} closeLabel={t.close} failedText={t.imageFailed} fallback={fallback} />;
+        }
+        return (
+          <Suspense fallback={(
+            <div className="fixed inset-0 z-[60] grid place-items-center bg-stone-900/90 text-stone-100">
+              <Loader2 size={22} className="animate-spin" />
+            </div>
+          )}>
+            <PdfReader
+              url={`dossier:${viewer.entry.id}`} title={title} lang={lang} onClose={close}
+              load={() => viewer.blob.arrayBuffer()} actions={actions} fallback={fallback}
+            />
+          </Suspense>
+        );
+      })()}
+    </div>
+  );
+}
+
+/** A scanned report (a photo of the paper form): the picture, fitted to the
+ *  width, with the same buttons as the PDF reader. HEIC opens only in Safari;
+ *  elsewhere the way out is the download. */
+function ImageViewer({ url, title, onClose, actions, closeLabel, failedText, fallback }: {
+  url: string; title: string; onClose: () => void; actions: ReactNode; closeLabel: string; failedText: string; fallback: ReactNode;
+}) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col bg-stone-900/95" role="dialog" aria-modal="true" aria-label={title}>
+      <header className="flex-none flex items-center gap-2 px-2 sm:px-3 h-12 bg-stone-900 text-stone-100 border-b border-stone-700">
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span>
+        {actions}
+        <button type="button" onClick={onClose} aria-label={closeLabel} className="p-1.5 rounded hover:bg-stone-700"><X size={17} /></button>
+      </header>
+      <div className="flex-1 overflow-auto overscroll-contain bg-stone-800 p-1.5 sm:p-6">
+        {failed ? (
+          <div className="h-full grid place-items-center text-center px-6">
+            <div>
+              <p className="text-sm text-stone-300">{failedText}</p>
+              {fallback}
+            </div>
+          </div>
+        ) : (
+          <img src={url} alt={title} onError={() => setFailed(true)} className="mx-auto block max-w-full h-auto bg-white shadow-lg" />
+        )}
       </div>
     </div>
   );

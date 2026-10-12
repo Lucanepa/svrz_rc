@@ -1855,6 +1855,11 @@ export async function submitSurvey(token: string, payload: { lang: string; answe
 export type CoacheeFileEntry = {
   id: string; date: string; role: '1. SR' | '2. SR'; matchNo: string; league: string;
   homeTeam: string; awayTeam: string; rc: string; goals: string; hasFile: boolean; isTest: boolean;
+  /** Season of the game (starting year), null without a date. Optional: an API
+   *  older than the statistics sends neither this nor `ratings`. */
+  season?: number | null;
+  /** Graded criteria, each folded into its letter on the 1–15 scale. */
+  ratings?: Array<{ id: string; section: number; score: number }>;
 };
 export type CoacheeFile = { refereeId: string; name: string; expiresAt: number; entries: CoacheeFileEntry[] };
 export class CoacheeFileError extends Error {

@@ -243,9 +243,13 @@ export function GradeLine({ points, nLabel }: { points: LinePoint[]; nLabel: (n:
             </circle>
           </g>
         )))}
-        {points.map((p, i) => (
-          <text key={`l-${p.key}`} x={x(i)} y={height - 8} fontSize={10} fill={INK_SOFT} textAnchor="middle">{p.label}</text>
-        ))}
+        {/* A label wider than the room beside an end point is pulled inwards
+            rather than cut off at the edge (a date, say, where a month fits). */}
+        {points.map((p, i) => {
+          const half = (p.label.length * 5.6) / 2;
+          const lx = Math.min(width - 2 - half, Math.max(2 + half, x(i)));
+          return <text key={`l-${p.key}`} x={lx} y={height - 8} fontSize={10} fill={INK_SOFT} textAnchor="middle">{p.label}</text>;
+        })}
       </svg>
     </div>
   );
@@ -375,6 +379,10 @@ export type ScaleRow = { key: string; label: string; avg: number | null; n: numb
   tier?: Tier | null;
   /** Replaces the row's hover text. */
   title?: string;
+  /** An earlier average of the same thing (the referee's own earlier seasons
+   *  on the dossier): a small grey ring on the track, joined to the dot, so
+   *  the step from then to now reads at a glance. */
+  ghost?: number | null;
   testId?: string };
 
 export type Tier = -2 | -1 | 0 | 1 | 2;
@@ -461,6 +469,15 @@ export function GradeScale({ rows, minLabel, maxLabel, nLabel, refScore, wide, h
               {hasRef
                 ? <span className={cn('absolute -translate-x-1/2 border-l-2 border-dashed border-stone-500', wide ? 'top-0 bottom-0 sm:-top-1 sm:-bottom-1' : '-top-1 -bottom-1')} style={{ left: `${refPos}%` }} />
                 : <span className="absolute top-1/2 h-4 w-0.5 -translate-x-1/2 -translate-y-1/2 bg-stone-400" style={{ left: `${pos(NORMAL_SCORE)}%` }} title="C" />}
+              {typeof r.ghost === 'number' && (
+                <>
+                  {r.avg !== null && (
+                    <span className="absolute top-1/2 h-0.5 -translate-y-1/2 bg-stone-300"
+                      style={{ left: `${Math.min(pos(r.ghost), pos(r.avg))}%`, width: `${Math.abs(pos(r.ghost) - pos(r.avg))}%` }} />
+                  )}
+                  <span data-ghost className="absolute top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white border-2 border-stone-400" style={{ left: `${pos(r.ghost)}%` }} />
+                </>
+              )}
               {r.avg !== null && (thin
                 ? <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white border-2" style={{ left: `${pos(r.avg)}%`, borderColor: hasRef ? IN_LINE : SERIES[0] }} />
                 : <span className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white" style={{ left: `${pos(r.avg)}%`, background: dot }} />)}

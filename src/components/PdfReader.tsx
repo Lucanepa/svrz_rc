@@ -10,7 +10,7 @@
 // a lazy import), which keeps roughly a megabyte of renderer out of the way of
 // everyone who never opens one.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronUp, ExternalLink, Loader2, Minus, Plus, Search, X } from 'lucide-react';
 // The legacy build, deliberately. The default one calls Math.sumPrecise, which
 // no Safari has yet — and half of these coaches read this on an iPhone in a
@@ -79,18 +79,30 @@ const STR = {
 const fold = foldText;
 
 export type PdfReaderProps = {
+  /** Where the bytes come from — and, with `load`, only the document's key. */
   url: string;
   title: string;
-  originalHref: string;
+  /** "Open the original": a link in the header and under a failure. Left out
+   *  where there is no public original (a referee's own report). */
+  originalHref?: string;
   lang: Lang;
   onClose: () => void;
+  /** Bytes from somewhere other than the document shelf: the coachee's
+   *  dossier holds its PDF already, fetched with its own session header, and
+   *  a private report must not land in Cache Storage. Must hand back a fresh
+   *  buffer each call — pdf.js detaches the one it is given. */
+  load?: (onProgress: (p: number) => void, signal: AbortSignal) => Promise<ArrayBuffer>;
+  /** More buttons in the header, before the close button (download, …). */
+  actions?: ReactNode;
+  /** Under the failure message when there is no original to send them to. */
+  fallback?: ReactNode;
   /** Opened from a hit of the search across documents: the term goes into the
    *  reader's own search, and the reader lands on the hit's page. */
   initialQuery?: string;
   initialPage?: number;
 };
 
-export default function PdfReader({ url, title, originalHref, lang, onClose, initialQuery, initialPage }: PdfReaderProps) {
+export default function PdfReader({ url, title, originalHref, lang, onClose, load, actions, fallback, initialQuery, initialPage }: PdfReaderProps) {
   const t = STR[lang];
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -121,7 +133,8 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, ini
     const abort = new AbortController();
     (async () => {
       try {
-        const bytes = await fetchDocBytes(url, (p) => { if (!cancelled) setProgress(p); }, abort.signal);
+        const onProgress = (p: number) => { if (!cancelled) setProgress(p); };
+        const bytes = load ? await load(onProgress, abort.signal) : await fetchDocBytes(url, onProgress, abort.signal);
         if (cancelled) return;
         const task = pdfjsLib.getDocument({
           data: new Uint8Array(bytes),
@@ -351,7 +364,8 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, ini
             <span className="hidden sm:inline text-xs text-stone-400 tabular-nums w-10 text-center">{Math.round(scale * 100)}%</span>
             <button type="button" onClick={() => zoom(0.2)} aria-label={t.zoomIn} className="p-1.5 rounded hover:bg-stone-700"><Plus size={15} /></button>
           </div>
-          <a href={originalHref} target="_blank" rel="noopener noreferrer" title={t.original} aria-label={t.original} className="p-1.5 rounded hover:bg-stone-700"><ExternalLink size={15} /></a>
+          {actions}
+          {originalHref && <a href={originalHref} target="_blank" rel="noopener noreferrer" title={t.original} aria-label={t.original} className="p-1.5 rounded hover:bg-stone-700"><ExternalLink size={15} /></a>}
           <button type="button" onClick={onClose} aria-label={t.close} className="p-1.5 rounded hover:bg-stone-700"><X size={17} /></button>
         </div>
 
@@ -417,9 +431,11 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, ini
           <div className="h-full grid place-items-center text-center px-6">
             <div>
               <p className="text-sm text-stone-300">{t.failed}</p>
-              <a href={originalHref} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 mt-3 text-sm text-red-400 hover:text-red-300 underline">
-                <ExternalLink size={14} /> {t.original}
-              </a>
+              {originalHref ? (
+                <a href={originalHref} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 mt-3 text-sm text-red-400 hover:text-red-300 underline">
+                  <ExternalLink size={14} /> {t.original}
+                </a>
+              ) : fallback}
             </div>
           </div>
         )}

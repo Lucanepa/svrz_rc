@@ -23,6 +23,12 @@
 // What a coachee sees is exactly what they were already sent: the filed PDF
 // (the report the mail carried) and its "Ziele für nächste Spiele". Never the
 // chair's private note, never a parked draft, never another person's report.
+// The grades travel too, for the page's statistics: each criterion's letter,
+// which the PDF already shows them — folded into the five letters like every
+// statistic in the app (src/lib/statistics.ts), and nothing else of the form.
+
+import { gradeToScore, letterScore } from '../src/lib/statistics.ts';
+import { seasonOfGame } from './season.ts';
 
 type Rec = Record<string, unknown>;
 
@@ -175,7 +181,34 @@ export type FileEntry = {
   hasFile: boolean;
   /** Filed on a Testspiel — only ever the people trying the flow out. */
   isTest: boolean;
+  /** The season of the game (Sept–Apr, named by its starting year); null
+   *  when the game has no date. */
+  season: number | null;
+  /** Every graded criterion: its id, the index of its form section, and its
+   *  score on the 1–15 scale folded into its letter (a C− or C+ is 8). */
+  ratings: FileRating[];
 };
+
+export type FileRating = { id: string; section: number; score: number };
+
+/** The graded criteria of one filed form — what the statistics count. An N/A
+ *  or an empty answer is no grade; an item without an id cannot be compared
+ *  across reports and is left out. */
+export function formRatings(rec: Rec): FileRating[] {
+  const json = (rec.feedback_json && typeof rec.feedback_json === 'object' ? rec.feedback_json : {}) as Rec;
+  const sections = Array.isArray(json.sections) ? json.sections as Rec[] : [];
+  const out: FileRating[] = [];
+  sections.forEach((section, index) => {
+    const items = Array.isArray(section?.items) ? section.items as Rec[] : [];
+    for (const item of items) {
+      const id = text(item?.id);
+      const score = gradeToScore(text(item?.rating));
+      if (!id || score === null) continue;
+      out.push({ id, section: index, score: letterScore(score) });
+    }
+  });
+  return out;
+}
 
 export function fileEntries(
   records: Array<Rec & { id: string }>,
@@ -204,6 +237,8 @@ export function fileEntries(
       goals: opts.toPlain(text(results.goals)).trim(),
       hasFile: !!text(rec.pdf_file),
       isTest: opts.manualGameIds.has(text(game.id) || text(rec.game)),
+      season: seasonOfGame(text(game.match_date)),
+      ratings: formRatings(rec),
     });
   }
   out.sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));

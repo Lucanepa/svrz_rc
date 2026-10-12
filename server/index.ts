@@ -8701,21 +8701,30 @@ function publishSwitch(r: AnyRecord) {
   publishLive({ type: 'switch.changed', requestId: String(r.id), holderId: asText(r.holder_id), requesterId: asText(r.requester_id) });
 }
 
-type SwitchMailKind = 'request' | 'accepted' | 'declined' | 'expired' | 'failed';
+type SwitchMailKind = 'request' | 'cancelled' | 'accepted' | 'declined' | 'expired' | 'failed';
 
-/** One mail about a request: the ask to the holder, every answer to the
- *  requester. Never throws — the request is already stored. */
-async function mailSwitch(kind: SwitchMailKind, r: AnyRecord, opts: { keepsLater?: boolean } = {}): Promise<void> {
+/** One mail about a request: the ask and its withdrawal to the holder, every
+ *  answer to the requester. Never throws — the request is already stored. */
+async function mailSwitch(kind: SwitchMailKind, r: AnyRecord, opts: { keepsLater?: boolean; byConsole?: boolean } = {}): Promise<void> {
+  const toHolder = kind === 'request' || kind === 'cancelled';
+  const who = toHolder ? 'holder' : 'requester';
   try {
     const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
-    const toHolder = kind === 'request';
     const ref = toHolder
       ? { id: asText(r.holder_id), name: asText(r.holder_name) }
       : { id: asText(r.requester_id), name: asText(r.requester_name) };
     const coach = people.find((p) => samePerson(ref, { id: p.id, name: p.fullName }, rcKnownIds));
     const testMode = await isEmailTestMode();
     const testRecipient = asText(process.env.FEEDBACK_TEST_RECIPIENT);
-    if (!coach?.email || (testMode && !testRecipient)) return;
+    // Said, not swallowed: a coach who never hears of a request answers none.
+    if (!coach?.email) {
+      log.warn('switch.mail', `no address for the ${who} — the ${kind} of a switch request was not mailed`, { requestId: String(r.id), kind });
+      return;
+    }
+    if (testMode && !testRecipient) {
+      log.info('switch.mail', `test mode without a test recipient — the ${kind} of a switch request was not mailed`, { requestId: String(r.id), kind });
+      return;
+    }
     const games = await gamesOfRequests([r]);
     const g1 = switchGameBrief(asText(r.to_game), asText(r.to_match_no), games.get(asText(r.to_game)));
     const g2 = switchGameBrief(asText(r.from_game), asText(r.from_match_no), games.get(asText(r.from_game)));
@@ -8733,6 +8742,18 @@ async function mailSwitch(kind: SwitchMailKind, r: AnyRecord, opts: { keepsLater
           `${requester} möchte ${coachee} früher beobachten: am ${d1} (${g1.teams}) statt an deinem Spiel am ${d2} (${g2.teams}). Stimmst du zu, übernimmt ${requester} das frühere Spiel, und ${opts.keepsLater ? `${coachee} wird auf deinem Spiel freigegeben — du behältst es für den anderen Coachee` : 'dein Spiel wird freigegeben'}. Bitte im Tool annehmen oder ablehnen${until ? `, bis ${until}` : ''}. Ohne Antwort bleibt alles, wie es ist.`,
           `${requester} would like to observe ${coachee} earlier: on ${d1} (${g1.teams}) instead of your game on ${d2} (${g2.teams}). If you agree, ${requester} takes the earlier game and ${opts.keepsLater ? `${coachee} is released from your game — you keep it for the other coachee` : 'your game is released'}. Please accept or decline in the tool${until ? ` by ${until}` : ''}. Without an answer nothing changes.`,
         ];
+        break;
+      case 'cancelled':
+        subject = `Tauschanfrage zurückgezogen: ${coachee}`;
+        lead = opts.byConsole
+          ? [
+            `Die Anfrage von ${requester}, ${coachee} am ${d1} (${g1.teams}) zu beobachten, wurde zurückgezogen. Du beobachtest ${coachee} wie geplant am ${d2} (${g2.teams}) — du musst nichts tun.`,
+            `The request from ${requester} to observe ${coachee} on ${d1} (${g1.teams}) has been withdrawn. You observe ${coachee} as planned on ${d2} (${g2.teams}) — nothing to do.`,
+          ]
+          : [
+            `${requester} hat die Anfrage zurückgezogen, ${coachee} am ${d1} (${g1.teams}) zu beobachten. Du beobachtest ${coachee} wie geplant am ${d2} (${g2.teams}) — du musst nichts tun.`,
+            `${requester} has withdrawn the request to observe ${coachee} on ${d1} (${g1.teams}). You observe ${coachee} as planned on ${d2} (${g2.teams}) — nothing to do.`,
+          ];
         break;
       case 'accepted':
         subject = `Tausch angenommen: ${coachee} am ${d1}`;
@@ -8784,6 +8805,9 @@ async function mailSwitch(kind: SwitchMailKind, r: AnyRecord, opts: { keepsLater
       coachId: coach.id,
       push: { title: subject, body: lead[0], url: MAIL_APP_URL },
     });
+    // A sent mail was silent before, so "did the holder hear of it?" had no
+    // answer in the log (12.10.2026). Who, not the address.
+    log.info('switch.mail', `the ${kind} of a switch request mailed to the ${who}${testMode ? ' (test mode: to the tester)' : ''}`, { requestId: String(r.id), kind, testMode });
   } catch (error) {
     log.warn('switch.mail', `could not mail the ${kind} of a switch request`, { requestId: String(r.id), error: String(error) });
   }
@@ -8937,6 +8961,9 @@ app.post('/api/switch-requests/:id/:action', requireRcSession, async (req: Reque
       log.info(`switch.${status}`, `switch request ${status} by ${by}`, { requestId: String(r.id) }, reqCtx(req));
       publishSwitch(done);
       if (status === 'declined') void mailSwitch('declined', done);
+      // The holder was asked by mail, so the withdrawal goes the same way —
+      // the card on their Home simply vanishing says nothing.
+      else void mailSwitch('cancelled', done, { byConsole: !rcAuth });
       res.json(switchView(done, await gamesOfRequests([done])));
       return;
     }

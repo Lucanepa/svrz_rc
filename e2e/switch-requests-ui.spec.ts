@@ -105,3 +105,63 @@ test('what became of an own request shows on Home', async ({ page }) => {
   await expect(row).toHaveAttribute('data-status', 'declined');
   await expect(row).toContainText(/Carlos Castro (declined|hat abgelehnt)/);
 });
+
+// 12.10.2026: "let me take back the request". "Tausch angefragt" takes it back,
+// asked first because the holder is told by mail; the button is "Tausch
+// anfragen" again once the request is gone.
+test('"Tausch angefragt" withdraws the request, after asking', async ({ page }) => {
+  const posted: string[] = [];
+  const lists = { incoming: [] as unknown[], outgoing: [request()] as unknown[] };
+  await stubSignedInApp(page);
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [BOOKED, EARLIER] }));
+  await page.route('**/api/switch-requests**', async (r) => {
+    if (r.request().method() === 'POST') {
+      posted.push(new URL(r.request().url()).pathname);
+      lists.outgoing = [request({ status: 'cancelled', decidedAt: '2026-11-01T10:00:00.000Z' })];
+      await r.fulfill({ json: lists.outgoing[0] });
+      return;
+    }
+    await r.fulfill({ json: lists });
+  });
+  await page.clock.setFixedTime(new Date('2026-11-01T10:00:00Z'));
+  await page.goto('/games');
+  await page.getByRole('button', { name: /Hide planned|Ohne Geplante/ }).click();
+  await page.getByRole('button', { name: new RegExp(EARLIER.matchNo) }).first().click();
+
+  const pending = page.getByTestId('take-switch-pending');
+  await pending.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText(/Carlos Castro .*(e-mail|E-Mail)/);
+  // Kept: nothing is sent.
+  await dialog.getByRole('button', { name: /^(Keep it|Behalten)$/ }).click();
+  expect(posted).toEqual([]);
+
+  await pending.click();
+  await page.getByRole('dialog').getByRole('button', { name: /^(Withdraw|Zurückziehen)$/ }).click();
+  await expect.poll(() => posted).toEqual(['/api/switch-requests/sw1/cancel']);
+  await expect(page.getByTestId('take-switch')).toBeVisible();
+  await expect(page.getByTestId('take-switch-pending')).toHaveCount(0);
+});
+
+test('"Zurückziehen" on Home asks first, then withdraws', async ({ page }) => {
+  const posted: string[] = [];
+  const lists = { incoming: [] as unknown[], outgoing: [request()] as unknown[] };
+  await stubSignedInApp(page);
+  await page.route('**/api/switch-requests**', async (r) => {
+    if (r.request().method() === 'POST') {
+      posted.push(new URL(r.request().url()).pathname);
+      lists.outgoing = [request({ status: 'cancelled', decidedAt: '2026-11-01T10:00:00.000Z' })];
+      await r.fulfill({ json: lists.outgoing[0] });
+      return;
+    }
+    await r.fulfill({ json: lists });
+  });
+  await page.clock.setFixedTime(new Date('2026-11-01T10:00:00Z'));
+  await page.goto('/home');
+
+  const row = page.getByTestId('switch-outgoing');
+  await row.getByRole('button', { name: /^(Withdraw|Zurückziehen)$/ }).click();
+  await page.getByRole('dialog').getByRole('button', { name: /^(Withdraw|Zurückziehen)$/ }).click();
+  await expect.poll(() => posted).toEqual(['/api/switch-requests/sw1/cancel']);
+  await expect(row).toHaveAttribute('data-status', 'cancelled');
+});

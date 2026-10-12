@@ -70,7 +70,7 @@ import RcMeetingsHome from './components/RcMeetingsHome';
 import SwitchRequestsHome from './components/SwitchRequestsHome';
 import PushOption from './components/PushOption';
 import { resyncPush } from './lib/push';
-import { clearSwitchRequests, pendingFor, refreshSwitchRequests, requestSwitch, useSwitchRequests } from './lib/switchRequests';
+import { answerSwitch, clearSwitchRequests, pendingFor, refreshSwitchRequests, requestSwitch, useSwitchRequests, type SwitchRequestView } from './lib/switchRequests';
 import InfoHint from './components/InfoHint';
 import { inSeasonOrManual as inSeasonWindow, currentSeason, seasonLabel as seasonLabelOf } from './lib/season';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
@@ -2999,8 +2999,8 @@ export default function App() {
     const ok = await confirmDialog({
       title: de ? 'Tausch anfragen?' : 'Request a switch?',
       message: de
-        ? `${c.name} ist schon am ${shortDate(c.date)} bei ${c.rc} geplant. Du fragst ${c.rc}, ${c.name} an dich zu übergeben, damit du dieses frühere Spiel beobachtest. ${c.rc} muss zustimmen — bis dahin bleibt alles, wie es ist.`
-        : `${c.name} is already planned with ${c.rc} on ${shortDate(c.date)}. You ask ${c.rc} to hand ${c.name} over to you, so you observe this earlier game. ${c.rc} has to agree — until then nothing changes.`,
+        ? `${c.name} ist schon am ${shortDate(c.date)} bei ${c.rc} geplant. Du fragst ${c.rc}, ${c.name} an dich zu übergeben, damit du dieses frühere Spiel beobachtest. ${c.rc} muss zustimmen — bis dahin bleibt alles, wie es ist. Zurückziehen kannst du die Anfrage jederzeit.`
+        : `${c.name} is already planned with ${c.rc} on ${shortDate(c.date)}. You ask ${c.rc} to hand ${c.name} over to you, so you observe this earlier game. ${c.rc} has to agree — until then nothing changes. You can withdraw the request at any time.`,
       confirmLabel: de ? 'Anfrage senden' : 'Send request',
       cancelLabel: de ? 'Abbrechen' : 'Cancel',
     });
@@ -3012,11 +3012,33 @@ export default function App() {
       toast.error(error instanceof Error ? error.message : String(error));
     }
   };
+  // "Tausch angefragt" takes the request back (asked 2026-10-12) — the same
+  // withdrawal as "Zurückziehen" on Home, where the coach may not be looking.
+  // The holder was asked by mail and hears of the withdrawal the same way.
+  const withdrawSwitch = async (pending: SwitchRequestView) => {
+    const de = formData.lang === 'DE';
+    const ok = await confirmDialog({
+      title: de ? 'Anfrage zurückziehen?' : 'Withdraw the request?',
+      message: de
+        ? `${pending.holder} beobachtet ${pending.coacheeName} dann wie geplant und bekommt eine E-Mail, dass du die Anfrage zurückgezogen hast.`
+        : `${pending.holder} then observes ${pending.coacheeName} as planned and is told by e-mail that you withdrew the request.`,
+      confirmLabel: de ? 'Zurückziehen' : 'Withdraw',
+      cancelLabel: de ? 'Behalten' : 'Keep it',
+    });
+    if (!ok) return;
+    try {
+      await answerSwitch(pending.id, 'cancel');
+      toast.success(de ? 'Anfrage zurückgezogen.' : 'Request withdrawn.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  };
+
 
   /** "Take game", greyed out, for a coachee who is already booked — same
    *  shape as the taken-by button, so a tap explains itself. Where the
    *  booking is another coach's on a later game it becomes "Tausch anfragen",
-   *  and once asked, "Tausch angefragt". */
+   *  and once asked, "Tausch angefragt" — which, tapped, takes it back. */
   const bookedButton = (game: EligibleGame, b: { name: string; rc: string; date: string }, className: string) => {
     const de = formData.lang === 'DE';
     const pending = pendingFor(switchLists, game.id);
@@ -3024,15 +3046,13 @@ export default function App() {
       return (
         <button
           type="button"
-          aria-disabled="true"
           data-testid="take-switch-pending"
-          onClick={(e) => {
-            e.stopPropagation();
-            toast.info(de ? `Tausch bei ${pending.holder} angefragt — die Antwort kommt auf Home.` : `Switch requested from ${pending.holder} — the answer shows on Home.`);
-          }}
-          className={cn(className, 'cursor-default border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-50')}
+          title={de ? `Bei ${pending.holder} angefragt — antippen zum Zurückziehen` : `Asked of ${pending.holder} — tap to withdraw`}
+          onClick={(e) => { e.stopPropagation(); void withdrawSwitch(pending); }}
+          className={cn(className, 'border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100')}
         >
           {de ? 'Tausch angefragt' : 'Switch requested'}
+          <X size={13} aria-hidden="true" className="ml-1 opacity-70" />
         </button>
       );
     }

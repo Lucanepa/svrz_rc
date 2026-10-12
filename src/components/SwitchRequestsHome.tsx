@@ -31,6 +31,19 @@ export default function SwitchRequestsHome({ lang, onChanged }: { lang: 'DE' | '
       });
       if (!ok) return;
     }
+    if (action === 'cancel') {
+      // The holder hears of it by mail (12.10.2026) — asked first, the same
+      // question the games list's "Tausch angefragt" asks.
+      const ok = await confirmDialog({
+        title: de ? 'Anfrage zurückziehen?' : 'Withdraw the request?',
+        message: de
+          ? `${r.holder} beobachtet ${r.coacheeName} dann wie geplant und bekommt eine E-Mail, dass du die Anfrage zurückgezogen hast.`
+          : `${r.holder} then observes ${r.coacheeName} as planned and is told by e-mail that you withdrew the request.`,
+        confirmLabel: de ? 'Zurückziehen' : 'Withdraw',
+        cancelLabel: de ? 'Behalten' : 'Keep it',
+      });
+      if (!ok) return;
+    }
     setBusy(r.id);
     try {
       await answerSwitch(r.id, action);

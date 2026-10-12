@@ -96,3 +96,20 @@ test('accepting re-checks everything under both games\' locks, in a fixed order'
   expect(fn).toMatch(/const \[lockA, lockB\] = \[toId, fromId\]\.sort\(\)/);
   expect(fn).toMatch(/withGameLock\(lockA, \(\) => withGameLock\(lockB,[\s\S]*?switchBlocker\(r, g1, g2/);
 });
+
+// Who hears of what, by mail (12.10.2026: "should be yes to all"): the ask and
+// its withdrawal go to the holder; accepted, declined, lapsed and failed go to
+// the requester.
+test('the holder is mailed the ask and the withdrawal; the requester every answer', () => {
+  const server = readFileSync(new URL('../server/index.ts', import.meta.url), 'utf8');
+  const mail = server.slice(server.indexOf('async function mailSwitch'), server.indexOf('async function updateSwitch'));
+  expect(mail).toMatch(/const toHolder = kind === 'request' \|\| kind === 'cancelled';/);
+  for (const kind of ['request', 'cancelled', 'accepted', 'declined', 'expired', 'failed']) {
+    expect(mail).toContain(`case '${kind}':`);
+  }
+  const route = server.slice(server.indexOf("app.post('/api/switch-requests/:id/:action'"), server.indexOf('async function sweepSwitchRequests'));
+  expect(route).toMatch(/mailSwitch\('declined', done\)/);
+  expect(route).toMatch(/mailSwitch\('cancelled', done/);
+  expect(route).toMatch(/mailSwitch\('accepted'/);
+  expect(route).toMatch(/mailSwitch\('failed'/);
+});

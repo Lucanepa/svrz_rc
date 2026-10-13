@@ -128,6 +128,10 @@ test('the coachees list shows each PIN and creates a missing one', async ({ page
   // Admin → E-Mails' "Text kopieren" (Luca, 2026-10-13).
   await row('c1').getByRole('button', { name: 'PIN kopieren' }).click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('482913');
+  // The SV-Nr. has its own copy icon, and copies the bare number: "055 555"
+  // as typed, 55555 as VolleyManager knows it (Luca, 2026-10-13).
+  await row('c2').getByRole('button', { name: 'SV-Nr. kopieren' }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('55555');
 });
 
 test('without the PIN roster the coachees list draws no PIN line', async ({ page }) => {

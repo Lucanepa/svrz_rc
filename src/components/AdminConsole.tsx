@@ -48,7 +48,7 @@ import { groupLabel } from '../lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName } from '../lib/coacheeName';
 import { coacheeLookup, gameLabel, indexPeople, samePerson } from '../lib/identity';
 import { confirmDialog, toast } from './ui';
-import CoacheeFileAdmin, { CoacheePinLine, useDossierPins } from './CoacheeFileAdmin';
+import CoacheeFileAdmin, { CoacheePinLine, svKey, useDossierPins } from './CoacheeFileAdmin';
 import RcMeetingsAdmin, { fmtMeetingDate } from './RcMeetingsAdmin';
 import BudgetCard, { chf } from './BudgetCard';
 import FinanceChair from './FinanceChair';
@@ -264,6 +264,8 @@ const STR = {
     svPick: 'Aus dem Register wählen …',
     svPickOnly: 'Nur aus dem Register — bitte einen Eintrag wählen.',
     svLinked: (sv: string) => `SV-Nr. ${sv}`,
+    copySv: 'SV-Nr. kopieren',
+    svCopied: 'SV-Nr. kopiert.',
     svNoRegister: 'Register noch leer — zuerst importieren.',
     svMissing: (n: number) => `${n} ${n === 1 ? 'Coachee' : 'Coachees'} ohne SV-Nr.`,
     svNone: 'ohne SV-Nr.',
@@ -585,6 +587,8 @@ const STR = {
     svPick: 'Pick from the register …',
     svPickOnly: 'Register entries only — please pick one.',
     svLinked: (sv: string) => `SV no. ${sv}`,
+    copySv: 'Copy SV no.',
+    svCopied: 'SV no. copied.',
     svNoRegister: 'Register still empty — import it first.',
     svMissing: (n: number) => `${n} ${n === 1 ? 'coachee' : 'coachees'} without an SV number`,
     svNone: 'no SV number',
@@ -1780,6 +1784,25 @@ const refusedForGood = (r: Refusal | null) => Boolean(r && r.status >= 400 && r.
  *  it stood at the top of the card in small type, and every press put the
  *  same words back, so nothing seemed to happen. With a holder (409) it
  *  offers that row: the usual reason is that the person is on the list. */
+/** The copy icon beside a coachee row's SV-Nr. (Luca, 2026-10-13). Copies the
+ *  bare number the way the server keys it, so a register entry typed as
+ *  "055 555" pastes into VolleyManager's search as 55555. 14px, inside the
+ *  16px text line it sits in, so the row does not grow. */
+function CopySvButton({ sv, t, lang }: { sv: string; t: T; lang: Lang }) {
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(svKey(sv) || sv.trim());
+      toast.success(t.svCopied, { lang });
+    } catch (e) { toast.error(e instanceof Error ? e.message : String(e), { lang }); }
+  };
+  return (
+    <button type="button" onClick={() => void copy()} aria-label={t.copySv} title={t.copySv}
+      className="ml-1 inline-flex h-3.5 w-3.5 items-center justify-center rounded align-[-2px] text-stone-400 hover:bg-stone-100 hover:text-stone-600 transition-colors">
+      <Copy size={11} />
+    </button>
+  );
+}
+
 function RefusalNote({ refusal, t, onShow }: { refusal: Refusal; t: T; onShow: (id: string) => void }) {
   return (
     <div role="alert" data-testid="coachee-refusal" className="col-span-full rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800">
@@ -2635,7 +2658,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
                   <p className="text-sm font-medium text-stone-800 truncate">{surnameFirstLabel(c)}</p>
                   {/* The number beside the level, or its absence in amber:
                       the badge above counts these, the row says which. */}
-                  <p className="text-xs text-stone-400 truncate"><LevelText level={c.referee_level} stage={c.stage} />{c.groups ? ` · ${c.groups}` : ''} · {c.referee_id ? t.svLinked(c.referee_id) : <span className="text-amber-600 font-medium">{t.svNone}</span>}</p>
+                  <p className="text-xs text-stone-400 truncate"><LevelText level={c.referee_level} stage={c.stage} />{c.groups ? ` · ${c.groups}` : ''} · {c.referee_id ? <>{t.svLinked(c.referee_id)}<CopySvButton sv={c.referee_id} t={t} lang={lang} /></> : <span className="text-amber-600 font-medium">{t.svNone}</span>}</p>
                   {/* Without an address the feedback submit fails at the very
                       end, after the whole form is filled in — flag it early. */}
                   <p className={cn('text-xs truncate', c.email ? 'text-stone-400' : 'text-amber-600 font-medium')}>

@@ -25,6 +25,14 @@ on:
   push:
     tags: ['native-v*']
   workflow_dispatch:
+    inputs:
+      only:
+        # For a release whose APK failed: build the APK alone and attach it to
+        # the release of package.json's version, leaving the desktop files as
+        # they are (1.1.0, 13.10.2026).
+        description: "'android' = build only the APK, for the existing release"
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -35,6 +43,7 @@ concurrency:
 
 jobs:
   desktop:
+    if: inputs.only != 'android'
     strategy:
       fail-fast: false
       matrix:
@@ -88,8 +97,10 @@ jobs:
           args: ${{ matrix.args }}
 
   android:
-    # After the desktop builds, so the release exists and the APK joins it.
+    # After the desktop builds, so the release exists and the APK joins it —
+    # or alone, when they were skipped for an APK-only run.
     needs: desktop
+    if: ${{ !cancelled() && (needs.desktop.result == 'success' || needs.desktop.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -126,10 +137,14 @@ jobs:
           password=$ANDROID_KEYSTORE_PASSWORD
           keyAlias=svrz-rc
           EOF
+      # NDK_HOME is set in the shell: ANDROID_HOME is the runner's variable, not
+      # the workflow's, so `${{ env.ANDROID_HOME }}` was empty and Tauri looked
+      # for /ndk/27.2.12479018 (1.1.0's APK failed on it).
       - name: Build APK
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
-        run: npx tauri android build --apk
+        run: |
+          export NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
+          test -d "$NDK_HOME" || { echo "no NDK at $NDK_HOME" >&2; exit 1; }
+          npx tauri android build --apk
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

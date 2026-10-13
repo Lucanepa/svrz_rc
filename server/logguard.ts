@@ -137,3 +137,23 @@ export function digestAdmission(
   if (pending.size < limits.maxGroups) return { admit: true };
   return firstUnverified !== undefined ? { admit: true, evict: firstUnverified } : { admit: false };
 }
+
+// ── Failures that are the caller's ───────────────────────────────────
+// body-parser's refusals of what the CALLER sent, by the `type` it sets. The
+// first was mailed as an error on 13.10.2026: a phone that closed the page (or
+// lost its signal) halfway through shipping a log batch — `request aborted` on
+// POST /api/client-logs, the one route that mounts its parsers inside itself,
+// so the 413 handler at the top of index.ts never saw it. Nothing on the server
+// broke, and an alert channel that mails about a phone going into a pocket is
+// one nobody reads. Malformed JSON is the SyntaxError case index.ts already
+// tells apart; `stream.not.readable` is missing on purpose — that one is ours.
+const CALLER_BODY_ERRORS = new Set([
+  'request.aborted', 'entity.too.large', 'request.size.invalid',
+  'encoding.unsupported', 'charset.unsupported', 'parameters.too.many',
+]);
+
+/** The body-parser `type` when the caller caused the error, else null. */
+export function callerBodyError(err: unknown): string | null {
+  const type = err && typeof err === 'object' ? (err as { type?: unknown }).type : undefined;
+  return typeof type === 'string' && CALLER_BODY_ERRORS.has(type) ? type : null;
+}

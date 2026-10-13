@@ -14,7 +14,8 @@
 //     UI silences the alert about it, which is what a reader expects;
 //   • it never throws into record(), and never alerts about its own failures.
 
-import { onEntry, type LogEntry } from './logstore.ts';
+import { onEntry, ringEntries, type LogEntry } from './logstore.ts';
+import { alertContext, type AlertContext } from './alertcontext.ts';
 import { digestAdmission, isUnverifiedEntry, UNVERIFIED_PREFIX } from './logguard.ts';
 import { entryGroup, readNotes, type MuteRule } from './logquery.ts';
 // The same palette and typeface the coaching mails use — an alert is still an
@@ -122,6 +123,15 @@ export function installErrorAlerts(opts: Options): void {
   function stamp(t: number | string | Date): string {
     return new Date(t).toLocaleString('en-GB', { timeZone: zone, hour12: false });
   }
+  const clock = (t: string) => new Date(t).toLocaleTimeString('en-GB', { timeZone: zone, hour12: false });
+
+  /** Who it happened to and what they did before (server/alertcontext.ts),
+   *  read off the ring at send time — two minutes after the first line, by
+   *  which time the browser has usually shipped its clicks. Never fails the
+   *  mail: without it the card is what it was before. */
+  function contextOf(g: Pending): AlertContext | null {
+    try { return alertContext(ringEntries(), g.last, clock); } catch { return null; }
+  }
 
   /** A burst that started and ended in the same second is one moment, not a
    *  range: printing "10/09/2026, 18:33:13 → 10/09/2026, 18:33:13" made the
@@ -174,14 +184,42 @@ export function installErrorAlerts(opts: Options): void {
     return `<span style="display:inline-block;padding:2px 7px;border-radius:6px;font:600 11px/1.6 ${MONO};color:${color};background:${background};white-space:nowrap">${esc(text)}</span>`;
   }
 
-  function card(g: Pending): string {
+  /** The people a group happened to, with the visit's own name added when
+   *  no line of the group carried one; "nobody signed in" when the visit is
+   *  known and anonymous. Empty for a line that belongs to no visit (a cron). */
+  function who(g: Pending, ctx: AlertContext | null): string[] {
+    const users = new Set(g.users);
+    if (ctx?.user) users.add(ctx.user);
+    const names = people(users);
+    if (names.length) return names.slice(0, 8);
+    return ctx ? ['nobody signed in'] : [];
+  }
+
+  /** "Before it", or "Before the last one" when the card stands for several. */
+  const trailTitle = (g: Pending) => (g.count > 1 ? 'Before the last one' : 'Before it');
+
+  function card(g: Pending, ctx: AlertContext | null): string {
     const e = g.last;
     const source = e.src === 'client' ? 'App' : 'Server';
     const meta: string[] = [esc(when(g.first.t, e.t))];
-    const names = people(g.users);
-    if (names.length) meta.push(esc(names.slice(0, 8).join(', ')));
     if (g.sessions.size) meta.push(`Session ${esc([...g.sessions].slice(0, 5).join(', '))}`);
     if (e.reqId) meta.push(`reqId ${esc(e.reqId)}`);
+    const rows: Array<[string, string]> = [];
+    const names = who(g, ctx);
+    if (names.length) rows.push(['Who', names.join(', ')]);
+    if (ctx?.device) rows.push(['Device', ctx.device]);
+    if (ctx?.page) rows.push(['Page', ctx.page]);
+    const facts = rows.length
+      ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:10px;font:400 13px/1.6 ${FONT};color:${C.ink}">${rows.map(([k, v]) => `<tr><td style="padding:0 12px 0 0;vertical-align:top;color:${C.mute};white-space:nowrap">${esc(k)}</td><td style="word-break:break-word">${esc(v)}</td></tr>`).join('')}</table>`
+      : '';
+    const trail = ctx?.steps.length
+      ? [
+        `<div style="margin-top:10px;font:600 12px/1.6 ${FONT};color:${C.mute}">${esc(trailTitle(g))}</div>`,
+        `<table role="presentation" cellpadding="0" cellspacing="0" style="font:400 12px/1.6 ${FONT};color:${C.ink}">`,
+        ctx.steps.map(([t, what]) => `<tr><td style="padding:0 10px 0 0;vertical-align:top;font:400 11px/1.75 ${MONO};color:${C.mute};white-space:nowrap">${esc(t)}</td><td style="word-break:break-word">${esc(what)}</td></tr>`).join(''),
+        `</table>`,
+      ].join('')
+      : '';
     const data = describe(e);
     return [
       `<tr><td style="padding:0 0 12px">`,
@@ -195,6 +233,8 @@ export function installErrorAlerts(opts: Options): void {
       `</div>`,
       `<div style="font:500 15px/1.45 ${FONT};color:${C.ink};word-break:break-word">${esc(e.msg || '(no message)')}</div>`,
       `<div style="margin-top:8px;font:400 12px/1.7 ${FONT};color:${C.mute};word-break:break-word">${meta.join(' &nbsp;·&nbsp; ')}</div>`,
+      facts,
+      trail,
       data ? `<pre style="margin:12px 0 0;padding:10px 12px;background:${C.code};color:#e7e5e4;border-radius:8px;font:400 11px/1.6 ${MONO};white-space:pre-wrap;word-break:break-word">${esc(data)}</pre>` : '',
       `</td></tr></table></td></tr>`,
     ].join('');
@@ -209,6 +249,7 @@ export function installErrorAlerts(opts: Options): void {
       : `[SVRZ RC] ${total} errors in ${groups.length} ${groups.length === 1 ? 'kind' : 'kinds'} — ${headline}`;
     const shown = groups.slice(0, MAX_GROUPS_PER_MAIL);
     const hidden = groups.length - shown.length;
+    const contexts = new Map(shown.map((g) => [g, contextOf(g)]));
     const summary = `${total} error${total === 1 ? '' : 's'} in ${groups.length} ${groups.length === 1 ? 'kind' : 'kinds'}`
       + `${swallowed ? `, ${swallowed} more suppressed by the cooldown` : ''}`;
 
@@ -223,10 +264,17 @@ export function installErrorAlerts(opts: Options): void {
         `   ${e.msg || '(no message)'}`,
         `   ${when(g.first.t, e.t)}`,
       );
-      const names = people(g.users);
-      if (names.length) lines.push(`   People: ${names.slice(0, 8).join(', ')}`);
+      const ctx = contexts.get(g) ?? null;
+      const names = who(g, ctx);
+      if (names.length) lines.push(`   Who: ${names.join(', ')}`);
+      if (ctx?.device) lines.push(`   Device: ${ctx.device}`);
+      if (ctx?.page) lines.push(`   Page: ${ctx.page}`);
       if (g.sessions.size) lines.push(`   Sessions: ${[...g.sessions].slice(0, 5).join(', ')}`);
       if (e.reqId) lines.push(`   reqId: ${e.reqId}`);
+      if (ctx?.steps.length) {
+        lines.push(`   ${trailTitle(g)}:`);
+        for (const [t, what] of ctx.steps) lines.push(`     ${t}  ${what}`);
+      }
       const data = describe(e);
       if (data) lines.push(data.split('\n').map((l) => `   ${l}`).join('\n'));
       lines.push('');
@@ -248,7 +296,7 @@ export function installErrorAlerts(opts: Options): void {
       `<div style="font:600 20px/1.35 ${FONT};color:${C.ink};margin-top:2px">${esc(summary)}</div>`,
       `<div style="font:400 13px/1.6 ${FONT};color:${C.mute}">in the last few minutes</div>`,
       `</td></tr>`,
-      shown.map(card).join(''),
+      shown.map((g) => card(g, contexts.get(g) ?? null)).join(''),
       hidden ? `<tr><td style="padding:0 0 12px;font:400 13px/1.6 ${FONT};color:${C.mute}">… and ${hidden} more error kind${hidden === 1 ? '' : 's'} in the console.</td></tr>` : '',
       `<tr><td style="padding:4px 0 0">`,
       `<a href="${esc(opts.consoleUrl)}" style="display:inline-block;padding:10px 16px;border-radius:8px;background:${C.ink};color:#ffffff;font:600 13px/1 ${FONT};text-decoration:none">Open the log</a>`,

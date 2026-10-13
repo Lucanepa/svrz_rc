@@ -21,7 +21,7 @@ import {
 import { installErrorAlerts } from './erroralerts.ts';
 import { latestTakes, type LogLine } from './assignedAt.ts';
 import { sameVisit } from '../src/lib/doubleGame.ts';
-import { boundedKeys, clientLogUser, clientTimestamp } from './logguard.ts';
+import { boundedKeys, callerBodyError, clientLogUser, clientTimestamp } from './logguard.ts';
 import { computePlanning, seasonProgress, type PlanningReport, type PlanningGameInput, type SeasonProgress } from './planning.ts';
 import { nativeClient } from './nativeClient.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
@@ -1219,8 +1219,25 @@ async function resolveAdmin(req: Request): Promise<{ ok: boolean; email: string 
 }
 
 async function requireAdminSession(req: Request, res: ExpressResponse, next: () => void) {
-  if (verifyAdminSession(req).ok) { next(); return; }
+  if (verifyAdminSession(req).ok) { tagReqUser(req, 'admin-ui'); next(); return; }
   res.status(401).json({ error: 'Unauthorized' });
+}
+
+/** Who sent a request, for an error no guard has named anyone on — a body
+ *  parser or an unguarded route that threw. The names the log uses elsewhere:
+ *  an RC's full name, `admin-ui` or `president-ui` (as at the console login),
+ *  or `referee <SV-Nr.>` on the dossier. A roster that cannot be read leaves
+ *  it blank. */
+async function requestIdentity(req: Request): Promise<string | undefined> {
+  const consoleSession = verifyConsoleSession(req);
+  if (consoleSession.ok) return consoleSession.role === 'president' ? 'president-ui' : 'admin-ui';
+  try {
+    const rc = await resolveRcSession(req);
+    if (rc) return rc.person.fullName;
+    const file = await coacheeFileSession(req);
+    if (file) return `referee ${file.sv}`;
+  } catch { /* best effort: the line is written either way */ }
+  return undefined;
 }
 
 // Identity of the RC session that authorized a request. Absent only for an
@@ -1231,7 +1248,7 @@ const rcAuthByReq = new WeakMap<Request, RcAuthInfo>();
 
 // Fails CLOSED: unlike the old shared gate there is no "auth disabled" mode.
 async function requireRcSession(req: Request, res: ExpressResponse, next: () => void) {
-  if (verifyAdminSession(req).ok) { next(); return; }
+  if (verifyAdminSession(req).ok) { tagReqUser(req, 'admin-ui'); next(); return; }
   try {
     const session = await resolveRcSession(req);
     if (session) {
@@ -1241,6 +1258,9 @@ async function requireRcSession(req: Request, res: ExpressResponse, next: () => 
       // that login gone there is no app session that skips this, which is what
       // keeps the "no rcAuth means admin" convention above true.
       rcAuthByReq.set(req, { rcId: session.person.id, name: session.person.fullName });
+      // Named on the request too, so every line it logs — and an error mail
+      // about it — says whose it was, not only the two routes that tagged it.
+      tagReqUser(req, session.person.fullName);
       next();
       return;
     }
@@ -14949,23 +14969,36 @@ app.delete('/api/notebook/pages/:pageId', requireRcSession, async (req: Request,
 
 // Anything that escapes a handler (including the CORS origin rejection and
 // malformed JSON bodies) lands here instead of Express's HTML default page.
-app.use((err: unknown, req: Request, res: ExpressResponse, _next: (e?: unknown) => void) => {
+app.use(async (err: unknown, req: Request, res: ExpressResponse, _next: (e?: unknown) => void) => {
   const ctx = reqCtx(req);
   const message = err instanceof Error ? err.message : String(err);
   const corsBlocked = message.includes('CORS');
   const badJson = err instanceof SyntaxError && 'body' in (err as object);
-  // A rejected origin and a malformed body are both the caller's doing and are
-  // already recorded where they happen; only a genuine escape is an error (and
-  // so only a genuine escape is worth an alert mail).
-  const level: LogLevel = corsBlocked || badJson ? 'warn' : 'error';
+  // A body the caller broke off or got wrong (server/logguard.ts): the first
+  // was mailed as an error on 13.10.2026, a phone leaving mid-beacon.
+  const bodyType = callerBodyError(err);
+  const callerBody = Boolean(bodyType);
+  // A rejected origin and a body the caller broke off or got wrong are the
+  // caller's doing and are already recorded where they happen; only a genuine
+  // escape is an error (and so only a genuine escape is worth an alert mail).
+  const level: LogLevel = corsBlocked || badJson || callerBody ? 'warn' : 'error';
+  // An error line names who it happened to: the alert mail shows it. A guard
+  // has usually tagged the request already; a throw before any guard ran (a
+  // body parser, an unguarded route) has not.
+  if (level === 'error' && !ctx.user) ctx.user = await requestIdentity(req);
   log[level]('req.fail', `${req.method} ${redactIcalToken(req.originalUrl)} threw`, {
     error: err,
     origin: asText(req.headers.origin) || undefined,
-    kind: corsBlocked ? 'cors' : badJson ? 'bad-json' : 'unhandled',
+    kind: corsBlocked ? 'cors' : badJson ? 'bad-json' : callerBody ? bodyType : 'unhandled',
   }, ctx);
   if (res.headersSent) return;
   if (corsBlocked) { res.status(403).json({ error: 'Origin not allowed.' }); return; }
   if (badJson) { res.status(400).json({ error: 'Malformed JSON body.' }); return; }
+  if (callerBody) {
+    const status = Number((err as { status?: unknown }).status);
+    res.status(status >= 400 && status < 500 ? status : 400).json({ error: 'Request body refused.' });
+    return;
+  }
   res.status(500).json({ error: 'Internal server error' });
 });
 

@@ -921,10 +921,25 @@ worse than none:
 - alerting never alerts about itself (`alert.*` is excluded), so a broken SMTP
   cannot loop.
 
-**Only real failures should be error level.** A rejected CORS origin and a
-malformed body are the API working as designed and are logged at `warn` for
-exactly this reason. When adding a `log.error`, ask whether it should wake
-somebody up.
+Each card says **who it happened to and what they did just before**
+(`server/alertcontext.ts`, since 13.10.2026): the name on the visit (an RC's
+full name, `admin-ui`, `president-ui`, `referee <SV-Nr.>`, or "nobody signed
+in"), the device in a few words, the page, and the visit's last eight steps:
+pages opened, buttons clicked, writes and failed requests. It is read off the
+ring by the visit's session id when the digest goes out. That is two minutes
+after the first line, so the browser has usually shipped its clicks by then;
+when it has not, the server's own requests stand in for them. A cron job
+belongs to no visit and gets none of this. The guards (`requireRcSession`,
+`requireAdminSession`) tag the request with its user, and the final error
+handler resolves one when nothing tagged it. Every `req.out` line names its
+user as well.
+
+**Only real failures should be error level.** A rejected CORS origin, a
+malformed body, and a body the caller broke off or sent too large
+(`callerBodyError` in `server/logguard.ts`: a phone leaving halfway through a
+log beacon was mailed as `request aborted` on 13.10.2026) are the API working as
+designed. They are logged at `warn` for exactly this reason. When adding a
+`log.error`, ask whether it should wake somebody up.
 
 ### Reading it from a terminal (`/api/admin/error-logs`)
 

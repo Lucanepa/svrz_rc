@@ -51,13 +51,18 @@ const STR = {
     other: 'English version',
     noPlay: 'Dein Browser kann dieses Video nicht abspielen.',
     app: 'Zur App',
+    // The video's beats, in its order (re-recorded 13.10.2026 with the
+    // Notizblock, Beilagen, Saison, Tausch, RC-Sitzungen and notifications).
     chapterList: [
       'Anmelden und Startseite',
-      'Coachees und Spiele',
+      'Coachees, Spiele und Saison',
       'Das Formular ausfüllen',
-      'Unterschreiben und senden',
+      'Dokumente beilegen, unterschreiben und senden',
       'Auf dem Handy, auch offline',
       'Entwürfe: nichts geht verloren',
+      'Der Notizblock',
+      'Tausch, RC-Sitzungen und Benachrichtigungen',
+      'Das Kalender-Abo',
     ],
   },
   EN: {
@@ -91,11 +96,14 @@ const STR = {
     app: 'Go to the app',
     chapterList: [
       'Signing in and the home screen',
-      'Coachees and games',
+      'Coachees, games and the season',
       'Filling in the form',
-      'Signing and sending',
+      'Attaching documents, signing and sending',
       'On your phone, offline too',
       'Drafts: nothing gets lost',
+      'The notebook',
+      'Switches, RC meetings and notifications',
+      'The calendar subscription',
     ],
   },
 } satisfies Record<Lang, Record<string, unknown>>;

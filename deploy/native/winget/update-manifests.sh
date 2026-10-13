@@ -19,7 +19,8 @@
 # a copy installed from the release page by that and offers it upgrades. The
 # app also updates itself (tauri-plugin-updater); both lead to the same version.
 set -euo pipefail
-REPO=Lucanepa/svrz_rc
+REPO=Lucanepa/svrz_rc                   # the code: issues, licence
+DOWNLOADS=Lucanepa/svrz-referee-coaching  # the releases (since 2026-10-13)
 MANIFEST_VERSION=1.28.0
 ID=Lucanepa.SVRZRC
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -37,7 +38,7 @@ done
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version must look like 1.0.0"
 tag=native-v$version
 
-release=$(gh release view "$tag" -R "$REPO" --json assets,publishedAt) || die "no release $tag"
+release=$(gh release view "$tag" -R "$DOWNLOADS" --json assets,publishedAt) || die "no release $tag"
 url=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(next(a["url"] for a in d["assets"] if a["name"].endswith("_x64-setup.exe")))' "$release") \
   || die "$tag has no _x64-setup.exe"
 date=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["publishedAt"][:10])' "$release")
@@ -113,7 +114,7 @@ Tags:
 - referee
 - coaching
 - svrz
-ReleaseNotesUrl: https://github.com/$REPO/releases/tag/$tag
+ReleaseNotesUrl: https://github.com/$DOWNLOADS/releases/tag/$tag
 ManifestType: defaultLocale
 ManifestVersion: $MANIFEST_VERSION
 YAML

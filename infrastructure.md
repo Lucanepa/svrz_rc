@@ -1309,10 +1309,16 @@ is never gated.
 **Releases.** `.github/workflows/native-release.yml`, on a tag `native-v<version>`
 where `<version>` is `package.json`'s: Linux AppImage + deb (built on Ubuntu
 22.04 for glibc reach), Windows exe + msi, macOS dmg (Apple silicon and Intel),
-then the Android APK, all on one GitHub Release. Installed desktop apps update
-in place from that release's `latest.json` (Tauri updater, signed). Android
-checks the same release and opens the new APK in the browser to install over
-the old one. Unsigned for Windows and macOS: SmartScreen says "unknown
+then the Android APK, all on one GitHub Release in the **download-only repo
+[Lucanepa/svrz-referee-coaching](https://github.com/Lucanepa/svrz-referee-coaching)**
+(since 2026-10-13; the tag is pushed here, the release is created there with the
+`RELEASES_REPO_TOKEN` secret — a fine-grained token with Contents read/write on
+that repo only, because `GITHUB_TOKEN` cannot write to another repo). Installed
+desktop apps update in place from that release's `latest.json` (Tauri updater,
+signed). Android checks the same release and opens the new APK in the browser to
+install over the old one. Apps up to 1.1.0 still read **this** repo's newest
+release: the workflow's `bridge` job puts `latest.json` (links into the download
+repo) and the APK on a release of the same tag here, until nobody runs them. Unsigned for Windows and macOS: SmartScreen says "unknown
 publisher", macOS wants right-click → *Open* the first time.
 
 **Where coaches get it** (first release 2026-10-10):
@@ -1320,11 +1326,12 @@ publisher", macOS wants right-click → *Open* the first time.
 - **Android**: F-Droid, from OpenVolley's public repo
   `https://get.openvolley.app/fdroid/repo` (add it once via the link or QR on
   https://get.openvolley.app, then install "SVRZ Referee Coaching"), or the
-  `.apk` on the GitHub release. Same file, same key, so either updates the other.
+  `.apk` on the GitHub release (https://github.com/Lucanepa/svrz-referee-coaching/releases/latest). Same file, same key, so either updates the other.
   Publish with `deploy/native/publish-fdroid.sh <apk>` on lenovoserver — it does
   OpenVolley's F-Droid steps for this one app and syncs only `fdroid/`.
   `APP_CERT_SHA256` in it pins the svrz-rc signing certificate.
-- **Windows / macOS / Linux**: the GitHub release (`native-v<version>`). Not
+- **Windows / macOS / Linux**: the GitHub release (`native-v<version>`) in
+  svrz-referee-coaching, whose README says which file is which. Not
   in OpenVolley's APT repo: its publish script renames any second package to
   its own; the AppImage updates itself.
 - **iPhone / iPad**: the PWA. A store app needs the paid Apple account.

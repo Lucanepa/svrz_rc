@@ -1,7 +1,9 @@
 name: Release the installed app
 
 # The installed app (Tauri, src-tauri/) for Linux, Windows, macOS and Android,
-# published as one GitHub Release that the apps themselves update from.
+# published as one GitHub Release that the apps themselves update from — in the
+# download-only repo Lucanepa/svrz-referee-coaching (since 2026-10-13; the code
+# stays here). The tag is pushed here; the release is created there.
 #
 # Cut a release by bumping package.json's version (the app's version is read
 # from it), committing, and pushing a tag of the same number:
@@ -10,7 +12,14 @@ name: Release the installed app
 # The desktop updater reads latest.json off the newest release; Android checks
 # the same release for its APK (src/lib/nativeShell.ts).
 #
+# Apps up to 1.1.0 still look HERE (svrz_rc's newest release). The `bridge` job
+# gives them a release of the same tag here with just latest.json and the APK,
+# so they find the new version; drop it once nobody runs 1.1.0 or older.
+#
 # Secrets (Settings → Secrets and variables → Actions):
+#   RELEASES_REPO_TOKEN                 fine-grained token, Contents read/write
+#                                       on Lucanepa/svrz-referee-coaching only
+#                                       (GITHUB_TOKEN cannot write to another repo)
 #   TAURI_SIGNING_PRIVATE_KEY           ~/.tauri/svrz-rc-updater.key on lenovoserver
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  empty (the key has none)
 #   ANDROID_KEYSTORE_BASE64             base64 of ~/.tauri/svrz-rc-android.jks
@@ -78,10 +87,15 @@ jobs:
       - run: npm ci
       - uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          owner: Lucanepa
+          repo: svrz-referee-coaching
+          # The tag is created there from its own main: this repo's commit
+          # does not exist in it.
+          releaseCommitish: main
           tagName: native-v__VERSION__
           releaseName: 'SVRZ RC app __VERSION__'
           releaseBody: |
@@ -147,9 +161,34 @@ jobs:
           npx tauri android build --apk
       - name: Attach to the release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           APK=$(find src-tauri/gen/android/app/build/outputs/apk -name '*-release.apk' | head -1)
           cp "$APK" "SVRZ-RC_${VERSION}_android.apk"
-          gh release upload "native-v${VERSION}" "SVRZ-RC_${VERSION}_android.apk" --clobber
+          gh release upload "native-v${VERSION}" "SVRZ-RC_${VERSION}_android.apk" --clobber -R Lucanepa/svrz-referee-coaching
+
+  bridge:
+    # For the apps up to 1.1.0, which read this repo's newest release: the new
+    # latest.json (its links point to the download repo) and the APK, under the
+    # same tag here. Public downloads, so reading needs no token.
+    needs: android
+    if: ${{ !cancelled() && needs.android.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mirror latest.json and the APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="native-v${VERSION}"
+          mkdir bridge
+          gh release download "$TAG" -R Lucanepa/svrz-referee-coaching -D bridge -p latest.json -p '*.apk'
+          grep -q '"version": *"'"$VERSION"'"' bridge/latest.json || { echo "latest.json is not $VERSION" >&2; exit 1; }
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" bridge/* --clobber
+          else
+            gh release create "$TAG" bridge/* --verify-tag --latest --title "SVRZ RC app ${VERSION}" \
+              --notes "The downloads moved to https://github.com/Lucanepa/svrz-referee-coaching/releases/latest — this release only keeps older installed apps updating."
+          fi

@@ -2647,7 +2647,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
                     {c.phone && <span className="text-stone-400"> · {c.phone}</span>}
                   </p>
                   {dossierPins && c.referee_id && (
-                    <CoacheePinLine lang={lang} sv={c.referee_id} name={c.full_name || c.first_name || ''} pins={dossierPins} onMint={mintDossierPin} />
+                    <CoacheePinLine lang={lang} sv={c.referee_id} pins={dossierPins} onMint={mintDossierPin} />
                   )}
                 </div>
                 <button onClick={() => setTargetEditId(targetEditId === c.id ? null : c.id)} className={cn(btnGhost, targetEditId === c.id && 'bg-stone-100')} title={t.target}><Target size={13} /></button>

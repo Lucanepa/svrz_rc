@@ -124,11 +124,10 @@ test('the coachees list shows each PIN and creates a missing one', async ({ page
 
   if (browserName !== 'chromium') return; // clipboard permissions
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await row('c1').getByRole('button', { name: 'Text kopieren' }).click();
-  const text = await page.evaluate(() => navigator.clipboard.readText());
-  expect(text).toContain('Hallo Hans');
-  expect(text).toContain('https://svrz-rc.openvolley.app/dossier');
-  expect(text).toContain('PIN: 482913');
+  // The icon beside the PIN copies the PIN alone — the ready-to-send text is
+  // Admin → E-Mails' "Text kopieren" (Luca, 2026-10-13).
+  await row('c1').getByRole('button', { name: 'PIN kopieren' }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('482913');
 });
 
 test('without the PIN roster the coachees list draws no PIN line', async ({ page }) => {

@@ -50,6 +50,8 @@ const STR = {
     sv: 'SV-Nr.',
     open: 'Seite öffnen',
     pinLabel: 'PIN',
+    copyPin: 'PIN kopieren',
+    pinCopied: 'PIN kopiert.',
     noPinYet: 'kein PIN',
     pinTitle: 'PIN für das Coaching-Dossier (/dossier)',
     create: 'PIN erstellen',
@@ -83,6 +85,8 @@ const STR = {
     sv: 'SV no.',
     open: 'Open page',
     pinLabel: 'PIN',
+    copyPin: 'Copy PIN',
+    pinCopied: 'PIN copied.',
     noPinYet: 'no PIN',
     pinTitle: 'PIN for the coaching file (/dossier)',
     create: 'Create PIN',
@@ -129,11 +133,14 @@ export function useDossierPins(active: boolean) {
   return { pins, mint };
 }
 
-/** One coachee's dossier PIN under their row in Admin → Coachees: the PIN
- *  with the ready-to-send text, or a button that creates it. A PIN normally
- *  comes with the first report; creating one earlier sends nothing either. */
-export function CoacheePinLine({ lang, sv, name, pins, onMint }: {
-  lang: Lang; sv: string; name: string; pins: DossierPins; onMint: (sv: string) => Promise<void>;
+/** One coachee's dossier PIN under their row in Admin → Coachees, or a button
+ *  that creates it. A PIN normally comes with the first report; creating one
+ *  earlier sends nothing either. The icon beside the PIN copies the PIN and
+ *  nothing else (Luca, 2026-10-13: it used to copy the whole ready-to-send
+ *  text, which is not what a copy icon next to a number promises) — that text
+ *  is still one click away in Admin → E-Mails, where its button says so. */
+export function CoacheePinLine({ lang, sv, pins, onMint }: {
+  lang: Lang; sv: string; pins: DossierPins; onMint: (sv: string) => Promise<void>;
 }) {
   const t = STR[lang];
   const [busy, setBusy] = useState(false);
@@ -143,8 +150,8 @@ export function CoacheePinLine({ lang, sv, name, pins, onMint }: {
   const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e), { lang });
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(t.shareText(pins.url, key, pin, name));
-      toast.success(t.copied, { lang });
+      await navigator.clipboard.writeText(pin);
+      toast.success(t.pinCopied, { lang });
     } catch (e) { fail(e); }
   };
   const create = async () => {
@@ -158,8 +165,11 @@ export function CoacheePinLine({ lang, sv, name, pins, onMint }: {
       {pin ? (
         <>
           <span>{t.pinLabel}</span>
-          <span className="font-mono font-semibold tracking-[0.15em] text-stone-700">{pin}</span>
-          <button type="button" onClick={() => void copy()} aria-label={t.copy} title={t.copy}
+          {/* Inter's own tabular figures, not font-mono: no mono face is
+              bundled, and the system fallback sat higher and larger than
+              the "PIN" beside it. */}
+          <span className="font-semibold tabular-nums tracking-[0.15em] text-stone-700">{pin}</span>
+          <button type="button" onClick={() => void copy()} aria-label={t.copyPin} title={t.copyPin}
             className="inline-flex items-center justify-center h-6 w-6 rounded-md text-stone-400 hover:bg-stone-100 hover:text-stone-600 transition-colors">
             <Copy size={12} />
           </button>

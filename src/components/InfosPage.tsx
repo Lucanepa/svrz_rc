@@ -4,8 +4,9 @@ import SvrzLogo from '../SvrzLogo';
 import { getStoredLang, type Lang } from '../lib/prefs';
 import { infosLangFromPath } from '../lib/routes';
 import { foldText } from '../lib/docText';
-import { USEFUL_DOCS, USEFUL_DOC_GROUPS, type UsefulDoc, type UsefulDocGroup } from '../lib/usefulDocs';
-import { INFOS_AUDIENCES, INFOS_AUDIENCE_ORDER, audienceOf } from '../lib/infosAudience';
+import { USEFUL_DOC_GROUPS, type UsefulDoc, type UsefulDocGroup } from '../lib/usefulDocs';
+import { defaultInfosLayout, placeInfosDocs, type InfosLayout, type InfosSection } from '../lib/infosLayout';
+import { getInfosLayout } from '../lib/pocketbase';
 
 /**
  * "Nützliche Infos & Dokumente", on a page anyone can open.
@@ -27,9 +28,13 @@ import { INFOS_AUDIENCES, INFOS_AUDIENCE_ORDER, audienceOf } from '../lib/infosA
  *    links to its canonical `href` instead — the upstream file, or ours under
  *    /docs/, which Pages serves to anyone already.
  *
- * And it is sorted differently: by who it is for, most useful first — new
- * referees, regional referees, then everyone incl. the national level — with
- * the topics inside each (src/lib/infosAudience.ts, Luca 2026-10-09).
+ * And it is sorted differently: in sections by who it is for, most useful
+ * first — new referees, regional referees, then everyone incl. the national
+ * level — with the topics inside each (src/lib/infosAudience.ts, Luca
+ * 2026-10-09). Since 2026-10-13 the sections are the admin's to rename,
+ * reorder and fill (Admin → Einstellungen, src/lib/infosLayout.ts); the code's
+ * audience table is what the page shows while nothing is stored or the API
+ * cannot be reached.
  */
 
 const STR = {
@@ -49,7 +54,8 @@ const STR = {
   },
 } satisfies Record<Lang, Record<string, string>>;
 
-const PUBLIC_DOCS = USEFUL_DOCS.filter((d) => d.kind !== 'form' && d.kind !== 'video');
+/** How long the page waits for the stored layout before drawing the default. */
+const LAYOUT_WAIT_MS = 3000;
 
 function hrefFor(doc: UsefulDoc, code: 'de' | 'en'): string {
   return /^(https?|mailto):/i.test(doc.href)
@@ -78,6 +84,19 @@ export default function InfosPage() {
   const [closed, setClosed] = useState<Set<string>>(() => new Set());
   const t = STR[lang];
   const code = lang === 'DE' ? 'de' : 'en';
+  // undefined while asking: the documents wait rather than appear in the
+  // default order and then jump into the stored one.
+  const [layout, setLayout] = useState<InfosLayout | undefined>(undefined);
+
+  useEffect(() => {
+    const ctl = new AbortController();
+    const timer = window.setTimeout(() => ctl.abort(), LAYOUT_WAIT_MS);
+    getInfosLayout(ctl.signal)
+      .then((r) => setLayout(r.layout ?? defaultInfosLayout()))
+      .catch(() => setLayout((cur) => cur ?? defaultInfosLayout()))
+      .finally(() => window.clearTimeout(timer));
+    return () => { window.clearTimeout(timer); ctl.abort(); };
+  }, []);
 
   useEffect(() => {
     document.documentElement.lang = code;
@@ -92,19 +111,20 @@ export default function InfosPage() {
   };
 
   const q = foldText(query.trim());
-  const audiences = useMemo(() => {
-    const matches = (doc: UsefulDoc) => !q || foldText(
-      [doc[lang].title, doc[lang].note, doc.badge, USEFUL_DOC_GROUPS[doc.group][lang], INFOS_AUDIENCES[audienceOf(doc)][lang].title].join(' '),
+  const sections = useMemo(() => {
+    if (!layout) return [];
+    const matches = (doc: UsefulDoc, section: InfosSection) => !q || foldText(
+      [doc[lang].title, doc[lang].note, doc.badge, USEFUL_DOC_GROUPS[doc.group][lang], section[lang].title].join(' '),
     ).includes(q);
-    return INFOS_AUDIENCE_ORDER
-      .map((audience) => ({
-        audience,
+    return placeInfosDocs(layout)
+      .map(({ section, docs }) => ({
+        section,
         groups: (Object.keys(USEFUL_DOC_GROUPS) as UsefulDocGroup[])
-          .map((group) => ({ group, docs: PUBLIC_DOCS.filter((d) => audienceOf(d) === audience && d.group === group && matches(d)) }))
+          .map((group) => ({ group, docs: docs.filter((d) => d.group === group && matches(d, section)) }))
           .filter((g) => g.docs.length > 0),
       }))
       .filter((a) => a.groups.length > 0);
-  }, [q, lang]);
+  }, [q, lang, layout]);
 
   const toggle = (key: string) => setClosed((prev) => {
     const next = new Set(prev);
@@ -153,19 +173,26 @@ export default function InfosPage() {
           />
         </div>
 
-        {audiences.length === 0 && (
+        {!layout && (
+          <div className="flex justify-center py-10" aria-busy="true">
+            <span className="h-5 w-5 rounded-full border-2 border-stone-300 border-t-red-700 animate-spin" />
+          </div>
+        )}
+        {layout && sections.length === 0 && (
           <div className="rounded-2xl bg-white shadow-card border border-stone-200/70 px-4 sm:px-6 py-2">
             <p className="py-6 text-sm text-stone-500 text-center">{t.none}</p>
           </div>
         )}
         <div className="flex flex-col gap-6">
-          {audiences.map(({ audience, groups }) => (
-            <section key={audience} data-audience={audience} aria-labelledby={`audience-${audience}`}>
-              <h2 id={`audience-${audience}`} className="text-lg sm:text-xl font-bold tracking-tight text-stone-900">{INFOS_AUDIENCES[audience][lang].title}</h2>
-              <p className="mt-1 mb-3 text-sm leading-snug text-stone-500">{INFOS_AUDIENCES[audience][lang].note}</p>
+          {sections.map(({ section, groups }) => (
+            <section key={section.id} data-audience={section.id} aria-labelledby={`audience-${section.id}`}>
+              <h2 id={`audience-${section.id}`} className="text-lg sm:text-xl font-bold tracking-tight text-stone-900">{section[lang].title}</h2>
+              {section[lang].note
+                ? <p className="mt-1 mb-3 text-sm leading-snug text-stone-500">{section[lang].note}</p>
+                : <div className="mb-3" />}
               <div className="rounded-2xl bg-white shadow-card border border-stone-200/70 px-4 sm:px-6 py-2">
                 {groups.map(({ group, docs }) => {
-                  const key = `${audience}/${group}`;
+                  const key = `${section.id}/${group}`;
                   const open = !!q || !closed.has(key);
                   return (
                     <section key={group} className="border-b border-stone-200/70 last:border-b-0">

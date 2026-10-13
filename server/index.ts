@@ -43,6 +43,7 @@ import { splitCoacheeGroups } from '../src/lib/coacheeGroup.ts';
 import { normalizeBudget } from '../src/lib/budget.ts';
 import { richToPlain, sanitizeRich } from '../src/lib/richText.ts';
 import { ATTACH_BUDGET_BYTES, attachableDoc, normalizeAttachedDocs, type UsefulDoc } from '../src/lib/usefulDocs.ts';
+import { normalizeInfosLayout } from '../src/lib/infosLayout.ts';
 
 // Shared with the survey page so the mailed copy can never drift from the form
 // the coachee actually filled in. Pure data — no browser dependencies.
@@ -4842,6 +4843,48 @@ async function loadProxiedDoc(id: string): Promise<CachedDoc> {
     throw error;
   }
 }
+
+// ── The public /infos page's folders (src/lib/infosLayout.ts) ─────────
+// Read by anyone — /infos is public, like the documents it lists; nothing in
+// a layout is private. Written from Admin → Einstellungen. Only what
+// normalizeInfosLayout returns is stored, and a reset stores '' — which reads
+// as "no layout", so the page falls back to the code's audience table.
+const INFOS_LAYOUT_KEY = 'infos_layout';
+
+async function readInfosLayout(): Promise<{ layout: ReturnType<typeof normalizeInfosLayout>; updatedAt: string }> {
+  const rec = await getSettingRecord(INFOS_LAYOUT_KEY);
+  const raw = asText(rec?.value);
+  let layout: ReturnType<typeof normalizeInfosLayout> = null;
+  if (raw) { try { layout = normalizeInfosLayout(JSON.parse(raw)); } catch { /* unreadable = default */ } }
+  return { layout, updatedAt: layout ? asText(rec?.updated) : '' };
+}
+
+app.get('/api/infos-layout', async (_req: Request, res: ExpressResponse) => {
+  try {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.json(await readInfosLayout());
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.put('/api/admin/infos-layout', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const layout = normalizeInfosLayout((req.body as { layout?: unknown } | undefined)?.layout);
+    if (!layout) { res.status(400).json({ error: 'Keine gültige Einteilung (mindestens ein Abschnitt mit Titel).' }); return; }
+    await setSetting(INFOS_LAYOUT_KEY, JSON.stringify(layout));
+    log.info('infos.layout', 'public /infos layout saved', { sections: layout.sections.length, hidden: layout.hidden.length });
+    res.json(await readInfosLayout());
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.delete('/api/admin/infos-layout', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    if (await getSettingRecord(INFOS_LAYOUT_KEY)) await setSetting(INFOS_LAYOUT_KEY, '');
+    log.info('infos.layout', 'public /infos layout reset to the default', {});
+    res.json({ layout: null, updatedAt: '' });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
 
 app.get('/api/docs/:id', async (req: Request, res: ExpressResponse) => {
   const id = String(req.params.id || '');

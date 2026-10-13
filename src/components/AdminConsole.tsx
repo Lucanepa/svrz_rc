@@ -49,6 +49,7 @@ import { bySurname, surnameFirstLabel, foldName } from '../lib/coacheeName';
 import { coacheeLookup, gameLabel, indexPeople, samePerson } from '../lib/identity';
 import { confirmDialog, toast } from './ui';
 import CoacheeFileAdmin, { CoacheePinLine, svKey, useDossierPins } from './CoacheeFileAdmin';
+import InfosLayoutAdmin from './InfosLayoutAdmin';
 import RcMeetingsAdmin, { fmtMeetingDate } from './RcMeetingsAdmin';
 import BudgetCard, { chf } from './BudgetCard';
 import FinanceChair from './FinanceChair';
@@ -1340,6 +1341,7 @@ export default function AdminConsole() {
         <div hidden={tab !== 'settings'}>
           <SettingsAdmin t={t} defaultSeason={defaultSeason} settingsLoading={settingsLoading} />
           <CoacheeDataAdmin t={t} lang={lang} defaultSeason={defaultSeason} settingsLoading={settingsLoading} active={tab === 'settings'} />
+          <InfosLayoutAdmin lang={lang} active={tab === 'settings'} />
           <CredentialsAdmin t={t} />
         </div>
         </>}

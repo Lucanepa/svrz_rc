@@ -10,6 +10,7 @@ import { IS_NATIVE, clearNativeApiCache } from './native';
 import { isDemoMode } from './demo';
 import { normalizeBudget, type BudgetSettings } from './budget';
 import type { PageAck, PageWire, ServerPage } from './notebook';
+import { normalizeInfosLayout, type InfosLayout } from './infosLayout';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
@@ -1887,6 +1888,28 @@ export async function getCoacheeFileForm(token: string, id: string): Promise<{ b
   return { blob: await res.blob(), name: named ? named[1] : 'coaching-bericht.pdf' };
 }
 /** Admin: whether the PIN mail is on (no route sets it) and the PIN count. */
+/** The public /infos page's folders: null while nothing is stored (the page
+ *  then uses the code's audience table). Public — /infos has no login. */
+export async function getInfosLayout(signal?: AbortSignal): Promise<{ layout: InfosLayout | null; updatedAt: string }> {
+  const res = await fetch(apiUrl('/api/infos-layout'), { cache: 'no-store', signal });
+  if (!res.ok) throw new Error('Could not load the /infos layout');
+  const body = await res.json() as { layout?: unknown; updatedAt?: unknown };
+  return { layout: normalizeInfosLayout(body.layout), updatedAt: typeof body.updatedAt === 'string' ? body.updatedAt : '' };
+}
+/** Admin: store a layout for /infos (the server keeps what it can read of it). */
+export async function saveInfosLayout(layout: InfosLayout): Promise<{ layout: InfosLayout | null; updatedAt: string }> {
+  const res = await fetch(apiUrl('/api/admin/infos-layout'), {
+    method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ layout }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not save');
+  const body = await res.json() as { layout?: unknown; updatedAt?: unknown };
+  return { layout: normalizeInfosLayout(body.layout), updatedAt: typeof body.updatedAt === 'string' ? body.updatedAt : '' };
+}
+/** Admin: back to the code's audience table. */
+export async function resetInfosLayout(): Promise<void> {
+  const res = await fetch(apiUrl('/api/admin/infos-layout'), { method: 'DELETE', credentials: 'include' });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not reset');
+}
 export async function getCoacheeFileAdmin(): Promise<{ enabled: boolean; pinCount: number; url: string }> {
   const res = await fetch(apiUrl('/api/admin/coachee-file'), { credentials: 'include' });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not load');

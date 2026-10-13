@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp } from './support/app';
+import { stubSignedInApp, suiteNow } from './support/app';
 
 // What the console says before it knows anything.
 //
@@ -27,7 +27,7 @@ const SETTINGS = {
   default_season: 2026, test_mode: true, groups: ['Beförderung'],
   coachee_targets: {}, rc_mandates: {}, default_goal: 10,
 };
-const SYNC = { status: { at: new Date().toISOString(), ok: true, imported: 4, totalFetched: 120 }, newestGame: new Date().toISOString(), cron: '0 5 * * *' };
+const SYNC = { status: { at: new Date(suiteNow()).toISOString(), ok: true, imported: 4, totalFetched: 120 }, newestGame: new Date(suiteNow()).toISOString(), cron: '0 5 * * *' };
 
 test('the console holds its answers until it has them', async ({ page }) => {
   await stubSignedInApp(page, { admin: true });

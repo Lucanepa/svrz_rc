@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp, RC } from './support/app';
+import { stubSignedInApp, RC, suiteNow } from './support/app';
 
 /**
  * Naming a page, and coming back to the one you were on.
@@ -61,8 +61,8 @@ const pageBox = (page: Page) => sheet(page).locator('.rich-surface');
 const titleBox = (page: Page) => sheet(page).getByTestId('pad-title');
 const closeSheet = (page: Page) => sheet(page).getByRole('button', { name: /^(Schliessen|Close)$/ }).click();
 
-const NEWER = padPage({ pageId: 'p-newer', text: 'newer page', createdAt: Date.now() - 60 * 60 * 1000 });
-const OLDER = padPage({ pageId: 'p-older', text: 'older page', createdAt: Date.now() - 3 * 60 * 60 * 1000 });
+const NEWER = padPage({ pageId: 'p-newer', text: 'newer page', createdAt: suiteNow() - 60 * 60 * 1000 });
+const OLDER = padPage({ pageId: 'p-older', text: 'older page', createdAt: suiteNow() - 3 * 60 * 60 * 1000 });
 
 test('a page can be named, and its name stands on its pill with the time beside it', async ({ page }) => {
   await stubSignedInApp(page);
@@ -94,9 +94,9 @@ test("a page with no title of its own never wears the last page's", async ({ pag
   // on a coach's device, written before the field existed. Handed to a
   // controlled input as `undefined`, React lets go of it, and the field goes
   // on showing whatever the page before it was called.
-  const untitled: Seed = padPage({ pageId: 'p-untitled', text: 'untitled page', createdAt: Date.now() - 2 * 60 * 60 * 1000 });
+  const untitled: Seed = padPage({ pageId: 'p-untitled', text: 'untitled page', createdAt: suiteNow() - 2 * 60 * 60 * 1000 });
   delete untitled.title;
-  const titled = padPage({ pageId: 'p-titled', text: 'titled page', createdAt: Date.now() - 60 * 60 * 1000, title: 'Urs 2SR' });
+  const titled = padPage({ pageId: 'p-titled', text: 'titled page', createdAt: suiteNow() - 60 * 60 * 1000, title: 'Urs 2SR' });
 
   await stubSignedInApp(page);
   await seedPad(page, [untitled, titled]);

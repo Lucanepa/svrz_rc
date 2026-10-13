@@ -57,8 +57,9 @@ test('a chip click writes the placeholder where the caret was', async ({ page })
   // The reminder card's own chip row — the feedback card has the same names.
   await page.getByTestId('tpl-editor-reminder').getByRole('button', { name: 'coach', exact: true }).click();
   await expect(field).toHaveValue('Hallo {{coach}}, schön');
-  // Caret lands after what was inserted, so typing carries on from there.
-  expect(await field.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(15);
+  // Caret lands after what was inserted, so typing carries on from there. Polled:
+  // the editor places it in the next animation frame, after the value lands.
+  await expect.poll(() => field.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(15);
 });
 
 test('typing {{ opens the list, typing narrows it, Enter completes it', async ({ page }) => {
@@ -76,6 +77,9 @@ test('typing {{ opens the list, typing narrows it, Enter completes it', async ({
   await field.press('Enter');
   await expect(field).toHaveValue('Liebe/r {{coachVorname}}');
   await expect(list).toHaveCount(0);
+  // The caret moves past the completion in the next frame; typing before it
+  // has would land in the wrong place.
+  await expect.poll(() => field.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe('Liebe/r {{coachVorname}}'.length);
   // Escape closes it without touching the text.
   await field.pressSequentially(' {{');
   await expect(list).toBeVisible();

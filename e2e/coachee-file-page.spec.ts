@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { pinClock, suiteNow } from './support/app';
 
 // The coachee file page (/dossier) against a stubbed API: the door, the list,
 // a report read in the page, opened in a tab or saved, the statistics, and
@@ -8,7 +9,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 const FILE = {
   refereeId: '12345',
   name: 'Hans Muster',
-  expiresAt: Date.now() + 30 * 60_000,
+  expiresAt: suiteNow() + 30 * 60_000,
   entries: [
     { id: 'fb2', date: '2026-03-14', role: '2. SR', matchNo: '312456', league: '3L ♂', homeTeam: 'VBC A', awayTeam: 'VBC B', rc: 'Anna Coach', goals: 'Pfiff klarer\nBlickkontakt', hasFile: true, isTest: false },
     { id: 'fb1', date: '2025-11-02', role: '1. SR', matchNo: '300001', league: '2L ♀', homeTeam: 'VBC C', awayTeam: 'VBC D', rc: 'Max Muster', goals: '', hasFile: false, isTest: false },
@@ -24,7 +25,7 @@ const row = (id: string, date: string, season: number, role: string, rc: string,
 const STATS_FILE = {
   refereeId: '12345',
   name: 'Hans Muster',
-  expiresAt: Date.now() + 30 * 60_000,
+  expiresAt: suiteNow() + 30 * 60_000,
   entries: [
     row('s5', '2026-10-04', 2026, '1. SR', 'Anna Coach', firstRef(14)),
     row('t', '2026-09-20', 2026, '1. SR', 'Test Coach', [R('1sr-prep-1', 0, 2)], true),
@@ -58,10 +59,13 @@ async function stubLogin(page: Page, opts: { status?: number; retryAfterMs?: num
       await r.fulfill({ status: opts.status, json: { error: 'nope', retryAfterMs: opts.retryAfterMs ?? 0 } });
       return;
     }
-    await r.fulfill({ json: { token: 'tok.sig', expiresAt: Date.now() + 30 * 60_000 } });
+    await r.fulfill({ json: { token: 'tok.sig', expiresAt: suiteNow() + 30 * 60_000 } });
   });
   return calls;
 }
+
+// The suite's clock (support/app.ts): this page reads dates too.
+test.beforeEach(async ({ page }) => { await pinClock(page); });
 
 test.describe('the coachee file page', () => {
   test('signs in with SV-Nr. and PIN, then lists the reports newest first', async ({ page }) => {

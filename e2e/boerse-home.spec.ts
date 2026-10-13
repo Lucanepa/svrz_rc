@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp, RC } from './support/app';
+import { stubSignedInApp, RC, suiteNow } from './support/app';
 
 /**
  * What the SR-Börse marks look like on Home.
@@ -15,7 +15,7 @@ import { stubSignedInApp, RC } from './support/app';
  * and a red chip with no text is exactly the failure the marks exist to avoid.
  */
 
-const asOf = new Date(Date.now() - 12 * 60_000).toISOString();
+const asOf = new Date(suiteNow() - 12 * 60_000).toISOString();
 
 const game = (over: Record<string, unknown> = {}) => ({
   gameId: 'g1',
@@ -122,7 +122,7 @@ test.describe('the Games tab', () => {
     id: 'eg1', matchNo: '408178', league: 'DU23 3. Liga',
     // Relative, not a date typed once: the Games tab hides past fixtures, so a
     // hard-coded day turns this spec red the morning after it is written.
-    date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(), location: 'Zwingert, Buchs ZH',
+    date: new Date(suiteNow() + 3 * 24 * 60 * 60 * 1000).toISOString(), location: 'Zwingert, Buchs ZH',
     homeTeam: 'VBC Furttal', awayTeam: 'KSC Wiedikon DU23-1',
     firstReferee: 'Coachee Eins', secondReferee: '',
     assignedRc: '', feedbackClosedRoles: [], starred: false, vmFlagged: false,

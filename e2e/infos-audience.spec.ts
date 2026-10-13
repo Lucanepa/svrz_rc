@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { USEFUL_DOCS } from '../src/lib/usefulDocs';
 import { INFOS_AUDIENCE_OF } from '../src/lib/infosAudience';
+import { pinClock } from './support/app';
 
 /**
  * The public /infos page, sorted by who a document is for, most useful first
@@ -9,6 +10,9 @@ import { INFOS_AUDIENCE_OF } from '../src/lib/infosAudience';
  */
 
 const PUBLIC = USEFUL_DOCS.filter((d) => d.kind !== 'form' && d.kind !== 'video');
+
+// The suite's clock (support/app.ts): this page reads dates too.
+test.beforeEach(async ({ page }) => { await pinClock(page); });
 
 test.describe('the table', () => {
   test('every public document says who it is for', () => {

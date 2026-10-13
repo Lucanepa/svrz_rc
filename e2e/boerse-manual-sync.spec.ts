@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp } from './support/app';
+import { stubSignedInApp, suiteNow } from './support/app';
 
 /**
  * "Jetzt prüfen" on the SR-Börse card: a tap, and then the result.
@@ -33,7 +33,7 @@ test('the card waits for the run the tap started, then reports it', async ({ pag
     return r.fulfill({ json: { status, liveOffers: 31, enabled: true, pollMinutes: 60, accountHeldBy: null } });
   });
   await page.route('**/api/admin/boerse/sync', (r) => {
-    tappedAt = new Date().toISOString();
+    tappedAt = new Date(suiteNow()).toISOString();
     polls = 0;
     return r.fulfill({ status: 202, json: { started: true, startedAt: tappedAt } });
   });
@@ -58,7 +58,7 @@ test('a run the account lock skipped is reported as skipped, not as a failure', 
     },
   }));
   await page.route('**/api/admin/boerse/sync', (r) => {
-    tappedAt = new Date().toISOString();
+    tappedAt = new Date(suiteNow()).toISOString();
     return r.fulfill({ status: 202, json: { started: true, startedAt: tappedAt } });
   });
   await page.goto('/admin/games');

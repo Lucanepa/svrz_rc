@@ -11,6 +11,51 @@ import { DEFAULT_SURVEY_CONFIG } from '../../src/lib/survey';
  * deterministic, and it belongs in one place rather than in each spec.
  */
 
+/**
+ * The suite's "now". The fixtures carry fixed dates in the 2026/27 season (GAME
+ * is 15.11.2026), and against the real clock they dropped into the past one by
+ * one — promotion-focus on 11.10., and GAME would have taken most of the suite
+ * with it on 16.11. Every page's `Date` starts here and RUNS on from it.
+ *
+ * Only `Date` moves. Timers, animation frames and performance.now stay the
+ * browser's own: Playwright's clock.install fakes those too, and under a loaded
+ * machine its timers fell behind real time — a logger grace timer missed its
+ * test's 200 ms margin, a caret set in the next frame was read before it.
+ *
+ * A spec that needs another moment calls `page.clock.setFixedTime` AFTER
+ * stubSignedInApp — that wins. A fixture built in Node that the page has to
+ * agree with (a page "created an hour ago", a draft saved "just now") uses
+ * `suiteNow()`, never `Date.now()`: the real date keeps moving, this one does not.
+ * Inside the page (addInitScript, evaluate) `Date.now()` already is the suite's.
+ */
+export const SUITE_NOW = new Date('2026-10-13T11:00:00Z');
+let pinnedAtReal = 0;
+/** The page's clock as Node reads it: SUITE_NOW plus the real time since the
+ *  current page was pinned (SUITE_NOW itself before any page is). */
+export const suiteNow = (): number => SUITE_NOW.getTime() + (pinnedAtReal ? Date.now() - pinnedAtReal : 0);
+const pinned = new WeakSet<Page>();
+/** Shift this page's `Date` so it reads SUITE_NOW now, in every document it
+ *  loads from here on. Once per page. */
+export async function pinClock(page: Page): Promise<void> {
+  if (pinned.has(page)) return;
+  pinned.add(page);
+  // Measured against the browser's own clock, not Node's, so the offset is
+  // right even when the two disagree.
+  const offset = SUITE_NOW.getTime() - await page.evaluate(() => Date.now());
+  pinnedAtReal = Date.now();
+  const shift = (off: number) => {
+    const RealDate = Date;
+    const now = () => RealDate.now() + off;
+    (globalThis as { Date: DateConstructor }).Date = new Proxy(RealDate, {
+      construct: (t, args, nt) => Reflect.construct(t, args.length ? args : [now()], nt),
+      apply: () => new RealDate(now()).toString(),
+      get: (t, p, r) => (p === 'now' ? now : Reflect.get(t, p, r)),
+    });
+  };
+  await page.addInitScript(shift, offset);
+  if (page.url() !== 'about:blank') await page.evaluate(shift, offset);
+}
+
 export const RC = { id: 'rc1', name: 'Anna Muster' };
 
 /** How COACHEE reads in the two coachee lists, which show "Nachname, Vorname".
@@ -151,7 +196,7 @@ export const GAME_VM = {
 };
 
 /** Twelve minutes ago — a fresh Börse poll. */
-export const BOERSE_AS_OF = new Date(Date.now() - 12 * 60_000).toISOString();
+export const BOERSE_AS_OF = new Date(suiteNow() - 12 * 60_000).toISOString();
 
 /** The coachee's own slot (the 1. SR on GAME) is in the SR-Börse: the red
  *  verdict, and the one Infoschreiben 4.1 asks a coach to check for. */
@@ -249,6 +294,7 @@ export type StubOptions = {
  * handler wins.
  */
 export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promise<void> {
+  await pinClock(page);
   const name = opts.signedInAs ?? RC.name;
   // The Coachees tab hides coachees with a booked observation by default; the
   // specs were written against the full list, so they start with it off (only

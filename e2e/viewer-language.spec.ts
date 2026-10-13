@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { RC, COACHEE, GAME, stubSignedInApp } from './support/app';
+import { RC, COACHEE, GAME, stubSignedInApp, suiteNow } from './support/app';
 
 /**
  * The app's language belongs to the coach, not to the document on screen.
@@ -119,7 +119,7 @@ test('resuming a draft written in German keeps the app in English', async ({ pag
   }, {
     id: `${RC.id}|${GAME.id}|1. SR`,
     schema: 1, ownerId: RC.id, gameId: GAME.id, role: '1. SR',
-    updatedAt: Date.now(), status: 'editing', submissionKey: '',
+    updatedAt: suiteNow(), status: 'editing', submissionKey: '',
     label: `${GAME.homeTeam} vs ${GAME.awayTeam}`, matchNo: GAME.matchNo,
     observationTarget: '1SR', resultUnlocked: false,
     coacheeId: COACHEE.id, coacheeName: COACHEE.full_name, coacheeLevel: COACHEE.referee_level,

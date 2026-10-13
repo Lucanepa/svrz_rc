@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp, RC } from './support/app';
+import { stubSignedInApp, RC, suiteNow } from './support/app';
 
 /**
  * The pen page: strokes are stored as vectors (never a bitmap), a pen draws
@@ -182,7 +182,7 @@ test('an ink page is pushed in its own request, with its strokes and its court; 
   await page.route('**/api/notebook/pages', async (r) => {
     const body = JSON.parse(r.request().postData() || '{"pages":[]}') as { pages: Record<string, unknown>[] };
     puts.push(body.pages);
-    await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: body.pages.map((p) => ({ pageId: p.pageId, savedAt: new Date().toISOString(), updatedAt: p.updatedAt, createdAt: p.createdAt })), stale: [], rejected: [] } });
+    await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: body.pages.map((p) => ({ pageId: p.pageId, savedAt: new Date(suiteNow()).toISOString(), updatedAt: p.updatedAt, createdAt: p.createdAt })), stale: [], rejected: [] } });
   });
   await page.goto('/');
   await openPenPage(page, true);
@@ -199,7 +199,7 @@ test('an ink page is pushed in its own request, with its strokes and its court; 
 test('a page whose ink is not local is fetched when opened', async ({ page }) => {
   await stubSignedInApp(page);
   const asked: string[] = [];
-  const at = Date.now() - 60_000;
+  const at = suiteNow() - 60_000;
   const stroke = { c: 0, w: 3, p: 0, d: [1000, 5000, 0, 0, 3000, 0, 0, 16, 3000, 200, 0, 32] };
   await page.route('**/api/notebook', (r) => r.fulfill({ json: { ownerId: RC.id, pages: [{ pageId: 'page-ink-remote', kind: 'ink', bg: '', points: 3, createdAt: at, updatedAt: at, deleted: false, schema: 1, savedAt: new Date(at).toISOString() }] } }));
   await page.route('**/api/notebook/pages/page-ink-remote', (r) => { asked.push(r.request().url()); return r.fulfill({ json: { ownerId: RC.id, page: { pageId: 'page-ink-remote', kind: 'ink', bg: '', points: 3, createdAt: at, updatedAt: at, deleted: false, schema: 1, savedAt: new Date(at).toISOString(), ink: { w: 1000, h: 1414, strokes: [stroke] } } } }); });

@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import { jarToCookieLine, nativeClient, versionBelow } from '../server/nativeClient';
+import { pinClock } from './support/app';
 
 /**
  * The installed app (Tauri) signs in with headers instead of cookies, and reads
@@ -17,6 +18,9 @@ import { jarToCookieLine, nativeClient, versionBelow } from '../server/nativeCli
  */
 
 // ── The API's door ─────────────────────────────────────────────────────
+
+// The suite's clock (support/app.ts): this page reads dates too.
+test.beforeEach(async ({ page }) => { await pinClock(page); });
 
 test.describe('versionBelow', () => {
   test('orders dotted versions numerically', () => {

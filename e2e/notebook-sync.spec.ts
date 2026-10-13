@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
-import { stubSignedInApp, RC } from './support/app';
+import { stubSignedInApp, RC, suiteNow } from './support/app';
 
 /**
  * The server is the notebook's source of truth: a page is pushed seconds after
@@ -22,14 +22,14 @@ type ServerPage = { pageId: string; kind: string; createdAt: number; updatedAt: 
 function local(over: Partial<StoredPage> = {}): StoredPage {
   const ownerId = over.ownerId || RC.id;
   const pageId = over.pageId || 'page-local-0001';
-  const at = over.createdAt ?? Date.now() - 60_000;
+  const at = over.createdAt ?? suiteNow() - 60_000;
   return {
     id: `${ownerId}|${pageId}`, schema: 1, ownerId, pageId, kind: 'text', text: 'local copy', bg: '', points: 0, usedIn: [],
     createdAt: at, updatedAt: at, deleted: false, dirty: false, savedAt: new Date(at).toISOString(), rejectedReason: '', ...over,
   };
 }
 function remote(over: Partial<ServerPage> = {}): ServerPage {
-  const at = over.createdAt ?? Date.now() - 60_000;
+  const at = over.createdAt ?? suiteNow() - 60_000;
   return { pageId: 'page-local-0001', kind: 'text', createdAt: at, updatedAt: at, deleted: false, schema: 1, savedAt: new Date(at).toISOString(), text: 'server copy', ...over };
 }
 
@@ -61,7 +61,7 @@ async function stubNotebook(page: Page, opts: { index?: ServerPage[]; onPush?: (
     const body = JSON.parse(r.request().postData() || '{"pages":[]}') as { pages: Record<string, unknown>[] };
     puts.push({ method: r.request().method(), pages: body.pages, keepalive: false });
     if (opts.onPush) { await opts.onPush(body, r); return; }
-    await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: body.pages.map((p) => ({ pageId: p.pageId, savedAt: new Date().toISOString(), updatedAt: p.updatedAt, createdAt: p.createdAt })), stale: [], rejected: [] } });
+    await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: body.pages.map((p) => ({ pageId: p.pageId, savedAt: new Date(suiteNow()).toISOString(), updatedAt: p.updatedAt, createdAt: p.createdAt })), stale: [], rejected: [] } });
   });
   return puts;
 }
@@ -101,7 +101,7 @@ test('a wiped device gets its pages back', async ({ page }) => {
 });
 
 test('local newer wins, server newer wins, tie goes to the server', async ({ page }) => {
-  const now = Date.now();
+  const now = suiteNow();
   await stubSignedInApp(page);
   await seedPad(page, [
     local({ pageId: 'p-local-newer', text: 'local wins', updatedAt: now - 1000, dirty: true, savedAt: '' }),
@@ -121,7 +121,7 @@ test('local newer wins, server newer wins, tie goes to the server', async ({ pag
 });
 
 test('a server tombstone hides an older local copy; absence on the server never deletes', async ({ page }) => {
-  const now = Date.now();
+  const now = suiteNow();
   await stubSignedInApp(page);
   await seedPad(page, [
     local({ pageId: 'p-deleted-elsewhere', text: 'deleted on the tablet', updatedAt: now - 2000 }),
@@ -139,9 +139,9 @@ test('a server tombstone hides an older local copy; absence on the server never 
 
 test("the ack's stamps are adopted, so the shown expiry is the enforced one", async ({ page }) => {
   await stubSignedInApp(page);
-  const sixDaysAgo = Date.now() - 6 * 24 * 60 * 60 * 1000;
+  const sixDaysAgo = suiteNow() - 6 * 24 * 60 * 60 * 1000;
   await stubNotebook(page, { onPush: async (body, r) => {
-    await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: body.pages.map((p) => ({ pageId: p.pageId, savedAt: new Date().toISOString(), updatedAt: p.updatedAt, createdAt: sixDaysAgo })), stale: [], rejected: [] } });
+    await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: body.pages.map((p) => ({ pageId: p.pageId, savedAt: new Date(suiteNow()).toISOString(), updatedAt: p.updatedAt, createdAt: sixDaysAgo })), stale: [], rejected: [] } });
   } });
   await page.goto('/');
   await launcher(page).click();
@@ -173,7 +173,7 @@ test('a refused page is not re-sent until edited; 429 is patience, not a refusal
   const puts = await stubNotebook(page, { onPush: async (body, r) => {
     if (answer === 'reject') { await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: [], stale: [], rejected: body.pages.map((p) => ({ pageId: p.pageId, reason: 'too-big' })) } }); return; }
     if (answer === 'throttle') { await r.fulfill({ status: 429, json: { error: 'Zu viele Versuche.', retryAfterMs: 1200 } }); return; }
-    await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: body.pages.map((p) => ({ pageId: p.pageId, savedAt: new Date().toISOString(), updatedAt: p.updatedAt, createdAt: p.createdAt })), stale: [], rejected: [] } });
+    await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: body.pages.map((p) => ({ pageId: p.pageId, savedAt: new Date(suiteNow()).toISOString(), updatedAt: p.updatedAt, createdAt: p.createdAt })), stale: [], rejected: [] } });
   } });
   await page.goto('/');
   await launcher(page).click();

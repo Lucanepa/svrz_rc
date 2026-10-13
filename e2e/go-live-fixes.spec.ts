@@ -46,6 +46,7 @@ test.describe('A colleague\'s queued observation is visible after a hand-off', (
         open.result.transaction('feedback-outbox', 'readwrite').objectStore('feedback-outbox').put({
           id: 'stranded-1',
           ownerId: 'rc-someone-else',
+          // In the page: Date.now() IS the suite's pinned clock here.
           createdAt: Date.now(),
           label: 'Spiel 2345678',
           payload: {},

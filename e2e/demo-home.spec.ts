@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { pinClock } from './support/app';
 
 /**
  * The demo (`/demo`, src/lib/demo.ts) is a throwaway coach with a season of
@@ -21,6 +22,9 @@ const enterDemo = async (page: Page) => {
 const giveBack = (page: Page) => page.getByRole('button', { name: /^(Give back|Abgeben)$/ });
 const takeGame = (page: Page) => page.getByRole('button', { name: /Take game|Spiel übernehmen/ });
 const startObservation = (page: Page) => page.getByRole('button', { name: /Start observation|Beobachtung starten/ });
+
+// The suite's clock (support/app.ts): this page reads dates too.
+test.beforeEach(async ({ page }) => { await pinClock(page); });
 
 test('Home shows the demo coach\'s summary — the lists behind the counters', async ({ page }) => {
   await enterDemo(page);

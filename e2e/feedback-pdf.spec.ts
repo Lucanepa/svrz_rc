@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import type { FeedbackFormData } from '../src/types';
+import { pinClock } from './support/app';
 
 // Exercises src/lib/feedbackPdf.ts directly in the browser, which is the only
 // place it can run: it embeds font subsets and a logo through Vite's asset
@@ -69,6 +70,9 @@ async function buildPdfs(page: import('@playwright/test').Page): Promise<Built> 
     };
   }) as Promise<Built>;
 }
+
+// The suite's clock (support/app.ts): this page reads dates too.
+test.beforeEach(async ({ page }) => { await pinClock(page); });
 
 test.describe('Feedback PDF builder', () => {
   test('produces A4 pages with real, extractable text', async ({ page }) => {

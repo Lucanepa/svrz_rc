@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp, openFeedbackForm, RC, GAME } from './support/app';
+import { stubSignedInApp, openFeedbackForm, RC, GAME, suiteNow } from './support/app';
 
 /**
  * The Notizblock: pages a coach writes anywhere in the app, kept on the device
@@ -31,7 +31,7 @@ type StoredPage = {
 function padPage(over: Partial<StoredPage> & { createdAt?: number } = {}): StoredPage {
   const ownerId = over.ownerId || RC.id;
   const pageId = over.pageId || 'page-seeded-0001';
-  const at = over.createdAt ?? Date.now() - 60_000;
+  const at = over.createdAt ?? suiteNow() - 60_000;
   return {
     id: `${ownerId}|${pageId}`, schema: 1, ownerId, pageId, kind: 'text', text: 'seeded page', bg: '', points: 0, usedIn: [],
     createdAt: at, updatedAt: at, deleted: false, dirty: false, savedAt: new Date(at).toISOString(), rejectedReason: '',
@@ -159,8 +159,8 @@ test.describe('The device keeps the page', () => {
   test('pages are turned with the arrows and the pills, newest first', async ({ page }) => {
     await stubSignedInApp(page);
     await seedPad(page, [
-      padPage({ pageId: 'p-older', text: 'older page', createdAt: Date.now() - 3 * 60 * 60 * 1000 }),
-      padPage({ pageId: 'p-newer', text: 'newer page', createdAt: Date.now() - 60 * 60 * 1000 }),
+      padPage({ pageId: 'p-older', text: 'older page', createdAt: suiteNow() - 3 * 60 * 60 * 1000 }),
+      padPage({ pageId: 'p-newer', text: 'newer page', createdAt: suiteNow() - 60 * 60 * 1000 }),
     ]);
     await page.goto('/');
     await openPad(page);
@@ -195,11 +195,11 @@ test.describe('A week is a week', () => {
   test('an expired page is hidden and purged; one written six days ago is not', async ({ page }) => {
     await stubSignedInApp(page);
     await seedPad(page, [
-      padPage({ pageId: 'page-old', text: 'eight days old', createdAt: Date.now() - 8 * DAY }),
-      padPage({ pageId: 'page-fresh', text: 'six days old', createdAt: Date.now() - 6 * DAY }),
+      padPage({ pageId: 'page-old', text: 'eight days old', createdAt: suiteNow() - 8 * DAY }),
+      padPage({ pageId: 'page-fresh', text: 'six days old', createdAt: suiteNow() - 6 * DAY }),
       // Dirty and past its week: the week is the promise, the server would
       // refuse the row by its own clock anyway.
-      padPage({ pageId: 'page-old-dirty', text: 'never synced', createdAt: Date.now() - 9 * DAY, dirty: true, savedAt: '' }),
+      padPage({ pageId: 'page-old-dirty', text: 'never synced', createdAt: suiteNow() - 9 * DAY, dirty: true, savedAt: '' }),
     ]);
     await page.goto('/');
     await openPad(page);
@@ -211,7 +211,7 @@ test.describe('A week is a week', () => {
 
   test('a page within a day of its end says so', async ({ page }) => {
     await stubSignedInApp(page);
-    await seedPad(page, [padPage({ createdAt: Date.now() - 6.5 * DAY })]);
+    await seedPad(page, [padPage({ createdAt: suiteNow() - 6.5 * DAY })]);
     await page.goto('/');
     await openPad(page);
     await expect(sheet(page).getByText(/Wird morgen gelöscht|Will be deleted tomorrow/)).toBeVisible();

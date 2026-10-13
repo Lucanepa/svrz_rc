@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { stubSignedInApp, openFeedbackForm, ratingControl, fillWholeForm, signOpenPad, openOptions, openFileMenu, RC, COACHEE, GAME } from './support/app';
+import { stubSignedInApp, openFeedbackForm, ratingControl, fillWholeForm, signOpenPad, openOptions, openFileMenu, RC, COACHEE, GAME, suiteNow } from './support/app';
 
 /**
  * An unfinished observation, and the three ways it is allowed to survive: the
@@ -69,7 +69,7 @@ function draftRecord(over: Record<string, unknown> = {}): Record<string, unknown
     ownerId,
     gameId,
     role,
-    updatedAt: Date.now(),
+    updatedAt: suiteNow(),
     status: 'editing',
     submissionKey: '',
     label: DRAFT_LABEL,
@@ -286,8 +286,8 @@ test.describe('The device keeps the work', () => {
     await stubSignedInApp(page);
     await useTwoRefereeGame(page);
     await seedDrafts(page, [
-      draftRecord({ role: '1. SR', observationTarget: 'both', tipsAndTricks: 'the first half', updatedAt: Date.now() }),
-      draftRecord({ role: '2. SR', observationTarget: 'both', tipsAndTricks: 'the second half', updatedAt: Date.now() - 60_000 }),
+      draftRecord({ role: '1. SR', observationTarget: 'both', tipsAndTricks: 'the first half', updatedAt: suiteNow() }),
+      draftRecord({ role: '2. SR', observationTarget: 'both', tipsAndTricks: 'the second half', updatedAt: suiteNow() - 60_000 }),
     ]);
     await page.goto(`/form/${GAME.matchNo}/2sr`);
 
@@ -618,7 +618,7 @@ test.describe('The autosave and the report that already went', () => {
     await useTwoRefereeGame(page);
     // A dual visit, both halves still unfinished. The 1. SR is the newer one,
     // so it is the form that opens and the 2. SR is the stash behind it.
-    const now = Date.now();
+    const now = suiteNow();
     await seedDrafts(page, [
       draftRecord({ role: '1. SR', observationTarget: 'both', updatedAt: now }),
       draftRecord({

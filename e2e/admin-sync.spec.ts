@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { stubSignedInApp } from './support/app';
+import { stubSignedInApp, suiteNow } from './support/app';
 
 // The games import and the activity log, from the admin console.
 //
@@ -10,8 +10,8 @@ import { stubSignedInApp } from './support/app';
 // two characters wide.
 
 const SYNC_STATUS = {
-  status: { at: new Date().toISOString(), ok: true, imported: 4, totalFetched: 120 },
-  newestGame: new Date().toISOString(),
+  status: { at: new Date(suiteNow()).toISOString(), ok: true, imported: 4, totalFetched: 120 },
+  newestGame: new Date(suiteNow()).toISOString(),
   cron: '0 5 * * *',
 };
 
@@ -23,7 +23,7 @@ async function stubAdminConsole(page: import('@playwright/test').Page) {
     json: {
       entries: [{
         seq: 1,
-        t: new Date().toISOString(),
+        t: new Date(suiteNow()).toISOString(),
         lvl: 'debug',
         src: 'client',
         evt: 'net.fetch',

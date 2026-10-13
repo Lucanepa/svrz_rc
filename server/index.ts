@@ -7818,14 +7818,16 @@ app.get('/api/feedback/:id/file', async (req: Request, res: ExpressResponse) => 
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
-// ── The coachee's own file (/dossier) — live, no mail to coachees ────
+// ── The coachee's own file (/dossier) ───────────────────────────────
 // A coached referee reads back every report the coaching mailed them, with
 // their SV-Nr. and a personal 6-digit PIN. Rules in server/coacheeFile.ts.
 // A PIN is minted whenever a report about someone with an SV-Nr. is filed;
-// the admin hands PINs out from the console. The PIN MAIL stays gated on
-// `coachee_file_enabled`, which no route sets: Luca asked for the feature
-// without e-mails to the coachees (2026-10-05), and the chair for waiting on
-// Swiss Volley's acceptance (2026-10-04).
+// the admin hands PINs out from the console. The PIN MAIL is gated on
+// `coachee_file_enabled`, off by default: it started locked (Luca, 2026-10-05:
+// no e-mails to coachees; the chair, 2026-10-04: wait for Swiss Volley), and
+// Luca unlocked the admin's switch on 2026-10-13. On, every report sent from
+// then on also mails its referee the link, SV-Nr. and PIN; nobody is mailed
+// for the reports before.
 
 const COACHEE_FILE_ENABLED_KEY = 'coachee_file_enabled';
 const COACHEE_FILE_PINS_KEY = 'coachee_file_pins';
@@ -7981,15 +7983,28 @@ app.get('/api/coachee-file/forms/:id/file', async (req: Request, res: ExpressRes
 });
 
 // The console side: every person with a file and their PIN, the missing PINs
-// minted in one go, and one PIN looked up (or replaced) by SV-Nr. — the PINs
-// are handed out by hand while no mail tells coachees. Admin only; the
-// chair's half of the console has no tab for it. Read-only on the switch: no
-// route turns the PIN mail on (see the header above).
+// minted in one go, one PIN looked up (or replaced) by SV-Nr., and the PIN
+// mail's switch. Admin only; the chair's half of the console has no tab for it.
 app.get('/api/admin/coachee-file', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const [enabled, pins] = await Promise.all([isCoacheeFileEnabled(), readCoacheePins()]);
     res.json({ enabled, pinCount: Object.keys(pins).length, url: COACHEE_FILE_URL });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// The PIN mail on or off. Only a real boolean flips it: anything else is a
+// 400, so a malformed request can never leave the mail on. The console asks
+// before turning it on (CoacheeFileAdmin); the log keeps who and when.
+app.put('/api/admin/coachee-file', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+  try {
+    await ensureAdminAuth();
+    const enabled = (req.body as AnyRecord | undefined)?.enabled;
+    if (typeof enabled !== 'boolean') { res.status(400).json({ error: 'enabled muss true oder false sein.' }); return; }
+    await setSetting(COACHEE_FILE_ENABLED_KEY, enabled ? '1' : '0');
+    log.info('coachee-file.mail', enabled ? 'PIN mail switched ON in the console' : 'PIN mail switched off in the console', { enabled }, reqCtx(req));
+    const pins = await readCoacheePins();
+    res.json({ enabled: await isCoacheeFileEnabled(), pinCount: Object.keys(pins).length, url: COACHEE_FILE_URL });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -8089,8 +8104,8 @@ async function issueCoacheeFilePin(sv: string, feedbackId: string): Promise<void
   }
 }
 
-/** After a report went out: the PIN mail — only if `coachee_file_enabled` is
- *  on, which no route sets (see the section header). Never throws and is not
+/** After a report went out: the PIN mail — only while `coachee_file_enabled`
+ *  is on (the admin's switch, see the section header). Never throws and is not
  *  awaited by the submit route — the coach is waiting on "Abschliessen", and
  *  the report is already delivered. */
 async function mailCoacheeFilePin(v: { to: string; sv: string; firstName: string; test: boolean; feedbackId: string }): Promise<void> {
@@ -13053,8 +13068,8 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
           testMode: isTestMode,
         });
         // The coachee file's PIN mail, in a message of its own to the referee
-        // alone (sendCoacheeFileMail says why). Gated on a switch no route
-        // sets: no mail to coachees for now (Luca, 2026-10-05).
+        // alone (sendCoacheeFileMail says why). Gated on the admin's switch
+        // in Admin → E-Mails, off by default.
         void mailCoacheeFilePin({
           to: mailTo,
           sv: normalizeSvNumber(asText(coachee?.referee_id) || slotRefereeId),

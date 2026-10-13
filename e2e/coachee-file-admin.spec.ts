@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
 
 // Admin → E-Mails → Coaching-Dossier: everyone with a file and their PIN, to
-// hand out by hand. Nothing here can turn on a mail to coachees (Luca,
-// 2026-10-05) — the switch is drawn but locked until SVRZ / RC approve.
+// hand out by hand, and the PIN mail's switch — locked from 2026-10-05 until
+// Luca unlocked it on 2026-10-13: off by default, and it asks before it turns on.
 
 const TEMPLATE = { subject: 'S', heading: '', intro: 'I', outro: 'O' };
 const PEOPLE = [
@@ -25,18 +25,15 @@ test.beforeEach(async ({ page }) => {
   }));
 });
 
-test('lists the people with their PINs; the mail switch is locked pending approval', async ({ page }) => {
+test('lists the people with their PINs; the PIN mail is off', async ({ page }) => {
   await page.route('**/api/admin/coachee-file/pins', (r) => r.fulfill({ json: { people: PEOPLE } }));
   await page.goto('/admin/emails');
   const card = page.getByTestId('coachee-file-admin');
   await expect(card.getByText('Keine E-Mails an Coachees')).toBeVisible();
-  // Drawn, off, and impossible to turn on: SVRZ / RC approval comes first.
   const toggle = card.getByRole('checkbox', { name: 'PIN per E-Mail an Coachees senden' });
-  await expect(toggle).toBeDisabled();
+  await expect(toggle).toBeEnabled();
   await expect(toggle).not.toBeChecked();
-  await expect(card.getByText('Gesperrt — muss zuerst von SVRZ / RC genehmigt werden.')).toBeVisible();
-  await toggle.click({ force: true });
-  await expect(toggle).not.toBeChecked();
+  await expect(card.getByText(/^Aus — es wird nichts an Coachees versendet/)).toBeVisible();
   const rows = card.getByTestId('coachee-file-person');
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(0)).toContainText('Hans Muster');
@@ -46,6 +43,59 @@ test('lists the people with their PINs; the mail switch is locked pending approv
   await card.getByLabel('Name oder SV-Nr.…').fill('5555');
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('Petra Beispiel');
+});
+
+test('the PIN mail turns on only after confirming, and off without asking', async ({ page }) => {
+  await page.route('**/api/admin/coachee-file/pins', (r) => r.fulfill({ json: { people: PEOPLE } }));
+  const state = { enabled: false, puts: [] as unknown[] };
+  await page.route('**/api/admin/coachee-file', async (r) => {
+    if (r.request().method() === 'PUT') {
+      const body = r.request().postDataJSON() as { enabled: boolean };
+      state.puts.push(body);
+      state.enabled = body.enabled;
+    }
+    await r.fulfill({ json: { enabled: state.enabled, pinCount: 1, url: 'https://svrz-rc.openvolley.app/dossier' } });
+  });
+  await page.goto('/admin/emails');
+  const card = page.getByTestId('coachee-file-admin');
+  const toggle = card.getByRole('checkbox', { name: 'PIN per E-Mail an Coachees senden' });
+
+  // Cancelled: nothing is saved, the switch stays off.
+  await toggle.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('PIN-Mail an Coachees einschalten?');
+  await expect(dialog).toContainText('Für die bisherigen Berichte wird nichts versendet.');
+  await dialog.getByRole('button', { name: /Abbrechen/ }).click();
+  await expect(toggle).not.toBeChecked();
+  expect(state.puts).toEqual([]);
+
+  await toggle.click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Einschalten' }).click();
+  await expect.poll(() => state.puts).toEqual([{ enabled: true }]);
+  await expect(toggle).toBeChecked();
+  await expect(card.getByText('PIN-Mail an', { exact: true })).toBeVisible();
+  await expect(card.getByText(/^An — mit jedem neu versendeten Bericht/)).toBeVisible();
+
+  // Off is the safe side: no question.
+  await toggle.click();
+  await expect.poll(() => state.puts).toEqual([{ enabled: true }, { enabled: false }]);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(toggle).not.toBeChecked();
+  await expect(card.getByText('Keine E-Mails an Coachees')).toBeVisible();
+});
+
+test('a failed save leaves the switch as the server has it', async ({ page }) => {
+  await page.route('**/api/admin/coachee-file/pins', (r) => r.fulfill({ json: { people: PEOPLE } }));
+  await page.route('**/api/admin/coachee-file', (r) => (r.request().method() === 'PUT'
+    ? r.fulfill({ status: 500, json: { error: 'Datenbank nicht erreichbar' } })
+    : r.fulfill({ json: { enabled: false, pinCount: 1, url: 'https://svrz-rc.openvolley.app/dossier' } })));
+  await page.goto('/admin/emails');
+  const card = page.getByTestId('coachee-file-admin');
+  const toggle = card.getByRole('checkbox', { name: 'PIN per E-Mail an Coachees senden' });
+  await toggle.click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Einschalten' }).click();
+  await expect(card.getByText('Datenbank nicht erreichbar')).toBeVisible();
+  await expect(toggle).not.toBeChecked();
 });
 
 test('mints the missing PINs, then shows them', async ({ page }) => {

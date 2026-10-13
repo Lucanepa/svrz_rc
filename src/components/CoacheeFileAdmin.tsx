@@ -2,19 +2,20 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Copy, ExternalLink, KeyRound, Loader2, RotateCcw, Search } from 'lucide-react';
 import { confirmDialog, toast } from './ui';
 import {
-  backfillCoacheeFilePins, coacheeFilePin, getCoacheeFileAdmin, listCoacheeFilePins,
+  backfillCoacheeFilePins, coacheeFilePin, getCoacheeFileAdmin, listCoacheeFilePins, setCoacheeFileMail,
   type CoacheeFilePerson,
 } from '../lib/pocketbase';
 
 /**
  * Admin → E-Mails: the coachee file (/dossier). Every referee with a report
- * and their PIN, to hand out by hand — no mail tells coachees for now (Luca,
- * 2026-10-05; the chair wants to wait for Swiss Volley's acceptance). A PIN
- * is minted when a report is filed; "Fehlende PINs erzeugen" mints them for
- * the reports filed before. The PIN mail's switch is drawn but greyed out and
- * locked, noting that SVRZ / RC must approve it first (Luca, 2026-10-05), so
- * it cannot be turned on by mistake — and no server route sets it either.
- * Turning it on is a code change.
+ * and their PIN, to hand out by hand. A PIN is minted when a report is filed;
+ * "Fehlende PINs erzeugen" mints them for the reports filed before.
+ *
+ * The PIN mail's switch: off by default, and it asks before it turns on. It
+ * was drawn locked from 2026-10-05 (no mail to coachees until SVRZ / RC
+ * approve); Luca unlocked it on 2026-10-13. On, every report sent from then
+ * on also mails its referee the link, SV-Nr. and PIN in a message of their
+ * own; nobody is mailed for the reports before.
  *
  * Admin → Coachees draws each coachee's PIN under their row from the same
  * map (CoacheePinLine below, Luca 2026-10-12).
@@ -26,10 +27,16 @@ const STR = {
   DE: {
     title: 'Coaching-Dossier für Coachees',
     badge: 'Keine E-Mails an Coachees',
-    hint: 'Coachees sehen unter /dossier alle Berichte, die sie erhalten haben — mit SV-Nr. und persönlichem 6-stelligem PIN. Jede:r mit SV-Nr. erhält beim ersten Bericht automatisch einen PIN. Es wird nichts an Coachees versendet: PINs gibst du selbst weiter.',
-    mailOn: 'Achtung: Der PIN-Versand ist in der Datenbank eingeschaltet.',
+    badgeOn: 'PIN-Mail an',
+    hint: 'Coachees sehen unter /dossier alle Berichte, die sie erhalten haben — mit SV-Nr. und persönlichem 6-stelligem PIN. Jede:r mit SV-Nr. erhält beim ersten Bericht automatisch einen PIN.',
     mailToggle: 'PIN per E-Mail an Coachees senden',
-    mailLocked: 'Gesperrt — muss zuerst von SVRZ / RC genehmigt werden.',
+    mailOff: 'Aus — es wird nichts an Coachees versendet, PINs gibst du selbst weiter.',
+    mailOnNote: 'An — mit jedem neu versendeten Bericht geht eine eigene E-Mail mit Link, SV-Nr. und PIN an die Person, an niemanden sonst. Für frühere Berichte wird nichts versendet.',
+    confirmOnTitle: 'PIN-Mail an Coachees einschalten?',
+    confirmOnBody: 'Ab sofort erhält jede:r Schiedsrichter:in mit jedem neuen Bericht eine eigene E-Mail mit dem Link zum Dossier, der SV-Nr. und dem PIN. Für die bisherigen Berichte wird nichts versendet. Im Testmodus geht die E-Mail an die Testadresse.',
+    confirmOn: 'Einschalten',
+    savedOn: 'PIN-Mail eingeschaltet.',
+    savedOff: 'PIN-Mail ausgeschaltet.',
     backfill: (n: number) => `Fehlende PINs erzeugen (${n})`,
     backfillDone: (n: number) => `${n} PIN${n === 1 ? '' : 's'} erzeugt.`,
     search: 'Name oder SV-Nr.…',
@@ -43,7 +50,7 @@ const STR = {
       `Hallo${name ? ` ${name.split(/\s+/)[0]}` : ''}, alle deine Coaching-Berichte findest du in deinem Coaching-Dossier: ${url}\nSV-Nr.: ${sv}\nPIN: ${pin}\nDer PIN gehört nur dir — bitte nicht weitergeben.`,
     reset: 'Neuer PIN',
     resetTitle: (who: string) => `Neuen PIN für ${who}?`,
-    resetBody: 'Der bisherige PIN gilt sofort nicht mehr, offene Sitzungen enden. Den neuen PIN musst du selbst weitergeben.',
+    resetBody: (mail: boolean) => `Der bisherige PIN gilt sofort nicht mehr, offene Sitzungen enden. ${mail ? 'Der neue PIN geht mit dem nächsten Bericht an die Person — oder du gibst ihn selbst weiter.' : 'Den neuen PIN musst du selbst weitergeben.'}`,
     other: 'Andere SV-Nr.',
     otherHint: 'Für eine SV-Nr. ohne Bericht: erzeugt einen PIN. Es wird nichts versendet.',
     show: 'PIN anzeigen',
@@ -60,10 +67,16 @@ const STR = {
   EN: {
     title: 'Coaching file for coachees',
     badge: 'No e-mails to coachees',
-    hint: 'Coachees see every report they received at /dossier — with their SV no. and a personal 6-digit PIN. Everyone with an SV no. gets a PIN automatically with their first report. Nothing is sent to coachees: you pass the PINs on yourself.',
-    mailOn: 'Warning: the PIN mail is switched on in the database.',
+    badgeOn: 'PIN mail on',
+    hint: 'Coachees see every report they received at /dossier — with their SV no. and a personal 6-digit PIN. Everyone with an SV no. gets a PIN automatically with their first report.',
     mailToggle: 'Send the PIN to coachees by e-mail',
-    mailLocked: 'Locked — to be approved by SVRZ / RC first.',
+    mailOff: 'Off — nothing is sent to coachees, you pass the PINs on yourself.',
+    mailOnNote: 'On — every newly sent report is followed by an e-mail of its own with the link, SV no. and PIN, to the person and nobody else. Nothing is sent for earlier reports.',
+    confirmOnTitle: 'Turn on the PIN mail to coachees?',
+    confirmOnBody: 'From now on every referee gets, with each new report, an e-mail of its own with the link to the file, their SV no. and PIN. Nothing is sent for the reports so far. In test mode the e-mail goes to the test address.',
+    confirmOn: 'Turn on',
+    savedOn: 'PIN mail turned on.',
+    savedOff: 'PIN mail turned off.',
     backfill: (n: number) => `Create missing PINs (${n})`,
     backfillDone: (n: number) => `${n} PIN${n === 1 ? '' : 's'} created.`,
     search: 'Name or SV no.…',
@@ -78,7 +91,7 @@ const STR = {
       `Hallo${name ? ` ${name.split(/\s+/)[0]}` : ''}, alle deine Coaching-Berichte findest du in deinem Coaching-Dossier: ${url}\nSV-Nr.: ${sv}\nPIN: ${pin}\nDer PIN gehört nur dir — bitte nicht weitergeben.`,
     reset: 'New PIN',
     resetTitle: (who: string) => `New PIN for ${who}?`,
-    resetBody: 'The old PIN stops working at once and open sessions end. You have to pass the new PIN on yourself.',
+    resetBody: (mail: boolean) => `The old PIN stops working at once and open sessions end. ${mail ? 'The new PIN goes to the person with their next report — or you pass it on yourself.' : 'You have to pass the new PIN on yourself.'}`,
     other: 'Other SV no.',
     otherHint: 'For an SV no. without a report: creates a PIN. Nothing is sent.',
     show: 'Show PIN',
@@ -223,7 +236,7 @@ export default function CoacheeFileAdmin({ lang }: { lang: Lang }) {
   });
 
   const reset = async (p: CoacheeFilePerson) => {
-    if (!(await confirmDialog({ title: t.resetTitle(p.name || p.sv), message: t.resetBody, confirmLabel: t.reset, tone: 'danger', lang }))) return;
+    if (!(await confirmDialog({ title: t.resetTitle(p.name || p.sv), message: t.resetBody(!!meta?.enabled), confirmLabel: t.reset, tone: 'danger', lang }))) return;
     await run(`reset:${p.sv}`, async () => { await coacheeFilePin(p.sv, true); load(); });
   };
 
@@ -232,6 +245,16 @@ export default function CoacheeFileAdmin({ lang }: { lang: Lang }) {
       await navigator.clipboard.writeText(t.shareText(meta?.url || '', p.sv, p.pin, p.name));
       toast.success(t.copied);
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+  };
+
+  // Turning the mail on asks first; turning it off does not — off is the safe side.
+  const setMail = async (on: boolean) => {
+    if (on && !(await confirmDialog({ title: t.confirmOnTitle, message: t.confirmOnBody, confirmLabel: t.confirmOn, lang }))) return;
+    await run('mail', async () => {
+      const m = await setCoacheeFileMail(on);
+      setMeta(m);
+      toast.success(m.enabled ? t.savedOn : t.savedOff, { lang });
+    });
   };
 
   const lookup = () => run('lookup', async () => {
@@ -244,21 +267,22 @@ export default function CoacheeFileAdmin({ lang }: { lang: Lang }) {
     <div data-testid="coachee-file-admin" className="bg-white rounded-2xl shadow-card border border-stone-200/70 p-4 sm:p-5 mb-4">
       <div className="flex flex-wrap items-center gap-2 mb-1">
         <h3 className="text-sm font-semibold text-stone-800">{t.title}</h3>
-        <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-amber-100 text-amber-800">{t.badge}</span>
+        {meta?.enabled
+          ? <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-emerald-100 text-emerald-800">{t.badgeOn}</span>
+          : <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase bg-amber-100 text-amber-800">{t.badge}</span>}
       </div>
       <p className="text-xs text-stone-500 mb-3">{t.hint}</p>
-      {/* Drawn so it is clear the mail exists, and locked so it cannot be
-          turned on by mistake: SVRZ / RC approval comes first. */}
-      <label data-testid="coachee-file-mail-toggle" className="mb-3 flex items-start gap-3 cursor-not-allowed opacity-60" title={t.mailLocked}>
-        <input type="checkbox" className="mt-0.5 h-4 w-4" checked={!!meta?.enabled} disabled readOnly aria-describedby="coachee-file-mail-locked" />
+      <label data-testid="coachee-file-mail-toggle" className={`mb-3 flex items-start gap-3 ${meta && !busy ? 'cursor-pointer' : 'cursor-wait opacity-60'}`}>
+        <input
+          type="checkbox" className="mt-0.5 h-4 w-4 accent-red-600" checked={!!meta?.enabled} disabled={!meta || !!busy}
+          onChange={(e) => void setMail(e.target.checked)} aria-describedby="coachee-file-mail-state"
+        />
         <span>
           <span className="block text-sm font-medium text-stone-700">{t.mailToggle}</span>
-          <span id="coachee-file-mail-locked" className="block text-xs text-stone-500">{t.mailLocked}</span>
+          <span id="coachee-file-mail-state" className="block text-xs text-stone-500">{meta?.enabled ? t.mailOnNote : t.mailOff}</span>
         </span>
+        {busy === 'mail' && <Loader2 size={14} className="mt-0.5 animate-spin text-stone-400" />}
       </label>
-      {meta?.enabled && (
-        <p className="mb-3 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{t.mailOn}</p>
-      )}
 
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <div className="relative flex-1 min-w-[12rem]">

@@ -1915,7 +1915,16 @@ export async function getCoacheeFileAdmin(): Promise<{ enabled: boolean; pinCoun
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not load');
   return res.json();
 }
-export type CoacheeFilePerson = { sv: string; name: string; reports: number; lastDate: string; pin: string; pinCreatedAt: string };
+/** Admin: the PIN mail on or off — on, every report sent from then on also
+ *  mails its referee the /dossier link, SV-Nr. and PIN. */
+export async function setCoacheeFileMail(enabled: boolean): Promise<{ enabled: boolean; pinCount: number; url: string }> {
+  const res = await fetch(apiUrl('/api/admin/coachee-file'), {
+    method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not save');
+  return res.json();
+}
+export type CoacheeFilePerson ={ sv: string; name: string; reports: number; lastDate: string; pin: string; pinCreatedAt: string };
 /** Admin: everyone with a file, and their PIN ('' while none is minted). */
 export async function listCoacheeFilePins(): Promise<CoacheeFilePerson[]> {
   const res = await fetch(apiUrl('/api/admin/coachee-file/pins'), { credentials: 'include', cache: 'no-store' });

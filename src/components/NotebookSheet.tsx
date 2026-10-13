@@ -168,15 +168,25 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   }, [current?.pageId, current?.updatedAt, current?.kind]);
 
   // ── text ────────────────────────────────────────────────────────────
+  // The page the first keystroke on a fresh page just made, until it is on
+  // screen. A multi-line insert fires one input event per line, all before the
+  // next render, and each of them still saw `current` empty — a heading as the
+  // first thing written made three pages, two of them blank (2026-10-13).
+  const madePage = useRef<NotebookPage | null>(null);
+  useEffect(() => { if (current || virtual) madePage.current = null; }, [current, virtual]);
   const handleText = (value: string) => {
-    if (current && current.kind === 'text') {
-      notebookSync.commit({ ...current, text: value });
+    const open = current && current.kind === 'text' ? current : madePage.current;
+    if (open) {
+      const next = { ...open, text: value };
+      if (open === madePage.current) madePage.current = next;
+      notebookSync.commit(next);
       return;
     }
     if (!value) return;
     const page = makePage(ownerId, 'text');
     page.text = value;
     notebookSync.commit(page, undefined, 0);
+    madePage.current = page;
     setVirtual(null);
     setCurrentId(page.pageId);
   };

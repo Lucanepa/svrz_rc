@@ -17,9 +17,13 @@ import { guideLangFromPath } from '../lib/routes';
  * keep. A modal cannot be sent to anybody.
  */
 
-// Same bucket the app's own links use. Re-recording overwrites the key, so this
-// URL keeps working and there is no version to bump anywhere.
+// Re-recording overwrites the same keys, so old links and forwarded URLs keep
+// working. CUT is the date of the recording, and it is bumped with every
+// re-record: the edge keeps a video for four hours (max-age=14400) while the
+// .vtt is never cached, so an unversioned page could show the new subtitles
+// over the old picture until the cached copy expired (2026-10-13).
 const MEDIA = 'https://svrz-rc-media.openvolley.app';
+const CUT = '2026-10-13';
 
 const STR = {
   DE: {
@@ -214,13 +218,13 @@ export default function GuidePage() {
             poster={`${import.meta.env.BASE_URL}img/guide-poster-${code}.jpg`}
             className="w-full aspect-[16/10] bg-black"
           >
-            <source src={`${MEDIA}/guide-${code}.mp4`} type="video/mp4" />
+            <source src={`${MEDIA}/guide-${code}.mp4?v=${CUT}`} type="video/mp4" />
             <track
               default
               kind="subtitles"
               srcLang={code}
               label={lang === 'DE' ? 'Deutsch' : 'English'}
-              src={`${MEDIA}/guide-${code}.vtt`}
+              src={`${MEDIA}/guide-${code}.vtt?v=${CUT}`}
             />
             {t.noPlay}
           </video>
@@ -231,7 +235,7 @@ export default function GuidePage() {
           {/* The way out when an in-page player will not play — an old WebView,
               a browser with media restrictions — and the file a coach forwards. */}
           <a
-            href={`${MEDIA}/guide-${code}.mp4`}
+            href={`${MEDIA}/guide-${code}.mp4?v=${CUT}`}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1.5 font-medium text-red-700 hover:underline"

@@ -418,6 +418,26 @@ test.describe('Into the form', () => {
     await expect(pageBox(page)).toHaveText(/Aufwärmen gesehen/);
   });
 
+  // A heading as the very first thing on a fresh page is one edit, one page.
+  // It used to be three: the multi-line insert fires an input event per line,
+  // all before the first page reached the screen, and each one started a page
+  // of its own — "Seite 3 von 3", two of them empty (found filming the guide,
+  // 2026-10-13).
+  test('a heading on a fresh page makes one page, not one per line', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await sheet(page).getByTestId('pad-section').click();
+    await sheet(page).getByRole('button', { name: /^(Satz 1|Set 1)$/ }).click();
+    await expect(pageBox(page)).toHaveText(/— (Satz 1|Set 1) —/);
+    await expect(sheet(page).getByText(/^(Seite 1 von 1|Page 1 of 1)$/)).toBeVisible();
+    await pageBox(page).pressSequentially('Pfiff klar');
+    await expect(padSaved(page)).toBeVisible();
+    const stored = await storedPages(page);
+    expect(stored).toHaveLength(1);
+    expect(stored[0].text).toMatch(/— (Satz 1|Set 1) —[\s\S]*Pfiff klar/);
+  });
+
   test('a second insert into the same field asks first', async ({ page }) => {
     await stubSignedInApp(page);
     await seedPad(page, [padPage({ text: 'twice' })]);

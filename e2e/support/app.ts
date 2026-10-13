@@ -44,6 +44,10 @@ export async function pinClock(page: Page): Promise<void> {
   const offset = SUITE_NOW.getTime() - await page.evaluate(() => Date.now());
   pinnedAtReal = Date.now();
   const shift = (off: number) => {
+    // A spec's own page.clock owns time. Chromium runs that script after this
+    // one, so it wraps the shift and wins anyway; WebKit runs it first after
+    // a navigation, and wrapping IT moved a setFixedTime moment by the offset.
+    if ((globalThis as { __pwClock?: unknown }).__pwClock) return;
     const RealDate = Date;
     const now = () => RealDate.now() + off;
     (globalThis as { Date: DateConstructor }).Date = new Proxy(RealDate, {

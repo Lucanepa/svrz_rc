@@ -101,17 +101,15 @@ test.describe('/infos with a slow layout answer', () => {
       await r.fulfill({ json: { updatedAt: '', layout: {
         sections: [{ id: 'regional', DE: { title: 'Spät gespeichert', note: '' }, EN: { title: 'Saved late', note: '' }, docs: ['las'] }],
         hidden: [],
-      } } }).catch(() => { /* the page went away first */ });
+      } } });
     });
-    const failed: string[] = [];
-    page.on('requestfailed', (req) => { if (req.url().includes('/api/infos-layout')) failed.push(req.failure()?.errorText ?? ''); });
+    // Cancelled, it never arrives and this times out — the old page did that.
+    const late = page.waitForResponse((res) => res.url().includes('/api/infos-layout'), { timeout: 8000 });
     await page.goto('/infos/de');
     const defaults = ['Neu als Schiedsrichter:in', 'Regionale Schiedsrichter:innen', 'Alle Schiedsrichter:innen · nationale Stufe'];
     await expect(page.getByRole('heading', { level: 2 })).toHaveText(defaults, { timeout: 4000 });
     expect(answered).toBe(false);
-    await expect.poll(() => answered, { timeout: 6000 }).toBe(true);
-    await page.waitForTimeout(300);
-    expect(failed).toEqual([]);
+    expect((await late).ok()).toBe(true);
     await expect(page.getByRole('heading', { level: 2 })).toHaveText(defaults);
   });
 });

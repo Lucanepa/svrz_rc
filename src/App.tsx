@@ -655,6 +655,10 @@ function englishOrdinal(n: number): string {
 
 /** An observation an RC has already booked for a coachee: their next taken game. */
 type PlannedObs = { game: EligibleGame; role: string; rc: string };
+/** One of the coach's own appointments on the day of a game they take. */
+type SameDayClash = { id: string; kind: 'observation' | 'referee'; label: string; date: string; near: boolean };
+/** Kick-offs this close to each other cannot both be attended. */
+const CLASH_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 /** Referee name rendered with a clear coachee highlight (amber chip + badge).
  *  The Niveau and the group ride in the badge — the games list is where an RC
@@ -1548,6 +1552,8 @@ export default function App() {
     gameId: string; rcName: string; rcId: string; previousRc?: string; previousRcId?: string; label: string;
     observed: Array<{ name: string; count: number; plannedBy?: string; plannedOn?: string }>;
     late: boolean;
+    /** The coach's own appointments that day — see sameDayClashes. */
+    clashes: SameDayClash[];
   } | null>(null);
   const [rcPeople, setRcPeople] = useState<RefereeCoachPerson[]>([]);
   // The roster's ids, for isMyGame / samePerson: a game whose holder id is one
@@ -3192,6 +3198,36 @@ export default function App() {
     );
   };
 
+  /**
+   * The coach's own appointments on the day of a game they are about to take
+   * (asked 2026-10-14): observations they already hold, and games they whistle
+   * themselves (the SR-Spiele on Home). Never a block — a double game on one
+   * day is one trip — but said before the take: amber for the same day, red
+   * for a kick-off within two hours either side, which cannot be both watched
+   * and whistled or watched twice.
+   */
+  const sameDayClashes = (game: EligibleGame): SameDayClash[] => {
+    const day = dayKey(game.date);
+    if (!day) return [];
+    const at = instantOf(game.date);
+    const near = (date: string) => {
+      const t = instantOf(date);
+      return at != null && t != null && Math.abs(t - at) <= CLASH_WINDOW_MS;
+    };
+    const out: SameDayClash[] = [];
+    for (const g of eligibleGames) {
+      if (g.id === game.id || !g.assignedRc || !isMyGame(g, rcAuth, rcKnownIds)) continue;
+      if (dayKey(g.date) !== day) continue;
+      out.push({ id: g.id, kind: 'observation', label: gameLabel(g), date: g.date, near: near(g.date) });
+    }
+    for (const g of myRcGames) {
+      if (g.gameId === game.id || dayKey(g.gameDate) !== day) continue;
+      if (out.some((o) => o.id === g.gameId)) continue;
+      out.push({ id: g.gameId, kind: 'referee', label: gameLabel({ matchNo: g.matchNo, teams: g.teams, date: g.gameDate }), date: g.gameDate, near: near(g.gameDate) });
+    }
+    return out.sort((a, b) => (instantOf(a.date) ?? 0) - (instantOf(b.date) ?? 0));
+  };
+
   const requestRcAssignment = (game: EligibleGame, rcName: string) => {
     const blocking = rcName ? bookingBlocking(game) : null;
     if (blocking) { toast.info(bookedWhy(blocking)); return; }
@@ -3203,10 +3239,11 @@ export default function App() {
     // mail in somebody's inbox, so the coach confirms it rather than finding
     // out afterwards.
     const late = !!rcName && takenAfterReminder(game.date);
-    if (observed.length > 0 || late) {
+    const clashes = rcName ? sameDayClashes(game) : [];
+    if (observed.length > 0 || late || clashes.length > 0) {
       setTakeNotice({
         gameId: game.id, rcName, rcId: rcAuth.rcId ?? '', previousRc: game.assignedRc, previousRcId: game.assignedRcId,
-        label: gameLabel(game), observed, late,
+        label: gameLabel(game), observed, late, clashes,
       });
       return;
     }
@@ -10953,7 +10990,8 @@ export default function App() {
       {takeNotice && (() => {
         const de = formData.lang === 'DE';
         const self = samePerson({ id: takeNotice.rcId, name: takeNotice.rcName }, { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' }, rcKnownIds);
-        const onlyLate = takeNotice.late && takeNotice.observed.length === 0;
+        const onlyLate = takeNotice.late && takeNotice.observed.length === 0 && takeNotice.clashes.length === 0;
+        const clashNear = takeNotice.clashes.some((c) => c.near);
         // Written as whole sentences per case: a coachee can be here for a
         // filed observation, for one somebody else has booked, or for both.
         const sentence = (o: { count: number; plannedBy?: string; plannedOn?: string }) => {
@@ -10987,6 +11025,33 @@ export default function App() {
                   ? (de ? `Spiel ${self ? 'übernehmen' : 'zuweisen'} und SR informieren?` : `${self ? 'Take' : 'Assign'} the game and inform the SR?`)
                   : (de ? 'Hinweis' : 'Notice')}
               </h3>
+              {takeNotice.clashes.length > 0 && (
+                // Amber for the same day, red when a kick-off is within two
+                // hours of this one — the box takes the worst of its rows.
+                <div
+                  data-testid="take-notice-clash"
+                  data-level={clashNear ? 'red' : 'amber'}
+                  className={cn('mt-3 rounded-lg border p-3 text-sm', clashNear
+                    ? 'border-red-300 bg-red-50 text-red-800'
+                    : 'border-amber-300 bg-amber-50 text-amber-900')}
+                >
+                  <p className="flex items-center gap-1.5 font-semibold">
+                    <AlertTriangle size={15} aria-hidden="true" />
+                    {clashNear
+                      ? (de ? 'Weniger als 2 Stunden Abstand zu deinem Termin' : 'Within 2 hours of your other appointment')
+                      : (de ? 'Am selben Tag hast du schon' : 'You already have on this day')}
+                  </p>
+                  <ul className="mt-1.5 space-y-1">
+                    {takeNotice.clashes.map((c) => (
+                      <li key={`${c.kind}-${c.id}`} className={cn(c.near && clashNear && 'font-semibold')}>
+                        {clockLabel(c.date)} · {c.kind === 'observation'
+                          ? (de ? 'Beobachtung' : 'Observation')
+                          : (de ? 'Eigenes Spiel als SR' : 'Your own game as referee')}: {c.label}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {takeNotice.observed.length > 0 && (
                 <ul className="mt-3 space-y-1.5 text-sm text-stone-700">
                   {takeNotice.observed.map((o) => (

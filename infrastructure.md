@@ -1331,9 +1331,10 @@ then the Android APK, all on one GitHub Release in the **download-only repo
 that repo only, because `GITHUB_TOKEN` cannot write to another repo). Installed
 desktop apps update in place from that release's `latest.json` (Tauri updater,
 signed). Android checks the same release and opens the new APK in the browser to
-install over the old one. Apps up to 1.1.0 still read **this** repo's newest
-release: the workflow's `bridge` job puts `latest.json` (links into the download
-repo) and the APK on a release of the same tag here, until nobody runs them. Unsigned for Windows and macOS: SmartScreen says "unknown
+install over the old one. Apps up to 1.1.0 read **this** repo's newest release
+instead; a `bridge` job mirrored `latest.json` and the APK here for them until
+1.2.0 had reached everyone (dropped 14.10.2026 — svrz_rc's `native-v1.2.0`
+release is what is left of it). Unsigned for Windows and macOS: SmartScreen says "unknown
 publisher", macOS wants right-click → *Open* the first time.
 
 **Where coaches get it** (first release 2026-10-10):

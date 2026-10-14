@@ -17,8 +17,8 @@ import { IS_NATIVE, NATIVE_VERSION, UPDATE_REQUIRED_EVENT } from './native';
 import { clientLog } from './logger';
 
 // The download-only repo (since 2026-10-13); the code stays in svrz_rc. Apps
-// up to 1.1.0 still read svrz_rc's releases — native-release.yml's `bridge`
-// job keeps a copy of latest.json and the APK there for them.
+// up to 1.1.0 read svrz_rc's releases and were carried to 1.2.0 by a copy
+// there (native-release.yml's `bridge` job, dropped 14.10.2026).
 const RELEASES_API = 'https://api.github.com/repos/Lucanepa/svrz-referee-coaching/releases/latest';
 const RELEASES_PAGE = 'https://github.com/Lucanepa/svrz-referee-coaching/releases/latest';
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;

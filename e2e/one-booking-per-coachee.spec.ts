@@ -67,6 +67,41 @@ test("the coach's own game earlier the same day does not block the next one", as
   await expect.poll(() => assigned.length).toBe(1);
 });
 
+// The trip wins over every other booking (2026-10-14): Luca held 16:00 with
+// both referees and a game of theirs on 20.10, and the 13:30 game in the same
+// hall was refused. Here the coachee's next booking is the coach's own game on
+// ANOTHER day — the one the old check looked at — and the same-day game comes
+// after it.
+test("the coach's own game that day frees the coachee even with a booking on another day", async ({ page }) => {
+  const ELSEWHERE = { ...GAME, assignedRc: RC.name, assignedRcId: RC.id };
+  const SAME_DAY = { ...GAME, id: 'g-same-day', matchNo: '2400779', date: '2026-11-21T15:00:00.000Z', assignedRc: RC.name, assignedRcId: RC.id };
+  const EARLIER = { ...FREE, date: '2026-11-21T12:30:00.000Z' };
+  const assigned = await openGames(page, [ELSEWHERE, SAME_DAY, EARLIER]);
+  await page.getByRole('button', { name: new RegExp(EARLIER.matchNo) }).first().click();
+  await expect(page.getByTestId('take-booked')).toHaveCount(0);
+  await page.getByRole('button', { name: /^(Take game|Spiel übernehmen)$/ }).click();
+  await page.getByRole('button', { name: /^(Take anyway|Trotzdem übernehmen)$/ }).click();
+  await expect.poll(() => assigned.length).toBe(1);
+});
+
+test('the trip is the Zürich day of games the coach holds, nobody else\'s', async () => {
+  const { tripCoachees } = await import('../src/lib/doubleGame');
+  const me = { id: RC.id, name: RC.name };
+  const held = [
+    // Mine, Saturday 17.10 16:00 in Zürich: both referees.
+    { rc: me, date: '2026-10-17T14:00:00.000Z', coacheeIds: ['davide', 'larissa'] },
+    // Mine, another day.
+    { rc: me, date: '2026-10-20T18:00:00.000Z', coacheeIds: ['jerome'] },
+    // Another coach's, the same day.
+    { rc: { id: 'rc-other', name: 'Carlos Castro' }, date: '2026-10-17T09:00:00.000Z', coacheeIds: ['paul'] },
+  ];
+  expect([...tripCoachees(held, me, '2026-10-17T11:30:00.000Z')].sort()).toEqual(['davide', 'larissa']);
+  expect([...tripCoachees(held, me, '2026-10-21T11:30:00.000Z')]).toEqual([]);
+  // 23:30 in Zürich on the 16th is the 16th, not the UTC 17th's neighbour.
+  expect([...tripCoachees(held, me, '2026-10-16T21:30:00.000Z')]).toEqual([]);
+  expect([...tripCoachees(held, me, '2026-10-16T22:30:00.000Z')].sort()).toEqual(['davide', 'larissa']);
+});
+
 test("the coach's own game on ANOTHER day still blocks", async ({ page }) => {
   const MINE = { ...GAME, assignedRc: RC.name, assignedRcId: RC.id };
   await openGames(page, [MINE, FREE]);
@@ -86,4 +121,9 @@ test('the take endpoint refuses a coach whose coachee is booked elsewhere', asyn
   // Asked as the coach taking it, so their own same-day game is a double game.
   expect(rcBranch).toContain('await openBookingBlocking(current, { id: rcAuth.rcId, name: rcAuth.name })');
   expect(rcBranch).toMatch(/if \(blocking\) \{[\s\S]*?status: 409/);
+  // A coachee the taker watches on their own game that day has no booking
+  // here at all — not only that game's, every one (tripCoachees).
+  const bookings = server.slice(server.indexOf('async function coacheeBookingsOn('), server.indexOf('\n}\n', server.indexOf('async function coacheeBookingsOn(')));
+  expect(bookings).toContain('tripCoachees(heldRefs, taker, asText(game.match_date), rcKnownIds)');
+  expect(bookings).toContain('booking: trip.has(id) ? null : booked.get(id) ?? null');
 });

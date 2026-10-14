@@ -44,7 +44,9 @@ test('a refused take says so and repairs the row it was refused on', async ({ pa
   await page.getByText(GAME.homeTeam).click();
   await page.getByRole('button', { name: 'Take game' }).click();
 
-  await expect(page.getByText(/bereits von einem anderen RC übernommen/)).toBeVisible();
+  // In a toast, where a phone sees it: the notice under the list sat screens
+  // below the tapped row (2026-10-14).
+  await expect(page.getByTestId('toast').filter({ hasText: /bereits von einem anderen RC übernommen/ })).toBeVisible();
   // And the affordance that was refused is gone, so the next tap cannot repeat
   // it: the list behind the message has been refetched.
   await expect(page.getByRole('button', { name: 'Take game' })).toHaveCount(0, { timeout: 10_000 });

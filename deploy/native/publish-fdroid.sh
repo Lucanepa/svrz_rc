@@ -1,50 +1,78 @@
 #!/usr/bin/env bash
-# Publish the installed app's APK into OpenVolley's public F-Droid repo
-# (https://get.openvolley.app/fdroid/repo), next to the OpenVolley apps.
+# Publish the installed app's APK into SVRZ RC's own F-Droid repo,
+# https://svrz-rc-fdroid.openvolley.app/repo. Since 14.10.2026 it is apart from
+# OpenVolley's repo (get.openvolley.app), so coaches who add it see this app and
+# nothing of the scoresheet; leave-openvolley-fdroid.sh took it out of there.
 #
-#   deploy/native/publish-fdroid.sh [--no-sync] FILE.apk
+#   deploy/native/publish-fdroid.sh --init     once: create the repo and its key
+#   deploy/native/publish-fdroid.sh FILE.apk   add a release
 #
-# Runs on lenovoserver: the repo's signing key and working copy live there, in
-# ~/.config/openvolley-pkgs, which belongs to OpenVolley's publish-pkgs.sh
-# (github.com/Lucanepa/openvolley, escoresheet/deploy/). This does that script's
-# F-Droid steps for one more app and nothing else. The two do not fight: the
-# OpenVolley script only vets the APKs it is handed and keeps every APK already
-# in the repo. Its APT half, though, would rename any second package to
-# OpenVolley's, which is why the .deb is not published there (the AppImage on
-# the GitHub release updates itself instead).
+# Runs on lenovoserver, which also serves the repo: the svrz-fdroid container
+# (deploy/hetzner/docker-compose.yml) serves $PUBLIC read-only through the
+# cloudflared-lenovo tunnel. Nothing is synced to another host. The repo key
+# ($FD/keystore.p12 + config.yml) never leaves $FD; back it up in Vaultwarden,
+# "SVRZ RC F-Droid repo key". Losing it means every coach re-adds the repo
+# under a new fingerprint (the app itself keeps updating: its key is another one).
 #
-# Coaches add the repo once in F-Droid (the QR code / link on
-# https://get.openvolley.app) and install "SVRZ Referee Coaching". F-Droid only
-# offers an update when versionCode grows: Tauri derives it from package.json's
-# version (1.0.0 → 1000000), so every release is a version bump.
+# F-Droid only offers an update when versionCode grows: Tauri derives it from
+# package.json's version (1.0.0 → 1000000), so every release is a version bump.
 set -euo pipefail
 umask 022
-PKGS=${OV_PKGS_HOME:-$HOME/.config/openvolley-pkgs}
-DEST=${OV_PKGS_DEST:-hetzner:/data/openvolley/pkgs/}
+FD=${SVRZ_FDROID_HOME:-$HOME/.config/svrz-rc-fdroid}
+PUBLIC=${SVRZ_FDROID_PUBLIC:-$HOME/svrz_rc/deploy/hetzner/fdroid-public}
+REPO_URL=https://svrz-rc-fdroid.openvolley.app/repo
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 APP_ID=app.openvolley.svrzrc
 # SHA-256 of the app's signing certificate: ~/.tauri/svrz-rc-android.jks,
 # alias svrz-rc (infrastructure.md → "Installed app"). Android refuses an
 # update signed with another key, so a different one here is a hard stop.
 APP_CERT_SHA256=da0ec9546fbff26b64785023c75e0251a268702abd3c830ff0d63ae7dc750cae
-FD="$PKGS/fdroid"
-PUB="$PKGS/public"
+REPO_ICON=svrz-rc-repo.png
 die() { echo "publish-fdroid: $*" >&2; exit 1; }
 
-SYNC=1
+INIT=0
 APK=''
 for a in "$@"; do
   case "$a" in
-    --no-sync) SYNC=0 ;;
+    --init) INIT=1 ;;
     -*) die "unknown option $a" ;;
     *) APK=$a ;;
   esac
 done
-[[ -f "$APK" ]] || die "usage: $0 [--no-sync] FILE.apk"
-[[ -f "$FD/config.yml" && -f "$FD/keystore.p12" ]] || die "no F-Droid repo in $FD (restore it from Vaultwarden, see OpenVolley's ANDROID.md)"
-for t in fdroid rsync python3; do command -v "$t" >/dev/null || die "$t not found"; done
-bt=$(ls -d "${ANDROID_HOME:-$HOME/Android/Sdk}"/build-tools/* 2>/dev/null | sort -V | tail -1)
+for t in fdroid rsync python3 keytool curl; do command -v "$t" >/dev/null || die "$t not found"; done
+SDK=${ANDROID_HOME:-$HOME/Android/Sdk}
+bt=$(ls -d "$SDK"/build-tools/* 2>/dev/null | sort -V | tail -1)
 [[ -x "$bt/apksigner" && -x "$bt/aapt2" ]] || die "no Android build-tools (set ANDROID_HOME)"
+
+fingerprint() {
+  keytool -printcert -jarfile "$FD/repo/index-v1.jar" | sed -n 's/^[[:space:]]*SHA256: //p' | tr -d ':' | head -1
+}
+
+if (( INIT )); then
+  [[ -z "$APK" ]] || die "--init takes no APK; publish one afterwards"
+  [[ ! -e "$FD/config.yml" ]] || die "$FD/config.yml exists: the repo is already set up"
+  install -d -m 700 "$FD"
+  # fdroid init makes keystore.p12 and writes its passwords into config.yml.
+  (cd "$FD" && fdroid init -q --android-home "$SDK" --repo-keyalias svrz-rc-fdroid)
+  cat >>"$FD/config.yml" <<EOF
+repo_url: $REPO_URL
+repo_name: SVRZ Referee Coaching
+repo_description: >-
+  The app of the referee coaches of Swiss Volley Region Zürich (SVRZ).
+  Source: https://github.com/Lucanepa/svrz_rc
+repo_icon: $REPO_ICON
+EOF
+  chmod 600 "$FD/config.yml" "$FD/keystore.p12"
+  install -d -m 755 "$PUBLIC"
+  echo "created the repo in $FD"
+  echo "back up $FD/config.yml and $FD/keystore.p12 in Vaultwarden (\"SVRZ RC F-Droid repo key\"),"
+  echo "then publish an APK: $0 FILE.apk"
+  exit 0
+fi
+
+[[ -f "$APK" ]] || die "usage: $0 --init | $0 FILE.apk"
+[[ -f "$FD/config.yml" && -f "$FD/keystore.p12" ]] || die "no F-Droid repo in $FD (run $0 --init once, or restore it from Vaultwarden)"
+[[ -d "$PUBLIC" ]] || die "$PUBLIC missing (the svrz-fdroid container serves it)"
 
 certs=$("$bt/apksigner" verify --print-certs "$APK") || die "$APK: not a validly signed APK"
 grep -q "SHA-256 digest: $APP_CERT_SHA256" <<<"$certs" || die "$APK: not signed with the SVRZ RC app key"
@@ -52,6 +80,7 @@ badging=$("$bt/aapt2" dump badging "$APK" | sed -n '/^package:/p')
 app_id=$(sed -E "s/^package: name='([^']+)'.*/\1/" <<<"$badging")
 code=$(sed -E "s/.*versionCode='([0-9]+)'.*/\1/" <<<"$badging")
 [[ "$app_id" == "$APP_ID" ]] || die "$APK: package $app_id, expected $APP_ID"
+install -d "$FD/repo"
 target="$FD/repo/${APP_ID}_${code}.apk"
 if [[ -e "$target" ]] && ! cmp -s "$APK" "$target"; then
   die "$target exists with different content; raise the version instead"
@@ -59,20 +88,23 @@ fi
 install -m 644 "$APK" "$target"
 echo "added $target"
 
-# The listing: name, summary, description, icon (kept in this repo).
+# The listing (name, summary, description, icon) and the repo's own icon, kept
+# in this repo.
+icon="$HERE/fdroid/$APP_ID/en-US/icon.png"
 install -d "$FD/metadata/$APP_ID/en-US"
 install -m 644 "$HERE/fdroid/$APP_ID.yml" "$FD/metadata/$APP_ID.yml"
-install -m 644 "$HERE/fdroid/$APP_ID/en-US/icon.png" "$FD/metadata/$APP_ID/en-US/icon.png"
+install -m 644 "$icon" "$FD/metadata/$APP_ID/en-US/icon.png"
+install -m 644 "$icon" "$FD/$REPO_ICON"
 
 (cd "$FD" && fdroid update -q)
-mkdir -p "$PUB/fdroid"
-# status/ is fdroidserver's run log (host OS, tool paths); clients never read it.
-rsync -a --delete --delete-excluded --exclude=/status/ "$FD/repo/" "$PUB/fdroid/repo/"
 
-leak=$(find "$PUB" \( -iname '*.p12' -o -iname '*.jks' -o -iname '*.keystore' -o -iname 'config.yml' \
-  -o -iname '*passphrase*' -o -iname 'private-keys-v1.d' \) -print)
-[[ -z "$leak" ]] || die "refusing to publish, key material in the public tree: $leak"
-chmod -R u=rwX,go=rX "$PUB/fdroid"
+leak=$(find "$FD/repo" \( -iname '*.p12' -o -iname '*.jks' -o -iname '*.keystore' -o -iname 'config.yml' \
+  -o -iname '*passphrase*' \) -print)
+[[ -z "$leak" ]] || die "refusing to publish, key material in the repo tree: $leak"
+# status/ is fdroidserver's run log (host OS, tool paths); clients never read it.
+# --delay-updates puts the new index in place last, so a client never sees an
+# index that points at an APK not copied yet.
+rsync -rlt --delete-after --delay-updates --exclude=/status/ --chmod=D755,F644 "$FD/repo/" "$PUBLIC/repo/"
 
 python3 - "$FD/repo/index-v2.json" <<'PY'
 import json, sys
@@ -82,13 +114,13 @@ for app, p in d["packages"].items():
         m = v["manifest"]
         print(f"  fdroid  {app} {m['versionName']} ({m['versionCode']})")
 PY
+echo "published to $PUBLIC/repo"
+echo "add in F-Droid: $REPO_URL?fingerprint=$(fingerprint)"
 
-if (( SYNC )); then
-  # The F-Droid folder only: the rest of the public tree is OpenVolley's to
-  # sync. --delay-updates puts the new index in place last, so a client never
-  # sees an index that points at an APK not uploaded yet.
-  rsync -rlt --delete-after --delay-updates --chmod=D755,F644 "$PUB/fdroid/" "${DEST%/}/fdroid/"
-  echo "synced fdroid/ to $DEST"
+# Served yet? Only a warning: the first publish comes before the tunnel hostname.
+if served=$(curl -fsS --max-time 15 "$REPO_URL/index-v2.json" 2>/dev/null); then
+  grep -q "${APP_ID}_${code}.apk" <<<"$served" && echo "live at $REPO_URL" \
+    || echo "warning: $REPO_URL does not list ${APP_ID}_${code}.apk yet (Cloudflare cache, 60 s)" >&2
 else
-  echo "not synced (--no-sync); tree: $PUB/fdroid"
+  echo "warning: $REPO_URL not reachable (svrz-fdroid up? tunnel hostname set?)" >&2
 fi

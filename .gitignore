@@ -22,6 +22,10 @@ deploy/hetzner/pb_data/
 deploy/hetzner/pg_data/
 deploy/hetzner/files/
 deploy/hetzner/.env
+# SVRZ RC's F-Droid repo as served (deploy/native/publish-fdroid.sh fills it on
+# the host); only the empty directory is tracked, so the compose bind finds it.
+deploy/hetzner/fdroid-public/*
+!deploy/hetzner/fdroid-public/.gitkeep
 
 # Postgres (10.10.2026): the generated Prisma client (npm run db:generate), the
 # CLI's own install, and the filed PDFs a local API writes (FILES_DIR=files).

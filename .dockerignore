@@ -16,6 +16,8 @@ deploy/hetzner/pb_data
 deploy/hetzner/pg_data
 deploy/hetzner/files
 files
+# The served F-Droid repo (APKs): svrz-fdroid's, never the API image's.
+deploy/hetzner/fdroid-public
 # Generated in the image (npm run db:generate), never copied from a checkout.
 server/db/generated
 deploy/hetzner/.env

@@ -1339,13 +1339,25 @@ publisher", macOS wants right-click → *Open* the first time.
 
 **Where coaches get it** (first release 2026-10-10):
 
-- **Android**: F-Droid, from OpenVolley's public repo
-  `https://get.openvolley.app/fdroid/repo` (add it once via the link or QR on
-  https://get.openvolley.app, then install "SVRZ Referee Coaching"), or the
+- **Android**: F-Droid, from SVRZ RC's own repo
+  `https://svrz-rc-fdroid.openvolley.app/repo` (add it once via the link or QR
+  on that page, then install "SVRZ Referee Coaching"), or the
   `.apk` on the GitHub release (https://github.com/Lucanepa/svrz-referee-coaching/releases/latest). Same file, same key, so either updates the other.
-  Publish with `deploy/native/publish-fdroid.sh <apk>` on lenovoserver — it does
-  OpenVolley's F-Droid steps for this one app and syncs only `fdroid/`.
-  `APP_CERT_SHA256` in it pins the svrz-rc signing certificate.
+  Up to 1.3.0 the app sat in OpenVolley's repo (get.openvolley.app/fdroid);
+  since 14.10.2026 it has its own, so coaches see nothing of the scoresheet and
+  OpenVolley's users nothing of SVRZ RC. `deploy/native/leave-openvolley-fdroid.sh`
+  (one time) took it out of OpenVolley's.
+  Publish with `deploy/native/publish-fdroid.sh <apk>` on lenovoserver
+  (`--init` once, to create the repo and its key). It builds the repo in
+  `~/.config/svrz-rc-fdroid` and copies `repo/` into
+  `deploy/hetzner/fdroid-public/repo` of the running stack, which the
+  `svrz-fdroid` container (Caddy, read-only, `deploy/hetzner/fdroid/Caddyfile`)
+  serves; cloudflared-lenovo routes `svrz-rc-fdroid.openvolley.app` →
+  `http://svrz-fdroid:80` (public hostname in the dashboard, like the API's).
+  Nothing goes to hetzner. `fdroid-public` is host state too, but git tracks
+  only its `.gitkeep` (so the bind always finds it), and a copy without
+  `--delete` leaves the repo in it alone. `APP_CERT_SHA256` in the script pins
+  the svrz-rc signing certificate.
 - **Windows / macOS / Linux**: the GitHub release (`native-v<version>`) in
   svrz-referee-coaching, whose README says which file is which. Not
   in OpenVolley's APT repo: its publish script renames any second package to
@@ -1362,6 +1374,12 @@ either one means installed apps can no longer take updates):
   Android refuses an update signed with a different key. GitHub secrets
   `ANDROID_KEYSTORE_BASE64` (`base64 -w0 svrz-rc-android.jks`) and
   `ANDROID_KEYSTORE_PASSWORD`.
+
+The F-Droid repo key is a third one, in `~/.config/svrz-rc-fdroid/`
+(`config.yml` + `keystore.p12`, alias `svrz-rc-fdroid`, made by
+`publish-fdroid.sh --init`; Vaultwarden "SVRZ RC F-Droid repo key"). It signs
+the repo index, not the app: losing it means coaches re-add the repo under a
+new fingerprint, while the app itself keeps updating.
 
 **Building locally** (lenovoserver has the toolchain: Rust, WebKitGTK dev
 packages, JDK 21, Android SDK + NDK 27.2 in `~/Android/Sdk`):

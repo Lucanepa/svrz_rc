@@ -88,6 +88,34 @@ test.describe('/infos with a stored layout', () => {
   });
 });
 
+test.describe('/infos with a slow layout answer', () => {
+  test.beforeEach(async ({ page }) => { await pinClock(page); });
+
+  // 15:39 on 14.10.2026: an iPhone opening /infos cold waited the 3 s, got the
+  // default, and the request the page cancelled was mailed as an API failure.
+  test('draws the default after the wait, lets the request finish, and does not jump', async ({ page }) => {
+    let answered = false;
+    await page.route('**/api/infos-layout', async (r) => {
+      await new Promise((done) => setTimeout(done, 4500));
+      answered = true;
+      await r.fulfill({ json: { updatedAt: '', layout: {
+        sections: [{ id: 'regional', DE: { title: 'Spät gespeichert', note: '' }, EN: { title: 'Saved late', note: '' }, docs: ['las'] }],
+        hidden: [],
+      } } }).catch(() => { /* the page went away first */ });
+    });
+    const failed: string[] = [];
+    page.on('requestfailed', (req) => { if (req.url().includes('/api/infos-layout')) failed.push(req.failure()?.errorText ?? ''); });
+    await page.goto('/infos/de');
+    const defaults = ['Neu als Schiedsrichter:in', 'Regionale Schiedsrichter:innen', 'Alle Schiedsrichter:innen · nationale Stufe'];
+    await expect(page.getByRole('heading', { level: 2 })).toHaveText(defaults, { timeout: 4000 });
+    expect(answered).toBe(false);
+    await expect.poll(() => answered, { timeout: 6000 }).toBe(true);
+    await page.waitForTimeout(300);
+    expect(failed).toEqual([]);
+    await expect(page.getByRole('heading', { level: 2 })).toHaveText(defaults);
+  });
+});
+
 test.describe('Admin → Einstellungen: the /infos sections', () => {
   const STAMP = '2026-10-13 14:40:00.000Z';
 

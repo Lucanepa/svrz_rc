@@ -4871,12 +4871,29 @@ async function loadProxiedDoc(id: string): Promise<CachedDoc> {
 // as "no layout", so the page falls back to the code's audience table.
 const INFOS_LAYOUT_KEY = 'infos_layout';
 
-async function readInfosLayout(): Promise<{ layout: ReturnType<typeof normalizeInfosLayout>; updatedAt: string }> {
+type InfosLayoutState = { layout: ReturnType<typeof normalizeInfosLayout>; updatedAt: string };
+// Held in memory: the public page asks on every visit and the page waits only
+// LAYOUT_WAIT_MS (InfosPage.tsx) before drawing the default. Only the two admin
+// routes below write the key, and one API process runs (see chainOnKey), so
+// they keep this copy true by dropping it.
+let infosLayoutCache: Promise<InfosLayoutState> | null = null;
+
+async function readInfosLayoutFromDb(): Promise<InfosLayoutState> {
   const rec = await getSettingRecord(INFOS_LAYOUT_KEY);
   const raw = asText(rec?.value);
   let layout: ReturnType<typeof normalizeInfosLayout> = null;
   if (raw) { try { layout = normalizeInfosLayout(JSON.parse(raw)); } catch { /* unreadable = default */ } }
   return { layout, updatedAt: layout ? asText(rec?.updated) : '' };
+}
+
+function readInfosLayout(): Promise<InfosLayoutState> {
+  if (!infosLayoutCache) {
+    const read = readInfosLayoutFromDb();
+    infosLayoutCache = read;
+    // A failed read is not remembered: the next visit asks the database again.
+    read.catch(() => { if (infosLayoutCache === read) infosLayoutCache = null; });
+  }
+  return infosLayoutCache;
 }
 
 app.get('/api/infos-layout', async (_req: Request, res: ExpressResponse) => {
@@ -4892,6 +4909,7 @@ app.put('/api/admin/infos-layout', requireAdminSession, async (req: Request, res
     const layout = normalizeInfosLayout((req.body as { layout?: unknown } | undefined)?.layout);
     if (!layout) { res.status(400).json({ error: 'Keine gültige Einteilung (mindestens ein Abschnitt mit Titel).' }); return; }
     await setSetting(INFOS_LAYOUT_KEY, JSON.stringify(layout));
+    infosLayoutCache = null;
     log.info('infos.layout', 'public /infos layout saved', { sections: layout.sections.length, hidden: layout.hidden.length });
     res.json(await readInfosLayout());
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -4901,6 +4919,7 @@ app.delete('/api/admin/infos-layout', requireAdminSession, async (_req: Request,
   try {
     await ensureAdminAuth();
     if (await getSettingRecord(INFOS_LAYOUT_KEY)) await setSetting(INFOS_LAYOUT_KEY, '');
+    infosLayoutCache = null;
     log.info('infos.layout', 'public /infos layout reset to the default', {});
     res.json({ layout: null, updatedAt: '' });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }

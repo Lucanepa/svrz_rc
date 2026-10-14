@@ -88,14 +88,21 @@ export default function InfosPage() {
   // default order and then jump into the stored one.
   const [layout, setLayout] = useState<InfosLayout | undefined>(undefined);
 
+  // The wait ends the WAITING, not the request. It used to abort the fetch, and
+  // the logger files every AbortError as an error: at 15:39 on 14.10.2026 an
+  // iPhone opening /infos cold got the default after 3 s — as designed — and
+  // the cancelled request went out by mail as an API failure. Left to finish,
+  // a slow answer is a timed net.fetch line and a dead API still fails loudly.
+  // A late answer is not applied: the page does not jump under a finger that
+  // is already reaching for a document.
   useEffect(() => {
-    const ctl = new AbortController();
-    const timer = window.setTimeout(() => ctl.abort(), LAYOUT_WAIT_MS);
-    getInfosLayout(ctl.signal)
-      .then((r) => setLayout(r.layout ?? defaultInfosLayout()))
-      .catch(() => setLayout((cur) => cur ?? defaultInfosLayout()))
+    let gone = false;
+    const timer = window.setTimeout(() => setLayout((cur) => cur ?? defaultInfosLayout()), LAYOUT_WAIT_MS);
+    getInfosLayout()
+      .then((r) => { if (!gone) setLayout((cur) => cur ?? r.layout ?? defaultInfosLayout()); })
+      .catch(() => { if (!gone) setLayout((cur) => cur ?? defaultInfosLayout()); })
       .finally(() => window.clearTimeout(timer));
-    return () => { window.clearTimeout(timer); ctl.abort(); };
+    return () => { gone = true; window.clearTimeout(timer); };
   }, []);
 
   useEffect(() => {

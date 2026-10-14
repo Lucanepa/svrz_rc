@@ -87,6 +87,50 @@ services:
         condition: service_healthy
     networks: [svrz, tunnel]
 
+  # SVRZ RC's own F-Droid repo, https://svrz-rc-fdroid.openvolley.app/repo
+  # (14.10.2026: out of OpenVolley's repo, so coaches see this app and nothing
+  # of the scoresheet). Static and read-only: serves ./fdroid-public, which
+  # deploy/native/publish-fdroid.sh fills on this host. The repo key stays in
+  # ~/.config/svrz-rc-fdroid and never enters the container. cloudflared-lenovo
+  # reaches it by service name on the tunnel network, like svrz-api; it joins
+  # nothing else. Hardening as OpenVolley's ov-pkgs.
+  svrz-fdroid:
+    image: caddy:2.11.7-alpine
+    restart: unless-stopped
+    user: "65534:65534"
+    volumes:
+      - type: bind
+        source: ./fdroid/Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+      - type: bind
+        source: ./fdroid-public
+        target: /srv
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /config:size=1m,uid=65534,gid=65534,mode=0700
+      - /data:size=1m,uid=65534,gid=65534,mode=0700
+      - /tmp:size=16m,mode=1777
+    read_only: true
+    cap_drop: [ALL]
+    # /usr/bin/caddy carries the file capability cap_net_bind_service; without
+    # it in the bounding set the kernel refuses the exec.
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    memswap_limit: 64m
+    cpus: 0.25
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/repo/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    networks: [tunnel]
+
 networks:
   svrz:
     driver: bridge

@@ -1,0 +1,64 @@
+# svrz-fdroid: static file server for SVRZ RC's own F-Droid repository,
+# https://svrz-rc-fdroid.openvolley.app/repo (since 14.10.2026; before that the
+# app sat in OpenVolley's repo at get.openvolley.app, next to the scoresheet).
+#
+# Serves /srv (read-only bind of deploy/hetzner/fdroid-public, filled by
+# deploy/native/publish-fdroid.sh on this host):
+#   /        redirects to /repo/
+#   /repo/   the signed F-Droid repo: index-v1.jar, index-v2.json, entry.jar,
+#            the APKs, icons, and fdroidserver's index.html with the add link + QR
+#
+# TLS ends at Cloudflare; cloudflared-lenovo reaches this on http://svrz-fdroid:80
+# over the shared tunnel network. No admin API, no ACME, no state on disk.
+# Modelled on OpenVolley's ov-pkgs (escoresheet/deploy/pkgs/Caddyfile).
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:80 {
+	root * /srv
+
+	# Read-only site: anything but GET/HEAD is refused.
+	@write not method GET HEAD
+	respond @write 405
+
+	redir / /repo/ 302
+
+	@apk path *.apk
+	@jar path *.jar
+	@json path *.json
+	header @apk Content-Type application/vnd.android.package-archive
+	header @jar Content-Type application/java-archive
+	header @json Content-Type "application/json; charset=utf-8"
+
+	# APKs are named by versionCode and never rewritten: immutable. The index
+	# files change on every publish: 60 s, revalidate.
+	@immutable path *.apk
+	@mutable not path *.apk
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	header @mutable Cache-Control "public, max-age=60, must-revalidate"
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		-Server
+	}
+
+	encode zstd gzip
+	file_server browse {
+		hide .*
+	}
+
+	handle_errors {
+		header {
+			Content-Type "text/plain; charset=utf-8"
+			Cache-Control "public, max-age=60"
+			X-Content-Type-Options nosniff
+			-Server
+		}
+		respond "{err.status_code} {err.status_text}"
+	}
+}

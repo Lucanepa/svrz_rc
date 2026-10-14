@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Video, ExternalLink, Subtitles, Check } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { getStoredLang, type Lang } from '../lib/prefs';
+import { useScreenLang } from '../lib/useScreenLang';
 import { guideLangFromPath } from '../lib/routes';
 
 /**
@@ -120,6 +121,7 @@ export default function GuidePage() {
     langFromUrl()
     ?? getStoredLang()
     ?? (navigator.language?.toLowerCase().startsWith('en') ? 'EN' : 'DE'));
+  useScreenLang(lang);
   const t = STR[lang];
   const code = lang === 'DE' ? 'de' : 'en';
 

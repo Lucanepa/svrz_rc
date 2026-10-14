@@ -49,14 +49,14 @@ test('a gone chunk reloads the page once; a second miss shows the notice instead
   await expect.poll(() => page.evaluate((k) => sessionStorage.getItem(k), STALE_CHUNK_STATE_KEY).catch(() => null)).not.toBeNull();
   const doc = page.getByRole('button', { name: /Leitfaden SR-Technik|Refereeing technique guide/ });
   await expect(doc).toBeVisible();
-  await expect(page.getByText(/Da ist etwas schiefgelaufen/)).toHaveCount(0);
+  await expect(page.getByText(/Da ist etwas schiefgelaufen|Something went wrong/)).toHaveCount(0);
 
   // Still the same missing chunk after the reload: no second reload, a notice.
   await doc.click();
   const notice = page.getByTestId('stale-build');
   await expect(notice).toBeVisible();
   await expect(notice).toContainText('App-Update nötig');
-  await expect(page.getByText(/Da ist etwas schiefgelaufen/)).toHaveCount(0);
+  await expect(page.getByText(/Da ist etwas schiefgelaufen|Something went wrong/)).toHaveCount(0);
   // The way out, and the way back.
   await expect(notice.getByRole('button', { name: 'Neu laden' })).toBeVisible();
   await notice.getByRole('button', { name: 'Schliessen' }).click();
@@ -79,5 +79,5 @@ test('mid-form there is no reload: the notice says the entries are kept', async 
   await expect(notice).toBeVisible();
   await expect(notice).toContainText(/deine Eingaben bleiben erhalten/);
   expect(await page.evaluate((k) => sessionStorage.getItem(k), STALE_CHUNK_STATE_KEY)).toBeNull();
-  await expect(page.getByText(/Da ist etwas schiefgelaufen/)).toHaveCount(0);
+  await expect(page.getByText(/Da ist etwas schiefgelaufen|Something went wrong/)).toHaveCount(0);
 });

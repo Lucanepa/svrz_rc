@@ -17,6 +17,7 @@ import { installLogging, clientLog, noteReloadingPage, scrubTokens } from './lib
 import { connection, installConnectionWatch } from './lib/connection';
 import ConnectionBanner from './components/ConnectionBanner.tsx';
 import { IS_NATIVE, installNativeFetch } from './lib/native';
+import { installApiLang } from './lib/apiLang';
 import { installNativeShell } from './lib/nativeShell';
 import {
   decideSwReload, recentSwReloads, noteSwReload, retryDelayMs, SW_RELOAD_STATE_KEY,
@@ -54,6 +55,11 @@ if (/^\/demo\/?$/i.test(window.location.pathname)) {
   enableDemo();
   history.replaceState(null, '', '/' + window.location.search);
 }
+
+// Every API call says which language to answer in (lib/apiLang.ts). Innermost:
+// the native session wrapper and the logger below both hand their requests to
+// it, so the logger's own shipping carries the header too.
+installApiLang((import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || '');
 
 // The installed app carries its session itself and caches API reads without a
 // service worker (lib/native.ts). Before the logger, so the logger's own copy

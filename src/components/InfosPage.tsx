@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, Download, ExternalLink, Globe, Mail, Search, Video } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { getStoredLang, type Lang } from '../lib/prefs';
+import { useScreenLang } from '../lib/useScreenLang';
 import { infosLangFromPath } from '../lib/routes';
 import { foldText } from '../lib/docText';
 import { USEFUL_DOC_GROUPS, type UsefulDoc, type UsefulDocGroup } from '../lib/usefulDocs';
@@ -77,6 +78,7 @@ export default function InfosPage() {
     infosLangFromPath(window.location.pathname)
     ?? getStoredLang()
     ?? (navigator.language?.toLowerCase().startsWith('en') ? 'EN' : 'DE'));
+  useScreenLang(lang);
   const [query, setQuery] = useState('');
   // Open by default, unlike Home: someone following a shared link has not
   // come to click through five folds before seeing anything.

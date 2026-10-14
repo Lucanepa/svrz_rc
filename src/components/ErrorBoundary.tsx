@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { AlertTriangle, RotateCw } from 'lucide-react';
 import { clientLog, flush, getClientLogs } from '../lib/logger';
+import { inUiLang } from '../lib/prefs';
 
 // A render crash otherwise leaves a white screen and no trace of what happened.
 // This records it (with the React component stack), ships the log immediately,
@@ -40,21 +41,23 @@ export default class ErrorBoundary extends Base {
 
   render() {
     if (!this.state.error) return this.props.children;
+    // Outside every screen's dictionary: the language that was on screen.
+    const t = (de: string, en: string) => inUiLang(de, en);
     return (
       <div className="min-h-screen flex items-center justify-center bg-stone-50 p-4">
         <div className="w-full max-w-sm bg-white rounded-2xl border border-stone-200 shadow-sm p-6 text-center">
           <AlertTriangle className="h-8 w-8 text-red-600 mx-auto" />
-          <h1 className="text-base font-semibold text-stone-900 mt-3">Da ist etwas schiefgelaufen</h1>
-          <p className="text-xs text-stone-500 mt-2">Der Fehler wurde automatisch protokolliert.</p>
+          <h1 className="text-base font-semibold text-stone-900 mt-3">{t('Da ist etwas schiefgelaufen', 'Something went wrong')}</h1>
+          <p className="text-xs text-stone-500 mt-2">{t('Der Fehler wurde automatisch protokolliert.', 'The error has been logged automatically.')}</p>
           <p className="text-[11px] text-stone-400 mt-1 break-words">{this.state.error.message}</p>
           <button
             onClick={() => window.location.reload()}
             className="w-full mt-5 inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-xl text-sm"
           >
-            <RotateCw className="h-4 w-4" /> Neu laden
+            <RotateCw className="h-4 w-4" /> {t('Neu laden', 'Reload')}
           </button>
           <button onClick={this.copyLogs} className="w-full mt-2 text-[11px] text-stone-400 hover:text-stone-600 underline">
-            {this.state.copied ? 'Protokoll kopiert' : 'Protokoll kopieren'}
+            {this.state.copied ? t('Protokoll kopiert', 'Log copied') : t('Protokoll kopieren', 'Copy log')}
           </button>
         </div>
       </div>

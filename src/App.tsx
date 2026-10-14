@@ -83,6 +83,7 @@ import {
 } from './lib/formDraft';
 import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
+import { useScreenLang } from './lib/useScreenLang';
 import { dayLabel, dayTimeLabel, shortDayLabel, clockLabel, dayKey, todayKey, shiftDayKey, zonedParts, instantOf } from './lib/appTime';
 import { subscribeLive } from './lib/liveEvents';
 import { IS_NATIVE } from './lib/native';
@@ -1523,6 +1524,9 @@ export default function App() {
       sections: lang === 'EN' ? SECTIONS_1SR_EN : SECTIONS_1SR_DE,
     };
   });
+  // The language on screen, for what speaks outside it: the API's answers and
+  // the toast and confirm chrome (lib/prefs.ts uiLang).
+  useScreenLang(formData.lang);
   const [dualFormData, setDualFormData] = useState<{
     '1. SR': { formData: FeedbackFormData; tipsAndTricks: string } | null;
     '2. SR': { formData: FeedbackFormData; tipsAndTricks: string } | null;

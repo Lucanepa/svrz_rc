@@ -69,6 +69,7 @@ import { identityAudit, type AuditRcPerson } from './identityAudit.ts';
 import { sniffAttachmentType, ATTACHMENT_EXTENSIONS, whistleBlocksForm, createMailCooldown, createCoalescer } from './writeGuards.ts';
 import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
 import { nameKeys, samePerson, resolveRcName, resolveRcRef, refereeSet, refereeAmong, type PersonRef, type RcPersonLike, type RefereeSet } from '../src/lib/identity.ts';
+import { say, answerInAskersLanguage } from './say.ts';
 
 // Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
 import {
@@ -160,6 +161,11 @@ const port = Number(process.env.PORT || 8787);
 // Trust exactly one proxy hop (the Cloudflare Tunnel in front of this origin),
 // not every upstream — so client-supplied X-Forwarded-For cannot be trusted blindly.
 app.set('trust proxy', 1);
+// Every JSON answer in the asker's language (server/say.ts). First of all, so
+// what answers before the routes — the CORS and body guards, the native-app
+// version check — speaks it too. The request log below wraps this again and
+// records the German, so Protokoll reads the same whichever language was asked.
+app.use(answerInAskersLanguage);
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false, crossOriginEmbedderPolicy: false, crossOriginOpenerPolicy: false }));
 // Default is the live frontend origin. It has now pointed at a dead domain
 // twice (Codeberg, then GitHub Pages) — a stale fallback rejects the real
@@ -275,7 +281,7 @@ app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
     // parkOwner refuses the console session, so only an app session gets here.
     if (!mayPostLargeBody(req, false)) { refuseLargeBody(req, res); return; }
     if (Number(req.headers['content-length'] || 0) > PARK_MAX_BYTES) {
-      res.status(413).json({ error: 'Der Entwurf ist zu gross zum Parken.' });
+      res.status(413).json({ error: say('Der Entwurf ist zu gross zum Parken.', 'The draft is too large to park.') });
       return;
     }
     parkJson(req, res, next);
@@ -288,7 +294,7 @@ app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
       // This gate answers before the request-log middleware runs, so without
       // its own line the refusal would be invisible in the Protokoll.
       log.warn('notebook.too-big', 'notebook push refused by size', { bytes: Number(req.headers['content-length'] || 0) }, reqCtx(req));
-      res.status(413).json({ error: 'Die Seite ist zu gross zum Sichern.' });
+      res.status(413).json({ error: say('Die Seite ist zu gross zum Sichern.', 'The page is too large to back up.') });
       return;
     }
     notebookJson(req, res, next);
@@ -308,7 +314,7 @@ app.use((req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
 // hint that the size was the problem. Name it.
 app.use((err: unknown, _req: Request, res: ExpressResponse, next: (e?: unknown) => void) => {
   if ((err as { type?: string })?.type === 'entity.too.large') {
-    res.status(413).json({ error: 'Das Formular ist zu gross zum Senden (PDF). Bitte im Support melden.' });
+    res.status(413).json({ error: say('Das Formular ist zu gross zum Senden (PDF). Bitte im Support melden.', 'The form is too large to send (PDF). Please contact support.') });
     return;
   }
   next(err);
@@ -804,7 +810,7 @@ function denyRateLimited(req: Request, res: ExpressResponse, bucket: string, ret
   // its path IS the referee's capability token.
   log.warn('ratelimit.deny', `${bucket} limit hit for ${ctx.ip}`, { bucket, retryAfterMs, path: redactIcalToken(req.path), ...extra }, { reqId: ctx.reqId, ip: ctx.ip, sid: ctx.sid });
   res.set('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
-  res.status(429).json({ error: 'Zu viele Versuche.', retryAfterMs });
+  res.status(429).json({ error: say('Zu viele Versuche.', 'Too many attempts.'), retryAfterMs });
 }
 
 // Per-IP limiter for unauthenticated signature writes (capability-token endpoint).
@@ -1266,7 +1272,7 @@ async function requireRcSession(req: Request, res: ExpressResponse, next: () => 
     }
   } catch (error) {
     console.error('[auth] RC session check failed:', error);
-    res.status(503).json({ error: 'Auth backend unavailable' });
+    res.status(503).json({ error: say('Die Anmeldung ist gerade nicht erreichbar.', 'Auth backend unavailable') });
     return;
   }
   res.status(401).json({ error: 'Unauthorized' });
@@ -4656,7 +4662,7 @@ function publishLive(event: LiveEvent) {
 
 app.get('/api/events', requireRcSession, (req: Request, res: ExpressResponse) => {
   if (liveClients.size >= LIVE_CLIENT_LIMIT) {
-    res.status(503).json({ error: 'Too many live connections.' });
+    res.status(503).json({ error: say('Zu viele Live-Verbindungen.', 'Too many live connections.') });
     return;
   }
   const owner = rcAuthByReq.get(req)?.rcId || '';
@@ -4667,7 +4673,7 @@ app.get('/api/events', requireRcSession, (req: Request, res: ExpressResponse) =>
       // A 503 ends an EventSource for good rather than retrying into a loop;
       // that tab falls back to the poll, which is the floor anyway.
       log.warn('live.limit', 'per-coach live stream limit reached', { open: mine, limit: LIVE_CLIENT_LIMIT_PER_RC }, reqCtx(req));
-      res.status(503).json({ error: 'Too many live connections.' });
+      res.status(503).json({ error: say('Zu viele Live-Verbindungen.', 'Too many live connections.') });
       return;
     }
   }
@@ -4907,7 +4913,7 @@ app.put('/api/admin/infos-layout', requireAdminSession, async (req: Request, res
   try {
     await ensureAdminAuth();
     const layout = normalizeInfosLayout((req.body as { layout?: unknown } | undefined)?.layout);
-    if (!layout) { res.status(400).json({ error: 'Keine gültige Einteilung (mindestens ein Abschnitt mit Titel).' }); return; }
+    if (!layout) { res.status(400).json({ error: say('Keine gültige Einteilung (mindestens ein Abschnitt mit Titel).', 'Not a valid layout (at least one section with a title).') }); return; }
     await setSetting(INFOS_LAYOUT_KEY, JSON.stringify(layout));
     infosLayoutCache = null;
     log.info('infos.layout', 'public /infos layout saved', { sections: layout.sections.length, hidden: layout.hidden.length });
@@ -4928,7 +4934,7 @@ app.delete('/api/admin/infos-layout', requireAdminSession, async (_req: Request,
 app.get('/api/docs/:id', async (req: Request, res: ExpressResponse) => {
   const id = String(req.params.id || '');
   if (!Object.prototype.hasOwnProperty.call(PROXIED_DOCS, id)) {
-    res.status(404).json({ error: 'Unknown document' });
+    res.status(404).json({ error: say('Unbekanntes Dokument.', 'Unknown document') });
     return;
   }
   try {
@@ -4949,7 +4955,7 @@ app.get('/api/docs/:id', async (req: Request, res: ExpressResponse) => {
     log.warn('docs.unavailable', 'A proxied document could not be fetched', {
       id, error: error instanceof Error ? error.message : String(error),
     });
-    res.status(502).json({ error: 'Document unavailable' });
+    res.status(502).json({ error: say('Dokument nicht verfügbar.', 'Document unavailable') });
   }
 });
 
@@ -5249,7 +5255,7 @@ function requireLogReader(req: Request, res: ExpressResponse, next: () => void) 
     tokenConfigured: Boolean(LOG_READ_TOKEN),
     overBudget: !rl.allowed,
   }, { ip, reqId: reqCtx(req).reqId });
-  if (!rl.allowed) { res.status(429).json({ error: 'Too many attempts' }); return; }
+  if (!rl.allowed) { res.status(429).json({ error: say('Zu viele Versuche.', 'Too many attempts') }); return; }
   res.status(401).json({ error: 'Unauthorized' });
 }
 
@@ -5310,8 +5316,8 @@ app.post('/api/admin/error-logs/annotate', requireLogReader, async (req: Request
     ? body.hashes.map((h) => asText(h)).filter(Boolean).slice(0, 500)
     : [asText(body.hash)].filter(Boolean);
   const status = asText(body.status) as AnnotationStatus;
-  if (!hashes.length) { res.status(400).json({ error: 'hash or hashes required' }); return; }
-  if (!['open', 'important', 'solved'].includes(status)) { res.status(400).json({ error: 'status must be open, important or solved' }); return; }
+  if (!hashes.length) { res.status(400).json({ error: say('hash oder hashes fehlt.', 'hash or hashes required') }); return; }
+  if (!['open', 'important', 'solved'].includes(status)) { res.status(400).json({ error: say('status muss open, important oder solved sein.', 'status must be open, important or solved') }); return; }
   try {
     const result = await annotate({
       hashes,
@@ -5356,7 +5362,7 @@ app.post('/api/admin/error-logs/mute-rules', requireLogReader, async (req: Reque
   const level = LOG_LEVELS.has(asText(body.level) as LogLevel) ? (asText(body.level) as LogLevel) : undefined;
   // A rule with no predicate would mute the entire log — the one mistake this
   // endpoint must not let someone make by leaving a field empty.
-  if (!evt && !match) { res.status(400).json({ error: 'evt or match required' }); return; }
+  if (!evt && !match) { res.status(400).json({ error: say('evt oder match fehlt.', 'evt or match required') }); return; }
   try {
     const rule = await addMuteRule({ evt: evt || undefined, match: match || undefined, level, note: asText(body.note).slice(0, 200) || undefined });
     log.info('log.mute-rule', 'created', { id: rule.id, evt: rule.evt, match: rule.match }, reqCtx(req));
@@ -5371,7 +5377,7 @@ app.patch('/api/admin/error-logs/mute-rules/:id', requireLogReader, async (req: 
   const id = asText(req.params.id);
   try {
     const found = await setMuteRuleEnabled(id, enabled);
-    if (!found) { res.status(404).json({ error: 'No such rule' }); return; }
+    if (!found) { res.status(404).json({ error: say('Diese Regel gibt es nicht.', 'No such rule') }); return; }
     log.info('log.mute-rule', enabled ? 'enabled' : 'disabled', { id }, reqCtx(req));
     res.json({ ok: true });
   } catch (error) {
@@ -5383,7 +5389,7 @@ app.delete('/api/admin/error-logs/mute-rules/:id', requireLogReader, async (req:
   const id = asText(req.params.id);
   try {
     const found = await deleteMuteRule(id);
-    if (!found) { res.status(404).json({ error: 'No such rule' }); return; }
+    if (!found) { res.status(404).json({ error: say('Diese Regel gibt es nicht.', 'No such rule') }); return; }
     log.info('log.mute-rule', 'deleted', { id }, reqCtx(req));
     res.json({ ok: true });
   } catch (error) {
@@ -5786,7 +5792,7 @@ app.post('/api/admin/credentials/challenge', requireAdminSession, async (req: Re
   const rl = checkRateLimit(credChallengeRl, ctx.ip, 5, 15 * 60 * 1000);
   if (!rl.allowed) { denyRateLimited(req, res, 'cred-2fa:ip', rl.retryAfterMs); return; }
   const slot = asText((req.body ?? {}).slot) as CredentialSlot;
-  if (!CREDENTIAL_SLOTS.includes(slot)) { res.status(400).json({ error: 'Unbekannter Zugang.' }); return; }
+  if (!CREDENTIAL_SLOTS.includes(slot)) { res.status(400).json({ error: say('Unbekannter Zugang.', 'Unknown login.') }); return; }
   const recipient = credential2faRecipient(slot);
   if (!recipient) {
     // Said plainly rather than as a 500: the operator needs to know this is a
@@ -5794,8 +5800,14 @@ app.post('/api/admin/credentials/challenge', requireAdminSession, async (req: Re
     log.error('auth.credentials', 'no 2FA recipient configured', { slot }, ctx);
     res.status(503).json({
       error: slot === 'president'
-        ? 'Kein Empfänger für den Bestätigungscode konfiguriert (CREDENTIAL_2FA_EMAIL_PRESIDENT). Der Zugang der Präsidentin fällt bewusst nicht auf die Admin-Adresse zurück.'
-        : `Kein Empfänger für den Bestätigungscode konfiguriert (CREDENTIAL_2FA_EMAIL_${slot.toUpperCase()} oder CREDENTIAL_2FA_EMAIL).`,
+        ? say(
+          'Kein Empfänger für den Bestätigungscode konfiguriert (CREDENTIAL_2FA_EMAIL_PRESIDENT). Der Zugang der Präsidentin fällt bewusst nicht auf die Admin-Adresse zurück.',
+          'No recipient configured for the confirmation code (CREDENTIAL_2FA_EMAIL_PRESIDENT). The president\'s login deliberately does not fall back to the admin address.',
+        )
+        : say(
+          `Kein Empfänger für den Bestätigungscode konfiguriert (CREDENTIAL_2FA_EMAIL_${slot.toUpperCase()} oder CREDENTIAL_2FA_EMAIL).`,
+          `No recipient configured for the confirmation code (CREDENTIAL_2FA_EMAIL_${slot.toUpperCase()} or CREDENTIAL_2FA_EMAIL).`,
+        ),
     });
     return;
   }
@@ -5805,7 +5817,7 @@ app.post('/api/admin/credentials/challenge', requireAdminSession, async (req: Re
     await sendCredentialCodeEmail(recipient, code, slot);
   } catch (error) {
     log.error('auth.credentials', 'could not send the confirmation code', { slot, error }, ctx);
-    res.status(503).json({ error: 'Der Bestätigungscode konnte nicht gesendet werden.' });
+    res.status(503).json({ error: say('Der Bestätigungscode konnte nicht gesendet werden.', 'The confirmation code could not be sent.') });
     return;
   }
   credChallenges.set(credChallengeKey(req), {
@@ -5819,17 +5831,17 @@ app.post('/api/admin/credentials/challenge', requireAdminSession, async (req: Re
 function consumeCredChallenge(req: Request, slot: CredentialSlot, code: string): string {
   const key = credChallengeKey(req);
   const entry = credChallenges.get(key);
-  if (!entry) return 'Kein Bestätigungscode angefordert. Bitte einen neuen Code senden.';
-  if (Date.now() > entry.expiresAt) { credChallenges.delete(key); return 'Der Code ist abgelaufen. Bitte einen neuen anfordern.'; }
-  if (entry.attempts >= CRED_2FA_MAX_ATTEMPTS) { credChallenges.delete(key); return 'Zu viele Fehlversuche. Bitte einen neuen Code anfordern.'; }
+  if (!entry) return say('Kein Bestätigungscode angefordert. Bitte einen neuen Code senden.', 'No confirmation code was requested. Please send a new code.');
+  if (Date.now() > entry.expiresAt) { credChallenges.delete(key); return say('Der Code ist abgelaufen. Bitte einen neuen anfordern.', 'The code has expired. Please request a new one.'); }
+  if (entry.attempts >= CRED_2FA_MAX_ATTEMPTS) { credChallenges.delete(key); return say('Zu viele Fehlversuche. Bitte einen neuen Code anfordern.', 'Too many failed attempts. Please request a new code.'); }
   // The code was issued FOR one door. Without this, a code sent for the team
   // password would open the admin one, which is the more valuable of the two.
-  if (entry.slot !== slot) { return 'Der Code gehört zu einem anderen Zugang.'; }
+  if (entry.slot !== slot) { return say('Der Code gehört zu einem anderen Zugang.', 'The code belongs to another login.'); }
   const attempt = Buffer.from(hashSecret(code, entry.salt), 'hex');
   const expected = Buffer.from(entry.hash, 'hex');
   if (attempt.length !== expected.length || !timingSafeEqual(attempt, expected)) {
     entry.attempts += 1;
-    return 'Code ungültig.';
+    return say('Code ungültig.', 'Invalid code.');
   }
   credChallenges.delete(key); // single use
   return '';
@@ -5865,18 +5877,18 @@ app.put('/api/admin/credentials', requireAdminSession, async (req: Request, res:
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const slot = asText(body.slot) as CredentialSlot;
-    if (!CREDENTIAL_SLOTS.includes(slot)) { res.status(400).json({ error: 'Unbekannter Zugang.' }); return; }
+    if (!CREDENTIAL_SLOTS.includes(slot)) { res.status(400).json({ error: say('Unbekannter Zugang.', 'Unknown login.') }); return; }
     const password = asText(body.password);
     const username = asText(body.username).trim() || (await credentialUsername(slot, SLOT_ENV[slot].username));
-    if (!username) { res.status(400).json({ error: 'Benutzername fehlt.' }); return; }
+    if (!username) { res.status(400).json({ error: say('Benutzername fehlt.', 'Username is missing.') }); return; }
     if (password.length < MIN_SECRET_LENGTH) {
-      res.status(400).json({ error: `Das Passwort braucht mindestens ${MIN_SECRET_LENGTH} Zeichen.` });
+      res.status(400).json({ error: say(`Das Passwort braucht mindestens ${MIN_SECRET_LENGTH} Zeichen.`, `The password needs at least ${MIN_SECRET_LENGTH} characters.`) });
       return;
     }
     // A password that contains its own username is the first thing anyone
     // guesses, and this form is exactly where that gets typed.
     if (password.toLowerCase().includes(username.toLowerCase())) {
-      res.status(400).json({ error: 'Das Passwort darf den Benutzernamen nicht enthalten.' });
+      res.status(400).json({ error: say('Das Passwort darf den Benutzernamen nicht enthalten.', 'The password must not contain the username.') });
       return;
     }
     const codeError = consumeCredChallenge(req, slot, asText(body.code).trim());
@@ -5988,7 +6000,7 @@ app.post('/api/admin/rc-people', requireAdminSession, async (req: Request, res: 
     const d = req.body ?? {};
     const email = asText(d.email);
     if (await emailTakenBy(email, '')) {
-      res.status(409).json({ error: 'Diese E-Mail-Adresse ist bereits einem anderen RC zugeordnet.' });
+      res.status(409).json({ error: say('Diese E-Mail-Adresse ist bereits einem anderen RC zugeordnet.', 'This e-mail address already belongs to another RC.') });
       return;
     }
     const created = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
@@ -6013,7 +6025,7 @@ app.put('/api/admin/rc-people/:id', requireAdminSession, async (req: Request, re
     if ('phone' in raw) payload.phone = asText(raw.phone);
     if ('active' in raw) payload.active = Boolean(raw.active);
     if ('email' in raw && await emailTakenBy(asText(raw.email), id)) {
-      res.status(409).json({ error: 'Diese E-Mail-Adresse ist bereits einem anderen RC zugeordnet.' });
+      res.status(409).json({ error: say('Diese E-Mail-Adresse ist bereits einem anderen RC zugeordnet.', 'This e-mail address already belongs to another RC.') });
       return;
     }
     const before = await withCollection(collectionCandidates.refereeCoachPeople, (c) =>
@@ -6164,7 +6176,7 @@ app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: R
     await ensureAdminAuth();
     const username = asText(process.env.VM_USERNAME);
     const password = asText(process.env.VM_PASSWORD);
-    if (!username || !password) { res.status(400).json({ error: 'VM_USERNAME / VM_PASSWORD sind nicht gesetzt.' }); return; }
+    if (!username || !password) { res.status(400).json({ error: say('VM_USERNAME / VM_PASSWORD sind nicht gesetzt.', 'VM_USERNAME / VM_PASSWORD are not set.') }); return; }
     const body = (req.body ?? {}) as Record<string, unknown>;
     const overwrite = Boolean(body.overwrite);
     const season = body.season == null || body.season === '' ? null : Number(body.season);
@@ -6446,7 +6458,7 @@ app.get('/api/admin/referees', requireAdminSession, async (req: Request, res: Ex
     const username = asText(process.env.VM_USERNAME);
     const password = asText(process.env.VM_PASSWORD);
     if (!username || !password) {
-      res.json({ source: 'volleymanager', at: cached.at, people: [], error: 'VM_USERNAME / VM_PASSWORD sind nicht gesetzt.' });
+      res.json({ source: 'volleymanager', at: cached.at, people: [], error: say('VM_USERNAME / VM_PASSWORD sind nicht gesetzt.', 'VM_USERNAME / VM_PASSWORD are not set.') });
       return;
     }
     const people = await refreshRefereeDirectory(username, password);
@@ -6869,7 +6881,7 @@ app.get('/api/auth/me', async (req: Request, res: ExpressResponse) => {
       // out" body would lock a valid session out of its own offline data.
       console.error('[auth/me] backend unavailable:', error);
       res.set('Cache-Control', 'no-store');
-      res.status(503).json({ error: 'Auth backend unavailable' });
+      res.status(503).json({ error: say('Die Anmeldung ist gerade nicht erreichbar.', 'Auth backend unavailable') });
       return;
     }
   }
@@ -6929,7 +6941,7 @@ app.post('/api/auth/shared/login', async (req: Request, res: ExpressResponse) =>
     // read by humans in the admin console. The two booleans answer every
     // support question the string would have.
     log.warn('auth.shared-login', 'rejected', { userOk, passOk }, ctx);
-    res.status(401).json({ error: 'Falscher Benutzername oder falsches Passwort.' });
+    res.status(401).json({ error: say('Falscher Benutzername oder falsches Passwort.', 'Wrong username or password.') });
     return;
   }
   log.info('auth.shared-login', 'ok', undefined, ctx);
@@ -6950,7 +6962,7 @@ app.get('/api/auth/rc/roster', async (req: Request, res: ExpressResponse) => {
     res.json((await getActiveRcPeople()).map((p) => ({ id: p.id, fullName: p.fullName })));
   } catch (error) {
     log.error('auth.roster', 'could not load the RC roster', { error }, reqCtx(req));
-    res.status(503).json({ error: 'Auth backend unavailable' });
+    res.status(503).json({ error: say('Die Anmeldung ist gerade nicht erreichbar.', 'Auth backend unavailable') });
   }
 });
 
@@ -6970,7 +6982,7 @@ app.post('/api/auth/rc/identify', async (req: Request, res: ExpressResponse) => 
     const person = (await getActiveRcPeople()).find((p) => p.id === rcId);
     if (!person) {
       log.warn('auth.identify', 'rejected: unknown or inactive RC', { rcId }, ctx);
-      res.status(400).json({ error: 'Unbekannter Referee Coach.' });
+      res.status(400).json({ error: say('Unbekannter Referee Coach.', 'Unknown referee coach.') });
       return;
     }
     tagReqUser(req, person.fullName);
@@ -6981,7 +6993,7 @@ app.post('/api/auth/rc/identify', async (req: Request, res: ExpressResponse) => 
     res.json({ ok: true, rc: { id: person.id, name: person.fullName, firstName: person.firstName } });
   } catch (error) {
     log.error('auth.identify', 'backend failure while identifying', { rcId, error }, ctx);
-    res.status(503).json({ error: 'Auth backend unavailable' });
+    res.status(503).json({ error: say('Die Anmeldung ist gerade nicht erreichbar.', 'Auth backend unavailable') });
   }
 });
 
@@ -7073,8 +7085,8 @@ app.post('/api/signature/start', requireRcSession, async (req: Request, res: Exp
 app.get('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
   try {
     const rec = await getSignatureRecord(asText(req.params.slug)) as AnyRecord | null;
-    if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
-    if (isSignatureExpired(rec)) { res.status(410).json({ error: 'Signature session expired' }); return; }
+    if (!rec) { res.status(404).json({ error: say('Nicht gefunden.', 'Not found') }); return; }
+    if (isSignatureExpired(rec)) { res.status(410).json({ error: say('Der Unterschrift-Link ist abgelaufen.', 'Signature session expired') }); return; }
     res.json({ context: asText(rec.context), signer: asText(rec.signer), signed: Boolean(rec.signed), data: rec.signed ? asText(rec.data) : '' });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
@@ -7095,17 +7107,17 @@ function withCapabilityLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
 app.post('/api/signature/:slug', async (req: Request, res: ExpressResponse) => {
   try {
     const rl = checkSignatureRateLimit(clientIp(req));
-    if (!rl.allowed) { res.status(429).json({ error: 'Too many attempts.', retryAfterMs: rl.retryAfterMs }); return; }
+    if (!rl.allowed) { res.status(429).json({ error: say('Zu viele Versuche.', 'Too many attempts.'), retryAfterMs: rl.retryAfterMs }); return; }
     const data = asText((req.body ?? {}).data);
     const signer = asText((req.body ?? {}).signer).slice(0, 120);
-    if (!data.startsWith('data:image/') || data.length > 2_000_000) { res.status(400).json({ error: 'Invalid signature' }); return; }
+    if (!data.startsWith('data:image/') || data.length > 2_000_000) { res.status(400).json({ error: say('Ungültige Unterschrift.', 'Invalid signature') }); return; }
     const slug = asText(req.params.slug);
     await withCapabilityLock(`signature|${slug}`, async () => {
       const rec = await getSignatureRecord(slug) as AnyRecord | null;
-      if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
-      if (isSignatureExpired(rec)) { res.status(410).json({ error: 'Signature session expired' }); return; }
+      if (!rec) { res.status(404).json({ error: say('Nicht gefunden.', 'Not found') }); return; }
+      if (isSignatureExpired(rec)) { res.status(410).json({ error: say('Der Unterschrift-Link ist abgelaufen.', 'Signature session expired') }); return; }
       // Signatures are write-once: once signed, the capability can't overwrite it.
-      if (Boolean(rec.signed)) { res.status(409).json({ error: 'Signature already captured' }); return; }
+      if (Boolean(rec.signed)) { res.status(409).json({ error: say('Die Unterschrift ist schon erfasst.', 'Signature already captured') }); return; }
       await ensureAdminAuth();
       await db.collection('signatures').update(rec.id, { data, signed: true, signer: signer || asText(rec.signer) });
       res.json({ ok: true });
@@ -7154,10 +7166,10 @@ async function requireSurveyReader(req: Request, res: ExpressResponse, next: () 
     if (isSurveyReader(req)) { next(); return; }
   } catch (error) {
     console.error('[survey] reader check failed:', error);
-    res.status(503).json({ error: 'Auth backend unavailable' });
+    res.status(503).json({ error: say('Die Anmeldung ist gerade nicht erreichbar.', 'Auth backend unavailable') });
     return;
   }
-  res.status(403).json({ error: 'Forbidden' });
+  res.status(403).json({ error: say('Keine Berechtigung.', 'Forbidden') });
 }
 
 // Where a submitted survey is mailed. Separate from is_rc_president on purpose:
@@ -7305,8 +7317,8 @@ async function createSurveyToken(v: { referee: string; date: string; matchNo: st
 app.get('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
   try {
     const rec = await getSurveyRecord(asText(req.params.token)) as AnyRecord | null;
-    if (!rec) { res.status(404).json({ error: 'Not found' }); return; }
-    if (isSurveyExpired(rec)) { res.status(410).json({ error: 'Survey link expired' }); return; }
+    if (!rec) { res.status(404).json({ error: say('Nicht gefunden.', 'Not found') }); return; }
+    if (isSurveyExpired(rec)) { res.status(410).json({ error: say('Der Fragebogen-Link ist abgelaufen.', 'Survey link expired') }); return; }
     res.json({
       referee: asText(rec.referee_name),
       date: asText(rec.match_date),
@@ -7367,10 +7379,10 @@ app.post('/api/survey/:token', async (req: Request, res: ExpressResponse) => {
     // the mail goes after it is released, and only by the request that wrote.
     const written = await withCapabilityLock(`survey|${token}`, async (): Promise<AnyRecord | null> => {
       const rec = await getSurveyRecord(token) as AnyRecord | null;
-      if (!rec) { res.status(404).json({ error: 'Not found' }); return null; }
-      if (isSurveyExpired(rec)) { res.status(410).json({ error: 'Survey link expired' }); return null; }
+      if (!rec) { res.status(404).json({ error: say('Nicht gefunden.', 'Not found') }); return null; }
+      if (isSurveyExpired(rec)) { res.status(410).json({ error: say('Der Fragebogen-Link ist abgelaufen.', 'Survey link expired') }); return null; }
       // Write-once, like signatures: the capability answers, it doesn't edit.
-      if (Boolean(rec.submitted)) { res.status(409).json({ error: 'Survey already submitted' }); return null; }
+      if (Boolean(rec.submitted)) { res.status(409).json({ error: say('Der Fragebogen ist schon abgeschickt.', 'Survey already submitted') }); return null; }
       await ensureAdminAuth();
       // Always named. The page's "Anonym absenden" box is gone (16.09.2026): it
       // blanked the name while match, date and RC stayed, which with one
@@ -7549,10 +7561,10 @@ app.get('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
     await ensureAdminAuth();
     let record: AnyRecord;
     try { record = await getFeedbackForNote(String(req.params.id)); }
-    catch { res.status(404).json({ error: 'Feedback not found' }); return; }
+    catch { res.status(404).json({ error: say('Feedback nicht gefunden.', 'Feedback not found') }); return; }
     // The author reads it back to edit it; the president reads anyone's.
     if (!(await mayReadPresidentNote(req, record))) {
-      res.status(403).json({ error: 'Forbidden' });
+      res.status(403).json({ error: say('Keine Berechtigung.', 'Forbidden') });
       return;
     }
     res.json({ note: asText((await presidentNoteRow(record.id))?.note) });
@@ -7564,8 +7576,8 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
     await ensureAdminAuth();
     let record: AnyRecord;
     try { record = await getFeedbackForNote(String(req.params.id)); }
-    catch { res.status(404).json({ error: 'Feedback not found' }); return; }
-    if (!(await mayWritePresidentNote(req, record))) { res.status(403).json({ error: 'Forbidden' }); return; }
+    catch { res.status(404).json({ error: say('Feedback nicht gefunden.', 'Feedback not found') }); return; }
+    if (!(await mayWritePresidentNote(req, record))) { res.status(403).json({ error: say('Keine Berechtigung.', 'Forbidden') }); return; }
 
     // Sanitised to the rich-text subset (anything else becomes escaped text),
     // cut before sanitising so a cut can never leave half a tag behind. A box
@@ -7614,7 +7626,7 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
       }
     });
     if (refused) {
-      res.status(409).json({ error: 'Auf diesem Bericht liegt schon die vertrauliche Notiz des Referee Coaches an das RC-Präsidium. Sie kann nur von ihm selbst geändert werden.' });
+      res.status(409).json({ error: say('Auf diesem Bericht liegt schon die vertrauliche Notiz des Referee Coaches an das RC-Präsidium. Sie kann nur von ihm selbst geändert werden.', 'This report already carries the referee coach\'s confidential note to the RC-Präsidium. Only that coach can change it.') });
       return;
     }
     res.json({ ok: true, note });
@@ -7693,14 +7705,14 @@ function zipStore(entries: ZipEntry[]): Buffer {
 // worked around.
 async function requireArchiveReader(req: Request, res: ExpressResponse, next: () => void) {
   if (isSurveyReader(req)) { next(); return; }
-  res.status(403).json({ error: 'Forbidden' });
+  res.status(403).json({ error: say('Keine Berechtigung.', 'Forbidden') });
 }
 
 app.get('/api/feedback-archive', requireArchiveReader, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const season = Math.round(Number(req.query.season));
-    if (!Number.isFinite(season)) { res.status(400).json({ error: 'season fehlt.' }); return; }
+    if (!Number.isFinite(season)) { res.status(400).json({ error: say('season fehlt.', 'season is missing.') }); return; }
 
     const records = await withCollection(collectionCandidates.refereeCoaches, (c) =>
       c.getFullList<AnyRecord>({ sort: 'submitted_at', expand: 'game,coachee' }));
@@ -7720,7 +7732,7 @@ app.get('/api/feedback-archive', requireArchiveReader, async (req: Request, res:
       // a form is worse than one that says which.
       log.warn('archive.skipped', 'feedbacks without a readable PDF were left out', { season, count: skipped.length, ids: skipped.slice(0, 20) });
     }
-    if (entries.length === 0) { res.status(404).json({ error: 'Keine Formulare für diese Saison.' }); return; }
+    if (entries.length === 0) { res.status(404).json({ error: say('Keine Formulare für diese Saison.', 'No forms for this season.') }); return; }
 
     const zip = zipStore(entries);
     res.setHeader('Content-Type', 'application/zip');
@@ -7792,10 +7804,10 @@ app.get('/api/forms/archive', requireArchiveReader, async (req: Request, res: Ex
   try {
     await ensureAdminAuth();
     const key = asText(req.query.referee);
-    if (!key) { res.status(400).json({ error: 'referee fehlt.' }); return; }
+    if (!key) { res.status(400).json({ error: say('referee fehlt.', 'referee is missing.') }); return; }
     const all = await loadFormsRows();
     const folder = groupForms(all).find((f) => f.key === key);
-    if (!folder) { res.status(404).json({ error: 'Keine Formulare für diese Person.' }); return; }
+    if (!folder) { res.status(404).json({ error: say('Keine Formulare für diese Person.', 'No forms for this person.') }); return; }
 
     const wanted = new Set(folder.forms.map((f) => f.id));
     const rows = all.filter((r) => wanted.has(r.rec.id));
@@ -7809,7 +7821,7 @@ app.get('/api/forms/archive', requireArchiveReader, async (req: Request, res: Ex
     if (skipped.length) {
       log.warn('forms.skipped', 'forms without a readable file were left out of the folder', { referee: folder.name, count: skipped.length, ids: skipped.slice(0, 20) });
     }
-    if (entries.length === 0) { res.status(404).json({ error: 'Keine Formulare für diese Person.' }); return; }
+    if (entries.length === 0) { res.status(404).json({ error: say('Keine Formulare für diese Person.', 'No forms for this person.') }); return; }
 
     const zip = zipStore(entries);
     res.setHeader('Content-Type', 'application/zip');
@@ -7838,15 +7850,15 @@ app.get('/api/feedback/:id/file', async (req: Request, res: ExpressResponse) => 
     if (!fromConsole && !me) { res.status(401).json({ error: 'Unauthorized' }); return; }
     let record: AnyRecord;
     try { record = await getFeedbackForNote(String(req.params.id)); }
-    catch { res.status(404).json({ error: 'Feedback not found' }); return; }
-    if (me && !rcRefMatches(record.rc_id, record.rc_name, me)) { res.status(403).json({ error: 'Forbidden' }); return; }
+    catch { res.status(404).json({ error: say('Feedback nicht gefunden.', 'Feedback not found') }); return; }
+    if (me && !rcRefMatches(record.rc_id, record.rc_name, me)) { res.status(403).json({ error: say('Keine Berechtigung.', 'Forbidden') }); return; }
     const row = formsRowOf(record);
     const fetched = await fetchStoredForm(row);
     if (!fetched) {
       // Worth a line: a filed feedback without its document is the half-write
       // the submit route's rollback exists to prevent.
       log.warn('forms.missing', 'a filed feedback has no readable file', { feedbackId: record.id }, reqCtx(req));
-      res.status(404).json({ error: 'Zu diesem Feedback ist keine Datei gespeichert.' });
+      res.status(404).json({ error: say('Zu diesem Feedback ist keine Datei gespeichert.', 'No file is stored for this feedback.') });
       return;
     }
     res.setHeader('Content-Type', fetched.type);
@@ -7942,7 +7954,7 @@ app.post('/api/coachee-file/login', async (req: Request, res: ExpressResponse) =
     const pin = normalizePin((req.body as AnyRecord | undefined)?.pin);
     // Same words for every wrong answer: an unknown SV-Nr. must not read
     // differently from a wrong PIN, or the door lists who has a file.
-    const wrong = () => res.status(401).json({ error: 'SV-Nr. oder PIN stimmt nicht. · SV no. or PIN is not correct.' });
+    const wrong = () => res.status(401).json({ error: say('SV-Nr. oder PIN stimmt nicht. · SV no. or PIN is not correct.', 'SV no. or PIN is not correct.') });
     if (!sv || !pin) { wrong(); return; }
 
     const ipRl = peekRateLimit(coacheeFileIpFails, ctx.ip, CF_IP_MAX);
@@ -8007,12 +8019,12 @@ app.get('/api/coachee-file/forms/:id/file', async (req: Request, res: ExpressRes
     if (!session) { res.status(401).json({ error: 'Unauthorized' }); return; }
     let record: AnyRecord;
     try { record = await getFeedbackForNote(String(req.params.id)); }
-    catch { res.status(404).json({ error: 'Not found' }); return; }
+    catch { res.status(404).json({ error: say('Nicht gefunden.', 'Not found') }); return; }
     // Someone else's report answers exactly like a missing one.
-    if (formRefereeId(record) !== session.sv) { res.status(404).json({ error: 'Not found' }); return; }
+    if (formRefereeId(record) !== session.sv) { res.status(404).json({ error: say('Nicht gefunden.', 'Not found') }); return; }
     const row = formsRowOf(record);
     const fetched = await fetchStoredForm(row);
-    if (!fetched) { res.status(404).json({ error: 'Zu diesem Bericht ist keine Datei gespeichert.' }); return; }
+    if (!fetched) { res.status(404).json({ error: say('Zu diesem Bericht ist keine Datei gespeichert.', 'No file is stored for this report.') }); return; }
     res.setHeader('Content-Type', fetched.type);
     res.setHeader('Content-Disposition', `inline; filename="${formsEntryName(row)}"`);
     res.setHeader('Content-Length', String(fetched.data.length));
@@ -8039,7 +8051,7 @@ app.put('/api/admin/coachee-file', requireAdminSession, async (req: Request, res
   try {
     await ensureAdminAuth();
     const enabled = (req.body as AnyRecord | undefined)?.enabled;
-    if (typeof enabled !== 'boolean') { res.status(400).json({ error: 'enabled muss true oder false sein.' }); return; }
+    if (typeof enabled !== 'boolean') { res.status(400).json({ error: say('enabled muss true oder false sein.', 'enabled must be true or false.') }); return; }
     await setSetting(COACHEE_FILE_ENABLED_KEY, enabled ? '1' : '0');
     log.info('coachee-file.mail', enabled ? 'PIN mail switched ON in the console' : 'PIN mail switched off in the console', { enabled }, reqCtx(req));
     const pins = await readCoacheePins();
@@ -8081,7 +8093,7 @@ app.post('/api/admin/coachee-file/pin', requireAdminSession, async (req: Request
   try {
     await ensureAdminAuth();
     const sv = normalizeSvNumber((req.body as AnyRecord | undefined)?.sv);
-    if (!sv) { res.status(400).json({ error: 'Ungültige SV-Nr.' }); return; }
+    if (!sv) { res.status(400).json({ error: say('Ungültige SV-Nr.', 'Invalid SV no.') }); return; }
     const reset = (req.body as AnyRecord | undefined)?.reset === true;
     const records = await loadCoacheeFileRecords();
     const entries = fileEntries(records, sv, { toPlain: richTextToPlain, manualGameIds: new Set() });
@@ -8220,7 +8232,7 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
     await ensureAdminAuth();
     const d = (req.body ?? {}) as Record<string, unknown>;
     const requestedDate = asText(d.match_date);
-    if (!requestedDate) { res.status(400).json({ error: 'match_date ist erforderlich.' }); return; }
+    if (!requestedDate) { res.status(400).json({ error: say('match_date ist erforderlich.', 'match_date is required.') }); return; }
     // A bare date is a date, not midnight UTC: the kick-off comes as a separate
     // wall-clock time and is read in the region, the way a real fixture is
     // stored. 20:00 when the form sends none — the ordinary evening slot.
@@ -8229,7 +8241,7 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
     const hour = clock ? Math.min(23, Number(clock[1])) : 20;
     const minute = clock ? Math.min(59, Number(clock[2])) : 0;
     const matchDate = bareDate ? zonedInstantIso(requestedDate, hour, minute) : requestedDate;
-    if (!matchDate || Number.isNaN(new Date(matchDate).getTime())) { res.status(400).json({ error: 'match_date ist kein gültiges Datum.' }); return; }
+    if (!matchDate || Number.isNaN(new Date(matchDate).getTime())) { res.status(400).json({ error: say('match_date ist kein gültiges Datum.', 'match_date is not a valid date.') }); return; }
     // The form picks its three people off a list, so the game can carry their
     // ids beside their names — the same argument as assigned_rc_id: a name
     // changes and two people can normalise to the same string, at which point
@@ -8271,7 +8283,10 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
         const teams = [asText(holder.home_team), asText(holder.away_team)].filter(Boolean).join(' – ');
         const when = fmtDateDe(asText(holder.match_date));
         const label = [teams, when].filter(Boolean).join(', ');
-        res.status(409).json({ error: `Die Spiel-Nr. ${typedNo} gibt es schon${label ? `: ${label}` : ''}.` });
+        res.status(409).json({ error: say(
+          `Die Spiel-Nr. ${typedNo} gibt es schon${label ? `: ${label}` : ''}.`,
+          `Match number ${typedNo} already exists${label ? `: ${label}` : ''}.`,
+        ) });
         return;
       }
     }
@@ -8285,7 +8300,7 @@ app.post('/api/admin/games', requireAdminSession, async (req: Request, res: Expr
       const candidate = manualMatchNo(`${today.year}-${today.month}-${today.day}`, randomInt);
       if (!(await findGameByMatchNo(candidate))) matchNo = candidate;
     }
-    if (!matchNo) { res.status(500).json({ error: 'Keine freie Spiel-Nr. gefunden — bitte eine eingeben.' }); return; }
+    if (!matchNo) { res.status(500).json({ error: say('Keine freie Spiel-Nr. gefunden — bitte eine eingeben.', 'No free match number found — please enter one.') }); return; }
     const created = await withCollection(collectionCandidates.games, (c) => c.create<AnyRecord>({
       match_no: matchNo,
       league: asText(d.league),
@@ -8462,7 +8477,7 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
       const closed = await withCollection(collectionCandidates.games, (collection) =>
         collection.getOne<AnyRecord>(gameId, { fields: 'feedback_closed_roles' }));
       if (Array.isArray(closed.feedback_closed_roles) && closed.feedback_closed_roles.length > 0) {
-        return { status: 409, body: { error: 'Für dieses Spiel wurde bereits ein Bericht gesendet — der Referee Coach kann nicht mehr geändert werden.' } };
+        return { status: 409, body: { error: say('Für dieses Spiel wurde bereits ein Bericht gesendet — der Referee Coach kann nicht mehr geändert werden.', 'A report has already been sent for this game — the referee coach can no longer be changed.') } };
       }
       if (rcAuth) {
         // Non-admin RCs may only take games for themselves, and only give back
@@ -8474,7 +8489,7 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
         const held = rcRefPresent(current.assigned_rc_id, current.assigned_rc);
         if (givingBack) {
           if (held && !heldByMe) {
-            return { status: 403, body: { error: 'Nur eigene Spiele können abgegeben werden.' } };
+            return { status: 403, body: { error: say('Nur eigene Spiele können abgegeben werden.', 'You can only give back your own games.') } };
           }
         } else {
           // Themselves, by id when the client sends one — a name spelled
@@ -8486,7 +8501,7 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
             ? requestedRcId !== rcAuth.rcId
             : !rcRefMatches('', rcName, rcAuth);
           if (notThemselves) {
-            return { status: 403, body: { error: 'Spiele können nur für dich selbst übernommen werden.' } };
+            return { status: 403, body: { error: say('Spiele können nur für dich selbst übernommen werden.', 'You can only take games for yourself.') } };
           }
           // A take the name decided: the client sent no id. Counted by the
           // identity audit (assignByNameLast30d) — once every client carries
@@ -8495,14 +8510,14 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
             log.info(ASSIGN_BY_NAME_EVT, 'game taken by name only — the client sent no rc id', { gameId, rcId: rcAuth.rcId }, reqCtx(req));
           }
           if (held && !heldByMe) {
-            return { status: 409, body: { error: 'Dieses Spiel wurde bereits von einem anderen RC übernommen.' } };
+            return { status: 409, body: { error: say('Dieses Spiel wurde bereits von einem anderen RC übernommen.', 'Another RC has already taken this game.') } };
           }
           // 4.4.10: a referee coach on the whistle next to the coachee files a
           // Rückmeldung, not a form — so the game is not observed by a second
           // coach and cannot be taken. The lists grey the button out; this is
           // for the tap that gets past them.
           if ((await makeRcGameTest())(current)) {
-            return { status: 422, body: { error: 'RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung, sondern eine Rückmeldung des RC (4.4.10).' } };
+            return { status: 422, body: { error: say('RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung, sondern eine Rückmeldung des RC (4.4.10).', 'RC game: a referee coach whistles next to the coachee — no observation, a Rückmeldung from the RC instead (4.4.10).') } };
           }
           // One open booking per coachee: the lists grey the button out,
           // this is for the screen that was out of date when it was tapped.
@@ -8511,7 +8526,7 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
           const blocking = await openBookingBlocking(current, { id: rcAuth.rcId, name: rcAuth.name });
           if (blocking) {
             const when = blocking.date ? ` (${fmtDateDe(blocking.date)})` : '';
-            return { status: 409, body: { error: `${blocking.name} hat schon eine geplante Beobachtung${when} durch ${blocking.rc || 'einen anderen RC'}. Erst wenn dieser Bericht gesendet oder das Spiel abgegeben ist, kann ein weiteres Spiel übernommen werden.` } };
+            return { status: 409, body: { error: say(`${blocking.name} hat schon eine geplante Beobachtung${when} durch ${blocking.rc || 'einen anderen RC'}. Erst wenn dieser Bericht gesendet oder das Spiel abgegeben ist, kann ein weiteres Spiel übernommen werden.`, `${blocking.name} already has an observation booked${when} by ${blocking.rc || 'another RC'}. Another game can be taken once that report is sent or the game is given back.`) } };
           }
           rcName = rcAuth.name; // write the canonical name from the RC record
           rcId = rcAuth.rcId;
@@ -8521,7 +8536,7 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
         // console too (a deliberate second look is; that stays allowed here).
         const current = await withCollection(collectionCandidates.games, (collection) => collection.getOne<AnyRecord>(gameId));
         if ((await makeRcGameTest())(current)) {
-          return { status: 422, body: { error: 'RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung, sondern eine Rückmeldung des RC (4.4.10).' } };
+          return { status: 422, body: { error: say('RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung, sondern eine Rückmeldung des RC (4.4.10).', 'RC game: a referee coach whistles next to the coachee — no observation, a Rückmeldung from the RC instead (4.4.10).') } };
         }
         // Admin assigning on someone's behalf: the id the picker sent, when it
         // names a coach on the roster — the row is then written under that
@@ -8537,7 +8552,7 @@ app.put('/api/games/:id/assign-rc', requireRcSession, async (req: Request, res: 
           rcId = await rcIdForName(rcName);
         }
         if (rcName === '') {
-          return { status: 422, body: { error: 'Unbekannter Referee Coach.' } };
+          return { status: 422, body: { error: say('Unbekannter Referee Coach.', 'Unknown referee coach.') } };
         }
       }
       const updated = await withCollection(collectionCandidates.games, (collection) =>
@@ -8669,7 +8684,7 @@ app.get('/api/push/config', requireRcSession, async (_req: Request, res: Express
   try {
     await ensureAdminAuth();
     const vapid = await getVapid();
-    if (!vapid) { res.status(503).json({ error: 'Benachrichtigungen sind auf dem Server nicht eingerichtet.' }); return; }
+    if (!vapid) { res.status(503).json({ error: say('Benachrichtigungen sind auf dem Server nicht eingerichtet.', 'Notifications are not set up on the server.') }); return; }
     res.json({ publicKey: vapid.publicKey });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
@@ -8693,9 +8708,9 @@ app.post('/api/push/subscribe', requireRcSession, async (req: Request, res: Expr
   try {
     await ensureAdminAuth();
     const rcAuth = rcAuthByReq.get(req);
-    if (!rcAuth?.rcId) { res.status(403).json({ error: 'Benachrichtigungen gibt es für Referee Coaches.' }); return; }
+    if (!rcAuth?.rcId) { res.status(403).json({ error: say('Benachrichtigungen gibt es für Referee Coaches.', 'Notifications are for referee coaches.') }); return; }
     const sub = readSubscription((req.body ?? {}).subscription);
-    if (!sub) { res.status(400).json({ error: 'Ungültiges Abonnement.' }); return; }
+    if (!sub) { res.status(400).json({ error: say('Ungültiges Abonnement.', 'Invalid subscription.') }); return; }
     const ua = asText((req.body ?? {}).ua).slice(0, 300);
     // One row per endpoint: the same browser subscribing again — or a second
     // coach signing in on a shared tablet — takes the row over.
@@ -8719,7 +8734,7 @@ app.post('/api/push/unsubscribe', requireRcSession, async (req: Request, res: Ex
     await ensureAdminAuth();
     const rcAuth = rcAuthByReq.get(req);
     const endpoint = asText((req.body ?? {}).endpoint);
-    if (!endpoint) { res.status(400).json({ error: 'Kein Abonnement angegeben.' }); return; }
+    if (!endpoint) { res.status(400).json({ error: say('Kein Abonnement angegeben.', 'No subscription given.') }); return; }
     const rows = await withCollection(collectionCandidates.pushSubscriptions, (c) =>
       c.getFullList<AnyRecord>({ filter: `endpoint = "${escapeFilterValue(endpoint)}"` }));
     // Only the coach's own device — or any, from the console.
@@ -8737,7 +8752,7 @@ app.post('/api/push/test', requireRcSession, async (req: Request, res: ExpressRe
   try {
     await ensureAdminAuth();
     const rcAuth = rcAuthByReq.get(req);
-    if (!rcAuth?.rcId) { res.status(403).json({ error: 'Benachrichtigungen gibt es für Referee Coaches.' }); return; }
+    if (!rcAuth?.rcId) { res.status(403).json({ error: say('Benachrichtigungen gibt es für Referee Coaches.', 'Notifications are for referee coaches.') }); return; }
     const sent = await pushToCoach(rcAuth.rcId, {
       title: 'SR-Coaching',
       body: 'Benachrichtigungen funktionieren. · Notifications work.',
@@ -8924,20 +8939,20 @@ function coacheeIdsOn(game: AnyRecord, coachees: CoacheeIndex): string[] {
  *  everything the request was made on is read again, under both games' locks. */
 function switchBlocker(r: AnyRecord, g1: AnyRecord | null, g2: AnyRecord | null, coachees: CoacheeIndex, isRcGame: (g: AnyRecord) => boolean): string {
   const coachee = asText(r.coachee_name);
-  if (!g1) return 'Das frühere Spiel gibt es nicht mehr.';
-  if (rcRefPresent(g1.assigned_rc_id, g1.assigned_rc)) return 'Das frühere Spiel hat inzwischen jemand übernommen.';
-  if (Date.parse(asText(g1.match_date)) < Date.now()) return 'Das frühere Spiel hat schon stattgefunden.';
-  if (isRcGame(g1)) return 'Das frühere Spiel ist inzwischen ein RC-Spiel (4.4.10).';
-  if (!coacheeIdsOn(g1, coachees).includes(asText(r.coachee_id))) return `${coachee} pfeift das frühere Spiel nicht mehr.`;
+  if (!g1) return say('Das frühere Spiel gibt es nicht mehr.', 'The earlier game no longer exists.');
+  if (rcRefPresent(g1.assigned_rc_id, g1.assigned_rc)) return say('Das frühere Spiel hat inzwischen jemand übernommen.', 'Someone has taken the earlier game in the meantime.');
+  if (Date.parse(asText(g1.match_date)) < Date.now()) return say('Das frühere Spiel hat schon stattgefunden.', 'The earlier game has already been played.');
+  if (isRcGame(g1)) return say('Das frühere Spiel ist inzwischen ein RC-Spiel (4.4.10).', 'The earlier game has become an RC game (4.4.10).');
+  if (!coacheeIdsOn(g1, coachees).includes(asText(r.coachee_id))) return say(`${coachee} pfeift das frühere Spiel nicht mehr.`, `${coachee} no longer referees the earlier game.`);
   const holderRef = { rcId: asText(r.holder_id), name: asText(r.holder_name) };
   if (!g2 || !rcRefMatches(g2.assigned_rc_id, g2.assigned_rc, holderRef)) {
-    return 'Die Buchung auf dem späteren Spiel gibt es nicht mehr — das frühere Spiel kann direkt übernommen werden.';
+    return say('Die Buchung auf dem späteren Spiel gibt es nicht mehr — das frühere Spiel kann direkt übernommen werden.', 'The booking on the later game no longer exists — the earlier game can be taken directly.');
   }
-  if (handedOverIds(g2).has(asText(r.coachee_id))) return `${coachee} wurde auf dem späteren Spiel schon abgegeben.`;
+  if (handedOverIds(g2).has(asText(r.coachee_id))) return say(`${coachee} wurde auf dem späteren Spiel schon abgegeben.`, `${coachee} has already been handed over on the later game.`);
   const i = refereeSlotQueries(g2).findIndex((q) => coachees.find(seasonOfGame(g2.match_date), q).row?.id === asText(r.coachee_id));
   const closed = Array.isArray(g2.feedback_closed_roles) ? (g2.feedback_closed_roles as unknown[]).map(asText) : [];
-  if (i < 0) return `${coachee} steht nicht mehr auf dem späteren Spiel — das frühere Spiel kann direkt übernommen werden.`;
-  if (closed.includes(i === 0 ? '1. SR' : '2. SR')) return `Für ${coachee} wurde auf dem späteren Spiel schon ein Bericht gesendet.`;
+  if (i < 0) return say(`${coachee} steht nicht mehr auf dem späteren Spiel — das frühere Spiel kann direkt übernommen werden.`, `${coachee} is no longer on the later game — the earlier game can be taken directly.`);
+  if (closed.includes(i === 0 ? '1. SR' : '2. SR')) return say(`Für ${coachee} wurde auf dem späteren Spiel schon ein Bericht gesendet.`, `A report has already been sent for ${coachee} on the later game.`);
   return '';
 }
 
@@ -8973,23 +8988,23 @@ app.post('/api/switch-requests', requireRcSession, async (req: Request, res: Exp
   try {
     await ensureAdminAuth();
     const rcAuth = rcAuthByReq.get(req);
-    if (!rcAuth) { res.status(403).json({ error: 'Einen Tausch fragt ein Referee Coach an, nicht die Konsole.' }); return; }
+    if (!rcAuth) { res.status(403).json({ error: say('Einen Tausch fragt ein Referee Coach an, nicht die Konsole.', 'A switch is requested by a referee coach, not by the console.') }); return; }
     const people = await getActiveRcPeople();
     const gameId = asText((req.body ?? {}).gameId);
     const requester = { id: rcAuth.rcId, name: rcAuth.name };
     const outcome = await withGameLock(gameId, async (): Promise<{ status: number; body: Record<string, unknown>; rec?: AnyRecord; keepsLater?: boolean }> => {
       const game = await readGameOrNull(gameId);
-      if (!game) return { status: 404, body: { error: 'Spiel nicht gefunden.' } };
-      if (rcRefPresent(game.assigned_rc_id, game.assigned_rc)) return { status: 409, body: { error: 'Dieses Spiel hat bereits ein Referee Coach übernommen.' } };
+      if (!game) return { status: 404, body: { error: say('Spiel nicht gefunden.', 'Game not found.') } };
+      if (rcRefPresent(game.assigned_rc_id, game.assigned_rc)) return { status: 409, body: { error: say('Dieses Spiel hat bereits ein Referee Coach übernommen.', 'A referee coach has already taken this game.') } };
       if (Array.isArray(game.feedback_closed_roles) && game.feedback_closed_roles.length > 0) {
-        return { status: 409, body: { error: 'Für dieses Spiel wurde bereits ein Bericht gesendet.' } };
+        return { status: 409, body: { error: say('Für dieses Spiel wurde bereits ein Bericht gesendet.', 'A report has already been sent for this game.') } };
       }
       const now = new Date().toISOString();
       const expires = switchExpiry(now, asText(game.match_date));
-      if (!expires) return { status: 422, body: { error: 'Zu kurzfristig: Das Spiel beginnt bald, für eine Anfrage bleibt keine Zeit mehr.' } };
+      if (!expires) return { status: 422, body: { error: say('Zu kurzfristig: Das Spiel beginnt bald, für eine Anfrage bleibt keine Zeit mehr.', 'Too late: the game starts soon, there is no time left for a request.') } };
       const coachees = await getCoacheeIndex();
       if ((await makeRcGameTest(coachees))(game)) {
-        return { status: 422, body: { error: 'RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung (4.4.10).' } };
+        return { status: 422, body: { error: say('RC-Spiel: Hier pfeift ein Referee Coach neben dem Coachee — es gibt keine Beobachtung (4.4.10).', 'RC game: a referee coach whistles next to the coachee — there is no observation (4.4.10).') } };
       }
       const slots = await coacheeBookingsOn(game, requester, coachees);
       const pick = pickSwitch({ gameDate: asText(game.match_date), slots, requester, knownIds: rcKnownIds });
@@ -9006,7 +9021,7 @@ app.post('/api/switch-requests', requireRcSession, async (req: Request, res: Exp
         filter: `status = "pending" && coachee_id = "${escapeFilterValue(pick.coacheeId)}"`,
       }));
       if (open.some((r) => switchOpen({ status: 'pending', expires_at: asText(r.expires_at) }, now))) {
-        return { status: 409, body: { error: `Für ${pick.name} ist bereits ein Tausch angefragt.` } };
+        return { status: 409, body: { error: say(`Für ${pick.name} ist bereits ein Tausch angefragt.`, `A switch has already been requested for ${pick.name}.`) } };
       }
       const booking = pick.booking!;
       const holder = people.find((p) => samePerson({ id: booking.rcId, name: booking.rc }, { id: p.id, name: p.fullName }, rcKnownIds));
@@ -9041,18 +9056,20 @@ app.post('/api/switch-requests/:id/:action', requireRcSession, async (req: Reque
     await getActiveRcPeople();
     const rcAuth = rcAuthByReq.get(req);
     const action = String(req.params.action);
-    if (!['accept', 'decline', 'cancel'].includes(action)) { res.status(404).json({ error: 'Unbekannte Aktion.' }); return; }
+    if (!['accept', 'decline', 'cancel'].includes(action)) { res.status(404).json({ error: say('Unbekannte Aktion.', 'Unknown action.') }); return; }
     let r: AnyRecord;
     try { r = await withCollection(collectionCandidates.switchRequests, (c) => c.getOne<AnyRecord>(String(req.params.id))); }
-    catch { res.status(404).json({ error: 'Anfrage nicht gefunden.' }); return; }
+    catch { res.status(404).json({ error: say('Anfrage nicht gefunden.', 'Request not found.') }); return; }
     const now = new Date().toISOString();
     if (!switchOpen({ status: asText(r.status), expires_at: asText(r.expires_at) }, now)) {
-      res.status(409).json({ error: 'Diese Anfrage ist nicht mehr offen.' }); return;
+      res.status(409).json({ error: say('Diese Anfrage ist nicht mehr offen.', 'This request is no longer open.') }); return;
     }
     // The holder answers; the requester may withdraw. The console may do both.
     const side = action === 'cancel' ? [r.requester_id, r.requester_name] : [r.holder_id, r.holder_name];
     if (rcAuth && !rcRefMatches(side[0], side[1], rcAuth)) {
-      res.status(403).json({ error: action === 'cancel' ? 'Nur wer angefragt hat, kann die Anfrage zurückziehen.' : 'Nur der Referee Coach mit der Buchung kann antworten.' });
+      res.status(403).json({ error: action === 'cancel'
+        ? say('Nur wer angefragt hat, kann die Anfrage zurückziehen.', 'Only the coach who asked can withdraw the request.')
+        : say('Nur der Referee Coach mit der Buchung kann antworten.', 'Only the referee coach holding the booking can answer.') });
       return;
     }
     const by = rcAuth?.name ?? 'console';
@@ -9250,7 +9267,7 @@ app.post('/api/admin/rc-meetings', requireAdminSession, async (req: Request, res
     await ensureAdminAuth();
     const id = `m${randomUUID().replace(/-/g, '').slice(0, 12)}`;
     const meeting = sanitizeMeeting({ ...(req.body ?? {}), attended: [] }, id);
-    if (!meeting) { res.status(400).json({ error: 'Datum fehlt oder ist ungültig.' }); return; }
+    if (!meeting) { res.status(400).json({ error: say('Datum fehlt oder ist ungültig.', 'Date is missing or invalid.') }); return; }
     await editRcMeetings((list) => ({ list: [...list, meeting], result: null }));
     log.info('admin.rc_meeting', 'RC-Sitzung created', { id, date: meeting.date }, reqCtx(req));
     res.status(201).json(meeting);
@@ -9269,8 +9286,8 @@ app.put('/api/admin/rc-meetings/:id', requireAdminSession, async (req: Request, 
       if (!next) return { list, result: 'invalid' as const };
       return { list: list.map((m) => (m.id === id ? next : m)), result: next };
     });
-    if (updated === null) { res.status(404).json({ error: 'RC-Sitzung nicht gefunden.' }); return; }
-    if (updated === 'invalid') { res.status(400).json({ error: 'Datum fehlt oder ist ungültig.' }); return; }
+    if (updated === null) { res.status(404).json({ error: say('RC-Sitzung nicht gefunden.', 'RC session not found.') }); return; }
+    if (updated === 'invalid') { res.status(400).json({ error: say('Datum fehlt oder ist ungültig.', 'Date is missing or invalid.') }); return; }
     log.info('admin.rc_meeting', 'RC-Sitzung updated', { id, date: updated.date }, reqCtx(req));
     res.json(updated);
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -9284,7 +9301,7 @@ app.delete('/api/admin/rc-meetings/:id', requireAdminSession, async (req: Reques
       const gone = list.find((m) => m.id === id) ?? null;
       return { list: list.filter((m) => m.id !== id), result: gone };
     });
-    if (!removed) { res.status(404).json({ error: 'RC-Sitzung nicht gefunden.' }); return; }
+    if (!removed) { res.status(404).json({ error: say('RC-Sitzung nicht gefunden.', 'RC session not found.') }); return; }
     log.info('admin.rc_meeting', 'RC-Sitzung deleted', { id, date: removed.date, attended: removed.attended.length }, reqCtx(req));
     res.json({ ok: true });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -9297,7 +9314,7 @@ app.put('/api/admin/rc-meetings/:id/attendance', requireAdminSession, async (req
     const id = String(req.params.id);
     const body = (req.body ?? {}) as { rcId?: unknown; attended?: unknown };
     const rcId = asText(body.rcId);
-    if (!rcId) { res.status(400).json({ error: 'rcId fehlt.' }); return; }
+    if (!rcId) { res.status(400).json({ error: say('rcId fehlt.', 'rcId is missing.') }); return; }
     const on = Boolean(body.attended);
     const found = await editRcMeetings((list) => {
       const current = list.find((m) => m.id === id);
@@ -9305,7 +9322,7 @@ app.put('/api/admin/rc-meetings/:id/attendance', requireAdminSession, async (req
       const attended = on ? [...new Set([...current.attended, rcId])] : current.attended.filter((x) => x !== rcId);
       return { list: list.map((m) => (m.id === id ? { ...m, attended } : m)), result: true };
     });
-    if (!found) { res.status(404).json({ error: 'RC-Sitzung nicht gefunden.' }); return; }
+    if (!found) { res.status(404).json({ error: say('RC-Sitzung nicht gefunden.', 'RC session not found.') }); return; }
     log.info('admin.rc_meeting', on ? 'RC-Sitzung attendance recorded' : 'RC-Sitzung attendance removed', { id, rcId }, reqCtx(req));
     res.json({ ok: true, attended: on });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -9359,7 +9376,7 @@ app.get('/api/rc-meetings/:id/ics', requireRcSession, async (req: Request, res: 
   try {
     await ensureAdminAuth();
     const m = (await readRcMeetings()).find((x) => x.id === String(req.params.id).replace(/\.ics$/i, ''));
-    if (!m) { res.status(404).json({ error: 'RC-Sitzung nicht gefunden.' }); return; }
+    if (!m) { res.status(404).json({ error: say('RC-Sitzung nicht gefunden.', 'RC session not found.') }); return; }
     const body = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Swiss Volley Region Zürich//Referee Coaching//DE', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', ...meetingIcsLines(m), 'END:VCALENDAR'];
     res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="rc-sitzung-${m.date}.ics"`);
@@ -9484,7 +9501,7 @@ app.get('/api/admin/rc-expenses/:rcId', requireAdminSession, async (req: Request
     const season = await resolveSeason(req.query.season);
     const people = await activeRcRecords();
     const person = people.find((p) => String(p.id) === String(req.params.rcId));
-    if (!person) { res.status(404).json({ error: 'Referee Coach nicht gefunden.' }); return; }
+    if (!person) { res.status(404).json({ error: say('Referee Coach nicht gefunden.', 'Referee coach not found.') }); return; }
     const [visits, rates, meetings, paidCap] = await Promise.all([
       collectExpenseVisits([person], season), readExpenseRates(), readRcMeetings(), readPaidCap(),
     ]);
@@ -9548,7 +9565,7 @@ app.put('/api/admin/budget', requireFinanceReader, async (req: Request, res: Exp
     await ensureAdminAuth();
     const body = (req.body ?? {}) as Record<string, unknown>;
     const season = parseSeason(body.season);
-    if (season == null) { res.status(400).json({ error: 'season required' }); return; }
+    if (season == null) { res.status(400).json({ error: say('season fehlt.', 'season required') }); return; }
     const next = normalizeBudget(body);
     await withSettingLock(budgetKey(season), () => setSetting(budgetKey(season), JSON.stringify(next)));
     log.info('admin.budget', 'season budget saved', { season, budget: next.budget, extras: next.extras.length }, reqCtx(req));
@@ -9585,7 +9602,7 @@ app.put('/api/admin/rc-paid/:rcId', requireAdminSession, async (req: Request, re
     const rcId = String(req.params.rcId);
     const body = (req.body ?? {}) as { season?: unknown; paid?: unknown };
     const season = parseSeason(body.season);
-    if (season == null) { res.status(400).json({ error: 'season required' }); return; }
+    if (season == null) { res.status(400).json({ error: say('season fehlt.', 'season required') }); return; }
     const on = Boolean(body.paid);
     const by = asText(verifyAdminSession(req).email) || 'admin';
     const entry: RcPaidEntry | null = on ? { at: new Date().toISOString(), by } : null;
@@ -10622,16 +10639,16 @@ const rcNoteWrites = new Map<string, Promise<unknown>>();
 app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     const subject = rcAuthByReq.get(req);
-    if (!subject) { res.status(403).json({ error: 'Nur Referee Coaches können eine Rückmeldung erfassen.' }); return; }
+    if (!subject) { res.status(403).json({ error: say('Nur Referee Coaches können eine Rückmeldung erfassen.', 'Only referee coaches can file a Rückmeldung.') }); return; }
     const body = (req.body ?? {}) as Record<string, unknown>;
     const gameId = asText(body.gameId);
     const note = asText(body.note).trim();
     const rolesSwapped = body.rolesSwapped === true;
     const submissionKey = asText(body.submissionKey);
-    if (!gameId) { res.status(400).json({ error: 'gameId fehlt.' }); return; }
-    if (!note) { res.status(400).json({ error: 'Die Rückmeldung darf nicht leer sein.' }); return; }
+    if (!gameId) { res.status(400).json({ error: say('gameId fehlt.', 'gameId is missing.') }); return; }
+    if (!note) { res.status(400).json({ error: say('Die Rückmeldung darf nicht leer sein.', 'The Rückmeldung must not be empty.') }); return; }
     if (note.length > RC_GAME_NOTE_MAX) {
-      res.status(422).json({ error: `Die Rückmeldung ist zu lang (höchstens ${RC_GAME_NOTE_MAX} Zeichen).` });
+      res.status(422).json({ error: say(`Die Rückmeldung ist zu lang (höchstens ${RC_GAME_NOTE_MAX} Zeichen).`, `The Rückmeldung is too long (at most ${RC_GAME_NOTE_MAX} characters).`) });
       return;
     }
 
@@ -10641,7 +10658,7 @@ app.post('/api/rc-game-notes', requireRcSession, async (req: Request, res: Expre
     const mine = await listMyRcGames(subject, body.season ?? req.query.season);
     const game = mine.find((g) => g.gameId === gameId);
     if (!game) {
-      res.status(403).json({ error: 'Dieses Spiel ist kein SR-Spiel von dir.' });
+      res.status(403).json({ error: say('Dieses Spiel ist kein SR-Spiel von dir.', 'This game is not one of your SR games.') });
       return;
     }
 
@@ -11090,7 +11107,7 @@ app.get('/api/coachees/:id/feedbacks', requireRcSession, async (req: Request, re
     try {
       coachee = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(asText(req.params.id)));
     } catch (error) {
-      if (isRecordNotFound(error)) { res.status(404).json({ error: 'Coachee not found' }); return; }
+      if (isRecordNotFound(error)) { res.status(404).json({ error: say('Coachee nicht gefunden.', 'Coachee not found') }); return; }
       throw error;
     }
     // About the person, not the row: coachees are one row per season, and
@@ -11121,7 +11138,7 @@ app.get('/api/games/:gameId/feedback', requireRcSession, async (req: Request, re
     await ensureAdminAuth();
     const role = asText(req.query.role);
     if (role !== '1. SR' && role !== '2. SR') {
-      res.status(400).json({ error: 'Rolle fehlt oder ist unbekannt.' });
+      res.status(400).json({ error: say('Rolle fehlt oder ist unbekannt.', 'Role is missing or unknown.') });
       return;
     }
     const rows = await withCollection(collectionCandidates.refereeCoaches, (collection) =>
@@ -11132,7 +11149,7 @@ app.get('/api/games/:gameId/feedback', requireRcSession, async (req: Request, re
       }));
     const me = await sessionRcIdentity(req);
     const mine = me ? rows.find((fb) => rcRefMatches(fb.rc_id, fb.rc_name, me)) : rows[0];
-    if (!mine) { res.status(404).json({ error: 'Für diese Rolle ist nichts eingereicht.' }); return; }
+    if (!mine) { res.status(404).json({ error: say('Für diese Rolle ist nichts eingereicht.', 'Nothing has been submitted for this role.') }); return; }
     res.json(mine);
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
@@ -11154,7 +11171,7 @@ app.get('/api/coachees/:id/prior-goals', requireRcSession, async (req: Request, 
     try {
       coachee = await withCollection(collectionCandidates.coachees, (c) => c.getOne<AnyRecord>(asText(req.params.id)));
     } catch (error) {
-      if (isRecordNotFound(error)) { res.status(404).json({ error: 'Coachee not found' }); return; }
+      if (isRecordNotFound(error)) { res.status(404).json({ error: say('Coachee nicht gefunden.', 'Coachee not found') }); return; }
       throw error;
     }
     // The coachee stands in as a row of its own, so the same rule that folders
@@ -11927,7 +11944,7 @@ app.get('/api/ical/me', requireRcSession, async (req: Request, res: ExpressRespo
   // loud rather than answer the read and drop the change: a "new link" button
   // that quietly keeps the old link would be worse than one that fails.
   if (asText(req.query.rotate) === '1' || asText(req.query.sr) === '1' || asText(req.query.sr) === '0') {
-    res.status(405).json({ error: 'Bitte die App neu laden (Kalender-Einstellungen werden jetzt per POST gespeichert).' });
+    res.status(405).json({ error: say('Bitte die App neu laden (Kalender-Einstellungen werden jetzt per POST gespeichert).', 'Please reload the app (calendar settings are now saved by POST).') });
     return;
   }
   await answerIcalMe(req, res, { rotate: false });
@@ -11935,7 +11952,7 @@ app.get('/api/ical/me', requireRcSession, async (req: Request, res: ExpressRespo
 
 app.post('/api/ical/me', requireRcSession, async (req: Request, res: ExpressResponse) => {
   if (!req.is('application/json')) {
-    res.status(415).json({ error: 'Expected application/json.' });
+    res.status(415).json({ error: say('Erwartet wird application/json.', 'Expected application/json.') });
     return;
   }
   const body = (req.body ?? {}) as Record<string, unknown>;
@@ -11952,7 +11969,7 @@ async function answerIcalMe(req: Request, res: ExpressResponse, change: { rotate
     // "my games" to hand out: the feed belongs to a person, not to a role.
     const person = session.rcId ? (await getActiveRcPeople()).find((p) => p.id === session.rcId) : undefined;
     if (!person) {
-      res.status(403).json({ error: 'Kalender-Abo gibt es nur für angemeldete RC.' });
+      res.status(403).json({ error: say('Kalender-Abo gibt es nur für angemeldete RC.', 'The calendar subscription is only for signed-in RCs.') });
       return;
     }
     const lang: IcalLang = asText(req.query.lang || (req.body ?? {}).lang).toUpperCase() === 'EN' ? 'EN' : 'DE';
@@ -12062,8 +12079,11 @@ async function rcRefFromBody(b: Record<string, unknown>): Promise<RcRefFromBody 
   return {
     rc_id: '', rc_name: '',
     error: rcName
-      ? `Referee Coach „${rcName}" ist nicht eindeutig oder unbekannt — bitte den Coach im Admin-Bereich anlegen oder die Schreibweise als Alias hinterlegen.`
-      : `Referee Coach mit der ID „${rcId}" gibt es nicht.`,
+      ? say(
+        `Referee Coach „${rcName}" ist nicht eindeutig oder unbekannt — bitte den Coach im Admin-Bereich anlegen oder die Schreibweise als Alias hinterlegen.`,
+        `Referee coach "${rcName}" is ambiguous or unknown — please add the coach in the admin area or store the spelling as an alias.`,
+      )
+      : say(`Referee Coach mit der ID „${rcId}" gibt es nicht.`, `There is no referee coach with the id "${rcId}".`),
   };
 }
 
@@ -12274,14 +12294,14 @@ async function deleteWhere(collection: string[], filter: string, what: string): 
 // notices it.
 async function requireFormCurator(req: Request, res: ExpressResponse, next: () => void) {
   if (verifyAdminSession(req).ok || isSurveyReader(req)) { next(); return; }
-  res.status(403).json({ error: 'Forbidden' });
+  res.status(403).json({ error: say('Keine Berechtigung.', 'Forbidden') });
 }
 
 app.delete('/api/referee-coaches/:id', requireFormCurator, async (req: Request, res: ExpressResponse) => {
   const feedbackId = String(req.params.id);
   try {
     await ensureAdminAuth();
-    if (!(await deleteFeedbackCascade(feedbackId))) { res.status(404).json({ error: 'Feedback not found' }); return; }
+    if (!(await deleteFeedbackCascade(feedbackId))) { res.status(404).json({ error: say('Feedback nicht gefunden.', 'Feedback not found') }); return; }
     log.info('feedback.delete', 'feedback deleted by the console', { feedbackId }, reqCtx(req));
     res.status(204).send();
   } catch (error) {
@@ -12398,13 +12418,13 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
 
   // Phase 1 — Validation
   if (!gameId || !role || !formData || !pdfBase64) {
-    res.status(400).json({ error: 'gameId, role, formData and pdfBase64 are required.' });
+    res.status(400).json({ error: say('gameId, role, formData und pdfBase64 sind erforderlich.', 'gameId, role, formData and pdfBase64 are required.') });
     return;
   }
   // formData must be a plain object — otherwise the identity override below is
   // silently skipped and the stored rc_name would disagree with the observation.
   if (typeof formData !== 'object' || Array.isArray(formData)) {
-    res.status(400).json({ error: 'formData must be an object.' });
+    res.status(400).json({ error: say('formData muss ein Objekt sein.', 'formData must be an object.') });
     return;
   }
   // Only the two real roles. Everything downstream treats "not 1. SR" as the
@@ -12413,14 +12433,14 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
   // another observation into the chair's statistics, and another mail to the
   // referee, with the submit-once 409 never firing.
   if (!FEEDBACK_ROLES.includes(String(role))) {
-    res.status(400).json({ error: 'role must be "1. SR" or "2. SR".' });
+    res.status(400).json({ error: say('role muss "1. SR" oder "2. SR" sein.', 'role must be "1. SR" or "2. SR".') });
     return;
   }
 
   // Validate PDF size (3MB decoded limit)
   const pdfBuffer = Buffer.from(String(pdfBase64), 'base64');
   if (pdfBuffer.length > 3 * 1024 * 1024) {
-    res.status(400).json({ error: 'PDF exceeds 3MB size limit.' });
+    res.status(400).json({ error: say('Das PDF ist grösser als 3 MB.', 'PDF exceeds 3MB size limit.') });
     return;
   }
   // Only the types the report can legitimately be. Falling through to
@@ -12432,7 +12452,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
   // report it had already overwritten the filed grades.
   const attachmentType = sniffAttachmentType(pdfBuffer);
   if (!(attachmentType in ATTACHMENT_EXTENSIONS)) {
-    res.status(422).json({ error: 'Der Anhang ist kein PDF oder Bild.' });
+    res.status(422).json({ error: say('Der Anhang ist kein PDF oder Bild.', 'The attachment is not a PDF or an image.') });
     return;
   }
 
@@ -12447,7 +12467,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
   const attachedDocs = normalizeAttachedDocs(requestedDocs);
   const unknownDocs = requestedDocs.filter((id) => typeof id !== 'string' || !attachedDocs.includes(id));
   if (unknownDocs.length > 0) {
-    res.status(422).json({ error: `Unbekannte Beilage: ${unknownDocs.map(String).join(', ')}. Bitte die Beilagen prüfen und erneut senden.` });
+    res.status(422).json({ error: say(`Unbekannte Beilage: ${unknownDocs.map(String).join(', ')}. Bitte die Beilagen prüfen und erneut senden.`, `Unknown enclosure: ${unknownDocs.map(String).join(', ')}. Please check the enclosures and send again.`) });
     return;
   }
   if (attachedDocs.length > 0) formData.attachedDocs = attachedDocs;
@@ -12466,7 +12486,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log.warn('feedback.enclosure', 'a ticked document could not be loaded', { docs: attachedDocs, error: message });
-      res.status(422).json({ error: 'Eine Beilage konnte gerade nicht geladen werden. Bitte die Beilagen abwählen oder später erneut senden.' });
+      res.status(422).json({ error: say('Eine Beilage konnte gerade nicht geladen werden. Bitte die Beilagen abwählen oder später erneut senden.', 'An enclosure could not be loaded just now. Please untick the enclosures or send again later.') });
       return;
     }
     // Measured on the real bytes, not the catalogue's — a proxied document is
@@ -12474,7 +12494,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     const enclosedBytes = enclosures.reduce((total, e) => total + e.content.byteLength, 0);
     if (enclosedBytes > ATTACH_BUDGET_BYTES) {
       res.status(422).json({
-        error: `Die Beilagen sind zu gross (${(enclosedBytes / 1e6).toFixed(1)} MB, höchstens ${Math.round(ATTACH_BUDGET_BYTES / 1e6)} MB). Bitte eine Beilage abwählen.`,
+        error: say(`Die Beilagen sind zu gross (${(enclosedBytes / 1e6).toFixed(1)} MB, höchstens ${Math.round(ATTACH_BUDGET_BYTES / 1e6)} MB). Bitte eine Beilage abwählen.`, `The enclosures are too large (${(enclosedBytes / 1e6).toFixed(1)} MB, at most ${Math.round(ATTACH_BUDGET_BYTES / 1e6)} MB). Please untick an enclosure.`),
       });
       return;
     }
@@ -12507,7 +12527,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
         replacing = await withCollection<AnyRecord>(collectionCandidates.refereeCoaches, (collection) =>
           collection.getOne<AnyRecord>(asText(replaceId)));
       } catch {
-        res.status(404).json({ error: 'Dieses Feedback gibt es nicht mehr.' });
+        res.status(404).json({ error: say('Dieses Feedback gibt es nicht mehr.', 'This feedback no longer exists.') });
         return;
       }
     }
@@ -12524,7 +12544,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     if (rcAuth
       && rcRefPresent(game.assigned_rc_id, game.assigned_rc)
       && !rcRefMatches(game.assigned_rc_id, game.assigned_rc, rcAuth)) {
-      res.status(403).json({ error: 'Dieses Spiel ist einem anderen RC zugewiesen.' });
+      res.status(403).json({ error: say('Dieses Spiel ist einem anderen RC zugewiesen.', 'This game is assigned to another RC.') });
       return;
     }
 
@@ -12534,18 +12554,18 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       // coach's report — or another referee's half of this one — is the whole
       // risk this route now carries.
       if (String(replacing.game) !== String(game.id) || asText(replacing.role_assessed) !== String(role)) {
-        res.status(400).json({ error: 'Dieses Feedback gehört zu einem anderen Spiel oder einer anderen Rolle.' });
+        res.status(400).json({ error: say('Dieses Feedback gehört zu einem anderen Spiel oder einer anderen Rolle.', 'This feedback belongs to another game or another role.') });
         return;
       }
       if (rcAuth && !rcRefMatches(replacing.rc_id, replacing.rc_name, rcAuth)) {
-        res.status(403).json({ error: 'Dieses Feedback stammt von einem anderen Referee Coach.' });
+        res.status(403).json({ error: say('Dieses Feedback stammt von einem anderen Referee Coach.', 'This feedback is from another referee coach.') });
         return;
       }
       const wait = reportResends.left(String(replacing.id));
       if (wait > 0) {
         res.set('Retry-After', String(Math.ceil(wait / 1000)));
         res.status(429).json({
-          error: `Dieser Bericht wurde eben erst korrigiert und neu verschickt. Die nächste Korrektur ist in ${Math.ceil(wait / 60000)} Min. möglich.`,
+          error: say(`Dieser Bericht wurde eben erst korrigiert und neu verschickt. Die nächste Korrektur ist in ${Math.ceil(wait / 60000)} Min. möglich.`, `This report was only just corrected and sent again. The next correction is possible in ${Math.ceil(wait / 60000)} min.`),
           retryAfterMs: wait,
         });
         return;
@@ -12556,7 +12576,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     // A reopened report is expected to find its own role closed — that is what
     // being filed means. Every other second submission is a duplicate.
     if (!replacing && closedRoles.includes(String(role))) {
-      res.status(409).json({ error: `Feedback for role "${role}" has already been submitted for this game.` });
+      res.status(409).json({ error: say(`Für die Rolle "${role}" wurde in diesem Spiel bereits ein Feedback eingereicht.`, `Feedback for role "${role}" has already been submitted for this game.`) });
       return;
     }
 
@@ -12568,7 +12588,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     const replayed = replacing ? '' : await findSubmissionByKey(asText(submissionKey));
     if (replayed) {
       res.status(409).json({
-        error: `Feedback for role "${role}" was already submitted for this game.`,
+        error: say(`Für die Rolle "${role}" wurde in diesem Spiel bereits ein Feedback eingereicht.`, `Feedback for role "${role}" was already submitted for this game.`),
         id: replayed,
       });
       return;
@@ -12577,7 +12597,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     const recentDuplicate = replacing ? '' : await findRecentSubmission(String(game.id), String(role));
     if (recentDuplicate) {
       res.status(409).json({
-        error: `Feedback for role "${role}" was already submitted for this game.`,
+        error: say(`Für die Rolle "${role}" wurde in diesem Spiel bereits ein Feedback eingereicht.`, `Feedback for role "${role}" was already submitted for this game.`),
         id: recentDuplicate,
       });
       return;
@@ -12629,7 +12649,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       if (whistleBlocksForm(String(role), refereeSlotQueries(game), coachAsReferee(rcAuth.name, self),
         (slot) => !!coacheeIndex.find(season, slot).row)) {
         res.status(422).json({
-          error: 'Du hast dieses Spiel selbst gepfiffen (SR-Spiel, 4.4.10): Für die Schiedsrichterin oder den Schiedsrichter neben dir gibt es kein Feedbackformular. Bitte auf der Startseite unter «Eigene SR-Spiele» eine Rückmeldung erfassen.',
+          error: say('Du hast dieses Spiel selbst gepfiffen (SR-Spiel, 4.4.10): Für die Schiedsrichterin oder den Schiedsrichter neben dir gibt es kein Feedbackformular. Bitte auf der Startseite unter «Eigene SR-Spiele» eine Rückmeldung erfassen.', 'You whistled this game yourself (SR game, 4.4.10): there is no feedback form for the referee next to you. Please file a Rückmeldung on Home under "Own SR games".'),
           code: 'sr_spiel',
         });
         return;
@@ -12639,7 +12659,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     if (!claimNamesSlot(claim, { name: refereeName, sv: slotRefereeId })
       && !claimNamesRow(coacheeIndex, gameSeason, claim, { name: refereeName, sv: slotRefereeId, matchNo: asText(game.match_no) })) {
       res.status(422).json({
-        error: `Das Feedback ist auf "${claimedName}" ausgestellt, aber für die Rolle "${role}" ist in diesem Spiel "${refereeName}" eingetragen. Bitte Rolle oder Schiedsrichter korrigieren.`,
+        error: say(`Das Feedback ist auf "${claimedName}" ausgestellt, aber für die Rolle "${role}" ist in diesem Spiel "${refereeName}" eingetragen. Bitte Rolle oder Schiedsrichter korrigieren.`, `The feedback is made out to "${claimedName}", but this game lists "${refereeName}" for the role "${role}". Please correct the role or the referee.`),
       });
       return;
     }
@@ -12647,7 +12667,7 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     if (!refereeName) {
       // A fixable data problem, not a server fault: as a 500 the outbox would
       // retry it forever instead of telling the coach what to correct.
-      res.status(422).json({ error: `Im Spiel ist für die Rolle "${role}" kein Schiedsrichter eingetragen.` });
+      res.status(422).json({ error: say(`Im Spiel ist für die Rolle "${role}" kein Schiedsrichter eingetragen.`, `The game lists no referee for the role "${role}".`) });
       return;
     }
 
@@ -13791,17 +13811,17 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
     // A coach may only remind for a game they hold. An admin session (no rcAuth)
     // may do it for any — the console is where somebody else's game is handled.
     if (rcAuth && !rcRefMatches(game.assigned_rc_id, game.assigned_rc, rcAuth)) {
-      res.status(403).json({ error: 'Dieses Spiel gehört einem anderen Referee Coach.' });
+      res.status(403).json({ error: say('Dieses Spiel gehört einem anderen Referee Coach.', 'This game belongs to another referee coach.') });
       return;
     }
     if (!rcRefPresent(game.assigned_rc_id, game.assigned_rc)) {
-      res.status(400).json({ error: 'Für ein Spiel ohne Referee Coach gibt es keine Erinnerung.' });
+      res.status(400).json({ error: say('Für ein Spiel ohne Referee Coach gibt es keine Erinnerung.', 'A game without a referee coach has no reminder.') });
       return;
     }
     // "Your game tomorrow" about a game already played is noise at best.
     const kickoff = Date.parse(asText(game.match_date));
     if (Number.isFinite(kickoff) && kickoff < Date.now()) {
-      res.status(422).json({ error: 'Dieses Spiel hat schon stattgefunden — eine Erinnerung gibt es nur vor dem Spiel.' });
+      res.status(422).json({ error: say('Dieses Spiel hat schon stattgefunden — eine Erinnerung gibt es nur vor dem Spiel.', 'This game has already been played — a reminder only goes out before the game.') });
       return;
     }
 
@@ -13837,7 +13857,10 @@ app.post('/api/games/:id/reminder', requireRcSession, async (req: Request, res: 
     if (wait > 0) {
       res.set('Retry-After', String(Math.ceil(wait / 1000)));
       res.status(429).json({
-        error: `Die Erinnerung für dieses Spiel ist eben erst verschickt worden. Erneut möglich in ${wait >= 3600000 ? `${Math.ceil(wait / 3600000)} Std.` : `${Math.ceil(wait / 60000)} Min.`}`,
+        error: say(
+          `Die Erinnerung für dieses Spiel ist eben erst verschickt worden. Erneut möglich in ${wait >= 3600000 ? `${Math.ceil(wait / 3600000)} Std.` : `${Math.ceil(wait / 60000)} Min.`}`,
+          `The reminder for this game was only just sent. Possible again in ${wait >= 3600000 ? `${Math.ceil(wait / 3600000)} h` : `${Math.ceil(wait / 60000)} min`}.`,
+        ),
         retryAfterMs: wait,
       });
       return;
@@ -13920,7 +13943,7 @@ let boerseManualRun: Promise<unknown> | null = null;
 app.post('/api/admin/boerse/sync', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
     if (boerseManualRun) {
-      res.status(409).json({ error: 'Die Börse wird gerade abgefragt — bitte einen Moment warten.' });
+      res.status(409).json({ error: say('Die Börse wird gerade abgefragt — bitte einen Moment warten.', 'The Börse is being read right now — please wait a moment.') });
       return;
     }
     const startedAt = new Date().toISOString();
@@ -13999,7 +14022,7 @@ app.put('/api/admin/email-templates', requireAdminSession, async (req: Request, 
       if (typeof t.outroEn === 'string') clean.outroEn = t.outroEn.slice(0, 4000);
       if (typeof t.subjectEn === 'string') clean.subjectEn = oneLine(t.subjectEn, 300);
       if (typeof t.noteEn === 'string') clean.noteEn = t.noteEn.slice(0, 4000);
-      if (!clean.subject.trim()) { res.status(400).json({ error: `Betreff darf nicht leer sein (${kind}).` }); return; }
+      if (!clean.subject.trim()) { res.status(400).json({ error: say(`Betreff darf nicht leer sein (${kind}).`, `The subject must not be empty (${kind}).`) }); return; }
       pending.push([kind, clean]);
     }
     for (const [kind, clean] of pending) {
@@ -14024,16 +14047,16 @@ app.put('/api/admin/survey-config', requireAdminSession, async (req: Request, re
   try {
     const raw = (req.body ?? {}) as AnyRecord;
     const sent = Array.isArray(raw.questions) ? raw.questions.length : 0;
-    if (!sent) { res.status(400).json({ error: 'Der Fragebogen braucht mindestens eine Frage.' }); return; }
+    if (!sent) { res.status(400).json({ error: say('Der Fragebogen braucht mindestens eine Frage.', 'The questionnaire needs at least one question.') }); return; }
     if (sent > SURVEY_LIMITS.questions) {
-      res.status(400).json({ error: `Höchstens ${SURVEY_LIMITS.questions} Fragen.` }); return;
+      res.status(400).json({ error: say(`Höchstens ${SURVEY_LIMITS.questions} Fragen.`, `At most ${SURVEY_LIMITS.questions} questions.`) }); return;
     }
     const clean = normalizeSurveyConfig(raw);
     // Saving fewer questions than were sent means normalisation threw some away
     // — a blank one, or two sharing an id. Refuse the whole save rather than
     // quietly storing a form that is missing what the admin just typed.
     if (clean.questions.length !== sent) {
-      res.status(400).json({ error: 'Jede Frage braucht einen Text und eine eigene Kennung.' }); return;
+      res.status(400).json({ error: say('Jede Frage braucht einen Text und eine eigene Kennung.', 'Every question needs a text and its own key.') }); return;
     }
     await setSetting(SURVEY_CONFIG_KEY, JSON.stringify(clean));
     log.info('survey.config_saved', 'survey form updated', { questions: clean.questions.length });
@@ -14159,7 +14182,7 @@ async function parkOwner(req: Request, res: ExpressResponse): Promise<ActiveRcPe
   const session = verifyRcSession(req);
   const person = session.rcId ? (await getActiveRcPeople()).find((p) => p.id === session.rcId) : undefined;
   if (!person) {
-    res.status(403).json({ error: 'Entwürfe parken gibt es nur für angemeldete Referee Coaches.' });
+    res.status(403).json({ error: say('Entwürfe parken gibt es nur für angemeldete Referee Coaches.', 'Parking drafts is only for signed-in referee coaches.') });
     return null;
   }
   return person;
@@ -14427,7 +14450,7 @@ async function handleParkDrafts(req: Request, res: ExpressResponse): Promise<voi
   if (!rl.allowed) { denyRateLimited(req, res, 'park', rl.retryAfterMs); return; }
   try {
     const gameId = asText(req.params.gameId).slice(0, 64);
-    if (!gameId) { res.status(400).json({ error: 'gameId is required.' }); return; }
+    if (!gameId) { res.status(400).json({ error: say('gameId fehlt.', 'gameId is required.') }); return; }
 
     // Keyed by role, so a client that sends the same role twice parks it once
     // instead of racing itself into two rows for one form.
@@ -14437,7 +14460,7 @@ async function handleParkDrafts(req: Request, res: ExpressResponse): Promise<voi
       const clean = sanitizeParkedDraft(raw);
       if (clean) byRole.set(clean.role, clean);
     }
-    if (byRole.size === 0) { res.status(400).json({ error: 'Nothing to park.' }); return; }
+    if (byRole.size === 0) { res.status(400).json({ error: say('Nichts zu parken.', 'Nothing to park.') }); return; }
 
     await ensureAdminAuth();
     await withParkLock(`${owner.id}|${gameId}`, async () => {
@@ -14494,7 +14517,7 @@ app.delete('/api/drafts/parked/:gameId', requireRcSession, async (req: Request, 
   if (!rl.allowed) { denyRateLimited(req, res, 'park', rl.retryAfterMs); return; }
   try {
     const gameId = asText(req.params.gameId).slice(0, 64);
-    if (!gameId) { res.status(400).json({ error: 'gameId is required.' }); return; }
+    if (!gameId) { res.status(400).json({ error: say('gameId fehlt.', 'gameId is required.') }); return; }
     await ensureAdminAuth();
     const removed = await withParkLock(`${owner.id}|${gameId}`, async () => {
       // Read this owner's rows and delete those ids — never a filtered delete
@@ -14597,7 +14620,7 @@ async function notebookOwner(req: Request, res: ExpressResponse): Promise<Active
   const session = verifyRcSession(req);
   const person = session.rcId ? (await getActiveRcPeople()).find((p) => p.id === session.rcId) : undefined;
   if (!person) {
-    res.status(403).json({ error: 'Den Notizblock gibt es nur für angemeldete Referee Coaches.' });
+    res.status(403).json({ error: say('Den Notizblock gibt es nur für angemeldete Referee Coaches.', 'The Notebook is only for signed-in referee coaches.') });
     return null;
   }
   return person;
@@ -14841,16 +14864,16 @@ app.get('/api/notebook/pages/:pageId', requireRcSession, async (req: Request, re
   const pageId = asText(req.params.pageId).slice(0, 64);
   // Fixed sentences on every 4xx: req.out logs their bodies, and a page must
   // never be echoed into the Protokoll by way of an error message.
-  if (!NOTEBOOK_PAGE_ID_RE.test(pageId)) { res.status(404).json({ error: 'Seite nicht gefunden.' }); return; }
+  if (!NOTEBOOK_PAGE_ID_RE.test(pageId)) { res.status(404).json({ error: say('Seite nicht gefunden.', 'Page not found.') }); return; }
   try {
     await ensureAdminAuth();
     const row = await db.collection(NOTEBOOK_COLLECTION).getFirstListItem<AnyRecord>(
       `owner_id = "${escapeFilterValue(owner.id)}" && page_id = "${escapeFilterValue(pageId)}"`,
     );
-    if (notebookExpiry(row) <= Date.now()) { res.status(404).json({ error: 'Seite nicht gefunden.' }); return; }
+    if (notebookExpiry(row) <= Date.now()) { res.status(404).json({ error: say('Seite nicht gefunden.', 'Page not found.') }); return; }
     res.json({ ownerId: owner.id, page: toNotebookWire(row, true) });
   } catch (error) {
-    if (isMissingCollectionError(error) || isRecordNotFound(error)) { res.status(404).json({ error: 'Seite nicht gefunden.' }); return; }
+    if (isMissingCollectionError(error) || isRecordNotFound(error)) { res.status(404).json({ error: say('Seite nicht gefunden.', 'Page not found.') }); return; }
     res.status(500).json({ error: safeError(error) });
   }
 });
@@ -14888,7 +14911,7 @@ async function handleNotebookPush(req: Request, res: ExpressResponse): Promise<v
       const prev = byId.get(s.page.pageId);
       if (!prev || prev.updatedAt < s.page.updatedAt) byId.set(s.page.pageId, s.page);
     }
-    if (byId.size === 0 && rejected.length === 0) { res.status(400).json({ error: 'Nichts zu sichern.' }); return; }
+    if (byId.size === 0 && rejected.length === 0) { res.status(400).json({ error: say('Nichts zu sichern.', 'Nothing to back up.') }); return; }
 
     await ensureAdminAuth();
     await withNotebookLock(owner.id, async () => {
@@ -15017,11 +15040,11 @@ app.use(async (err: unknown, req: Request, res: ExpressResponse, _next: (e?: unk
     kind: corsBlocked ? 'cors' : badJson ? 'bad-json' : callerBody ? bodyType : 'unhandled',
   }, ctx);
   if (res.headersSent) return;
-  if (corsBlocked) { res.status(403).json({ error: 'Origin not allowed.' }); return; }
-  if (badJson) { res.status(400).json({ error: 'Malformed JSON body.' }); return; }
+  if (corsBlocked) { res.status(403).json({ error: say('Herkunft nicht erlaubt.', 'Origin not allowed.') }); return; }
+  if (badJson) { res.status(400).json({ error: say('Ungültiger JSON-Inhalt.', 'Malformed JSON body.') }); return; }
   if (callerBody) {
     const status = Number((err as { status?: unknown }).status);
-    res.status(status >= 400 && status < 500 ? status : 400).json({ error: 'Request body refused.' });
+    res.status(status >= 400 && status < 500 ? status : 400).json({ error: say('Anfrageinhalt abgelehnt.', 'Request body refused.') });
     return;
   }
   res.status(500).json({ error: 'Internal server error' });

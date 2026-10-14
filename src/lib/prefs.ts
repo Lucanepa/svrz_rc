@@ -35,3 +35,29 @@ export function setStoredRcId(rcId: string | null): void {
     else localStorage.removeItem(RC_KEY);
   } catch { /* private mode — the picker just asks again next time */ }
 }
+
+// The language on screen right now. The RC app and the admin console each keep
+// their own choice (svrz_lang / svrz_admin_lang) and say which one is showing;
+// the pages that only read the stored choice need not. Read by what speaks
+// outside any one screen: the API language header (apiLang.ts), and the toast
+// and confirm chrome when their caller passed no language.
+let showing: Lang | null = null;
+
+export function setUiLang(lang: Lang | null): void {
+  showing = lang;
+}
+
+export function uiLang(): Lang {
+  if (showing) return showing;
+  const stored = getStoredLang();
+  if (stored) return stored;
+  // Nothing chosen yet: the browser's guess, as the app's first screen makes it.
+  const nav = typeof navigator === 'undefined' ? '' : navigator.language || '';
+  return nav.toLowerCase().startsWith('en') ? 'EN' : 'DE';
+}
+
+/** The text for the language on screen — for a message composed away from any
+ *  screen's dictionary (a fetch helper's fallback, a parser's refusal). */
+export function inUiLang(de: string, en: string): string {
+  return uiLang() === 'EN' ? en : de;
+}

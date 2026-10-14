@@ -20,7 +20,7 @@ import {
 } from './logquery.ts';
 import { installErrorAlerts } from './erroralerts.ts';
 import { latestTakes, type LogLine } from './assignedAt.ts';
-import { sameVisit } from '../src/lib/doubleGame.ts';
+import { tripCoachees, type HeldGameRef } from '../src/lib/doubleGame.ts';
 import { boundedKeys, callerBodyError, clientLogUser, clientTimestamp } from './logguard.ts';
 import { computePlanning, seasonProgress, type PlanningReport, type PlanningGameInput, type SeasonProgress } from './planning.ts';
 import { nativeClient } from './nativeClient.ts';
@@ -9664,9 +9664,10 @@ async function makeCoacheeSlotTest(coacheeIndex?: CoacheeIndex): Promise<(game: 
  * blocks it, or null. A game is blocked only when EVERY coachee on it is
  * booked elsewhere; one with a free coachee beside a booked one stays
  * takeable, for the free one. Admin assignments skip this — the console is
- * where a deliberate second look is set up. The `taker`'s own game on the
- * same Zürich day books nobody against this one: that is a double game, one
- * trip (asked 2026-10-07, src/lib/doubleGame.ts).
+ * where a deliberate second look is set up. A coachee on the `taker`'s own
+ * game the same Zürich day is free here, whatever else they are booked for:
+ * that is a double game, one trip (asked 2026-10-07 and 2026-10-14,
+ * `tripCoachees` in src/lib/doubleGame.ts).
  */
 async function openBookingBlocking(game: AnyRecord, taker?: PersonRef, coacheeIndex?: CoacheeIndex): Promise<{ name: string; rc: string; date: string } | null> {
   const slots = await coacheeBookingsOn(game, taker, coacheeIndex);
@@ -9679,7 +9680,8 @@ async function openBookingBlocking(game: AnyRecord, taker?: PersonRef, coacheeIn
  *  ANOTHER held game of the season, or null — the facts openBookingBlocking
  *  decides on, and that a switch request (server/switchRequests.ts) picks its
  *  coachee from. A role whose report is sent books nobody, nor does one the
- *  holder handed over to an earlier game. */
+ *  holder handed over to an earlier game, and a coachee the taker watches on
+ *  their own game that day has no booking here at all. */
 async function coacheeBookingsOn(game: AnyRecord, taker?: PersonRef, coacheeIndex?: CoacheeIndex): Promise<SlotBooking[]> {
   const coachees = coacheeIndex ?? await getCoacheeIndex();
   const season = seasonOfGame(game.match_date);
@@ -9692,28 +9694,32 @@ async function coacheeBookingsOn(game: AnyRecord, taker?: PersonRef, coacheeInde
     fields: 'id,match_date,first_referee,second_referee,first_referee_id,second_referee_id,match_no,assigned_rc,assigned_rc_id,feedback_closed_roles,handed_over',
   }));
   const booked = new Map<string, NonNullable<SlotBooking['booking']>>();
+  const heldRefs: Array<HeldGameRef & { coacheeIds: string[] }> = [];
   for (const g of held) {
     if (seasonOfGame(g.match_date) !== season) continue;
-    // The taker's own game on this game's day: the same trip, so it books
-    // nobody against this one.
-    if (taker && sameVisit(
-      { rc: { id: asText(g.assigned_rc_id), name: asText(g.assigned_rc) }, date: asText(g.match_date) },
-      { rc: taker, date: asText(game.match_date) },
-      rcKnownIds,
-    )) continue;
     const closed = Array.isArray(g.feedback_closed_roles) ? g.feedback_closed_roles as string[] : [];
     const handed = handedOverIds(g);
-    refereeSlotQueries(g).forEach((q, i) => {
-      if (closed.includes(i === 0 ? '1. SR' : '2. SR')) return;
-      const row = coachees.find(season, q).row;
-      if (!row || handed.has(String(row.id)) || booked.has(String(row.id))) return;
-      booked.set(String(row.id), {
+    const onSlots = refereeSlotQueries(g).map((q) => String(coachees.find(season, q).row?.id ?? ''));
+    heldRefs.push({
+      rc: { id: asText(g.assigned_rc_id), name: asText(g.assigned_rc) }, date: asText(g.match_date),
+      coacheeIds: onSlots.filter((id) => !handed.has(id)),
+    });
+    onSlots.forEach((id, i) => {
+      if (!id || closed.includes(i === 0 ? '1. SR' : '2. SR')) return;
+      if (handed.has(id) || booked.has(id)) return;
+      booked.set(id, {
         gameId: String(g.id), matchNo: asText(g.match_no), date: asText(g.match_date),
         rc: asText(g.assigned_rc), rcId: asText(g.assigned_rc_id),
       });
     });
   }
-  return slots.map((x) => ({ coacheeId: String(x.row!.id), name: asText(x.q.name), booking: booked.get(String(x.row!.id)) ?? null }));
+  // The taker's own games on this game's day: one trip, so a coachee they
+  // watch there books nothing against this game.
+  const trip = taker ? tripCoachees(heldRefs, taker, asText(game.match_date), rcKnownIds) : new Set<string>();
+  return slots.map((x) => {
+    const id = String(x.row!.id);
+    return { coacheeId: id, name: asText(x.q.name), booking: trip.has(id) ? null : booked.get(id) ?? null };
+  });
 }
 
 /** The fields rcWorkloadRule and the coachee-slot test read off a game. */

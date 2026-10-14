@@ -101,7 +101,7 @@ import { importBlock } from './lib/notebookImport';
 import { parseResult, formatResult, validateResult, findSetError, tallyFromSets, isSetComplete, isMatchDecided, type SetScore } from './lib/matchResult';
 import { normalizeCoacheeGroup, groupLabel, splitCoacheeGroups, isNewSrGroup, isPromotionGroup, newSrGroupOptions, COACHEE_GROUP_OPTIONS } from './lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName as normName } from './lib/coacheeName';
-import { sameVisit } from './lib/doubleGame';
+import { tripCoachees } from './lib/doubleGame';
 import { coacheeLookup, coacheeUrlToken, gameLabel, gameUrlToken, isMyGame, isMyRecord, resolveCoacheeToken, resolveGameToken, samePerson, svClaimOnSlot, type SlotRole } from './lib/identity';
 import { keepGame, levelKey, levelDisplay, isTargetActive, resolveNiveauTable, visitRolesFor, type CoacheeTargetMap, type NiveauMatrix, type TargetRole } from './lib/niveauTargets';
 import SvrzLogo from './SvrzLogo';
@@ -2915,8 +2915,10 @@ export default function App() {
     } catch (err) {
       // The server refuses to hand over a game somebody else holds (409). That
       // answer only ever reaches a screen that was already out of date, so the
-      // row is corrected in the same breath as the message.
-      setBackendNotice(localizeRuntimeError(err instanceof Error ? err.message : String(err), formData.lang));
+      // row is corrected in the same breath as the message. A toast, not the
+      // notice under the list: on a phone the list runs on for screens below
+      // the tapped row, and the refusal never came into view (2026-10-14).
+      toast.error(localizeRuntimeError(err instanceof Error ? err.message : String(err), formData.lang), { lang: formData.lang });
       void syncGamesQuietly();
       return false;
     }
@@ -2946,6 +2948,24 @@ export default function App() {
     return out;
   };
 
+  // The coach's own held games, as the double-game rule reads them: who, when,
+  // and which coachees they watch there (a handed-over one is no longer theirs).
+  const myHeldRefs = useMemo(() => eligibleGames
+    .filter((g) => g.assignedRc && isMyGame(g, rcAuth, rcKnownIds))
+    .map((g) => ({
+      rc: { id: g.assignedRcId ?? '', name: g.assignedRc ?? '' },
+      date: g.date,
+      coacheeIds: (['1. SR', '2. SR'] as const)
+        .map((role) => roster.idOnSlot(g, role))
+        .filter((id): id is string => !!id && !(g.handedOver ?? []).includes(id)),
+    })), [eligibleGames, rcAuth, rcKnownIds, roster]);
+  /** The coachees this coach already watches on the game's Zürich day — free
+   *  on this game whatever else they are booked for, the same rule the take
+   *  guard applies (tripCoachees, src/lib/doubleGame.ts). */
+  const myTrip = (game: EligibleGame) => tripCoachees(
+    myHeldRefs, { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' }, game.date, rcKnownIds,
+  );
+
   /**
    * One open booking per coachee (asked 2026-09-30): a game is not takeable
    * while EVERY coachee on it already has one on another game — a held game
@@ -2958,17 +2978,13 @@ export default function App() {
   const bookingBlocking = (game: EligibleGame): { name: string; rc: string; date: string } | null => {
     let first: { name: string; rc: string; date: string } | null = null;
     let any = false;
+    const trip = myTrip(game);
     for (const role of ['1. SR', '2. SR'] as const) {
       const id = roster.idOnSlot(game, role);
       if (!id) continue;
       any = true;
       const booked = plannedObsByCoachee.get(id);
-      if (!booked || booked.game.id === game.id) return null;
-      if (sameVisit(
-        { rc: { id: booked.game.assignedRcId ?? '', name: booked.game.assignedRc ?? '' }, date: booked.game.date },
-        { rc: { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' }, date: game.date },
-        rcKnownIds,
-      )) return null;
+      if (!booked || booked.game.id === game.id || trip.has(id)) return null;
       first ??= { name: roster.onSlot(game, role)?.full_name || getRefereeForRole(game, role), rc: booked.rc, date: booked.game.date };
     }
     return any ? first : null;
@@ -2989,11 +3005,7 @@ export default function App() {
     // remains open in front of them, with "Abgeben"); another coach's goes,
     // so a refused take does not leave a dead button behind.
     if (booked.game.id === game.id) return !isMyGame(game, rcAuth, rcKnownIds);
-    if (sameVisit(
-      { rc: { id: booked.game.assignedRcId ?? '', name: booked.game.assignedRc ?? '' }, date: booked.game.date },
-      { rc: { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' }, date: game.date },
-      rcKnownIds,
-    )) return false;
+    if (myTrip(game).has(coacheeId)) return false;
     const at = instantOf(game.date);
     const bookedAt = instantOf(booked.game.date);
     if (at == null || bookedAt == null) return true;
@@ -3302,7 +3314,7 @@ export default function App() {
       refreshAfterAssignment({ id: previous?.assignedRcId, name: previous?.assignedRc });
       return true;
     } catch (err) {
-      setBackendNotice(localizeRuntimeError(err instanceof Error ? err.message : String(err), formData.lang));
+      toast.error(localizeRuntimeError(err instanceof Error ? err.message : String(err), formData.lang), { lang: formData.lang });
       void syncGamesQuietly();
       return false;
     }

@@ -66,6 +66,7 @@ import { dayLabel, dayTimeLabel, clockLabel, dayKey, todayKey, instantOf } from 
 import { inSeasonOrManual, currentSeason, seasonLabel } from '../lib/season';
 import { importFresh } from '../lib/freshImport';
 import { APP_VERSION, BUILD_INFO } from '../lib/buildInfo';
+import { useTabScroll } from '../lib/useTabScroll';
 
 type Lang = 'DE' | 'EN';
 const CUR_SEASON = currentSeason();
@@ -920,6 +921,9 @@ export default function AdminConsole() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [tab, setTab] = useState<AdminTab>(adminTabFromUrl);
+  // Every tab stays mounted and scrolls the one window: each opens where it
+  // was left, not at the offset of the tab before it.
+  const forgetTabScroll = useTabScroll(tab);
   // A game the Planung tab asked to open: the Games tab searches for it. `n`
   // counts the asks, so opening the same game twice still re-applies it.
   const [gamesFocus, setGamesFocus] = useState<{ q: string; n: number }>({ q: '', n: 0 });
@@ -1307,7 +1311,9 @@ export default function AdminConsole() {
         <div hidden={tab !== 'form'}><SurveyFormAdmin t={t} lang={lang} /></div>
         <div hidden={tab !== 'planning'}>
           <PlanningAdmin lang={lang} season={defaultSeason} settingsLoading={settingsLoading} active={tab === 'planning'}
-            onOpenGame={(matchNo) => { setGamesFocus((f) => ({ q: matchNo, n: f.n + 1 })); setTab('games'); }} />
+            // The search narrows Spiele to that one game: opened at the top,
+            // not at an offset meant for the whole list.
+            onOpenGame={(matchNo) => { setGamesFocus((f) => ({ q: matchNo, n: f.n + 1 })); forgetTabScroll('games'); setTab('games'); }} />
         </div>
         <div hidden={tab !== 'games'}>
           {/* Import status strip first: it turns red exactly when the list
@@ -2655,8 +2661,12 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
             </div>
           ) : (
             <div key={c.id} data-coachee-row={c.id} className={cn('py-2 transition-colors', shownId === c.id && 'bg-amber-50 ring-2 ring-amber-300 rounded-lg px-2')}>
-              <div className="flex items-center gap-3">
-                <div className="flex-1 min-w-0">
+              {/* From sm up the buttons stand beside the details and the target
+                  line runs under both. On a phone they took a third of the
+                  width beside the details and cut every line short (Luca,
+                  2026-10-14), so there they come last, on a row of their own. */}
+              <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-x-3">
+                <div className="min-w-0">
                   <p className="text-sm font-medium text-stone-800 truncate">{surnameFirstLabel(c)}</p>
                   {/* The number beside the level, or its absence in amber:
                       the badge above counts these, the row says which. */}
@@ -2675,21 +2685,23 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
                     <CoacheePinLine lang={lang} sv={c.referee_id} pins={dossierPins} onMint={mintDossierPin} />
                   )}
                 </div>
-                <button onClick={() => setTargetEditId(targetEditId === c.id ? null : c.id)} className={cn(btnGhost, targetEditId === c.id && 'bg-stone-100')} title={t.target}><Target size={13} /></button>
-                <button onClick={() => startEdit(c)} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
-                <button onClick={() => remove(c)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
-              </div>
-              <div className="flex items-center gap-1.5 mt-1 pl-0.5">
-                <span className="text-[11px] text-stone-400">{t.target}:</span>
-                <span className={cn('text-[11px] font-medium', isTargetActive(targets[c.id], levelKey(c.referee_level, c.stage), niveauTable) ? 'text-emerald-700' : 'text-stone-400')}>{(() => {
-                  const key = levelKey(c.referee_level, c.stage);
-                  const tgt = targets[c.id];
-                  // Auto mode with no derivable rules because the Niveau/Stufe is still TBD
-                  if ((!tgt || tgt.mode === 'auto') && !hasNiveauRules(key, niveauTable) && levelDisplay(c.referee_level, c.stage).tbd) {
-                    return <>Auto (<span className="text-red-600 font-semibold">TBD</span>)</>;
-                  }
-                  return summarizeTarget(tgt, key, lang, niveauTable);
-                })()}</span>
+                <div data-coachee-actions className="order-last sm:order-none mt-2 sm:mt-0 flex gap-3">
+                  <button onClick={() => setTargetEditId(targetEditId === c.id ? null : c.id)} className={cn(btnGhost, targetEditId === c.id && 'bg-stone-100')} title={t.target}><Target size={13} /></button>
+                  <button onClick={() => startEdit(c)} className={btnGhost} aria-label={t.edit} title={t.edit}><Pencil size={13} /></button>
+                  <button onClick={() => remove(c)} aria-label={t.deleteLabel} title={t.deleteLabel} className="inline-flex items-center h-8 px-2.5 rounded-lg border border-red-100 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={13} /></button>
+                </div>
+                <div className="sm:col-span-2 flex items-center gap-1.5 mt-1 pl-0.5">
+                  <span className="text-[11px] text-stone-400">{t.target}:</span>
+                  <span className={cn('text-[11px] font-medium', isTargetActive(targets[c.id], levelKey(c.referee_level, c.stage), niveauTable) ? 'text-emerald-700' : 'text-stone-400')}>{(() => {
+                    const key = levelKey(c.referee_level, c.stage);
+                    const tgt = targets[c.id];
+                    // Auto mode with no derivable rules because the Niveau/Stufe is still TBD
+                    if ((!tgt || tgt.mode === 'auto') && !hasNiveauRules(key, niveauTable) && levelDisplay(c.referee_level, c.stage).tbd) {
+                      return <>Auto (<span className="text-red-600 font-semibold">TBD</span>)</>;
+                    }
+                    return summarizeTarget(tgt, key, lang, niveauTable);
+                  })()}</span>
+                </div>
               </div>
               {targetEditId === c.id && (
                 <TargetEditor t={t} target={targets[c.id] ?? { mode: 'auto' }} onChange={(next) => onTargets({ ...targets, [c.id]: next })} leagueOptions={leagueOptions} />
@@ -6077,7 +6089,10 @@ function GamesAdmin({ t, lang, season, settingsLoading, active, focus }: { t: T;
       ) : shown.length === 0 ? (
         <p className="mt-3 text-sm text-stone-400">{t.gamesNone}</p>
       ) : (
-        <GameList className="mt-3 max-h-[70vh] overflow-y-auto">
+        // A box of its own only beside the rail. On a phone the search, the
+        // toggles and the header above it left the box a third of the screen
+        // (Luca, 2026-10-14), so there the whole page scrolls instead.
+        <GameList className="mt-3 lg:max-h-[70vh] lg:overflow-y-auto">
           {shown.slice(0, limit).map((g) => (
             <GameRow
               key={g.id}

@@ -121,6 +121,7 @@ import { useDocTextSearch, DOC_TEXT_MIN_QUERY, type DocTextSearch } from './lib/
 import type { DocTextResult } from './lib/docText';
 import { clientLog } from './lib/logger';
 import { isNoResponseMessage } from './lib/connection';
+import { useTabScroll } from './lib/useTabScroll';
 
 // Niveau string for the feedback form / PDF: raw and truthful — "N3 - 2", "N4",
 // "ITA" — never a fabricated or TBD value (the red TBD is a UI-only concept).
@@ -5537,6 +5538,10 @@ export default function App() {
   // an admin who is being sent to /admin.
   // The list screens carry the bottom nav; the form and the other sub-views keep their Back button.
   const bottomNav = feedbackSubView === 'coachees';
+  // The tabs on that bar share the window's one scroll: each opens where it
+  // was left, or at the top the first time, instead of at the offset of the
+  // tab before it (clamped to its bottom when shorter).
+  const forgetTabScroll = useTabScroll(listTab, bottomNav);
   // Whatever is scrolled into view (keyboard focus, scrollIntoView, a row
   // opened near the foot of the page) stops above the bar, not under it. From
   // lg up the bar is a rail at the side and there is nothing to stop above.
@@ -7281,7 +7286,7 @@ export default function App() {
               const startFromSummary = (g: rcCoachSummaryGame) => {
                 const eg = eligibleGames.find((e) => e.id === g.gameId);
                 if (eg) handleSelectGame(eg, { id: g.coacheeId, name: g.refereeName });
-                else { setListTab('games'); setListSearch(g.teams); }
+                else { forgetTabScroll('games'); setListTab('games'); setListSearch(g.teams); }
               };
               /** Everyone refereeing the game, each marked for whether they are
                *  one of THIS coach's coachees, as one chip apiece.

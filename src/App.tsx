@@ -2984,10 +2984,11 @@ export default function App() {
    */
   const bookedBefore = (coacheeId: string, game: EligibleGame): boolean => {
     const booked = plannedObsByCoachee.get(coacheeId);
-    // The booked game itself is not ruled out: it is taken, and the taken
-    // games have their own rule (gone from the list unless open or asked for),
-    // which keeps the row the coach just took in front of them.
-    if (!booked || booked.game.id === game.id) return false;
+    if (!booked) return false;
+    // The booked game itself: the coach's own stays (the row they just took
+    // remains open in front of them, with "Abgeben"); another coach's goes,
+    // so a refused take does not leave a dead button behind.
+    if (booked.game.id === game.id) return !isMyGame(game, rcAuth, rcKnownIds);
     if (sameVisit(
       { rc: { id: booked.game.assignedRcId ?? '', name: booked.game.assignedRc ?? '' }, date: booked.game.date },
       { rc: { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' }, date: game.date },

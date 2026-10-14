@@ -2976,8 +2976,8 @@ export default function App() {
 
   /**
    * Whether a coachee's booking rules this game out for good (asked
-   * 2026-10-14): the booking is on this game itself, or on an earlier or the
-   * same kick-off — a switch only ever brings an observation forward, so
+   * 2026-10-14): the booking is on an earlier or the same kick-off — a switch
+   * only ever brings an observation forward, so
    * nothing can make this game takeable for them. An EARLIER game is not ruled
    * out: it is where the coach asks for the earlier observation. The coach's
    * own game on the same Zürich day is a double game, never a block.
@@ -2985,7 +2985,10 @@ export default function App() {
   const bookedBefore = (coacheeId: string, game: EligibleGame): boolean => {
     const booked = plannedObsByCoachee.get(coacheeId);
     if (!booked) return false;
-    if (booked.game.id === game.id) return true;
+    // The booked game itself: the coach's own stays (the row they just took
+    // remains open in front of them, with "Abgeben"); another coach's goes,
+    // so a refused take does not leave a dead button behind.
+    if (booked.game.id === game.id) return !isMyGame(game, rcAuth, rcKnownIds);
     if (sameVisit(
       { rc: { id: booked.game.assignedRcId ?? '', name: booked.game.assignedRc ?? '' }, date: booked.game.date },
       { rc: { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' }, date: game.date },

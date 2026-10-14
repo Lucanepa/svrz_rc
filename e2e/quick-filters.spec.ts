@@ -180,14 +180,21 @@ test.describe('games', () => {
     await expect(page.getByText(FREE.homeTeam)).toHaveCount(0);
   });
 
-  test('a flagged game stays on the default list when a coach already took another of theirs', async ({ page }) => {
+  // "Ohne Geplante" hides only what cannot be taken (asked 2026-10-14): a
+  // star does not make a game after the booking takeable, so it goes too. A
+  // game the same day as the coach's own booking is a double game and stays.
+  test('a flagged game after a booking the coach holds leaves the default list too', async ({ page }) => {
     await stubSignedInApp(page);
-    // GAME is held by the signed-in coach with its feedback still open, which
-    // books the referee and hides the rest of their games — the star excepted.
-    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [GAME, FREE, STARRED] }));
+    // GAME (15.11.) is held by the signed-in coach with its feedback still
+    // open, which books the referee: their later games cannot be taken.
+    const LATER = { ...FREE, homeTeam: 'VBC Später', date: '2026-11-22T19:30:00Z' };
+    const LATER_STARRED = { ...STARRED, date: '2026-11-22T19:30:00Z' };
+    const SAME_DAY = { ...FREE, id: 'g-same', matchNo: '2400222', homeTeam: 'VBC Doppel', date: '2026-11-15T15:00:00Z' };
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [GAME, LATER, LATER_STARRED, SAME_DAY] }));
     await page.goto('/games');
-    await expect(page.getByText(STARRED.homeTeam)).toBeVisible();
-    await expect(page.getByText(FREE.homeTeam)).toHaveCount(0);
+    await expect(page.getByText(SAME_DAY.homeTeam)).toBeVisible();
+    await expect(page.getByText(LATER_STARRED.homeTeam)).toHaveCount(0);
+    await expect(page.getByText(LATER.homeTeam)).toHaveCount(0);
   });
 });
 

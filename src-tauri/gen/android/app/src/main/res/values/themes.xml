@@ -1,6 +1,9 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
     <style name="Theme.svrz_rc" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <!-- The page's own background (stone-100), shown under the system bars
+             (MainActivity) and before the page has loaded. Light in night mode
+             too: the app is light-only. -->
+        <item name="android:windowBackground">@color/app_background</item>
     </style>
 </resources>

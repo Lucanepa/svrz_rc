@@ -21,6 +21,7 @@
 // intake stay open, so an outdated app can still say what happened to it.
 
 import type { Request, Response } from 'express';
+import { say } from './say.ts';
 
 export const NATIVE_JAR_COOKIES = new Set(['svrz_rc_session', 'svrz_admin_session']);
 
@@ -55,7 +56,7 @@ export function nativeClient(opts: { minVersion: string }) {
     if (!client.startsWith('native/')) { next(); return; }
     const version = client.slice('native/'.length);
     if (opts.minVersion && versionBelow(version, opts.minVersion) && !OPEN_TO_OUTDATED.has(req.path)) {
-      res.status(426).json({ error: 'This version of the app is no longer supported. Please update it.', minVersion: opts.minVersion });
+      res.status(426).json({ error: say('Diese Version der App wird nicht mehr unterstützt. Bitte aktualisieren.', 'This version of the app is no longer supported. Please update it.'), minVersion: opts.minVersion });
       return;
     }
     // The jar replaces the Cookie line outright: the installed app has no

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useSyncExternalStore } from 'react';
 import { cn } from '../../lib/utils';
+import { uiLang } from '../../lib/prefs';
 import { getConfirmSnapshot, settleConfirm, subscribeConfirm } from './store';
 
 // Everything a Tab can land on. The message is a ReactNode, so it may well
@@ -83,7 +84,7 @@ export default function ConfirmDialog() {
 
   if (!entry) return null;
 
-  const de = (entry.lang ?? 'DE') === 'DE';
+  const de = (entry.lang ?? uiLang()) === 'DE';
   const confirmLabel = entry.confirmLabel ?? (de ? 'Bestätigen' : 'Confirm');
   const cancelLabel = entry.cancelLabel ?? (de ? 'Abbrechen' : 'Cancel');
   const hasMessage = entry.message !== undefined && entry.message !== null && entry.message !== '';

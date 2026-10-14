@@ -17,6 +17,7 @@ import { personKey } from './forms.ts';
 import { coacheeRowSeason } from './season.ts';
 import { foldName } from '../src/lib/identity.ts';
 import { seasonLabel } from '../src/lib/season.ts';
+import { say } from './say.ts';
 
 type AnyRecord = Record<string, unknown>;
 
@@ -53,15 +54,19 @@ export function refereeLinkProblem(
   const sv = text(link.sv);
   if (!sv) return null;
   if (!register.some((r) => text(r.sv_number) === sv)) {
-    return { status: 400, error: `Die SV-Nr. ${sv} steht nicht im Schiedsrichter-Register.` };
+    return { status: 400, error: say(`Die SV-Nr. ${sv} steht nicht im Schiedsrichter-Register.`, `SV no. ${sv} is not in the referee register.`) };
   }
   const other = coachees.find((c) =>
     String(c.id) !== link.rowId && text(c.referee_id) === sv && coacheeRowSeason(c.season) === link.season);
   if (other) {
     const season = link.season == null ? '' : ` in der Saison ${seasonLabel(link.season)}`;
+    const seasonEn = link.season == null ? '' : ` in season ${seasonLabel(link.season)}`;
     return {
       status: 409,
-      error: `Die SV-Nr. ${sv} ist${season} bereits „${coacheeDisplayName(other)}" zugeordnet.`,
+      error: say(
+        `Die SV-Nr. ${sv} ist${season} bereits „${coacheeDisplayName(other)}" zugeordnet.`,
+        `SV no. ${sv} already belongs to "${coacheeDisplayName(other)}"${seasonEn}.`,
+      ),
       holder: { id: String(other.id), name: coacheeDisplayName(other) },
     };
   }

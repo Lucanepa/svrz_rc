@@ -10,6 +10,7 @@ import { clientLog, setLogUser, flush } from '../lib/logger';
 import AppSpinner from './AppSpinner';
 import { Skeleton } from './Skeleton';
 import { getStoredLang, setStoredLang, getStoredRcId, setStoredRcId, type Lang } from '../lib/prefs';
+import { useScreenLang } from '../lib/useScreenLang';
 
 type ApiError = Error & { status?: number; retryAfterMs?: number };
 
@@ -167,6 +168,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [probeRun, setProbeRun] = useState(0);
   const [view, setView] = useState<View>('shared');
   const [lang, setLang] = useState<Lang>(() => getStoredLang() ?? (navigator.language?.toLowerCase().startsWith('en') ? 'EN' : 'DE'));
+  useScreenLang(lang);
   const t = STR[lang];
 
   const [username, setUsername] = useState('');

@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { inUiLang } from '../lib/prefs';
+import { useScreenLang } from '../lib/useScreenLang';
 import { CalendarDays, Gauge, Lock, User, Eye, EyeOff, Loader2, LogOut, Upload, Plus, Trash2, Pencil, Check, X, Users, ShieldCheck, Settings as SettingsIcon, FlaskConical, Languages, ChevronDown, ChevronUp, Home, Target, Mail, RotateCcw, Send, ScrollText, Pause, Play, Copy, MessageSquare, UserX, ClipboardList, Star, Download, BellOff, CheckCheck, Layers, AlertTriangle, Coins, BarChart3, FolderOpen, ExternalLink, Search, RefreshCw, ListChecks } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { RichView } from './RichText';
@@ -846,7 +848,7 @@ async function parseRefereeXlsx(file: File): Promise<RefereeImportRow[]> {
   };
   // Without the number this file is just another name list, and importing it
   // would fill the roster with rows nothing can key on.
-  if (ci.sv < 0) throw new Error('Der Datei fehlt die Spalte „SV-Nr." — das ist der Schlüssel des Registers.');
+  if (ci.sv < 0) throw new Error(inUiLang('Der Datei fehlt die Spalte „SV-Nr." — das ist der Schlüssel des Registers.', 'The file has no "SV-Nr." column — that is the register\'s key.'));
   const out: RefereeImportRow[] = [];
   for (const raw of rows.slice(headerRow + 1)) {
     const r = raw as unknown[];
@@ -953,6 +955,9 @@ export default function AdminConsole() {
   });
   const t = STR[lang];
   const toggleLang = () => setLang((l) => { const n = l === 'DE' ? 'EN' : 'DE'; try { localStorage.setItem('svrz_admin_lang', n); } catch { /* ignore */ } return n; });
+  // The console's language is the one on screen while it is open (API answers,
+  // toast and confirm chrome); closing it hands back to the stored choice.
+  useScreenLang(lang);
 
   useEffect(() => {
     getAdminAuthStatus()

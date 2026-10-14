@@ -655,6 +655,10 @@ function englishOrdinal(n: number): string {
 
 /** An observation an RC has already booked for a coachee: their next taken game. */
 type PlannedObs = { game: EligibleGame; role: string; rc: string };
+/** One of the coach's own appointments on the day of a game they take. */
+type SameDayClash = { id: string; kind: 'observation' | 'referee'; label: string; date: string; near: boolean };
+/** Kick-offs this close to each other cannot both be attended. */
+const CLASH_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 /** Referee name rendered with a clear coachee highlight (amber chip + badge).
  *  The Niveau and the group ride in the badge — the games list is where an RC
@@ -1548,6 +1552,8 @@ export default function App() {
     gameId: string; rcName: string; rcId: string; previousRc?: string; previousRcId?: string; label: string;
     observed: Array<{ name: string; count: number; plannedBy?: string; plannedOn?: string }>;
     late: boolean;
+    /** The coach's own appointments that day — see sameDayClashes. */
+    clashes: SameDayClash[];
   } | null>(null);
   const [rcPeople, setRcPeople] = useState<RefereeCoachPerson[]>([]);
   // The roster's ids, for isMyGame / samePerson: a game whose holder id is one
@@ -2968,6 +2974,29 @@ export default function App() {
     return any ? first : null;
   };
 
+  /**
+   * Whether a coachee's booking rules this game out for good (asked
+   * 2026-10-14): the booking is on this game itself, or on an earlier or the
+   * same kick-off — a switch only ever brings an observation forward, so
+   * nothing can make this game takeable for them. An EARLIER game is not ruled
+   * out: it is where the coach asks for the earlier observation. The coach's
+   * own game on the same Zürich day is a double game, never a block.
+   */
+  const bookedBefore = (coacheeId: string, game: EligibleGame): boolean => {
+    const booked = plannedObsByCoachee.get(coacheeId);
+    if (!booked) return false;
+    if (booked.game.id === game.id) return true;
+    if (sameVisit(
+      { rc: { id: booked.game.assignedRcId ?? '', name: booked.game.assignedRc ?? '' }, date: booked.game.date },
+      { rc: { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' }, date: game.date },
+      rcKnownIds,
+    )) return false;
+    const at = instantOf(game.date);
+    const bookedAt = instantOf(booked.game.date);
+    if (at == null || bookedAt == null) return true;
+    return bookedAt <= at;
+  };
+
   const bookedWhy = (b: { name: string; rc: string; date: string }) => (formData.lang === 'DE'
     ? `${b.name} hat schon eine geplante Beobachtung (${shortDate(b.date)}) durch ${b.rc}. Erst wenn dieser Bericht gesendet oder das Spiel abgegeben ist, kann ein weiteres Spiel übernommen werden.`
     : `${b.name} already has an observation booked (${shortDate(b.date)}) by ${b.rc}. Another game can be taken once that report is sent or the game is given back.`);
@@ -2991,6 +3020,37 @@ export default function App() {
       const later = instantOf(booked.game.date);
       if (later == null || later <= at) continue;
       return { name: roster.onSlot(game, role)?.full_name || getRefereeForRole(game, role), rc: booked.rc, date: booked.game.date };
+    }
+    return null;
+  };
+
+  /**
+   * Why a game EARLIER than a coachee's booking still cannot be taken, when no
+   * switch can be asked for it: the booking is the coach's own (give it back
+   * first), or kick-off is too close for a request — then the coach asks the
+   * holder directly. Null when no coachee on it is booked on a later game.
+   */
+  const earlierWhy = (game: EligibleGame): string | null => {
+    const at = instantOf(game.date);
+    if (at == null) return null;
+    const de = formData.lang === 'DE';
+    for (const role of ['1. SR', '2. SR'] as const) {
+      const id = roster.idOnSlot(game, role);
+      if (!id) continue;
+      const booked = plannedObsByCoachee.get(id);
+      if (!booked || booked.game.id === game.id) continue;
+      const later = instantOf(booked.game.date);
+      if (later == null || later <= at) continue;
+      const name = roster.onSlot(game, role)?.full_name || getRefereeForRole(game, role);
+      const date = shortDate(booked.game.date);
+      if (isMyGame(booked.game, rcAuth, rcKnownIds)) {
+        return de
+          ? `Du hast ${name} schon am ${date} geplant. Dieses Spiel ist früher: Gib jenes Spiel ab, dann kannst du dieses übernehmen.`
+          : `You already have ${name} booked on ${date}. This game is earlier: give that one back, then you can take this one.`;
+      }
+      return de
+        ? `${name} ist am ${date} bei ${booked.rc} geplant. Dieses Spiel ist früher, für eine Tauschanfrage ist es aber zu knapp vor Anpfiff — frag ${booked.rc} direkt nach der früheren Beobachtung.`
+        : `${name} is booked with ${booked.rc} on ${date}. This game is earlier, but too close to kick-off for a switch request — ask ${booked.rc} directly for the earlier observation.`;
     }
     return null;
   };
@@ -3071,13 +3131,14 @@ export default function App() {
         </button>
       );
     }
+    const why = earlierWhy(game) ?? bookedWhy(b);
     return (
       <button
         type="button"
         aria-disabled="true"
         data-testid="take-booked"
-        title={bookedWhy(b)}
-        onClick={(e) => { e.stopPropagation(); toast.info(bookedWhy(b)); }}
+        title={why}
+        onClick={(e) => { e.stopPropagation(); toast.info(why); }}
         className={cn(className, 'cursor-not-allowed border border-stone-200 bg-stone-100 text-stone-400 hover:bg-stone-100')}
       >
         {de ? 'Spiel übernehmen' : 'Take game'}
@@ -3137,6 +3198,36 @@ export default function App() {
     );
   };
 
+  /**
+   * The coach's own appointments on the day of a game they are about to take
+   * (asked 2026-10-14): observations they already hold, and games they whistle
+   * themselves (the SR-Spiele on Home). Never a block — a double game on one
+   * day is one trip — but said before the take: amber for the same day, red
+   * for a kick-off within two hours either side, which cannot be both watched
+   * and whistled or watched twice.
+   */
+  const sameDayClashes = (game: EligibleGame): SameDayClash[] => {
+    const day = dayKey(game.date);
+    if (!day) return [];
+    const at = instantOf(game.date);
+    const near = (date: string) => {
+      const t = instantOf(date);
+      return at != null && t != null && Math.abs(t - at) <= CLASH_WINDOW_MS;
+    };
+    const out: SameDayClash[] = [];
+    for (const g of eligibleGames) {
+      if (g.id === game.id || !g.assignedRc || !isMyGame(g, rcAuth, rcKnownIds)) continue;
+      if (dayKey(g.date) !== day) continue;
+      out.push({ id: g.id, kind: 'observation', label: gameLabel(g), date: g.date, near: near(g.date) });
+    }
+    for (const g of myRcGames) {
+      if (g.gameId === game.id || dayKey(g.gameDate) !== day) continue;
+      if (out.some((o) => o.id === g.gameId)) continue;
+      out.push({ id: g.gameId, kind: 'referee', label: gameLabel({ matchNo: g.matchNo, teams: g.teams, date: g.gameDate }), date: g.gameDate, near: near(g.gameDate) });
+    }
+    return out.sort((a, b) => (instantOf(a.date) ?? 0) - (instantOf(b.date) ?? 0));
+  };
+
   const requestRcAssignment = (game: EligibleGame, rcName: string) => {
     const blocking = rcName ? bookingBlocking(game) : null;
     if (blocking) { toast.info(bookedWhy(blocking)); return; }
@@ -3148,10 +3239,11 @@ export default function App() {
     // mail in somebody's inbox, so the coach confirms it rather than finding
     // out afterwards.
     const late = !!rcName && takenAfterReminder(game.date);
-    if (observed.length > 0 || late) {
+    const clashes = rcName ? sameDayClashes(game) : [];
+    if (observed.length > 0 || late || clashes.length > 0) {
       setTakeNotice({
         gameId: game.id, rcName, rcId: rcAuth.rcId ?? '', previousRc: game.assignedRc, previousRcId: game.assignedRcId,
-        label: gameLabel(game), observed, late,
+        label: gameLabel(game), observed, late, clashes,
       });
       return;
     }
@@ -5995,7 +6087,6 @@ export default function App() {
     // observation is still pending (role not yet in feedbackClosedRoles), so none
     // of their games need to stay on the open list. Once the feedback is filed,
     // coverage lifts and needsObservation (latest "further visit" answer) governs.
-    const coveredRefs = plannedObsByCoachee;
     const pickedCoachees = gameFilterCoachees.length > 0 ? new Set(gameFilterCoachees) : undefined;
     /** The coachees on the whistle, as the slot ids say. */
     const slotCoachees = (game: EligibleGame) =>
@@ -6082,16 +6173,22 @@ export default function App() {
           // list read "keine passenden Spiele" until the default was switched
           // off (Jasmin, 2026-09-15). The "taken games" view is an assignment
           // audit — that one is not thinned out by the state either.
+          // "Ohne Geplante" hides flagged games too (asked 2026-10-14): it only
+          // hides what cannot be taken anyway — a game on or after the
+          // coachee's booking — and a flag does not make that takeable.
           const askNeedsObs = gameFilterNeedsObs && !gameFilterRcAssigned && !g.starred;
-          const askHidePlanned = gameFilterHidePlanned && !gameFilterRcAssigned && !g.starred;
+          const askHidePlanned = gameFilterHidePlanned && !gameFilterRcAssigned;
           const hasEligibleRef = refCoachees.some((c) => {
             const isActive = (c.stage || 'active') !== 'inactive';
             if (!gameFilterShowInactive && !isActive) return false;
             if (askNeedsObs && !c.observation_status?.needsObservation) return false;
-            // Covered by a planned observation → all their games leave the open list
-            // ("Ohne Geplante", on by default). Skipped when the user explicitly
-            // picked coachees in the filter (explicit intent beats the coverage default).
-            if (askHidePlanned && gameFilterCoachees.length === 0 && coveredRefs.has(c.id)) return false;
+            // Covered by a planned observation → their games from the booked
+            // one on leave the open list ("Ohne Geplante", on by default): no
+            // take and no switch can reach them. Earlier games stay, where
+            // the coach can ask for the earlier observation. Skipped when the
+            // user explicitly picked coachees in the filter (explicit intent
+            // beats the coverage default).
+            if (askHidePlanned && gameFilterCoachees.length === 0 && bookedBefore(c.id, g)) return false;
             return true;
           });
           if (!hasEligibleRef) return false;
@@ -6110,7 +6207,7 @@ export default function App() {
       // timestamps rather than strings so a stray offset cannot reorder a day,
       // and anything undated sinks to the bottom instead of leading.
       .sort((a, b) => gameTime(a.date) - gameTime(b.date));
-  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterBoerse, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterHidePlanned, gameFilterShowInactive, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, roster, inSeasonOrManual, showAllLevels, outOfNiveauFocus]);
+  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterBoerse, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterHidePlanned, gameFilterShowInactive, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, roster, inSeasonOrManual, showAllLevels, outOfNiveauFocus, rcAuth.rcId, rcAuth.rcName, rcKnownIds]);
 
   // Any filter can shrink a list below the page currently shown, and the pager
   // itself disappears under one page of rows — leaving a blank list with no
@@ -8619,8 +8716,8 @@ export default function App() {
                         icon={<CalendarCheck size={14} />}
                         label={formData.lang === 'DE' ? 'Ohne Geplante' : 'Hide planned'}
                         title={formData.lang === 'DE'
-                          ? 'Spiele von Coachees ausblenden, für die schon eine Beobachtung geplant ist (Standard). Vorgemerkte Spiele bleiben. Antippen, um sie zu zeigen.'
-                          : 'Hide games of coachees who already have an observation booked (default). Flagged games stay. Tap to show them.'}
+                          ? 'Spiele ausblenden, die nicht übernommen werden können, weil der Coachee schon früher eine Beobachtung geplant hat (Standard). Frühere Spiele bleiben, dort kannst du einen Tausch anfragen. Antippen, um alle zu zeigen.'
+                          : 'Hide games that cannot be taken because the coachee already has an earlier observation booked (default). Earlier games stay, where you can request a switch. Tap to show them all.'}
                       />
                     )}
                     {(filterAvailability.starred || gameFilterStarred) && (
@@ -10893,7 +10990,8 @@ export default function App() {
       {takeNotice && (() => {
         const de = formData.lang === 'DE';
         const self = samePerson({ id: takeNotice.rcId, name: takeNotice.rcName }, { id: rcAuth.rcId ?? '', name: rcAuth.rcName ?? '' }, rcKnownIds);
-        const onlyLate = takeNotice.late && takeNotice.observed.length === 0;
+        const onlyLate = takeNotice.late && takeNotice.observed.length === 0 && takeNotice.clashes.length === 0;
+        const clashNear = takeNotice.clashes.some((c) => c.near);
         // Written as whole sentences per case: a coachee can be here for a
         // filed observation, for one somebody else has booked, or for both.
         const sentence = (o: { count: number; plannedBy?: string; plannedOn?: string }) => {
@@ -10927,6 +11025,33 @@ export default function App() {
                   ? (de ? `Spiel ${self ? 'übernehmen' : 'zuweisen'} und SR informieren?` : `${self ? 'Take' : 'Assign'} the game and inform the SR?`)
                   : (de ? 'Hinweis' : 'Notice')}
               </h3>
+              {takeNotice.clashes.length > 0 && (
+                // Amber for the same day, red when a kick-off is within two
+                // hours of this one — the box takes the worst of its rows.
+                <div
+                  data-testid="take-notice-clash"
+                  data-level={clashNear ? 'red' : 'amber'}
+                  className={cn('mt-3 rounded-lg border p-3 text-sm', clashNear
+                    ? 'border-red-300 bg-red-50 text-red-800'
+                    : 'border-amber-300 bg-amber-50 text-amber-900')}
+                >
+                  <p className="flex items-center gap-1.5 font-semibold">
+                    <AlertTriangle size={15} aria-hidden="true" />
+                    {clashNear
+                      ? (de ? 'Weniger als 2 Stunden Abstand zu deinem Termin' : 'Within 2 hours of your other appointment')
+                      : (de ? 'Am selben Tag hast du schon' : 'You already have on this day')}
+                  </p>
+                  <ul className="mt-1.5 space-y-1">
+                    {takeNotice.clashes.map((c) => (
+                      <li key={`${c.kind}-${c.id}`} className={cn(c.near && clashNear && 'font-semibold')}>
+                        {clockLabel(c.date)} · {c.kind === 'observation'
+                          ? (de ? 'Beobachtung' : 'Observation')
+                          : (de ? 'Eigenes Spiel als SR' : 'Your own game as referee')}: {c.label}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {takeNotice.observed.length > 0 && (
                 <ul className="mt-3 space-y-1.5 text-sm text-stone-700">
                   {takeNotice.observed.map((o) => (

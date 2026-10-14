@@ -43,3 +43,24 @@ test('the list/calendar switch sits on the date row, and there is no "Gestern" c
   await page.getByRole('button', { name: /^(Kalender|Calendar)$/ }).click();
   await expect(page.getByRole('button', { name: /^(Kalender|Calendar)$/ })).toHaveAttribute('aria-pressed', 'true');
 });
+
+/**
+ * "Ohne Geplante" hides only what cannot be taken (asked 2026-10-14): games on
+ * or after the coachee's booking, flagged ones included — a flag does not make
+ * them takeable. An EARLIER game stays: there the coach asks for the earlier
+ * observation, or — when the booking is their own — is told to give it back.
+ */
+test('a flagged later game is hidden, an earlier game stays and says why it is greyed', async ({ page }) => {
+  const LATER_FLAGGED = { ...OPEN, id: 'g-late', matchNo: '2345680', homeTeam: 'VBC Später', starred: true };
+  const EARLIER = { ...OPEN, id: 'g-early', matchNo: '2345681', homeTeam: 'VBC Früher', date: '2026-11-12T19:30:00Z' };
+  await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [GAME, LATER_FLAGGED, EARLIER] }));
+  await page.goto('/games');
+  await expect(page.getByRole('button', { name: /^(Ohne Geplante|Hide planned)$/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText(LATER_FLAGGED.homeTeam)).toHaveCount(0);
+  await expect(page.getByText(EARLIER.homeTeam)).toBeVisible();
+
+  // The booking is the coach's own: no switch to ask, so the greyed button
+  // says to give the later game back.
+  await page.getByRole('button', { name: new RegExp(EARLIER.matchNo) }).first().click();
+  await expect(page.getByTestId('take-booked')).toHaveAttribute('title', /give that one back|Gib jenes Spiel ab/);
+});

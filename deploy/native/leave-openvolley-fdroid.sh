@@ -6,7 +6,8 @@
 #   deploy/native/leave-openvolley-fdroid.sh [--no-sync]
 #
 # Runs on lenovoserver, in OpenVolley's working copy ~/.config/openvolley-pkgs
-# (owned by OpenVolley's publish-pkgs.sh). Removes this app's APKs, listing and
+# (owned by OpenVolley's publish-pkgs.sh, which takes no lock: do not run the
+# two at the same time). Removes this app's APKs, listing and
 # icons, rebuilds the index, and syncs fdroid/ to hetzner as publish-fdroid.sh
 # used to. Refuses to run before the new repo serves the app, so a coach on
 # F-Droid is never left with no repo carrying it. Run it again: it finds
@@ -42,7 +43,10 @@ sys.exit(0 if sys.argv[1] in json.load(sys.stdin).get("packages", {}) else 1)
 ' "$APP_ID" || die "$NEW_REPO does not serve $APP_ID yet: publish it there first (publish-fdroid.sh)"
 
 shopt -s nullglob
+# fdroid update names the per-version icons <app id>.<versionCode>.png in
+# icons*/ and does not remove them when the APK goes.
 gone=( "$FD"/repo/"${APP_ID}"_* "$FD"/archive/"${APP_ID}"_* "$FD"/unsigned/"${APP_ID}"_*
+       "$FD"/repo/icons*/"${APP_ID}".*.png "$FD"/archive/icons*/"${APP_ID}".*.png
        "$FD/repo/$APP_ID" "$FD/archive/$APP_ID" "$FD/metadata/$APP_ID" "$FD/metadata/$APP_ID.yml" )
 for f in "${gone[@]}"; do
   [[ -e "$f" ]] || continue

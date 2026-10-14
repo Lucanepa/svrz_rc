@@ -60,7 +60,7 @@ test('a game opened from Planung opens Spiele at the top, on that game', async (
   await page.route('**/api/admin/planning*', (r) => r.fulfill({ json: computePlanning({
     season: 2026, now: '2026-10-15T10:00:00.000Z',
     coachees: [{ id: 'c1', name: 'Ref One', groups: 'Varia', level: 'N3', stage: '2', observed: 0, furtherWanted: false }],
-    games: [{ id: 'g7', matchNo: '406807', date: '2026-11-01T19:00:00.000Z', label: 'Home – Away', rc: '', closedRoles: [], feedbackRoles: [], isRcGame: false, offeredRoles: [],
+    games: [{ id: 'g7', matchNo: '406807', date: '2026-11-01T19:00:00.000Z', label: 'Home – Away', rc: 'Anna Muster', closedRoles: [], feedbackRoles: [], isRcGame: false, offeredRoles: [],
       slots: [{ role: '1. SR', name: 'Ref One', coacheeId: 'c1' }, { role: '2. SR', name: '', coacheeId: '' }] }],
   }) }));
   await page.goto('/admin/games');

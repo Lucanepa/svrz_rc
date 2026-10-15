@@ -616,6 +616,8 @@ Sign-in rate limits (in memory, reset on restart):
 
 ## API Endpoints (What They Do)
 
+**Every message an endpoint answers a person with is written in German AND English (since 2026-10-14).** Write it as `say('Spiel nicht gefunden.', 'Game not found.')` (`server/say.ts`). `say()` returns the German: handlers, `req.out`, mute rules and error groups keep seeing German. The first middleware (`answerInAskersLanguage`) swaps in the English on the wire when the request's `Accept-Language` prefers `en`. The app sends its on-screen language as that header on every API call (`src/lib/apiLang.ts`, fed by `useScreenLang`). Exceptions: `Unauthorized`, `Internal server error` and `Invalid credentials.` stay one string, because the app's own table (`localizeRuntimeError` in `App.tsx`) translates them. `e2e/en-everywhere.spec.ts` fails on any `error: '…'` literal that is neither.
+
 - `GET /api/health`: one real database read through the record layer; 500 `{ stage: 'database' }` when it fails.
 - `GET /api/eligible-games`: games filtered to coachees by name matching.
 - `GET /api/referee-coach-people`: active RC people list for assignment/selectors.

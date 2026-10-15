@@ -1,4 +1,5 @@
 import { type ReactNode } from 'react';
+import { uiLang } from '../../lib/prefs';
 
 // Imperative UI singletons that replace window.confirm / window.alert.
 //
@@ -107,7 +108,9 @@ export function dismissToast(id: number) {
 function pushToast(kind: ToastKind, message: string, opts?: ToastOptions): number {
   const id = ++seq;
   const duration = opts?.duration ?? (kind === 'error' ? ERROR_MS : DEFAULT_MS);
-  const next = [...toastList, { id, kind, message, duration, lang: opts?.lang ?? 'DE' }];
+  // No language from the caller: the one on screen, not German — the close
+  // button of an English screen said "Meldung schliessen" (2026-10-14).
+  const next = [...toastList, { id, kind, message, duration, lang: opts?.lang ?? uiLang() }];
   toastList = next.length > MAX_VISIBLE ? next.slice(next.length - MAX_VISIBLE) : next;
   emitToasts();
   return id;

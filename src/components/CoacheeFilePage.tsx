@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEven
 import { BarChart3, Download, ExternalLink, Eye, EyeOff, FileText, Loader2, LogOut, Lock, X } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import { getStoredLang, type Lang } from '../lib/prefs';
+import { useScreenLang } from '../lib/useScreenLang';
 import {
   coacheeFileLogin, getCoacheeFile, getCoacheeFileForm, CoacheeFileError,
   type CoacheeFile, type CoacheeFileEntry,
@@ -145,6 +146,7 @@ async function deliver(blob: Blob, name: string, title: string): Promise<void> {
 export default function CoacheeFilePage() {
   const [lang, setLang] = useState<Lang>(() =>
     getStoredLang() ?? (navigator.language?.toLowerCase().startsWith('en') ? 'EN' : 'DE'));
+  useScreenLang(lang);
   const t = STR[lang];
   const [session, setSession] = useState<Stored | null>(() => readSession());
   const [file, setFile] = useState<CoacheeFile | null>(null);

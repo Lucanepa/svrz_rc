@@ -36,3 +36,26 @@ export function visitCount(bookings: HeldGameRef[], knownIds?: Set<string>): num
   }
   return visits.length;
 }
+
+/**
+ * The coachees a coach already watches on the Zürich day of `date`: every
+ * coachee on a game they hold that day. A game that day adds no trip for
+ * them, so none of their bookings — not this game's twin, nor one on another
+ * day — rules it out (asked 2026-10-14: Luca held 16:00 with both referees,
+ * took the same pair at 13:30 in that hall, and the guard still counted the
+ * pair's bookings on 20.10 and 26.11 against it). The take guard and the
+ * take button both ask this, so they cannot disagree about the trip.
+ */
+export function tripCoachees(
+  held: Array<HeldGameRef & { coacheeIds: string[] }>,
+  me: PersonRef,
+  date: string,
+  knownIds?: Set<string>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const g of held) {
+    if (!sameVisit(g, { rc: me, date }, knownIds)) continue;
+    for (const id of g.coacheeIds) if (id) out.add(id);
+  }
+  return out;
+}

@@ -11,6 +11,7 @@ import { isDemoMode } from './demo';
 import { normalizeBudget, type BudgetSettings } from './budget';
 import type { PageAck, PageWire, ServerPage } from './notebook';
 import { normalizeInfosLayout, type InfosLayout } from './infosLayout';
+import { inUiLang } from './prefs';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() ?? '';
 
@@ -1140,7 +1141,7 @@ export type MyRcGame = {
 export async function loadMyRcGames(season: number): Promise<MyRcGame[]> {
   if (isDemoMode()) return demo.loadMyRcGames();
   const response = await fetch(apiUrl(`/api/rc-games?season=${season}`), { credentials: 'include' });
-  if (!response.ok) throw await apiError(response, 'SR-Spiele konnten nicht geladen werden.');
+  if (!response.ok) throw await apiError(response, inUiLang('SR-Spiele konnten nicht geladen werden.', 'SR games could not be loaded.'));
   return response.json() as Promise<MyRcGame[]>;
 }
 
@@ -1151,7 +1152,7 @@ export async function loadMyRcGames(season: number): Promise<MyRcGame[]> {
 export async function loadRcGameNotes(): Promise<RcGameNote[]> {
   if (isDemoMode()) return demo.loadRcGameNotes();
   const response = await fetch(apiUrl('/api/rc-game-notes'), { credentials: 'include' });
-  if (!response.ok) throw await apiError(response, 'Rückmeldungen konnten nicht geladen werden.');
+  if (!response.ok) throw await apiError(response, inUiLang('Rückmeldungen konnten nicht geladen werden.', 'Rückmeldungen could not be loaded.'));
   return response.json() as Promise<RcGameNote[]>;
 }
 
@@ -1166,7 +1167,7 @@ export async function submitRcGameNote(payload: { gameId: string; note: string; 
     // A queued Rückmeldung (noteQueue.ts) brings its own, the same on every try.
     body: JSON.stringify({ ...payload, submissionKey: payload.submissionKey || crypto.randomUUID() }),
   });
-  if (!response.ok) throw await apiError(response, 'Die Rückmeldung konnte nicht gesendet werden.');
+  if (!response.ok) throw await apiError(response, inUiLang('Die Rückmeldung konnte nicht gesendet werden.', 'The Rückmeldung could not be sent.'));
   return response.json() as Promise<RcGameNote>;
 }
 

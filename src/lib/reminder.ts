@@ -12,6 +12,14 @@ import { dayKey, instantOf, shiftDayKey, zonedParts, type Moment } from './appTi
 /** The hour (Zürich) the daily reminder goes out — mirrors REMINDER_CRON's default. */
 export const REMINDER_HOUR = 10;
 
+/** How many minutes before the whistle the reminder tells the referee to meet
+ *  the coach in the hall: 45 for 1L — both genders, any group ("1L ♀ C",
+ *  "1L ♂ D") — and 30 for everything else (Luca, 15.10.2026). The juniors'
+ *  "DU23 1. Liga" is not 1L. */
+export function meetMinutesBefore(league: string): number {
+  return /^\s*1L(\s|$)/.test(league) ? 45 : 30;
+}
+
 /** The instant the daily job would have reminded for this game, or null for a
  *  date it cannot read. */
 export function reminderDeadlineOf(gameDate: Moment): number | null {

@@ -15,6 +15,7 @@ import { SECTIONS_1SR_DE, PAID_CAP } from '../types';
 import { dayLabel } from './appTime';
 import { samePerson } from './identity';
 import { attachableDoc, type UsefulDoc } from './usefulDocs';
+import { meetMinutesBefore } from './reminder';
 import type {
   EligibleGame,
   FeedbackFormData,
@@ -434,7 +435,7 @@ Spiel: ${game.homeTeam} – ${game.awayTeam}
 Liga: ${game.league}
 Ort/Halle: ${game.location}
 
-Ablauf: Im Normalfall triffst du ${first(RC.name)} 45 Minuten vor Spielbeginn in der Halle. Nach dem Spiel nehmt ihr euch im Schnitt 30 Minuten Zeit für das gemeinsame Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen. Das Coaching ist keine Prüfung.
+Ablauf: Im Normalfall triffst du ${first(RC.name)} ${meetMinutesBefore(game.league)} Minuten vor Spielbeginn in der Halle. Nach dem Spiel nehmt ihr euch im Schnitt 30 Minuten Zeit für das gemeinsame Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen. Das Coaching ist keine Prüfung.
 
 Falls einer dieser Zeitpunkte für dich nicht möglich ist, melde dich bitte vorgängig bei ${first(RC.name)} – ebenso bei Fragen oder falls sich am Einsatz etwas ändert. ${RC.name} ist in Kopie (Cc) dieser E-Mail; deine Antwort geht direkt an ${first(RC.name)}.
 

@@ -20,8 +20,8 @@
 set -euo pipefail
 
 # Overridable only so the script can be rehearsed against a throwaway cluster.
-STACK_DIR=${STACK_DIR:-/home/lucanepa/svrz_rc/deploy/hetzner}
-OUT_DIR=${OUT_DIR:-/home/lucanepa/svrz_rc/backups}
+STACK_DIR=${STACK_DIR:-/home/lucanepa/stacks/svrz_rc/deploy/hetzner}
+OUT_DIR=${OUT_DIR:-/home/lucanepa/stacks/svrz_rc/backups}
 PG_CONTAINER=${PG_CONTAINER:-svrz-rc-postgres-1}
 KEEP=14
 STAMP=$(date +%Y%m%d-%H%M%S)

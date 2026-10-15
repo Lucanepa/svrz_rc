@@ -3,14 +3,14 @@
 #
 #   scripts/deploy-api.sh            # from lenovoserver itself, or from anywhere `ssh lenovoserver` works
 #
-# The host tree (/home/lucanepa/svrz_rc) is a FILE COPY, not a git checkout: never `git pull` there.
+# The host tree (/home/lucanepa/stacks/svrz_rc) is a FILE COPY, not a git checkout: never `git pull` there.
 # Copy first, then build — a rebuild on stale files succeeds loudly and ships nothing.
 # Deploy the API BEFORE pushing a main that depends on it (push main = Pages deploy).
 # Schema changes ride along as Prisma migrations, applied by the API at start (infrastructure.md, "Database").
 set -euo pipefail
 
 HOST=${DEPLOY_HOST:-lenovoserver}
-DEST=/home/lucanepa/svrz_rc
+DEST=/home/lucanepa/stacks/svrz_rc
 COMPOSE="docker compose -p svrz-rc -f $DEST/deploy/hetzner/docker-compose.yml"   # -p svrz-rc is NOT optional
 
 cd "$(git rev-parse --show-toplevel)"

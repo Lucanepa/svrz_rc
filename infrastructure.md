@@ -74,8 +74,8 @@ files into the live log. `playwright.config.ts` points the proxy at a closed por
 (`DEV_API_TARGET`) so an unstubbed call in a test fails loudly instead; set the
 same variable when running `npm run dev` here.
 
-Deploying the API means copying this repo over `/home/lucanepa/svrz_rc` on
-lenovoserver and rebuilding there — never `git pull` in that directory, which is
+Deploying the API means copying this repo over `/home/lucanepa/stacks/svrz_rc` on
+lenovoserver (every live stack on the host lives under `~/stacks/` since 15.10.2026) and rebuilding there — never `git pull` in that directory, which is
 not a checkout. Copy source only: `deploy/hetzner/pg_data`, `deploy/hetzner/files`,
 `deploy/hetzner/logs`, `deploy/hetzner/svrz-api.env*`
 and every `.env*` are host state and must be excluded, and `--delete` must NOT be
@@ -116,7 +116,7 @@ Prisma queries area by area and deletes the layer.
   `ADMIN_SESSION_SECRET` is unset, it signs every session and salts every RC PIN.
 - **Look at the data** (Prisma Studio, the PocketBase dashboard's successor):
   on lenovoserver, in a checkout with `npm run db:tools` done,
-  `DATABASE_URL="postgresql://svrz:$(grep ^POSTGRES_PASSWORD= /home/lucanepa/svrz_rc/deploy/hetzner/.env | cut -d= -f2)@127.0.0.1:55432/svrz" npm run db:studio -- --port 5555 --browser none`,
+  `DATABASE_URL="postgresql://svrz:$(grep ^POSTGRES_PASSWORD= /home/lucanepa/stacks/svrz_rc/deploy/hetzner/.env | cut -d= -f2)@127.0.0.1:55432/svrz" npm run db:studio -- --port 5555 --browser none`,
   then from the laptop `ssh -L 5555:127.0.0.1:5555 lenovoserver` and open
   `http://localhost:5555`. Studio binds 127.0.0.1 only, so it cannot run inside
   a container and be reached from outside it.
@@ -1449,9 +1449,8 @@ Since 10.10.2026: **`deploy/hetzner/backup-db.sh`** — `pg_dump -Fc` from insid
 the postgres container plus a tar of `./files`, both read back before they
 count (the dump is listed and must hold 15+ tables and 100+ games), rotated at
 14, same 02:45 timer, same `~/BACKUP-FAILED-svrz-rc` marker, borg carries them.
-The installed unit still names `backup-pb.sh`, which now only `exec`s
-`backup-db.sh`; repoint the unit (`deploy/hetzner/systemd/`, sudo) and delete
-the wrapper. Restore: `docker exec -i svrz-rc-postgres-1 pg_restore --clean
+The installed unit runs `backup-db.sh` directly (repointed 15.10.2026, when the
+`backup-pb.sh` wrapper was deleted). Restore: `docker exec -i svrz-rc-postgres-1 pg_restore --clean
 --if-exists -U svrz -d svrz < svrz-rc-db-<stamp>.dump` and untar the files into
 `deploy/hetzner/files`.
 
@@ -1490,7 +1489,7 @@ files.
 ```bash
 python3 - <<'PY'
 import zipfile, sqlite3, glob
-src = sorted(glob.glob('/home/lucanepa/svrz_rc/backups/svrz-rc-*.zip'))[-1]
+src = sorted(glob.glob('/home/lucanepa/stacks/svrz_rc/backups/svrz-rc-*.zip'))[-1]
 zipfile.ZipFile(src).extractall('/tmp/restore-check')
 con = sqlite3.connect('file:/tmp/restore-check/data.db?mode=ro', uri=True)
 print(con.execute('PRAGMA integrity_check').fetchone()[0])

@@ -2,7 +2,7 @@
 # is part of the repo rather than folklore on one host.
 [Unit]
 Description=Consistent database snapshot for svrz_rc (pg_dump + files)
-Documentation=file:///home/lucanepa/svrz_rc/deploy/hetzner/backup-db.sh
+Documentation=file:///home/lucanepa/stacks/svrz_rc/deploy/hetzner/backup-db.sh
 Wants=docker.service
 After=docker.service
 
@@ -13,6 +13,6 @@ Group=lucanepa
 # The host runs several other stacks; a backup is never the urgent thing.
 Nice=19
 IOSchedulingClass=idle
-ExecStart=/home/lucanepa/svrz_rc/deploy/hetzner/backup-db.sh
+ExecStart=/home/lucanepa/stacks/svrz_rc/deploy/hetzner/backup-db.sh
 StandardOutput=append:/home/lucanepa/svrz-rc-backup.log
 StandardError=append:/home/lucanepa/svrz-rc-backup.log

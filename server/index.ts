@@ -44,6 +44,7 @@ import { normalizeBudget } from '../src/lib/budget.ts';
 import { richToPlain, sanitizeRich } from '../src/lib/richText.ts';
 import { ATTACH_BUDGET_BYTES, attachableDoc, normalizeAttachedDocs, type UsefulDoc } from '../src/lib/usefulDocs.ts';
 import { normalizeInfosLayout } from '../src/lib/infosLayout.ts';
+import { meetMinutesBefore } from '../src/lib/reminder.ts';
 
 // Shared with the survey page so the mailed copy can never drift from the form
 // the coachee actually filled in. Pure data — no browser dependencies.
@@ -1580,6 +1581,41 @@ const RETIRED_EMAIL_TEMPLATES_FEEDBACK_DE = {
   intro: 'Hallo {{name}}\n\nHier ist das Feedback zu deinem Einsatz als {{rolle}}. Der vollständige Bericht ist als PDF angehängt.',
 };
 
+// The reminder's body, around how long before the whistle the referee meets
+// the coach — `{{treffMinuten}}`/`{{meetMinutes}}` in the shipped text, which
+// is 45 for a 1L game and 30 otherwise (meetMinutesBefore). Until 15.10.2026
+// it said 45 for every league; that copy is kept in RETIRED_EMAIL_TEMPLATES.
+const reminderIntroDe = (minutes: string) => `Liebe/r {{vorname}},
+
+bei deinem nächsten Einsatz wirst du im Rahmen unseres Schiedsrichter-Coachings begleitet: {{coach}} ist als Coach vor Ort, um dich zu unterstützen und gemeinsam mit dir an deiner Weiterentwicklung zu arbeiten.
+
+Einsatz-Details:
+
+Datum: {{datum}}
+Zeit: {{uhrzeit}}
+Spiel: {{heim}} – {{gast}}
+Liga: {{liga}}
+Ort/Halle: {{halle}}
+
+Ablauf: Im Normalfall triffst du {{coachVorname}} ${minutes} Minuten vor Spielbeginn in der Halle. Nach dem Spiel nehmt ihr euch im Schnitt 30 Minuten Zeit für das gemeinsame Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen. Das Coaching ist keine Prüfung.
+
+Falls einer dieser Zeitpunkte für dich nicht möglich ist, melde dich bitte vorgängig bei {{coachVorname}} – ebenso bei Fragen oder falls sich am Einsatz etwas ändert. {{coach}} ist in Kopie (Cc) dieser E-Mail; deine Antwort geht direkt an {{coachVorname}}.`;
+const reminderIntroEn = (minutes: string) => `Dear {{firstName}},
+
+Your next appointment will be accompanied as part of our referee coaching: {{coach}} will be there as your coach, to support you and to work on your development together with you.
+
+Appointment details:
+
+Date: {{date}}
+Time: {{time}}
+Match: {{home}} – {{away}}
+League: {{league}}
+Venue: {{venue}}
+
+How it works: as a rule you meet {{coachFirstName}} at the hall ${minutes} minutes before the game. After the game, allow about 30 minutes for the discussion together, to consolidate strengths and to discuss where you can develop. The coaching is not an examination.
+
+If either of these times is not possible for you, please let {{coachFirstName}} know beforehand — likewise if you have questions or if anything about the appointment changes. {{coach}} is copied (Cc) on this e-mail; your reply goes directly to {{coachFirstName}}.`;
+
 const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
   feedback: {
     ...DEFAULT_EMAIL_TEMPLATES_FEEDBACK_DE,
@@ -1606,37 +1642,9 @@ const DEFAULT_EMAIL_TEMPLATES: Record<EmailTemplateKind, EmailTemplate> = {
     // why (Luca, 21.09.2026).
     note: 'Zur Information: {{kollegeVorname}} ({{kollege}}) steht bei diesem Spiel ebenfalls auf der Pfeife und ist in Kopie (Cc) dieser E-Mail. {{coachVorname}} bereitet nach dem Spiel auch für {{kollegeVorname}} eine eigene, individuelle Rückmeldung vor.',
     noteEn: 'For your information: {{colleagueFirstName}} ({{colleague}}) is also on the whistle for this match and is copied (Cc) on this e-mail. {{coachFirstName}} will prepare separate, individual feedback for {{colleagueFirstName}} too, after the game.',
-    intro: `Liebe/r {{vorname}},
-
-bei deinem nächsten Einsatz wirst du im Rahmen unseres Schiedsrichter-Coachings begleitet: {{coach}} ist als Coach vor Ort, um dich zu unterstützen und gemeinsam mit dir an deiner Weiterentwicklung zu arbeiten.
-
-Einsatz-Details:
-
-Datum: {{datum}}
-Zeit: {{uhrzeit}}
-Spiel: {{heim}} – {{gast}}
-Liga: {{liga}}
-Ort/Halle: {{halle}}
-
-Ablauf: Im Normalfall triffst du {{coachVorname}} 45 Minuten vor Spielbeginn in der Halle. Nach dem Spiel nehmt ihr euch im Schnitt 30 Minuten Zeit für das gemeinsame Gespräch, um Stärken zu festigen und Ansatzpunkte für deine Entwicklung zu besprechen. Das Coaching ist keine Prüfung.
-
-Falls einer dieser Zeitpunkte für dich nicht möglich ist, melde dich bitte vorgängig bei {{coachVorname}} – ebenso bei Fragen oder falls sich am Einsatz etwas ändert. {{coach}} ist in Kopie (Cc) dieser E-Mail; deine Antwort geht direkt an {{coachVorname}}.`,
+    intro: reminderIntroDe('{{treffMinuten}}'),
     outro: 'Sportliche Grüsse\n{{coach}}',
-    introEn: `Dear {{firstName}},
-
-Your next appointment will be accompanied as part of our referee coaching: {{coach}} will be there as your coach, to support you and to work on your development together with you.
-
-Appointment details:
-
-Date: {{date}}
-Time: {{time}}
-Match: {{home}} – {{away}}
-League: {{league}}
-Venue: {{venue}}
-
-How it works: as a rule you meet {{coachFirstName}} at the hall 45 minutes before the game. After the game, allow about 30 minutes for the discussion together, to consolidate strengths and to discuss where you can develop. The coaching is not an examination.
-
-If either of these times is not possible for you, please let {{coachFirstName}} know beforehand — likewise if you have questions or if anything about the appointment changes. {{coach}} is copied (Cc) on this e-mail; your reply goes directly to {{coachFirstName}}.`,
+    introEn: reminderIntroEn('{{meetMinutes}}'),
     outroEn: 'Best regards\n{{coach}}',
   },
 };
@@ -1662,10 +1670,15 @@ const RETIRED_EMAIL_TEMPLATES: Partial<Record<EmailTemplateKind, EmailTemplate[]
     outroEn: 'We would be glad to hear how you found the coaching:',
   }],
   reminder: [{
+    // Until 15.10.2026: 45 minutes before the game, whatever the league.
+    ...DEFAULT_EMAIL_TEMPLATES.reminder,
+    intro: reminderIntroDe('45'),
+    introEn: reminderIntroEn('45'),
+  }, {
     // 14.09.2026 — the reworded text, English half still in German names.
     subject: 'Coaching-Begleitung bei deinem nächsten Einsatz',
     heading: '',
-    intro: DEFAULT_EMAIL_TEMPLATES.reminder.intro,
+    intro: reminderIntroDe('45'),
     outro: 'Sportliche Grüsse\n{{coach}}',
     introEn: `Dear {{vorname}},
 
@@ -1846,6 +1859,7 @@ function emailVars(o: {
   const refereeFirst = o.refereeFirstName?.trim() || firstNameOf(o.refereeName);
   const rcFirst = o.rcFirstName?.trim() || firstNameOf(o.rcName);
   const colleagueFirst = o.colleagueFirstName?.trim() || firstNameOf(colleague);
+  const meetMinutes = String(meetMinutesBefore(o.league));
   return {
     vorname: refereeFirst, name: o.refereeName,
     coach: o.rcName, coachVorname: rcFirst,
@@ -1853,6 +1867,7 @@ function emailVars(o: {
     heim: o.homeTeam, gast: o.awayTeam, liga: o.league, halle: o.location,
     spielNr: o.matchNo, rolle: o.role,
     kollege: colleague, kollegeVorname: colleagueFirst,
+    treffMinuten: meetMinutes,
     // The English names — one per German name, so the English half of a mail
     // can be written in English placeholders (the console offers these chips
     // when it is switched to English) — plus the older aliases, kept so a
@@ -1860,7 +1875,7 @@ function emailVars(o: {
     firstName: refereeFirst, coachFirstName: rcFirst,
     date: o.date, time: o.time, home: o.homeTeam, away: o.awayTeam, league: o.league, venue: o.location,
     matchNo: o.matchNo, role: o.role,
-    colleague, colleagueFirstName: colleagueFirst,
+    colleague, colleagueFirstName: colleagueFirst, meetMinutes,
     coachee: o.refereeName, rc: o.rcName, location: o.location, homeTeam: o.homeTeam, awayTeam: o.awayTeam,
     match: `${o.homeTeam} – ${o.awayTeam}`,
   };
@@ -1883,9 +1898,10 @@ const EMAIL_PLACEHOLDER_ALIASES = ['coachee', 'rc', 'location', 'homeTeam', 'awa
 // this mail instead of getting their own. Offered as their own chips rather
 // than folded into EMAIL_PLACEHOLDERS_MATCH so the feedback editor, which
 // never has a colleague to name, does not offer a placeholder that always
-// renders blank there.
-const EMAIL_PLACEHOLDERS_REMINDER_EXTRA = ['kollege', 'kollegeVorname'];
-const EMAIL_PLACEHOLDERS_REMINDER_EXTRA_EN = ['colleague', 'colleagueFirstName'];
+// renders blank there. treffMinuten is how long before the whistle to meet the
+// coach (45 for 1L, else 30) — something only a mail sent before the game says.
+const EMAIL_PLACEHOLDERS_REMINDER_EXTRA = ['kollege', 'kollegeVorname', 'treffMinuten'];
+const EMAIL_PLACEHOLDERS_REMINDER_EXTRA_EN = ['colleague', 'colleagueFirstName', 'meetMinutes'];
 const EMAIL_PLACEHOLDERS_SURVEY = ['vorname', 'name', 'coach', 'coachVorname', 'datum', 'spielNr'];
 const EMAIL_PLACEHOLDERS_SURVEY_EN = ['firstName', 'name', 'coach', 'coachFirstName', 'date', 'matchNo'];
 

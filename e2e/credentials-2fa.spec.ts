@@ -95,3 +95,31 @@ test('the code travels with the change, and a short one cannot be sent', async (
   // exactly what a rotation after a leak has to end.
   await expect(page.getByText(/abgemeldet|signed out/)).toBeVisible();
 });
+
+// On a phone the hint beside the button squeezed its label onto three lines,
+// spilling out of a button whose height is fixed (seen in English at 15.10.2026,
+// "Send confirmation code"). The label stays on one line inside its border; the
+// hint wraps under it instead.
+for (const lang of ['DE', 'EN'] as const) {
+  test(`the send-code button holds its label on a narrow phone (${lang})`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 720 });
+    await openCredentials(page);
+    if (lang === 'EN') await page.getByRole('button', { name: 'DE', exact: true }).click();
+    const buttons = page.getByRole('button', { name: lang === 'EN' ? 'Send confirmation code' : 'Bestätigungscode senden' });
+    await expect(buttons).toHaveCount(3);
+    for (const b of await buttons.all()) {
+      const box = await b.evaluate((el) => {
+        const card = el.closest('div.rounded-xl')!.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        return {
+          overflowY: el.scrollHeight - el.clientHeight, overflowX: el.scrollWidth - el.clientWidth,
+          height: r.height, insideCard: r.left >= card.left && r.right <= card.right,
+        };
+      });
+      expect(box.overflowY, 'label spills out of the button vertically').toBeLessThanOrEqual(0);
+      expect(box.overflowX, 'label spills out of the button sideways').toBeLessThanOrEqual(0);
+      expect(box.height).toBeLessThanOrEqual(33);
+      expect(box.insideCard).toBe(true);
+    }
+  });
+}

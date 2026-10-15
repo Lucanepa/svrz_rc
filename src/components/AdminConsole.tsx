@@ -162,7 +162,7 @@ const STR = {
     tplFeedback: 'Feedback-E-Mail (nach dem Spiel)',
     tplFeedbackHint: 'Wird nach dem Absenden eines Feedbacks an den Coachee gesendet (RC in Kopie, PDF im Anhang).',
     tplReminder: 'Erinnerung (Tag vor dem Spiel)',
-    tplReminderHint: 'Wird am Vortag an das Spiel gesendet — eine E-Mail pro Spiel, nicht pro SR. Jeder Coachee steht in „An"; ein SR ohne eigene Coachee-Akte steht in Kopie, zusammen mit dem RC. Sind beide SR Coachees (oder keiner von beiden), stehen beide in „An".',
+    tplReminderHint: 'Wird am Vortag an das Spiel gesendet — eine E-Mail pro Spiel, nicht pro SR. Jeder Coachee steht in „An"; ein SR ohne eigene Coachee-Akte steht in Kopie, zusammen mit dem RC. Sind beide SR Coachees (oder keiner von beiden), stehen beide in „An". {{treffMinuten}} ist 45 bei einem 1L-Spiel, sonst 30.',
     tplSurvey: 'RC-Feedback-Benachrichtigung',
     tplSurveyHint: 'Geht an die RC-Kommission, sobald jemand den Fragebogen abgeschickt hat. Die Antworten hängen automatisch darunter — anonyme Rückmeldungen ohne Namen.',
     tplSubject: 'Betreff', tplSubjectEn: 'Betreff (EN, optional)', tplHeading: 'Titel (optional)', tplIntro: 'Text', tplOutro: 'Schluss / Grussformel',
@@ -490,7 +490,7 @@ const STR = {
     tplFeedback: 'Feedback email (after the match)',
     tplFeedbackHint: 'Sent to the coachee when a feedback is submitted (RC in CC, PDF attached).',
     tplReminder: 'Reminder (day before the match)',
-    tplReminderHint: 'Sent the day before, one email per game rather than per referee. Every coachee goes in To:; a referee with no coachee record of their own rides in Cc, alongside the RC. With two coachees (or neither), both go in To: together.',
+    tplReminderHint: 'Sent the day before, one email per game rather than per referee. Every coachee goes in To:; a referee with no coachee record of their own rides in Cc, alongside the RC. With two coachees (or neither), both go in To: together. {{meetMinutes}} is 45 for a 1L game, 30 otherwise.',
     tplSurvey: 'RC feedback notification',
     tplSurveyHint: 'Goes to the RC commission as soon as somebody submits the questionnaire. The answers are appended automatically — anonymous responses without a name.',
     tplSubject: 'Subject', tplSubjectEn: 'Subject (EN, optional)', tplHeading: 'Title (optional)', tplIntro: 'Body', tplOutro: 'Closing / sign-off',
@@ -6317,8 +6317,11 @@ function CredentialsAdmin({ t }: { t: T }) {
               {!armed ? (
                 // Nothing is editable until a code has been asked for: a change
                 // starts by proving you can read the mailbox, not by typing.
-                <div className="mt-2 flex items-center gap-2">
-                  <button className={btnGhost} disabled={busy === slot.slot} onClick={() => void sendCode(slot)}>
+                // The label stays on one line: btnGhost is a fixed h-8, and on a
+                // phone the hint squeezed it into three lines spilling out of
+                // its own border. The hint wraps under it instead.
+                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <button className={`${btnGhost} shrink-0 whitespace-nowrap`} disabled={busy === slot.slot} onClick={() => void sendCode(slot)}>
                     {busy === slot.slot ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />} {t.credSendCode}
                   </button>
                   <span className="text-[11px] text-stone-400">{t.credCodeWhy}</span>

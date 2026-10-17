@@ -116,6 +116,25 @@ test("a page with no title of its own never wears the last page's", async ({ pag
   await expect(titleBox(page)).toHaveValue('');
 });
 
+test('naming a new page keeps the caret in the name, and makes one page', async ({ page }) => {
+  // The first letter on a page not yet written MAKES the page. The field was
+  // keyed by the page id, so that letter swapped it for a fresh field without
+  // focus, and the rest of the name went nowhere (2026-10-17).
+  await stubSignedInApp(page);
+  await seedPad(page, [OLDER, NEWER]);
+  await page.goto('/');
+  await launcher(page).click();
+  await sheet(page).getByRole('button', { name: /^(Text)$/ }).click();
+
+  await titleBox(page).click();
+  await page.keyboard.type('Halbzeit');
+  await expect(titleBox(page)).toHaveValue('Halbzeit');
+  await expect(titleBox(page)).toBeFocused();
+
+  await expect.poll(async () => (await storedPages(page)).filter((r) => r.title === 'Halbzeit').length).toBe(1);
+  expect(await storedPages(page)).toHaveLength(3);
+});
+
 test('the sheet reopens on the page it was closed on, not on the newest', async ({ page }) => {
   await stubSignedInApp(page);
   await seedPad(page, [OLDER, NEWER]);

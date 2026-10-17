@@ -22,7 +22,7 @@ import * as notebookSync from '../lib/notebookSync';
 import type { PadSyncStatus } from '../lib/notebookSync';
 import { importBlock, pageBlock } from '../lib/notebookImport';
 import { richToPlain } from '../lib/richText';
-import { RichSurface, RichToolbar, appendBullet, appendNumbered } from './RichText';
+import { RichSurface, RichToolbar, appendBullet, appendCheck, appendNumbered } from './RichText';
 import { confirmDialog, toast } from './ui';
 import AppSpinner from './AppSpinner';
 import StaleBuildNotice from './StaleBuildNotice';
@@ -194,14 +194,20 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const handleTitle = (value: string) => {
     // One line: the strip draws this, and a pasted paragraph would break it.
     const title = value.replace(/[\r\n]+/g, ' ').slice(0, NOTEBOOK_MAX_TITLE_LEN);
-    if (current) {
-      notebookSync.commit({ ...current, title });
+    // The page the first letter just made, as for the text: a second event
+    // before the next render must name that page, not make another.
+    const open = current || madePage.current;
+    if (open) {
+      const next = { ...open, title };
+      if (open === madePage.current) madePage.current = next;
+      notebookSync.commit(next);
       return;
     }
     if (!title.trim()) return;
     const page = makePage(ownerId, virtualKind, virtualBg);
     page.title = title;
     notebookSync.commit(page, undefined, 0);
+    madePage.current = page;
     setVirtual(null);
     setCurrentId(page.pageId);
   };
@@ -429,8 +435,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
               type="text"
               // `|| ''`, never `current.title`: one undefined — a page stored
               // before this field existed — makes React let go of the input,
-              // and it goes on showing the title of the page before it.
-              key={current ? current.pageId : 'new'}
+              // and it goes on showing the title of the page before it. Not
+              // keyed by the page: the first letter on a new page MAKES the
+              // page, the key changed under the caret, and the field was
+              // swapped for a fresh one without focus (2026-10-17).
               value={(current && current.title) || ''}
               onChange={(e) => handleTitle(e.target.value)}
               maxLength={NOTEBOOK_MAX_TITLE_LEN}
@@ -583,7 +591,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
               ) : activeKind === 'text' ? (
                 <div ref={surfaceRef} className="relative flex-1 min-h-0 flex flex-col">
                   <div className="px-3 py-1.5 border-b border-stone-100 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
-                    <RichToolbar de={de} onCommand={format} onBullet={() => handleText(appendBullet(currentText))} onNumber={() => handleText(appendNumbered(currentText))}>
+                    <RichToolbar de={de} onCommand={format} onBullet={() => handleText(appendBullet(currentText))} onNumber={() => handleText(appendNumbered(currentText))} onCheck={() => handleText(appendCheck(currentText))}>
                       <span className="mx-0.5 h-5 w-px bg-stone-200" />
                       {/* One button, not nine: nine pills wrap, and a wrapped
                           row is a second row of height this sheet does not

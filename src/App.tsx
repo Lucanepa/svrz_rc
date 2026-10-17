@@ -164,6 +164,23 @@ const RATING_COLORS: Record<string, string> = {
 // visit) — the same blue as a "C", so the report reads as one scale.
 const SELECTED_RESULT = 'bg-blue-600 text-white border-blue-600 font-bold';
 
+/** Which of the results row's required fields are still empty. A dash is what
+ *  a coach types to get past a required field; the goal is the one line the
+ *  next coach reads first (it is handed over with the record), so it has to
+ *  say something: at least one letter or digit. */
+function bottomGaps(fd: FeedbackFormData) {
+  const r = fd.results;
+  return {
+    spielniveau: !r.spielniveau,
+    motivation: !r.motivation,
+    einstufung: !r.einstufung,
+    secondBesuch: !r.secondBesuch,
+    srZiel: !/[\p{L}\p{N}]/u.test(String(r.srZiel || '')),
+  };
+}
+/** The red a gap wears once a send has been refused over it. */
+const GAP_RING = 'bg-red-50 ring-2 ring-inset ring-red-500';
+
 const NA_ELIGIBLE_IDS = new Set(['1sr-lead-2', '2sr-lead-1']);
 
 const UI_STRINGS = {
@@ -3338,8 +3355,19 @@ export default function App() {
   // `isMine` rides along for the same reason: the roster's ids arrive after
   // the subscription and the check must read the current set.
   const isMine = (game: { assignedRc?: string; assignedRcId?: string }) => isMyGame(game, rcAuth, rcKnownIds);
-  const liveHandlersRef = useRef({ loadHome, syncGamesQuietly, loadSettings, isMine });
-  liveHandlersRef.current = { loadHome, syncGamesQuietly, loadSettings, isMine };
+  // The footer's "Spiele vor …" / "Börse vor …" ages are counted from times the
+  // settings call hands over, and that call ran only at start-up: an installed
+  // app left open for two days said "2 d ago" over a sync that ran that
+  // afternoon (2026-10-17). Only the freshness is taken here — the rest of the
+  // settings has its own event.
+  const freshnessReadAt = useRef(0);
+  const refreshFreshness = async (force = false) => {
+    if (!force && Date.now() - freshnessReadAt.current < 300_000) return;
+    freshnessReadAt.current = Date.now();
+    try { setFreshness((await getSettings()).freshness ?? null); } catch { /* the next one */ }
+  };
+  const liveHandlersRef = useRef({ loadHome, syncGamesQuietly, loadSettings, refreshFreshness, isMine });
+  liveHandlersRef.current = { loadHome, syncGamesQuietly, loadSettings, refreshFreshness, isMine };
   // The signed-in coach's switch requests: read on sign-in, forgotten on
   // sign-out, and kept fresh by the live stream and every Home load after.
   useEffect(() => {
@@ -3366,6 +3394,7 @@ export default function App() {
         if (mine || wasMine) void live.loadHome();
       } else if (event.type === 'games.synced') {
         void live.syncGamesQuietly();
+        void live.refreshFreshness(true);
       } else if (event.type === 'settings.changed') {
         // No season claim here: if the default moved, the season-change effect
         // is what re-fetches Home, the overview and the calendar for it.
@@ -3385,6 +3414,9 @@ export default function App() {
     if (!rcAuth.rcName) return;
     const refresh = () => {
       if (document.visibilityState !== 'visible') return;
+      // Throttled inside to one read in five minutes: the Börse runs hourly
+      // and sends no event, so this is what keeps its age honest.
+      void refreshFreshness();
       if (listTab === 'games') void syncGamesQuietly();
       else if (listTab === 'home') void loadHome();
       else if (listTab === 'switches') void refreshSwitchRequests();
@@ -4646,6 +4678,10 @@ export default function App() {
    *  the half it is about. Null means the one on screen. */
   const [sendRole, setSendRole] = useState<'1. SR' | '2. SR' | null>(null);
   const [validationError, setValidationError] = useState('');
+  /** A send was refused for the form on screen: what it still lacks wears red
+   *  until it is filled. Read live off the form, so a field clears as it fills. */
+  const [showGaps, setShowGaps] = useState(false);
+  useEffect(() => { setShowGaps(false); }, [formData.role, selectedGameId]);
 
   const validateSingleForm = (fd: FeedbackFormData): string | null => {
     const unrated = fd.sections.flatMap(s => s.items).filter(it => !it.rating);
@@ -4654,15 +4690,20 @@ export default function App() {
         ? `Bitte alle Bewertungen ausfüllen (${unrated.length} fehlend).`
         : `Please fill in all ratings (${unrated.length} missing).`;
     }
-    const r = fd.results;
-    // A dash is what a coach types to get past a required field. The goal is
-    // the one line the next coach reads first (it is handed over with the
-    // record), so it has to say something: at least one letter or digit.
-    const goalSaid = /[\p{L}\p{N}]/u.test(String(r.srZiel || ''));
-    if (!r.spielniveau || !r.motivation || !r.einstufung || !r.secondBesuch || !goalSaid) {
+    // Only the ones still empty: all five, every time, sent the coach looking
+    // for a gap in fields that were already filled.
+    const gaps = bottomGaps(fd);
+    const missing = ([
+      [gaps.spielniveau, 'Spielniveau', 'Match Level'],
+      [gaps.motivation, 'Motivation', 'Motivation'],
+      [gaps.einstufung, 'Einstufung', 'Outlook'],
+      [gaps.secondBesuch, '2. Besuch', '2nd Visit'],
+      [gaps.srZiel, 'SR-Ziel', 'Referee Goal'],
+    ] as const).filter(([gap]) => gap).map(([, de, en]) => (fd.lang === 'DE' ? de : en));
+    if (missing.length > 0) {
       return fd.lang === 'DE'
-        ? 'Bitte alle Felder im unteren Bereich ausfüllen (Spielniveau, Motivation, Einstufung, 2. Besuch, SR-Ziel).'
-        : 'Please fill in all bottom fields (Match Level, Motivation, Outlook, 2nd Visit, Referee Goal).';
+        ? `Bitte im unteren Bereich noch ausfüllen: ${missing.join(', ')}.`
+        : `Please fill in at the bottom: ${missing.join(', ')}.`;
     }
     // The result is on the form and in the mail the coachee gets, so a missing
     // or impossible one (3:0 with a set the winner lost) has to stop the send.
@@ -4705,8 +4746,25 @@ export default function App() {
       return false;
     }
     const error = validateSingleForm(stored.formData);
+    if (role === formData.role) setShowGaps(!!error);
+    if (error && role === formData.role) {
+      // To the first gap, once the red is on it. Both layouts are in the DOM
+      // (table on a wide screen, cards on a phone), so the visible one.
+      requestAnimationFrame(() => {
+        const first = [...document.querySelectorAll<HTMLElement>('[data-missing="true"]')]
+          .find((el) => el.offsetParent !== null);
+        if (!first) return;
+        first.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        // A text field takes the caret; a row of buttons is only shown — its
+        // first button is the info hint, which is not what is missing.
+        first.querySelector<HTMLInputElement>('input[type="text"]')?.focus({ preventScroll: true });
+      });
+    }
     if (error) {
-      setValidationError(role === formData.role ? error : `${role}: ${error}`);
+      // With two referees on the game, every message says whose form it is
+      // about — the one on screen included: "the form" is not one form there.
+      const name = stored.formData.meta.srName;
+      setValidationError(role === formData.role && !gameHas2SR ? error : `${role}${name ? ` (${name})` : ''}: ${error}`);
       return false;
     }
 
@@ -4834,17 +4892,21 @@ export default function App() {
 
   const buildDraftRecords = (owner: string): DraftRecord[] => {
     const out: DraftRecord[] = [];
-    const push = (fd: FeedbackFormData, tips: string) => {
+    const push = (fd: FeedbackFormData, tips: string, updatedAt: number) => {
       if (!draftHasWork(fd, tips)) return;
       const prev = drafts.find((d) => d.gameId === selectedGameId && d.role === fd.role);
       out.push({
         id: draftKey(owner, selectedGameId, fd.role),
         schema: DRAFT_SCHEMA, ownerId: owner, gameId: selectedGameId, role: fd.role,
-        updatedAt: Date.now(),
+        updatedAt,
         status: 'editing', submissionKey: '',
         label: selectedGame ? `${selectedGame.homeTeam} vs ${selectedGame.awayTeam}` : '',
         matchNo: selectedGame?.matchNo || '',
-        observationTarget, resultUnlocked,
+        // Each record names its OWN half. The tab on screen used to be written
+        // into the stashed sibling as well, so a resume could open the 1. SR
+        // form under the 2SR tab (2026-10-17).
+        observationTarget: observationTarget === 'both' ? 'both' : fd.role === '2. SR' ? '2SR' : '1SR',
+        resultUnlocked,
         coacheeId: selectedCoacheeId, coacheeName: selectedCoacheeName, coacheeLevel: selectedCoacheeLevel,
         lang: fd.lang, meta: { ...fd.meta },
         ratings: ratingsFromSections(fd.sections),
@@ -4857,8 +4919,11 @@ export default function App() {
         extra: prev?.extra,
       });
     };
-    push(formData, tipsAndTricks);
-    if (otherStash) push(otherStash.formData, otherStash.tipsAndTricks);
+    // The half on screen is the newest, strictly: both used to carry the same
+    // millisecond, and a resume then reopened whichever happened to sort first.
+    const now = Date.now();
+    push(formData, tipsAndTricks, now);
+    if (otherStash) push(otherStash.formData, otherStash.tipsAndTricks, now - 1);
     return out;
   };
 
@@ -5078,24 +5143,21 @@ export default function App() {
     const game = eligibleGames.find((g) => g.id === editing[0].gameId);
     if (!game) { setBackendNotice(t.draftGameMissing); releaseAutoSelect(); draftLoadingRef.current = ''; return; }
     const has2SR = !!game.secondReferee;   // THIS game, not a stale flag from the last one
+    // A record saved before 2026-10-17 carries the tab that was on screen, on
+    // both halves alike and with the same timestamp: the one whose own role
+    // matches it is the half the coach was looking at.
+    const onItsTab = (d: DraftRecord) => d.observationTarget === (d.role === '2. SR' ? '2SR' : '1SR');
     const live = (preferRole && editing.find((d) => d.role === preferRole))
-      || editing.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
+      || editing.slice().sort((a, b) => (b.updatedAt - a.updatedAt) || (Number(onItsTab(b)) - Number(onItsTab(a))))[0];
     const other = editing.find((d) => d.role !== live.role);
 
     const stash: typeof dualFormData = { '1. SR': null, '2. SR': null };
     if (other) stash[other.role] = { formData: formDataFromDraft(other, has2SR), tipsAndTricks: other.tipsAndTricks };
 
-    // A sibling already queued or filed cannot be sent as a pair: validateForm
-    // would demand a form for a role that is no longer editable, so collapse to
-    // the single role that IS restorable. A sibling that was merely never
-    // STARTED is a different thing — the visit is still the 'both' the coach
-    // chose, and this record is the only thing left saying so. Collapsing there
-    // silently filed one report on a two-referee visit.
-    const blocked = !other && records.some((d) => d.role !== live.role && d.status !== 'editing');
-    // "Both" is gone from the toggle (2026-09-24): a draft saved in it comes
-    // back on the role it was showing, its sibling stashed for the switch.
-    const target: '1SR' | '2SR' | 'both' =
-      blocked || live.observationTarget === 'both' ? (live.role === '2. SR' ? '2SR' : '1SR') : live.observationTarget;
+    // "Both" is gone from the toggle (2026-09-24), so the tab is the half the
+    // form shows, always — taken from the role, never from the record's saved
+    // tab, which older builds wrote onto the stashed half too.
+    const target: '1SR' | '2SR' = live.role === '2. SR' ? '2SR' : '1SR';
 
     setSelectedGameId(game.id);
     setSelectedCoacheeId(live.coacheeId);
@@ -5151,8 +5213,7 @@ export default function App() {
       // No draft is the normal case: leave the fresh-game reset handleSelectGame
       // already performed exactly as it is.
       if (editing.length === 0) { draftLoadingRef.current = ''; return; }
-      // The unfiltered list: resumeDraft filters internally, and it needs to see
-      // a sibling that is queued or filed to tell that apart from one never started.
+      // The unfiltered list: resumeDraft filters internally.
       resumeDraft(found, preferRole);
       toast.success(t.draftRestored, { lang: formData.lang });
     } catch { if (draftLoadingRef.current === gameId) draftLoadingRef.current = ''; }
@@ -9866,8 +9927,8 @@ export default function App() {
                     const hasNA = NA_ELIGIBLE_IDS.has(item.id);
                     const isNA = item.rating === 'N/A';
                     return (
-                    <tr key={item.id} className="group hover:bg-stone-50 transition-colors">
-                      <td className="p-2 text-xs border-b border-stone-900 leading-tight">{item.label}</td>
+                    <tr key={item.id} className="group hover:bg-stone-50 transition-colors" data-missing={showGaps && !item.rating ? 'true' : undefined}>
+                      <td className={cn("p-2 text-xs border-b border-stone-900 leading-tight", showGaps && !item.rating && GAP_RING)}>{item.label}</td>
                       {sectionHasNA && (
                         hasNA ? (
                           <td
@@ -9927,7 +9988,7 @@ export default function App() {
                   const hasNA = NA_ELIGIBLE_IDS.has(item.id);
                   const isNA = item.rating === 'N/A';
                   return (
-                    <div key={item.id} className="p-2.5">
+                    <div key={item.id} className={cn("p-2.5", showGaps && !item.rating && GAP_RING)} data-missing={showGaps && !item.rating ? 'true' : undefined}>
                       <div className="text-xs text-stone-700 mb-2 leading-snug">{item.label}</div>
                       <div className="flex flex-wrap gap-1.5">
                         {RATINGS.map(r => {
@@ -9958,8 +10019,15 @@ export default function App() {
         </div>
 
         {/* Results Header Row */}
+        {(() => {
+        const gaps = showGaps ? bottomGaps(formData) : null;
+        const gapCell = (key: keyof ReturnType<typeof bottomGaps>) => ({
+          className: cn('p-3', gaps?.[key] && GAP_RING),
+          'data-missing': gaps?.[key] ? 'true' : undefined,
+        });
+        return (
         <div className="mt-8 border border-stone-900 bg-stone-50 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 print:grid-cols-5 divide-y sm:divide-y-0 sm:divide-x divide-stone-900">
-          <div className="p-3">
+          <div {...gapCell('spielniveau')}>
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.matchLevel}</h4><InfoHint id="matchLevel" lang={formData.lang} className="ml-1 mb-1" />
             <div className="flex flex-wrap gap-1">
               {([['leicht', t.easy], ['normal', t.normal], ['schwierig', t.difficult]] as [string, string][]).map(([v, lbl]) => (
@@ -9970,7 +10038,7 @@ export default function App() {
               ))}
             </div>
           </div>
-          <div className="p-3">
+          <div {...gapCell('motivation')}>
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.motivation}</h4><InfoHint id="motivation" lang={formData.lang} className="ml-1 mb-1" />
             <div className="flex gap-1">
               {['up', 'check', 'down'].map(v => (
@@ -9987,7 +10055,7 @@ export default function App() {
               ))}
             </div>
           </div>
-          <div className="p-3">
+          <div {...gapCell('einstufung')}>
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.rating}</h4><InfoHint id="rating" lang={formData.lang} className="ml-1 mb-1" />
             <div className="flex gap-1">
               {['up', 'check', 'down'].map(v => (
@@ -10004,7 +10072,7 @@ export default function App() {
               ))}
             </div>
           </div>
-          <div className="p-3">
+          <div {...gapCell('secondBesuch')}>
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.secondVisit}</h4><InfoHint id="secondVisit" lang={formData.lang} className="ml-1 mb-1" />
             {/* A plain Y always stands first: "needs another visit", no role
                 named. When the Niveau table allows this referee both roles,
@@ -10045,7 +10113,7 @@ export default function App() {
               );
             })()}
           </div>
-          <div className="p-3">
+          <div {...gapCell('srZiel')}>
             <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-1 inline-block">{t.refGoal}</h4><InfoHint id="refGoal" lang={formData.lang} className="ml-1 mb-1" />
             <input
               type="text"
@@ -10080,6 +10148,8 @@ export default function App() {
             </div>
           </div>
         </div>
+        );
+        })()}
 
         {/* Full-width Remarks */}
         <div className="border-x border-b border-stone-900 p-4 flex flex-col gap-3">

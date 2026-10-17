@@ -5,7 +5,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { cn } from '../lib/utils';
-import { domToRich, richToEditableHtml, richToPlain, toRuns } from '../lib/richText';
+import { BOX_DONE, BOX_OPEN, domToRich, richToEditableHtml, richToPlain, toRuns } from '../lib/richText';
 
 // One editable surface, used both inline and in the full-screen editor.
 //
@@ -23,6 +23,36 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
   onFocus?: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  /** The checklist box under the pointer, if the pointer is ON one: a click
+   *  beside it is a click into the text, and must place the caret as always. */
+  const boxAt = (x: number, y: number): { node: Text; index: number } | null => {
+    const el = ref.current;
+    const doc = document as Document & {
+      caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    };
+    let node: Node | null = null;
+    let offset = 0;
+    if (doc.caretPositionFromPoint) {
+      const p = doc.caretPositionFromPoint(x, y);
+      if (p) { node = p.offsetNode; offset = p.offset; }
+    } else if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(x, y);
+      if (r) { node = r.startContainer; offset = r.startOffset; }
+    }
+    if (!el || !node || node.nodeType !== Node.TEXT_NODE || !el.contains(node)) return null;
+    const text = node.textContent || '';
+    // The caret lands before or after the glyph, depending on which half was hit.
+    for (const index of [offset, offset - 1]) {
+      if (text[index] !== BOX_OPEN && text[index] !== BOX_DONE) continue;
+      const range = document.createRange();
+      range.setStart(node, index);
+      range.setEnd(node, index + 1);
+      const r = range.getBoundingClientRect();
+      // A little give around it: the glyph is text-sized, and a thumb is not.
+      if (x >= r.left - 6 && x <= r.right + 4 && y >= r.top - 4 && y <= r.bottom + 4) return { node: node as Text, index };
+    }
+    return null;
+  };
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -46,6 +76,18 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
       data-placeholder={placeholder}
       onFocus={onFocus}
       onInput={() => { const el = ref.current; if (el) onChange(domToRich(el)); }}
+      // A box is ticked by tapping it. mousedown is held back on a box so the
+      // caret stays where the coach was writing (and, on a desktop, the field
+      // does not even take focus); the click then swaps the one character in
+      // place, so nothing else in the text moves.
+      onMouseDown={(e) => { if (boxAt(e.clientX, e.clientY)) e.preventDefault(); }}
+      onClick={(e) => {
+        const hit = boxAt(e.clientX, e.clientY);
+        const el = ref.current;
+        if (!hit || !el) return;
+        hit.node.replaceData(hit.index, 1, hit.node.data[hit.index] === BOX_OPEN ? BOX_DONE : BOX_OPEN);
+        onChange(domToRich(el));
+      }}
       onBlur={() => { const el = ref.current; if (el) onChange(domToRich(el)); }}
       // Paste as text, then let the toolbar add formatting: pasting from Word
       // otherwise drags in fonts, sizes and background colours that the subset
@@ -66,12 +108,14 @@ export const RICH_COLOURS = ['#1c1917', '#b91c1c', '#b45309', '#15803d', '#1d4ed
 /** The formatting toolbar. execCommand is deprecated and still the only thing
  *  every browser implements for a contenteditable selection; the output is
  *  normalised by domToRich on the way out, so what it emits does not matter. */
-export function RichToolbar({ de, onCommand, onBullet, onNumber, children }: {
+export function RichToolbar({ de, onCommand, onBullet, onNumber, onCheck, children }: {
   de: boolean;
   onCommand: (command: string, value?: string) => void;
   onBullet: () => void;
   /** A numbered line, continuing the count above it. Only where a caller wants it. */
   onNumber?: () => void;
+  /** A checklist line, its box ticked by tapping it. Only where a caller wants it. */
+  onCheck?: () => void;
   children?: React.ReactNode;
 }) {
   const btn = 'h-8 min-w-8 px-2 rounded-lg border border-stone-200 text-xs font-medium text-stone-700 hover:bg-stone-100 transition-colors';
@@ -97,6 +141,9 @@ export function RichToolbar({ de, onCommand, onBullet, onNumber, children }: {
       <span className="mx-0.5 h-5 w-px bg-stone-200" />
       <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onBullet} className={btn}>• {de ? 'Aufzählung' : 'Bullet'}</button>
       {onNumber && <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onNumber} className={btn}>1. {de ? 'Nummerierung' : 'Numbered'}</button>}
+      {/* The box alone: with a word beside it the notebook's toolbar wrapped
+          onto a second row, height that sheet does not have. */}
+      {onCheck && <button type="button" title={de ? 'Checkliste' : 'Checklist'} aria-label={de ? 'Checkliste' : 'Checklist'} onMouseDown={(e) => e.preventDefault()} onClick={onCheck} className={cn(btn, 'text-sm')}>{BOX_DONE}</button>}
       {children}
     </div>
   );
@@ -108,6 +155,14 @@ export function RichToolbar({ de, onCommand, onBullet, onNumber, children }: {
 export function appendBullet(value: string): string {
   const plain = richToPlain(value);
   return value ? `${value.replace(/\s+$/, '')}${plain ? '\n' : ''}• ` : '• ';
+}
+
+/** A new checklist line at the end of the value: an open box, ticked later by
+ *  tapping it. Plain characters like the bullet, so the line survives every
+ *  renderer — the PDF prints the box in a glyph its font has. */
+export function appendCheck(value: string): string {
+  const plain = richToPlain(value);
+  return value ? `${value.replace(/\s+$/, '')}${plain ? '\n' : ''}${BOX_OPEN} ` : `${BOX_OPEN} `;
 }
 
 /** A new numbered line: one more than the last numbered line above, else 1. */

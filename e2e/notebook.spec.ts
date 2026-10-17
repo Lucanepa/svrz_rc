@@ -383,6 +383,46 @@ test.describe('Into the form', () => {
     expect((await storedPages(page))[0].text).toMatch(/<b>erster Satz<\/b>/);
   });
 
+  test('a checklist line, ticked and unticked by tapping its box', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await pageBox(page).fill('Vor dem Spiel');
+    await sheet(page).getByRole('button', { name: /Checkliste|Checklist/ }).click();
+    await expect(pageBox(page)).toHaveText(/Vor dem Spiel\s*☐\s?$/);
+    await pageBox(page).press('Control+End');
+    await page.keyboard.type('Netz messen');
+    await expect(pageBox(page)).toHaveText(/☐ Netz messen$/);
+
+    const box = () => pageBox(page).evaluate((el) => {
+      const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+        const i = (n.textContent || '').search(/[☐☑]/);
+        if (i < 0) continue;
+        const r = document.createRange();
+        r.setStart(n, i);
+        r.setEnd(n, i + 1);
+        const b = r.getBoundingClientRect();
+        return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+      }
+      return null;
+    });
+
+    // A tap on the words is a tap into the text, not a tick.
+    await pageBox(page).getByText(/Netz messen/).click();
+    await expect(pageBox(page)).toHaveText(/☐ Netz messen$/);
+
+    const at = await box();
+    expect(at).not.toBeNull();
+    await page.mouse.click(at!.x, at!.y);
+    await expect(pageBox(page)).toHaveText(/☑ Netz messen$/);
+    await expect.poll(async () => (await storedPages(page))[0]?.text).toMatch(/☑ Netz messen/);
+
+    await page.mouse.click(at!.x, at!.y);
+    await expect(pageBox(page)).toHaveText(/☐ Netz messen$/);
+    await expect.poll(async () => (await storedPages(page))[0]?.text).toMatch(/☐ Netz messen/);
+  });
+
   test('the phases of a match are headings a thumb can write', async ({ page }) => {
     await stubSignedInApp(page);
     await page.goto('/');

@@ -612,6 +612,61 @@ test.describe('A draft from the retired "Both" mode', () => {
   });
 });
 
+test.describe('Two referees, two halves, one tab', () => {
+  // 2026-10-17: the 2SR tab lit over the 1. SR form. The autosave wrote the tab
+  // on screen into BOTH halves' records, in the same millisecond, so a resume
+  // picked whichever half sorted first and took the tab from the record.
+  test('a pair saved by an older build opens on the half its tab names', async ({ page }) => {
+    await stubSignedInApp(page);
+    await useTwoRefereeGame(page);
+    const now = suiteNow();
+    await seedDrafts(page, [
+      draftRecord({ role: '1. SR', observationTarget: '2SR', tipsAndTricks: 'the first referee', updatedAt: now }),
+      draftRecord({ role: '2. SR', observationTarget: '2SR', tipsAndTricks: 'the second referee', updatedAt: now, ratings: {} }),
+    ]);
+    await page.goto('/');
+
+    await openGameFromList(page);
+    await expect(restoredToast(page)).toBeVisible();
+    await expect(targetButton(page, /^2SR/)).toHaveAttribute('aria-pressed', 'true');
+    await expect(tipsBox(page)).toHaveValue('the second referee');
+  });
+
+  test('each half is saved under its own tab, and the one on screen comes back', async ({ page }) => {
+    await stubSignedInApp(page);
+    await useTwoRefereeGame(page);
+    await page.route(/\/api\/drafts\/parked\//, (r) => r.fulfill({
+      json: r.request().method() === 'DELETE' ? { removed: 1 } : { parked: 1 },
+    }));
+    await page.goto('/');
+    await openGameFromList(page);
+
+    await tipsBox(page).fill('first referee: signals late');
+    await expect.poll(async () => (await storedDrafts(page)).length).toBe(1);
+    await targetButton(page, /^2SR/).click();
+    await tipsBox(page).fill('second referee: watch the net');
+    await expect.poll(async () => (await storedDrafts(page)).find((d) => d.role === '2. SR')?.tipsAndTricks)
+      .toBe('second referee: watch the net');
+
+    const first = await storedRole(page, '1. SR');
+    const second = await storedRole(page, '2. SR');
+    expect(first.observationTarget).toBe('1SR');
+    expect(second.observationTarget).toBe('2SR');
+    expect(second.updatedAt).toBeGreaterThan(first.updatedAt);
+
+    // At the root, not a reload: the form's own address names the half and
+    // would answer this without the records having to. The root resumes the
+    // game this device was last on, and only the records say which half.
+    await page.goto('/');
+    await expect(targetButton(page, /^2SR/)).toHaveAttribute('aria-pressed', 'true');
+    await expect(tipsBox(page)).toHaveValue('second referee: watch the net');
+
+    // And the other half is still behind the other tab.
+    await targetButton(page, /^1SR/).click();
+    await expect(tipsBox(page)).toHaveValue('first referee: signals late');
+  });
+});
+
 test.describe('The autosave and the report that already went', () => {
   test('a filed role is not resurrected by the next keystroke', async ({ page }) => {
     await stubSignedInApp(page);

@@ -423,6 +423,41 @@ test.describe('Into the form', () => {
     await expect.poll(async () => (await storedPages(page))[0]?.text).toMatch(/☐ Netz messen/);
   });
 
+  test('Enter carries a list on, and Enter on an empty item ends it', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await pageBox(page).fill('Vor dem Spiel');
+    await sheet(page).getByRole('button', { name: /Checkliste|Checklist/ }).click();
+    await pageBox(page).press('Control+End');
+    await page.keyboard.type('Netz messen');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Antennen');
+    await expect(pageBox(page)).toHaveText(/☐ Netz messen\s*☐ Antennen$/);
+
+    // An item left empty: Enter takes its box back off instead of adding one.
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Notizen');
+    await expect(pageBox(page)).toHaveText(/☐ Antennen\s*Notizen$/);
+    await expect(pageBox(page)).not.toHaveText(/☐\s*Notizen/);
+
+    // Numbers count on, bullets stay bullets.
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('1. erstens');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('zweitens');
+    await expect(pageBox(page)).toHaveText(/1\. erstens\s*2\. zweitens$/);
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('• a');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('b');
+    await expect(pageBox(page)).toHaveText(/• a\s*• b$/);
+
+    await expect.poll(async () => (await storedPages(page))[0]?.text).toMatch(/• a\n• b$/);
+  });
+
   test('the phases of a match are headings a thumb can write', async ({ page }) => {
     await stubSignedInApp(page);
     await page.goto('/');

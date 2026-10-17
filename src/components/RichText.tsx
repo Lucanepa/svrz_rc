@@ -7,6 +7,30 @@ import React, { useEffect, useRef } from 'react';
 import { cn } from '../lib/utils';
 import { BOX_DONE, BOX_OPEN, domToRich, richToEditableHtml, richToPlain, toRuns } from '../lib/richText';
 
+/** A line that is a list item: its indent, its mark (a box, a bullet, or a
+ *  number with its dot) and the space after it. */
+const LIST_LINE = new RegExp(`^([ \\t]*)([${BOX_OPEN}${BOX_DONE}•]|(\\d{1,3})\\.)(?: |$)`);
+
+/** The text of the caret's line on one side of it, read off the DOM the way
+ *  domToRich reads it: a <br> or a block ends a line, as does a newline in a
+ *  text node. (Range.toString() would lose the <br>s, and with them the lines.) */
+function lineText(root: HTMLElement, caret: Range, side: 'before' | 'after'): string {
+  const range = document.createRange();
+  if (side === 'before') { range.setStart(root, 0); range.setEnd(caret.startContainer, caret.startOffset); }
+  else { range.setStart(caret.startContainer, caret.startOffset); range.setEnd(root, root.childNodes.length); }
+  let out = '';
+  const walk = (node: Node): void => {
+    if (node.nodeType === Node.TEXT_NODE) { out += node.textContent || ''; return; }
+    if (node.nodeName === 'BR') { out += '\n'; return; }
+    const block = /^(DIV|P|LI)$/.test(node.nodeName);
+    if (block && out && !out.endsWith('\n')) out += '\n';
+    node.childNodes.forEach(walk);
+    if (block && side === 'after' && !out.endsWith('\n')) out += '\n';
+  };
+  range.cloneContents().childNodes.forEach(walk);
+  return side === 'before' ? out.slice(out.lastIndexOf('\n') + 1) : out.split('\n')[0];
+}
+
 // One editable surface, used both inline and in the full-screen editor.
 //
 // Uncontrolled on purpose: writing `value` back into the DOM on every keystroke
@@ -65,6 +89,39 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
   useEffect(() => {
     if (autoFocus) ref.current?.focus();
   }, [autoFocus]);
+  // Enter on a list line starts the next one: a box after a box (open, even
+  // under a ticked one), a bullet after a bullet, 3. after 2. Enter on an item
+  // with nothing written ends the list instead, as every editor does. On
+  // `beforeinput`, not keydown: a phone keyboard's Enter arrives there as
+  // insertParagraph and often carries no usable key code at all.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onBeforeInput = (e: InputEvent) => {
+      if (e.inputType !== 'insertParagraph') return;
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return;
+      const caret = sel.getRangeAt(0);
+      if (!el.contains(caret.startContainer)) return;
+      const before = lineText(el, caret, 'before');
+      const m = LIST_LINE.exec(before);
+      if (!m) return;
+      const [marker, indent, mark, num] = m;
+      const after = lineText(el, caret, 'after');
+      if (!before.slice(marker.length).trim() && !after.trim()) {
+        // An empty item: take its marker back off, and the list is over.
+        for (let i = 0; i < before.length; i += 1) sel.modify('extend', 'backward', 'character');
+        if (document.execCommand('delete')) e.preventDefault();
+        return;
+      }
+      const next = mark === BOX_OPEN || mark === BOX_DONE ? `${BOX_OPEN} ` : mark === '•' ? '• ' : `${Number(num) + 1}. `;
+      // Only once the browser has taken the insert is its own Enter cancelled:
+      // a browser that refuses execCommand here still gets a plain new line.
+      if (document.execCommand('insertText', false, `\n${indent}${next}`)) e.preventDefault();
+    };
+    el.addEventListener('beforeinput', onBeforeInput);
+    return () => el.removeEventListener('beforeinput', onBeforeInput);
+  }, []);
   return (
     <div
       ref={ref}

@@ -19,7 +19,8 @@
 set -euo pipefail
 umask 022
 FD=${SVRZ_FDROID_HOME:-$HOME/.config/svrz-rc-fdroid}
-PUBLIC=${SVRZ_FDROID_PUBLIC:-$HOME/svrz_rc/deploy/hetzner/fdroid-public}
+# The live stack moved to ~/stacks/svrz_rc on 15.10.2026; ~/svrz_rc is gone.
+PUBLIC=${SVRZ_FDROID_PUBLIC:-$HOME/stacks/svrz_rc/deploy/hetzner/fdroid-public}
 REPO_URL=https://svrz-rc-fdroid.openvolley.app/repo
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 APP_ID=app.openvolley.svrzrc

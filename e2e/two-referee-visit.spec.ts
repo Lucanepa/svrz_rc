@@ -89,11 +89,19 @@ test('a goal that says nothing is not a goal', async ({ page }) => {
   // to the next coach and has to say something.
   await page.getByRole('heading', { name: /Referee Goal|SR-Ziel/ }).locator('xpath=..').locator('input').fill('-');
   await page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ }).click();
-  await expect(page.getByText(/Bitte alle Felder im unteren Bereich|Please fill in all bottom fields/)).toBeVisible();
+  // Whose form, and only what is missing from it: on a two-referee game "the
+  // bottom fields" left the coach to guess which of two forms was meant.
+  await expect(page.getByText(/^1\. SR( \(.+\))?: (Bitte im unteren Bereich noch ausfüllen|Please fill in at the bottom): (SR-Ziel|Referee Goal)\.$/)).toBeVisible();
   await expect(page.getByRole('heading', { name: /Save feedback|Feedback speichern/ })).toHaveCount(0);
+  // And it is marked where it is: the goal alone wears red, with the caret in it.
+  const goalInput = page.getByRole('heading', { name: /Referee Goal|SR-Ziel/ }).locator('xpath=..').locator('input');
+  await expect(page.locator('[data-missing="true"]')).toHaveCount(1);
+  await expect(page.locator('[data-missing="true"]').locator('input')).toHaveCount(1);
+  await expect(goalInput).toBeFocused();
 
   // Say something and it goes.
   await page.getByRole('heading', { name: /Referee Goal|SR-Ziel/ }).locator('xpath=..').locator('input').fill('N3 halten');
+  await expect(page.locator('[data-missing="true"]')).toHaveCount(0);
   await page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ }).click();
   await expect(page.getByRole('heading', { name: /Save feedback|Feedback speichern/ })).toBeVisible();
 });

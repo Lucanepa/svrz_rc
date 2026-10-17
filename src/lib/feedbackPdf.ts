@@ -18,7 +18,7 @@ import qrcode from 'qrcode-generator';
 import logoDataUrl from '../assets/svrz-logo.png?inline';
 import { VERSION_STAMP } from './buildInfo';
 import { INTER_BOLD_B64, INTER_BOLD_ITALIC_B64, INTER_ITALIC_B64, INTER_REGULAR_B64 } from './pdfFonts';
-import { richToPlain, toRuns, type RichRun } from './richText';
+import { BOX_DONE, BOX_OPEN, richToPlain, toRuns, type RichRun } from './richText';
 import {
   FeedbackFormData,
   LEGEND,
@@ -795,6 +795,15 @@ type RemarkBlockName = 'remarks' | 'highlights' | 'improvements' | 'goals';
  *
  * The blank form draws all four regardless: there the empty band is the point.
  */
+/** The notebook's checklist boxes, in glyphs the embedded Inter has: it has
+ *  neither ☐ nor ☑, and a glyph the font lacks does not print. */
+function printableBoxes(runs: RichRun[]): RichRun[] {
+  return runs.map((run) => ({
+    ...run,
+    text: run.text.split(BOX_OPEN).join('□').split(BOX_DONE).join('✓'),
+  }));
+}
+
 export function remarkBlocksToDraw(
   results: FeedbackFormData['results'],
   blank: boolean,
@@ -872,7 +881,7 @@ function drawRemarks(sheet: Sheet, data: FeedbackFormData, t: Labels): void {
     // its own face or a bold sentence overruns the column.
     const lines: RichRun[][] = [];
     if (!sheet.blank) {
-      for (const hardLine of toRuns(block.value)) {
+      for (const hardLine of toRuns(block.value).map(printableBoxes)) {
         // A blank line is the paragraph separator and has to survive the wrap.
         if (!hardLine.length) { lines.push([]); continue; }
         lines.push(...wrapRuns(sheet, hardLine, CONTENT_W - 20, 8));

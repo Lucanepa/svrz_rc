@@ -15,6 +15,11 @@
 // on the way in AND again on the server, because a coach's remarks end up inside
 // an e-mail somebody else opens.
 
+/** A checklist line opens with one of these, and tapping it swaps the one for
+ *  the other. Literal characters, like the bullet: no list markup to agree on. */
+export const BOX_OPEN = '☐';
+export const BOX_DONE = '☑';
+
 export interface RichRun {
   text: string;
   bold?: boolean;

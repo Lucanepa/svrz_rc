@@ -93,7 +93,7 @@ import { importFresh } from './lib/freshImport';
 import StaleBuildNotice from './components/StaleBuildNotice';
 import { NotebookPen, BarChart3 } from 'lucide-react';
 import NotebookSheet, { type InsertContext } from './components/NotebookSheet';
-import { RichSurface, RichToolbar, RichView, appendBullet } from './components/RichText';
+import { RichSurface, RichToolbar, RichView, appendBullet, appendCheck } from './components/RichText';
 import * as notebookSync from './lib/notebookSync';
 import type { PadSyncStatus } from './lib/notebookSync';
 import { PAD_STRINGS, fill as padFill } from './lib/notepadStrings';
@@ -816,6 +816,7 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
                   document.execCommand(command, false, commandValue);
                 }}
                 onBullet={addBullet}
+                onCheck={() => onChange(appendCheck(value))}
               />
               <span className="ml-auto text-[11px] text-stone-400">{richToPlain(value).length}</span>
             </div>
@@ -9835,7 +9836,7 @@ export default function App() {
           <MetaField label={t.group} value={formData.meta.gruppe} onChange={v => updateMeta('gruppe', v)} />
           <MetaField label={t.rc} value={formData.meta.rc} onChange={v => updateMeta('rc', v)} className="col-span-2 md:col-span-1 print:col-span-1" readOnly />
 
-          <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} teams={formData.meta.mannschaften} className="col-span-2 md:col-span-4 print:col-span-4" readOnly={!!selectedGame?.game_result && !resultUnlocked} onUnlock={() => setResultUnlocked(true)} lang={formData.lang} />
+          <ResultField label={t.result} value={formData.meta.ergebnis} onChange={v => updateMeta('ergebnis', v)} teams={formData.meta.mannschaften} className="col-span-2 md:col-span-4 print:col-span-4" readOnly={!!selectedGame?.game_result && !resultUnlocked} onUnlock={() => setResultUnlocked(true)} lang={formData.lang} missing={showGaps && !!validateResult(formData.meta.ergebnis, formData.lang)} />
         </div>
 
         {/* Legend */}
@@ -10184,8 +10185,11 @@ export default function App() {
           {([
             { target: 'referee' as const, image: formData.signature || '', label: formData.lang === 'DE' ? 'Unterschrift Schiedsrichter' : 'Referee signature' },
             { target: 'rc' as const, image: formData.rcSignature || '', label: formData.lang === 'DE' ? 'Unterschrift Referee Coach' : 'Referee Coach signature' },
-          ]).map((sig) => (
-            <div key={sig.target} className="p-4 flex items-end gap-3 min-w-0">
+          ]).map((sig) => {
+            // Ink, or for the referee a recorded refusal: either lets the report go.
+            const missing = showGaps && !sig.image && !(sig.target === 'referee' && formData.results.refereeRefusedSignature === 'Y');
+            return (
+            <div key={sig.target} className={cn("p-4 flex items-end gap-3 min-w-0", missing && GAP_RING)} data-missing={missing ? 'true' : undefined}>
               <div className="flex-1 min-w-0">
                 <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-2">{sig.label}</h4>
                 {sig.image ? (
@@ -10220,7 +10224,8 @@ export default function App() {
                 {sig.image && <button type="button" onClick={() => updateSignature('', sig.target)} className="h-8 px-3 rounded-lg border border-stone-200 text-xs text-stone-500 hover:bg-stone-100">{formData.lang === 'DE' ? 'Entfernen' : 'Remove'}</button>}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Left on a phone, right where there is room for it. Each segment
@@ -11773,7 +11778,7 @@ function splitTeams(teams: string): [string, string] | null {
   return home && away ? [home, away] : null;
 }
 
-function ResultField({ label, value, onChange, teams = '', readOnly = false, onUnlock, lang, className = "" }: { label: string; value: string; onChange: (v: string) => void; teams?: string; readOnly?: boolean; onUnlock?: () => void; lang: 'DE' | 'EN'; className?: string }) {
+function ResultField({ label, value, onChange, teams = '', readOnly = false, onUnlock, lang, className = "", missing = false }: { label: string; value: string; onChange: (v: string) => void; teams?: string; readOnly?: boolean; onUnlock?: () => void; lang: 'DE' | 'EN'; className?: string; missing?: boolean }) {
   // parseResult reads both the "3:1 | 25:20, …" this field writes and the
   // "3:1 (25:20 / …)" the VolleyManager sync writes — every synced game uses
   // the latter, whose set scores the old split-on-"|" parser dropped silently.
@@ -11845,7 +11850,7 @@ function ResultField({ label, value, onChange, teams = '', readOnly = false, onU
   const ROMAN = ['I', 'II', 'III', 'IV', 'V'];
   const pair = splitTeams(teams);
   return (
-    <div className={cn("border-r border-b border-stone-900 p-1.5 flex flex-col min-h-[48px]", className)}>
+    <div className={cn("border-r border-b border-stone-900 p-1.5 flex flex-col min-h-[48px]", className, missing && GAP_RING)} data-missing={missing ? 'true' : undefined}>
       <label className="block text-[8px] uppercase font-black text-stone-400 leading-none mb-1">{label}</label>
       <div className="flex flex-col gap-1.5">
         {/* Centred: the cell is four columns wide and the score is the one

@@ -189,6 +189,18 @@ test.describe('The device keeps the page', () => {
     await sheet(page).getByRole('button', { name: /^(Zeit|Time)$/ }).click();
     await expect(pageBox(page)).toHaveText(/^\d\d:\d\d\s*$/);
   });
+
+  test('Zeit in the toolbar keeps the caret: the stamp goes on the line being typed', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await pageBox(page).click();
+    await page.keyboard.type('Netz ');
+    // A button that took the focus would append on a new line instead.
+    await sheet(page).getByRole('button', { name: /^(Zeit|Time)$/ }).click();
+    await expect.poll(() => pageBox(page).evaluate((el) => (el as HTMLElement).innerText))
+      .toMatch(/^Netz \d\d:\d\d\s*$/);
+  });
 });
 
 test.describe('A week is a week', () => {

@@ -411,9 +411,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const wrapper = full
     ? 'no-print fixed inset-0 z-50 bg-white flex'
     : 'no-print fixed inset-0 z-50 bg-stone-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4';
+  // 3xl, not 2xl: wide enough for the whole toolbar, Zeit included, on one row.
   const panel = full
     ? 'bg-white w-full h-full max-w-none rounded-none shadow-none flex flex-col'
-    : 'bg-white w-full sm:max-w-2xl h-[92dvh] sm:h-[85vh] rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col';
+    : 'bg-white w-full sm:max-w-3xl h-[92dvh] sm:h-[85vh] rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col';
 
   return (
     <div
@@ -573,11 +574,6 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                 ) : <span>{fill(tp.padExpires, { date: dayLabel(Date.now() + NOTEBOOK_TTL_MS) })}</span>}
                 <span className="ml-auto flex items-center gap-2">
                   {pageNav}
-                  {activeKind === 'text' && (
-                    <button type="button" onClick={insertTime} title={tp.padTimeTitle} className="inline-flex items-center gap-1 h-7 px-2 rounded border border-stone-300 bg-white text-[11px] text-stone-600 hover:bg-stone-50">
-                      <Clock size={12} /> {tp.padTime}
-                    </button>
-                  )}
                 </span>
               </div>
             )}
@@ -593,6 +589,19 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                   <div className="px-3 py-1.5 border-b border-stone-100 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
                     <RichToolbar de={de} onCommand={format} onBullet={() => handleText(appendBullet(currentText))} onNumber={() => handleText(appendNumbered(currentText))} onCheck={() => handleText(appendCheck(currentText))}>
                       <span className="mx-0.5 h-5 w-px bg-stone-200" />
+                      {/* With the other things that go into the text, not up by
+                          the page arrows. mousedown is prevented so the stamp
+                          lands at the caret instead of the end of the page. */}
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={insertTime}
+                        title={tp.padTimeTitle}
+                        data-testid="pad-time"
+                        className="h-8 px-2 inline-flex items-center gap-1 rounded-lg border border-stone-200 text-xs font-medium text-stone-700 hover:bg-stone-100 transition-colors"
+                      >
+                        <Clock size={12} className="shrink-0" />{tp.padTime}
+                      </button>
                       {/* One button, not nine: nine pills wrap, and a wrapped
                           row is a second row of height this sheet does not
                           have. mousedown is prevented so the page keeps the

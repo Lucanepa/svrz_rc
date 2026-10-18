@@ -44,17 +44,27 @@ test('the other referee of the same game starts on an empty form', async ({ page
   await signAs(page, 'rc');
   await expect(refereeSig(page)).toBeVisible();
 
-  // Back into the SAME game from the list: the app opens the coachee's half.
-  // Not openFeedbackForm — the held-games filter is already on from the first
-  // time, and pressing it again would put the row back out of reach.
+  // Back into the SAME game from the list. Not openFeedbackForm — the
+  // held-games filter is already on from the first time, and pressing it
+  // again would put the row back out of reach.
   await page.getByRole('button', { name: /^(Back|Zurück)$/ }).click();
   await page.getByRole('button', { name: /^(Games|Spiele)$/ }).click();
   await page.getByText(GAME.homeTeam).first().click();
   await page.getByRole('button', { name: /Start observation|Beobachtung starten/ }).click();
   await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
 
-  // Nothing of the other referee may be here. Their ink above all: it would
-  // satisfy the mandatory-signature gate and go out under this name.
+  // The unsent 2. SR comes back as its draft — the half last written, with its
+  // own ink. Waited for: the form first opens blank on the coachee's half and
+  // the draft lands over it a moment later, so a check made in between was a
+  // check of the blank form, passing or failing with the machine's load
+  // (2026-10-18).
+  await expect(targetButton(page, /^2SR/)).toHaveAttribute('aria-pressed', 'true');
+  await expect(refereeSig(page)).toBeVisible();
+
+  // The other referee: nothing of the 2. SR's may be here. Their ink above all:
+  // it would satisfy the mandatory-signature gate and go out under this name.
+  await targetButton(page, /^1SR/).click();
+  await expect(targetButton(page, /^1SR/)).toHaveAttribute('aria-pressed', 'true');
   await expect(refereeSig(page)).toHaveCount(0);
   // The coach, though, signed the visit and does not sign twice.
   await expect(rcSig(page)).toBeVisible();

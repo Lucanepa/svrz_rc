@@ -71,6 +71,7 @@ import { sniffAttachmentType, ATTACHMENT_EXTENSIONS, whistleBlocksForm, createMa
 import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
 import { nameKeys, samePerson, resolveRcName, resolveRcRef, refereeSet, refereeAmong, type PersonRef, type RcPersonLike, type RefereeSet } from '../src/lib/identity.ts';
 import { say, answerInAskersLanguage } from './say.ts';
+import { parkVerdict, tombstoneTime, rolesToRemove, parseGameIds, parkKey } from './parkSync.ts';
 
 // Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
 import {
@@ -13217,6 +13218,14 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
       }
     }
 
+    // The draft this report was written from is finished on every device of
+    // the coach — not only on the one that sent it (Luca, 19.10.2026: filed on
+    // the laptop, still "Nicht gesendet" on the phone). Best-effort: the report
+    // is filed whether or not its draft's backup could be retired.
+    await retireParkedRole(refereeCoachPersonId, String(game.id), String(role)).catch((error: unknown) => {
+      if (!isMissingCollectionError(error)) log.warn('park.retire', 'could not retire the parked draft of a filed report', { feedbackId: created.id, error: String(error) }, reqCtx(req));
+    });
+
     // Phase 5 — Response
     log.info('feedback.submit', `${replacing ? 'refiled' : 'filed'} ${asText(game.match_no) || game.id} · ${String(role)}${emailSent ? '' : ' (no mail)'}`, {
       feedbackId: created.id,
@@ -14157,6 +14166,9 @@ const PARK_MAX_CLOCK_SKEW_MS = 24 * 60 * 60 * 1000;
 // longer.
 const PARK_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 const PARK_MAX_PER_OWNER = 12;
+// Tombstones are a few bytes each and only have to outlive the copies they
+// retire, which the TTL above already bounds.
+const PARK_MAX_TOMBSTONES = 100;
 
 // Its own bucket, for the reason the survey writes have one: a coach parking on
 // a debounce must not be able to lock a hall out of signing, and a burst of
@@ -14364,7 +14376,7 @@ async function parkedRowsFor(ownerId: string, gameId: string): Promise<AnyRecord
  * whose `owner_id` it had already matched.
  */
 async function pruneParkedDrafts(ownerId: string): Promise<void> {
-  const rows = await db.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
+  const all = await db.collection(PARKED_DRAFTS_COLLECTION).getFullList<AnyRecord>({
     filter: `owner_id = "${escapeFilterValue(ownerId)}"`,
     // `updated` (the server's autodate), NOT `updated_at` (the device's clock).
     // A tablet whose battery died boots in 1970 and parks a row stamped 1970,
@@ -14374,17 +14386,75 @@ async function pruneParkedDrafts(ownerId: string): Promise<void> {
     // question about one device's edits; how long a row is KEPT is a question
     // only the server's own clock can answer.
     sort: '-updated',
-    fields: 'id,updated',
+    fields: 'id,updated,deleted_at',
   });
   const cutoff = Date.now() - PARK_TTL_MS;
-  const doomed = rows.filter((row, index) => {
-    if (index >= PARK_MAX_PER_OWNER) return true;
+  const expired = (row: AnyRecord) => {
     const at = Date.parse(asText(row.updated));
     // An unreadable date keeps the row. Deleting a coach's only copy of an
     // unfinished observation is not a failure to make on a parse error.
     return Number.isFinite(at) && at < cutoff;
-  });
+  };
+  // Live work and tombstones on separate budgets: a busy month of filed
+  // reports must not push a coach's unfinished observation over the cap, and a
+  // tombstone holds nothing but the fact that a role is finished.
+  const live = all.filter((row) => !asText(row.deleted_at));
+  const dead = all.filter((row) => !!asText(row.deleted_at));
+  const doomed = [
+    ...live.filter((row, index) => index >= PARK_MAX_PER_OWNER || expired(row)),
+    ...dead.filter((row, index) => index >= PARK_MAX_TOMBSTONES || expired(row)),
+  ];
   for (const row of doomed) await db.collection(PARKED_DRAFTS_COLLECTION).delete(row.id);
+}
+
+/**
+ * The roles of these games this coach has filed a report for — from the
+ * reports themselves, so it holds whichever device sent them and however long
+ * ago. A device that still has a draft for one of them is holding work that is
+ * finished.
+ */
+async function filedRolesFor(ownerId: string, gameIds: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (!ownerId || gameIds.length === 0) return out;
+  const games = gameIds.map((id) => `game = "${escapeFilterValue(id)}"`).join(' || ');
+  const rows = await withCollection(collectionCandidates.refereeCoaches, (c) => c.getFullList<AnyRecord>({
+    filter: `rc_id = "${escapeFilterValue(ownerId)}" && (${games})`,
+    fields: 'game,role_assessed',
+  }));
+  for (const row of rows) out.add(parkKey(asText(row.game), asText(row.role_assessed)));
+  return out;
+}
+
+/**
+ * Turn rows into tombstones: the payload goes, the row stays with the time it
+ * was removed. Only rows that exist — a role that was never parked has no copy
+ * on any other device to retire.
+ */
+async function retireParkedRows(rows: AnyRecord[], at: unknown): Promise<number> {
+  const now = Date.now();
+  let removed = 0;
+  for (const row of rows) {
+    if (asText(row.deleted_at)) continue;
+    const when = tombstoneTime(Date.parse(asText(row.updated_at)) || 0, at, now, PARK_MAX_CLOCK_SKEW_MS);
+    await db.collection(PARKED_DRAFTS_COLLECTION).update(row.id, {
+      payload: null,
+      deleted_at: new Date(now).toISOString(),
+      updated_at: new Date(when).toISOString(),
+    });
+    removed++;
+  }
+  return removed;
+}
+
+/** A report has been filed: its parked draft is finished on every device. The
+ *  sending device asks for this itself; doing it here as well covers a send
+ *  whose follow-up request never made it out of the hall. */
+async function retireParkedRole(ownerId: string, gameId: string, role: string): Promise<void> {
+  if (!ownerId || !gameId) return;
+  await withParkLock(`${ownerId}|${gameId}`, async () => {
+    const rows = await parkedRowsFor(ownerId, gameId);
+    await retireParkedRows(rows.filter((r) => asText(r.role) === role), Date.now());
+  });
 }
 
 // The collection is created by deploy/hetzner/seed/setup-schema.mjs, which has
@@ -14397,7 +14467,16 @@ function parkSchemaError(): SchemaOutOfDateError {
   return new SchemaOutOfDateError('Die Sammlung „parked_drafts" fehlt in der Datenbank — bitte `npx prisma migrate deploy` ausführen.');
 }
 
-/** Everything this owner has parked, newest first: metadata and payload. */
+/**
+ * Everything this owner has parked, newest first: metadata and payload — plus
+ * what the coach's devices need to agree on it:
+ *
+ *  - `gone`: tombstones, one per role filed or discarded since. A device
+ *    holding a copy older than its tombstone drops it.
+ *  - `filed`: of the games named in `?games=` (the ones the asking device holds
+ *    drafts for) and the games parked here, the roles this coach has filed. A
+ *    draft for one of those is finished, whichever device sent the report.
+ */
 app.get('/api/drafts/parked', requireRcSession, async (req: Request, res: ExpressResponse) => {
   const owner = await parkOwner(req, res);
   if (!owner) return;
@@ -14415,13 +14494,34 @@ app.get('/api/drafts/parked', requireRcSession, async (req: Request, res: Expres
       // compares a parked copy against a local one with.
       sort: '-updated',
     });
+    const live = rows.filter((row) => !asText(row.deleted_at));
+    const dead = rows.filter((row) => !!asText(row.deleted_at));
+    const games = parseGameIds(req.query.games);
+    for (const row of live) {
+      const id = asText(row.game_id);
+      if (id && !games.includes(id)) games.push(id);
+    }
+    const filed = await filedRolesFor(owner.id, games);
     // `ownerId` travels so the client can key the restored records under the
     // identity the SERVER resolved instead of the one it believes it is. The
     // two agree today; if they ever stop agreeing, the server's answer is the
     // one that decided what came back.
-    res.json({ ownerId: owner.id, drafts: rows.map(toParkedWire) });
+    res.json({
+      ownerId: owner.id,
+      // A copy of a role already filed is never handed out as work to resume.
+      drafts: live.filter((row) => !filed.has(parkKey(asText(row.game_id), asText(row.role)))).map(toParkedWire),
+      gone: dead.map((row) => ({
+        gameId: asText(row.game_id),
+        role: asText(row.role),
+        at: Date.parse(asText(row.updated_at)) || 0,
+      })),
+      filed: [...filed].map((key) => {
+        const [gameId, role] = key.split('|');
+        return { gameId, role };
+      }),
+    });
   } catch (error) {
-    if (isMissingCollectionError(error)) { res.json({ ownerId: owner.id, drafts: [] }); return; }
+    if (isMissingCollectionError(error)) { res.json({ ownerId: owner.id, drafts: [], gone: [], filed: [] }); return; }
     res.status(500).json({ error: safeError(error) });
   }
 });
@@ -14479,12 +14579,29 @@ async function handleParkDrafts(req: Request, res: ExpressResponse): Promise<voi
     if (byRole.size === 0) { res.status(400).json({ error: say('Nichts zu parken.', 'Nothing to park.') }); return; }
 
     await ensureAdminAuth();
+    // Per role, what happened to it — so a device whose copy lost can fetch the
+    // one that won instead of parking its older work over it again.
+    const stale: string[] = [];
+    const gone: string[] = [];
+    const filedRoles: string[] = [];
+    let parked = 0;
+    const filed = await filedRolesFor(owner.id, [gameId]);
     await withParkLock(`${owner.id}|${gameId}`, async () => {
       const existing = await parkedRowsFor(owner.id, gameId).catch((error: unknown) => {
         if (isMissingCollectionError(error)) throw parkSchemaError();
         throw error;
       });
       for (const [role, draft] of byRole) {
+        // A filed role takes no draft at all: its report has gone, and a copy
+        // parked now would be offered to the next device as work to send again.
+        if (filed.has(parkKey(gameId, role))) { filedRoles.push(role); continue; }
+        const row = existing.find((r) => asText(r.role) === role);
+        const verdict = parkVerdict(
+          row ? { updatedAt: Date.parse(asText(row.updated_at)) || 0, deleted: !!asText(row.deleted_at) } : null,
+          draft.updatedAt,
+        );
+        if (verdict === 'stale') { stale.push(role); continue; }
+        if (verdict === 'gone') { gone.push(role); continue; }
         const fields = {
           // Written from the session on every single upsert, so a row cannot
           // drift onto another owner even if one were somehow reached.
@@ -14494,12 +14611,14 @@ async function handleParkDrafts(req: Request, res: ExpressResponse): Promise<voi
           updated_at: new Date(draft.updatedAt).toISOString(),
           schema: draft.schema,
           payload: draft,
+          // Work edited after its removal brings the row back to life.
+          deleted_at: '',
         };
         // `existing` was already filtered to this owner, so the id being updated
         // is by construction one of theirs.
-        const row = existing.find((r) => asText(r.role) === role);
         if (row) await db.collection(PARKED_DRAFTS_COLLECTION).update(row.id, fields);
         else await db.collection(PARKED_DRAFTS_COLLECTION).create(fields);
+        parked++;
       }
     });
     // Best-effort and deliberately after the answer's data is settled: a coach
@@ -14508,7 +14627,7 @@ async function handleParkDrafts(req: Request, res: ExpressResponse): Promise<voi
     await withParkLock(owner.id, () => pruneParkedDrafts(owner.id)).catch((error: unknown) => {
       log.warn('park.prune', 'could not prune parked drafts', { error: String(error) }, reqCtx(req));
     });
-    res.json({ ok: true, parked: byRole.size });
+    res.json({ ok: true, parked, stale, gone, filed: filedRoles });
   } catch (error) {
     if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
     res.status(500).json({ error: safeError(error) });
@@ -14519,7 +14638,12 @@ app.put('/api/drafts/parked/:gameId', requireRcSession, handleParkDrafts);
 app.post('/api/drafts/parked/:gameId', requireRcSession, handleParkDrafts);
 
 /**
- * Unpark one game — both roles, this owner only.
+ * Unpark one game, this owner only: `?role=1. SR|2. SR|both`, and `?at=` the
+ * removing device's clock.
+ *
+ * With a role the rows become tombstones (see server/parkSync.ts), so the
+ * coach's other devices drop their copies too. Without one — only an older
+ * build asks that way — both rows are deleted outright, as before.
  *
  * Removing nothing is a success. The coach may have unparked from another
  * device already, or never parked this game at all, and turning an idempotent
@@ -14535,11 +14659,13 @@ app.delete('/api/drafts/parked/:gameId', requireRcSession, async (req: Request, 
     const gameId = asText(req.params.gameId).slice(0, 64);
     if (!gameId) { res.status(400).json({ error: say('gameId fehlt.', 'gameId is required.') }); return; }
     await ensureAdminAuth();
+    const roles = rolesToRemove(req.query.role);
     const removed = await withParkLock(`${owner.id}|${gameId}`, async () => {
-      // Read this owner's rows and delete those ids — never a filtered delete
-      // built from the path, which is the one shape where a mistake in the
-      // filter reaches somebody else's work.
+      // Read this owner's rows and change or delete those ids — never a
+      // filtered write built from the path, which is the one shape where a
+      // mistake in the filter reaches somebody else's work.
       const rows = await parkedRowsFor(owner.id, gameId);
+      if (roles) return retireParkedRows(rows.filter((r) => roles.includes(asText(r.role))), req.query.at);
       for (const row of rows) await db.collection(PARKED_DRAFTS_COLLECTION).delete(row.id);
       return rows.length;
     });

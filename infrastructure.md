@@ -370,14 +370,36 @@ association — ratings, written remarks, and both signature images — is on th
 server while it is being written, and not only on the coach's phone. Reads are
 scoped to the session's own RC, so no colleague and no admin console password
 opens another coach's unfinished work. Rows are pruned to 45 days or the newest
-12 per coach, and a draft is deleted outright the moment its report is filed,
-reset or discarded — so the table holds work in progress and nothing else.
+12 per coach, and a draft's payload is deleted the moment its report is filed,
+reset or discarded — what stays is a **tombstone** (game, role, when; no
+ratings, text or signatures), so the table holds work in progress and the bare
+fact that some of it is finished.
 
 The frontend shows this rather than asking about it: the form's save line reads
 "Auf dem Server gesichert" once a park has succeeded, with the signatures called
 out in its tooltip.
 
-Common fields: `owner_id`, `game_id`, `role`, `updated_at`, `schema`, `payload`.
+Common fields: `owner_id`, `game_id`, `role`, `updated_at`, `schema`, `payload`,
+`deleted_at` (set on a tombstone; migration `20261019160000_parked_draft_tombstones`,
+applied by the API at start).
+
+**Sync between a coach's devices** (since 19.10.2026; rules in
+`server/parkSync.ts` and `src/lib/draftSync.ts`). The server copy is no longer
+only a backup: every device asks `GET /api/drafts/parked?games=…` at boot, when
+it comes back to the foreground or online, and every 30 s while open (never
+while the coach waits: a form opens from the device's own store). The answer carries the live copies, the tombstones
+(`gone`) and, for the games named, the roles this coach has **filed**
+(`filed`, read from `referee_coach_feedbacks.rc_id`). A device then adopts a
+newer copy, pushes one the server lacks or holds older, retires a draft whose
+report was filed from any device, and drops one discarded elsewhere after its
+last edit here. It never touches the game whose form is on screen; a game
+only kept in the form's memory behind Home is synced, and that memory cleared,
+so a later flush cannot write the old work back. A park older
+than the stored copy is refused (`stale`), as is one older than its tombstone
+(`gone`) or for a role already filed (`filed`). `DELETE …/:gameId?role=` leaves
+tombstones; without `role` (only builds before this change ask that way) it
+deletes both rows outright, as it always did. Filing a report retires that
+role's row on the server by itself as well.
 
 `owner_id` is the RC's id **from the session**, never from a request body. Every
 read and every write filters on it, so a coach cannot fetch, overwrite or delete
@@ -393,7 +415,8 @@ ever comes back to the coach who parked it. The server stores it opaquely: it
 files nothing, mails nothing and creates no observation from it. `updated_at` is
 the device's clock (it decides which of two copies is newer); the autodate
 `updated` column is the server's own, which is the one to trust when a tablet
-boots in 1970. Rows are pruned per owner after 45 days, and beyond the newest 12.
+boots in 1970. Live rows are pruned per owner after 45 days and beyond the
+newest 12; tombstones after 45 days and beyond the newest 100.
 
 Created by `deploy/hetzner/seed/setup-schema.mjs` like the collections above.
 **After deploying the code, apply it on the API host** — the container has both

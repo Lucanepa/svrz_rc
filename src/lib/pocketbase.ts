@@ -2220,16 +2220,25 @@ function draftFromParked(ownerId: string, row: ParkedDraftRow): DraftRecord | nu
  * Nothing to park is a no-op, not a request: a caller that flushes on every
  * game change must be able to call this unconditionally.
  */
-export async function parkDrafts(gameId: string, records: DraftRecord[]): Promise<{ parked: number }> {
+/** Per role, what a park did. `stale`: a copy edited later on another device
+ *  is already stored and was kept. `gone`: the role was filed or discarded
+ *  after this copy's last edit. `filed`: this coach has filed that role. An
+ *  older server answers with none of the three — read as "all written". */
+export type ParkResult = { parked: number; stale: string[]; gone: string[]; filed: string[] };
+
+const roleList = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((r): r is string => r === '1. SR' || r === '2. SR') : [];
+
+export async function parkDrafts(gameId: string, records: DraftRecord[]): Promise<ParkResult> {
   // Demo mode makes no backend calls at all — "Nichts wird gespeichert oder
   // versendet." has to keep being literally true.
-  if (isDemoMode()) return { parked: 0 };
+  if (isDemoMode()) return { parked: 0, stale: [], gone: [], filed: [] };
   const drafts = (records || [])
     // A record for another game would be parked under this path and come back
     // bound to the wrong match — a caller's bug, but not one worth storing.
     .filter((r) => r && r.gameId === gameId && r.status === 'editing')
     .map(parkedWireFrom);
-  if (!gameId || drafts.length === 0) return { parked: 0 };
+  if (!gameId || drafts.length === 0) return { parked: 0, stale: [], gone: [], filed: [] };
   const response = await fetch(apiUrl(`/api/drafts/parked/${encodeURIComponent(gameId)}`), {
     credentials: 'include',
     method: 'PUT',
@@ -2237,42 +2246,62 @@ export async function parkDrafts(gameId: string, records: DraftRecord[]): Promis
     body: JSON.stringify({ drafts }),
   });
   if (!response.ok) throw await parkError(response, 'Could not park the draft');
-  return response.json() as Promise<{ parked: number }>;
+  const raw = await response.json() as Record<string, unknown>;
+  return {
+    parked: Number(raw && raw.parked) || 0,
+    stale: roleList(raw && raw.stale),
+    gone: roleList(raw && raw.gone),
+    filed: roleList(raw && raw.filed),
+  };
 }
 
 /**
- * Everything this coach has parked, newest first.
+ * The server's side of this coach's drafts (see src/lib/draftSync.ts for what a
+ * device does with it):
+ *  - `drafts`: every parked copy, newest first;
+ *  - `gone`: a role filed or discarded, and when (device clock);
+ *  - `filed`: of `gameIds` — the games this device holds drafts for — and the
+ *    games parked, the roles this coach has filed a report for.
  *
- * An empty list is the normal answer — parking is opt-in and most coaches will
- * never have used it — so this never throws for "nothing found". It throws only
- * when the server said no (`reachedServer`) or the network did.
+ * Nothing parked is the normal answer, so this never throws for "nothing
+ * found". It throws only when the server said no (`reachedServer`) or the
+ * network did.
  */
-export async function listParkedDrafts(): Promise<DraftRecord[]> {
-  if (isDemoMode()) return [];
-  const response = await fetch(apiUrl('/api/drafts/parked'), { credentials: 'include' });
+export type ParkedState = {
+  drafts: DraftRecord[];
+  gone: Array<{ gameId: string; role: string; at: number }>;
+  filed: Array<{ gameId: string; role: string }>;
+};
+
+export async function listParkedDrafts(gameIds: string[] = []): Promise<ParkedState> {
+  const empty: ParkedState = { drafts: [], gone: [], filed: [] };
+  if (isDemoMode()) return empty;
+  const query = gameIds.length > 0 ? `?games=${encodeURIComponent(gameIds.join(','))}` : '';
+  const response = await fetch(apiUrl(`/api/drafts/parked${query}`), { credentials: 'include', cache: 'no-store' });
   if (!response.ok) throw await parkError(response, 'Could not load the parked drafts');
-  const raw = await response.json() as { ownerId?: string; drafts?: ParkedDraftRow[] };
+  const raw = await response.json() as { ownerId?: string; drafts?: ParkedDraftRow[]; gone?: unknown[]; filed?: unknown[] };
   const ownerId = parkedText(raw && raw.ownerId);
   const rows = Array.isArray(raw && raw.drafts) ? raw.drafts : [];
   // No owner means the server told us nothing it served belongs to anybody it
   // could name, and a record keyed under '' would be invisible to every reader
   // in formDraft.ts anyway. Drop the lot rather than store orphans.
-  if (!ownerId) return [];
+  if (!ownerId) return empty;
   const out: DraftRecord[] = [];
   for (const row of rows) {
     const record = draftFromParked(ownerId, row);
     if (record) out.push(record);
   }
-  return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const marks = (list: unknown) => (Array.isArray(list) ? list : [])
+    .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object' && !Array.isArray(m))
+    .map((m) => ({ gameId: parkedText(m.gameId), role: parkedText(m.role), at: Number(m.at) || 0 }))
+    .filter((m) => !!m.gameId && (m.role === '1. SR' || m.role === '2. SR'));
+  return {
+    drafts: out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)),
+    gone: marks(raw.gone),
+    filed: marks(raw.filed).map(({ gameId, role }) => ({ gameId, role })),
+  };
 }
 
-/**
- * Drop one game's parked copies — both roles.
- *
- * Removing nothing is a success: the coach may have unparked from another
- * device already, or never parked this game at all, and "the copy is gone" is
- * what the caller asked to be true either way.
- */
 // ── Notebook (the coach's private pages; see src/lib/notebook.ts) ─────
 //
 // Same shape as the park wrappers: the owner comes from the session cookie and
@@ -2335,9 +2364,19 @@ export async function deleteNotebookPage(pageId: string): Promise<{ removed: num
   return response.json() as Promise<{ removed: number }>;
 }
 
-export async function unparkDrafts(gameId: string): Promise<{ removed: number }> {
+/**
+ * Drop one game's parked copy — one role, or both. The server keeps a
+ * tombstone stamped with this device's clock, which is how the coach's other
+ * devices learn that their copy is finished too.
+ *
+ * Removing nothing is a success: the coach may have unparked from another
+ * device already, or never parked this game at all, and "the copy is gone" is
+ * what the caller asked to be true either way.
+ */
+export async function unparkDrafts(gameId: string, role: '1. SR' | '2. SR' | 'both'): Promise<{ removed: number }> {
   if (isDemoMode() || !gameId) return { removed: 0 };
-  const response = await fetch(apiUrl(`/api/drafts/parked/${encodeURIComponent(gameId)}`), {
+  const query = `?role=${encodeURIComponent(role)}&at=${Date.now()}`;
+  const response = await fetch(apiUrl(`/api/drafts/parked/${encodeURIComponent(gameId)}${query}`), {
     credentials: 'include',
     method: 'DELETE',
   });

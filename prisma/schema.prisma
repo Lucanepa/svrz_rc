@@ -250,6 +250,8 @@ model ParkedDraft {
   updated_at String @default("")
   schema Float @default(0)
   payload Json? @db.Json
+  /// Set when the draft was filed or discarded: the row is then a tombstone.
+  deleted_at String @default("")
   created DateTime? @default(now()) @db.Timestamptz(3)
   updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
   /// PocketBase listed rows in SQLite rowid order when no sort was given and

@@ -345,6 +345,36 @@ export async function setDraftStatus(
   });
 }
 
+/**
+ * Retire one role's 'editing' record because another device finished it
+ * (src/lib/draftSync.ts): 'filed' blanks it to the same tombstone a send leaves
+ * here, 'removed' deletes it outright.
+ *
+ * Checked again inside the write, because the plan was made from a read that
+ * is now a network round trip old: a record that has since been queued, sent,
+ * or edited past `notAfter` is the coach's newer intent, and it stays.
+ */
+export async function retireDraft(
+  ownerId: string, gameId: string, role: string,
+  how: 'filed' | 'removed', notAfter = Number.POSITIVE_INFINITY,
+): Promise<void> {
+  const key = draftKey(ownerId, gameId, role);
+  await runTx('readwrite', (s) => {
+    const req = s.get(key);
+    req.onsuccess = () => {
+      const record = req.result as DraftRecord | undefined;
+      if (!record || record.ownerId !== ownerId || record.status !== 'editing') return;
+      if ((record.updatedAt || 0) > notAfter) return;
+      if (how === 'removed') { s.delete(key); return; }
+      s.put({
+        ...record,
+        status: 'filed', submissionKey: '', updatedAt: Date.now(),
+        meta: {}, ratings: {}, results: {}, signature: '', rcSignature: '', tipsAndTricks: '', attachedDocs: [],
+      });
+    };
+  });
+}
+
 // Both roles unless one is named. The keys are derived from the owner, so this
 // cannot reach another coach's record for the same game even by accident.
 export async function deleteDraft(ownerId: string, gameId: string, role?: string): Promise<void> {

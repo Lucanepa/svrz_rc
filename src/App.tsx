@@ -4995,18 +4995,21 @@ export default function App() {
     if (adopt.length > 0) await putDrafts(adopt, true);
     for (const d of plan.file) if (!skip(d.gameId)) await retireDraft(owner, d.gameId, d.role, 'filed');
     for (const d of plan.remove) if (!skip(d.gameId)) await retireDraft(owner, d.gameId, d.role, 'removed', d.updatedAt);
+    if (syncOwnerRef.current === owner) {
+      try { setDrafts(await listDrafts(owner)); } catch { /* the banner just stays as it was */ }
+    }
     const pushes = new Map<string, DraftRecord[]>();
     for (const d of plan.push) {
       if (skip(d.gameId)) continue;
       pushes.set(d.gameId, [...(pushes.get(d.gameId) || []), d]);
     }
-    for (const [gameId, records] of pushes) {
-      // A backup that cannot be made now is made on the next pass.
-      await parkDrafts(gameId, records).catch(() => {});
-    }
-    if (syncOwnerRef.current === owner) {
-      try { setDrafts(await listDrafts(owner)); } catch { /* the banner just stays as it was */ }
-    }
+    // Uploads are for the coach's OTHER devices, so nothing on this one waits
+    // for them: the boot reopens the form the coach was on right after this
+    // pass, and must not sit behind two signatures going up a hall's line
+    // first. A backup that cannot be made now is made on the next pass.
+    void (async () => {
+      for (const [gameId, records] of pushes) await parkDrafts(gameId, records).catch(() => {});
+    })();
     return plan;
   };
 

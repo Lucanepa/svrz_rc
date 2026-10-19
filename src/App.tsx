@@ -75,12 +75,13 @@ import InfoHint from './components/InfoHint';
 import { inSeasonOrManual as inSeasonWindow, currentSeason, seasonLabel as seasonLabelOf } from './lib/season';
 import { enqueueFeedback, flushOutbox, outboxCounts, discardOutboxItem, retryOutboxItem, listOutbox, foreignOutboxSummary, type OutboxItem, type OutboxPayload, type SendResult } from './lib/offlineQueue';
 import {
-  draftKey, putDrafts, listDrafts, getGameDrafts, setDraftStatus, deleteDraft, pruneDrafts,
+  draftKey, putDrafts, listDrafts, getGameDrafts, setDraftStatus, deleteDraft, pruneDrafts, retireDraft,
   draftStoreAvailable, requestPersistentStorage, encodeDraftFile, decodeDraftFile,
   draftFileName, resumeHint, setResumeHint, clearResumeHint,
   draftIsStale, draftAgeDays, claimDraft, releaseDraft, subscribeDraftClaims,
   DRAFT_SCHEMA, DRAFT_MAX_BYTES, type DraftRecord, type DraftFilePart, type DraftClaimNotice,
 } from './lib/formDraft';
+import { planDraftSync, sameDraftContent, type DraftSyncPlan } from './lib/draftSync';
 import { cn } from './lib/utils';
 import { getStoredLang, setStoredLang } from './lib/prefs';
 import { useScreenLang } from './lib/useScreenLang';
@@ -2528,6 +2529,18 @@ export default function App() {
    *  so neither of the two paths that can open it does so twice. */
   const urlGameOpenedRef = useRef(false);
   const didBootDraftsRef = useRef(false);
+  /** Draft syncs run one after another (see runDraftSync), never side by side. */
+  const draftSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  /** The game whose form is on screen, or has edits not yet committed — the
+   *  one a sync must leave alone: the coach is working on it right now. */
+  const openDraftGameRef = useRef('');
+  /** The game whose work the form holds in memory, on screen or not. Every
+   *  flush path writes that memory back, so a sync that changes this game's
+   *  copy also has to clear it (clearFormInMemoryRef). */
+  const memoryDraftGameRef = useRef('');
+  const clearFormInMemoryRef = useRef<() => void>(() => {});
+  const syncOwnerRef = useRef('');
+  const syncDraftsRef = useRef<() => void>(() => {});
   const parkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const parkImmediatelyRef = useRef<() => void>(() => {});
 
@@ -4395,7 +4408,9 @@ export default function App() {
       void refreshDrafts();
       // The local record is blanked to a tombstone, so the parked copy must not
       // outlive it — it is a full signed assessment with nothing left to guard.
-      void unparkDrafts(selectedGame.id).catch(() => {});
+      // THIS role only: the other referee of a two-referee visit is still
+      // unsent, and a tombstone on it would tell every device to drop it.
+      void unparkDrafts(selectedGame.id, fd.role).catch(() => {});
       // The new record's id travels back so the sender can add a private note to
       // the RC president straight away, without reopening the game to find it.
       // Not in dual mode: two records are filed in one go and only one form is
@@ -4512,7 +4527,7 @@ export default function App() {
             void setDraftStatus(outboxOwnerId, item.payload.gameId, item.payload.role, 'filed')
               .catch(() => {})
               .finally(() => { void refreshDrafts(); });
-            void unparkDrafts(item.payload.gameId).catch(() => {});
+            void unparkDrafts(item.payload.gameId, item.payload.role === '2. SR' ? '2. SR' : '1. SR').catch(() => {});
           }
         });
       await refreshOutboxCount();
@@ -4896,7 +4911,7 @@ export default function App() {
     const push = (fd: FeedbackFormData, tips: string, updatedAt: number) => {
       if (!draftHasWork(fd, tips)) return;
       const prev = drafts.find((d) => d.gameId === selectedGameId && d.role === fd.role);
-      out.push({
+      const record: DraftRecord = {
         id: draftKey(owner, selectedGameId, fd.role),
         schema: DRAFT_SCHEMA, ownerId: owner, gameId: selectedGameId, role: fd.role,
         updatedAt,
@@ -4918,7 +4933,12 @@ export default function App() {
         // Carried, not dropped: a field a NEWER build wrote survives a round
         // trip through this one instead of being silently stripped.
         extra: prev?.extra,
-      });
+      };
+      // The stamp moves only when the work does. It decides whose copy wins
+      // between the coach's devices, and a form merely re-opened or sent to the
+      // background must not out-rank a real edit made elsewhere since.
+      if (prev && prev.status === 'editing' && sameDraftContent(prev, record)) record.updatedAt = prev.updatedAt;
+      out.push(record);
     };
     // The half on screen is the newest, strictly: both used to carry the same
     // millisecond, and a resume then reopened whichever happened to sort first.
@@ -4932,6 +4952,79 @@ export default function App() {
     // A read failure is a missing banner, not an error worth a red line. A
     // WRITE failure is the one that matters, and it surfaces via draftSaveFailed.
     try { setDrafts(await listDrafts(outboxOwnerId)); } catch { /* leave the list as it is */ }
+  };
+
+  // ── Drafts across the coach's devices (src/lib/draftSync.ts) ─────────
+  //
+  // The park above is the push half. This is the other half: what the server
+  // knows that this device does not — a newer copy written elsewhere, a role
+  // filed or discarded on another device — brought into this device's store.
+
+  memoryDraftGameRef.current = draftContext && draftWorth ? selectedGameId : '';
+  // The list keeps a game selected behind Home, so "in memory" is not "on
+  // screen": only the form actually showing, or edits still waiting for their
+  // commit, hold a game back from the sync.
+  openDraftGameRef.current = memoryDraftGameRef.current && (feedbackSubView === 'feedbackForm' || draftUnsaved)
+    ? selectedGameId : '';
+  syncOwnerRef.current = outboxOwnerId;
+
+  /** One pass. Reads only refs and its argument, so a pass that outlives the
+   *  render that started it still acts on the present: the game open NOW, the
+   *  coach signed in NOW. Never awaited by anything the coach is waiting on —
+   *  opening a form reads this device's store, which the passes keep current. */
+  const syncDraftsWith = async (owner: string): Promise<DraftSyncPlan | null> => {
+    const local = await listDrafts(owner);
+    const held = new Set(local.filter((d) => d.status === 'editing').map((d) => d.gameId));
+    const server = await listParkedDrafts([...held]);
+    // A coach hand-off while the request was out: the answer is someone
+    // else's now, and so is this device's store.
+    if (syncOwnerRef.current !== owner) return null;
+    // Asked again for every record, at the moment it is acted on.
+    const skip = (gameId: string) => gameId === openDraftGameRef.current || gameId === draftLoadingRef.current;
+    const plan = planDraftSync(local, server, skip);
+    // The game behind Home whose work is still in the form's memory: a copy
+    // changed under it has to take that memory with it, or the next flush
+    // (a page hide, the next tap on a game) writes the old work back over it.
+    const inMemory = memoryDraftGameRef.current;
+    if (inMemory && !skip(inMemory)
+      && [...plan.adopt, ...plan.file, ...plan.remove].some((d) => d.gameId === inMemory)) {
+      clearFormInMemoryRef.current();
+    }
+    const adopt = plan.adopt.filter((d) => !skip(d.gameId));
+    // `true`: a record queued or filed in the meantime is not overwritten.
+    if (adopt.length > 0) await putDrafts(adopt, true);
+    for (const d of plan.file) if (!skip(d.gameId)) await retireDraft(owner, d.gameId, d.role, 'filed');
+    for (const d of plan.remove) if (!skip(d.gameId)) await retireDraft(owner, d.gameId, d.role, 'removed', d.updatedAt);
+    const pushes = new Map<string, DraftRecord[]>();
+    for (const d of plan.push) {
+      if (skip(d.gameId)) continue;
+      pushes.set(d.gameId, [...(pushes.get(d.gameId) || []), d]);
+    }
+    for (const [gameId, records] of pushes) {
+      // A backup that cannot be made now is made on the next pass.
+      await parkDrafts(gameId, records).catch(() => {});
+    }
+    if (syncOwnerRef.current === owner) {
+      try { setDrafts(await listDrafts(owner)); } catch { /* the banner just stays as it was */ }
+    }
+    return plan;
+  };
+
+  /** Passes run one after another: two at once would each plan from a store
+   *  the other is about to change. */
+  const runDraftSync = (owner: string): Promise<DraftSyncPlan | null> => {
+    const next = draftSyncChainRef.current.catch(() => {}).then(() => syncDraftsWith(owner));
+    draftSyncChainRef.current = next.catch(() => {});
+    return next;
+  };
+
+  const canSyncDrafts = () => outboxOwnerId !== 'anon' && outboxOwnerId !== 'admin'
+    && !isDemoMode() && draftStoreOk && didBootDraftsRef.current
+    && (typeof navigator === 'undefined' || navigator.onLine !== false);
+
+  syncDraftsRef.current = () => {
+    if (!canSyncDrafts()) return;
+    void runDraftSync(outboxOwnerId).catch(() => { /* offline, or the server said no — the next pass tries again */ });
   };
 
   /**
@@ -5093,6 +5186,24 @@ export default function App() {
 
   useEffect(() => subscribeDraftClaims((n: DraftClaimNotice) => setDraftClaimedElsewhere(n.active)), []);
 
+  // The coach's other devices, heard from: whenever this one comes back — to
+  // the foreground, onto the network — and every half minute while it is in
+  // use, it asks the server what changed elsewhere. The boot asks first, by
+  // itself. Nothing the coach taps waits for it: a game opens from this
+  // device's store at once, and these passes are what keep that store current.
+  useEffect(() => {
+    if (booting || outboxOwnerId === 'anon') return;
+    const run = () => { if (document.visibilityState === 'visible') syncDraftsRef.current(); };
+    window.addEventListener('online', run);
+    document.addEventListener('visibilitychange', run);
+    const timer = setInterval(run, 30_000);
+    return () => {
+      window.removeEventListener('online', run);
+      document.removeEventListener('visibilitychange', run);
+      clearInterval(timer);
+    };
+  }, [booting, outboxOwnerId]);
+
   // Commit and back up a captured signature at once, on the render that has it.
   // Fires for a cleared signature too — that also wants writing immediately.
   useEffect(() => {
@@ -5232,8 +5343,9 @@ export default function App() {
     if (!ok) return;
     try { await deleteDraft(outboxOwnerId, gameId); } catch { /* nothing to undo */ }
     // Discard means gone, including the server copy — leaving it parked would
-    // resurrect the work on the next device the coach signs in on.
-    void unparkDrafts(gameId).catch(() => {});
+    // resurrect the work on the next device the coach signs in on — and the
+    // tombstone it leaves takes the copies on the coach's other devices too.
+    void unparkDrafts(gameId, 'both').catch(() => {});
     if (gameId === selectedGameId) {
       // The form for THIS game is still in memory, and every flush path rebuilds
       // its record from that memory — handleSelectGame flushes before it does
@@ -5327,26 +5439,16 @@ export default function App() {
       setDraftStoreOk(available);
       if (!available) { if (!openUrlGame()) releaseAutoSelect(); return; }
       try { await pruneDrafts(outboxOwnerId); } catch { /* a prune failure is not worth a word */ }
+      // Whatever this coach parked on the server, merged in — and whatever was
+      // sent or discarded on another device, taken out. On a brand-new or wiped
+      // device this is the ONLY thing that brings the work back. A local
+      // 'queued' or 'filed' record ALWAYS wins over a parked copy: restoring
+      // over it would re-arm a submission that has already gone.
+      if (outboxOwnerId !== 'admin') {
+        try { await runDraftSync(outboxOwnerId); } catch { /* offline, or nothing parked */ }
+      }
       let mine: DraftRecord[] = [];
       try { mine = await listDrafts(outboxOwnerId); } catch { /* ignore */ }
-      // Whatever this coach parked on the server, merged in. On a brand-new or
-      // wiped device this call is the ONLY thing that brings the work back.
-      let parked: DraftRecord[] = [];
-      try { parked = await listParkedDrafts(); } catch { /* offline, or nothing parked */ }
-      const adopt = parked.filter((p) => {
-        const local = mine.find((d) => d.id === p.id);
-        // A local 'queued' or 'filed' record ALWAYS wins: the parked copy
-        // predates the send, and restoring over it would re-arm a submission
-        // that has already gone.
-        if (!local) return true;
-        return local.status === 'editing' && p.updatedAt > local.updatedAt;
-      });
-      if (adopt.length > 0) {
-        try {
-          await putDrafts(adopt);
-          mine = await listDrafts(outboxOwnerId);
-        } catch { /* keep the local list */ }
-      }
       setDrafts(mine);
       // The URL's game as a record id: `/form/2345678/2sr` names its draft
       // by the match number, the draft store keys by the record id, and the
@@ -5417,6 +5519,12 @@ export default function App() {
     return Array.from(byGame.entries()).map(([gameId, list]) => {
       const game = eligibleGames.find((g) => g.id === gameId);
       const editing = list.filter((d) => d.status === 'editing');
+      // A role the server has since closed cannot be resumed, but the draft is
+      // never deleted for it — the coach discards it, or the age prune does.
+      // (The coach's OWN report retires the draft on every device once it has
+      // heard from the server, see draftSync.ts — so what stays here is a role
+      // closed by someone else, or a device that has been offline since.)
+      const allClosed = editing.length > 0 && editing.every((d) => !!game?.feedbackClosedRoles?.includes(d.role));
       return {
         gameId,
         list,
@@ -5441,14 +5549,14 @@ export default function App() {
          * signed and sent at the hall, so a draft that outlives its own game by a
          * day is not a coach taking their time — it is a report the referee and
          * the association are still waiting for. A day of slack, so a late match
-         * that runs past midnight is never accused of anything.
+         * that runs past midnight is never accused of anything. Never for a
+         * role already closed: its report is filed, and a red "not sent" over it
+         * is a false alarm (Luca, 19.10.2026).
          */
-        overdue: editing.length > 0 && !!game?.date
+        overdue: editing.length > 0 && !allClosed && !!game?.date
           && Number.isFinite(Date.parse(game.date))
           && Date.now() > Date.parse(game.date) + 24 * 60 * 60 * 1000,
-        // A role the server has since closed cannot be resumed, but the draft is
-        // never deleted for it — the coach discards it, or the age prune does.
-        allClosed: editing.length > 0 && editing.every((d) => !!game?.feedbackClosedRoles?.includes(d.role)),
+        allClosed,
         resumable: editing.length > 0 && !!game,
         missing: !game,
         records: editing,
@@ -5684,7 +5792,10 @@ export default function App() {
   }, [coachees, observedCoacheeId]);
   const observedCoacheeEmail = observedCoacheeInfo.email;
 
-  const doResetForm = () => {
+  /** The form back to blank, in memory only. Also what a draft sync uses when
+   *  it changed the copy of the game this memory belongs to: the store holds
+   *  the current work then, and opening the game again reads it from there. */
+  const clearFormInMemory = () => {
     setFormData((prev) => ({
       ...prev,
       sections: adjustSectionsFor2SR(
@@ -5705,11 +5816,17 @@ export default function App() {
     setOpenFeedbackMine(false);
     setTipsAndTricks('');
     setDualFormData({ '1. SR': null, '2. SR': null });
+  };
+
+  clearFormInMemoryRef.current = clearFormInMemory;
+
+  const doResetForm = () => {
+    clearFormInMemory();
     setShowConfirmModal(null);
     // The confirm dialog promises everything is cleared — including the copy on
     // disk, or "clear" would be a lie the next reload exposes.
     void deleteDraft(outboxOwnerId, selectedGameId).catch(() => {});
-    void unparkDrafts(selectedGameId).catch(() => {});
+    void unparkDrafts(selectedGameId, 'both').catch(() => {});
     clearResumeHint();
     setDraftScoreConflict('');
     void refreshDrafts();

@@ -232,6 +232,7 @@ export const COLLECTIONS: Record<string, CollectionMeta> = {
       {name: 'updated_at', type: 'text'},
       {name: 'schema', type: 'number'},
       {name: 'payload', type: 'json'},
+      {name: 'deleted_at', type: 'text'},
       {name: 'created', type: 'autodate'},
       {name: 'updated', type: 'autodate'},
     ],

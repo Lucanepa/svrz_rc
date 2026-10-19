@@ -801,9 +801,11 @@ test.describe('A report that has just gone leaves the banner', () => {
       await r.fulfill({ status: 201, json: { id: 'fb1', emailSent: true } });
     });
     // The park on every signature, and the unpark the send issues.
-    await page.route(/\/api\/drafts\/parked\//, (r) => r.fulfill({
-      json: r.request().method() === 'DELETE' ? { removed: 1 } : { parked: 1 },
-    }));
+    const unparked: string[] = [];
+    await page.route(/\/api\/drafts\/parked\//, (r) => {
+      if (r.request().method() === 'DELETE') unparked.push(r.request().url());
+      return r.fulfill({ json: r.request().method() === 'DELETE' ? { removed: 1 } : { parked: 1 } });
+    });
     await page.goto('/');
     await openFeedbackForm(page);
 
@@ -841,6 +843,11 @@ test.describe('A report that has just gone leaves the banner', () => {
     expect(filed.ratings).toEqual({});
     expect(filed.signature).toBe('');
     expect(filed.rcSignature).toBe('');
+
+    // The server copy goes for the half that was sent, and only that half: a
+    // tombstone on the other referee's would retire it on every device.
+    await expect.poll(() => unparked.length).toBeGreaterThan(0);
+    expect(unparked.map((u) => new URL(u).searchParams.get('role'))).toEqual(['1. SR']);
   });
 
   test('a send held in the outbox is queued on the banner, not offered as unfinished', async ({ page }) => {
@@ -907,5 +914,189 @@ test.describe('A report that has just gone leaves the banner', () => {
     const filed = await storedRole(page, '1. SR');
     expect(filed.status).toBe('filed');
     expect(filed.ratings).toEqual({});
+  });
+});
+
+test.describe('The same coach on another device', () => {
+  // Luca, 19.10.2026: both reports of a visit filed from the laptop, and the
+  // phone still holding its copies as red "Nicht gesendet" two days later. The
+  // server now tells every device what happened to a draft elsewhere.
+
+  const unsentBanner = (page: Page) =>
+    page.getByText(/Unsent observations?|Nicht gesendete Beobachtung(en)?/);
+
+  /** The server's side, as GET /api/drafts/parked answers it; every request's
+   *  address is kept so the games the device asked about can be read back. */
+  async function serverSays(page: Page, body: Record<string, unknown>): Promise<string[]> {
+    const asked: string[] = [];
+    await page.route(/\/api\/drafts\/parked(\?|$)/, (r) => {
+      asked.push(r.request().url());
+      return r.fulfill({ json: { ownerId: RC.id, drafts: [], gone: [], filed: [], ...body } });
+    });
+    return asked;
+  }
+
+  /** A copy as another device parked it — the wire shape, not a record. */
+  function parkedCopy(over: Record<string, unknown>, updatedAt: number): Record<string, unknown> {
+    const { id: _id, ownerId: _o, status: _s, submissionKey: _k, ...draft } = draftRecord(over);
+    return { gameId: GAME.id, role: draft.role, updatedAt, schema: 1, parkedAt: '', draft: { ...draft, updatedAt } };
+  }
+
+  test('a report sent from another device takes this device\'s draft with it', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [{ ...GAME, feedbackClosedRoles: ['1. SR'] }] }));
+    const asked = await serverSays(page, { filed: [{ gameId: GAME.id, role: '1. SR' }] });
+    await seedDraft(page, RC.id);
+    await page.goto('/');
+
+    await expect.poll(async () => (await storedRole(page, '1. SR')).status, { timeout: 15000 }).toBe('filed');
+    // The device named the game it holds a draft for — that is how the server
+    // can answer for a draft that was never parked at all.
+    expect(asked.some((url) => new URL(url).searchParams.get('games')?.split(',').includes(GAME.id))).toBe(true);
+    await expect(listHeading(page)).toBeVisible();
+    await expect(draftsBanner(page)).toHaveCount(0);
+    await expect(unsentBanner(page)).toHaveCount(0);
+    // A tombstone, not the work: nothing of the assessment stays behind.
+    const filed = await storedRole(page, '1. SR');
+    expect(filed.ratings).toEqual({});
+    expect(filed.tipsAndTricks).toBe('');
+  });
+
+  test('a newer copy written on another device is the one that opens', async ({ page }) => {
+    await stubSignedInApp(page);
+    await serverSays(page, {
+      drafts: [parkedCopy({ tipsAndTricks: 'finished on the laptop', ratings: { [FIRST_CRITERION_ID]: 'A' } }, suiteNow() - 60_000)],
+    });
+    await seedDrafts(page, [draftRecord({ updatedAt: suiteNow() - 10 * 60_000 })]);
+    await page.goto('/');
+
+    await expect(draftsBanner(page)).toBeVisible({ timeout: 15000 });
+    await resumeButton(page).click();
+    await expect(tipsBox(page)).toHaveValue('finished on the laptop');
+    await expect(await ratingControl(page, 0, 'A')).toHaveClass(RATING_CLASS.A);
+  });
+
+  test('a draft discarded on another device goes here too', async ({ page }) => {
+    await stubSignedInApp(page);
+    await serverSays(page, { gone: [{ gameId: GAME.id, role: '1. SR', at: suiteNow() - 60_000 }] });
+    await seedDrafts(page, [draftRecord({ updatedAt: suiteNow() - 10 * 60_000 })]);
+    await page.goto('/');
+
+    await expect.poll(() => storedDrafts(page), { timeout: 15000 }).toEqual([]);
+    await expect(listHeading(page)).toBeVisible();
+    await expect(draftsBanner(page)).toHaveCount(0);
+  });
+
+  test('…but not if it was worked on here after the discard', async ({ page }) => {
+    await stubSignedInApp(page);
+    await serverSays(page, { gone: [{ gameId: GAME.id, role: '1. SR', at: suiteNow() - 10 * 60_000 }] });
+    const pushed: string[] = [];
+    await page.route(/\/api\/drafts\/parked\//, (r) => {
+      if (r.request().method() === 'PUT') pushed.push(r.request().postData() || '');
+      return r.fulfill({ json: { parked: 1 } });
+    });
+    await seedDrafts(page, [draftRecord({ updatedAt: suiteNow() - 60_000 })]);
+    await page.goto('/');
+
+    await expect(draftsBanner(page)).toBeVisible({ timeout: 15000 });
+    // ...and it goes back up, so the device that discarded it gets it back.
+    await expect.poll(() => pushed.length).toBeGreaterThan(0);
+    expect(pushed[0]).toContain('left half-written on this device');
+    expect((await storedRole(page, '1. SR')).status).toBe('editing');
+  });
+
+  test('a role someone else has filed is not called unsent', async ({ page }) => {
+    await stubSignedInApp(page);
+    // A match three days gone, its role closed — by a report that is not this
+    // coach's, so the server does not count it as theirs and the draft stays.
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({
+      json: [{ ...GAME, date: '2026-10-10T18:00:00Z', feedbackClosedRoles: ['1. SR'] }],
+    }));
+    await serverSays(page, {});
+    await seedDraft(page, RC.id);
+    await page.goto('/');
+
+    await expect(page.getByText(/A report has already been filed for this role|Für diese Rolle wurde bereits ein Bericht eingereicht/))
+      .toBeVisible({ timeout: 15000 });
+    await expect(draftsBanner(page)).toBeVisible();
+    await expect(unsentBanner(page)).toHaveCount(0);
+    await expect(page.getByText(/Not sent — match of|Nicht gesendet — Spiel vom/)).toHaveCount(0);
+  });
+
+  /** What a device does on coming back to the foreground — the sync trigger
+   *  a test can pull without waiting half a minute for the timer. */
+  const backToForeground = (page: Page) =>
+    page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+
+  test('the form on screen is left alone, whatever the server says', async ({ page }) => {
+    await stubSignedInApp(page);
+    let filed: Array<{ gameId: string; role: string }> = [];
+    const asked: string[] = [];
+    await page.route(/\/api\/drafts\/parked(\?|$)/, (r) => {
+      asked.push(r.request().url());
+      return r.fulfill({ json: { ownerId: RC.id, drafts: [], gone: [], filed } });
+    });
+    await page.goto('/');
+    await openFeedbackForm(page);
+    await tipsBox(page).fill('typed on this phone, right now');
+    await expect(savedStrip(page)).toBeVisible();
+
+    filed = [{ gameId: GAME.id, role: '1. SR' }];
+    const before = asked.length;
+    await backToForeground(page);
+    await expect.poll(() => asked.length).toBeGreaterThan(before);
+    // The coach is looking at this form: nothing is taken from under them.
+    await expect(tipsBox(page)).toHaveValue('typed on this phone, right now');
+    expect((await storedRole(page, '1. SR')).status).toBe('editing');
+  });
+
+  test('a game left behind Home is brought up to date, and its old work is not written back', async ({ page }) => {
+    await stubSignedInApp(page);
+    let filed: Array<{ gameId: string; role: string }> = [];
+    await page.route(/\/api\/drafts\/parked(\?|$)/, (r) =>
+      r.fulfill({ json: { ownerId: RC.id, drafts: [], gone: [], filed } }));
+    await page.goto('/');
+    await openFeedbackForm(page);
+    await tipsBox(page).fill('written here, then sent from the laptop');
+    await expect(savedStrip(page)).toBeVisible();
+    await page.getByRole('button', { name: /^(Back|Zurück)$/ }).click();
+    await expect(draftsBanner(page)).toBeVisible();
+
+    // Sent from the laptop while this device sat on Home with the game still
+    // selected — and its work still in the form's memory.
+    filed = [{ gameId: GAME.id, role: '1. SR' }];
+    await backToForeground(page);
+    await expect.poll(async () => (await storedRole(page, '1. SR')).status).toBe('filed');
+    await expect(draftsBanner(page)).toHaveCount(0);
+
+    // The next tap on the game flushes the form's memory before anything else.
+    // Had that memory survived, it would have gone back into the store here.
+    const start = page.getByRole('button', { name: /Start observation|Beobachtung starten/ });
+    if (await start.count() === 0) await page.getByText(GAME.homeTeam).first().click();
+    await start.click();
+    await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
+    await expect(tipsBox(page)).toHaveValue('');
+    expect((await storedRole(page, '1. SR')).status).toBe('filed');
+  });
+
+  test('Discard takes the copies on the coach\'s other devices too', async ({ page }) => {
+    await stubSignedInApp(page);
+    const removed: string[] = [];
+    await page.route(/\/api\/drafts\/parked\//, (r) => {
+      if (r.request().method() === 'DELETE') removed.push(r.request().url());
+      return r.fulfill({ json: r.request().method() === 'DELETE' ? { removed: 1 } : { parked: 1 } });
+    });
+    await seedDraft(page, RC.id);
+    await page.goto('/');
+    await expect(draftsBanner(page)).toBeVisible({ timeout: 15000 });
+
+    await page.getByRole('button', { name: /^(Discard|Verwerfen)$/ }).first().click();
+    await page.getByTestId('confirm-accept').click();
+    await expect(draftsBanner(page)).toHaveCount(0);
+    // Both halves, as a tombstone stamped with this device's clock.
+    await expect.poll(() => removed.length).toBeGreaterThan(0);
+    const url = new URL(removed[0]);
+    expect(url.searchParams.get('role')).toBe('both');
+    expect(Number(url.searchParams.get('at'))).toBeGreaterThan(0);
   });
 });

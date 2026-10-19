@@ -658,7 +658,9 @@ test.describe('Two referees, two halves, one tab', () => {
     // would answer this without the records having to. The root resumes the
     // game this device was last on, and only the records say which half.
     await page.goto('/');
-    await expect(targetButton(page, /^2SR/)).toHaveAttribute('aria-pressed', 'true');
+    // The boot's own budget, as everywhere else in this file that waits on it:
+    // a CI runner takes four of the default five seconds to get this far.
+    await expect(targetButton(page, /^2SR/)).toHaveAttribute('aria-pressed', 'true', { timeout: 15000 });
     await expect(tipsBox(page)).toHaveValue('second referee: watch the net');
 
     // And the other half is still behind the other tab.

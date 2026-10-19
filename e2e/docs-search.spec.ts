@@ -26,6 +26,9 @@ test('sections start closed, open on a tap, and stay open after a reload', async
 });
 
 test('the search finds a document in a closed section, in either language', async ({ page }) => {
+  // The text search reads every document on the device, and on a busy runner
+  // its wait below outran the whole default budget of a test (CI, 19.10.2026).
+  test.slow();
   await stubSignedInApp(page, { keepDocsDefault: true });
   await page.goto('/');
   // The German title, whatever language the app is in.
@@ -35,7 +38,7 @@ test('the search finds a document in a closed section, in either language', asyn
 
   await docsSearch(page).fill('zzzz-nothing');
   // Nothing in a title, and — once the text search is through — nothing inside either.
-  await expect(page.getByText(/In keinem Dokument gefunden|Not found in any document/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/In keinem Dokument gefunden|Not found in any document/)).toBeVisible({ timeout: 60_000 });
 
   await docsSearch(page).fill('');
   await expect(page.getByRole('button', { name: /^(Regeln|Rules)\s*\d+$/ })).toHaveAttribute('aria-expanded', 'false');
@@ -51,16 +54,18 @@ async function storeDoc(page: import('@playwright/test').Page, path: string) {
 }
 
 test('the search looks inside the documents on this device, and a hit opens the reader there', async ({ page }) => {
+  // Two waits on the text search: the same budget as the test above.
+  test.slow();
   await stubSignedInApp(page, { keepDocsDefault: true });
   await page.goto('/');
   await storeDoc(page, '/docs/Leitfaden-SR-Technik.pdf');
   // "Netzoberkante" is in the guide's text, nowhere in a title or note.
   await docsSearch(page).fill('Netzoberkante');
   const results = page.getByTestId('doc-text-results');
-  await expect(results.getByText(/Leitfaden SR-Technik|Refereeing technique guide/)).toBeVisible({ timeout: 20_000 });
+  await expect(results.getByText(/Leitfaden SR-Technik|Refereeing technique guide/)).toBeVisible({ timeout: 30_000 });
   await expect(results.locator('mark').first()).toHaveText(/Netzoberkante/i);
   // The rest were not stored, so they were searched by title only — and it says so.
-  await expect(results.getByText(/nur im Titel|by title only/)).toBeVisible({ timeout: 30_000 });
+  await expect(results.getByText(/nur im Titel|by title only/)).toBeVisible({ timeout: 45_000 });
 
   await results.getByRole('button', { name: /^(S\.|p\.) \d+/ }).first().click();
   await expect(page.locator('#pdf-search')).toHaveValue('Netzoberkante');

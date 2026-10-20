@@ -19,7 +19,10 @@ export type LiveEvent =
   | { type: 'games.synced'; imported: number; refreshed: number }
   | { type: 'settings.changed'; keys: string[] }
   // A switch request was made or answered; whoever it concerns re-reads them.
-  | { type: 'switch.changed'; requestId: string; holderId: string; requesterId: string };
+  | { type: 'switch.changed'; requestId: string; holderId: string; requesterId: string }
+  // A parked draft of THIS coach changed on one of their devices — sent only to
+  // their own streams. The device asks /api/drafts/parked what changed.
+  | { type: 'drafts.changed'; gameId: string };
 
 type Listener = (event: LiveEvent) => void;
 type StatusListener = (connected: boolean) => void;

@@ -4677,6 +4677,27 @@ function publishLive(event: LiveEvent) {
   }
 }
 
+/**
+ * One coach's streams only — for what is nobody else's business, like the fact
+ * that their own draft of a game just changed. Their other devices re-read
+ * /api/drafts/parked on it instead of waiting out the half-minute timer: the
+ * laptop opened a minute after the phone parked the signed 1. SR, and showed
+ * the unsigned copy it already had (Luca, 20.10.2026).
+ */
+function publishLiveTo(ownerId: string, event: LiveEvent) {
+  if (!ownerId || liveClients.size === 0) return;
+  const frame = `data: ${JSON.stringify(event)}\n\n`;
+  for (const [client, rcId] of liveOwners) {
+    if (rcId !== ownerId) continue;
+    try {
+      client.write(frame);
+    } catch {
+      liveClients.delete(client);
+      liveOwners.delete(client);
+    }
+  }
+}
+
 app.get('/api/events', requireRcSession, (req: Request, res: ExpressResponse) => {
   if (liveClients.size >= LIVE_CLIENT_LIMIT) {
     res.status(503).json({ error: say('Zu viele Live-Verbindungen.', 'Too many live connections.') });
@@ -14455,6 +14476,9 @@ async function retireParkedRole(ownerId: string, gameId: string, role: string): 
     const rows = await parkedRowsFor(ownerId, gameId);
     await retireParkedRows(rows.filter((r) => asText(r.role) === role), Date.now());
   });
+  // Whether or not a copy was parked: a device holding one it never uploaded
+  // learns from the filed list that the report is out.
+  publishLiveTo(ownerId, { type: 'drafts.changed', gameId });
 }
 
 // The collection is created by deploy/hetzner/seed/setup-schema.mjs, which has
@@ -14627,6 +14651,7 @@ async function handleParkDrafts(req: Request, res: ExpressResponse): Promise<voi
     await withParkLock(owner.id, () => pruneParkedDrafts(owner.id)).catch((error: unknown) => {
       log.warn('park.prune', 'could not prune parked drafts', { error: String(error) }, reqCtx(req));
     });
+    if (parked > 0) publishLiveTo(owner.id, { type: 'drafts.changed', gameId });
     res.json({ ok: true, parked, stale, gone, filed: filedRoles });
   } catch (error) {
     if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
@@ -14669,6 +14694,7 @@ app.delete('/api/drafts/parked/:gameId', requireRcSession, async (req: Request, 
       for (const row of rows) await db.collection(PARKED_DRAFTS_COLLECTION).delete(row.id);
       return rows.length;
     });
+    if (removed > 0) publishLiveTo(owner.id, { type: 'drafts.changed', gameId });
     res.json({ ok: true, removed });
   } catch (error) {
     // Nothing to delete because the collection does not exist yet is still

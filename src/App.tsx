@@ -331,6 +331,7 @@ const UI_STRINGS = {
     draftExportOk: "Entwurf als Datei gesichert.",
     draftImportOk: "Entwurf geladen.",
     draftRestored: "Entwurf wiederhergestellt.",
+    draftUpdatedElsewhere: "Neuere Fassung von deinem anderen Gerät übernommen.",
     draftHeading: "Nicht abgeschlossene Beobachtung",
     draftHeadingPlural: "Nicht abgeschlossene Beobachtungen",
     draftUnsentHeading: "Nicht gesendete Beobachtung",
@@ -513,6 +514,7 @@ const UI_STRINGS = {
     draftExportOk: "Draft saved as a file.",
     draftImportOk: "Draft loaded.",
     draftRestored: "Draft restored.",
+    draftUpdatedElsewhere: "Updated with the newer version from your other device.",
     draftHeading: "Unfinished observation",
     draftHeadingPlural: "Unfinished observations",
     draftUnsentHeading: "Unsent observation",
@@ -2539,6 +2541,23 @@ export default function App() {
    *  copy also has to clear it (clearFormInMemoryRef). */
   const memoryDraftGameRef = useRef('');
   const clearFormInMemoryRef = useRef<() => void>(() => {});
+  /** A switch to the other half that is still reading that half's draft
+   *  (loadStoredHalf): `<game>|<role>|<n>`, or '' when none is. */
+  const halfLoadRef = useRef('');
+  /** What the sync pass reads of the form on screen, as of the last render:
+   *  whether a commit is still pending, and which half is showing. */
+  const draftUnsavedRef = useRef(false);
+  /** The game whose form is showing and could hold a draft — with work in it
+   *  or still blank, unlike openDraftGameRef. */
+  const formGameRef = useRef('');
+  const formRoleRef = useRef<'1. SR' | '2. SR'>('1. SR');
+  /** When the open form was last replaced by a copy from another device, per
+   *  game — the brake on two devices handing one form back and forth. */
+  const formReloadsRef = useRef<Map<string, number[]>>(new Map());
+  /** Per record key, the form as it stood once a copy from another device was
+   *  put on screen: 'pending' until the first record is built from it. While
+   *  the form still holds that, the copy keeps its own stamp (buildDraftRecords). */
+  const reloadBaseRef = useRef<Map<string, DraftRecord | 'pending'>>(new Map());
   const syncOwnerRef = useRef('');
   const syncDraftsRef = useRef<() => void>(() => {});
   const parkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3415,6 +3434,10 @@ export default function App() {
         void live.loadSettings();
       } else if (event.type === 'switch.changed') {
         void refreshSwitchRequests();
+      } else if (event.type === 'drafts.changed') {
+        // One of this coach's devices parked, sent or discarded a draft. Only
+        // ever sent to the coach's own streams; the pass reads the rest.
+        syncDraftsRef.current();
       }
     }, setLiveConnected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4938,13 +4961,31 @@ export default function App() {
       // between the coach's devices, and a form merely re-opened or sent to the
       // background must not out-rank a real edit made elsewhere since.
       if (prev && prev.status === 'editing' && sameDraftContent(prev, record)) record.updatedAt = prev.updatedAt;
+      // A copy just taken from another device, rebuilt from the form: the
+      // fields the form fills in by itself (the game's, the referee's) may
+      // differ from the copy's without anyone having touched a thing. Stamped
+      // "now" for that, it would go back to the other device as newer work and
+      // round again. So the first build after the swap is the baseline, and
+      // the copy's stamp holds until the form differs from it.
+      const base = reloadBaseRef.current.get(record.id);
+      if (base && prev && prev.status === 'editing') {
+        if (base === 'pending') { reloadBaseRef.current.set(record.id, record); record.updatedAt = prev.updatedAt; }
+        else if (sameDraftContent(base, record)) record.updatedAt = prev.updatedAt;
+        else reloadBaseRef.current.delete(record.id);
+      }
       out.push(record);
     };
     // The half on screen is the newest, strictly: both used to carry the same
     // millisecond, and a resume then reopened whichever happened to sort first.
     const now = Date.now();
     push(formData, tipsAndTricks, now);
-    if (otherStash) push(otherStash.formData, otherStash.tipsAndTricks, now - 1);
+    // A half whose report is filed is no draft. Its stash is the filed report,
+    // kept so the tab back shows it — the form reached it through that record
+    // (Home opens a sent 2. SR, the coach taps 1SR) — and committed it would
+    // come back as unfinished work on every device.
+    if (otherStash && !selectedGame?.feedbackClosedRoles?.includes(otherRole)) {
+      push(otherStash.formData, otherStash.tipsAndTricks, now - 1);
+    }
     return out;
   };
 
@@ -4966,7 +5007,30 @@ export default function App() {
   // commit, hold a game back from the sync.
   openDraftGameRef.current = memoryDraftGameRef.current && (feedbackSubView === 'feedbackForm' || draftUnsaved)
     ? selectedGameId : '';
+  draftUnsavedRef.current = draftUnsaved;
+  formGameRef.current = draftContext && feedbackSubView === 'feedbackForm' ? selectedGameId : '';
+  formRoleRef.current = formData.role;
   syncOwnerRef.current = outboxOwnerId;
+
+  /**
+   * Whether the form on screen may be replaced by a copy edited LATER on
+   * another device. "Never touch the open form" left the laptop showing the
+   * evening's unsigned 1. SR while the phone had parked the signed one a
+   * minute after it opened (Luca, 20.10.2026) — and the next keystroke there
+   * would have stamped the old work newest and wiped the signature everywhere.
+   *
+   * Only while nothing typed here is still waiting for its commit: the store
+   * then holds exactly what the form shows, so swapping both loses nothing that
+   * is not already older than the incoming copy. A form being read in
+   * (draftLoadingRef) is never touched, and the brake stops two devices that
+   * disagree about one form from handing it back and forth.
+   */
+  const formTakesNewer = (gameId: string): boolean => {
+    if (!gameId || gameId !== formGameRef.current || gameId === draftLoadingRef.current) return false;
+    if (draftUnsavedRef.current) return false;
+    const recent = (formReloadsRef.current.get(gameId) || []).filter((at) => Date.now() - at < 5 * 60_000);
+    return recent.length < 4;
+  };
 
   /** One pass. Reads only refs and its argument, so a pass that outlives the
    *  render that started it still acts on the present: the game open NOW, the
@@ -4981,7 +5045,11 @@ export default function App() {
     if (syncOwnerRef.current !== owner) return null;
     // Asked again for every record, at the moment it is acted on.
     const skip = (gameId: string) => gameId === openDraftGameRef.current || gameId === draftLoadingRef.current;
-    const plan = planDraftSync(local, server, skip);
+    // The open form is planned too when it may take a newer copy — for that
+    // and nothing else: a role filed or discarded elsewhere still waits until
+    // the coach leaves the form (the send gate answers a filed role there).
+    const onScreen = formGameRef.current;
+    const plan = planDraftSync(local, server, (gameId) => skip(gameId) && !formTakesNewer(gameId));
     // The game behind Home whose work is still in the form's memory: a copy
     // changed under it has to take that memory with it, or the next flush
     // (a page hide, the next tap on a game) writes the old work back over it.
@@ -4990,13 +5058,35 @@ export default function App() {
       && [...plan.adopt, ...plan.file, ...plan.remove].some((d) => d.gameId === inMemory)) {
       clearFormInMemoryRef.current();
     }
-    const adopt = plan.adopt.filter((d) => !skip(d.gameId));
+    const adopt = plan.adopt.filter((d) => !skip(d.gameId) || formTakesNewer(d.gameId));
+    // Of those, the copies that change what the open form shows. One that
+    // differs from this device's only by its stamp is stored and nothing more:
+    // reloading the form for it would be a flicker and nothing else.
+    const mineByKey = new Map(local.map((d) => [`${d.gameId}|${d.role}`, d]));
+    const changesForm = adopt.some((d) => d.gameId === onScreen && (() => {
+      const here = mineByKey.get(`${d.gameId}|${d.role}`);
+      return !here || !sameDraftContent(here, d);
+    })());
     // `true`: a record queued or filed in the meantime is not overwritten.
     if (adopt.length > 0) await putDrafts(adopt, true);
     for (const d of plan.file) if (!skip(d.gameId)) await retireDraft(owner, d.gameId, d.role, 'filed');
     for (const d of plan.remove) if (!skip(d.gameId)) await retireDraft(owner, d.gameId, d.role, 'removed', d.updatedAt);
     if (syncOwnerRef.current === owner) {
       try { setDrafts(await listDrafts(owner)); } catch { /* the banner just stays as it was */ }
+    }
+    // Asked once more after the writes: a coach who started typing meanwhile
+    // keeps their form, and their commit — the newest edit — goes up instead.
+    if (changesForm && syncOwnerRef.current === owner && formTakesNewer(onScreen)) {
+      const records = await getGameDrafts(owner, onScreen).catch(() => [] as DraftRecord[]);
+      if (records.some((d) => d.status === 'editing') && formTakesNewer(onScreen)) {
+        formReloadsRef.current.set(onScreen, [...(formReloadsRef.current.get(onScreen) || []), Date.now()]);
+        reloadBaseRef.current = new Map(records.filter((d) => d.status === 'editing').map((d) => [d.id, 'pending' as const]));
+        // The half on screen stays on screen; the other is re-stashed from the
+        // store, which holds both.
+        resumeDraft(records, formRoleRef.current);
+        clientLog.info('draft.sync', 'open form took a newer copy from another device', { gameId: onScreen });
+        toast.info(t.draftUpdatedElsewhere, { lang: formData.lang });
+      }
     }
     const pushes = new Map<string, DraftRecord[]>();
     for (const d of plan.push) {
@@ -5206,6 +5296,15 @@ export default function App() {
       clearInterval(timer);
     };
   }, [booting, outboxOwnerId]);
+
+  // A form just put on screen asks at once whether another device holds a
+  // newer copy: half a minute is long enough to start typing over it, and the
+  // first keystroke makes this device's older work the newest. After the
+  // render, not inside the open, so the pass already sees the form as open.
+  useEffect(() => {
+    if (booting || feedbackSubView !== 'feedbackForm' || !selectedGameId || !draftContext) return;
+    syncDraftsRef.current();
+  }, [booting, feedbackSubView, selectedGameId, draftContext]);
 
   // Commit and back up a captured signature at once, on the render that has it.
   // Fires for a cleared signature too — that also wants writing immediately.
@@ -5852,9 +5951,67 @@ export default function App() {
     setReopenedId('');
   };
 
+  /**
+   * The half just switched to had nothing in memory. That is the case whenever
+   * the form was reached through the OTHER half's filed report: Home opens the
+   * sent 2. SR, the 1SR tab is tapped, and no draft of this game was ever read.
+   * The 1. SR came up blank although its draft was right there in the store —
+   * Jérôme's, typed on the laptop, filled in a second time on the phone (Luca,
+   * 20.10.2026). And since a form reached that way never claimed an owner,
+   * the second filling was not saved either, not even on the phone.
+   *
+   * So the store is asked, and its copy put on screen if the coach is still on
+   * that half. Until it answers the autosave holds still (draftLoadingRef): the
+   * blank form must not be written over the draft it is about to show.
+   */
+  const loadStoredHalf = (gameId: string, role: FeedbackFormData['role']) => {
+    if (!gameId || isDemoMode() || !draftStoreOk || outboxOwnerId === 'anon' || outboxOwnerId === 'admin') return;
+    const owner = outboxOwnerId;
+    // Work typed into this half is the signed-in coach's from here on.
+    draftOwnerRef.current = owner;
+    draftLoadingRef.current = gameId;
+    const token = `${gameId}|${role}|${Date.now()}`;
+    halfLoadRef.current = token;
+    void (async () => {
+      try {
+        const found = await getGameDrafts(owner, gameId);
+        if (halfLoadRef.current !== token || draftLoadingRef.current !== gameId) return;
+        const d = found.find((r) => r.role === role && r.status === 'editing' && (r.schema ?? 1) <= DRAFT_SCHEMA);
+        if (!d) return;
+        const game = eligibleGames.find((g) => g.id === gameId);
+        // Guarded by role: what lands is this half's, or nothing.
+        setFormData((prev) => (prev.role === role ? formDataFromDraft(d, game ? !!game.secondReferee : gameHas2SR) : prev));
+        setTipsAndTricks(d.tipsAndTricks);
+        if (d.coacheeId) {
+          setSelectedCoacheeId(d.coacheeId);
+          setSelectedCoacheeName(d.coacheeName);
+          setSelectedCoacheeLevel(d.coacheeLevel);
+        }
+        setResultUnlocked(d.resultUnlocked);
+        toast.success(t.draftRestored, { lang: formData.lang });
+        // And the newest copy anywhere, now that this form is the open one.
+        syncDraftsRef.current();
+      } catch { /* the blank half stays, and saves as before */ }
+      finally {
+        if (halfLoadRef.current === token) {
+          halfLoadRef.current = '';
+          if (draftLoadingRef.current === gameId) draftLoadingRef.current = '';
+        }
+      }
+    })();
+  };
+
+  /** A switch of half abandons a read still out for the previous one. */
+  const cancelHalfLoad = () => {
+    if (!halfLoadRef.current) return;
+    halfLoadRef.current = '';
+    if (draftLoadingRef.current === selectedGameId) draftLoadingRef.current = '';
+  };
+
   const changeObservationTarget = (target: '1SR' | '2SR' | 'both') => {
     if (target === observationTarget) return;
     void flushDraftNowRef.current();
+    cancelHalfLoad();
     setObservationTarget(target);
     if (target === 'both') {
       // Keep the current role's form on screen; the other role starts blank (or from its stash) when switched to
@@ -5893,6 +6050,7 @@ export default function App() {
         },
       }));
       setTipsAndTricks(demoTips());
+      loadStoredHalf(selectedGameId, newRole);
     }
   };
 
@@ -5900,6 +6058,7 @@ export default function App() {
     // Flushed before the swap, so a crash can never leave the stashed role a
     // role-switch of typing behind.
     void flushDraftNowRef.current();
+    cancelHalfLoad();
     leaveFiledRole();
     const currentRole = formData.role;
     const newRole = currentRole === '1. SR' ? '2. SR' : '1. SR';
@@ -5938,6 +6097,7 @@ export default function App() {
           },
         }));
         setTipsAndTricks(demoTips());
+        loadStoredHalf(selectedGameId, newRole);
       }
     } else {
       // Single-coachee mode: original behavior

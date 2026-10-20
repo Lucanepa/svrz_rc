@@ -392,7 +392,15 @@ while the coach waits: a form opens from the device's own store). The answer car
 (`filed`, read from `referee_coach_feedbacks.rc_id`). A device then adopts a
 newer copy, pushes one the server lacks or holds older, retires a draft whose
 report was filed from any device, and drops one discarded elsewhere after its
-last edit here. It never touches the game whose form is on screen; a game
+last edit here. The form on screen takes a copy edited later elsewhere too
+(since 21.10.2026) — but only while nothing typed on this device is still
+waiting for its commit, at most four times in five minutes, and the incoming
+stamp is kept until the coach changes something, so two devices never hand a
+form back and forth. A role filed or discarded elsewhere still waits until the
+coach leaves the open form. A form also asks once the moment it opens, and a
+park, an unpark or a filed report sends `drafts.changed` over `/api/events` to
+**that coach's own streams only** (`publishLiveTo`), so their other devices ask
+at once instead of on the 30 s timer. A game
 only kept in the form's memory behind Home is synced, and that memory cleared,
 so a later flush cannot write the old work back. A park older
 than the stored copy is refused (`stale`), as is one older than its tombstone

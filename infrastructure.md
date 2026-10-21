@@ -1391,6 +1391,15 @@ publisher", macOS wants right-click → *Open* the first time.
   only its `.gitkeep` (so the bind always finds it), and a copy without
   `--delete` leaves the repo in it alone. `APP_CERT_SHA256` in the script pins
   the svrz-rc signing certificate.
+  **Automatic since 21.10.2026:** `svrz-rc-fdroid-sync.timer` (a user unit of
+  lucanepa on lenovoserver, units in `deploy/native/systemd/`) runs
+  `deploy/native/sync-fdroid.sh` every 10 min. It reads the newest release off
+  github.com's `releases/latest` redirect (not the REST API, which is
+  rate-limited per IP unauthenticated), and if that versionCode is not in the
+  repo yet, downloads the APK and runs `publish-fdroid.sh` on it — so a
+  `native-v<version>` tag reaches F-Droid ~10 min after its release is up. Log:
+  `~/svrz-rc-fdroid-sync.log` (silent while there is nothing new). It runs from
+  the host tree (`~/stacks/svrz_rc`), which `scripts/deploy-api.sh` keeps current.
 - **Windows / macOS / Linux**: the GitHub release (`native-v<version>`) in
   svrz-referee-coaching, whose README says which file is which. Not
   in OpenVolley's APT repo: its publish script renames any second package to

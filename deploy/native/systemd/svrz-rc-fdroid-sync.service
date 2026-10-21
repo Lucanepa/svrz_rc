@@ -1,0 +1,16 @@
+# A user unit on lenovoserver: ~/.config/systemd/user/ (lucanepa lingers, so it
+# runs without a login). Tracked here so the schedule is part of the repo.
+#   systemctl --user enable --now svrz-rc-fdroid-sync.timer
+[Unit]
+Description=Publish the newest svrz_rc installed-app release to its F-Droid repo
+Documentation=file:///home/lucanepa/stacks/svrz_rc/deploy/native/sync-fdroid.sh
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=ANDROID_HOME=/home/lucanepa/Android/Sdk
+ExecStart=/home/lucanepa/stacks/svrz_rc/deploy/native/sync-fdroid.sh
+StandardOutput=append:/home/lucanepa/svrz-rc-fdroid-sync.log
+StandardError=append:/home/lucanepa/svrz-rc-fdroid-sync.log

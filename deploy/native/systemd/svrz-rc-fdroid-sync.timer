@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for a new svrz_rc installed-app release every 10 minutes
+
+[Timer]
+# A release takes ~15 min to build; within 10 more it is on the phones.
+OnBootSec=3min
+OnUnitActiveSec=10min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

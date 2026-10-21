@@ -46,7 +46,7 @@ there is no public ingress IP, reverse proxy, or open port to document here.
 The services run via Docker Compose (`deploy/hetzner/docker-compose.yml`):
 
 - `postgres` — `postgres:18.6-alpine`, cluster in `./pg_data`, reachable only on the internal `svrz` network as `postgres:5432`. Password in `deploy/hetzner/.env` (`POSTGRES_PASSWORD`, gitignored), from which compose also builds the API's `DATABASE_URL`.
-- `svrz-api` — built from `Dockerfile.api`, published on `127.0.0.1:8787` for the Cloudflare Tunnel to route. Reads secrets from `deploy/hetzner/svrz-api.env` (gitignored). Applies pending Prisma migrations at every start, then serves. Filed PDFs in `./files` (`FILES_DIR=/app/files`).
+- `svrz-api` — built from `Dockerfile.api`, published on `127.0.0.1:8787` for the Cloudflare Tunnel to route. Reads secrets from `deploy/hetzner/svrz-api.env` (gitignored). Applies pending Prisma migrations at every start, then serves. Filed PDFs in `./files` (`FILES_DIR=/app/files`); the proxied documents' last good copies in `./doc-cache` (`DOC_CACHE_DIR=/app/doc-cache`, a cache — not backed up).
 - PocketBase, the store before 11.10.2026, is retired: no service, no `pb_data`. Its last snapshot is `backups/pocketbase-final-2026-10-11.zip` (below).
 
 Public ingress is the external Cloudflare Tunnel (`svrz-rc-api.openvolley.app` → `http://localhost:8787`); there is no Nginx/Certbot on the host. The tunnel is **dashboard-managed** (Zero Trust → Networks → Tunnels → Public Hostnames) — editing `/etc/cloudflared/config.yml` on the host changes nothing.
@@ -76,7 +76,7 @@ same variable when running `npm run dev` here.
 
 Deploying the API means copying this repo over `/home/lucanepa/stacks/svrz_rc` on
 lenovoserver (every live stack on the host lives under `~/stacks/` since 15.10.2026) and rebuilding there — never `git pull` in that directory, which is
-not a checkout. Copy source only: `deploy/hetzner/pg_data`, `deploy/hetzner/files`,
+not a checkout. Copy source only: `deploy/hetzner/pg_data`, `deploy/hetzner/files`, `deploy/hetzner/doc-cache`,
 `deploy/hetzner/logs`, `deploy/hetzner/svrz-api.env*`
 and every `.env*` are host state and must be excluded, and `--delete` must NOT be
 used (the host keeps timestamped secret backups that are not in git).
@@ -151,6 +151,7 @@ VITE_API_BASE_URL="" # optional; set for static hosting that needs absolute API 
 ```env
 DATABASE_URL="postgresql://svrz:<POSTGRES_PASSWORD>@postgres:5432/svrz"  # set by compose
 FILES_DIR="/app/files"                   # set by compose; ./files locally
+DOC_CACHE_DIR="/app/doc-cache"           # set by compose; unset locally = proxied docs kept in memory only
 POCKETBASE_ADMIN_PASSWORD="..."  # ⚠ keep: session/PIN secret fallback (see the Database section)
 VM_USERNAME="..."   # game sync credentials
 VM_PASSWORD="..."   # game sync credentials
@@ -674,7 +675,7 @@ Sign-in rate limits (in memory, reset on restart):
 - `GET /api/survey-responses`: read the responses. Gated on `requireSurveyReader` — the chair's own console password, **not** admin rights (an admin session gets 403) and **not** the `is_rc_president` flag, which grants nothing. Not under `/api/admin/` for that reason, and not `/api/survey/responses`, which the `:token` route above would swallow.
 - `GET /api/rc-game-notes`: read every filed 4.4.10 Rückmeldung. Same `requireSurveyReader` gate as the survey answers and `/api/president-notes`. A coach reads their own note back through `/api/rc-games`, never this.
 - `POST /api/rc-game-notes`: file (or rewrite) one Rückmeldung. RC session; the game, the role and the coachee are re-derived server-side, so a coach who was not on that whistle gets 403. Body is redacted in the activity log.
-- `GET /api/docs/:id`: **public** — the rulebooks and the SVRZ sheets, proxied. volleyball.ch, fivb.com and svrz.ch serve their PDFs with no `Access-Control-Allow-Origin`, so the browser may link to them but not read them, and the in-app reader needs the bytes. A closed allowlist of ids (`PROXIED_DOCS` in `server/index.ts`, one per `proxyId` in `src/lib/usefulDocs.ts` — the two rulebooks, the rule changes, the Swiss Volley regulation, and the RSK's sheets and SVRZ regulations) — not a URL parameter, which would be an SSRF hole. Each is held in memory and revalidated against its upstream ETag every 6 h; if upstream is down the last good copy is served rather than an error.
+- `GET /api/docs/:id`: **public** — the rulebooks and the SVRZ sheets, proxied. volleyball.ch, fivb.com and svrz.ch serve their PDFs with no `Access-Control-Allow-Origin`, so the browser may link to them but not read them, and the in-app reader needs the bytes. A closed allowlist of ids (`PROXIED_DOCS` in `server/index.ts`, one per `proxyId` in `src/lib/usefulDocs.ts` — the two rulebooks, the rule changes, the Swiss Volley regulation, and the RSK's sheets and SVRZ regulations) — not a URL parameter, which would be an SSRF hole. Each is held in memory and on disk (`DOC_CACHE_DIR`, `server/docstore.ts`, so a restart keeps it) and revalidated against its upstream ETag every 6 h; if upstream is down the last good copy is served rather than an error. With no copy at all it answers **503** + `Retry-After` — never 502, which Cloudflare replaces with its own CORS-less page that the app sees as a bare "Failed to fetch" (21.10.2026: svrz.ch answered every PDF `503 no available server` hours after a redeploy had emptied the memory-only cache).
 - `GET /api/coachees`: list coachees + observation status summary.
 - `POST /api/coachees`: create coachee.
 - `PUT /api/coachees/:id`: update coachee.

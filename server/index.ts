@@ -65,6 +65,7 @@ import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrew
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
 import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan, type LinkProblem } from './dataHygiene.ts';
 import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
+import { readStoredDoc, writeStoredDoc, type StoredDoc } from './docstore.ts';
 import { presidentNoteEntry, presidentNoteBelongsToAnother, type PresidentNoteEntry } from './presidentNotes.ts';
 import { identityAudit, type AuditRcPerson } from './identityAudit.ts';
 import { sniffAttachmentType, ATTACHMENT_EXTENSIONS, whistleBlocksForm, createMailCooldown, createCoalescer } from './writeGuards.ts';
@@ -4852,23 +4853,33 @@ const DOC_PREFACES: Record<string, { version: number; apply: (upstream: Uint8Arr
  * `upstreamEtag` is what we revalidate with; `etag` is what the browser sees.
  * They differ for a prefaced document, whose bytes are ours — its ETag carries
  * the preface version so an edited summary supersedes the copies out there.
+ * Each copy is also written to DOC_CACHE_DIR (server/docstore.ts), so a
+ * restart does not leave an upstream outage with nothing to fall back on.
  */
-type CachedDoc = { body: Buffer; etag: string; upstreamEtag: string; checkedAt: number };
+type CachedDoc = StoredDoc;
 const docCache = new Map<string, CachedDoc>();
 /** Long enough that a gym full of coaches costs volleyball.ch one request. */
 const DOC_REVALIDATE_MS = 6 * 60 * 60 * 1000;
 
 async function loadProxiedDoc(id: string): Promise<CachedDoc> {
   const url = PROXIED_DOCS[id];
-  const cached = docCache.get(id);
-  if (cached && Date.now() - cached.checkedAt < DOC_REVALIDATE_MS) return cached;
+  let cached = docCache.get(id);
+  if (!cached) {
+    cached = (await readStoredDoc(id)) || undefined;
+    if (cached) docCache.set(id, cached);
+  }
+  const preface = DOC_PREFACES[id];
+  // A copy made under another preface version (or whose preface failed) is
+  // still a fallback, but not something to revalidate: a 304 would keep it.
+  const current = Boolean(cached) && cached.preface === (preface?.version ?? 0);
+  if (current && Date.now() - cached.checkedAt < DOC_REVALIDATE_MS) return cached;
 
   try {
     const upstream = await fetch(url, {
-      headers: cached ? { 'If-None-Match': cached.upstreamEtag } : {},
+      headers: current ? { 'If-None-Match': cached.upstreamEtag } : {},
       signal: AbortSignal.timeout(30_000),
     });
-    if (upstream.status === 304 && cached) {
+    if (upstream.status === 304 && current) {
       cached.checkedAt = Date.now();
       return cached;
     }
@@ -4880,19 +4891,25 @@ async function loadProxiedDoc(id: string): Promise<CachedDoc> {
     if (body.subarray(0, 5).toString('latin1') !== '%PDF-') throw new Error('upstream did not return a PDF');
     const upstreamEtag = upstream.headers.get('etag') || `W/"${id}-${body.byteLength}"`;
     let etag = upstreamEtag;
-    const preface = DOC_PREFACES[id];
+    let applied = 0;
     if (preface) {
       try {
         body = Buffer.from(await preface.apply(body));
         etag = `W/"${upstreamEtag.replace(/^W\//, '').replace(/"/g, '')}-p${preface.version}"`;
+        applied = preface.version;
       } catch (error) {
         log.warn('docs.preface_failed', 'Serving a proxied document without its summary page', {
           id, error: error instanceof Error ? error.message : String(error),
         });
       }
     }
-    const fresh: CachedDoc = { body, etag, upstreamEtag, checkedAt: Date.now() };
+    const fresh: CachedDoc = { body, etag, upstreamEtag, checkedAt: Date.now(), preface: applied };
     docCache.set(id, fresh);
+    writeStoredDoc(id, fresh).catch((error) => {
+      log.warn('docs.store_failed', 'A proxied document could not be kept on disk', {
+        id, error: error instanceof Error ? error.message : String(error),
+      });
+    });
     return fresh;
   } catch (error) {
     // A copy we already have beats an error page: the coach in the gym gets
@@ -4993,7 +5010,11 @@ app.get('/api/docs/:id', async (req: Request, res: ExpressResponse) => {
     log.warn('docs.unavailable', 'A proxied document could not be fetched', {
       id, error: error instanceof Error ? error.message : String(error),
     });
-    res.status(502).json({ error: say('Dokument nicht verfügbar.', 'Document unavailable') });
+    // 503, not 502: Cloudflare swaps an origin's 502 for its own error page,
+    // which has no CORS headers, so the app saw a bare "Failed to fetch". A 503
+    // passes through with ours.
+    res.set('Retry-After', '300');
+    res.status(503).json({ error: say('Dokument nicht verfügbar.', 'Document unavailable') });
   }
 });
 

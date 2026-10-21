@@ -26,7 +26,7 @@ git archive HEAD | tar -x -C "$export_dir"
 
 # No --delete: the host keeps secret backups (svrz-api.env.bak-*) and snapshots that exist nowhere else.
 rsync -a \
-  --exclude pb_data/ --exclude pg_data/ --exclude files/ --exclude logs/ --exclude 'svrz-api.env*' --exclude '.env*' \
+  --exclude pb_data/ --exclude pg_data/ --exclude files/ --exclude doc-cache/ --exclude logs/ --exclude 'svrz-api.env*' --exclude '.env*' \
   --exclude .git/ --exclude node_modules/ --exclude dist/ --exclude .claude/ \
   "$export_dir/" "$target"
 

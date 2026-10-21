@@ -137,17 +137,38 @@ export async function storedState(): Promise<{ stored: number; total: number; mi
   return { stored, total: entries.length, missingBytes };
 }
 
+/**
+ * Where a document really comes from: the upstream site for a proxied one,
+ * since that is what fails (svrz.ch, 21.10.2026), and the app for our own.
+ */
+function docOrigin(doc: UsefulDoc): string {
+  if (doc.path) return 'app';
+  try { return new URL(doc.href).host; } catch { return doc.href; }
+}
+
+/**
+ * Fetches each missing document, but none from a source that already failed
+ * this pass: with svrz.ch down, one login asked for all its ~30 sheets and got
+ * ~30 errors (and as many log lines) for one fact.
+ */
+async function storeMissing(entries: { doc: UsefulDoc; url: string }[], after?: () => void): Promise<void> {
+  const failed = new Set<string>();
+  for (const { doc, url } of entries) {
+    const origin = docOrigin(doc);
+    if (!failed.has(origin)) {
+      try {
+        if (!(await isDocStored(url))) await fetchDocBytes(url);
+      } catch { failed.add(origin); /* offline, or that source is down: try again next time */ }
+    }
+    after?.();
+  }
+}
+
 /** Downloads whatever is not stored yet, reporting how many are done. */
 export async function storeAllDocs(onProgress?: (done: number, total: number) => void): Promise<void> {
   const entries = storableDocs();
   let done = 0;
-  for (const entry of entries) {
-    try {
-      if (!(await isDocStored(entry.url))) await fetchDocBytes(entry.url);
-    } catch { /* one unreachable document must not stop the rest */ }
-    done += 1;
-    onProgress?.(done, entries.length);
-  }
+  await storeMissing(entries, () => { done += 1; onProgress?.(done, entries.length); });
 }
 
 export async function clearStoredDocs(): Promise<void> {
@@ -172,14 +193,7 @@ export function prefetchSmallDocs(): void {
   if (conn?.effectiveType && /(^|-)2g$/.test(conn.effectiveType)) return;
 
   const run = () => {
-    void (async () => {
-      for (const { doc, url } of storableDocs()) {
-        if ((doc.bytes || 0) > PREFETCH_MAX_BYTES) continue;
-        try {
-          if (!(await isDocStored(url))) await fetchDocBytes(url);
-        } catch { /* offline, or the proxy is down: try again next launch */ }
-      }
-    })();
+    void storeMissing(storableDocs().filter(({ doc }) => (doc.bytes || 0) <= PREFETCH_MAX_BYTES));
   };
 
   const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void }).requestIdleCallback;

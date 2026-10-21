@@ -21,6 +21,7 @@ deploy/hetzner/svrz-api.env
 deploy/hetzner/pb_data/
 deploy/hetzner/pg_data/
 deploy/hetzner/files/
+deploy/hetzner/doc-cache/
 deploy/hetzner/.env
 # SVRZ RC's F-Droid repo as served (deploy/native/publish-fdroid.sh fills it on
 # the host); only the empty directory is tracked, so the compose bind finds it.

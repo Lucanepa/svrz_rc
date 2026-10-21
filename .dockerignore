@@ -15,6 +15,7 @@ deploy/hetzner/pb_data
 # fail) and every filed form PDF. Neither belongs in an image layer.
 deploy/hetzner/pg_data
 deploy/hetzner/files
+deploy/hetzner/doc-cache
 files
 # The served F-Droid repo (APKs): svrz-fdroid's, never the API image's.
 deploy/hetzner/fdroid-public

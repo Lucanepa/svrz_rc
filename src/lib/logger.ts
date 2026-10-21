@@ -359,10 +359,15 @@ export function noteWentOffline(): void { lastOfflineAt = performance.now(); }
 function sawOfflineSince(started: number, onlineAtStart: boolean): boolean {
   return !onlineAtStart || !navigator.onLine || lastOfflineAt >= started;
 }
-/** True when the page is leaving now, or was taken away at any point since
- *  the request started — even if it has come back since. */
-function leftSince(started: number): boolean {
-  return leaving || lastLeftAt >= started;
+/** True when the page is leaving now, was taken away at any point since the
+ *  request started — even if it has come back since — or was not on screen
+ *  when the request began. That last one has no event to note it: at 19:40 on
+ *  21.10.2026 a coach's deferred update reloaded the app while she was in
+ *  Maps, so the page was BORN hidden and never fired `visibilitychange`. Its
+ *  boot requests froze with the tab and failed 310 s later as she came back,
+ *  mailed as an outage the server never saw. */
+function leftSince(started: number, hiddenAtStart = false): boolean {
+  return leaving || hiddenAtStart || lastLeftAt >= started;
 }
 
 export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving, wentOffline = false): { evt: string; lvl: ClientLevel } {
@@ -384,6 +389,7 @@ function installFetchLogging(): void {
     const traced = input instanceof Request ? init : withTraceHeaders(url, init);
     const started = performance.now();
     const onlineAtStart = navigator.onLine;
+    const hiddenAtStart = document.visibilityState === 'hidden';
     const conn = connection.start(method, url);
     try {
       const res = await originalFetch(input as RequestInfo, traced);
@@ -410,7 +416,7 @@ function installFetchLogging(): void {
       // the questionnaire AS the referee, and re-links an anonymous answer to
       // the person who gave it — into a Protokoll every admin reads.
       const write = () => {
-        const { evt, lvl } = classifyFetchFailure(ms, error, leftSince(started), offline());
+        const { evt, lvl } = classifyFetchFailure(ms, error, leftSince(started, hiddenAtStart), offline());
         clientLog[lvl](evt, `${method} ${scrubTokens(url)} failed after ${ms}ms (no response)`, {
           method, url: scrubTokens(url), ms, error, online: navigator.onLine,
         });
@@ -421,11 +427,11 @@ function installFetchLogging(): void {
       // The banner follows the same verdict, so a page that is only reloading
       // never tells the coach their network is down.
       const settle = () => {
-        const { evt } = classifyFetchFailure(ms, error, leftSince(started), offline());
+        const { evt } = classifyFetchFailure(ms, error, leftSince(started, hiddenAtStart), offline());
         const aborted = error instanceof Error && error.name === 'AbortError';
         if (evt === 'net.fail' && !aborted) conn.failed(); else conn.dropped();
       };
-      if (classifyFetchFailure(ms, error, leftSince(started), offline()).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
+      if (classifyFetchFailure(ms, error, leftSince(started, hiddenAtStart), offline()).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
       else { write(); settle(); }
       throw error;
     }

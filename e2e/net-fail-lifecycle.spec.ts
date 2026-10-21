@@ -98,6 +98,21 @@ test('a request frozen in the background and rejected on return is a warning', a
   expect(await lastFailure(page)).toMatchObject({ lvl: 'warn', evt: 'net.fail.unload' });
 });
 
+test('a request a page sends before it was ever on screen is a warning', async ({ page }) => {
+  // 21.10.2026, 19:40: a deferred update reloaded the app while the coach was
+  // in Maps. The new page started hidden — no visibilitychange, nothing to
+  // note — and its boot requests froze with the tab, failing 310 s later as
+  // she came back. Five of them were mailed as an outage.
+  await page.evaluate(async () => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    const pending = fetch('/api/lost-cause').catch(() => {});
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await pending;
+  });
+  expect(await lastFailure(page)).toMatchObject({ lvl: 'warn', evt: 'net.fail.unload' });
+});
+
 test('a page restored from the back/forward cache is not still leaving', async ({ page }) => {
   await page.evaluate(() => {
     window.dispatchEvent(new Event('pagehide'));

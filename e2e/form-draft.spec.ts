@@ -1101,4 +1101,103 @@ test.describe('The same coach on another device', () => {
     expect(url.searchParams.get('role')).toBe('both');
     expect(Number(url.searchParams.get('at'))).toBeGreaterThan(0);
   });
+
+  test('the form on screen takes a copy edited later on another device', async ({ page }) => {
+    // Luca, 20.10.2026: the laptop opened the 1. SR a minute before the phone
+    // parked it signed, and kept showing its own unsigned copy — the next
+    // keystroke there would have made that the newest everywhere.
+    await stubSignedInApp(page);
+    let drafts: Record<string, unknown>[] = [];
+    const parked: string[] = [];
+    await page.route(/\/api\/drafts\/parked(\?|$)/, (r) =>
+      r.fulfill({ json: { ownerId: RC.id, drafts, gone: [], filed: [] } }));
+    await page.route(/\/api\/drafts\/parked\//, (r) => {
+      if (r.request().method() === 'PUT') parked.push(r.request().postData() || '');
+      return r.fulfill({ json: { parked: 1, stale: [], gone: [], filed: [] } });
+    });
+    await page.goto('/');
+    await openFeedbackForm(page);
+    await tipsBox(page).fill('typed on the laptop');
+    await expect(savedStrip(page)).toBeVisible();
+
+    const later = suiteNow() + 60_000;
+    drafts = [parkedCopy({ tipsAndTricks: 'signed on the phone', ratings: { [FIRST_CRITERION_ID]: 'A' } }, later)];
+    await backToForeground(page);
+
+    await expect(tipsBox(page)).toHaveValue('signed on the phone');
+    await expect(await ratingControl(page, 0, 'A')).toHaveClass(RATING_CLASS.A);
+    await expect(page.getByText(/newer version from your other device|Neuere Fassung von deinem anderen Gerät/)).toBeVisible();
+    // Taken as it came, stamp and all: re-stamped "now" by the autosave, the
+    // copy would bounce back to the phone as newer work and round again.
+    await expect.poll(async () => (await storedRole(page, '1. SR')).tipsAndTricks).toBe('signed on the phone');
+    const settledAt = parked.length;
+    await page.waitForTimeout(2500);
+    expect((await storedRole(page, '1. SR')).updatedAt).toBe(later);
+    expect(parked.slice(settledAt).filter((body) => body.includes('signed on the phone') && !body.includes(`"updatedAt":${later}`))).toEqual([]);
+  });
+});
+
+test.describe('The other half of a visit whose first report is out', () => {
+  // Luca, 20.10.2026: the 2. SR of a two-referee visit was sent, the 1. SR was
+  // still a draft. Home opens the sent 2. SR; the 1SR tab then showed a BLANK
+  // form, so the 1. SR was filled in a second time — and, the form never
+  // having claimed an owner, not saved anywhere either.
+  const FILED_2SR = {
+    id: 'fb-2sr',
+    role_assessed: '2. SR',
+    rc_name: RC.name,
+    rc_id: RC.id,
+    submitted_at: '2026-10-13T10:00:00Z',
+    feedback_json: {
+      role: '2. SR', lang: 'EN',
+      meta: { spielNr: GAME.matchNo, liga: GAME.league, srName: 'Ref Two', rc: RC.name },
+      sections: [],
+      results: { bemerkungen: 'the second referee, already sent' },
+      signature: '', rcSignature: '',
+    },
+    expand: {
+      game: {
+        id: GAME.id, match_no: GAME.matchNo, league: GAME.league, match_date: GAME.date,
+        location: GAME.location, home_team: GAME.homeTeam, away_team: GAME.awayTeam,
+        first_referee: GAME.firstReferee, second_referee: 'Ref Two',
+      },
+    },
+  };
+
+  test('the 1SR tab on the sent 2. SR opens the 1. SR draft, and work there is saved', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.route('**/api/eligible-games*', (r) => r.fulfill({ json: [{ ...GAME_2SR, feedbackClosedRoles: ['2. SR'] }] }));
+    await page.route('**/api/coachees/*/feedbacks', (r) => r.fulfill({ json: [FILED_2SR] }));
+    await page.route(/\/api\/rc-overview\?/, (r) => r.fulfill({
+      json: [{ id: RC.id, fullName: RC.name, done: 1, outstanding: 0, planned: 0 }],
+    }));
+    await page.route(/\/api\/rc-overview\/[^/]+\/coachees/, (r) => r.fulfill({
+      json: [{
+        coacheeId: COACHEE.id, coacheeName: COACHEE.full_name,
+        doneFeedbacks: [{
+          gameDate: GAME.date, league: GAME.league, teams: `${GAME.homeTeam} vs ${GAME.awayTeam}`,
+          role: '2. SR', submittedAt: FILED_2SR.submitted_at, result: '',
+          feedbackId: FILED_2SR.id, gameId: GAME.id, matchNo: GAME.matchNo,
+        }],
+        outstandingGames: [], plannedGames: [],
+      }],
+    }));
+    await page.route(/\/api\/drafts\/parked\//, (r) => r.fulfill({ json: { parked: 1, stale: [], gone: [], filed: [] } }));
+    await seedDrafts(page, [draftRecord({ tipsAndTricks: 'typed on the laptop', ratings: { [FIRST_CRITERION_ID]: 'A' } })]);
+    await page.goto('/home');
+
+    await page.getByRole('button', { name: /^(Open feedback|Feedback öffnen)$/ }).or(page.getByTitle(/^(Open feedback|Feedback öffnen)$/)).first().click();
+    await expect(page.getByText(/bereits beobachtet|already been observed/)).toBeVisible();
+
+    await targetButton(page, /^1SR/).click();
+    await expect(tipsBox(page)).toHaveValue('typed on the laptop');
+    await expect(await ratingControl(page, 0, 'A')).toHaveClass(RATING_CLASS.A);
+
+    // And what is added there is kept — on this device, as this coach's.
+    await tipsBox(page).fill('typed on the laptop, signed on the phone');
+    await expect.poll(async () => (await storedDrafts(page)).find((d) => d.role === '1. SR')?.tipsAndTricks)
+      .toBe('typed on the laptop, signed on the phone');
+    // The sent 2. SR, still in memory behind the other tab, is no draft.
+    expect((await storedDrafts(page)).filter((d) => d.role === '2. SR' && d.status === 'editing')).toEqual([]);
+  });
 });

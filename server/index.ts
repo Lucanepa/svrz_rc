@@ -69,6 +69,7 @@ import { readStoredDoc, writeStoredDoc, type StoredDoc } from './docstore.ts';
 import { presidentNoteEntry, presidentNoteBelongsToAnother, type PresidentNoteEntry } from './presidentNotes.ts';
 import { identityAudit, type AuditRcPerson } from './identityAudit.ts';
 import { sniffAttachmentType, ATTACHMENT_EXTENSIONS, whistleBlocksForm, createMailCooldown, createCoalescer } from './writeGuards.ts';
+import { createCredentialReader, CredentialsUnavailableError } from './credentialStore.ts';
 import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
 import { nameKeys, samePerson, resolveRcName, resolveRcRef, refereeSet, refereeAmong, type PersonRef, type RcPersonLike, type RefereeSet } from '../src/lib/identity.ts';
 import { say, answerInAskersLanguage } from './say.ts';
@@ -645,10 +646,30 @@ function makeCredential(username: string, password: string, updatedBy: string): 
   return { username, salt, hash: hashSecret(password, salt), updatedAt: new Date().toISOString(), updatedBy };
 }
 
+// One read of the row, uncached. A missing row is the empty map (a slot never
+// set in the console); a row that cannot be read or parsed THROWS — it is not
+// "nothing set", and treating it as that opened the env bootstrap passwords
+// (server/credentialStore.ts, 22.10.2026).
+async function loadCredentialRecord(): Promise<CredentialMap> {
+  const rec = await getSettingRecord(CREDENTIALS_KEY);
+  const parsed = rec ? JSON.parse(asText(rec.value)) : {};
+  return parsed && typeof parsed === 'object' ? parsed as CredentialMap : {};
+}
+
 // Short TTL rather than none: a login is rate-limited to a trickle, but the
 // reminder cron and a burst of Saturday sign-ins should not each cost a round
 // trip. Every write invalidates it, so a rotated password takes effect at once.
-let credentialsCache: { data: CredentialMap; expiresAt: number } | null = null;
+// Only a successful read is cached; a failed one answers with the last map
+// that was read, or throws (see credentialStore.ts).
+const credentialStore = createCredentialReader<CredentialMap>({
+  load: loadCredentialRecord,
+  ttlMs: 60 * 1000,
+  onError: (error, servedLastGood) => {
+    // The fallback case only: with no copy to serve, the throw reaches a login
+    // handler, and that is where the 503 is logged at error.
+    if (servedLastGood) log.warn('auth.credentials', 'stored credentials unreadable — answering with the last copy read', { error });
+  },
+});
 
 // When the team password last changed, in ms — the generation every app
 // session is checked against (see server/rcSession.ts). Held here, in step with
@@ -669,43 +690,48 @@ function noteSharedCredential(data: CredentialMap): void {
 function ensureSharedCredentialKnown(): void {
   if (sharedCredentialKnown || Date.now() < sharedCredentialRefreshAt) return;
   sharedCredentialRefreshAt = Date.now() + 30_000;
-  credentialsCache = null;
-  void readCredentials().catch(() => { /* retried on the next nudge */ });
+  credentialStore.invalidate();
+  void readCredentials().catch((error) => {
+    // Retried on the next nudge.
+    log.warn('auth.credentials', 'stored credentials unreadable — the team password generation is not known yet', { error });
+  });
 }
 
+/** The stored credentials. Throws CredentialsUnavailableError when the store
+ *  cannot be read and nothing was read before it — never an empty map in its
+ *  place, which would hand the logins to the env bootstrap. */
 async function readCredentials(): Promise<CredentialMap> {
-  if (credentialsCache && credentialsCache.expiresAt > Date.now()) return credentialsCache.data;
-  let data: CredentialMap = {};
-  try {
-    const rec = await getSettingRecord(CREDENTIALS_KEY);
-    const parsed = rec ? JSON.parse(asText(rec.value)) : {};
-    if (parsed && typeof parsed === 'object') data = parsed as CredentialMap;
-    noteSharedCredential(data);
-  } catch (error) {
-    // A malformed or unreachable record must not lock everyone out — fall
-    // through to the env bootstrap rather than denying every login.
-    console.error('[auth] could not read stored credentials:', error);
-  }
-  credentialsCache = { data, expiresAt: Date.now() + 60 * 1000 };
+  const data = await credentialStore.read();
+  noteSharedCredential(data);
   return data;
 }
 
 async function writeCredentials(mutate: (current: CredentialMap) => CredentialMap): Promise<void> {
   await withSettingLock(CREDENTIALS_KEY, async () => {
-    let current: CredentialMap = {};
-    try {
-      const rec = await getSettingRecord(CREDENTIALS_KEY);
-      const parsed = rec ? JSON.parse(asText(rec.value)) : {};
-      if (parsed && typeof parsed === 'object') current = parsed as CredentialMap;
-    } catch { current = {}; }
+    // A failed read aborts the write. It used to carry on with an empty map,
+    // which wrote back ONLY the slot being edited — the other two slots then
+    // fell back to their env values for good, not for a minute (22.10.2026).
+    let current: CredentialMap;
+    try { current = await loadCredentialRecord(); }
+    catch (error) { throw new CredentialsUnavailableError(error); }
     const next = mutate(current);
     await setSetting(CREDENTIALS_KEY, JSON.stringify(next));
     // Before the lock is released and before the handler answers: the very
     // next request made with an old session must already be judged against
     // the new generation.
     noteSharedCredential(next);
+    credentialStore.remember(next);
   });
-  credentialsCache = null;
+}
+
+/** The 503 a login answers when the stored credentials cannot be read. Not a
+ *  401: the password was never checked, and "wrong password" would send a
+ *  coach hunting for a typo during a database outage. */
+function answerCredentialsUnavailable(res: ExpressResponse, evt: string, error: unknown, ctx?: ReturnType<typeof reqCtx>): void {
+  log.error(evt, 'stored credentials unreadable — sign-in refused', { error }, ctx);
+  res.set('Cache-Control', 'no-store');
+  res.set('Retry-After', '30');
+  res.status(503).json({ error: say('Anmeldung vorübergehend nicht möglich.', 'Sign-in is temporarily unavailable.') });
 }
 
 // Checks one slot against the stored hash, falling back to the env pair for a
@@ -713,6 +739,11 @@ async function writeCredentials(mutate: (current: CredentialMap) => CredentialMa
 // nothing about which one was wrong, and the scrypt runs even when the slot is
 // empty so an unconfigured slot cannot be told from a wrong password by how
 // fast it answers.
+//
+// "Never written" is only ever what the store SAID: when it cannot be read,
+// this throws CredentialsUnavailableError and the caller answers 503
+// (answerCredentialsUnavailable) — the env pair is never the fallback for an
+// outage.
 async function verifyCredential(
   slot: CredentialSlot, username: string, password: string,
   envUsername: string, envPassword: string,
@@ -5106,8 +5137,19 @@ app.post('/api/admin/ui-login', async (req: Request, res: ExpressResponse) => {
   // password is a support call nobody should have to make.
   const username = asText(body.username).trim();
   const password = asText(body.password);
-  const asAdmin = await verifyCredential('admin', username, password, ADMIN_UI_USERNAME, ADMIN_UI_PASSWORD);
-  const asPresident = await verifyCredential('president', username, password, PRESIDENT_UI_USERNAME, PRESIDENT_UI_PASSWORD);
+  let asAdmin: Awaited<ReturnType<typeof verifyCredential>>;
+  let asPresident: Awaited<ReturnType<typeof verifyCredential>>;
+  try {
+    asAdmin = await verifyCredential('admin', username, password, ADMIN_UI_USERNAME, ADMIN_UI_PASSWORD);
+    asPresident = await verifyCredential('president', username, password, PRESIDENT_UI_USERNAME, PRESIDENT_UI_PASSWORD);
+  } catch (error) {
+    if (!(error instanceof CredentialsUnavailableError)) throw error;
+    // Nothing was checked, so nothing is charged: an outage must not walk
+    // the chair into the lockout while she retries.
+    refundGateRateLimit(ctx.ip, 'admin-ui');
+    answerCredentialsUnavailable(res, 'auth.admin-ui-login', error, ctx);
+    return;
+  }
   const role: ConsoleRole | null = asAdmin.ok ? 'admin' : asPresident.ok ? 'president' : null;
   if (!role) {
     // Already charged above; a failure keeps the charge.
@@ -5906,7 +5948,7 @@ function consumeCredChallenge(req: Request, slot: CredentialSlot, code: string):
   return '';
 }
 
-app.get('/api/admin/credentials', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
+app.get('/api/admin/credentials', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     const stored = await readCredentials();
     res.json({
@@ -5924,7 +5966,10 @@ app.get('/api/admin/credentials', requireAdminSession, async (_req: Request, res
       }),
       minLength: MIN_SECRET_LENGTH,
     });
-  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+  } catch (error) {
+    if (error instanceof CredentialsUnavailableError) { answerCredentialsUnavailable(res, 'auth.credentials', error, reqCtx(req)); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
 });
 
 // Writing one slot. Changing the admin password does NOT sign the current admin
@@ -5971,6 +6016,9 @@ app.put('/api/admin/credentials', requireAdminSession, async (req: Request, res:
     log.info('auth.credentials', 'password changed', { slot, username, by, feedsRevoked, sessionsRevoked }, ctx);
     res.json({ ok: true, slot, username, feedsRevoked, sessionsRevoked });
   } catch (error) {
+    // The read before the write failed, so nothing was written. The 2FA code
+    // is spent all the same: a retry asks for a new one.
+    if (error instanceof CredentialsUnavailableError) { answerCredentialsUnavailable(res, 'auth.credentials', error, ctx); return; }
     log.error('auth.credentials', 'could not store the credential', { error }, ctx);
     res.status(500).json({ error: safeError(error) });
   }
@@ -6983,9 +7031,17 @@ app.post('/api/auth/shared/login', async (req: Request, res: ExpressResponse) =>
   const password = asText((req.body ?? {}).password);
   // Both halves are compared every time — no early return on a wrong username,
   // so the response says nothing about which half was wrong.
-  const attempt = await verifyCredential(
-    'shared', username, password, SHARED_LOGIN_USERNAME_ENV, SHARED_LOGIN_PASSWORD_ENV,
-  );
+  let attempt: Awaited<ReturnType<typeof verifyCredential>>;
+  try {
+    attempt = await verifyCredential(
+      'shared', username, password, SHARED_LOGIN_USERNAME_ENV, SHARED_LOGIN_PASSWORD_ENV,
+    );
+  } catch (error) {
+    if (!(error instanceof CredentialsUnavailableError)) throw error;
+    // No budget spent: only a wrong answer spends it, and there was no answer.
+    answerCredentialsUnavailable(res, 'auth.shared-login', error, ctx);
+    return;
+  }
   const userOk = attempt.userMatched;
   const passOk = attempt.ok;
   if (!attempt.ok) {

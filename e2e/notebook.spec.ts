@@ -1,5 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { stubSignedInApp, openFeedbackForm, RC, GAME, suiteNow } from './support/app';
+import { lineHash, linesOf } from '../src/lib/notebookTimes';
+import { clockLabel } from '../src/lib/appTime';
 
 /**
  * The Notizblock: pages a coach writes anywhere in the app, kept on the device
@@ -26,6 +28,7 @@ type StoredPage = {
   id: string; schema: number; ownerId: string; pageId: string; kind: string; text: string; bg: string; points: number;
   usedIn: { f: string; r: string; g: string; label: string; t: number }[];
   createdAt: number; updatedAt: number; deleted: boolean; dirty: boolean; savedAt: string; rejectedReason: string;
+  extra?: Record<string, unknown>;
 };
 
 function padPage(over: Partial<StoredPage> & { createdAt?: number } = {}): StoredPage {
@@ -556,5 +559,68 @@ test.describe('Into the form', () => {
     await expect(sheet(page).getByRole('button', { name: /^(Übernehmen…|Insert…)$/ })).toHaveCount(0);
     await expect(sheet(page).getByText(/gesendet|sent/)).toBeVisible();
     await expect(pageBox(page)).toHaveText('seeded page');
+  });
+});
+
+test.describe('The time column', () => {
+  // Beside every note, small: when it was written (Luca, 2026-10-22). On by
+  // default, off by a toggle this device remembers.
+  const margin = (page: Page) => sheet(page).getByTestId('pad-times');
+  const toggle = (page: Page) => sheet(page).getByTestId('pad-times-toggle');
+  const TEXT = 'Netz nicht kontrolliert\n\nDer 2. SR steht zu weit links';
+  /** The list the sheet itself keeps: epoch minutes and a hash per line. */
+  const stamped = (text: string, minutes: number[]) => ({
+    lt: linesOf(text).map((line, i) => (lineHash(line) ? `${minutes[i].toString(36)}.${lineHash(line)}` : '')),
+  });
+
+  test('each note shows its own time; a new one shows now, and is kept', async ({ page }) => {
+    const start = Math.floor((suiteNow() - 40 * 60_000) / 60_000);
+    await seedPad(page, [padPage({ text: TEXT, extra: stamped(TEXT, [start, 0, start + 25]) })]);
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await expect(toggle(page)).toHaveAttribute('aria-pressed', 'true');
+    // The blank line between them has nothing to show.
+    await expect(margin(page).locator('[data-line]')).toHaveText([clockLabel(start * 60_000), clockLabel((start + 25) * 60_000)]);
+    expect(await margin(page).locator('[data-line]').evaluateAll((els) => els.map((el) => el.getAttribute('data-line')))).toEqual(['0', '2']);
+
+    await pageBox(page).click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Pfiff zu spät');
+    const labels = margin(page).locator('[data-line]');
+    await expect(labels).toHaveCount(3);
+    const now = [clockLabel(suiteNow()), clockLabel(suiteNow() - 60_000)];
+    expect(now).toContain(await labels.nth(2).textContent());
+
+    // Each label stands beside its own line, not stacked at the top.
+    const tops = await labels.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
+    expect(tops[1]).toBeGreaterThan(tops[0] + 20);
+    expect(tops[2]).toBeGreaterThan(tops[1] + 10);
+
+    // Kept with the page, the text itself untouched.
+    await expect(padSaved(page)).toBeVisible();
+    const row = (await storedPages(page))[0];
+    expect(row.text).toBe(`${TEXT}\nPfiff zu spät`);
+    expect((row.extra as { lt: string[] }).lt).toHaveLength(4);
+  });
+
+  test('the toggle hides the column, and this device remembers it', async ({ page }) => {
+    await seedPad(page, [padPage({ text: TEXT, extra: stamped(TEXT, [Math.floor(suiteNow() / 60_000), 0, Math.floor(suiteNow() / 60_000)]) })]);
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await expect(margin(page)).toBeVisible();
+    await toggle(page).click();
+    await expect(toggle(page)).toHaveAttribute('aria-pressed', 'false');
+    await expect(margin(page)).toHaveCount(0);
+    await expect(pageBox(page)).toHaveText(TEXT.replace(/\n/g, ''));
+
+    await page.reload();
+    await openPad(page);
+    await expect(toggle(page)).toHaveAttribute('aria-pressed', 'false');
+    await expect(margin(page)).toHaveCount(0);
+    await toggle(page).click();
+    await expect(margin(page).locator('[data-line]')).toHaveCount(2);
   });
 });

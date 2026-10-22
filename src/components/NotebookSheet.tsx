@@ -22,10 +22,12 @@ import * as notebookSync from '../lib/notebookSync';
 import type { PadSyncStatus } from '../lib/notebookSync';
 import { importBlock, pageBlock } from '../lib/notebookImport';
 import { richToPlain } from '../lib/richText';
+import { lineTimes, withLineTimes } from '../lib/notebookTimes';
 import { RichSurface, RichToolbar, appendBullet, appendCheck, appendNumbered } from './RichText';
 import { confirmDialog, toast } from './ui';
 import AppSpinner from './AppSpinner';
 import StaleBuildNotice from './StaleBuildNotice';
+import NoteTimes from './NoteTimes';
 import { importFresh } from '../lib/freshImport';
 import type { InkTool } from './InkPad';
 
@@ -62,6 +64,8 @@ const FINGER_KEY = 'svrz_ink_finger';
  *  reopen one coach's notebook on another's page. */
 const LAST_PAGE_KEY = 'svrz_pad_last_page';
 const PEN_SEEN_KEY = 'svrz_ink_pen_seen';
+/** The time column beside a text page: on unless this device turned it off. */
+const TIMES_KEY = 'svrz_pad_times';
 
 function readPref(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -101,7 +105,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [field, setField] = useState<PadField>('bemerkungen');
   const [showUsed, setShowUsed] = useState(false);
+  const [showTimes, setShowTimes] = useState<boolean>(() => readPref(TIMES_KEY) !== '0');
+  const toggleTimes = () => { setShowTimes((v) => { writePref(TIMES_KEY, v ? '0' : '1'); return !v; }); };
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const pressedBackdrop = useRef(false);
 
   const current = pages.find((p) => p.pageId === currentId) || null;
@@ -176,8 +183,12 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   useEffect(() => { if (current || virtual) madePage.current = null; }, [current, virtual]);
   const handleText = (value: string) => {
     const open = current && current.kind === 'text' ? current : madePage.current;
+    // Every change stamps the lines it made: kept whether or not the column is
+    // on, so turning it back on shows the evening as it was written.
     if (open) {
-      const next = { ...open, text: value };
+      const extra = withLineTimes(open.text, open.extra, value, Date.now());
+      const next = { ...open, text: value, ...(extra ? { extra } : {}) };
+      if (!extra) delete next.extra;
       if (open === madePage.current) madePage.current = next;
       notebookSync.commit(next);
       return;
@@ -185,6 +196,8 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     if (!value) return;
     const page = makePage(ownerId, 'text');
     page.text = value;
+    const extra = withLineTimes('', undefined, value, page.createdAt);
+    if (extra) page.extra = extra;
     notebookSync.commit(page, undefined, 0);
     madePage.current = page;
     setVirtual(null);
@@ -213,6 +226,8 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   };
 
   const currentText = current && current.kind === 'text' ? current.text : '';
+  const currentExtra = current && current.kind === 'text' ? current.extra : undefined;
+  const times = useMemo(() => lineTimes(currentText, currentExtra), [currentText, currentExtra]);
   /** The evening in the order it happens. A coach taking notes through a match
    *  writes the same handful of headings every time and writes them badly with
    *  a thumb; these are the headings, spelled the same way on every page, so a
@@ -646,13 +661,18 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       </div>
                     </>
                   )}
-                  <RichSurface
-                    autoFocus
-                    value={currentText}
-                    onChange={handleText}
-                    placeholder={tp.padPlaceholder}
-                    className="notebook-surface flex-1 w-full min-h-[40vh] overflow-auto text-sm leading-relaxed px-4 py-3 bg-white"
-                  />
+                  {/* One scroller for the margin and the page, so a time stays
+                      beside its note however far down the evening goes. */}
+                  <div ref={scrollRef} className="flex-1 min-h-0 flex overflow-auto bg-white">
+                    {showTimes && <NoteTimes scrollRef={scrollRef} times={times} lineTitle={(date) => fill(tp.padTimesLine, { date })} />}
+                    <RichSurface
+                      autoFocus
+                      value={currentText}
+                      onChange={handleText}
+                      placeholder={tp.padPlaceholder}
+                      className={cn('notebook-surface flex-1 min-w-0 min-h-[40vh] text-sm leading-relaxed py-3 bg-white', showTimes ? 'pl-3 pr-4' : 'px-4')}
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="flex-1 min-h-0 flex flex-col">
@@ -699,6 +719,24 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
             {/* footer */}
             <div className="flex items-center gap-2 px-4 py-2 border-t border-stone-200">
               <p className={cn('flex-1 min-w-0 text-[11px] truncate', statusTone)} aria-live="polite">{statusText}</p>
+              {/* Down here, not by the page arrows: that line already runs to
+                  two rows on a phone, and this row has room on every screen. */}
+              {activeKind === 'text' && !pagesPending && (
+                <button
+                  type="button"
+                  onClick={toggleTimes}
+                  aria-pressed={showTimes}
+                  aria-label={tp.padTimes}
+                  title={showTimes ? tp.padTimesOn : tp.padTimesOff}
+                  data-testid="pad-times-toggle"
+                  className={cn(
+                    'shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium transition-colors',
+                    showTimes ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50',
+                  )}
+                >
+                  <Clock size={14} /> <span className="hidden sm:inline">{tp.padTimes}</span>
+                </button>
+              )}
               {(current || virtual) && (
                 <button type="button" onClick={() => void deletePage()} aria-label={tp.padDeletePage} title={tp.padDeletePage} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50">
                   <Trash2 size={14} /> <span className="hidden sm:inline">{tp.padDeletePage}</span>

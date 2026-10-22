@@ -1,4 +1,7 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { RC, stubSignedInApp, openFileMenu } from './support/app';
 import { presidentNoteEntry, presidentNoteBelongsToAnother } from '../server/presidentNotes';
 
@@ -225,4 +228,32 @@ test('the PDF menu says which PDF the referee got', async ({ page }) => {
   // Shut by Escape, like any menu.
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
+});
+
+// 22.10.2026 (log audit): a note past the limit used to be cut to it and saved
+// with "ok" — the end of the coach's words was gone without a sign. The server
+// now refuses it whole with a 413, and the box says so and keeps the text.
+test('a note over the limit is refused in words, and nothing typed is lost', async ({ page }) => {
+  const TOO_LONG = "Die Notiz ist zu lang (höchstens 50'000 Zeichen inklusive Formatierung). Bitte kürzen und nochmals speichern – gespeichert wurde nichts.";
+  await stub(page, { signedInAs: RC.name, note: { note: '' } });
+  await page.route('**/api/feedback/*/president-note', async (r) => {
+    if (r.request().method() === 'PUT') { await r.fulfill({ status: 413, json: { error: TOO_LONG } }); return; }
+    await r.fallback();
+  });
+  await openFiledObservation(page);
+  await noteBox(page).fill('Sehr gute Leistung.');
+  await page.getByRole('button', { name: /Notiz speichern|Save note/ }).click();
+  await expect(page.getByText(TOO_LONG)).toBeVisible();
+  await expect(page.getByText(/Gespeichert ✓|Saved ✓/)).toHaveCount(0);
+  await expect(noteBox(page)).toHaveText('Sehr gute Leistung.');
+});
+
+test('the server refuses an overlong note instead of cutting it', () => {
+  const server = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server', 'index.ts'), 'utf8');
+  const at = server.indexOf("app.put('/api/feedback/:id/president-note'");
+  expect(at).toBeGreaterThan(-1);
+  const route = server.slice(at, server.indexOf('\napp.', at + 10));
+  expect(route).not.toMatch(/\.slice\(0, PRESIDENT_NOTE_MAX\)/);
+  expect(route).toMatch(/if \(raw\.length > PRESIDENT_NOTE_MAX\)/);
+  expect(route).toContain('res.status(413)');
 });

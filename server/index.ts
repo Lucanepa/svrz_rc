@@ -7730,10 +7730,24 @@ app.put('/api/feedback/:id/president-note', requireRcSession, async (req: Reques
     catch { res.status(404).json({ error: say('Feedback nicht gefunden.', 'Feedback not found') }); return; }
     if (!(await mayWritePresidentNote(req, record))) { res.status(403).json({ error: say('Keine Berechtigung.', 'Forbidden') }); return; }
 
-    // Sanitised to the rich-text subset (anything else becomes escaped text),
-    // cut before sanitising so a cut can never leave half a tag behind. A box
-    // holding only formatting and no words is an empty note.
-    const sanitized = sanitizeRich(asText((req.body ?? {}).note).slice(0, PRESIDENT_NOTE_MAX)).trim();
+    // Refused whole, never cut. The note used to be sliced to the limit and
+    // saved with "ok", so a coach who wrote past it lost the end of her words
+    // to the chair without a sign (log audit, 22.10.2026). The limit counts
+    // what the editor sends, formatting included.
+    const raw = asText((req.body ?? {}).note);
+    if (raw.length > PRESIDENT_NOTE_MAX) {
+      // Grouped by hand: toLocaleString('de-CH') is ' or ’ depending on the
+      // ICU build the container's Node ships with.
+      const grouped = (sep: string) => String(PRESIDENT_NOTE_MAX).replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+      res.status(413).json({ error: say(
+        `Die Notiz ist zu lang (höchstens ${grouped("'")} Zeichen inklusive Formatierung). Bitte kürzen und nochmals speichern – gespeichert wurde nichts.`,
+        `The note is too long (at most ${grouped(',')} characters including formatting). Please shorten it and save again – nothing was saved.`,
+      ) });
+      return;
+    }
+    // Sanitised to the rich-text subset (anything else becomes escaped text).
+    // A box holding only formatting and no words is an empty note.
+    const sanitized = sanitizeRich(raw).trim();
     const note = richToPlain(sanitized).trim() ? sanitized : '';
     // An admin may write on a feedback another coach filed, so the note records
     // who wrote it separately from who filed the observation — the president

@@ -91,9 +91,29 @@ function redact(value: unknown, depth = 0): unknown {
   return String(value);
 }
 
+/** Readers, renderers and crawlers that run the app's JavaScript: Google's
+ *  Read Aloud (10 of the 11 "service worker registration failed: Rejected"
+ *  lines up to 21.10.2026), Googlebot and its tools, and the odd crawler
+ *  that names itself. Whatever breaks for them, no coach can act on. */
+const AUTOMATED_AGENT = /Google-Read-Aloud|Googlebot|Google-InspectionTool|GoogleOther|Google-PageRenderer|AdsBot-Google|Mediapartners-Google|FeedFetcher-Google|bingbot|\b(crawler|spider)\b|bot\/\d/i;
+
+/** True for a visit that is not a person. Google's Web Rendering Service
+ *  sometimes presents a plain Android user agent, but it replaces
+ *  serviceWorker.register with a stub of its own, and the stub's frame names
+ *  `wrsParams` in every stack it throws. Exported for the test. */
+export function isAutomatedVisit(ua: string, error?: unknown): boolean {
+  if (AUTOMATED_AGENT.test(ua || '')) return true;
+  const stack = error instanceof Error ? error.stack
+    : error && typeof error === 'object' ? (error as { stack?: unknown }).stack : '';
+  return typeof stack === 'string' && stack.includes('wrsParams');
+}
+
 // ── Core ──────────────────────────────────────────────────────────────
 export function logEvent(lvl: ClientLevel, evt: string, msg?: string, data?: Record<string, unknown>): void {
   try {
+    // Still written, under the same event name so a search finds it, but as
+    // a warning: the alert mail is for failures somebody can do something about.
+    if (lvl === 'error' && isAutomatedVisit(typeof navigator === 'undefined' ? '' : navigator.userAgent, data?.error)) lvl = 'warn';
     const entry: ClientLogEntry = {
       t: new Date().toISOString(),
       lvl,

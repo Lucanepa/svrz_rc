@@ -537,6 +537,19 @@ function probeEdge(): Promise<EdgeState> {
   return result;
 }
 
+/** How loud an answered request is: 5xx error, 4xx warn, the rest debug.
+ *  One exception. Since b8603cd the document proxy answers 503 with
+ *  Retry-After when svrz.ch cannot be reached and it holds no copy of the
+ *  file — svrz.ch's outage, already recorded once by the API as
+ *  docs.unavailable. The one on 21.10.2026 reached the log 29 times (then as
+ *  Cloudflare 502s); the next would arrive as these 503s, each mailed. Only that
+ *  route and only 503: a 500 from the proxy is our bug and still mails, and
+ *  a 503 anywhere else is still an outage. Exported for the test. */
+export function responseLevel(status: number, url: string): ClientLevel {
+  if (status === 503 && /\/api\/docs\//.test(url.split(/[?#]/)[0])) return 'warn';
+  return status >= 500 ? 'error' : status >= 400 ? 'warn' : 'debug';
+}
+
 function installFetchLogging(): void {
   originalFetch = window.fetch.bind(window);
   window.fetch = async function loggedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -553,7 +566,7 @@ function installFetchLogging(): void {
       const res = await originalFetch(input as RequestInfo, traced);
       const ms = Math.round(performance.now() - started);
       conn.answered(ms);
-      const lvl: ClientLevel = res.status >= 500 ? 'error' : res.status >= 400 ? 'warn' : 'debug';
+      const lvl = responseLevel(res.status, url);
       logEvent(lvl, 'net.fetch', `${method} ${scrubTokens(url)} → ${res.status} (${ms}ms)`, {
         method, url: scrubTokens(url), status: res.status, ms, ok: res.ok,
         // The one header that explains a 429 to whoever reads the log later.

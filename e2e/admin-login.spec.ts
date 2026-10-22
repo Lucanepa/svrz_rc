@@ -64,3 +64,31 @@ test('a rejected sign-in names neither half', async ({ page }) => {
 
   await expect(page.getByText(/Benutzername oder Passwort falsch|Wrong username or password/)).toBeVisible();
 });
+
+// 27.09–06.10.2026: the browser filled the app's team login into this form,
+// and the chair failed eight times in 92 s against "wrong username or
+// password". The server now says which login she typed; the form shows it.
+test('the team login typed here is named as such', async ({ page }) => {
+  await page.route('**/api/admin/ui-login', (r) => r.fulfill({
+    status: 401,
+    json: { error: 'Das ist der Team-Login der App. Hier braucht es den Admin-Zugang (admin bzw. praesidium).' },
+  }));
+  await page.goto('/admin');
+  await page.getByLabel(/^(Benutzername|Username)$/).fill('Referee-Coaching');
+  await page.locator('input[type="password"]').fill(FAKE_PW);
+  await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();
+
+  await expect(page.getByText(/Hier braucht es den Admin-Zugang/)).toBeVisible();
+  await expect(page.getByText(/Benutzername oder Passwort falsch|Wrong username or password/)).toHaveCount(0);
+});
+
+test('an unreadable credentials store reads as a pause, not as a wrong password', async ({ page }) => {
+  await page.route('**/api/admin/ui-login', (r) =>
+    r.fulfill({ status: 503, json: { error: 'Anmeldung vorübergehend nicht möglich.' } }));
+  await page.goto('/admin');
+  await page.getByLabel(/^(Benutzername|Username)$/).fill('admin');
+  await page.locator('input[type="password"]').fill(FAKE_PW);
+  await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();
+
+  await expect(page.getByText('Anmeldung vorübergehend nicht möglich.')).toBeVisible();
+});

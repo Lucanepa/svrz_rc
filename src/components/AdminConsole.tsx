@@ -1160,7 +1160,15 @@ export default function AdminConsole() {
       const signedInAs = await adminUiLogin(username.trim(), password.trim());
       setRole(signedInAs); setAuthed(true); setPassword('');
     }
-    catch { setError(t.wrongCreds); setPassword(''); }
+    catch (err) {
+      // The server's own words when it has some: the app's team login typed
+      // here (a password manager offers it on this form), or a 503 while the
+      // stored credentials cannot be read. A plain wrong pair stays the form's
+      // own message, which names neither half (22.10.2026).
+      const e = err as Error & { status?: number };
+      const ownWords = e.status === 503 || (e.status === 401 && e.message !== 'Invalid credentials.');
+      setError(ownWords ? e.message : t.wrongCreds); setPassword('');
+    }
     finally { setSubmitting(false); }
   };
   // A logout the server never saw leaves the cookie alive; logoutAdmin keeps a

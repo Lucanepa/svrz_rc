@@ -399,6 +399,20 @@ export function classifyFetchFailure(ms: number, error: unknown, isLeaving = lea
   return { evt: 'net.fail', lvl: 'error' };
 }
 
+/** Sent on the window when an RC app route answers 401: the app session is
+ *  gone. On 09.10.2026 a cached "signed in" kept a coach working against 18
+ *  refusals for seven minutes; AuthGate now asks /api/auth/me again on this
+ *  and, if the session really is gone, goes to the login screen. */
+export const UNAUTHORIZED_EVENT = 'svrz:unauthorized';
+
+/** A 401 from these answers to another credential than the RC's app session:
+ *  the login itself, the console cookie (admin, chair), a referee's PIN, or a
+ *  link token (signature, survey, calendar feed). Exported for the test. */
+export function isRcSessionRefusal(status: number, url: string): boolean {
+  return status === 401 && /\/api\//.test(url)
+    && !/\/api\/((auth|admin|coachee-file|president-notes|forms|feedback-archive|finance|referee-coaches|vm|survey-responses)(\/|\?|$)|survey\/|signature\/(?!start(\?|$))|ical\/(?!me(\?|$)))/.test(url);
+}
+
 function installFetchLogging(): void {
   originalFetch = window.fetch.bind(window);
   window.fetch = async function loggedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -421,6 +435,7 @@ function installFetchLogging(): void {
         // The one header that explains a 429 to whoever reads the log later.
         retryAfter: res.headers.get('retry-after') || undefined,
       });
+      if (isRcSessionRefusal(res.status, url)) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
       return res;
     } catch (error) {
       const ms = Math.round(performance.now() - started);

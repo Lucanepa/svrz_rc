@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, createContext, useContext, type ReactNode } from 'react';
+import React, { useState, useEffect, useCallback, useRef, createContext, useContext, type ReactNode } from 'react';
 import { foldName } from '../lib/coacheeName';
 import { Lock, Loader2, ArrowLeft, Eye, EyeOff, User, Languages, Search, Check, ChevronDown, WifiOff, RotateCw } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
@@ -6,7 +6,8 @@ import {
   getAuthMe, rcLogout, logoutAdmin, hasPendingLogout, settlePendingLogout,
   sharedLogin, listRcRoster, identifyAsRc, type AuthMe, type RcRosterEntry,
 } from '../lib/pocketbase';
-import { clientLog, setLogUser, flush } from '../lib/logger';
+import { clientLog, setLogUser, flush, UNAUTHORIZED_EVENT } from '../lib/logger';
+import { connection, looksLikeCacheTiming } from '../lib/connection';
 import AppSpinner from './AppSpinner';
 import { Skeleton } from './Skeleton';
 import { getStoredLang, setStoredLang, getStoredRcId, setStoredRcId, type Lang } from '../lib/prefs';
@@ -18,6 +19,32 @@ type ApiError = Error & { status?: number; retryAfterMs?: number };
  *  Well past the service worker's 6 s cache fallback, so a device with a
  *  cached session opens on it instead of on an error. */
 const PROBE_GIVE_UP_MS = 20_000;
+
+/** At most one re-check of the session per this long, however many requests
+ *  come back 401 in a burst (a refresh fires a dozen at once). */
+const RECHECK_EVERY_MS = 30_000;
+
+/** How long the open form gets to write its draft before the gate takes the
+ *  screen away. Raced, like the service-worker reload in main.tsx: a wedged
+ *  IndexedDB must not keep a dead session on screen. */
+const FLUSH_BEFORE_SIGNOUT_MS = 1500;
+
+/** Asks the server who this is, and says afterwards whether the answer was
+ *  the service worker's cached copy rather than the server's. On a slow
+ *  network the worker answers /api/auth/me from its cache after 6 s, and a
+ *  copy from yesterday says "signed in" whatever the cookie says today
+ *  (09.10.2026: a coach worked on against 18 refusals for seven minutes). */
+async function askWhoAmI(): Promise<{ me: AuthMe; fromCache: () => Promise<boolean> }> {
+  const started = Date.now();
+  const me = await getAuthMe();
+  const ms = Date.now() - started;
+  // The worker's broadcast and the response race into the page; connection.ts
+  // waits the same moment before it calls an answer live.
+  const fromCache = () => new Promise<boolean>((resolve) => setTimeout(() => {
+    resolve(connection.cacheHitSince('/api/auth/me', started) || looksLikeCacheTiming(ms));
+  }, 200));
+  return { me, fromCache };
+}
 
 // Every string on the gate, in both languages. The gate is where the language
 // gets chosen, so it cannot lean on the app's own translations — those live
@@ -57,6 +84,7 @@ const STR = {
     cookieBlocked: 'Anmeldung unvollständig: Der Browser hat die Sitzung nicht gespeichert. '
       + 'Bitte im Datenschutz die Option „Cross-Site-Tracking verhindern" für diese Seite deaktivieren '
       + 'oder einen anderen Browser verwenden.',
+    sessionExpired: 'Sitzung abgelaufen – bitte neu anmelden. Offene Formulare sind als Entwurf gespeichert.',
   },
   EN: {
     brand: 'Referee Coaching',
@@ -92,6 +120,7 @@ const STR = {
     cookieBlocked: 'Sign-in incomplete: the browser did not store the session. '
       + 'Please turn off "Prevent cross-site tracking" for this site in your privacy settings, '
       + 'or use a different browser.',
+    sessionExpired: 'Session expired – please sign in again. Open forms are saved as drafts.',
   },
 } satisfies Record<Lang, Record<string, unknown>>;
 
@@ -182,6 +211,14 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [isAdminSession, setIsAdminSession] = useState(false);
   const [adminShortcut, setAdminShortcut] = useState(false);
   const [sharedSession, setSharedSession] = useState(false);
+  // Why the login form is back, when it was not the person's own doing.
+  const [notice, setNotice] = useState('');
+  // The session the app is running on came from the service worker's cache
+  // and the server has not confirmed it yet.
+  const unconfirmedRef = useRef(false);
+  const lastRecheckRef = useRef(0);
+  const recheckBusyRef = useRef(false);
+  const recheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Picker state.
   const [roster, setRoster] = useState<RcRosterEntry[] | null>(null);
@@ -227,6 +264,8 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     setSharedSession(Boolean(me.shared));
     setAdminShortcut(Boolean(me.adminShortcut));
     setAuthed(Boolean(me.rc || me.admin));
+    // A session just confirmed or just made: the next refusal is news.
+    lastRecheckRef.current = 0;
   }, []);
 
   useEffect(() => {
@@ -256,8 +295,18 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       setProbeFailed(true);
       setChecking(false);
     }, PROBE_GIVE_UP_MS);
-    getAuthMe()
-      .then((me) => {
+    askWhoAmI()
+      .then(({ me, fromCache }) => {
+        // A "signed in" that may be the cache's is used — offline, it is the
+        // only way into the app — but only until the server can be asked.
+        if (me.rc || me.admin) {
+          void fromCache().then((cached) => {
+            if (!cached) return;
+            clientLog.warn('auth.probe', 'the session came from the offline cache — asking the server again once it answers');
+            unconfirmedRef.current = true;
+            if (connection.get() === 'ok') void recheckRef.current('connection');
+          });
+        }
         if (stale) {
           if (me.rc || me.admin) adoptSession(me);
           return;
@@ -288,9 +337,100 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     return () => { stale = true; clearTimeout(timeout); };
   }, [adoptSession, loadRoster, probeRun]);
 
+  // The app is open on a session the server may no longer honour. Ask again,
+  // and if it is gone, put the open form's work in its draft and leave: to the
+  // picker when the team login still holds but no RC is named, to the login
+  // form otherwise. A burst of refusals asks once; a cached answer is no
+  // answer, and the next live one asks again.
+  const recheck = async (reason: 'connection' | 'unauthorized'): Promise<void> => {
+    if (!authed || recheckBusyRef.current) return;
+    const now = Date.now();
+    const wait = lastRecheckRef.current + RECHECK_EVERY_MS - now;
+    if (wait > 0) {
+      // Dropped, except for a session still unconfirmed: that one is asked
+      // again when the window ends, or nothing might ever ask.
+      if (unconfirmedRef.current && !recheckTimerRef.current) {
+        recheckTimerRef.current = setTimeout(() => { recheckTimerRef.current = null; void recheckRef.current(reason); }, wait);
+      }
+      return;
+    }
+    lastRecheckRef.current = now;
+    recheckBusyRef.current = true;
+    try {
+      const { me, fromCache } = await askWhoAmI();
+      if (await fromCache()) {
+        clientLog.info('auth.recheck', 'auth/me answered from the cache again — still unconfirmed', { reason });
+        unconfirmedRef.current = true;
+        return;
+      }
+      unconfirmedRef.current = false;
+      if (me.rc || me.admin) {
+        clientLog.info('auth.recheck', 'session still valid', { reason, rc: me.rc?.name, admin: Boolean(me.admin) });
+        return;
+      }
+      clientLog.warn('auth.recheck', me.needsIdentity
+        ? 'the team session holds but no RC is named — back to the picker'
+        : 'the session is gone — back to the login screen', { reason });
+      // Autosave is debounced; whatever was typed in the last second is only
+      // in memory, and leaving unmounts the form.
+      try {
+        const flushDraft = window.__svrzFlushDraft;
+        if (flushDraft) await Promise.race([flushDraft(), new Promise((r) => setTimeout(r, FLUSH_BEFORE_SIGNOUT_MS))]);
+      } catch (error) {
+        clientLog.warn('auth.recheck', 'could not write the open draft before signing out', { error });
+      }
+      void flush();
+      setLogUser(null);
+      setAuthed(false);
+      setRcId(null);
+      setRcName(null);
+      setRcFirstName(null);
+      setIsAdminSession(false);
+      setAdminShortcut(false);
+      setError('');
+      if (me.needsIdentity) {
+        setSharedSession(true);
+        setChosenRcId(null);
+        setView('identify');
+        void loadRoster();
+      } else {
+        setSharedSession(false);
+        setRoster(null);
+        setView('shared');
+        setNotice(t.sessionExpired);
+      }
+    } catch (error) {
+      // No answer, or a server error: says nothing about the session.
+      clientLog.warn('auth.recheck', 'could not ask auth/me again', { reason, error });
+    } finally {
+      recheckBusyRef.current = false;
+    }
+  };
+  // The probe effect and the listeners below hold this, not the function, so
+  // they always run the current render's version.
+  const recheckRef = useRef(recheck);
+  recheckRef.current = recheck;
+
+  useEffect(() => {
+    if (!authed) return;
+    const onUnauthorized = () => { void recheckRef.current('unauthorized'); };
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    // A cached session waits for the first live answer from the server.
+    const unsubscribe = connection.subscribe(() => {
+      if (unconfirmedRef.current && connection.get() === 'ok') void recheckRef.current('connection');
+    });
+    return () => {
+      window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+      unsubscribe();
+    };
+  }, [authed]);
+
+  useEffect(() => () => { if (recheckTimerRef.current) clearTimeout(recheckTimerRef.current); }, []);
+
   const handleSharedSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setNotice('');
     setSubmitting(true);
     clientLog.info('auth.shared-login', 'team login submitted', { username: username.trim() });
     try {
@@ -347,6 +487,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   const logout = () => {
     clientLog.info('auth.logout', 'logout');
+    unconfirmedRef.current = false;
     void flush();
     // An admin session lives in a SECOND cookie, and /auth/rc/logout never
     // touches it. Revoking only the RC one dropped the screen back to the login
@@ -475,6 +616,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
           {view === 'shared' && (
             <>
+              {notice && (
+                <p role="status" data-testid="session-expired" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs font-medium text-amber-800">
+                  {notice}
+                </p>
+              )}
               <form onSubmit={handleSharedSubmit} className="space-y-3">
                 <div className="relative">
                   <label htmlFor="rc-username" className="sr-only">{t.username}</label>

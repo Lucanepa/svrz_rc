@@ -30,6 +30,12 @@ export const SLOW_AFTER_MS = 3000;
  *  even when the broadcast below did not arrive (no BroadcastChannel). */
 export const SW_CACHE_TIMEOUT_MS = 6000;
 
+/** Whether a GET that took `ms` was, by its timing alone, the service worker
+ *  giving up on the network and answering from its cache. */
+export function looksLikeCacheTiming(ms: number): boolean {
+  return ms >= SW_CACHE_TIMEOUT_MS - 100 && ms < SW_CACHE_TIMEOUT_MS + 1500;
+}
+
 /** The channel the service worker names every URL it answered from cache on. */
 export const SW_CACHE_CHANNEL = 'svrz-sw-cache';
 
@@ -110,6 +116,17 @@ export class ConnectionTracker {
     this.emit();
   }
 
+  /** Whether the service worker said it answered a request for this path
+   *  from its cache at or after `since`. How the session probe learns that
+   *  its "signed in" may be an old copy (AuthGate). */
+  cacheHitSince(path: string, since: number): boolean {
+    for (const [url, at] of this.cacheHits) {
+      if (at < since) continue;
+      try { if (new URL(url).pathname === path) return true; } catch { /* not a URL */ }
+    }
+    return false;
+  }
+
   /** Call when a request starts; the returned functions settle it. */
   start(method: string, url: string): { answered: (ms: number) => void; failed: () => void; dropped: () => void } {
     const api = isApiRequest(url);
@@ -133,7 +150,7 @@ export class ConnectionTracker {
         setTimeout(() => {
           const hit = this.cacheHits.get(key);
           const fromCache = (hit !== undefined && hit >= startedAt)
-            || (method === 'GET' && ms >= SW_CACHE_TIMEOUT_MS - 100 && ms < SW_CACHE_TIMEOUT_MS + 1500);
+            || (method === 'GET' && looksLikeCacheTiming(ms));
           this.last = fromCache ? 'stale' : 'ok';
           this.emit();
         }, 150);

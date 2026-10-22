@@ -645,8 +645,10 @@ export function isResizeObserverLoopNotice(message: string | undefined): boolean
 }
 
 /**
- * A throw from code the browser put into the page, not code we shipped. Our
- * index.html has no inline script, so an error whose file is the HTML page
+ * A throw from code the browser put into the page, not code we shipped. The
+ * one inline script in our index.html is the start-failure net (ba9aacb,
+ * ES5): it reports through its own boot.fail line, and its listeners and
+ * checks swallow their own failures — so an error whose file is the HTML page
  * itself ("…/infos", line 1) can only come from something injected — Firefox
  * for iOS's reader helper (`window.__firefox__`), an in-app browser probing
  * for a crypto wallet (`window.ethereum`) — and an extension's own URL says so

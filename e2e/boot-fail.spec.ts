@@ -68,3 +68,76 @@ test('an app that started shows nothing and files nothing', async ({ page }) => 
   await expect(page.locator('[data-boot-fail]')).toHaveCount(0);
   expect(reports).toHaveLength(0);
 });
+
+// 16.10.2026, a crawler on OVH (142.44.187.197): the user agent said Edge 122,
+// the error said "Unexpected token ?" — which no Edge since 80 says. An old
+// engine behind a borrowed user agent, mailed as a coach who cannot start the
+// app. The net now asks the engine itself whether it reads `?.` and `??`.
+const EDGE_122 = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0';
+
+/** The one line the net sends, once it has sent it. */
+async function bootFailEntry(reports: Request[]): Promise<{ lvl: string; evt: string; data: Record<string, unknown> }> {
+  await expect.poll(() => reports.length, { timeout: 10_000 }).toBe(1);
+  return JSON.parse(reports[0].postData() || '{}').entries[0];
+}
+
+test.describe('a user agent that claims more than its engine can do', () => {
+  test.use({ userAgent: EDGE_122 });
+
+  test('is filed as a warning', async ({ page }) => {
+    const reports = bootFailReports(page);
+    // What an old engine makes of the probe: the optional chain does not parse.
+    await page.addInitScript(() => {
+      const Real = Function;
+      (window as unknown as { Function: unknown }).Function = new Proxy(Real, {
+        construct(target, args) {
+          if (String(args[args.length - 1]).includes('?.')) throw new SyntaxError("Unexpected token '?'");
+          return Reflect.construct(target, args);
+        },
+      });
+    });
+    await page.route('**/api/client-logs', (r) => r.fulfill({ status: 202, json: { ok: true } }));
+    await page.route(ENTRY, (r) => r.fulfill({ contentType: 'application/javascript', body: 'const = ;' }));
+    await page.goto('/');
+    await expect(page.locator('[data-boot-fail]')).toHaveAttribute('data-boot-fail', 'browser', { timeout: 10_000 });
+    const entry = await bootFailEntry(reports);
+    expect(entry).toMatchObject({ lvl: 'warn', evt: 'boot.fail' });
+    expect(entry.data).toMatchObject({ parses: false, reason: 'not supported' });
+  });
+
+  test('but a current engine that fails on our syntax is still an error', async ({ page }) => {
+    // Never "modern user agent + SyntaxError = warning": that would hide our
+    // own syntax shipping past what a real browser supports.
+    const reports = bootFailReports(page);
+    await page.route('**/api/client-logs', (r) => r.fulfill({ status: 202, json: { ok: true } }));
+    await page.route(ENTRY, (r) => r.fulfill({ contentType: 'application/javascript', body: 'const = ;' }));
+    await page.goto('/');
+    const entry = await bootFailEntry(reports);
+    expect(entry).toMatchObject({ lvl: 'error', evt: 'boot.fail' });
+    expect(entry.data).toMatchObject({ parses: true, webdriver: false });
+  });
+});
+
+test('a browser driven by a script files its boot failure as a warning', async ({ page }) => {
+  const reports = bootFailReports(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => true, configurable: true });
+  });
+  await page.route('**/api/client-logs', (r) => r.fulfill({ status: 202, json: { ok: true } }));
+  await page.route(ENTRY, (r) => r.fulfill({ contentType: 'application/javascript', body: 'const = ;' }));
+  await page.goto('/');
+  const entry = await bootFailEntry(reports);
+  expect(entry).toMatchObject({ lvl: 'warn', evt: 'boot.fail' });
+  expect(entry.data).toMatchObject({ webdriver: true });
+});
+
+test('a rejection whose reason cannot be added to a string is still noted', async ({ page }) => {
+  // Adding a Symbol to a string throws. The listener used to throw with it,
+  // and the reason never reached the line.
+  const reports = bootFailReports(page);
+  await page.route('**/api/client-logs', (r) => r.fulfill({ status: 202, json: { ok: true } }));
+  await page.route(ENTRY, (r) => r.fulfill({ contentType: 'application/javascript', body: 'Promise.reject(Symbol("odd"));' }));
+  await page.goto('/');
+  const entry = await bootFailEntry(reports);
+  expect(entry.data.errors).toContain('unhandled rejection: Symbol(odd)');
+});

@@ -27,15 +27,42 @@
       (function () {
         var errors = [];
         var loadFailed = false;
-        function note(text) { if (errors.length < 5) errors.push(String(text).slice(0, 300)); }
+        // Whether this engine can read the syntax the bundle is built with.
+        // A crawler on 16.10.2026 claimed to be Edge 122 and failed with
+        // "Unexpected token ?", which no Edge since 80 says: an old engine
+        // behind a borrowed user agent. Tested directly, never guessed from a
+        // SyntaxError — that would hide our own syntax shipping past what a
+        // real browser supports. Only a SyntaxError counts: a page policy
+        // that forbids eval throws something else.
+        var parses = true;
+        try { new Function('a?.b ?? c'); } catch (err) { if (err && err.name === 'SyntaxError') parses = false; }
+        // String() and not `'' + v`: a Symbol reason throws on concatenation.
+        function text(v) { try { return String(v); } catch (err) { return '[unprintable]'; } }
+        function note(t) { if (errors.length < 5) errors.push(text(t).slice(0, 300)); }
         // Capture phase: a <script> or stylesheet that fails to load fires its
-        // error on the element and never bubbles to window.
+        // error on the element and never bubbles to window. Both listeners
+        // swallow their own failures: this net must never be what throws.
         window.addEventListener('error', function (e) {
-          var el = e && e.target;
-          if (el && el !== window && (el.src || el.href)) { loadFailed = true; note('failed to load ' + (el.src || el.href)); }
-          else note((e && e.message) || 'error');
+          try {
+            var el = e && e.target;
+            if (el && el !== window && (el.src || el.href)) { loadFailed = true; note('failed to load ' + text(el.src || el.href)); }
+            else note((e && e.message) || 'error');
+          } catch (err) { /* nothing to add */ }
         }, true);
-        window.addEventListener('unhandledrejection', function (e) { note('unhandled rejection: ' + (e && e.reason)); });
+        window.addEventListener('unhandledrejection', function (e) {
+          try { note('unhandled rejection: ' + text(e && e.reason)); } catch (err) { /* nothing to add */ }
+        });
+        // The user agent claims an engine that reads `?.` and `??`:
+        // Chrome/Edge 80+, Firefox 74+, Safari 14+.
+        function claimsModern(ua) {
+          var m = /\b(?:Edg|Chrome)\/(\d+)/.exec(ua);
+          if (m) return +m[1] >= 80;
+          m = /\bFirefox\/(\d+)/.exec(ua);
+          if (m) return +m[1] >= 74;
+          m = /\bVersion\/(\d+)[.\d]* (?:Mobile\/\S+ )?Safari\//.exec(ua);
+          if (m) return +m[1] >= 14;
+          return false;
+        }
 
         function apiBase() {
           var base = '%VITE_API_BASE_URL%';
@@ -60,12 +87,17 @@
           if (base === null || !window.XMLHttpRequest) return;
           var ua = navigator.userAgent || '';
           var bot = /bot|crawl|spider|slurp|preview|headless|lighthouse|facebookexternalhit/i.test(ua);
+          // A browser that says a script drives it (the e2e suite turns the
+          // marker off in playwright.config.ts, so its errors stay errors).
+          var driven = navigator.webdriver === true;
+          // Claims a current browser, cannot read current syntax: a liar.
+          var liar = !parses && claimsModern(ua);
           var body = JSON.stringify({
             // The logger's own keys, so this line joins the device's history.
             sid: stored('sessionStorage', 'svrz_log_sid'),
             did: stored('localStorage', 'svrz_log_did'),
             entries: [{
-              lvl: bot ? 'warn' : 'error',
+              lvl: bot || driven || liar ? 'warn' : 'error',
               evt: 'boot.fail',
               msg: 'the app did not start in this browser (' + reason + ')',
               t: new Date().toISOString(),
@@ -76,6 +108,8 @@
                 path: location.pathname,
                 errors: errors,
                 modules: 'noModule' in document.createElement('script'),
+                parses: parses,
+                webdriver: driven,
                 online: navigator.onLine
               }
             }]
@@ -120,8 +154,8 @@
         function check() {
           if (window.__svrzStarted) return;
           var network = loadFailed || navigator.onLine === false;
-          show(network);
-          report(network ? 'not loaded' : 'not supported');
+          try { show(network); } catch (err) { /* still report it */ }
+          try { report(network ? 'not loaded' : 'not supported'); } catch (err) { /* nothing else to try */ }
         }
         // Module scripts run before `load`, so by then the app has either started
         // or it is not going to; the grace covers a slow device finishing up.

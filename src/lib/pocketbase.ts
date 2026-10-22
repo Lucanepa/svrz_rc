@@ -524,9 +524,19 @@ async function writeError(response: Response, fallback: string): Promise<WriteEr
   return new WriteError(text || fallback, response.status);
 }
 
+/** How long one of the console's own row edits (a coachee, an RC) may wait
+ *  for the server. On 01.10.2026 the chair's PUT of a coachee hung eleven
+ *  times, never reached the server and never said so: a plain fetch has no
+ *  end of its own. 20 s is far past any real answer, and these writes are
+ *  safe to send again. Deliberately NOT on the feedback submit or the
+ *  draft and notebook syncs: an abort there can re-send work the server has
+ *  already filed. */
+export const CONSOLE_WRITE_TIMEOUT_MS = 20_000;
+
 export async function createCoachee(payload: Partial<Coachee>) {
   const response = await fetch(apiUrl('/api/coachees'), {
     credentials: 'include',
+    signal: AbortSignal.timeout(CONSOLE_WRITE_TIMEOUT_MS),
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -541,6 +551,7 @@ export async function updateCoachee(id: string, payload: Partial<Coachee>) {
   if (isDemoMode()) return demo.updateCoachee(id, payload);
   const response = await fetch(apiUrl(`/api/coachees/${id}`), {
     credentials: 'include',
+    signal: AbortSignal.timeout(CONSOLE_WRITE_TIMEOUT_MS),
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -554,6 +565,7 @@ export async function updateCoachee(id: string, payload: Partial<Coachee>) {
 export async function deleteCoachee(id: string) {
   const response = await fetch(apiUrl(`/api/coachees/${id}`), {
     credentials: 'include',
+    signal: AbortSignal.timeout(CONSOLE_WRITE_TIMEOUT_MS),
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -1226,7 +1238,7 @@ export async function listRcPeopleFull(): Promise<RcPerson[]> {
 }
 export async function createRcPerson(p: Partial<RcPerson>) {
   const r = await fetch(apiUrl('/api/admin/rc-people'), {
-    method: 'POST', credentials: 'include',
+    method: 'POST', credentials: 'include', signal: AbortSignal.timeout(CONSOLE_WRITE_TIMEOUT_MS),
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
   });
   if (!r.ok) throw new Error(await r.text());
@@ -1234,14 +1246,14 @@ export async function createRcPerson(p: Partial<RcPerson>) {
 }
 export async function updateRcPerson(id: string, p: Partial<RcPerson>) {
   const r = await fetch(apiUrl(`/api/admin/rc-people/${id}`), {
-    method: 'PUT', credentials: 'include',
+    method: 'PUT', credentials: 'include', signal: AbortSignal.timeout(CONSOLE_WRITE_TIMEOUT_MS),
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 export async function deleteRcPerson(id: string) {
-  const r = await fetch(apiUrl(`/api/admin/rc-people/${id}`), { method: 'DELETE', credentials: 'include' });
+  const r = await fetch(apiUrl(`/api/admin/rc-people/${id}`), { method: 'DELETE', credentials: 'include', signal: AbortSignal.timeout(CONSOLE_WRITE_TIMEOUT_MS) });
   if (!r.ok) throw new Error(await r.text());
 }
 

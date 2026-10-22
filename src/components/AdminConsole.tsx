@@ -49,6 +49,7 @@ import { subscribeLive } from '../lib/liveEvents';
 import { groupLabel } from '../lib/coacheeGroup';
 import { bySurname, surnameFirstLabel, foldName } from '../lib/coacheeName';
 import { coacheeLookup, gameLabel, indexPeople, samePerson } from '../lib/identity';
+import { isNoResponseMessage } from '../lib/connection';
 import { confirmDialog, toast } from './ui';
 import CoacheeFileAdmin, { CoacheePinLine, svKey, useDossierPins } from './CoacheeFileAdmin';
 import InfosLayoutAdmin from './InfosLayoutAdmin';
@@ -277,6 +278,7 @@ const STR = {
     svHeldHint: 'Ist es dieselbe Person, hat sie schon einen Eintrag in der Liste — nicht nochmals anlegen. Sonst im Feld SV-Nummer die richtige Person wählen.',
     svHeldShow: (n: string) => `Eintrag „${n}" zeigen`,
     refusedSame: 'Erst etwas ändern — dieselbe Eingabe würde wieder abgelehnt.',
+    noAnswerNotSaved: 'Keine Antwort vom Server – nicht gespeichert.',
     // The "Datenqualität" card: everything a name still decides, counted
     // and listed, with the three buttons that write the ids.
     dqTitle: 'Datenqualität',
@@ -600,6 +602,7 @@ const STR = {
     svHeldHint: 'If it is the same person, they already have an entry on the list — do not add them again. Otherwise pick the right person in the SV number field.',
     svHeldShow: (n: string) => `Show the entry "${n}"`,
     refusedSame: 'Change something first — the same entry would be refused again.',
+    noAnswerNotSaved: 'No answer from the server – not saved.',
     dqTitle: 'Data quality',
     dqHint: 'What still runs on a name instead of a number — the SV number for referees, the id for referee coaches, the match number for games. The goal is 0 everywhere.',
     dqRefresh: 'Check again',
@@ -1784,9 +1787,19 @@ function RefereeRosterAdmin({ t, roster, onRoster, onLinked }: {
 /** A refused add or edit of a coachee, and the form it refused (`sent`). */
 type Refusal = { message: string; status: number; holder?: { id: string; name: string }; sent: string };
 
-const refusalOf = (e: unknown, sent: string): Refusal => (e instanceof WriteError
+/** A write that got no answer at all: the network failed, or the console's
+ *  write timeout ran out (CONSOLE_WRITE_TIMEOUT_MS). 01.10.2026: a coachee
+ *  edit hung eleven times and never said so. Said as what it means, not as
+ *  the browser's "signal timed out" or "Failed to fetch". */
+const gotNoAnswer = (e: unknown): boolean => (e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError'))
+  || (e instanceof TypeError && isNoResponseMessage(e.message));
+
+/** A failed write, in words for the notice under its button. */
+const writeFailureText = (e: unknown, t: T): string => (gotNoAnswer(e) ? t.noAnswerNotSaved : e instanceof Error ? e.message : String(e));
+
+const refusalOf = (e: unknown, sent: string, t: T): Refusal => (e instanceof WriteError
   ? { message: e.message, status: e.status, holder: e.holder, sent }
-  : { message: e instanceof Error ? e.message : String(e), status: 0, sent });
+  : { message: writeFailureText(e, t), status: 0, sent });
 
 /** A refusal the server will give again for the same input (a 4xx), as
  *  against a failure worth retrying as is (offline, a 500). */
@@ -2470,7 +2483,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
   const guard = async (action: () => Promise<void>) => {
     setNotice('');
     try { await action(); }
-    catch (e) { setNotice(e instanceof Error ? e.message : String(e)); }
+    catch (e) { setNotice(writeFailureText(e, t)); }
   };
   const addSent = JSON.stringify(form);
   const addRefused = addRefusal?.sent === addSent ? addRefusal : null;
@@ -2483,7 +2496,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
       await createCoachee({ ...form, full_name, season } as Partial<Coachee>);
       setForm(EMPTY_FORM); setSvText('');
       await reload();
-    } catch (e) { setAddRefusal(refusalOf(e, addSent)); }
+    } catch (e) { setAddRefusal(refusalOf(e, addSent, t)); }
     finally { setAdding(false); }
   };
   const editSent = `${editId}:${JSON.stringify(editForm)}`;
@@ -2497,7 +2510,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
       await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>);
       setEditId(null);
       await reload();
-    } catch (e) { setEditRefusal(refusalOf(e, editSent)); }
+    } catch (e) { setEditRefusal(refusalOf(e, editSent, t)); }
     finally { setSavingEdit(false); }
   };
   // The row that holds the number, scrolled to and marked. The badge's
@@ -2749,7 +2762,7 @@ function RcsAdmin({ t, lang, mandates, defaultGoal, settingsLoading, onMandates 
   const guard = async (action: () => Promise<void>) => {
     setNotice('');
     try { await action(); }
-    catch (e) { setNotice(e instanceof Error ? e.message : String(e)); }
+    catch (e) { setNotice(writeFailureText(e, t)); }
   };
   // Same as the coachee list: reloaded after every write, so an older answer
   // must not be allowed to land on top of a newer one.

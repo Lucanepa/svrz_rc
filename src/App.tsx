@@ -4776,6 +4776,23 @@ export default function App() {
       : dualFormData[role]
   );
 
+  /** The language that role's referee reads — their PDF is built in it. Set
+   *  from the top of the form or from the send dialog, which on a two-referee
+   *  visit may be sending the half that is not on screen. */
+  const setRefereeLangFor = (role: '1. SR' | '2. SR', lang: 'DE' | 'EN') => {
+    const value = lang === 'DE' ? '' : 'EN';
+    if (role === formData.role) {
+      setFormData(prev => ({ ...prev, results: { ...prev.results, refereeLang: value } }));
+      return;
+    }
+    setDualFormData(prev => {
+      const stored = prev[role];
+      return stored
+        ? { ...prev, [role]: { ...stored, formData: { ...stored.formData, results: { ...stored.formData.results, refereeLang: value } } } }
+        : prev;
+    });
+  };
+
   const validateForm = (role: '1. SR' | '2. SR' = formData.role): boolean => {
     // One report, one send: the other referee's form is their own business and
     // must not hold this one back — nor be filed by it.
@@ -10083,7 +10100,7 @@ export default function App() {
                     key={l}
                     type="button"
                     aria-pressed={on}
-                    onClick={() => setFormData(prev => ({ ...prev, results: { ...prev.results, refereeLang: l === 'DE' ? '' : 'EN' } }))}
+                    onClick={() => setRefereeLangFor(formData.role, l)}
                     className={cn('h-8 px-3 text-xs font-bold transition-colors', on ? SELECTED_RESULT : 'bg-white text-stone-600 hover:bg-stone-100')}
                   >
                     {l}
@@ -10920,6 +10937,44 @@ export default function App() {
                     )}
                   </div>
                 )}
+                {/* Asked again here, where it is about to matter: the switch at
+                    the top right of the form is easy to leave on DE, and the
+                    referee then gets a PDF they do not read (2026-10-22). */}
+                {(() => {
+                  const role = sendRole ?? formData.role;
+                  const stored = formForRole(role);
+                  if (!stored) return null;
+                  const chosen = stored.formData.results.refereeLang === 'EN' ? 'EN' : 'DE';
+                  return (
+                    <div
+                      role="group"
+                      aria-label={formData.lang === 'DE' ? 'SR spricht' : 'Referee speaks'}
+                      data-testid="confirm-referee-lang"
+                      className="bg-stone-50 rounded-lg p-3 text-xs flex items-center justify-between gap-3"
+                    >
+                      <span className="min-w-0">
+                        <span className="block font-semibold text-stone-700">
+                          {formData.lang === 'DE' ? 'SR spricht' : 'Referee speaks'}
+                          {dualMode && <span className="font-normal text-stone-400"> ({role})</span>}
+                        </span>
+                        <span className="block text-stone-500">{formData.lang === 'DE' ? 'Sprache des PDF' : 'Language of the PDF'}</span>
+                      </span>
+                      <div className="flex shrink-0 overflow-hidden rounded border border-stone-300">
+                        {(['DE', 'EN'] as const).map((l) => (
+                          <button
+                            key={l}
+                            type="button"
+                            aria-pressed={chosen === l}
+                            onClick={() => setRefereeLangFor(role, l)}
+                            className={cn('h-9 px-4 text-xs font-bold transition-colors', chosen === l ? SELECTED_RESULT : 'bg-white text-stone-600 hover:bg-stone-100')}
+                          >
+                            {l}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
                 {/* What rides along, named — the one moment to notice that the
                     7 MB rulebook is still ticked from a debrief about a
                     double contact. In dual mode each role has its own list;

@@ -64,6 +64,25 @@ test('English when chosen — the PDF only; the stored report stays German', asy
   expect((body.formData as { lang: string }).lang).toBe('DE');
 });
 
+test('the send dialog asks again, and what it says is what the PDF is in', async ({ page }) => {
+  // The switch at the top right is easy to leave on DE; the dialog that sends
+  // the report is where the choice is made in passing (2026-10-22).
+  await fillWholeForm(page);
+  await page.getByRole('button', { name: /Confirm and send|Bestätigen und senden/ }).click();
+  const inDialog = page.getByTestId('confirm-referee-lang');
+  await expect(inDialog.getByRole('button', { name: 'DE' })).toHaveAttribute('aria-pressed', 'true');
+  await inDialog.getByRole('button', { name: 'EN' }).click();
+  await expect(inDialog.getByRole('button', { name: 'EN' })).toHaveAttribute('aria-pressed', 'true');
+  // One setting, shown in two places.
+  await expect(langGroup(page).getByRole('button', { name: 'EN' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: /^(Abbrechen|Cancel)$/ }).click();
+
+  const body = await sendAndCapture(page);
+  const pdf = await pdfText(String(body.pdfBase64));
+  expect(pdf).toContain('REFEREE GOAL');
+  expect(pdf).not.toContain('SR-ZIEL');
+});
+
 test('the ambition ticks are independent and go out with the report', async ({ page }) => {
   const promo = page.getByRole('button', { name: /^(Will befördert werden|Wants to be promoted)$/ });
   const cand = page.getByRole('button', { name: /^(Kandidat:in nächste Saison|Next year's candidates)$/ });

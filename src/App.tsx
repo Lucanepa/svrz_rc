@@ -1900,10 +1900,12 @@ export default function App() {
     if (document.fullscreenElement) leaveBrowserFullscreen(); else enterBrowserFullscreen();
   };
   /** The column every block of the form page is measured by — the toolbar, the
-   *  sheet, and the signature, Beilagen and send blocks under it. The whole
-   *  tool uses the whole window (2026-09-25), so this is no longer a column
-   *  the coach toggles; one name still keeps those blocks from drifting apart. */
-  const sheetWidth = 'max-w-none';
+   *  sheet, and the signature, Beilagen and send blocks under it; one name
+   *  keeps them from drifting apart. The tool uses the whole window
+   *  (2026-09-25), but the form itself is a sheet of A4 again from `md` up
+   *  (2026-10-22): a criteria row 2000 px long is not read as one line. A
+   *  phone is narrower than that and is left exactly as it was. */
+  const sheetWidth = feedbackSubView === 'feedbackForm' ? 'md:max-w-[210mm]' : 'max-w-none';
   const [showEmptyFormModal, setShowEmptyFormModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
   /** The document open in the reader, or null. */

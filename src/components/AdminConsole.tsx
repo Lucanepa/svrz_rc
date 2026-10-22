@@ -1192,11 +1192,16 @@ export default function AdminConsole() {
               {/* autoComplete username/current-password, and both fields inside
                   one form: that is the shape a password manager recognises, so
                   the console can be saved and filled like any other login. */}
+              {/* The placeholder names the two console logins rather than the
+                  word "Username": a password manager offers the app's team
+                  login here too (same site), and the chair tried it 8 times
+                  in 92 s on 27.09. The label says what the field is. */}
               <div className="relative">
+                <label htmlFor="admin-user" className="sr-only">{t.adminUser}</label>
                 <User className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 pointer-events-none" />
                 <input id="admin-user" type="text" value={username} autoFocus disabled={submitting}
                   autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false}
-                  onChange={(e) => setUsername(e.target.value)} placeholder={t.adminUser}
+                  onChange={(e) => setUsername(e.target.value)} placeholder="admin / praesidium"
                   className={`w-full pl-10 pr-3 py-3 rounded-xl border text-sm bg-stone-50 focus:bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-red-500/70 ${error ? 'border-red-400 bg-red-50' : 'border-stone-300'}`} />
               </div>
               <div className="relative">

@@ -18,12 +18,15 @@ test.beforeEach(async ({ page }) => {
 
 test('the gate asks for a username and a password', async ({ page }) => {
   await page.goto('/admin');
-  const user = page.getByPlaceholder(/Benutzername|Username/);
+  const user = page.getByLabel(/^(Benutzername|Username)$/);
   const pw = page.locator('input[type="password"]');
   await expect(user).toBeVisible();
   await expect(pw).toBeVisible();
   // The shape password managers look for.
   await expect(user).toHaveAttribute('autocomplete', 'username');
+  // The two console logins, not the app's team login a password manager
+  // offers here too (27.09.2026: the chair tried it 8 times in 92 s).
+  await expect(user).toHaveAttribute('placeholder', 'admin / praesidium');
   await expect(pw).toHaveAttribute('autocomplete', 'current-password');
 });
 
@@ -32,7 +35,7 @@ test('a password on its own cannot submit', async ({ page }) => {
   const submit = page.getByRole('button', { name: /Anmelden|Sign in/ });
   await page.locator('input[type="password"]').fill(FAKE_PW);
   await expect(submit).toBeDisabled();
-  await page.getByPlaceholder(/Benutzername|Username/).fill('admin');
+  await page.getByLabel(/^(Benutzername|Username)$/).fill('admin');
   await expect(submit).toBeEnabled();
 });
 
@@ -43,7 +46,7 @@ test('both fields are sent to the API', async ({ page }) => {
     await r.fulfill({ json: { ok: true } });
   });
   await page.goto('/admin');
-  await page.getByPlaceholder(/Benutzername|Username/).fill('admin');
+  await page.getByLabel(/^(Benutzername|Username)$/).fill('admin');
   await page.locator('input[type="password"]').fill(FAKE_PW);
   await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();
 
@@ -55,7 +58,7 @@ test('a rejected sign-in names neither half', async ({ page }) => {
   await page.route('**/api/admin/ui-login', (r) =>
     r.fulfill({ status: 401, json: { error: 'Invalid credentials.' } }));
   await page.goto('/admin');
-  await page.getByPlaceholder(/Benutzername|Username/).fill('admin');
+  await page.getByLabel(/^(Benutzername|Username)$/).fill('admin');
   await page.locator('input[type="password"]').fill('wrong');
   await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();
 

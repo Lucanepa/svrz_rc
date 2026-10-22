@@ -32,7 +32,7 @@ test('the shortcut is cosmetic: it opens the console login, not the console', as
   // The console asks for its own password regardless of how you arrived. If it
   // ever renders its tabs here instead, the flag has become a permission.
   await expect(page.getByText(/Eigener Zugang für diese Seite|This page has its own login/)).toBeVisible();
-  await expect(page.getByPlaceholder(/Benutzername|Username/)).toBeVisible();
+  await expect(page.getByLabel(/^(Benutzername|Username)$/)).toBeVisible();
   await expect(page.getByRole('button', { name: /^Coachees$/ })).toHaveCount(0);
 });
 

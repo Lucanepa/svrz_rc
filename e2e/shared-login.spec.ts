@@ -117,7 +117,7 @@ test.describe('Team login', () => {
     // its own username + password form, and the copy says as much so nobody
     // stands there typing the team credential.
     await expect(page.getByText(/Eigener Zugang für diese Seite|This page has its own login/)).toBeVisible();
-    await expect(page.getByPlaceholder(/Benutzername|Username/)).toBeVisible();
+    await expect(page.getByLabel(/^(Benutzername|Username)$/)).toBeVisible();
     // And there is no e-mail field anywhere — that login does not exist now.
     await expect(page.getByPlaceholder(/E-Mail|^Email$/)).toHaveCount(0);
   });

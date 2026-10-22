@@ -457,7 +457,12 @@ function leftSince(started: number, hiddenAtStart = false): boolean {
 
 export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving, wentOffline = false): { evt: string; lvl: ClientLevel } {
   const name = error instanceof Error ? error.name : '';
-  if (name === 'AbortError') return { evt: 'net.fail', lvl: 'error' };
+  // The app cancelled it itself: the PDF reader closed while a document was
+  // loading, the installed app's live stream closed (native.ts). Nothing
+  // failed. A warning rather than info, so an abort that some day stands in
+  // for a timeout still shows up; a real timeout (TimeoutError) falls
+  // through to the rules below.
+  if (name === 'AbortError') return { evt: 'net.fail.aborted', lvl: 'warn' };
   if (isLeaving) return { evt: 'net.fail.unload', lvl: 'warn' };
   if (wentOffline) return { evt: 'net.fail.offline', lvl: 'warn' };
   if (ms < INSTANT_FAIL_MS) return { evt: 'net.fail.instant', lvl: 'warn' };
@@ -528,8 +533,7 @@ function installFetchLogging(): void {
       // never tells the coach their network is down.
       const settle = () => {
         const { evt } = classifyFetchFailure(ms, error, leftSince(started, hiddenAtStart), offline());
-        const aborted = error instanceof Error && error.name === 'AbortError';
-        if (evt === 'net.fail' && !aborted) conn.failed(); else conn.dropped();
+        if (evt === 'net.fail') conn.failed(); else conn.dropped();
       };
       if (classifyFetchFailure(ms, error, leftSince(started, hiddenAtStart), offline()).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
       else { write(); settle(); }

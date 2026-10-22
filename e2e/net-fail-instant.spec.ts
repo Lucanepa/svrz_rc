@@ -22,9 +22,17 @@ test.describe('classifying a fetch that got no response', () => {
     expect(classifyFetchFailure(30_000, new TypeError('Failed to fetch')).lvl).toBe('error');
   });
 
-  test("the app's own cancellation is never downgraded on speed alone", () => {
+  test("the app's own cancellation is a warning of its own, at any speed", () => {
+    // Nothing failed: the PDF reader closed mid-load, or the installed app's
+    // live stream was closed. Its own name, so it is never filed as instant.
     const abort = new DOMException('The user aborted a request.', 'AbortError');
-    expect(classifyFetchFailure(3, abort)).toEqual({ evt: 'net.fail', lvl: 'error' });
+    expect(classifyFetchFailure(3, abort)).toEqual({ evt: 'net.fail.aborted', lvl: 'warn' });
+    expect(classifyFetchFailure(30_000, abort)).toEqual({ evt: 'net.fail.aborted', lvl: 'warn' });
+  });
+
+  test('a timeout is not a cancellation: still an error', () => {
+    const timeout = new DOMException('The operation timed out.', 'TimeoutError');
+    expect(classifyFetchFailure(20_000, timeout)).toEqual({ evt: 'net.fail', lvl: 'error' });
   });
 
   test('a request cut off by the page reloading itself is a warning, however slow', () => {
@@ -87,9 +95,9 @@ test.describe('a request cut off by the device going offline', () => {
     expect(classifyFetchFailure(5016, new TypeError('Failed to fetch'), false, false).lvl).toBe('error');
   });
 
-  test("the app's own cancellation is not excused by it", () => {
+  test("the app's own cancellation keeps its own name", () => {
     const abort = new DOMException('The user aborted a request.', 'AbortError');
-    expect(classifyFetchFailure(5016, abort, false, true)).toEqual({ evt: 'net.fail', lvl: 'error' });
+    expect(classifyFetchFailure(5016, abort, false, true)).toEqual({ evt: 'net.fail.aborted', lvl: 'warn' });
   });
 });
 

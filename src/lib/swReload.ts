@@ -64,3 +64,46 @@ export function decideSwReload(input: { uptimeMs: number; reloadsSoFar: number; 
 export function retryDelayMs(uptimeMs: number): number {
   return Math.max(1_000, SW_RELOAD_MIN_UPTIME_MS - uptimeMs + 1_000);
 }
+
+// ── A registration that failed ───────────────────────────────────────
+
+/** Network-shaped registration failures in a row on this device (localStorage). */
+export const SW_REGISTER_FAILS_KEY = 'svrz_sw_register_fails';
+
+/** What kind of failure a registration error is.
+ *  • broken: the worker file came back wrong — a bad HTTP status, an HTML
+ *    page instead of JavaScript (the Pages cache trap of 12.08.2026, which
+ *    blanked the app), or a SecurityError. Ours to fix, every time.
+ *  • network: the file never arrived — the browser's own words for a fetch
+ *    with no answer, or a module import that died the same way.
+ *  • other: anything else, including the "Rejected" of Google's renderer
+ *    (the logger knows that visitor by itself). */
+export function classifySwRegisterError(error: unknown): 'broken' | 'network' | 'other' {
+  const name = error instanceof Error ? error.name
+    : error && typeof error === 'object' ? String((error as { name?: unknown }).name ?? '') : '';
+  let message = '';
+  try { message = error instanceof Error ? error.message : String(error ?? ''); } catch { /* unprintable */ }
+  if (name === 'SecurityError' || /bad HTTP response|MIME type|Content-Type|with status \d{3}/i.test(message)) return 'broken';
+  if (/unknown error occurred when fetching the script|load failed|failed to fetch|networkerror|network connection was lost|internet connection appears to be offline|timed out|dynamically imported module|importing a module script failed/i.test(message)) return 'network';
+  return 'other';
+}
+
+/**
+ * How loud a failed registration is. The iPhone's hidden link previews
+ * (02.10, 19.10, 21.10.2026: "Script …/sw.js load failed") and a scanner's
+ * page torn down mid-boot (12.10.2026) were each mailed as an error. A worker
+ * that cannot be fetched once, or while nobody is looking or the network is
+ * gone, is not news; the same device failing again on its next visit is.
+ *
+ * Never by the message alone: a worker served wrong is always an error,
+ * whatever else is true, because that is how the app blanked in August.
+ * `failuresInARow` counts this failure too (1 = the first).
+ */
+export function swRegisterErrorLevel(
+  kind: 'broken' | 'network' | 'other',
+  input: { excused: boolean; failuresInARow: number },
+): 'warn' | 'error' {
+  if (kind !== 'network') return 'error';
+  if (input.excused) return 'warn';
+  return input.failuresInARow <= 1 ? 'warn' : 'error';
+}

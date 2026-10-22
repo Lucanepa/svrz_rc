@@ -8,6 +8,15 @@ import { defineConfig, devices } from '@playwright/test';
 const PORT = Number(process.env.E2E_PORT || 4374);
 const BASE_URL = process.env.E2E_BASE_URL || `http://localhost:${PORT}`;
 
+// The logger files every error from a browser that says it is driven by a
+// script (navigator.webdriver) as a warning — and Playwright's browser says
+// exactly that, so every spec that expects an error line would see a warning.
+// Chromium is started with the automation marker off instead: the page then
+// looks like a person's browser, the app needs no hook for the suite, and the
+// one spec that tests the rule (e2e/automated-visit.spec.ts) sets
+// navigator.webdriver back to true itself.
+const AS_A_PERSON = { args: ['--disable-blink-features=AutomationControlled'] };
+
 export default defineConfig({
   testDir: './e2e',
   globalSetup: './e2e/support/assert-right-app.ts',
@@ -27,13 +36,13 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: { ...devices['Desktop Chrome'], launchOptions: AS_A_PERSON },
     },
     {
       name: 'mobile-chrome',
       // Chromium on a phone viewport. This is also the closest thing the suite
       // has to Samsung Internet, Edge and Opera — all Chromium underneath.
-      use: { ...devices['Pixel 5'] },
+      use: { ...devices['Pixel 5'], launchOptions: AS_A_PERSON },
     },
     // WebKit — Safari's engine — behind a flag, because it needs system
     // libraries this box does not have (`sudo npx playwright install-deps

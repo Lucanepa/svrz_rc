@@ -95,17 +95,79 @@ function redact(value: unknown, depth = 0): unknown {
  *  Read Aloud (10 of the 11 "service worker registration failed: Rejected"
  *  lines up to 21.10.2026), Googlebot and its tools, and the odd crawler
  *  that names itself. Whatever breaks for them, no coach can act on. */
-const AUTOMATED_AGENT = /Google-Read-Aloud|Googlebot|Google-InspectionTool|GoogleOther|Google-PageRenderer|AdsBot-Google|Mediapartners-Google|FeedFetcher-Google|bingbot|\b(crawler|spider)\b|bot\/\d/i;
+const AUTOMATED_AGENT = /Google-Read-Aloud|Googlebot|Google-InspectionTool|GoogleOther|Google-PageRenderer|AdsBot-Google|Mediapartners-Google|FeedFetcher-Google|bingbot|HeadlessChrome|\b(crawler|spider)\b|bot\/\d/i;
+const MOBILE_UA = /\b(Mobile|Android|iPhone|iPad|iPod)\b/;
+const IOS_UA = /\b(iPhone|iPad|iPod)\b/;
+
+/** What the page knows about the window it runs in, beside the user agent. */
+export type VisitEnv = {
+  /** navigator.webdriver: the browser says it is driven by automation. */
+  webdriver?: boolean;
+  screenW?: number;
+  screenH?: number;
+  innerW?: number;
+  /** Opened from the home screen (navigator.standalone, or display-mode). */
+  standalone?: boolean;
+  /** The installed app (lib/native.ts): its webview is not a browser tab. */
+  native?: boolean;
+};
+
+/** This window, read when a line is written. Undefined outside a browser. */
+export function currentVisitEnv(): VisitEnv | undefined {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return undefined;
+  try {
+    return {
+      webdriver: navigator.webdriver === true,
+      screenW: window.screen?.width,
+      screenH: window.screen?.height,
+      innerW: window.innerWidth,
+      standalone: (navigator as { standalone?: boolean }).standalone === true
+        || !!window.matchMedia?.('(display-mode: standalone)').matches,
+      native: IS_NATIVE,
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /** True for a visit that is not a person. Google's Web Rendering Service
  *  sometimes presents a plain Android user agent, but it replaces
  *  serviceWorker.register with a stub of its own, and the stub's frame names
- *  `wrsParams` in every stack it throws. Exported for the test. */
-export function isAutomatedVisit(ua: string, error?: unknown): boolean {
+ *  `wrsParams` in every stack it throws. Exported for the test.
+ *
+ *  The window gives the rest away (`env`, left out by the rule specs that
+ *  only pass a user agent):
+ *  • navigator.webdriver, or a HeadlessChrome user agent: a script drives it.
+ *    The test suite is driven too, and expects its errors to stay errors —
+ *    playwright.config.ts launches Chromium with AutomationControlled off,
+ *    so navigator.webdriver is false there, and the spec that tests this
+ *    rule sets it back to true itself. No hook in the app for the suite.
+ *  • An 800x600 screen with a wider window: the VirusTotal-style scanner of
+ *    12.10.2026 (screen 800x600, viewport 1024x768) — no monitor does that.
+ *  • A phone user agent whose window is wider than the screen's long side:
+ *    the hidden WKWebView an iPhone renders a link preview in (1920x1080 on
+ *    a 402x874 screen, 02.10, 19.10 and 21.10.2026, zero API calls). The
+ *    long side, not screen.width: iOS keeps reporting the portrait width in
+ *    landscape, where a real window is wider than that.
+ *  • An iPhone/iPad user agent with no "Safari/" token outside a home-screen
+ *    app: that preview's user agent. The installed home-screen PWA has no
+ *    Safari token either, and says so with navigator.standalone.
+ *  The installed app (Tauri) is exempt from the window rules: its webview is
+ *  no Safari, and is a person every time. */
+export function isAutomatedVisit(ua: string, error?: unknown, env?: VisitEnv): boolean {
   if (AUTOMATED_AGENT.test(ua || '')) return true;
   const stack = error instanceof Error ? error.stack
     : error && typeof error === 'object' ? (error as { stack?: unknown }).stack : '';
-  return typeof stack === 'string' && stack.includes('wrsParams');
+  if (typeof stack === 'string' && stack.includes('wrsParams')) return true;
+  if (!env) return false;
+  if (env.webdriver === true) return true;
+  if (env.native) return false;
+  const { screenW: sw, screenH: sh, innerW: iw } = env;
+  if (sw && sh && iw) {
+    if (sw === 800 && sh === 600 && iw > sw) return true;
+    if (MOBILE_UA.test(ua || '') && iw > Math.max(sw, sh)) return true;
+  }
+  return IOS_UA.test(ua || '') && !/Safari\//.test(ua || '') && env.standalone !== true;
 }
 
 // ── Core ──────────────────────────────────────────────────────────────
@@ -113,7 +175,7 @@ export function logEvent(lvl: ClientLevel, evt: string, msg?: string, data?: Rec
   try {
     // Still written, under the same event name so a search finds it, but as
     // a warning: the alert mail is for failures somebody can do something about.
-    if (lvl === 'error' && isAutomatedVisit(typeof navigator === 'undefined' ? '' : navigator.userAgent, data?.error)) lvl = 'warn';
+    if (lvl === 'error' && isAutomatedVisit(typeof navigator === 'undefined' ? '' : navigator.userAgent, data?.error, currentVisitEnv())) lvl = 'warn';
     const entry: ClientLogEntry = {
       t: new Date().toISOString(),
       lvl,
@@ -360,6 +422,9 @@ export function noteReloadingPage(): void { reloading = true; leaving = true; }
  *  18:33 on 10.09.2026 that order cleared the flag just in time for the three
  *  Home requests dying in the reload to be mailed out as an API outage. */
 export function noteBackOnPage(): void { if (!reloading) leaving = false; }
+/** Whether the page is going away right now (pagehide, backgrounded, or a
+ *  reload the app started). For main.tsx's service-worker failure line. */
+export function isPageLeaving(): boolean { return leaving; }
 /** Both flags outlive the module, and the test suite shares one process with
  *  it — a spec that simulates a reload would otherwise downgrade every failure
  *  the next spec measures. Nothing in the app calls this: a page that really
@@ -615,6 +680,10 @@ export function installLogging(options: { apiBase?: string; ship?: boolean } = {
       screen: `${window.screen?.width}x${window.screen?.height}`,
       viewport: `${window.innerWidth}x${window.innerHeight}`,
       standalone: window.matchMedia?.('(display-mode: standalone)').matches,
+      // Whether anybody could have been looking (a link preview, a page
+      // reloaded in the background), and whether a script was driving it.
+      visibility: document.visibilityState,
+      webdriver: navigator.webdriver === true,
       referrer: document.referrer || undefined,
       sid,
       did,

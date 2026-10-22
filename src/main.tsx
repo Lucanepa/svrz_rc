@@ -13,7 +13,7 @@ import ErrorBoundary from './components/ErrorBoundary.tsx';
 import { UiHost } from './components/ui';
 import { enableDemo, isDemoMode } from './lib/demo';
 import { canonicalizeLegacyHash, routeRoot } from './lib/routes';
-import { installLogging, clientLog, noteReloadingPage, scrubTokens } from './lib/logger';
+import { installLogging, clientLog, noteReloadingPage, scrubTokens, isPageLeaving } from './lib/logger';
 import { connection, installConnectionWatch } from './lib/connection';
 import ConnectionBanner from './components/ConnectionBanner.tsx';
 import { IS_NATIVE, installNativeFetch } from './lib/native';
@@ -21,6 +21,7 @@ import { installApiLang } from './lib/apiLang';
 import { installNativeShell } from './lib/nativeShell';
 import {
   decideSwReload, recentSwReloads, noteSwReload, retryDelayMs, SW_RELOAD_STATE_KEY,
+  classifySwRegisterError, swRegisterErrorLevel, SW_REGISTER_FAILS_KEY,
 } from './lib/swReload';
 import './index.css';
 
@@ -101,6 +102,8 @@ if (!IS_NATIVE) registerSW({
   immediate: true,
   onRegisteredSW(_swUrl, registration) {
     clientLog.info('sw.registered', 'service worker registered');
+    // The streak of failed registrations (onRegisterError) ends here.
+    try { localStorage.removeItem(SW_REGISTER_FAILS_KEY); } catch { /* private mode */ }
     if (!registration) return;
     let lastCheck = Date.now();
     const check = () => {
@@ -118,8 +121,26 @@ if (!IS_NATIVE) registerSW({
     // (which refuses every service worker by design, and visits weekly) must
     // not share a row with a real browser's failure. The logger itself files
     // the renderer's as a warning (isAutomatedVisit), so it mails nobody.
-    const reason = error instanceof Error ? error.message : String(error);
-    clientLog.error('sw.error', `service worker registration failed: ${reason}`, { error });
+    let reason = '';
+    try { reason = error instanceof Error ? error.message : String(error); } catch { reason = 'unprintable'; }
+    // A worker that merely did not arrive is a warning the first time, or
+    // whenever nobody was looking or the network was gone; the same device
+    // failing again on its next visit is an error. A worker served wrong
+    // (bad status, wrong MIME type, SecurityError) is always an error — the
+    // rule lives in lib/swReload.ts, where it is tested.
+    const kind = classifySwRegisterError(error);
+    const excused = document.visibilityState === 'hidden' || navigator.onLine === false || isPageLeaving();
+    let failuresInARow = 1;
+    if (kind === 'network' && !excused) {
+      try {
+        failuresInARow = (Number(localStorage.getItem(SW_REGISTER_FAILS_KEY)) || 0) + 1;
+        localStorage.setItem(SW_REGISTER_FAILS_KEY, String(failuresInARow));
+      } catch { /* storage refused: every failure counts as a first */ }
+    }
+    const lvl = swRegisterErrorLevel(kind, { excused, failuresInARow });
+    clientLog[lvl]('sw.error', `service worker registration failed: ${reason}`, {
+      error, kind, failuresInARow, visibility: document.visibilityState, online: navigator.onLine,
+    });
   },
 });
 

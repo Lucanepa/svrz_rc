@@ -174,3 +174,44 @@ export function requestOutLevel(method: string, path: string, status: number): '
   }
   return status >= 400 ? 'warn' : 'info';
 }
+
+// ── A log batch that arrives twice ───────────────────────────────────
+// The browser keeps a batch whose POST got no answer and sends it again,
+// whole and under the same id (src/lib/logger.ts) — but no answer is not
+// the same as not delivered. On 10.10.2026 a phone shipped a batch from the
+// background, the server filed it, the answer was lost, and the same lines
+// were filed again seven minutes later; on 12.10.2026 a page torn down
+// mid-flush had one batch filed twice within the same second. A duplicated
+// error line is a second entry in the alert digest.
+
+/** Batch ids filed recently, so a second copy is accepted and dropped.
+ *  Bounded by age and count: a phone can sit in a pocket for hours before it
+ *  sends again, and the store must not grow with an unauthenticated caller. */
+export class RecentBatchIds {
+  private seen = new Map<string, number>();
+
+  constructor(private readonly ttlMs = 24 * 60 * 60 * 1000, private readonly max = 20_000) {}
+
+  /** True when `key` was already filed within the window; otherwise it is
+   *  remembered now and the answer is false. */
+  repeat(key: string, now = Date.now()): boolean {
+    const at = this.seen.get(key);
+    if (at !== undefined && now - at < this.ttlMs) return true;
+    this.seen.delete(key);
+    this.seen.set(key, now);
+    // A Map iterates oldest first: drop what has aged out, or is over the cap.
+    for (const [k, t] of this.seen) {
+      if (this.seen.size <= this.max && now - t < this.ttlMs) break;
+      this.seen.delete(k);
+    }
+    return false;
+  }
+}
+
+/** The key a client log batch is remembered by, or null when it names no
+ *  batch (older builds, and the start-failure net's single line). */
+export function clientBatchKey(sid: string | undefined, bid: unknown): string | null {
+  const id = typeof bid === 'string' ? bid.trim() : '';
+  if (!sid || !/^[\w-]{4,64}$/.test(id)) return null;
+  return `${sid}:${id}`;
+}

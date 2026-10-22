@@ -21,7 +21,7 @@ import {
 import { installErrorAlerts } from './erroralerts.ts';
 import { latestTakes, type LogLine } from './assignedAt.ts';
 import { tripCoachees, type HeldGameRef } from '../src/lib/doubleGame.ts';
-import { boundedKeys, callerBodyError, clientLogUser, clientTimestamp, requestOutLevel } from './logguard.ts';
+import { boundedKeys, callerBodyError, clientBatchKey, clientLogUser, clientTimestamp, RecentBatchIds, requestOutLevel } from './logguard.ts';
 import { computePlanning, seasonProgress, type PlanningReport, type PlanningGameInput, type SeasonProgress } from './planning.ts';
 import { nativeClient } from './nativeClient.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
@@ -5225,6 +5225,7 @@ const CLIENT_LOG_GLOBAL_PER_WINDOW = 20_000;
 const clientLogGlobalRl: RateLimitStore = new Map();
 const CLIENT_LOG_WINDOW_MS = 5 * 60 * 1000;
 const CLIENT_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+const clientLogBatches = new RecentBatchIds();
 
 // Cap a client log entry's `data` at ~2 kb of serialized JSON. Anything larger
 // is replaced with a marker, so a hostile caller cannot fill the ring by bytes.
@@ -5262,7 +5263,11 @@ app.post('/api/client-logs',
   const parsed = typeof req.body === 'string'
     ? (() => { try { return JSON.parse(req.body as string); } catch { return {}; } })()
     : req.body;
-  const body = (parsed ?? {}) as { sid?: unknown; did?: unknown; user?: unknown; entries?: unknown };
+  const body = (parsed ?? {}) as { sid?: unknown; did?: unknown; user?: unknown; bid?: unknown; entries?: unknown };
+  // A batch the browser sent again because the answer to the first copy never
+  // came back is filed once (logguard.ts, RecentBatchIds).
+  const batchKey = clientBatchKey(asText(body.sid).slice(0, 64) || undefined, body.bid);
+  if (batchKey && clientLogBatches.repeat(batchKey)) { res.json({ ok: true, accepted: 0, duplicate: true }); return; }
   const entries = Array.isArray(body.entries) ? body.entries.slice(0, CLIENT_LOG_MAX_BATCH) : [];
   // Bill the batch, not the request. Otherwise the nominal per-window budget
   // bought that many *batches* — enough to push every real line out of the ring

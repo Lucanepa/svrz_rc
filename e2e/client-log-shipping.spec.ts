@@ -59,3 +59,42 @@ test('the log batch that names the coach goes out with credentials', async ({ pa
   // adopted still has to carry the cookie, or it files the same lines twice over.
   for (const flush of await recorded(page)) expect(flush.credentials).toBe('include');
 });
+
+/**
+ * A POST that gets no answer may still have arrived. On 10.10.2026 a phone's
+ * batch was filed, the answer lost while the app was in the background, and
+ * the batch went out again — merged into newer lines — seven minutes later:
+ * the server had no way to know it had those lines already. A batch now keeps
+ * its id and its lines until it is answered, so the server can drop the copy.
+ */
+test('a batch that got no answer goes out again whole, under the same id', async ({ page }) => {
+  type Shipped = { bid?: string; entries: { t: string; evt: string; msg?: string }[] };
+  const shipped: Shipped[] = [];
+  await stubSignedInApp(page);
+  let calls = 0;
+  await page.route('**/api/client-logs', async (r) => {
+    shipped.push(JSON.parse(r.request().postData() || '{}'));
+    // The first one is lost on the way back.
+    if (calls++ === 0) await r.abort('connectionreset');
+    else await r.fulfill({ json: { ok: true } });
+  });
+  await page.goto('/');
+  // An error ships at once — the first flush, the one that is lost.
+  const boom = () => page.evaluate(() => window.dispatchEvent(new ErrorEvent('error', {
+    message: 'boom', filename: `${location.origin}/assets/index-x.js`, error: new Error('boom'),
+  })));
+  await boom();
+  await expect.poll(() => shipped.length).toBeGreaterThanOrEqual(1);
+  // The next error ships at once too, and the batch that got no answer goes first.
+  await boom();
+  await expect.poll(() => shipped.length).toBeGreaterThanOrEqual(2);
+
+  const [lost, again] = shipped;
+  expect(lost.bid).toMatch(/^[0-9a-f]{16}$/);
+  expect(again.bid).toBe(lost.bid);
+  expect(again.entries).toEqual(lost.entries);
+  // And the newer lines follow in a batch of their own.
+  await expect.poll(() => shipped.length, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+  expect(shipped[2].bid).not.toBe(lost.bid);
+  expect(shipped[2].entries.some((e) => e.msg === 'boom')).toBe(true);
+});

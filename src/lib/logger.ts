@@ -207,12 +207,43 @@ function scheduleFlush(): void {
   flushTimer = setTimeout(() => { flushTimer = null; void flush(); }, FLUSH_INTERVAL_MS);
 }
 
+/** A batch keeps its id for life, so the server can tell a second copy of it
+ *  from new lines (server/logguard.ts, RecentBatchIds). A fetch that rejects
+ *  has not necessarily failed to arrive: on 10.10.2026 a phone sent a batch
+ *  while the app was in the background, the server filed it, the answer never
+ *  came back, and the batch went out again seven minutes later when the app
+ *  returned; on 12.10.2026 a page torn down mid-flush had its batch filed by
+ *  the fetch and again by the pagehide beacon. Both were written twice. */
+type Batch = { bid: string; entries: ClientLogEntry[] };
+/** Batches that went out without an answer, oldest first, sent again whole
+ *  — same id, same lines — before anything newer. */
+let unsent: Batch[] = [];
+
+function takeBatch(): Batch | null {
+  const again = unsent.shift();
+  if (again) return again;
+  if (!pending.length) return null;
+  const entries = pending.slice(0, BATCH_MAX);
+  pending = pending.slice(entries.length);
+  return { bid: randomId(), entries };
+}
+
+/** Put a batch back for the next flush. Bounded as before: past RING_MAX
+ *  waiting lines, the oldest go. */
+function putBack(batch: Batch): void {
+  unsent.unshift(batch);
+  if (pending.length > RING_MAX) pending = pending.slice(-RING_MAX);
+  let waiting = pending.length + unsent.reduce((n, b) => n + b.entries.length, 0);
+  while (waiting > RING_MAX && unsent.length) waiting -= unsent.shift()!.entries.length;
+}
+
 // `beacon` is used on pagehide, where a normal fetch would be cancelled.
 export async function flush(beacon = false): Promise<void> {
-  if (!pending.length || !shipping) return;
-  const batch = pending.slice(0, BATCH_MAX);
-  pending = pending.slice(batch.length);
-  const payload = JSON.stringify({ sid, did, user, entries: batch });
+  if (!shipping) return;
+  const next = takeBatch();
+  if (!next) return;
+  const batch = next.entries;
+  const payload = JSON.stringify({ sid, did, user, bid: next.bid, entries: batch });
   const url = `${apiBase}/api/client-logs`;
   try {
     // Not in the installed app: a beacon cannot carry the session header, and
@@ -222,7 +253,7 @@ export async function flush(beacon = false): Promise<void> {
       // runs on every switch to another app — so the offline failure window the
       // log exists to explain was exactly what got dropped. Keep the batch.
       if (typeof navigator.onLine === 'boolean' && !navigator.onLine) {
-        pending = [...batch, ...pending].slice(-RING_MAX);
+        putBack(next);
         return;
       }
       // text/plain keeps this a CORS-simple request. A beacon fired on pagehide
@@ -230,7 +261,7 @@ export async function flush(beacon = false): Promise<void> {
       // captures the moment someone gave up and closed the app.
       // A false return means the payload was refused (over the beacon quota).
       if (!navigator.sendBeacon(url, new Blob([payload], { type: 'text/plain;charset=UTF-8' }))) {
-        pending = [...batch, ...pending].slice(-RING_MAX);
+        putBack(next);
       }
       return;
     }
@@ -249,10 +280,14 @@ export async function flush(beacon = false): Promise<void> {
       keepalive: batch.length < 30,
     });
   } catch {
-    // Offline or the API is down. Put the batch back (bounded) so it ships on
-    // the next successful flush instead of vanishing.
-    pending = [...batch, ...pending].slice(-RING_MAX);
+    // Offline or the API is down — or the batch arrived and only the answer
+    // was lost. Put it back whole (bounded) so it ships on the next flush
+    // under the same id, and the server files it once either way.
+    putBack(next);
+    return;
   }
+  // Lines still waiting (a batch sent again went first): keep going.
+  if (unsent.length || pending.length) scheduleFlush();
 }
 
 /** The in-memory tail, for `window.svrzLogs()` and the offline "copy" button. */

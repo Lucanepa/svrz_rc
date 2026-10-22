@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import {
   redactCapabilityTokens, clientTimestamp, boundedKeys, clientLogUser,
   isUnverifiedEntry, digestAdmission, SHAPE_MAX_KEYS, SHAPE_MAX_KEY_CHARS, requestOutLevel,
+  RecentBatchIds, clientBatchKey,
 } from '../server/logguard';
 
 /**
@@ -136,5 +137,34 @@ test.describe('how loud a finished request is', () => {
     expect(requestOutLevel('PUT', '/api/coachees/x', 409)).toBe('warn');
     expect(requestOutLevel('GET', '/api/docs/kurz-sr', 200)).toBe('info');
     expect(requestOutLevel('GET', '/api/docs/kurz-sr', 304)).toBe('info');
+  });
+});
+
+// 10.10 and 12.10.2026: a batch the server had filed was sent again because
+// the browser never heard back, and its lines were written twice.
+test.describe('a client log batch that arrives twice is filed once', () => {
+  test('the second copy is recognised, within the window and only within it', () => {
+    const ids = new RecentBatchIds(60_000, 100);
+    expect(ids.repeat('s1:abcd1234', 0)).toBe(false);
+    expect(ids.repeat('s1:abcd1234', 7 * 1000)).toBe(true);
+    // Another session's batch with the same id is its own.
+    expect(ids.repeat('s2:abcd1234', 7 * 1000)).toBe(false);
+    // Past the window it is new again.
+    expect(ids.repeat('s1:abcd1234', 61_000)).toBe(false);
+  });
+
+  test('bounded by count: the oldest are forgotten first', () => {
+    const ids = new RecentBatchIds(60_000, 3);
+    for (const k of ['a', 'b', 'c', 'd']) ids.repeat(`s:${k}0000`, 0);
+    expect(ids.repeat('s:d0000', 1)).toBe(true);
+    expect(ids.repeat('s:a0000', 1)).toBe(false);
+  });
+
+  test('only a well-formed id from a session counts', () => {
+    expect(clientBatchKey('sid1', '0123456789abcdef')).toBe('sid1:0123456789abcdef');
+    expect(clientBatchKey(undefined, '0123456789abcdef')).toBeNull();
+    expect(clientBatchKey('sid1', undefined)).toBeNull();
+    expect(clientBatchKey('sid1', 'x'.repeat(65))).toBeNull();
+    expect(clientBatchKey('sid1', 'a b c d')).toBeNull();
   });
 });

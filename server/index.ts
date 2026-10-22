@@ -69,7 +69,7 @@ import { readStoredDoc, writeStoredDoc, type StoredDoc } from './docstore.ts';
 import { presidentNoteEntry, presidentNoteBelongsToAnother, type PresidentNoteEntry } from './presidentNotes.ts';
 import { identityAudit, type AuditRcPerson } from './identityAudit.ts';
 import { sniffAttachmentType, ATTACHMENT_EXTENSIONS, whistleBlocksForm, createMailCooldown, createCoalescer } from './writeGuards.ts';
-import { createCredentialReader, CredentialsUnavailableError } from './credentialStore.ts';
+import { createCredentialReader, CredentialsUnavailableError, sameLoginName } from './credentialStore.ts';
 import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/lib/boerseRules.ts';
 import { nameKeys, samePerson, resolveRcName, resolveRcRef, refereeSet, refereeAmong, type PersonRef, type RcPersonLike, type RefereeSet } from '../src/lib/identity.ts';
 import { say, answerInAskersLanguage } from './say.ts';
@@ -5154,6 +5154,23 @@ app.post('/api/admin/ui-login', async (req: Request, res: ExpressResponse) => {
   if (!role) {
     // Already charged above; a failure keeps the charge.
     clearAdminSessionCookie(res);
+    // 27.09–06.10.2026: eleven sign-ins here as "Referee-Coaching" — the
+    // browser offers the app's team login on this form, because both are on
+    // the same site — eight of them in 92 s, two short of the lockout, each
+    // answered only "Invalid credentials.". The typed NAME is the team's, so
+    // say which login this is. The password is never checked against the team
+    // slot: this form must not become a second door to test it through.
+    let teamName = false;
+    try { teamName = sameLoginName(username, await credentialUsername('shared', SHARED_LOGIN_USERNAME_ENV)); }
+    catch { /* unreadable store: the plain answer below is still true */ }
+    if (teamName) {
+      log.warn('auth.admin-ui-login', 'rejected: the team login typed into the console', { teamLogin: true }, ctx);
+      res.status(401).json({ error: say(
+        'Das ist der Team-Login der App. Hier braucht es den Admin-Zugang (admin bzw. praesidium).',
+        "That is the app's team login. This page needs the admin login (admin or praesidium).",
+      ) });
+      return;
+    }
     // `userMatched` is for the admin reading the log after a failed sign-in
     // ("was it the name or the password?"); the CALLER is told neither.
     log.warn('auth.admin-ui-login', 'rejected', {

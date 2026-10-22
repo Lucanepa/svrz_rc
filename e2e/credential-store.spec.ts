@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCredentialReader, CredentialsUnavailableError } from '../server/credentialStore';
+import { createCredentialReader, CredentialsUnavailableError, sameLoginName } from '../server/credentialStore';
 
 /**
  * 22.10.2026 (log audit, R3): one unreadable credentials row used to be cached
@@ -144,4 +144,33 @@ test('both logins and the credential routes answer 503 when the store cannot be 
   expect(answer).toContain('res.status(503)');
   expect(answer).toContain("'Anmeldung vorübergehend nicht möglich.'");
   expect(answer).toContain('log.error(');
+});
+
+// 27.09–06.10.2026 (log audit, R4): the browser filled the app's team login
+// into the admin console, and the chair failed eight times in 92 s against a
+// bare "Invalid credentials.". The console now names the team login — by the
+// NAME alone, the way a person types it.
+test.describe('the team login typed into the admin console', () => {
+  test('is recognised by its name, trimmed and in any case', () => {
+    expect(sameLoginName('Referee-Coaching', 'Referee-Coaching')).toBe(true);
+    expect(sameLoginName('  referee-coaching ', 'Referee-Coaching')).toBe(true);
+    expect(sameLoginName('admin', 'Referee-Coaching')).toBe(false);
+    // An unset name matches nothing, not every empty field.
+    expect(sameLoginName('', '')).toBe(false);
+    expect(sameLoginName('  ', ' ')).toBe(false);
+  });
+
+  test('is answered without the team password ever being checked, and still costs an attempt', () => {
+    const fn = block("app.post('/api/admin/ui-login'");
+    const named = fn.indexOf('sameLoginName(');
+    expect(named).toBeGreaterThan(-1);
+    // Inside the failure branch — after the charge, and never refunded there.
+    expect(fn.indexOf("checkGateRateLimit(ctx.ip, 'admin-ui')")).toBeLessThan(named);
+    expect(fn.indexOf('if (!role) {')).toBeLessThan(named);
+    expect(fn).not.toContain("verifyCredential('shared'");
+    expect(fn).toContain('Das ist der Team-Login der App. Hier braucht es den Admin-Zugang (admin bzw. praesidium).');
+    const branch = fn.slice(named, fn.indexOf('return;', named));
+    expect(branch).not.toContain('refundGateRateLimit');
+    expect(branch).toContain('res.status(401)');
+  });
 });

@@ -85,3 +85,11 @@ export function createCredentialReader<T>(opts: {
     },
   };
 }
+
+/** Whether two login names are the same name as a person types it: trimmed,
+ *  any case. A phone capitalises the first letter of a username field, and
+ *  "Admin" is the admin. Not for secrets — a name, compared in the clear. */
+export function sameLoginName(typed: string, stored: string): boolean {
+  const norm = (v: string) => v.trim().toLowerCase();
+  return norm(stored) !== '' && norm(typed) === norm(stored);
+}

@@ -1197,7 +1197,10 @@ export async function adminUiLogin(username: string, password: string): Promise<
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Login failed');
+  // With the status on it: a 401 that names the team login, or a 503 while the
+  // stored credentials cannot be read, has words worth showing rather than
+  // the form's own "wrong username or password" (22.10.2026).
+  if (!r.ok) throw await apiError(r, 'Login failed');
   // A fresh console cookie replaces the one a failed logout still owed, and
   // the new holder's data must not come out of the previous one's cache.
   setPendingAdminLogout(false);

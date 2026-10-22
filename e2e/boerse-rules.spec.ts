@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { boerseLevel, type BoerseSlotOffer, type BoerseView } from '../src/lib/boerseRules';
-import { gameHolder } from '../server/boerse';
+import { gameHolder, boerseFailureLevel, boerseRecovered, roleFailure, type DashboardRead } from '../server/boerse';
 
 /**
  * The truth table for the SR-Börse row colours.
@@ -179,5 +179,62 @@ test.describe('the holder rule', () => {
   test('nobody holds it — no holder, and no name match on an empty string', () => {
     expect(gameHolder({}, roster)).toBeUndefined();
     expect(gameHolder({ assigned_rc: '', assigned_rc_id: '' }, [{ id: 'y', fullName: '' }])).toBeUndefined();
+  });
+});
+
+// 22.09.2026: VolleyManager answered every page with something other than a
+// logged-in dashboard for seven hours overnight. Every hourly failure from the
+// third on was an error (four alert mails), and each one blamed the account's
+// ROLE — "session is on (none)" — when there had never been a session at all.
+test.describe('a failing poll: how loud, and what it blames', () => {
+  test('an error at three in a row and once more at twelve; warnings otherwise', () => {
+    const levels = Array.from({ length: 14 }, (_, i) => boerseFailureLevel(i + 1));
+    expect(levels.map((l, i) => (l === 'error' ? i + 1 : null)).filter(Boolean)).toEqual([3, 12]);
+  });
+
+  test('the poll that works again after an alerted streak is the one that says so', () => {
+    expect(boerseRecovered(undefined)).toBe(false);
+    expect(boerseRecovered(0)).toBe(false);
+    expect(boerseRecovered(2)).toBe(false);
+    expect(boerseRecovered(3)).toBe(true);
+    expect(boerseRecovered(40)).toBe(true);
+  });
+
+  const ROLE = 'b87653c7-role';
+  const page = (over: Partial<DashboardRead> = {}): DashboardRead =>
+    ({ csrf: 'tok', attr: ROLE, status: 200, title: 'VolleyManager', ...over });
+
+  test('no token and no role after the login is a failed login, with what the page was', () => {
+    const msg = roleFailure({
+      before: page({ csrf: '', attr: '', status: 200, title: 'Anmelden' }),
+      after: page({ csrf: '', attr: '', status: 200, title: 'Anmelden' }),
+      switched: false,
+      wanted: ROLE,
+    });
+    expect(msg).toMatch(/^VM_LOGIN_FAILED:/);
+    expect(msg).toContain('CSRF token and active role missing');
+    expect(msg).toContain('HTTP 200 "Anmelden"');
+    expect(msg).not.toContain('(none)');
+  });
+
+  test('a dashboard with a token but no role anywhere is still not a logged-in session', () => {
+    const msg = roleFailure({
+      before: page({ attr: '', status: 503, title: '' }),
+      after: page({ attr: '' }),
+      switched: true,
+      wanted: ROLE,
+    });
+    expect(msg).toMatch(/^VM_LOGIN_FAILED:/);
+    expect(msg).toContain('HTTP 503)');
+  });
+
+  test('a switch VM refused is named as that', () => {
+    const msg = roleFailure({ before: page({ attr: 'club-admin' }), after: page({ attr: 'club-admin' }), switched: false, wanted: ROLE });
+    expect(msg).toMatch(/^VM_ROLE_SWITCH_REFUSED: switching club-admin → b87653c7-role was refused/);
+  });
+
+  test('a switch that answered ok but did not stick is the role not claimed', () => {
+    const msg = roleFailure({ before: page({ attr: 'club-admin' }), after: page({ attr: 'other' }), switched: true, wanted: ROLE });
+    expect(msg).toMatch(/^VM_ROLE_NOT_CLAIMED: wanted b87653c7-role, session is on other/);
   });
 });

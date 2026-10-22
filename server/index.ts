@@ -59,7 +59,7 @@ import {
 // not a 403: it is a clean 200 with the wrong rows.
 import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
-import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, type BoerseOfferRow } from './boerse.ts';
+import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, boerseFailureLevel, boerseRecovered, type BoerseOfferRow } from './boerse.ts';
 import { handedOverIds, pickSwitch, switchExpiry, switchOpen, switchSettlement, type HandOver, type SlotBooking } from './switchRequests.ts';
 import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, missingHeldGames, CREW_RELEASE_MIN_DAYS, type HeldGameChange, type HeldGameSide, type HeldSlot, type MissingGamesState } from './gamesSync.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
@@ -3923,7 +3923,14 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
   });
 
   if (!attempt.ran) {
-    const status = base({ skipped: `VolleyManager busy with ${attempt.blockedBy}` });
+    // The streak rides through a skip: a poll that stood down for the games
+    // sync learned nothing about VolleyManager, and resetting the count here
+    // made the next failure "the first" again — so a lasting outage that
+    // happened to straddle a sync never reached the alert (22.10.2026).
+    const status = base({
+      skipped: `VolleyManager busy with ${attempt.blockedBy}`,
+      consecutiveFailures: prev?.consecutiveFailures,
+    });
     log.info('boerse.skip', `börse poll skipped — ${attempt.blockedBy} holds the account`, { reason });
     await recordBoerseStatus(status);
     return status;
@@ -4410,7 +4417,15 @@ async function runBoerseSyncSafely(reason: string): Promise<BoerseSyncStatus> {
     };
   }
   try {
-    return await runBoerseSync(reason);
+    const status = await runBoerseSync(reason);
+    // The all-clear for a streak that alerted, so the mail about it has an
+    // answer in Protokoll rather than a silence.
+    if (status.ok && boerseRecovered(prev?.consecutiveFailures)) {
+      log.info('boerse.sync', `börse poll works again after ${prev?.consecutiveFailures} failures in a row`, {
+        failures: prev?.consecutiveFailures, lastError: prev?.error,
+      });
+    }
+    return status;
   } catch (error) {
     const failures = (prev?.consecutiveFailures ?? 0) + 1;
     const status: BoerseSyncStatus = {
@@ -4422,9 +4437,12 @@ async function runBoerseSyncSafely(reason: string): Promise<BoerseSyncStatus> {
     };
     await recordBoerseStatus(status);
     // Only a sustained failure is worth an alert mail — erroralerts mails on
-    // every error-level entry, and VolleyManager has bad minutes.
-    if (failures >= 3) log.error('boerse.sync', `börse poll failed ${failures}× in a row`, { error: status.error });
-    else log.warn('boerse.sync', `börse poll failed (${failures})`, { error: status.error });
+    // every error-level entry, and VolleyManager has bad minutes. And only
+    // ONCE per stretch (at 3, again at 12): from the 3rd on every hourly
+    // failure used to be an error, and the hour-long alert cooldown matched the
+    // poll, so one overnight VM outage mailed four times (22.09.2026).
+    if (boerseFailureLevel(failures) === 'error') log.error('boerse.sync', `börse poll failed ${failures}× in a row`, { error: status.error, failures });
+    else log.warn('boerse.sync', `börse poll failed (${failures})`, { error: status.error, failures });
     return status;
   }
 }

@@ -19,7 +19,7 @@
 //      is readable ONLY through the `refereeConvocations` ARRAY. The singular
 //      `activeRefereeConvocation*HeadReferee` accessors return a fixed
 //      projection that omits it however you ask.
-import { CookieJar, followRedirects, VM_USER_AGENT } from './vmhttp.ts';
+import { CookieJar, extractPageTitle, followRedirects, VM_USER_AGENT } from './vmhttp.ts';
 import { vmFetch } from './vmlock.ts';
 import { samePerson } from '../src/lib/identity.ts';
 
@@ -180,9 +180,16 @@ export type FetchResult = {
 const failed = (error: string, httpStatus?: number): FetchResult =>
   ({ ok: false, offers: [], total: 0, ignored: 0, error, httpStatus });
 
+/** What one look at the dashboard showed: its token and active role, and —
+ *  for a failure that has to explain itself — the HTTP status and the page
+ *  title it answered with. */
+export type DashboardRead = { csrf: string; attr: string; status: number; title: string };
+
 /** The dashboard's active role, so a poll can put it back the way it found it. */
-async function readActiveRole(base: string, jar: CookieJar): Promise<{ csrf: string; attr: string }> {
-  const { body } = await followRedirects(base, `${base}/`, jar);
+async function readActiveRole(base: string, jar: CookieJar): Promise<DashboardRead> {
+  const { response, body } = await followRedirects(base, `${base}/`, jar);
+  const status = response.status;
+  const title = extractPageTitle(body);
   const csrf = body.match(/data-csrf-token="([^"]+)"/)?.[1] ?? '';
   // Parse it, do not pattern-match it. `activeAttributeValue` contains nested
   // objects, so a `[^}]*` regex walks straight past its own closing brace and
@@ -204,7 +211,41 @@ async function readActiveRole(base: string, jar: CookieJar): Promise<{ csrf: str
       attr = txt(party.activeAttributeValue?.persistenceObjectIdentifier);
     } catch { attr = ''; }
   }
-  return { csrf, attr };
+  return { csrf, attr, status, title };
+}
+
+/**
+ * Why the session is not on the börse role, in words that point at the cause.
+ *
+ * 22.09.2026: VolleyManager answered every page with something other than a
+ * logged-in dashboard for seven hours overnight, and each hourly poll said
+ * "VM_ROLE_NOT_CLAIMED … session is on (none)" — which sent the reader after
+ * the shared account's role, when there had never been a session to have a
+ * role at all. No token or no role on the page right after the login is a
+ * failed login; only a dashboard that HAS a role, and kept the wrong one, is
+ * a role that was not claimed.
+ *
+ * Pure, and pinned in boerse-rules.spec.ts.
+ */
+export function roleFailure(input: {
+  /** The dashboard straight after the login. */
+  before: DashboardRead;
+  /** The dashboard after the claim (the same as before when none was needed). */
+  after: DashboardRead;
+  /** What the role switch answered; undefined when it was not attempted. */
+  switched?: boolean;
+  wanted: string;
+}): string {
+  const { before, after, switched, wanted } = input;
+  const page = (d: DashboardRead) => `HTTP ${d.status}${d.title ? ` "${d.title}"` : ''}`;
+  if (!before.csrf || (!before.attr && !after.attr)) {
+    const missing = [!before.csrf && 'CSRF token', !before.attr && 'active role'].filter(Boolean).join(' and ');
+    return `VM_LOGIN_FAILED: no logged-in dashboard after the login (${missing} missing; dashboard answered ${page(before)})`;
+  }
+  if (switched === false) {
+    return `VM_ROLE_SWITCH_REFUSED: switching ${before.attr || '(none)'} → ${wanted} was refused; session is on ${after.attr || '(none)'} (dashboard ${page(after)})`;
+  }
+  return `VM_ROLE_NOT_CLAIMED: wanted ${wanted}, session is on ${after.attr || '(none)'} (dashboard ${page(after)})`;
 }
 
 async function switchRole(base: string, jar: CookieJar, csrf: string, attributeValueId: string): Promise<boolean> {
@@ -266,13 +307,14 @@ export async function fetchBoerseOffers(opts: {
 
     const before = await readActiveRole(base, jar);
     restoreTo = before.attr;
+    let switched: boolean | undefined;
     if (before.attr !== VM_ROLE_FOR_BOERSE) {
       // Worth saying out loud: the account is shared, and "somebody else moved
       // it" is the single likeliest cause of a future wrong answer here. On
       // 2026-09-11 it was found on wiedisync's ClubAdministrator, which answers
       // this endpoint 200 with five rows — invisible without this line.
       say(`[boerse] account was on ${before.attr || '(none)'} — claiming ${VM_ROLE_FOR_BOERSE}, will restore`);
-      await switchRole(base, jar, before.csrf, VM_ROLE_FOR_BOERSE);
+      switched = await switchRole(base, jar, before.csrf, VM_ROLE_FOR_BOERSE);
     }
 
     // Assert the ATTRIBUTE VALUE ID, not the role name. Two different attributes
@@ -281,7 +323,9 @@ export async function fetchBoerseOffers(opts: {
     // because it looks exactly like "nothing is in the börse".
     const after = await readActiveRole(base, jar);
     if (after.attr !== VM_ROLE_FOR_BOERSE) {
-      return failed(`VM_ROLE_NOT_CLAIMED: wanted ${VM_ROLE_FOR_BOERSE}, session is on ${after.attr || '(none)'}`);
+      // Which of the three it was — a login that never happened, a switch VM
+      // refused, or a role that did not stick — is in the message (roleFailure).
+      return failed(roleFailure({ before, after, switched, wanted: VM_ROLE_FOR_BOERSE }), before.csrf ? after.status : before.status);
     }
 
     const page = await followRedirects(base, `${base}${PAGE_PATH}`, jar, { headers: { Referer: `${base}/` } });
@@ -383,6 +427,32 @@ export const BOERSE_QUIET_HOUR_UTC = 4;
  *  only an admin's manual run ('manual') goes ahead, a person choosing to. */
 export function boersePollMustSkip(reason: string, now: Date): boolean {
   return reason !== 'manual' && now.getUTCHours() === BOERSE_QUIET_HOUR_UTC;
+}
+
+// ── How loud a failed poll is ────────────────────────────────────────
+
+/** The streaks that are worth an error line — and so an alert mail. */
+export const BOERSE_ALERT_AT_FAILURES = [3, 12] as const;
+
+/**
+ * The level of the Nth failed poll in a row.
+ *
+ * 22.09.2026: VolleyManager answered with something other than a dashboard for
+ * seven hours overnight, and every failure from the third on was an error. The
+ * alert cooldown is an hour — the poll's own period — so it mailed at 01:41,
+ * 02:41, 03:41 and 05:41 about one outage that then ended by itself. Three in
+ * a row is still worth knowing about, and twelve (half a day) is worth hearing
+ * about once more; everything between and after is a warning in Protokoll.
+ *
+ * Pure, and pinned in boerse-rules.spec.ts.
+ */
+export function boerseFailureLevel(failures: number): 'error' | 'warn' {
+  return (BOERSE_ALERT_AT_FAILURES as readonly number[]).includes(failures) ? 'error' : 'warn';
+}
+
+/** Whether a poll that worked ends a streak long enough to have alerted. */
+export function boerseRecovered(previousFailures: number | undefined): boolean {
+  return (previousFailures ?? 0) >= BOERSE_ALERT_AT_FAILURES[0];
 }
 
 // ── Reconcile ────────────────────────────────────────────────────────

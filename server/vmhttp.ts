@@ -55,7 +55,7 @@ export class CookieJar {
 
 
 /** The <title> of an error page, for a trace entry that has to explain itself. */
-function extractPageTitle(html: string): string {
+export function extractPageTitle(html: string): string {
   return (html.match(/<title>([^<]*)<\/title>/i)?.[1] ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 

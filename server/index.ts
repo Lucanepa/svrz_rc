@@ -15497,8 +15497,15 @@ app.listen(port, () => {
   scheduleDaily('30 3 * * *', 'log prune', async () => {
     await pruneLogFiles();
     // Expired signature sessions go with the logs: same hour, no VolleyManager.
-    const removed = await pruneSignatureSessions();
-    if (removed) log.info('signature.prune', `${removed} expired signature session(s) deleted`, { removed });
+    // Their own catch: a failure here used to surface as "log prune failed",
+    // which sent the reader to the log files (the 28.09.2026 400 on the
+    // missing `created` field was a signatures problem).
+    try {
+      const removed = await pruneSignatureSessions();
+      if (removed) log.info('signature.prune', `${removed} expired signature session(s) deleted`, { removed });
+    } catch (error) {
+      log.error('signature.prune', 'expired signature sessions could not be deleted', { error });
+    }
   });
 
   scheduleDaily(REMINDER_CRON, 'match reminder', async () => {

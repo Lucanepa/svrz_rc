@@ -131,5 +131,7 @@ test('the server sends the push beside every coach mail, never in test mode, and
   expect(server).toMatch(/if \(!testMode\) void pushToCoach\(coach\.id, \{ title: `SR-Börse:/);
   // A subscription the push service says is gone is removed.
   expect(server).toMatch(/status === 404 \|\| status === 410/);
-  expect(vite).toMatch(/importScripts: \['push-sw\.js'\]/);
+  // Versioned with the build, so the zone's 4 h browser cache cannot keep an
+  // old push handler on a phone after a deploy.
+  expect(vite).toMatch(/importScripts: \[`push-sw\.js\?v=\$\{buildSha\}`\]/);
 });

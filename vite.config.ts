@@ -81,7 +81,14 @@ export default defineConfig(() => {
           skipWaiting: true,
           // Phone notifications: the push and notification-click handlers
           // live in public/push-sw.js, beside the generated worker.
-          importScripts: ['push-sw.js'],
+          //
+          // Versioned with the build. The zone's 4 h Browser Cache TTL wins
+          // over our no-cache (push-sw.js comes back "max-age=14400"), so the
+          // same URL could be answered from the browser's cache for hours
+          // after a deploy and a push-handler change would not reach a phone.
+          // A new build names a new URL, which no cache holds. The precache
+          // entry for push-sw.js (globPatterns) is untouched by this.
+          importScripts: [`push-sw.js?v=${buildSha}`],
           // The default only precaches js/css/html, which left everything else
           // Vite emits into assets/ out of the shell: the header logo and the
           // Inter woff2 files. That is invisible online — but once the service

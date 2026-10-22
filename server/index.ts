@@ -21,7 +21,7 @@ import {
 import { installErrorAlerts } from './erroralerts.ts';
 import { latestTakes, type LogLine } from './assignedAt.ts';
 import { tripCoachees, type HeldGameRef } from '../src/lib/doubleGame.ts';
-import { boundedKeys, callerBodyError, clientLogUser, clientTimestamp } from './logguard.ts';
+import { boundedKeys, callerBodyError, clientLogUser, clientTimestamp, requestOutLevel } from './logguard.ts';
 import { computePlanning, seasonProgress, type PlanningReport, type PlanningGameInput, type SeasonProgress } from './planning.ts';
 import { nativeClient } from './nativeClient.ts';
 import { parseSeason, coacheeRowSeason, seasonOfGame, seasonOfDate, pickSeason, seasonWindowFilter } from './season.ts';
@@ -523,7 +523,8 @@ app.use((req: Request, res: ExpressResponse, next: () => void) => {
     if (noisy) return;
     if (!budgeted && res.statusCode < 500) return;
     const ms = Date.now() - ctx.startedAt;
-    const lvl: LogLevel = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info';
+    // 5xx → error, except the document proxy's 503 (logguard.ts, 21.10.2026).
+    const lvl: LogLevel = requestOutLevel(req.method, req.path, res.statusCode);
     log[lvl]('req.out', `${req.method} ${redactIcalToken(req.originalUrl)} → ${res.statusCode} (${ms}ms)`, {
       method: req.method,
       path: redactIcalToken(req.path),

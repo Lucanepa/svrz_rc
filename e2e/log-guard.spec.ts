@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   redactCapabilityTokens, clientTimestamp, boundedKeys, clientLogUser,
-  isUnverifiedEntry, digestAdmission, SHAPE_MAX_KEYS, SHAPE_MAX_KEY_CHARS,
+  isUnverifiedEntry, digestAdmission, SHAPE_MAX_KEYS, SHAPE_MAX_KEY_CHARS, requestOutLevel,
 } from '../server/logguard';
 
 /**
@@ -105,5 +105,36 @@ test.describe('the error-alert digest cannot be filled by anonymous lines', () =
 
   test('a digest full of real errors stays full', () => {
     expect(digestAdmission(pendingOf(60, 0), false, limits)).toEqual({ admit: false });
+  });
+});
+
+// 21.10.2026: svrz.ch could not hand over the PDFs, the document proxy said so
+// with a 503 — and the request logger mailed every one of them as if the API
+// were down. The route's docs.unavailable warning is the single record now.
+test.describe('how loud a finished request is', () => {
+  test("the document proxy's 503 is a warning", () => {
+    expect(requestOutLevel('GET', '/api/docs/kurz-sr', 503)).toBe('warn');
+    // Express routes case-insensitively, and req.path keeps the caller's case.
+    expect(requestOutLevel('get', '/API/docs/GBO/', 503)).toBe('warn');
+  });
+
+  test('any other failure of that route still mails', () => {
+    expect(requestOutLevel('GET', '/api/docs/kurz-sr', 500)).toBe('error');
+    expect(requestOutLevel('GET', '/api/docs/kurz-sr', 502)).toBe('error');
+    expect(requestOutLevel('POST', '/api/docs/kurz-sr', 503)).toBe('error');
+  });
+
+  test('a 503 anywhere else still mails', () => {
+    expect(requestOutLevel('GET', '/api/auth/me', 503)).toBe('error');
+    expect(requestOutLevel('POST', '/api/auth/shared/login', 503)).toBe('error');
+    expect(requestOutLevel('GET', '/api/docs', 503)).toBe('error');
+    expect(requestOutLevel('GET', '/api/docs/a/b', 503)).toBe('error');
+  });
+
+  test('the rest is as it was: 4xx warn, everything else info', () => {
+    expect(requestOutLevel('GET', '/api/docs/kurz-sr', 404)).toBe('warn');
+    expect(requestOutLevel('PUT', '/api/coachees/x', 409)).toBe('warn');
+    expect(requestOutLevel('GET', '/api/docs/kurz-sr', 200)).toBe('info');
+    expect(requestOutLevel('GET', '/api/docs/kurz-sr', 304)).toBe('info');
   });
 });

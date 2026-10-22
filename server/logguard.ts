@@ -157,3 +157,20 @@ export function callerBodyError(err: unknown): string | null {
   const type = err && typeof err === 'object' ? (err as { type?: unknown }).type : undefined;
   return typeof type === 'string' && CALLER_BODY_ERRORS.has(type) ? type : null;
 }
+
+// ── How loud a finished request is ───────────────────────────────────
+// req.out is an error for every 5xx — that is our failure, and the alert
+// mail is how we hear of it. One exception, and only one: since b8603cd the
+// document proxy answers 503 (with Retry-After) when svrz.ch cannot hand over
+// a PDF it does not already hold, and on 21.10.2026 that upstream outage
+// mailed as if the API were down. The route's own docs.unavailable warning is
+// the single record of it. Any other 5xx from that route — a 500 is a bug in
+// the proxy — and a 503 from anywhere else still mail.
+const DOCS_ROUTE_RE = /^\/api\/docs\/[^/]+\/?$/i;
+
+export function requestOutLevel(method: string, path: string, status: number): 'error' | 'warn' | 'info' {
+  if (status >= 500) {
+    return status === 503 && method.toUpperCase() === 'GET' && DOCS_ROUTE_RE.test(path) ? 'warn' : 'error';
+  }
+  return status >= 400 ? 'warn' : 'info';
+}

@@ -97,7 +97,6 @@ function redact(value: unknown, depth = 0): unknown {
  *  that names itself. Whatever breaks for them, no coach can act on. */
 const AUTOMATED_AGENT = /Google-Read-Aloud|Googlebot|Google-InspectionTool|GoogleOther|Google-PageRenderer|AdsBot-Google|Mediapartners-Google|FeedFetcher-Google|bingbot|HeadlessChrome|\b(crawler|spider)\b|bot\/\d/i;
 const MOBILE_UA = /\b(Mobile|Android|iPhone|iPad|iPod)\b/;
-const IOS_UA = /\b(iPhone|iPad|iPod)\b/;
 
 /** What the page knows about the window it runs in, beside the user agent. */
 export type VisitEnv = {
@@ -149,9 +148,9 @@ export function currentVisitEnv(): VisitEnv | undefined {
  *    a 402x874 screen, 02.10, 19.10 and 21.10.2026, zero API calls). The
  *    long side, not screen.width: iOS keeps reporting the portrait width in
  *    landscape, where a real window is wider than that.
- *  • An iPhone/iPad user agent with no "Safari/" token outside a home-screen
- *    app: that preview's user agent. The installed home-screen PWA has no
- *    Safari token either, and says so with navigator.standalone.
+ *  NOT a missing "Safari/" token on its own: the preview has none, but
+ *  neither have the in-app browsers (Instagram, Mail, WhatsApp) a coach may
+ *  open a shared link in, and a real failure there must still mail.
  *  The installed app (Tauri) is exempt from the window rules: its webview is
  *  no Safari, and is a person every time. */
 export function isAutomatedVisit(ua: string, error?: unknown, env?: VisitEnv): boolean {
@@ -167,7 +166,7 @@ export function isAutomatedVisit(ua: string, error?: unknown, env?: VisitEnv): b
     if (sw === 800 && sh === 600 && iw > sw) return true;
     if (MOBILE_UA.test(ua || '') && iw > Math.max(sw, sh)) return true;
   }
-  return IOS_UA.test(ua || '') && !/Safari\//.test(ua || '') && env.standalone !== true;
+  return false;
 }
 
 // ── Core ──────────────────────────────────────────────────────────────

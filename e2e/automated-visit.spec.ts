@@ -65,8 +65,6 @@ test.describe('what the window gives away', () => {
 
   test("the iPhone's hidden link preview", () => {
     expect(isAutomatedVisit(IPHONE, undefined, { ...IPHONE_SCREEN, innerW: 1920, standalone: false })).toBe(true);
-    // No Safari token and not a home-screen app, even at a phone's width.
-    expect(isAutomatedVisit(IPHONE, undefined, { ...IPHONE_SCREEN, innerW: 402, standalone: false })).toBe(true);
     // A phone browser whose window is wider than its screen.
     expect(isAutomatedVisit(IPHONE_SAFARI, undefined, { ...IPHONE_SCREEN, innerW: 1920 })).toBe(true);
   });
@@ -79,6 +77,8 @@ test.describe('what the window gives away', () => {
     expect(isAutomatedVisit(PHONE, undefined, { screenW: 412, screenH: 915, innerW: 412 })).toBe(false);
     // A desktop window spread over two monitors is wider than the screen it starts on.
     expect(isAutomatedVisit(DESKTOP, undefined, { screenW: 1920, screenH: 1080, innerW: 2400 })).toBe(false);
+    // An in-app browser (Instagram, Mail) names no Safari either, and is a coach.
+    expect(isAutomatedVisit(IPHONE, undefined, { ...IPHONE_SCREEN, innerW: 402, standalone: false })).toBe(false);
     // The installed app's webview names no Safari and is a person every time.
     expect(isAutomatedVisit(IPHONE, undefined, { ...IPHONE_SCREEN, innerW: 402, native: true })).toBe(false);
     expect(isAutomatedVisit(IPHONE_SAFARI, undefined, { ...IPHONE_SCREEN, innerW: 402, standalone: false })).toBe(false);

@@ -409,8 +409,19 @@ export function ringStats() {
 // and every `docker compose up --build` waits out the grace period and ends in
 // a SIGKILL through whatever write was in flight.
 process.on('beforeExit', () => { void flushToFile(); });
+//
+// The one line written on the way out says it was ASKED to stop. A deploy and
+// a crash read the same otherwise — a "startup" line and nothing before it —
+// and the audit of 22.10.2026 had to take fifty restarts on trust. Written
+// before the flush, so it is in the batch the flush writes.
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.once(sig, () => {
+    // Guarded: nothing may stand between a stop signal and the exit below.
+    try {
+      log.info('api.shutdown', `${sig} received — flushing the log and exiting`, {
+        signal: sig, uptimeS: Math.round(process.uptime()),
+      });
+    } catch { /* the flush and the exit still happen */ }
     void flushToFile().finally(() => {
       process.removeAllListeners(sig);
       process.kill(process.pid, sig);

@@ -69,7 +69,11 @@ export default defineConfig({
     // who was signed in. The suite stubs what it needs, so the proxy points at a
     // closed port: anything unstubbed now fails loudly instead of quietly
     // talking to production.
-    env: { VITE_API_BASE_URL: '', DEV_API_TARGET: 'http://127.0.0.1:9' },
+    // The logger's edge probe goes to the live Cloudflare edge by default
+    // (src/lib/logger.ts, EDGE_PROBE_URL). Same rule: a closed local port, so
+    // an unstubbed probe reads "edge down" instead of reaching production.
+    // e2e/support/app.ts answers it for every spec that signs in.
+    env: { VITE_API_BASE_URL: '', DEV_API_TARGET: 'http://127.0.0.1:9', VITE_EDGE_PROBE_URL: 'http://127.0.0.1:9/edge-probe.txt' },
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 60000,

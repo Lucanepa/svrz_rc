@@ -23,3 +23,9 @@
   Cache-Control: no-cache
 /manifest.webmanifest
   Cache-Control: no-cache
+
+# The logger's "is it the device's network?" probe (src/lib/logger.ts,
+# EDGE_PROBE_URL). An answer from any cache would say "online" for a device
+# that is not, so nothing may keep a copy of it.
+/edge-probe.txt
+  Cache-Control: no-store

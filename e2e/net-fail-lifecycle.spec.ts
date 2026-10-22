@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp, openFeedbackForm, fillWholeForm, GAME } from './support/app';
+import { stubSignedInApp, openFeedbackForm, fillWholeForm, GAME, EDGE_PROBE_ROUTE } from './support/app';
 import { LEAVE_GRACE_MS } from '../src/lib/logger';
 
 /**
@@ -22,10 +22,13 @@ type Entry = { lvl: string; evt: string; msg?: string; data?: Record<string, unk
  *  that long in case the page is leaving, so an immediate read sees nothing. */
 async function lastFailure(page: Page): Promise<Entry | undefined> {
   await page.waitForTimeout(LEAVE_GRACE_MS + 200);
-  return page.evaluate(() => {
+  // A would-be outage also waits for the edge probe after the grace.
+  const read = () => page.evaluate(() => {
     const logs = (window as unknown as { svrzLogs: () => Entry[] }).svrzLogs();
     return logs.filter((e) => e.evt.startsWith('net.fail')).pop();
   });
+  await expect.poll(read, { timeout: 6_000 }).toBeDefined();
+  return read();
 }
 
 /** Slow enough that only the lifecycle can excuse it — past INSTANT_FAIL_MS. */
@@ -129,6 +132,82 @@ test('a failure does not carry a capability token into the log', async ({ page }
   const entry = await lastFailure(page);
   expect(JSON.stringify(entry)).not.toContain('tok-abcdef123456');
   expect(entry?.msg).toContain('/api/survey/<token>');
+});
+
+/**
+ * The one failure no lifecycle rule excuses: a visible, online page whose
+ * request died after 50 ms. Nine of them were mailed as an API outage up to
+ * 17.10.2026 — a tethered laptop, a phone between networks, a laptop that
+ * reached nothing for ten minutes while every other client reached the API —
+ * and each one retried fine. The logger now asks the Cloudflare edge first.
+ */
+test.describe('asking the edge before calling it an outage', () => {
+  /** Every probe the page sends, whatever the support stub answers. */
+  function probes(page: Page): string[] {
+    const seen: string[] = [];
+    page.on('request', (r) => { if (r.url().includes('edge-probe.txt')) seen.push(r.url()); });
+    return seen;
+  }
+
+  test('the edge answers: our API is down, an error that says so', async ({ page }) => {
+    const sent = probes(page);
+    await failSlowly(page);
+    expect(await lastFailure(page)).toMatchObject({ lvl: 'error', evt: 'net.fail', data: { edge: 'up' } });
+    expect(sent).toHaveLength(1);
+    // Absolute, on the edge, never the page's own origin — in the installed
+    // app that is tauri.localhost, which always answers.
+    const probe = new URL(sent[0]);
+    expect(probe.origin).not.toBe(new URL(page.url()).origin);
+    expect(probe.pathname).toBe('/edge-probe.txt');
+    expect(probe.searchParams.get('e')).toMatch(/^\d+$/);
+  });
+
+  test("the edge is unreachable too: the device's network, a warning", async ({ page }) => {
+    await page.route(EDGE_PROBE_ROUTE, (r) => r.abort('internetdisconnected'));
+    await failSlowly(page);
+    expect(await lastFailure(page)).toMatchObject({ lvl: 'warn', evt: 'net.fail.network', data: { edge: 'down' } });
+  });
+
+  test('an edge that does not answer in time counts as unreachable', async ({ page }) => {
+    // Never answered: the probe gives up after EDGE_PROBE_TIMEOUT_MS (4 s).
+    await page.route(EDGE_PROBE_ROUTE, () => { /* hang */ });
+    await failSlowly(page);
+    await page.waitForTimeout(4_000);
+    expect(await lastFailure(page)).toMatchObject({ lvl: 'warn', evt: 'net.fail.network', data: { edge: 'down' } });
+  });
+
+  test('one probe answers for a burst of failures', async ({ page }) => {
+    const sent = probes(page);
+    await page.evaluate(async () => {
+      await new Promise((r) => setTimeout(r, 80));
+      await Promise.all([1, 2, 3].map(() => fetch('/api/lost-cause').catch(() => {})));
+    });
+    await page.waitForTimeout(LEAVE_GRACE_MS + 500);
+    const errors = await page.evaluate(() => (window as unknown as { svrzLogs: () => Entry[] }).svrzLogs()
+      .filter((e) => e.evt === 'net.fail' && e.lvl === 'error'));
+    expect(errors).toHaveLength(3);
+    expect(sent).toHaveLength(1);
+  });
+
+  test('a page that leaves while the edge is asked is a warning after all', async ({ page }) => {
+    // The probe takes a second; the coach switches app during it.
+    await page.route(EDGE_PROBE_ROUTE, (r) => setTimeout(() => r.fulfill({ status: 200, body: 'ok\n' }).catch(() => {}), 1_000));
+    await failSlowly(page);
+    await page.waitForTimeout(LEAVE_GRACE_MS + 300);
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(await lastFailure(page)).toMatchObject({ lvl: 'warn', evt: 'net.fail.unload' });
+  });
+
+  test("the installed app's live stream dropping is a warning, and asks nobody", async ({ page }) => {
+    const sent = probes(page);
+    await page.route('**/api/events*', (r) => setTimeout(() => r.abort(), 80));
+    await failSlowly(page, '/api/events');
+    expect(await lastFailure(page)).toMatchObject({ lvl: 'warn', evt: 'net.fail.live' });
+    expect(sent).toHaveLength(0);
+  });
 });
 
 // What a send that the network lost is called once it is back on screen. The

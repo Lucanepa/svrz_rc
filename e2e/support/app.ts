@@ -297,6 +297,10 @@ export type StubOptions = {
  * calling this to override a specific one — in Playwright the last matching
  * handler wins.
  */
+/** Whatever host the probe is pointed at (playwright.config.ts sets a closed
+ *  local port; a reused dev server may still name the live edge). */
+export const EDGE_PROBE_ROUTE = '**/edge-probe.txt*';
+
 export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promise<void> {
   await pinClock(page);
   const name = opts.signedInAs ?? RC.name;
@@ -315,6 +319,11 @@ export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promi
   }
   // Catch-all first, so an endpoint nobody named still answers something valid.
   await page.route('**/api/**', (r) => r.fulfill({ json: [] }));
+  // The logger's edge probe (EDGE_PROBE_URL): the edge answers, so a request
+  // that fails on a visible, online page is still the API's outage — an error,
+  // as every spec written before the probe expects. A spec that wants the
+  // device's own network to be down routes it again to fail.
+  await page.route(EDGE_PROBE_ROUTE, (r) => r.fulfill({ status: 200, contentType: 'text/plain', body: 'ok\n' }));
   // The live stream, answered as a stream. Left to the catch-all it came back as
   // JSON, and EventSource logged a MIME-type error into every test's console —
   // noise that one spec asserts the absence of, for good reason.

@@ -429,7 +429,7 @@ export function isPageLeaving(): boolean { return leaving; }
  *  it — a spec that simulates a reload would otherwise downgrade every failure
  *  the next spec measures. Nothing in the app calls this: a page that really
  *  reloaded is gone. */
-export function resetPageLifecycle(): void { leaving = false; reloading = false; lastOfflineAt = -Infinity; lastLeftAt = -Infinity; }
+export function resetPageLifecycle(): void { leaving = false; reloading = false; lastOfflineAt = -Infinity; lastLeftAt = -Infinity; edgeProbe = null; }
 
 /** When the browser last said `offline` (performance.now()). A phone that
  *  loses the network drops every request in flight, and the log already
@@ -455,7 +455,14 @@ function leftSince(started: number, hiddenAtStart = false): boolean {
   return leaving || hiddenAtStart || lastLeftAt >= started;
 }
 
-export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving, wentOffline = false): { evt: string; lvl: ClientLevel } {
+/** The live stream. On the web it is an EventSource, which fetch never sees;
+ *  the installed app reads it through fetch (native.ts, FetchEventSource), so
+ *  every dropped stream there used to reach this wrapper as a failed request
+ *  — 14.10.2026, mailed as an outage. The stream reports its own trouble at
+ *  warn (liveEvents.ts), and connection.ts leaves it out of the banner too. */
+const LIVE_STREAM = /\/api\/events(\?|#|$)/;
+
+export function classifyFetchFailure(ms: number, error: unknown, isLeaving = leaving, wentOffline = false, url = ''): { evt: string; lvl: ClientLevel } {
   const name = error instanceof Error ? error.name : '';
   // The app cancelled it itself: the PDF reader closed while a document was
   // loading, the installed app's live stream closed (native.ts). Nothing
@@ -465,6 +472,7 @@ export function classifyFetchFailure(ms: number, error: unknown, isLeaving = lea
   if (name === 'AbortError') return { evt: 'net.fail.aborted', lvl: 'warn' };
   if (isLeaving) return { evt: 'net.fail.unload', lvl: 'warn' };
   if (wentOffline) return { evt: 'net.fail.offline', lvl: 'warn' };
+  if (LIVE_STREAM.test(url)) return { evt: 'net.fail.live', lvl: 'warn' };
   if (ms < INSTANT_FAIL_MS) return { evt: 'net.fail.instant', lvl: 'warn' };
   return { evt: 'net.fail', lvl: 'error' };
 }
@@ -481,6 +489,52 @@ export const UNAUTHORIZED_EVENT = 'svrz:unauthorized';
 export function isRcSessionRefusal(status: number, url: string): boolean {
   return status === 401 && /\/api\//.test(url)
     && !/\/api\/((auth|admin|coachee-file|president-notes|forms|feedback-archive|finance|referee-coaches|vm|survey-responses)(\/|\?|$)|survey\/|signature\/(?!start(\?|$))|ical\/(?!me(\?|$)))/.test(url);
+}
+
+// ── Is it us, or the device's network? ────────────────────────────────
+/** A static file on Cloudflare's edge, asked for when a request from a
+ *  visible, online page has failed and the grace for a navigation has run
+ *  out — the one case no rule above excuses. Up to 17.10.2026 nine such
+ *  failures were mailed as an API outage, every one of them retried fine:
+ *  a tethered laptop, a phone between networks, a laptop that reached
+ *  nothing at all for ten minutes while every other client reached the API.
+ *  If the edge does not answer either, the path between this device and the
+ *  internet is what failed (net.fail.network, a warning). If it answers, the
+ *  device is online and our API or tunnel is not: a real outage, mailed.
+ *
+ *  Absolute, never location.origin: the installed app runs on
+ *  tauri.localhost, which always answers. no-store in public/_headers and a
+ *  fresh query each time, so no cache can answer for the network; not in the
+ *  service-worker precache (vite.config.ts globPatterns has no .txt).
+ *  The e2e config points it at a closed local port, and the support stubs
+ *  answer it, so the suite never reaches the live edge. */
+export const EDGE_PROBE_URL: string = (typeof import.meta.env !== 'undefined'
+  && (import.meta.env.VITE_EDGE_PROBE_URL as string | undefined)?.trim())
+  || 'https://svrz-rc.openvolley.app/edge-probe.txt';
+export const EDGE_PROBE_TIMEOUT_MS = 4000;
+/** One probe answers for a whole burst: a dead network fails every request
+ *  in flight at once, and one question is enough for all of them. */
+export const EDGE_PROBE_SHARE_MS = 10_000;
+
+export type EdgeState = 'up' | 'down';
+let edgeProbe: { at: number; result: Promise<EdgeState> } | null = null;
+
+function probeEdge(): Promise<EdgeState> {
+  const now = performance.now();
+  if (edgeProbe && now - edgeProbe.at < EDGE_PROBE_SHARE_MS) return edgeProbe.result;
+  const result = new Promise<EdgeState>((resolve) => {
+    // Raced as well as aborted: an engine without AbortSignal.timeout still
+    // gets its answer in time.
+    const timer = setTimeout(() => resolve('down'), EDGE_PROBE_TIMEOUT_MS);
+    let signal: AbortSignal | undefined;
+    try { signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(EDGE_PROBE_TIMEOUT_MS) : undefined; } catch { /* old engine */ }
+    // no-cors: any answer at all, even an opaque one, means the edge was reached.
+    originalFetch(`${EDGE_PROBE_URL}?e=${Date.now()}`, { mode: 'no-cors', cache: 'no-store', credentials: 'omit', signal })
+      .then(() => resolve('up'), () => resolve('down'))
+      .finally(() => clearTimeout(timer));
+  });
+  edgeProbe = { at: now, result };
+  return result;
 }
 
 function installFetchLogging(): void {
@@ -520,23 +574,33 @@ function installFetchLogging(): void {
       // a survey that failed to load filed its capability token — which answers
       // the questionnaire AS the referee, and re-links an anonymous answer to
       // the person who gave it — into a Protokoll every admin reads.
-      const write = () => {
-        const { evt, lvl } = classifyFetchFailure(ms, error, leftSince(started, hiddenAtStart), offline());
+      const verdict = () => classifyFetchFailure(ms, error, leftSince(started, hiddenAtStart), offline(), url);
+      const write = (edge?: EdgeState) => {
+        let { evt, lvl } = verdict();
+        // The edge did not answer either: this device's network, not our API.
+        if (evt === 'net.fail' && edge === 'down') { evt = 'net.fail.network'; lvl = 'warn'; }
         clientLog[lvl](evt, `${method} ${scrubTokens(url)} failed after ${ms}ms (no response)`, {
-          method, url: scrubTokens(url), ms, error, online: navigator.onLine,
+          method, url: scrubTokens(url), ms, error, online: navigator.onLine, edge,
         });
       };
       // Anything already excused is written now. A failure that would go out
       // as an outage waits LEAVE_GRACE_MS, so a navigation that has not fired
-      // pagehide yet gets the chance to claim it (see the constant).
-      // The banner follows the same verdict, so a page that is only reloading
-      // never tells the coach their network is down.
-      const settle = () => {
-        const { evt } = classifyFetchFailure(ms, error, leftSince(started, hiddenAtStart), offline());
-        if (evt === 'net.fail') conn.failed(); else conn.dropped();
-      };
-      if (classifyFetchFailure(ms, error, leftSince(started, hiddenAtStart), offline()).lvl === 'error') setTimeout(() => { write(); settle(); }, LEAVE_GRACE_MS);
-      else { write(); settle(); }
+      // pagehide yet gets the chance to claim it (see the constant), and then
+      // asks the edge whether the device can reach the internet at all. The
+      // verdict is taken again after the probe: the page may have left, or
+      // the browser said `offline`, while it was out.
+      // The banner follows the verdict at the end of the grace — a request
+      // that got no answer is one the coach should hear about, whoever's
+      // network it was — so a page that is only reloading never tells the
+      // coach their network is down.
+      const settle = () => { if (verdict().evt === 'net.fail') conn.failed(); else conn.dropped(); };
+      if (verdict().lvl === 'error') {
+        setTimeout(() => {
+          settle();
+          if (verdict().lvl !== 'error') { write(); return; }
+          void probeEdge().then(write, () => write());
+        }, LEAVE_GRACE_MS);
+      } else { write(); settle(); }
       throw error;
     }
   };

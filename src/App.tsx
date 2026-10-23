@@ -2098,12 +2098,17 @@ export default function App() {
       setSigSlug(started.slug);
     } catch { setSigError(formData.lang === 'DE' ? 'Konnte nicht gestartet werden.' : 'Could not start.'); }
   };
-  const saveSignatureHere = async () => {
+  const saveSignatureHere = () => {
     if (!sigPadRef.current || sigPadRef.current.isEmpty()) return;
     const data = sigPadRef.current.toDataURL();
     updateSignature(data);
-    if (sigSlug) { try { await submitSignatureSession(sigSlug, data, sigSignerName(sigTarget)); } catch { /* ignore */ } }
+    // Closed at once: the ink is on the form already. The dialog used to wait
+    // for the copy below, which in a gym took up to a minute (22.10.2026) — the
+    // coach tapped again, and every extra tap sent the same signature into a
+    // 409. The copy only tells a phone that scanned the QR it is done; its
+    // answer was never read.
     setSigModalOpen(false);
+    if (sigSlug) void submitSignatureSession(sigSlug, data, sigSignerName(sigTarget)).catch(() => { /* see above */ });
   };
   useEffect(() => {
     if (!sigModalOpen || !sigSlug) return;

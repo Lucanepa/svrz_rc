@@ -54,7 +54,11 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30, not 15: a shard runs ~7 minutes, but a changed package-lock.json
+    # (every app version bump) misses the browser cache, and installing
+    # Chromium and its system packages took another 9. Shards were cut off
+    # mid-run with nothing failing and the deploy skipped (22. and 23.10.2026).
+    timeout-minutes: 30
     strategy:
       # Every shard reports; a failure in one must not hide a second one.
       fail-fast: false

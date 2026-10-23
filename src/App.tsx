@@ -47,6 +47,9 @@ import {
   startSignature,
   getSignatureSession,
   submitSignatureSession,
+  getSavedRcSignature,
+  setSavedRcSignatureEnabled,
+  type SavedRcSignature,
   getPresidentNote,
   savePresidentNote,
   getIcalSubscription,
@@ -92,7 +95,7 @@ import { flushRcNotes, isNetworkFailure, queueRcNote, queuedRcNotes, type Queued
 import { richToPlain, richToDisplayHtml, sanitizeRich, appendToRich } from './lib/richText';
 import { importFresh } from './lib/freshImport';
 import StaleBuildNotice from './components/StaleBuildNotice';
-import { NotebookPen, BarChart3 } from 'lucide-react';
+import { NotebookPen, BarChart3, Signature } from 'lucide-react';
 import NotebookSheet, { type InsertContext } from './components/NotebookSheet';
 import { RichSurface, RichToolbar, RichView, appendBullet, appendCheck } from './components/RichText';
 import * as notebookSync from './lib/notebookSync';
@@ -1837,6 +1840,45 @@ export default function App() {
   const [padOpen, setPadOpen] = useState(false);
   // The Options sheet behind the bottom nav (language, admin, calendar, log out, Load draft).
   const [optionsOpen, setOptionsOpen] = useState(false);
+  /** The coach's own signature, kept by the server from their last filed
+   *  report (23.10.2026): a new form starts with it in the coach's box. */
+  const [savedRcSig, setSavedRcSig] = useState<SavedRcSignature>({ enabled: true, data: '' });
+  const [savedRcSigBusy, setSavedRcSigBusy] = useState(false);
+  /** Games the coach took the kept signature off, for this visit: the coach
+   *  signs the visit, so it is per game, both referees' reports at once. */
+  const [rcSigDropped, setRcSigDropped] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (!rcAuth.rcId || isDemoMode()) { setSavedRcSig({ enabled: true, data: '' }); return; }
+    let live = true;
+    // Failing is harmless: the coach signs by hand, as before.
+    void getSavedRcSignature().then((kept) => { if (live) setSavedRcSig(kept); }).catch(() => {});
+    return () => { live = false; };
+  }, [rcAuth.rcId]);
+  const toggleSavedRcSig = async () => {
+    if (savedRcSigBusy) return;
+    const de = formData.lang === 'DE';
+    const next = !savedRcSig.enabled;
+    if (!next && !(await confirmDialog({
+      title: de ? 'Unterschrift nicht mehr merken?' : 'Stop remembering your signature?',
+      message: de
+        ? 'Die gemerkte Unterschrift wird gelöscht, und neue Formulare beginnen wieder ohne. Bereits gesendete Feedbacks bleiben, wie sie sind.'
+        : 'The remembered signature is deleted, and new forms start without it again. Feedback already sent stays as it is.',
+      confirmLabel: de ? 'Nicht mehr merken' : 'Stop remembering',
+      cancelLabel: de ? 'Abbrechen' : 'Cancel',
+      lang: formData.lang,
+    }))) return;
+    setSavedRcSigBusy(true);
+    try {
+      setSavedRcSig(await setSavedRcSignatureEnabled(next));
+      toast.success(next
+        ? (de ? 'Deine Unterschrift wird ab dem nächsten gesendeten Feedback gemerkt.' : 'Your signature is remembered from the next feedback you send.')
+        : (de ? 'Unterschrift gelöscht — sie wird nicht mehr gemerkt.' : 'Signature deleted — it is no longer remembered.'));
+    } catch (error) {
+      toast.error(de ? `Konnte nicht gespeichert werden: ${error instanceof Error ? error.message : String(error)}` : `Could not be saved: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setSavedRcSigBusy(false);
+    }
+  };
   const padOpenRef = useRef(false);
   padOpenRef.current = padOpen;
   const [padPages, setPadPages] = useState<NotebookPage[]>([]);
@@ -2098,12 +2140,17 @@ export default function App() {
       setSigSlug(started.slug);
     } catch { setSigError(formData.lang === 'DE' ? 'Konnte nicht gestartet werden.' : 'Could not start.'); }
   };
-  const saveSignatureHere = async () => {
+  const saveSignatureHere = () => {
     if (!sigPadRef.current || sigPadRef.current.isEmpty()) return;
     const data = sigPadRef.current.toDataURL();
     updateSignature(data);
-    if (sigSlug) { try { await submitSignatureSession(sigSlug, data, sigSignerName(sigTarget)); } catch { /* ignore */ } }
+    // Closed at once: the ink is on the form already. The dialog used to wait
+    // for the copy below, which in a gym took up to a minute (22.10.2026) — the
+    // coach tapped again, and every extra tap sent the same signature into a
+    // 409. The copy only tells a phone that scanned the QR it is done; its
+    // answer was never read.
     setSigModalOpen(false);
+    if (sigSlug) void submitSignatureSession(sigSlug, data, sigSignerName(sigTarget)).catch(() => { /* see above */ });
   };
   useEffect(() => {
     if (!sigModalOpen || !sigSlug) return;
@@ -4177,7 +4224,7 @@ export default function App() {
       // them at the top of the form (German unless English was chosen),
       // whatever the app is set to — so the downloaded copy and the mailed
       // one are the same document.
-      const pdfData = toRefereePdfData(formData);
+      const pdfData = toRefereePdfData(formDisabled ? formData : withSavedRcSig(formData));
       const pdf = buildFeedbackPdf(pdfData);
 
       const file = new File([pdf.output('blob')], pdfFilename(pdfData), { type: 'application/pdf' });
@@ -4610,8 +4657,12 @@ export default function App() {
       const role = sendRole ?? formData.role;
       const stored = formForRole(role);
       if (!stored) throw new Error(`No form for ${role}`);
-      const notice = (await submitSingleFeedback(stored.formData, stored.tipsAndTricks))
+      const sent = withSavedRcSig(stored.formData);
+      const notice = (await submitSingleFeedback(sent, stored.tipsAndTricks))
         .replace(`${role}: `, '');
+      // The server keeps the signature this report went out with; so does
+      // this screen, for the next form, without asking it again.
+      if (sent.rcSignature) setSavedRcSig((kept) => (kept.enabled ? { ...kept, data: sent.rcSignature as string } : kept));
       // Refreshed in the background so every other tab is already up to date
       // when the coach navigates back to it.
       //
@@ -4803,7 +4854,7 @@ export default function App() {
         : `Please fill in the form for ${role} first.`);
       return false;
     }
-    const error = validateSingleForm(stored.formData);
+    const error = validateSingleForm(withSavedRcSig(stored.formData));
     if (role === formData.role) setShowGaps(!!error);
     if (error && role === formData.role) {
       // To the first gap, once the red is on it. Both layouts are in the DOM
@@ -4876,6 +4927,16 @@ export default function App() {
     return rec.status === 'queued' ? 'queued' : rec.status === 'filed' ? 'filed' : '';
   })();
   const formDisabled = !reopenedId && (feedbackLocked || isGameRoleClosed || !!draftRoleSent);
+  /** The kept signature, for a form whose coach box is still empty. Not
+   *  written into the form: an untouched form must not read as work to keep,
+   *  and a coach who signs anew simply covers it. Validation, the PDF and the
+   *  send all read the form through withSavedRcSig. */
+  const savedRcSigFor = (fd: FeedbackFormData): string =>
+    !fd.rcSignature && savedRcSig.enabled && savedRcSig.data && !rcSigDropped.has(selectedGameId) ? savedRcSig.data : '';
+  const withSavedRcSig = (fd: FeedbackFormData): FeedbackFormData => {
+    const kept = savedRcSigFor(fd);
+    return kept ? { ...fd, rcSignature: kept } : fd;
+  };
   /** The Tips & Tricks box lives outside the form card and so outside the
    *  wrapper that goes inert with it; it is locked by the same three facts,
    *  plus a filed record being on screen. */
@@ -6997,6 +7058,23 @@ export default function App() {
                 </button>
               )}
               {rcAuth.rcName && !isDemoMode() && <PushOption lang={formData.lang} />}
+              {rcAuth.rcName && !isDemoMode() && (
+                <button
+                  type="button"
+                  onClick={() => void toggleSavedRcSig()}
+                  disabled={savedRcSigBusy}
+                  aria-pressed={savedRcSig.enabled}
+                  data-testid="option-keep-signature"
+                  className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer disabled:opacity-60"
+                  title={formData.lang === 'DE'
+                    ? 'Deine Unterschrift vom letzten gesendeten Feedback steht im nächsten Formular schon drin.'
+                    : 'Your signature from the last feedback you sent is already on the next form.'}
+                >
+                  <Signature size={18} />
+                  <span className="flex-1 text-left">{formData.lang === 'DE' ? 'Unterschrift merken' : 'Remember my signature'}</span>
+                  <span className="text-xs font-semibold text-stone-500">{savedRcSig.enabled ? (formData.lang === 'DE' ? 'An' : 'On') : (formData.lang === 'DE' ? 'Aus' : 'Off')}</span>
+                </button>
+              )}
               {/* Whether this phone holds what the app needs with no signal.
                   Prepared by itself after the first load; tapping prepares it
                   again (e.g. after a new season's games came in). */}
@@ -10483,21 +10561,19 @@ export default function App() {
         <div className="border-x border-b border-stone-900 grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-stone-300">
           {([
             { target: 'referee' as const, image: formData.signature || '', label: formData.lang === 'DE' ? 'Unterschrift Schiedsrichter' : 'Referee signature' },
-            { target: 'rc' as const, image: formData.rcSignature || '', label: formData.lang === 'DE' ? 'Unterschrift Referee Coach' : 'Referee Coach signature' },
+            { target: 'rc' as const, image: formData.rcSignature || (formDisabled ? '' : savedRcSigFor(formData)), label: formData.lang === 'DE' ? 'Unterschrift Referee Coach' : 'Referee Coach signature' },
           ]).map((sig) => {
+            // The coach's remembered signature, standing in until they sign anew.
+            const kept = sig.target === 'rc' && !formData.rcSignature && !!sig.image;
             // Ink, or for the referee a recorded refusal: either lets the report go.
             const missing = showGaps && !sig.image && !(sig.target === 'referee' && formData.results.refereeRefusedSignature === 'Y');
             return (
-            <div key={sig.target} className={cn("p-4 flex items-end gap-3 min-w-0", missing && GAP_RING)} data-missing={missing ? 'true' : undefined}>
-              <div className="flex-1 min-w-0">
-                <h4 className="text-[10px] font-bold uppercase text-stone-500 mb-2">{sig.label}</h4>
-                {sig.image ? (
-                  <img src={sig.image} alt={sig.label} className="h-20 max-w-full object-contain" />
-                ) : sig.target === 'referee' && formData.results.refereeRefusedSignature === 'Y' ? (
-                  <div className="h-14 border-b border-stone-400 flex items-end pb-1 text-sm italic text-stone-600">{formData.lang === 'DE' ? 'Unterschrift verweigert' : 'Signature refused'}</div>
-                ) : (
-                  <div className="h-14 border-b border-stone-400" />
-                )}
+            <div key={sig.target} className={cn("p-4 min-w-0", missing && GAP_RING)} data-missing={missing ? 'true' : undefined}>
+              {/* The same two rows in both boxes — the label (and, for the
+                  referee, the refusal) on top, the line and its buttons below —
+                  so the two signature lines sit at one height (2026-10-23). */}
+              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 min-h-8 mb-2">
+                <h4 className="text-[10px] font-bold uppercase text-stone-500">{sig.label}</h4>
                 {/* The way out when the referee will not sign: without it the
                     report cannot be filed, so the visit never reaches the
                     Spesen list. Only offered while there is no ink. */}
@@ -10509,7 +10585,7 @@ export default function App() {
                       aria-pressed={on}
                       onClick={() => setFormData(prev => ({ ...prev, results: { ...prev.results, refereeRefusedSignature: prev.results.refereeRefusedSignature === 'Y' ? '' : 'Y' } }))}
                       className={cn(
-                        "no-print mt-2 min-h-8 px-2 py-1 border border-stone-300 rounded text-[11px] font-bold leading-tight text-left transition-all",
+                        "no-print min-h-8 px-2 py-1 border border-stone-300 rounded text-[11px] font-bold leading-tight transition-all",
                         on ? SELECTED_RESULT : "bg-white hover:bg-stone-100"
                       )}
                     >
@@ -10518,9 +10594,23 @@ export default function App() {
                   );
                 })()}
               </div>
-              <div className="no-print flex flex-col gap-1.5 shrink-0">
-                <button type="button" onClick={() => void openSignatureModal(sig.target)} className="h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700">{formData.lang === 'DE' ? 'Unterschreiben' : 'Sign'}</button>
-                {sig.image && <button type="button" onClick={() => updateSignature('', sig.target)} className="h-8 px-3 rounded-lg border border-stone-200 text-xs text-stone-500 hover:bg-stone-100">{formData.lang === 'DE' ? 'Entfernen' : 'Remove'}</button>}
+              <div className="flex items-end gap-3">
+                <div className="flex-1 min-w-0">
+                  {sig.image ? (
+                    <>
+                      <img src={sig.image} alt={sig.label} className="h-20 max-w-full object-contain" />
+                      {kept && <p className="no-print text-[10px] text-stone-400">{formData.lang === 'DE' ? 'Gemerkte Unterschrift' : 'Remembered signature'}</p>}
+                    </>
+                  ) : sig.target === 'referee' && formData.results.refereeRefusedSignature === 'Y' ? (
+                    <div className="h-14 border-b border-stone-400 flex items-end pb-1 text-sm italic text-stone-600">{formData.lang === 'DE' ? 'Unterschrift verweigert' : 'Signature refused'}</div>
+                  ) : (
+                    <div className="h-14 border-b border-stone-400" />
+                  )}
+                </div>
+                <div className="no-print flex flex-col gap-1.5 shrink-0">
+                  <button type="button" onClick={() => void openSignatureModal(sig.target)} className="h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700">{formData.lang === 'DE' ? 'Unterschreiben' : 'Sign'}</button>
+                  {sig.image && <button type="button" onClick={() => (kept ? setRcSigDropped((s) => new Set(s).add(selectedGameId)) : updateSignature('', sig.target))} className="h-8 px-3 rounded-lg border border-stone-200 text-xs text-stone-500 hover:bg-stone-100">{formData.lang === 'DE' ? 'Entfernen' : 'Remove'}</button>}
+                </div>
               </div>
             </div>
             );

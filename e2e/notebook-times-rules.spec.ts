@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { NOTEBOOK_TIMES_KEY, decodeTimes, lineHash, lineTimes, linesOf, withLineTimes } from '../src/lib/notebookTimes';
+import { NOTEBOOK_TIMES_KEY, NOTEBOOK_TIMES_MINUTES_KEY, decodeTimes, lineHash, lineTimes, linesOf, withLineTimes } from '../src/lib/notebookTimes';
 
 /**
  * The time beside each line of a text page: when that note was written. The
@@ -96,6 +96,45 @@ test('a list too long for the bag is dropped, never sent to be refused', () => {
   const p = write([[huge, 0]], { text: '', extra: { other: 1 } });
   expect(p.extra).toEqual({ other: 1 });
   expect(p.extra![NOTEBOOK_TIMES_KEY]).toBeUndefined();
+});
+
+test('times are kept to the second', () => {
+  const first = withLineTimes('', undefined, 'Pfiff zu spät', T0 + 5_000);
+  const second = withLineTimes('Pfiff zu spät', first, 'Pfiff zu spät\nNetz', T0 + 37_000);
+  expect(lineTimes('Pfiff zu spät\nNetz', second)).toEqual([T0 + 5_000, T0 + 37_000]);
+});
+
+/** A list the way 1.3.6 wrote it: epoch minutes, under its own key. */
+const minutesList = (text: string, minutes: (number | null)[]) => linesOf(text).map((line, i) => {
+  const h = lineHash(line);
+  if (!h) return '';
+  const m = minutes[i];
+  return `${m === null ? '' : (T0 / MIN + m).toString(36)}.${h}`;
+});
+
+test("1.3.6's minutes are still read, and give way to seconds on the next write", () => {
+  const text = 'eins\nzwei';
+  const page = { text, extra: { [NOTEBOOK_TIMES_MINUTES_KEY]: minutesList(text, [0, 4]) } };
+  expect(shown(page)).toEqual([0, 4]);
+  const next = write([['eins\nzwei\ndrei', 9]], page);
+  expect(shown(next)).toEqual([0, 4, 9]);
+  expect(next.extra![NOTEBOOK_TIMES_MINUTES_KEY]).toBeUndefined();
+  expect(next.extra![NOTEBOOK_TIMES_KEY]).toHaveLength(3);
+});
+
+test('an edit made on an installed 1.3.6 keeps the seconds here, and adds its own minutes', () => {
+  const ours = write([['eins', 0], ['eins\nzwei', 2]]);
+  // 1.3.6 reads only its minutes list — there is none, so it knows no times —
+  // writes it for the text it leaves, and carries the seconds list along.
+  const text = 'eins\nzwei\ndrei';
+  const theirs = { text, extra: { ...ours.extra, [NOTEBOOK_TIMES_MINUTES_KEY]: minutesList(text, [null, null, 30]) } };
+  expect(shown(theirs)).toEqual([0, 2, 30]);
+  expect(shown(write([['eins\nzwei\ndrei\nvier', 31]], theirs))).toEqual([0, 2, 30, 31]);
+});
+
+test('seconds never land in the minutes list, where 1.3.6 would misread them', () => {
+  const p = write([['eins', 0]], { text: '', extra: { [NOTEBOOK_TIMES_MINUTES_KEY]: [] } });
+  expect(Object.keys(p.extra!)).toEqual([NOTEBOOK_TIMES_KEY]);
 });
 
 test('a list that is not ours is ignored, not trusted', () => {

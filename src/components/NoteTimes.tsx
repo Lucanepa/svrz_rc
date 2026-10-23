@@ -74,8 +74,9 @@ export default function NoteTimes({ scrollRef, times, lineTitle }: {
       const rect = range.getClientRects()[0] || range.getBoundingClientRect();
       if (!rect || (!rect.height && !rect.top)) continue;
       const label = clockLabel(list[i]);
-      // The same minute twice running is still printed — every note has its
-      // time — but quieter, so the column reads as the evening's rhythm.
+      // Every note has its time, to the second; one written in the same
+      // minute as the note above it is printed quieter, so the column still
+      // reads as the evening's rhythm.
       out.push({ key: i, top: rect.top - origin, height: rect.height, at: list[i], repeat: label === previous });
       previous = label;
     }
@@ -103,7 +104,7 @@ export default function NoteTimes({ scrollRef, times, lineTitle }: {
   }, [scrollRef]);
 
   return (
-    <div className="relative shrink-0 w-12 border-r border-stone-200 bg-stone-50/60 select-none" aria-hidden="true" data-testid="pad-times">
+    <div className="relative shrink-0 w-14 border-r border-stone-200 bg-stone-50/60 select-none" aria-hidden="true" data-testid="pad-times">
       {labels.map((l) => (
         <span
           key={l.key}
@@ -112,7 +113,7 @@ export default function NoteTimes({ scrollRef, times, lineTitle }: {
           className={`absolute right-1.5 flex items-center text-[10px] leading-none tabular-nums ${l.repeat ? 'text-stone-300' : 'text-stone-500'}`}
           style={{ top: l.top, height: l.height }}
         >
-          {clockLabel(l.at)}
+          {clockLabel(l.at, { seconds: true })}
         </span>
       ))}
     </div>

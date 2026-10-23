@@ -1847,6 +1847,25 @@ export async function submitSignatureSession(slug: string, data: string, signer?
   if (!res.ok) throw new Error('Could not save signature');
 }
 
+/** The coach's own signature as kept by the server for their next report,
+ *  and whether they want it kept at all (on unless they turned it off). */
+export type SavedRcSignature = { enabled: boolean; data: string };
+export async function getSavedRcSignature(): Promise<SavedRcSignature> {
+  if (isDemoMode()) return { enabled: false, data: '' };
+  const res = await fetch(apiUrl('/api/rc/signature'), { credentials: 'include' });
+  if (!res.ok) throw new Error('Could not load the saved signature');
+  const body = await res.json() as Partial<SavedRcSignature>;
+  return { enabled: body.enabled !== false, data: typeof body.data === 'string' && body.data.startsWith('data:image/') ? body.data : '' };
+}
+export async function setSavedRcSignatureEnabled(enabled: boolean): Promise<SavedRcSignature> {
+  const res = await fetch(apiUrl('/api/rc/signature'), {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error(await res.text().catch(() => '') || `HTTP ${res.status}`);
+  const body = await res.json() as Partial<SavedRcSignature>;
+  return { enabled: body.enabled !== false, data: typeof body.data === 'string' ? body.data : '' };
+}
+
 // ---- Post-visit survey (coachee's feedback on the RC) ----
 // No demo branch: #/survey/<token> mounts its own root, which the demo never
 // reaches, and a token only exists once a real feedback mail has gone out.

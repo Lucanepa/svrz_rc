@@ -8918,6 +8918,70 @@ app.post('/api/push/unsubscribe', requireRcSession, async (req: Request, res: Ex
   }
 });
 
+// ---------------------------------------------------------------------------
+// The coach's own signature, kept for their next report (Luca, 23.10.2026:
+// "once a RC signs once, save the signature on the server so next time it is
+// still there — can be turned off in settings"). Kept when a report the coach
+// signed is filed, so the one on their latest report is the one their next
+// form starts with; read back by the form, which shows it in the coach's box.
+// One row per coach in a table of its own (no endpoint handing out coach
+// records can carry the image along). Turned off, the image goes and the row
+// stays behind as the "no" the next filing respects.
+// ---------------------------------------------------------------------------
+const RC_SIGNATURE_COLLECTION = 'rc_saved_signatures';
+
+async function savedSignatureRow(rcId: string): Promise<AnyRecord | null> {
+  const rows = await db.collection(RC_SIGNATURE_COLLECTION).getFullList<AnyRecord>({
+    filter: `rc_id = "${escapeFilterValue(rcId)}"`,
+  });
+  return rows[0] || null;
+}
+
+/** Keeps `data` as the coach's signature unless they turned that off. */
+async function keepRcSignature(rcId: string, data: string): Promise<void> {
+  if (!rcId || !data) return;
+  const row = await savedSignatureRow(rcId);
+  if (row?.opted_out === true || (row && asText(row.data) === data)) return;
+  if (row) await db.collection(RC_SIGNATURE_COLLECTION).update(String(row.id), { data });
+  else await db.collection(RC_SIGNATURE_COLLECTION).create({ rc_id: rcId, data, opted_out: false });
+}
+
+app.get('/api/rc/signature', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  const rcAuth = rcAuthByReq.get(req);
+  if (!rcAuth?.rcId) { res.status(403).json({ error: say('Nur für Referee Coaches.', 'Referee coaches only.') }); return; }
+  // Not for a shared cache: it is one coach's signature. The app's own
+  // offline copy is what lets a form in a gym with no signal start signed.
+  res.set('Cache-Control', 'private, no-cache');
+  try {
+    await ensureAdminAuth();
+    const row = await savedSignatureRow(rcAuth.rcId);
+    const enabled = row?.opted_out !== true;
+    res.json({ enabled, data: enabled && row ? asText(row.data) : '' });
+  } catch (error) {
+    if (isMissingCollectionError(error)) { res.json({ enabled: true, data: '' }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
+app.put('/api/rc/signature', requireRcSession, async (req: Request, res: ExpressResponse) => {
+  const rcAuth = rcAuthByReq.get(req);
+  if (!rcAuth?.rcId) { res.status(403).json({ error: say('Nur für Referee Coaches.', 'Referee coaches only.') }); return; }
+  const enabled = (req.body ?? {}).enabled;
+  if (typeof enabled !== 'boolean') { res.status(400).json({ error: say('enabled fehlt.', 'enabled is missing.') }); return; }
+  try {
+    await ensureAdminAuth();
+    const row = await savedSignatureRow(rcAuth.rcId);
+    const fields = enabled ? { opted_out: false } : { opted_out: true, data: '' };
+    if (row) await db.collection(RC_SIGNATURE_COLLECTION).update(String(row.id), fields);
+    else await db.collection(RC_SIGNATURE_COLLECTION).create({ rc_id: rcAuth.rcId, data: '', ...fields });
+    log.info('rc.signature', `${rcAuth.name}: signature ${enabled ? 'kept from the next report on' : 'no longer kept, and removed'}`, { enabled }, reqCtx(req));
+    res.json({ enabled, data: enabled && row ? asText(row.data) : '' });
+  } catch (error) {
+    if (isMissingCollectionError(error)) { res.status(503).json({ error: say('Die Datenbank ist noch nicht bereit.', 'The database is not ready yet.') }); return; }
+    res.status(500).json({ error: safeError(error) });
+  }
+});
+
 app.post('/api/push/test', requireRcSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
@@ -13378,6 +13442,15 @@ app.post('/api/feedback/submit', requireRcSession, async (req: Request, res: Exp
     await retireParkedRole(refereeCoachPersonId, String(game.id), String(role)).catch((error: unknown) => {
       if (!isMissingCollectionError(error)) log.warn('park.retire', 'could not retire the parked draft of a filed report', { feedbackId: created.id, error: String(error) }, reqCtx(req));
     });
+
+    // The coach's signature on this report is the one their next form starts
+    // with — unless they said no. Best-effort, like the line above: the report
+    // is filed either way.
+    if (rcAuth?.rcId) {
+      await keepRcSignature(rcAuth.rcId, parkSignature(formData.rcSignature)).catch((error: unknown) => {
+        if (!isMissingCollectionError(error)) log.warn('rc.signature', 'could not keep the coach\'s signature', { feedbackId: created.id, error: String(error) }, reqCtx(req));
+      });
+    }
 
     // Phase 5 — Response
     log.info('feedback.submit', `${replacing ? 'refiled' : 'filed'} ${asText(game.match_no) || game.id} · ${String(role)}${emailSent ? '' : ' (no mail)'}`, {

@@ -405,3 +405,21 @@ model PresidentNote {
   seq Int @default(autoincrement()) @map("_seq")
   @@map("president_notes")
 }
+
+/// The coach's own signature, kept for their next report (23.10.2026). Its own
+/// table, one row per coach, so that no endpoint handing out coach records can
+/// carry the image along. `opted_out` is the coach's "no": the image goes, and
+/// the next filed report does not bring it back.
+model RcSavedSignature {
+  id String @id @db.VarChar(15)
+  rc_id String @default("")
+  data String @default("")
+  opted_out Boolean @default(false)
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@unique([rc_id])
+  @@map("rc_saved_signatures")
+}

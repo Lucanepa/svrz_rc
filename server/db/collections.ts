@@ -365,4 +365,18 @@ export const COLLECTIONS: Record<string, CollectionMeta> = {
       {name: 'updated', type: 'autodate'},
     ],
   },
+  rc_saved_signatures: {
+    name: 'rc_saved_signatures',
+    // Born on Postgres (23.10.2026).
+    id: 'pg_rc_saved_signatures',
+    delegate: 'rcSavedSignature',
+    fields: [
+      {name: 'id', type: 'text'},
+      {name: 'rc_id', type: 'text'},
+      {name: 'data', type: 'text'},
+      {name: 'opted_out', type: 'bool'},
+      {name: 'created', type: 'autodate'},
+      {name: 'updated', type: 'autodate'},
+    ],
+  },
 };

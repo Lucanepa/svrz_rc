@@ -568,20 +568,22 @@ test.describe('The time column', () => {
   const margin = (page: Page) => sheet(page).getByTestId('pad-times');
   const toggle = (page: Page) => sheet(page).getByTestId('pad-times-toggle');
   const TEXT = 'Netz nicht kontrolliert\n\nDer 2. SR steht zu weit links';
-  /** The list the sheet itself keeps: epoch minutes and a hash per line. */
-  const stamped = (text: string, minutes: number[]) => ({
-    lt: linesOf(text).map((line, i) => (lineHash(line) ? `${minutes[i].toString(36)}.${lineHash(line)}` : '')),
+  /** The list the sheet itself keeps: epoch seconds and a hash per line. */
+  const stamped = (text: string, seconds: number[]) => ({
+    ls: linesOf(text).map((line, i) => (lineHash(line) ? `${seconds[i].toString(36)}.${lineHash(line)}` : '')),
   });
+  const label = (sec: number) => clockLabel(sec * 1000, { seconds: true });
 
   test('each note shows its own time; a new one shows now, and is kept', async ({ page }) => {
-    const start = Math.floor((suiteNow() - 40 * 60_000) / 60_000);
-    await seedPad(page, [padPage({ text: TEXT, extra: stamped(TEXT, [start, 0, start + 25]) })]);
+    const start = Math.floor((suiteNow() - 40 * 60_000) / 1000);
+    await seedPad(page, [padPage({ text: TEXT, extra: stamped(TEXT, [start, 0, start + 25 * 60 + 17]) })]);
     await stubSignedInApp(page);
     await page.goto('/');
     await openPad(page);
     await expect(toggle(page)).toHaveAttribute('aria-pressed', 'true');
     // The blank line between them has nothing to show.
-    await expect(margin(page).locator('[data-line]')).toHaveText([clockLabel(start * 60_000), clockLabel((start + 25) * 60_000)]);
+    // To the second.
+    await expect(margin(page).locator('[data-line]')).toHaveText([label(start), label(start + 25 * 60 + 17)]);
     expect(await margin(page).locator('[data-line]').evaluateAll((els) => els.map((el) => el.getAttribute('data-line')))).toEqual(['0', '2']);
 
     await pageBox(page).click();
@@ -590,8 +592,9 @@ test.describe('The time column', () => {
     await page.keyboard.type('Pfiff zu spät');
     const labels = margin(page).locator('[data-line]');
     await expect(labels).toHaveCount(3);
-    const now = [clockLabel(suiteNow()), clockLabel(suiteNow() - 60_000)];
-    expect(now).toContain(await labels.nth(2).textContent());
+    const typed = await labels.nth(2).textContent();
+    expect(typed).toMatch(/^\d\d:\d\d:\d\d$/);
+    expect([clockLabel(suiteNow()), clockLabel(suiteNow() - 60_000)]).toContain(typed!.slice(0, 5));
 
     // Each label stands beside its own line, not stacked at the top.
     const tops = await labels.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
@@ -602,11 +605,11 @@ test.describe('The time column', () => {
     await expect(padSaved(page)).toBeVisible();
     const row = (await storedPages(page))[0];
     expect(row.text).toBe(`${TEXT}\nPfiff zu spät`);
-    expect((row.extra as { lt: string[] }).lt).toHaveLength(4);
+    expect((row.extra as { ls: string[] }).ls).toHaveLength(4);
   });
 
   test('the toggle hides the column, and this device remembers it', async ({ page }) => {
-    await seedPad(page, [padPage({ text: TEXT, extra: stamped(TEXT, [Math.floor(suiteNow() / 60_000), 0, Math.floor(suiteNow() / 60_000)]) })]);
+    await seedPad(page, [padPage({ text: TEXT, extra: stamped(TEXT, [Math.floor(suiteNow() / 1000), 0, Math.floor(suiteNow() / 1000)]) })]);
     await stubSignedInApp(page);
     await page.goto('/');
     await openPad(page);

@@ -1,6 +1,6 @@
 // When each line of a text page was written — the small clock in the margin
 // beside every note (Luca, 2026-10-22: "a column on the left of every note …
-// what time the note has been written").
+// what time the note has been written"), to the second since 2026-10-23.
 //
 // The page's text stays exactly what it was: the subset in richText.ts has no
 // block elements and no attributes, and the times are not content — they never
@@ -10,20 +10,29 @@
 //
 // One entry per line of the page's plain reading (richToPlain → split '\n'):
 //   ''              an empty line — nothing written, nothing to stamp
-//   '<t36>.<h36>'   epoch MINUTES and a hash of that line's text
+//   '<t36>.<h36>'   the time, base 36, and a hash of that line's text
 //   '.<h36>'        a line whose time is not known (written before this
 //                   existed, or by a build that does not keep times)
 //
-// The hash is what makes the list survive a writer that does not maintain it.
-// The installed apps carry the build they shipped with, and an edit made there
-// keeps the old list against a new text. Read back, the entries are matched to
-// the lines by hash first and by position only inside the stretches that
-// changed, so a foreign edit costs the times of the lines it touched — never a
-// time printed beside the wrong note.
+// Two keys, one per unit. `ls` holds epoch SECONDS and is the only one written.
+// `lt` holds epoch MINUTES: what 1.3.6 wrote (web 22.10, installed app 1.3.6),
+// and what an installed 1.3.6 still writes when it edits a page — it reads and
+// writes `lt` only and carries `ls` along untouched in the bag. So `lt` is read
+// as a fallback, line by line, and dropped on the next write here. Seconds were
+// not put into `lt`: 1.3.6 would have printed them as minutes, a clock some
+// three thousand years out.
+//
+// The hash is what makes a list survive a writer that does not maintain it.
+// Read back, the entries are matched to the lines by hash first and by
+// position only inside the stretches that changed, so a foreign edit costs the
+// times of the lines it touched — never a time printed beside the wrong note.
 
 import { richToPlain } from './richText';
 
-export const NOTEBOOK_TIMES_KEY = 'lt';
+/** Epoch seconds per line — the list this build writes. */
+export const NOTEBOOK_TIMES_KEY = 'ls';
+/** Epoch minutes per line — 1.3.6's list, read only. */
+export const NOTEBOOK_TIMES_MINUTES_KEY = 'lt';
 /** Well under the server's 20 000-byte cap on the whole bag. */
 export const NOTEBOOK_TIMES_MAX_CHARS = 16_000;
 /** Above this many line pairs in one changed stretch, lines are paired by
@@ -31,6 +40,7 @@ export const NOTEBOOK_TIMES_MAX_CHARS = 16_000;
 const GAP_SCAN_LIMIT = 20_000;
 const LCS_LIMIT = 250_000;
 
+/** `t` in epoch seconds, 0 = not known. */
 type Entry = { t: number; h: string; text?: string };
 
 const isBlank = (line: string): boolean => line.trim() === '';
@@ -51,22 +61,24 @@ export const linesOf = (text: string): string[] => richToPlain(text || '').split
 
 const ENTRY_RE = /^([0-9a-z]{0,9})\.([0-9a-z]{1,8})$/;
 
-/** The stored list, or null when there is none or it is not ours to read. */
-export function decodeTimes(extra: unknown): Entry[] | null {
+/** One stored list in seconds, or null when there is none or it is not ours
+ *  to read. `key` picks the list; the minutes one is scaled on the way in. */
+export function decodeTimes(extra: unknown, key: string = NOTEBOOK_TIMES_KEY): Entry[] | null {
   if (!extra || typeof extra !== 'object' || Array.isArray(extra)) return null;
-  const raw = (extra as Record<string, unknown>)[NOTEBOOK_TIMES_KEY];
+  const raw = (extra as Record<string, unknown>)[key];
   if (!Array.isArray(raw)) return null;
+  const unit = key === NOTEBOOK_TIMES_MINUTES_KEY ? 60 : 1;
   const out: Entry[] = [];
   for (const item of raw) {
     if (item === '') { out.push({ t: 0, h: '' }); continue; }
     const m = typeof item === 'string' ? ENTRY_RE.exec(item) : null;
     if (!m) return null;
-    out.push({ t: m[1] ? parseInt(m[1], 36) : 0, h: m[2] });
+    out.push({ t: m[1] ? parseInt(m[1], 36) * unit : 0, h: m[2] });
   }
   return out;
 }
 
-/** The list as stored, or null when it would not fit the bag. */
+/** The list as stored (seconds), or null when it would not fit the bag. */
 export function encodeTimes(entries: { t: number; h: string }[]): string[] | null {
   const out = entries.map((e) => (e.h ? `${e.t > 0 ? e.t.toString(36) : ''}.${e.h}` : ''));
   return JSON.stringify(out).length > NOTEBOOK_TIMES_MAX_CHARS ? null : out;
@@ -159,22 +171,27 @@ function align(old: Entry[], next: string[], fill: number): number[] {
   return out;
 }
 
-/** The stored list as it stands against `text`: one time per line (epoch
- *  minutes, 0 = none). Matched by hash when a writer that does not keep times
- *  changed the text under it. */
-function entriesFor(extra: unknown, lines: string[]): Entry[] {
-  const stored = decodeTimes(extra);
-  const hashes = lines.map(lineHash);
-  if (!stored) return lines.map((text, i) => ({ t: 0, h: hashes[i], text }));
+/** One stored list against the lines as they stand: a time per line, matched
+ *  by hash when a writer that does not keep this list changed the text. */
+function timesFrom(stored: Entry[] | null, lines: string[], hashes: string[]): number[] {
+  if (!stored) return lines.map(() => 0);
   const inStep = stored.length === lines.length && stored.every((e, i) => e.h === hashes[i]);
-  const times = inStep ? stored.map((e) => e.t) : align(stored, lines, 0);
-  return lines.map((text, i) => ({ t: hashes[i] ? times[i] : 0, h: hashes[i], text }));
+  return inStep ? stored.map((e) => e.t) : align(stored, lines, 0);
+}
+
+/** Both lists as they stand against `lines`: the seconds where they know the
+ *  line, 1.3.6's minutes where only they do. */
+function entriesFor(extra: unknown, lines: string[]): Entry[] {
+  const hashes = lines.map(lineHash);
+  const seconds = timesFrom(decodeTimes(extra, NOTEBOOK_TIMES_KEY), lines, hashes);
+  const minutes = timesFrom(decodeTimes(extra, NOTEBOOK_TIMES_MINUTES_KEY), lines, hashes);
+  return lines.map((text, i) => ({ t: hashes[i] ? seconds[i] || minutes[i] : 0, h: hashes[i], text }));
 }
 
 /** What the margin shows: epoch milliseconds per line of `text`, 0 where
  *  there is nothing to show. */
 export function lineTimes(text: string, extra: unknown): number[] {
-  return entriesFor(extra, linesOf(text)).map((e) => e.t * 60_000);
+  return entriesFor(extra, linesOf(text)).map((e) => e.t * 1000);
 }
 
 /**
@@ -192,12 +209,13 @@ export function withLineTimes(
   const prevLines = linesOf(prevText);
   const nextLines = linesOf(nextText);
   const old = entriesFor(prevExtra, prevLines);
-  const times = align(old, nextLines, Math.floor(now / 60_000));
+  const times = align(old, nextLines, Math.floor(now / 1000));
   const encoded = encodeTimes(nextLines.map((line, i) => ({ t: times[i], h: lineHash(line) })));
   const before = prevExtra && Array.isArray(prevExtra[NOTEBOOK_TIMES_KEY]) ? prevExtra[NOTEBOOK_TIMES_KEY] as unknown[] : null;
-  if (encoded && before && before.length === encoded.length && before.every((v, i) => v === encoded[i])) return prevExtra;
-  const { [NOTEBOOK_TIMES_KEY]: _drop, ...rest } = prevExtra || {};
-  void _drop;
+  const legacy = !!prevExtra && NOTEBOOK_TIMES_MINUTES_KEY in prevExtra;
+  if (encoded && before && !legacy && before.length === encoded.length && before.every((v, i) => v === encoded[i])) return prevExtra;
+  const { [NOTEBOOK_TIMES_KEY]: _seconds, [NOTEBOOK_TIMES_MINUTES_KEY]: _minutes, ...rest } = prevExtra || {};
+  void _seconds; void _minutes;
   if (!encoded) return Object.keys(rest).length ? rest : undefined;
   return { ...rest, [NOTEBOOK_TIMES_KEY]: encoded };
 }

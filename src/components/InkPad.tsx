@@ -71,7 +71,7 @@ export type InkPadProps = {
   onErase(strokes: InkStroke[]): void;
   /** The page cannot take this stroke (size or stroke count). */
   onFull(): void;
-  /** The browser cancelled a stroke (Scribble, a gesture) — counted by the parent. */
+  /** The browser cancelled a pen stroke (Scribble, a gesture) — counted by the parent. */
   onCancelledStroke(): void;
   className?: string;
 };
@@ -487,11 +487,18 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     active = null;
     try { stage.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
     const p = props();
+    if (cancelled) stats.cancels += 1;
+    // A cancelled touch was not the coach's: iPadOS cancels a contact it took
+    // for the palm under the Pencil, and one an edge swipe claimed. It goes
+    // without a trace, with whatever its eraser rubbed out and had not handed
+    // over yet.
+    if (cancelled && a.kind === 'touch') { clearLive(); return; }
     if (a.eraser) { flushErase(true); clearLive(); return; }
-    if (cancelled) { stats.cancels += 1; p.onCancelledStroke(); }
-    // A cancelled stroke keeps what was drawn: iPadOS cancels a stroke it
+    // A cancelled pen stroke keeps what was drawn: iPadOS cancels a stroke it
     // hands to Scribble or a system gesture, and the coach's ink vanishing
-    // looked exactly like "it does not recognise my handwriting".
+    // looked exactly like "it does not recognise my handwriting". Scribble is
+    // the Pencil's, so only the pen counts for its hint.
+    if (cancelled && a.kind === 'pen') p.onCancelledStroke();
     if (a.samples.length === 0 || (cancelled && a.samples.length < 2)) { clearLive(); return; }
     const realPressure = a.kind === 'pen' && a.pressureSeen;
     const stroke: InkStroke = { c: p.tool.kind === 'pen' ? p.tool.colour : 0, w: NEW_STROKE_W, p: realPressure ? 1 : 0, d: [] };

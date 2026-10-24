@@ -73,6 +73,17 @@ async function syntheticStroke(page: Page, init: PointerInit, points: [number, n
   await page.evaluate(([b, xy]) => { window.dispatchEvent(new PointerEvent('pointerup', { ...(b as PointerEventInit), ...(xy as PointerEventInit) })); }, [base, at(...last)] as const);
 }
 
+/** Ink on the page canvas, the court's grey lines not counted. */
+async function nonBlankInk(page: Page): Promise<boolean> {
+  return stage(page).locator('canvas').first().evaluate((c: HTMLCanvasElement) => {
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return false;
+    const { data } = ctx.getImageData(0, 0, c.width, c.height);
+    for (let i = 0; i < data.length; i += 4) if (data[i + 3] > 128 && data[i] < 120 && data[i + 1] < 120) return true;
+    return false;
+  });
+}
+
 async function nonBlank(page: Page): Promise<boolean> {
   return stage(page).locator('canvas').first().evaluate((c: HTMLCanvasElement) => {
     const ctx = c.getContext('2d', { willReadFrequently: true });
@@ -150,18 +161,30 @@ test('a phone with no pen draws with the finger by default', async ({ page }) =>
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
 });
 
-test('pointercancel keeps what was drawn and counts for the Scribble hint; undo and clear work; the court stays with the page', async ({ page }) => {
+test('pointercancel: a pen stroke keeps what was drawn and counts for the Scribble hint, a finger stroke leaves nothing; undo and clear work; the court stays with the page', async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');
   await openPenPage(page, true);
-  // iPadOS cancels a stroke it hands to Scribble or a system gesture: the ink
-  // drawn until then stays (it vanishing looked like lost handwriting), and
-  // the second cancel brings the hint about Scribble.
   const box = (await pad(page).boundingBox())!;
+  const cancelled = async (pointerType: string, pointerId: number, y: number) => {
+    const init = { bubbles: true, pointerType, pointerId, isPrimary: true, buttons: 1, pressure: pointerType === 'pen' ? 0.4 : 0, width: 20, height: 20 };
+    await pad(page).dispatchEvent('pointerdown', { ...init, clientX: box.x + 10, clientY: box.y + y });
+    await pad(page).dispatchEvent('pointermove', { ...init, clientX: box.x + 60, clientY: box.y + y + 50 });
+    await page.evaluate(([type, id]) => window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: id as number, pointerType: type as string, bubbles: true })), [pointerType, pointerId] as const);
+  };
+  // A cancelled touch is a contact iPadOS took for a palm, or an edge swipe
+  // took over: it leaves nothing, and it is no sign of Scribble. (The finger
+  // still draws here: no pen has been seen yet.)
+  for (const [id, y] of [[21, 10], [22, 80]] as const) await cancelled('touch', id, y);
+  await page.waitForTimeout(300);
+  expect(await storedPages(page)).toHaveLength(0);
+  expect(await nonBlankInk(page)).toBe(false);
+  await expect(sheet(page).getByText(/Kritzeln aus|Scribble off/)).toHaveCount(0);
+  // iPadOS cancels a Pencil stroke it hands to Scribble or a system gesture:
+  // the ink drawn until then stays (it vanishing looked like lost
+  // handwriting), and the second cancel brings the hint about Scribble.
   for (const [n, y] of [[1, 10], [2, 80]] as const) {
-    await pad(page).dispatchEvent('pointerdown', { bubbles: true, pointerType: 'mouse', pointerId: 1, isPrimary: true, buttons: 1, clientX: box.x + 10, clientY: box.y + y });
-    await pad(page).dispatchEvent('pointermove', { bubbles: true, pointerType: 'mouse', pointerId: 1, isPrimary: true, buttons: 1, clientX: box.x + 60, clientY: box.y + y + 50 });
-    await page.evaluate(() => window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: 1, pointerType: 'mouse', bubbles: true })));
+    await cancelled('pen', 7, y);
     await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(n);
   }
   await expect(sheet(page).getByText(/Kritzeln aus|Scribble off/)).toBeVisible();

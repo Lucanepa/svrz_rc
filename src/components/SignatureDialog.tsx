@@ -184,7 +184,7 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
         tabIndex={-1}
         onPointerDownCapture={onPointerDownCapture}
         onClickCapture={onClickCapture}
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-sm sm:max-w-2xl p-4 max-h-[90vh] overflow-y-auto overscroll-contain select-none [-webkit-touch-callout:none] outline-none"
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-sm sm:max-w-2xl p-4 max-h-[85vh] overflow-y-auto overscroll-contain select-none [-webkit-touch-callout:none] outline-none"
       >
         <div className="flex items-center justify-between gap-2 mb-3">
           <h3 id={titleId} className="text-base font-bold text-stone-900 min-w-0">{title}</h3>

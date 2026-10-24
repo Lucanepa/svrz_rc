@@ -186,7 +186,12 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
 
   return (
     <div
-      className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print"
+      // Top-aligned, not centred: centred, the panel moved whenever something
+      // below the pad changed height (the QR arriving, or the 8 s start
+      // timeout turning the spinner into the offline note), and a pen in
+      // mid-stroke went on drawing at another height of the pad (47 px off on
+      // an iPad, 65 px on a phone). Only what is above the pad can move it now.
+      className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-start justify-center p-4 pt-[max(1rem,6vh)] z-50 no-print"
       // Inert on purpose (no onClick): see the top of this file. touch-action
       // and overscroll keep a palm from scrolling or pinching the page behind.
       style={{ touchAction: 'none', overscrollBehavior: 'contain' }}
@@ -234,7 +239,16 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
           </button>
         </div>
 
-        <div ref={padBoxRef} className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50/50 overflow-hidden">
+        <div
+          ref={padBoxRef}
+          className="mx-auto rounded-lg border-2 border-dashed border-stone-300 bg-stone-50/50 overflow-hidden"
+          // The pad takes every swipe (it draws), so the panel scrolls only
+          // where the pad is not. On a phone held sideways the full-width pad
+          // filled all of the 85vh panel below the buttons and the phone
+          // hand-off was out of reach; capped, there is room below and beside
+          // it. No effect from a portrait phone up to a landscape iPad.
+          style={{ maxWidth: 'calc((85vh - 10rem) * 2.5)' }}
+        >
           <SignaturePad ref={padRef} initialStrokes={initialStrokes} onChange={onPadChange} onPenLockChange={setPenLock} fingerToo={fingerToo} />
         </div>
 

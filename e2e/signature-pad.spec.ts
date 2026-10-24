@@ -570,6 +570,49 @@ test('the pad is there at once while the phone hand-off is still starting, and i
   await expect(rcSig(page)).toBeVisible();
 });
 
+for (const outcome of ['answers', 'fails'] as const) {
+  test(`the pad stays where the pen is when the phone hand-off ${outcome}`, async ({ page }) => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await page.route('**/api/signature/start', async (route) => {
+      await gate;
+      if (outcome === 'answers') await route.fulfill({ json: { slug: 'sig-test' } });
+      else await route.abort();
+    });
+    await page.goto('/');
+    await openFeedbackForm(page);
+    await openSign(page, 'rc');
+    const before = (await pad(page).boundingBox())!;
+    release();
+    await expect(signatureDialog(page).getByText(outcome === 'answers' ? /Waiting for signature|Warte auf Unterschrift/ : /offline/)).toBeVisible();
+    const after = (await pad(page).boundingBox())!;
+    // A pen mid-stroke keeps drawing on the same screen line: the pad must not
+    // move under it (it jumped 47 px on an iPad and 65 px on a phone).
+    expect(Math.abs(after.y - before.y)).toBeLessThan(0.5);
+    expect(Math.abs(after.x - before.x)).toBeLessThan(0.5);
+    expect(Math.abs(after.height - before.height)).toBeLessThan(0.5);
+  });
+}
+
+test.describe('a phone held sideways', () => {
+  test.use({ viewport: { width: 851, height: 393 } });
+  test('the pad leaves room below it to scroll the dialog to the phone hand-off', async ({ page }) => {
+    await page.route('**/api/signature/start', (route) => route.fulfill({ json: { slug: 'sig-test' } }));
+    await page.goto('/');
+    await openFeedbackForm(page);
+    await openSign(page, 'rc');
+    const box = (await pad(page).boundingBox())!;
+    const panel = (await signatureDialog(page).boundingBox())!;
+    // The pad swallows every swipe (it draws), so the dialog scrolls only
+    // where the pad is not: below it, and beside it.
+    expect(box.y + box.height).toBeLessThan(panel.y + panel.height - 30);
+    expect(box.width).toBeLessThan(panel.width - 100);
+    expect(box.width / box.height).toBeCloseTo(2.5, 1);
+    await signatureDialog(page).evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    await expect(signatureDialog(page).getByText(/Waiting for signature|Warte auf Unterschrift/)).toBeInViewport();
+  });
+});
+
 test('offline, the dialog does not wait for the phone hand-off: the pad shows at once and signing works', async ({ page }) => {
   const started: string[] = [];
   await page.route('**/api/signature/start', (r) => { started.push(r.request().method()); return r.fulfill({ json: { slug: 'sig-test' } }); });

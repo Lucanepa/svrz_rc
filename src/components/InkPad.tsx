@@ -25,6 +25,7 @@
 
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef, type RefObject } from 'react';
 import { freehandPath, type InkSample } from '../lib/inkPath';
+import { PEN_TRAILING_MS, captureQuietly, coalescedOf, isLargeContact } from '../lib/inkInput';
 import { INK_COLOURS, NEW_STROKE_W, minRadiusFor, outlineSamples, strokeOptions } from '../lib/inkStyle';
 import {
   PAGE_H, PAGE_W, clampZoom, fitPageScale, pageVisibleWhole, panBy, pinchView, resizeView, scaleOf, toPage, topView, visibleRect, zoomAbout,
@@ -73,15 +74,10 @@ export type InkPadProps = {
   onFull(): void;
   /** The browser cancelled a pen stroke (Scribble, a gesture) — counted by the parent. */
   onCancelledStroke(): void;
-  className?: string;
 };
 
-/** A fingertip is smaller; a palm is hundreds of px. Not 40: WebKit reports
- *  width = 2 × UITouch.majorRadius, about 42 for a light fingertip, so the old
- *  rule took every finger for a palm. */
-const PALM_MAX_CONTACT_PX = 80;
-/** Touch stays a palm this long after the pen was last seen. */
-const PEN_TRAILING_MS = 500;
+// The palm's size and the pen's trailing window are lib/inkInput.ts's, shared
+// with the signature pad: a palm is the same palm on both.
 /** A gesture that started moving this soon before the pen landed was the
  *  writing hand arriving first: it is undone. */
 const PALM_LEAD_MS = 300;
@@ -97,7 +93,7 @@ const PRESSURE_EMA = 0.5;
 const WHEEL_REPORT_MS = 150;
 
 /** Absolute samples of one stroke: [x, y, p01][] in page units. */
-export function strokePoints(stroke: InkStroke): InkSample[] {
+function strokePoints(stroke: InkStroke): InkSample[] {
   const out: InkSample[] = [];
   const d = stroke.d;
   let x = 0; let y = 0;
@@ -169,7 +165,9 @@ function eraserHits(stroke: InkStroke, x: number, y: number, radius: number, min
 // stroke as JSON, plus the commas between them.
 const strokeChars = new WeakMap<InkStroke, number>();
 
-function pageChars(page: InkPage): number {
+/** inkSize(page), counted from the cached lengths. Exported for the spec that
+ *  holds the two to the same number (e2e/notebook-ink.spec.ts). */
+export function pageChars(page: InkPage): number {
   let n = JSON.stringify({ ...page, strokes: [] }).length;
   for (const s of page.strokes) {
     if (!s || typeof s !== 'object') return inkSize(page);   // not a stroke as we know it: count it the slow, sure way
@@ -184,7 +182,7 @@ function pageChars(page: InkPage): number {
  *  middle, attack lines 3 m from it. Light lines under the ink, never part of
  *  it. Drawn in page units under the view's transform; `scale` (CSS px per
  *  unit) keeps the lines at least a pixel wide at any zoom. */
-export function renderBackground(ctx: CanvasRenderingContext2D, bg: PageBackground, scale: number): void {
+function renderBackground(ctx: CanvasRenderingContext2D, bg: PageBackground, scale: number): void {
   if (bg !== 'court') return;
   const left = 175; const right = 825;
   const top = 57; const bottom = 1357;
@@ -377,9 +375,8 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
 
   // ── the stage's size ─────────────────────────────────────────────────
   // The canvases are reassigned ONLY when their size changed (assigning
-  // resets the bitmap even for the same value — the on-screen keyboard
-  // opening used to wipe the SignaturePad), and a stage not laid out yet is
-  // left alone. Zoom never changes them.
+  // resets the bitmap even for the same value), and a stage not laid out yet
+  // is left alone. Zoom never changes them.
   const measure = () => {
     const r = stage.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) return;
@@ -427,11 +424,6 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     a.samples.push({ x, y, p, t });
   };
 
-  const coalesced = (e: PointerEvent): PointerEvent[] => {
-    const list = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
-    return list.length ? list : [e];
-  };
-
   const flushErase = (force: boolean) => {
     const a = active;
     if (!a || a.erased.size === 0) return;
@@ -460,10 +452,8 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     e.preventDefault();
     const eraser = props().tool.kind === 'eraser' || (kind === 'pen' && e.button === 5);
     active = { pointerId: e.pointerId, kind, startedAt: now, eraser, samples: [], minDist: SAMPLE_MIN_PX / scale(), pressureSeen: false, ema: 0, erased: new Set() };
-    // Capture AFTER the stroke started: setPointerCapture throws NotFoundError
-    // for a pointer that is not active — every synthetic dispatch — and
-    // unguarded it would abort the stroke and file a js.error.
-    try { stage.setPointerCapture(e.pointerId); } catch { /* see above */ }
+    // After the stroke started (lib/inkInput.ts says why).
+    captureQuietly(stage, e.pointerId);
     if (eraser) { eraseAt(x, y); return true; }
     if (kind === 'pen' && !(e.pressure > 0)) stats.penZeroStart += 1;
     addSample(active, x, y, kind === 'pen' ? e.pressure : 0, e.timeStamp);
@@ -561,11 +551,11 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
 
   const onTouchDown = (e: PointerEvent, now: number) => {
     const p = props();
-    const palm = e.width > PALM_MAX_CONTACT_PX || e.height > PALM_MAX_CONTACT_PX;
+    const palm = isLargeContact(e);
     const penBusy = !p.readOnly && ((!!active && active.kind === 'pen') || now - penAt < PEN_TRAILING_MS);
     const t: TouchState = { x: e.clientX, y: e.clientY, tainted: palm || penBusy };
     touches.set(e.pointerId, t);
-    try { stage.setPointerCapture(e.pointerId); } catch { /* a synthetic pointer has no capture */ }
+    captureQuietly(stage, e.pointerId);
     e.preventDefault();
     if (t.tainted) { stats.palms += 1; return; }
     if (active) {
@@ -660,7 +650,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       // Gated on the tracked pointer, never on e.buttons (synthetic moves carry 0).
       e.preventDefault();
       if (a.kind === 'touch') { const t = touches.get(e.pointerId); if (t) { t.x = e.clientX; t.y = e.clientY; } }
-      const list = coalesced(e);
+      const list = coalescedOf(e);
       if (a.eraser) { for (const ev of list) { const [x, y] = pagePoint(ev.clientX, ev.clientY); eraseAt(x, y); } flushErase(false); return; }
       if (a.kind === 'pen') { stats.penMoves += 1; stats.penCoalesced += list.length; }
       for (const ev of list) {
@@ -720,8 +710,9 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   // Safari's own pinch would zoom the whole app around the pad. On an iPad
   // the pointer path above does the pinch, so these are only prevented; with
   // no touch pointer down they are a Mac trackpad (or a Magic Keyboard's), and
-  // drive the zoom.
-  const onGestureStart = (e: Event) => { e.preventDefault(); webkitGesture = { z0: view.z }; };
+  // drive the zoom. One that starts with a finger down is never taken up: its
+  // end reported the iPad's pinch a second time.
+  const onGestureStart = (e: Event) => { e.preventDefault(); webkitGesture = touches.size ? null : { z0: view.z }; };
   const onGestureChange = (e: Event) => {
     e.preventDefault();
     const g = e as WebKitGestureEvent;
@@ -736,33 +727,6 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     webkitGesture = null;
     if (g && g.z0 !== view.z) report(true);
   };
-
-  /** The app went away mid-gesture: a missed pointerup must not leave a
-   *  finger "down" that blocks the next pinch. */
-  const forgetTouches = () => {
-    touches.clear();
-    if (gesture) endGesture();
-  };
-  const onVisibility = () => { if (document.visibilityState === 'hidden') { forgetTouches(); logVisit(); } };
-
-  stage.addEventListener('pointerdown', onDown);
-  stage.addEventListener('pointermove', onMove);
-  window.addEventListener('pointerup', onUp);
-  window.addEventListener('pointercancel', onCancel);
-  stage.addEventListener('touchmove', onTouchMoveNative, { passive: false });
-  // Natively and not passive: React's onWheel cannot prevent the browser's zoom.
-  stage.addEventListener('wheel', onWheel, { passive: false });
-  stage.addEventListener('gesturestart', onGestureStart);
-  stage.addEventListener('gesturechange', onGestureChange);
-  stage.addEventListener('gestureend', onGestureEnd);
-  window.addEventListener('blur', forgetTouches);
-  // On the window, in the capture phase: ahead of the logger's listener on the
-  // document, which ships what is queued as the app goes to the background.
-  window.addEventListener('visibilitychange', onVisibility, true);
-  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
-  if (ro) ro.observe(stage);
-  window.addEventListener('resize', measure);
-  measure();
 
   /** One line per page visit, numbers only: which of the causes behind thin or
    *  missing ink (a first pressure of 0, 60 Hz sampling, cancels, palms) a
@@ -791,6 +755,33 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     });
     stats = freshStats();
   };
+
+  /** The app went away mid-gesture: a missed pointerup must not leave a
+   *  finger "down" that blocks the next pinch. */
+  const forgetTouches = () => {
+    touches.clear();
+    if (gesture) endGesture();
+  };
+  const onVisibility = () => { if (document.visibilityState === 'hidden') { forgetTouches(); logVisit(); } };
+
+  stage.addEventListener('pointerdown', onDown);
+  stage.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onCancel);
+  stage.addEventListener('touchmove', onTouchMoveNative, { passive: false });
+  // Natively and not passive: React's onWheel cannot prevent the browser's zoom.
+  stage.addEventListener('wheel', onWheel, { passive: false });
+  stage.addEventListener('gesturestart', onGestureStart);
+  stage.addEventListener('gesturechange', onGestureChange);
+  stage.addEventListener('gestureend', onGestureEnd);
+  window.addEventListener('blur', forgetTouches);
+  // On the window, in the capture phase: ahead of the logger's listener on the
+  // document, which ships what is queued as the app goes to the background.
+  window.addEventListener('visibilitychange', onVisibility, true);
+  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+  if (ro) ro.observe(stage);
+  window.addEventListener('resize', measure);
+  measure();
 
   return {
     pageChanged() {
@@ -836,7 +827,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
 }
 
 export default function InkPad(props: InkPadProps) {
-  const { tool, controlRef, className } = props;
+  const { tool, controlRef } = props;
   const stageRef = useRef<HTMLDivElement>(null);
   const paperRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLCanvasElement>(null);
@@ -867,7 +858,6 @@ export default function InkPad(props: InkPadProps) {
     <div
       ref={stageRef}
       data-testid="ink-stage"
-      className={className}
       style={{
         position: 'absolute', inset: 0, overflow: 'hidden',
         touchAction: 'none', overscrollBehavior: 'contain',

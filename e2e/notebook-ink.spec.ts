@@ -485,6 +485,39 @@ test('a real tap on Rückgängig right after the pen is the writing hand, a tap 
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
 });
 
+test('the size guard counts a page exactly as the server does', async ({ page }) => {
+  // InkPad counts a page from cached per-stroke lengths, on every stroke end;
+  // the server counts JSON.stringify(page).length. A drift here is a stroke
+  // refused for nothing, or one the server answers with a 413 hours later.
+  await stubSignedInApp(page);
+  await page.goto('/');
+  const pairs = await page.evaluate(async () => {
+    const inkPadUrl = '/src/components/InkPad.tsx'; const notebookUrl = '/src/lib/notebook.ts';
+    const { pageChars } = await import(/* @vite-ignore */ inkPadUrl);
+    const { inkSize } = await import(/* @vite-ignore */ notebookUrl);
+    let seed = 7;
+    const rnd = (n: number) => { seed = (seed * 16807) % 2147483647; return seed % n; };
+    const stroke = () => ({ c: rnd(2), w: 1 + rnd(20), p: rnd(2), d: Array.from({ length: 4 * (1 + rnd(60)) }, (_, i) => (i < 4 ? rnd(14_140) : rnd(2_001) - 1_000)) });
+    const out: [number, number][] = [];
+    let ink = { w: 1000, h: 1414, strokes: [] as ReturnType<typeof stroke>[] };
+    out.push([pageChars(ink), inkSize(ink)]);
+    // Grown one stroke at a time, as the pad does: each count reuses the
+    // lengths cached for the strokes before.
+    for (let i = 0; i < 300; i += 1) {
+      ink = { ...ink, strokes: [...ink.strokes, stroke()] };
+      if (i % 37 === 0 || i < 3) out.push([pageChars(ink), inkSize(ink)]);
+    }
+    // Undo, an eraser hit in the middle, and the same page counted twice.
+    ink = { ...ink, strokes: ink.strokes.slice(0, -1) };
+    out.push([pageChars(ink), inkSize(ink)]);
+    ink = { ...ink, strokes: ink.strokes.filter((_, i) => i !== 150) };
+    out.push([pageChars(ink), inkSize(ink)], [pageChars(ink), inkSize(ink)]);
+    return out;
+  });
+  expect(pairs.length).toBeGreaterThan(8);
+  for (const [fast, sure] of pairs) expect(fast).toBe(sure);
+});
+
 test('a pen page files one line of counts when it is left, never a coordinate', async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');

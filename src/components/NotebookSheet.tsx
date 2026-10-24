@@ -85,6 +85,11 @@ function writePref(key: string, value: string): void {
 
 const FIELD_KEYS: PadField[] = ['bemerkungen', 'highlights', 'improvements', 'goals', 'tips'];
 
+/** A pen page with no strokes yet. One object, not one per render: the pad
+ *  redraws when its page prop changes identity, and every commit makes a new
+ *  page anyway ({ ...inkPage, strokes }), so this one is never written to. */
+const EMPTY_INK: InkPage = { w: 1000, h: 1414, strokes: [] };
+
 export default function NotebookSheet({ lang, ownerId, pages, status, insert, reviewOnly, full, onToggleFull, onClose }: NotebookSheetProps) {
   const tp = PAD_STRINGS[lang] || PAD_STRINGS.DE;
   const de = lang === 'DE';
@@ -240,7 +245,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     setInkLoading(!notebookSync.hasLocalInk(current.pageId));
     void notebookSync.getInk(current.pageId).then((page) => {
       if (!alive) return;
-      setInk(page || { w: 1000, h: 1414, strokes: [] });
+      setInk(page || EMPTY_INK);
       setInkLoading(false);
     });
     return () => { alive = false; };
@@ -359,7 +364,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     }
     setInk(next);
   };
-  const inkPage: InkPage = ink || { w: 1000, h: 1414, strokes: [] };
+  const inkPage: InkPage = ink || EMPTY_INK;
   const zoomPct = `${Math.round((inkZoom ? inkZoom.z : 1) * 100)} %`;
   const onStrokeEnd = (stroke: InkStroke) => commitInk({ ...inkPage, strokes: [...inkPage.strokes, stroke] });
   const onErase = (strokes: InkStroke[]) => {

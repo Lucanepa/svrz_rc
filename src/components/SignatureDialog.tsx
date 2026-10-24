@@ -32,8 +32,12 @@ export type SignatureRelay =
 export type SignatureSaveStats = SignaturePadStats & { fingerToo: boolean };
 
 type Props = {
+  /** React's own, declared because this project has no @types/react (see
+   *  GameRow.tsx's Keyed): App mounts a new dialog per form. */
+  key?: string;
   lang: 'DE' | 'EN';
   title: string;
+  /** Read once, at mount, like the pad's. */
   initialStrokes?: SigStroke[];
   onDraftChange(strokes: SigStroke[]): void;
   onSave(dataUrl: string, stats: SignatureSaveStats): void;

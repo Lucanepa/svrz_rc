@@ -2067,12 +2067,17 @@ export default function App() {
   const sigModalOpenRef = useRef(false);
   sigModalOpenRef.current = sigModalOpen;
   const [sigSlug, setSigSlug] = useState('');
-  const [sigError, setSigError] = useState('');
+  /** The phone hand-off could not start (offline, or the server said no):
+   *  the dialog says signing on a phone is not available, and the pad works. */
+  const [sigRelayFailed, setSigRelayFailed] = useState(false);
   /** The form the open dialog signs, captured when it opened, so a save can
    *  never land on another form than the one it was opened for. The referee
    *  signs to acknowledge the discussion, the coach for what the form says;
-   *  both use the same pad and the same QR hand-off to a phone. */
-  const [sigFor, setSigFor] = useState<{ gameId: string; role: string; target: 'referee' | 'rc'; key: string } | null>(null);
+   *  both use the same pad and the same QR hand-off to a phone. `draft` is
+   *  that form's half-drawn signature as it stood at the open: the dialog
+   *  reads its strokes once, at mount, so it is taken here and not read from
+   *  sigDraftsRef during a render. */
+  const [sigFor, setSigFor] = useState<{ gameId: string; role: string; target: 'referee' | 'rc'; key: string; draft?: SigStroke[] } | null>(null);
   /** Half-drawn signatures per form, so a close nobody chose (a Back swipe, a
    *  navigation, the dialog unmounting) does not cost the ink: reopening the
    *  same form brings it back. Memory only — half a signature on disk helps
@@ -2147,12 +2152,12 @@ export default function App() {
   };
   const openSignatureModal = async (target: 'referee' | 'rc') => {
     const seq = ++sigOpenSeqRef.current;
-    setSigFor({ gameId: selectedGameId, role: formData.role, target, key: sigDraftKey(selectedGameId, formData.role, target) });
-    setSigModalOpen(true); setSigSlug(''); setSigError('');
-    const failed = formData.lang === 'DE' ? 'Konnte nicht gestartet werden.' : 'Could not start.';
+    const key = sigDraftKey(selectedGameId, formData.role, target);
+    setSigFor({ gameId: selectedGameId, role: formData.role, target, key, draft: sigDraftsRef.current.get(key) });
+    setSigModalOpen(true); setSigSlug(''); setSigRelayFailed(false);
     // Offline there is no phone to relay through; say so at once instead of
     // waiting for a request that cannot answer. The pad works either way.
-    if (isOffline && !isDemoMode()) { setSigError(failed); return; }
+    if (isOffline && !isDemoMode()) { setSigRelayFailed(true); return; }
     try {
       const who = target === 'rc'
         ? `${formData.lang === 'DE' ? 'Referee Coach' : 'Referee Coach'} ${sigSignerName('rc')}`.trim()
@@ -2160,7 +2165,7 @@ export default function App() {
       const context = [formData.meta.mannschaften, formData.meta.liga, who].filter(Boolean).join(' · ');
       const started = await startSignature(context, sigSignerName(target));
       if (seq === sigOpenSeqRef.current) setSigSlug(started.slug);
-    } catch { if (seq === sigOpenSeqRef.current) setSigError(failed); }
+    } catch { if (seq === sigOpenSeqRef.current) setSigRelayFailed(true); }
   };
   const saveSignatureHere = (data: string, stats: SignatureSaveStats) => {
     const target = sigFor;
@@ -11198,7 +11203,7 @@ export default function App() {
       {sigModalOpen && sigFor && (() => {
         const de = formData.lang === 'DE';
         const relay: SignatureRelay = isDemoMode() ? { kind: 'demo' }
-          : sigError ? { kind: 'offline' }
+          : sigRelayFailed ? { kind: 'offline' }
           : !sigSlug ? { kind: 'loading' }
           : { kind: 'ready', url: signUrlFor(sigSlug), canShare: canShareLink, shareLabel: canShareLink ? t.sigShareLink : t.sigCopyLink, hint: t.sigLinkHint, onShare: () => void shareSignatureLink(sigSlug) };
         // Taken off this form with Entfernen, the coach's kept signature is one
@@ -11215,11 +11220,13 @@ export default function App() {
           : null;
         return (
           <SignatureDialog
+            // A new mount per form, so "read once, at mount" holds by construction.
+            key={sigFor.key}
             lang={formData.lang}
             title={sigFor.target === 'rc'
               ? (de ? 'Unterschrift Referee Coach' : 'Referee Coach signature')
               : (de ? 'Unterschrift Schiedsrichter' : 'Referee signature')}
-            initialStrokes={sigDraftsRef.current.get(sigFor.key)}
+            initialStrokes={sigFor.draft}
             onDraftChange={(strokes) => {
               if (strokes.length) sigDraftsRef.current.set(sigFor.key, strokes);
               else sigDraftsRef.current.delete(sigFor.key);

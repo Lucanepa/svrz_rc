@@ -175,9 +175,26 @@ export function markUsed(pageIds: string[], use: PageUse): void {
   }
 }
 
+/** Reads of a page's strokes that are still running, by store key. */
+const inkInFlight = new Map<string, Promise<InkPage | null>>();
+
 /** The strokes of a pen page: local first, the server when ours are missing or
- *  older. Null when neither has them (a brand-new page). */
-export async function getInk(pageId: string): Promise<InkPage | null> {
+ *  older. Null when neither has them (a brand-new page).
+ *
+ *  A second ask for the same page while the first is still out shares it.
+ *  React's StrictMode runs the sheet's ink effect twice on mount, and in
+ *  WebKit both runs reached the network before either had stored what it
+ *  fetched: two GETs for one page (notebook-ink spec, mobile-safari). */
+export function getInk(pageId: string): Promise<InkPage | null> {
+  const id = `${owner()}|${pageId}`;
+  const running = inkInFlight.get(id);
+  if (running) return running;
+  const read = readInk(pageId).finally(() => { if (inkInFlight.get(id) === read) inkInFlight.delete(id); });
+  inkInFlight.set(id, read);
+  return read;
+}
+
+async function readInk(pageId: string): Promise<InkPage | null> {
   const o = owner();
   const id = `${o}|${pageId}`;
   const page = cache.get(id);

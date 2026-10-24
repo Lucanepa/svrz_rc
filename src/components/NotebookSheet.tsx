@@ -379,7 +379,9 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     setInkZoom(zoom);
     if (!byUser) return;
     zoomLevel.current = zoom.z;
-    writePref(ZOOM_KEY, zoom.z.toFixed(2));
+    // Four places, not two: the whole page rounded up to 0.68 reopened a page
+    // 2.6 px too tall to fit (lib/inkView.ts snaps what is left).
+    writePref(ZOOM_KEY, zoom.z.toFixed(4));
     setZoomedOnce(true);
   };
 

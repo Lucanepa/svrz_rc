@@ -25,6 +25,11 @@ export const MAX_SCALE = 2.5;
 export const MIN_MAX_ZOOM = 2;
 /** One tap on Vergrössern / Verkleinern. */
 export const ZOOM_STEP = 1.5;
+/** A level this close above the whole page IS the whole page (half of the
+ *  last place of a level rounded to two): a level stored rounded, or a pinch
+ *  that ends a hair above it, left a page a few px too tall to fit,
+ *  off-centre and scrollable. */
+export const WHOLE_PAGE_SNAP = 0.005;
 
 export type Stage = { w: number; h: number };
 export type View = { z: number; ox: number; oy: number };
@@ -52,7 +57,8 @@ export function zoomRange(st: Stage): ZoomRange {
 
 export function clampZoom(st: Stage, z: number): number {
   const r = zoomRange(st);
-  return clamp(Number.isFinite(z) ? z : 1, r.min, r.max);
+  const v = clamp(Number.isFinite(z) ? z : 1, r.min, r.max);
+  return v - r.min <= WHOLE_PAGE_SNAP ? r.min : v;
 }
 
 export function scaleOf(st: Stage, z: number): number {

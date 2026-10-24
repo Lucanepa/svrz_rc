@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
-  PAGE_H, PAGE_W, VIEW_MARGIN, clampView, fitPageScale, fitWidthScale, fromPage, pinchView, panBy, resizeView, scaleOf, toPage, topView,
-  visibleRect, zoomAbout, zoomRange, zoomStepIn, zoomStepOut, type Stage, type View,
+  PAGE_H, PAGE_W, VIEW_MARGIN, clampView, clampZoom, fitPageScale, fitWidthScale, fromPage, pageVisibleWhole, pinchView, panBy, resizeView, scaleOf,
+  toPage, topView, visibleRect, zoomAbout, zoomRange, zoomStepIn, zoomStepOut, type Stage, type View,
 } from '../src/lib/inkView';
 
 /**
@@ -77,6 +77,21 @@ test('clamping: zoom stays in range, a big page never shows more than the margin
   const small = clampView(st, { z: r.min, ox: -300, oy: 900 });
   expect(small.ox).toBeCloseTo((st.w - pageBox(st, small).w) / 2, 9);
   expect(small.oy).toBeCloseTo((st.h - pageBox(st, small).h) / 2, 9);
+});
+
+test('a level a hair above the whole page is the whole page: a remembered level reopens a page that fits', () => {
+  // The sheet remembers the level as a number. The whole page rounded to two
+  // places (0.68 for 0.6776 on an iPad in portrait) reopened a page 2.6 px too
+  // tall for the stage, off-centre and scrollable.
+  for (const st of STAGES) {
+    const { min } = zoomRange(st);
+    for (const stored of [Number(min.toFixed(2)), Number(min.toFixed(4)), min * 1.004]) {
+      expect(clampZoom(st, stored)).toBe(min);
+      expect(pageVisibleWhole(st, topView(st, stored))).toBe(true);
+    }
+    // A level the coach chose just above it stays hers.
+    if (min < 1) expect(clampZoom(st, min * 1.02)).toBeCloseTo(min * 1.02, 12);
+  }
 });
 
 test('zooming about a point keeps the page point under it', () => {

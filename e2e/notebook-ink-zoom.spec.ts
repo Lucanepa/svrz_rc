@@ -325,6 +325,26 @@ test('the zoom level is remembered on this device, and every page opens at its t
   await expect(stage(page)).toHaveAttribute('data-zoom', '1.50');
 });
 
+test('the whole page, remembered, reopens whole after a reload: not a few px too tall', async ({ page }) => {
+  // An iPad in portrait: the whole page is 0.6776 of fit-width, which was
+  // stored as 0.68 and reopened 2.6 px taller than the stage's room.
+  await page.setViewportSize({ width: 820, height: 1180 });
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await wholePage(page).click();
+  await expect(zoomOut(page)).toBeDisabled();
+  await page.reload();
+  await launcher(page).click();
+  await sheet(page).getByTestId('pad-new-ink').click();
+  await expect(paper(page)).toBeVisible();
+  await expect(zoomOut(page)).toBeDisabled();
+  const s = await box(page, 'stage'); const p = await box(page, 'paper');
+  expect(p.y).toBeGreaterThanOrEqual(s.y + 7.5);
+  expect(p.y + p.height).toBeLessThanOrEqual(s.y + s.height - 7.5);
+  expect(Math.abs((p.y - s.y) - (s.y + s.height - p.y - p.height))).toBeLessThan(0.5);
+});
+
 test('fullscreen keeps the zoom and the point in the middle', async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');

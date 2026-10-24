@@ -307,15 +307,17 @@ test('a page whose ink is not local is fetched when opened', async ({ page }) =>
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
 });
 
-test('a stroke written while the newer server copy of its page is on the way stays: on screen, in IndexedDB and in the push', async ({ page }) => {
+test('a page whose newer strokes are on the way takes no stroke until they are in, and the next one goes onto them', async ({ page }) => {
   // Another device wrote on the page; the pull says so and its strokes are
-  // fetched, slowly (a gym). The coach goes on writing meanwhile. That stroke
-  // used to vanish: the sheet's next read shared the fetch that started
-  // before it, and the server's strokes replaced the page.
+  // fetched, slowly (a gym). A stroke written meanwhile once vanished when the
+  // fetch answered (the sheet's next read shared the fetch that started before
+  // it), and once — kept — was pushed over the other device's strokes. Since
+  // 25.10.2026 strokes not known to be current are read-only: nothing is
+  // written onto them until the server's are in (review, F4).
   const at = suiteNow() - 60_000;
   const id = `${RC.id}|page-ink-race`;
   const mine = { c: 0, w: 4, p: 0, d: [1000, 2000, 0, 0, 3000, 0, 0, 16] };
-  const row = { id, schema: 1, ownerId: RC.id, pageId: 'page-ink-race', kind: 'ink', title: '', text: '', bg: '', points: 2, usedIn: [], createdAt: at, updatedAt: at, deleted: false, dirty: false, savedAt: new Date(at).toISOString(), rejectedReason: '' };
+  const row = { id, schema: 1, ownerId: RC.id, pageId: 'page-ink-race', kind: 'ink', title: '', text: '', bg: '', points: 2, usedIn: [], createdAt: at, updatedAt: at, deleted: false, dirty: false, savedAt: new Date(at).toISOString(), rejectedReason: '', sides: 2 };
   await page.addInitScript(([db, r, ink]) => {
     const open = indexedDB.open(db, 1);
     open.onupgradeneeded = () => {
@@ -331,7 +333,7 @@ test('a stroke written while the newer server copy of its page is on the way sta
     };
   }, [PAD_DB, row, { id, ownerId: RC.id, page: { w: 1000, h: 1414, strokes: [mine] } }] as const);
   await stubSignedInApp(page);
-  const server = { pageId: 'page-ink-race', kind: 'ink', bg: '', points: 1, createdAt: at, updatedAt: at + 1000, deleted: false, schema: 1, savedAt: new Date(at + 1000).toISOString() };
+  const server = { pageId: 'page-ink-race', kind: 'ink', bg: '', points: 2, createdAt: at, updatedAt: at + 1000, deleted: false, schema: 1, savedAt: new Date(at + 1000).toISOString() };
   let releaseIndex!: () => void;
   const indexGate = new Promise<void>((resolve) => { releaseIndex = resolve; });
   await page.route('**/api/notebook', async (r) => { await indexGate; await r.fulfill({ json: { ownerId: RC.id, pages: [server] } }); });
@@ -344,10 +346,10 @@ test('a stroke written while the newer server copy of its page is on the way sta
     await r.fulfill({ json: { ownerId: RC.id, page: { ...server, ink: { w: 1000, h: 1414, strokes: [{ c: 0, w: 7, p: 0, d: [5000, 9000, 0, 0, 1000, 0, 0, 16] }] } } } });
     answered = true;
   });
-  const pushed: number[] = [];
+  const pushed: number[][] = [];
   await page.route('**/api/notebook/pages', async (r) => {
-    const body = JSON.parse(r.request().postData() || '{"pages":[]}') as { pages: { pageId: string; updatedAt: number; createdAt: number; ink?: { strokes: unknown[] } }[] };
-    for (const p of body.pages) if (p.ink) pushed.push(p.ink.strokes.length);
+    const body = JSON.parse(r.request().postData() || '{"pages":[]}') as { pages: { pageId: string; updatedAt: number; createdAt: number; ink?: { strokes: { w: number }[] } }[] };
+    for (const p of body.pages) if (p.ink) pushed.push(p.ink.strokes.map((st) => st.w));
     await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: body.pages.map((p) => ({ pageId: p.pageId, savedAt: new Date(suiteNow()).toISOString(), updatedAt: p.updatedAt, createdAt: p.createdAt })), stale: [], rejected: [] } });
   });
   await page.goto('/');
@@ -361,12 +363,13 @@ test('a stroke written while the newer server copy of its page is on the way sta
   await page.waitForTimeout(300);
   releaseInk();
   await expect.poll(() => answered, SYNC).toBe(true);
+  const strokes = async () => (await storedInk(page)).find((i) => i.id === id)?.page.strokes;
+  await expect.poll(async () => (await strokes())?.map((st) => st.w), SYNC).toEqual([7]);
   await page.waitForTimeout(500);
   await mouseStroke(page, 0.1, 0.6, 0.5, 0.65);
-  const strokes = async () => (await storedInk(page)).find((i) => i.id === id)?.page.strokes;
-  await expect.poll(async () => (await strokes())?.length, SYNC).toBe(3);
-  expect((await strokes())!.map((st) => st.w)).toEqual([4, 4, 4]);
-  await expect.poll(() => pushed[pushed.length - 1], { timeout: 15_000 }).toBe(3);
+  await expect.poll(async () => (await strokes())?.map((st) => st.w), SYNC).toEqual([7, 4]);
+  await expect.poll(() => pushed[pushed.length - 1], { timeout: 15_000 }).toEqual([7, 4]);
+  for (const sent of pushed) expect(sent[0], 'every push starts with the other device\'s stroke').toBe(7);
 });
 
 /** A pen stroke with a pressure per event: [fx, fy, pressure] of the page. */

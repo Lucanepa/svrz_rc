@@ -2371,13 +2371,32 @@ export async function listNotebook(): Promise<{ ownerId: string; pages: ServerPa
   return { ownerId, pages: ownerId ? pages : [] };
 }
 
+/** How long a page's strokes may take to come: up to 800 kB on a gym's
+ *  network, so not short — but not for ever either. A fetch that never
+ *  answered (a signal there in name only) kept the sheet on "wird geladen"
+ *  with nothing to press; ended, it says so and offers to try again
+ *  (review, 25.10.2026). */
+const NOTEBOOK_INK_TIMEOUT_MS = 25_000;
 export async function fetchNotebookInk(pageId: string): Promise<{ ownerId: string; page: ServerPage } | null> {
   if (isDemoMode() || !pageId) return null;
-  const response = await fetch(apiUrl(`/api/notebook/pages/${encodeURIComponent(pageId)}`), { credentials: 'include', cache: 'no-store' });
-  if (response.status === 404) return null;
-  if (!response.ok) throw await parkError(response, 'Could not load the page');
-  const raw = await response.json() as { ownerId?: string; page?: ServerPage };
-  return raw && raw.page && raw.ownerId ? { ownerId: parkedText(raw.ownerId), page: raw.page } : null;
+  let signal: AbortSignal | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') signal = AbortSignal.timeout(NOTEBOOK_INK_TIMEOUT_MS);
+  else if (typeof AbortController !== 'undefined') {
+    // Safari before 16 has no AbortSignal.timeout.
+    const controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), NOTEBOOK_INK_TIMEOUT_MS);
+    signal = controller.signal;
+  }
+  try {
+    const response = await fetch(apiUrl(`/api/notebook/pages/${encodeURIComponent(pageId)}`), { credentials: 'include', cache: 'no-store', signal });
+    if (response.status === 404) return null;
+    if (!response.ok) throw await parkError(response, 'Could not load the page');
+    const raw = await response.json() as { ownerId?: string; page?: ServerPage };
+    return raw && raw.page && raw.ownerId ? { ownerId: parkedText(raw.ownerId), page: raw.page } : null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**

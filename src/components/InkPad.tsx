@@ -40,6 +40,10 @@ export type InkTool = { kind: 'pen'; colour: 0 | 1 } | { kind: 'eraser' };
 /** The zoom level (relative to fit-width) and its range on this stage. */
 export type InkZoom = { z: number; min: number; max: number };
 
+/** Where the page lay on the stage, and how big the stage was: what a pad
+ *  made again for the same page opens at (initialView). */
+export type InkViewState = { stage: Stage; view: View };
+
 /** What the sheet around the pad may ask of it. */
 export type InkPadControl = {
   zoomIn(): void;
@@ -52,6 +56,12 @@ export type InkPadControl = {
    *  while touching, up); 0 = none yet. Hover does not count: a coach holding
    *  the Pencil over the page still taps the toolbar with the other hand. */
   lastPenAt(): number;
+  /** The stroke in progress ends now, with what it drew, as a stroke whose
+   *  up was lost does: the sheet calls this before it turns the page or the
+   *  side, which a key can do while the pen is still on the glass. */
+  endStroke(): void;
+  /** The view now, for a pad made again for this page; null before layout. */
+  viewState(): InkViewState | null;
 };
 
 export type InkPadProps = {
@@ -63,6 +73,11 @@ export type InkPadProps = {
   fingerDraws: boolean;
   /** The zoom level to open at, relative to fit-width. Read once, at the first layout. */
   initialZoom?: number;
+  /** The view to open at instead — the page's own, when the coach comes back
+   *  to its handwriting from its typed side (the place was lost, the zoom
+   *  kept: UI review, 25.10.2026). Read once, at the first layout, and fitted
+   *  to the stage as a resize would. */
+  initialView?: InkViewState | null;
   controlRef?: RefObject<InkPadControl | null>;
   /** The view's zoom changed, or its range did (a resize). `byUser` when the
    *  coach zoomed: a pinch, a wheel, a button. */
@@ -250,6 +265,8 @@ type Engine = {
   zoomFit(): void;
   zoomWidth(): void;
   lastPenAt(): number;
+  endStroke(): void;
+  viewState(): InkViewState | null;
   destroy(): void;
 };
 
@@ -398,7 +415,10 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     if (!moved && !resized) return;
     kx = bw / next.w; ky = bh / next.h;
     if (moved) {
-      view = stageSize ? resizeView(stageSize, next, view) : topView(next, clampZoom(next, props().initialZoom ?? 1));
+      const start = props().initialView;
+      view = stageSize ? resizeView(stageSize, next, view)
+        : start ? resizeView(start.stage, next, start.view)
+          : topView(next, clampZoom(next, props().initialZoom ?? 1));
       if (!stageSize) stats.zoomMax = view.z;
       stageSize = next;
       minR = minRadiusFor(fitPageScale(next));
@@ -857,7 +877,12 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       zoomTo(1);
     },
     lastPenAt: () => penContactAt,
+    endStroke() { finish('lost'); },
+    viewState: () => (stageSize ? { stage: stageSize, view } : null),
     destroy() {
+      // A stroke still open when the pad goes (the sheet closed by a key, the
+      // pad replaced under the pen) keeps what it drew rather than vanishing.
+      finish('lost');
       window.removeEventListener('pointerdown', onAnyDown, true);
       stage.removeEventListener('pointerdown', onDown);
       stage.removeEventListener('pointermove', onMove);
@@ -910,6 +935,8 @@ export default function InkPad(props: InkPadProps) {
     zoomFit: () => engineRef.current?.zoomFit(),
     zoomWidth: () => engineRef.current?.zoomWidth(),
     lastPenAt: () => engineRef.current?.lastPenAt() ?? 0,
+    endStroke: () => engineRef.current?.endStroke(),
+    viewState: () => engineRef.current?.viewState() ?? null,
   }), []);
 
   return (

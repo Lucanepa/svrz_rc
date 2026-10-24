@@ -197,7 +197,9 @@ test('typed and handwritten on one page: both stay through a reload, and both tr
   // The push: one page, its text and its strokes, from a client that writes both.
   await expect.poll(() => pushes.flatMap((p) => p.pages).some((w) => w.text === 'Netz zu hoch' && w.ink?.strokes.length === 1 && w.both === true), SYNC).toBe(true);
   const sent = pushes.flatMap((p) => p.pages).filter((w) => w.ink).at(-1)!;
-  expect(sent.kind).toBe('text');
+  // The side last written is the stroke's: the installed apps show a page by
+  // its kind, and so show the side with the latest on it (25.10.2026).
+  expect(sent.kind).toBe('ink');
   expect(sent.points).toBeGreaterThan(0);
   // A page with strokes goes in a request of its own.
   expect(pushes.find((p) => p.pages.some((w) => w.ink))!.pages).toHaveLength(1);
@@ -206,7 +208,7 @@ test('typed and handwritten on one page: both stay through a reload, and both tr
   const rows = await storedPages(page);
   expect(rows).toHaveLength(1);
   expect(rows[0].text).toBe('Netz zu hoch');
-  expect(rows[0].kind).toBe('text');
+  expect(rows[0].kind).toBe('ink');
 
   // Typed on again, the strokes the server already has stay home: the push
   // says what changed, and the server keeps the strokes it holds.
@@ -215,6 +217,8 @@ test('typed and handwritten on one page: both stay through a reload, and both tr
   await expect.poll(() => pushes.slice(before).flatMap((p) => p.pages).some((w) => w.text === 'Netz zu hoch, Antenne schief'), SYNC).toBe(true);
   for (const w of pushes.slice(before).flatMap((p) => p.pages)) expect(w).not.toHaveProperty('ink');
   await expect.poll(async () => (await storedPages(page))[0]?.dirty, SYNC).toBe(false);
+  // Typed on last, it is a typed page again.
+  expect((await storedPages(page))[0].kind).toBe('text');
 
   await page.reload();
   await openPad(page);

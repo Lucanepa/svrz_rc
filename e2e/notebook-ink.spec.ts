@@ -620,10 +620,17 @@ test.describe('a stroke whose pointerup never came', () => {
     const first = (await storedInk(page))[0].page.strokes[0].d;
     // The lost stroke kept all it drew: five samples, 0.1 to 0.5 of the page.
     expect(first.length / 4).toBe(5);
-    await burst(page, padSteps({ pointerType: 'mouse', pointerId: 1, button: 0 }, line(0.6, 0.1, 0.5, 4), false));
-    await page.waitForTimeout(600);
-    await mouseStroke(page, 0.1, 0.8, 0.9, 0.8);
+    // A mouse the same way, and only its press ends it: every event here is
+    // synthetic, so no real move with no button can end it first. (A mouse
+    // has one pointer id: the next press comes with the lost stroke's own.)
+    const mouse = { pointerType: 'mouse', pointerId: 1, button: 0 };
+    const nextPress = padSteps(mouse, line(0.8));
+    await burst(page, [...padSteps(mouse, line(0.6, 0.1, 0.5, 4), false), nextPress[0], { wait: 30 }, ...nextPress.slice(1)]);
+    // Two pen strokes, the lost mouse stroke, the next one.
     await expect.poll(() => strokeCount(page), SYNC).toBe(4);
+    const strokes = (await storedInk(page))[0].page.strokes;
+    expect(strokes[2].d.length / 4).toBe(5);
+    expect(strokes[3].d.length / 4).toBe(9);
     const before = await zoomLevel(page);
     await sheet(page).getByRole('button', { name: /^(Vergrössern|Zoom in)$/ }).click();
     await expect.poll(() => zoomLevel(page)).not.toBe(before);

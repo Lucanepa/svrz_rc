@@ -29,6 +29,7 @@ import AppSpinner from './AppSpinner';
 import StaleBuildNotice from './StaleBuildNotice';
 import NoteTimes from './NoteTimes';
 import { importFresh } from '../lib/freshImport';
+import { PEN_TRAILING_MS } from '../lib/inkInput';
 import type { InkPadControl, InkTool, InkZoom } from './InkPad';
 
 // perfect-freehand and the canvas code load the first time a coach opens a
@@ -70,8 +71,6 @@ const TIMES_KEY = 'svrz_pad_times';
  *  svrz_pad_full: a coach who writes zoomed in should not pinch on every new
  *  page. The level, never the position — each page opens at its top. */
 const ZOOM_KEY = 'svrz_ink_zoom';
-/** A touch on the sheet's buttons this soon after the pen is the writing hand. */
-const PALM_CLICK_MS = 500;
 /** A click this soon after a touch went down or up on its button is that
  *  touch's click (iOS sends it within a few hundred ms of the lift). */
 const TAP_CLICK_MS = 1000;
@@ -166,9 +165,14 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   // The writing hand rests on the sheet: on the toolbar right under the page,
   // on the page strip, by the header's buttons. iOS turns a short palm contact
   // into a click, and a click on Rückgängig took the last stroke away, one on
-  // Finger turned finger drawing on. A touch's click this soon after the pen is
-  // swallowed here, in the capture phase, before any button sees it — the
-  // signature dialog's failure, on the notebook (Jennifer, 23.10.2026).
+  // Finger turned finger drawing on. A touch's click is swallowed here, in the
+  // capture phase, before any button sees it — the signature dialog's
+  // failure, on the notebook (Jennifer, 23.10.2026) — when the pen was on the
+  // glass within PEN_TRAILING_MS of the click, or of that touch going down: a
+  // palm that lands on Rückgängig mid-letter can lift long after the pen did,
+  // and its click then undid the letter (final review, 24.10.2026). Only
+  // contact counts, never hover: a coach holding the Pencil over the page
+  // still taps the toolbar with the other hand.
   //
   // Which pointer made a click is read from the touches themselves, by the
   // element they landed on. The click's own pointerType cannot be trusted:
@@ -179,32 +183,46 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
-    const touched: { target: Node; at: number }[] = [];
-    const onTouch = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch' || !(e.target instanceof Node)) return;
-      touched.push({ target: e.target, at: performance.now() });
-      if (touched.length > 8) touched.shift();
+    const penBusy = (now: number) => {
+      const at = inkControl.current?.lastPenAt() ?? 0;
+      return !!at && now - at < PEN_TRAILING_MS;
     };
-    const byTouch = (e: MouseEvent): boolean => {
-      if ((e as PointerEvent).pointerType === 'touch') return true;
-      const target = e.target instanceof Node ? e.target : null;
+    /** The last few touches on the panel, by pointer, in the order they were
+     *  last seen: what they landed on, and whether the pen was busy then. */
+    const touched = new Map<number, { target: Node; busyAtDown: boolean; at: number }>();
+    const seen = (id: number, t: { target: Node; busyAtDown: boolean; at: number }) => {
+      touched.delete(id);
+      touched.set(id, t);
+      if (touched.size > 8) touched.delete(touched.keys().next().value as number);
+    };
+    const onTouchDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' || !(e.target instanceof Node)) return;
       const now = performance.now();
-      // The click goes to the element the touch hit, or to one around it.
-      return !!target && touched.some((t) => now - t.at < TAP_CLICK_MS && target.contains(t.target));
+      seen(e.pointerId, { target: e.target, busyAtDown: penBusy(now), at: now });
+    };
+    const onTouchUp = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' || !(e.target instanceof Node)) return;
+      const down = touched.get(e.pointerId);
+      seen(e.pointerId, { target: down ? down.target : e.target, busyAtDown: !!down && down.busyAtDown, at: performance.now() });
     };
     const onClick = (e: MouseEvent) => {
-      if (!byTouch(e)) return;
-      const penAt = inkControl.current?.lastPenAt() ?? 0;
-      if (!penAt || performance.now() - penAt >= PALM_CLICK_MS) return;
+      const target = e.target instanceof Node ? e.target : null;
+      const now = performance.now();
+      // The touch this click is from: the last one seen on the element the
+      // click went to, or on one inside it.
+      let tap: { busyAtDown: boolean } | null = null;
+      if (target) for (const t of touched.values()) if (now - t.at < TAP_CLICK_MS && target.contains(t.target)) tap = t;
+      if (!tap && (e as PointerEvent).pointerType !== 'touch') return;
+      if (!(tap && tap.busyAtDown) && !penBusy(now)) return;
       e.preventDefault();
       e.stopPropagation();
     };
-    panel.addEventListener('pointerdown', onTouch, true);
-    panel.addEventListener('pointerup', onTouch, true);
+    panel.addEventListener('pointerdown', onTouchDown, true);
+    panel.addEventListener('pointerup', onTouchUp, true);
     panel.addEventListener('click', onClick, true);
     return () => {
-      panel.removeEventListener('pointerdown', onTouch, true);
-      panel.removeEventListener('pointerup', onTouch, true);
+      panel.removeEventListener('pointerdown', onTouchDown, true);
+      panel.removeEventListener('pointerup', onTouchUp, true);
       panel.removeEventListener('click', onClick, true);
     };
   }, []);

@@ -529,6 +529,33 @@ test('a real tap on Rückgängig right after the pen is the writing hand, a tap 
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
 });
 
+test('a palm that landed on Rückgängig while the pen wrote stays a palm, however late it lifts', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await mouseStroke(page, 0.1, 0.2, 0.5, 0.25);
+  await expect.poll(() => strokeCount(page), SYNC).toBe(1);
+  await page.waitForTimeout(600);
+  const palm = { pointerType: 'touch', pointerId: 40, width: 30, height: 30 };
+  await burst(page, [
+    { pad: 'pointerdown', init: { ...PEN, pointerId: 7 }, at: [0.2, 0.5] },
+    { pad: 'pointermove', init: { ...PEN, pointerId: 7 }, at: [0.3, 0.5] },
+    // The heel of the writing hand comes down on the button mid-letter…
+    { el: 'undo', type: 'pointerdown', init: palm },
+    { pad: 'pointermove', init: { ...PEN, pointerId: 7 }, at: [0.4, 0.5] },
+    { pad: 'pointerup', init: { ...PEN, pointerId: 7, pressure: 0 }, at: [0.4, 0.5] },
+    // …and lifts long after the pen did. iPadOS still makes it a click.
+    { wait: 700 },
+    { el: 'undo', type: 'pointerup', init: palm },
+    { el: 'undo', type: 'click', init: { pointerType: 'mouse' } },
+  ]);
+  // Had the click gone through, the stroke and the undo would reach IndexedDB
+  // in one debounced write, and 2 would never be read.
+  await expect.poll(() => strokeCount(page), SYNC).toBe(2);
+  await page.waitForTimeout(2_500);
+  expect(await strokeCount(page)).toBe(2);
+});
+
 test.describe('a stroke whose pointerup never came', () => {
   test('the next pen ends it with what it drew, and draws; so does a mouse; the zoom buttons work again', async ({ page }) => {
     await stubSignedInApp(page);

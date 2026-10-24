@@ -19,7 +19,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import SignaturePad, { isSignatureEmpty, type SigStroke, type SignaturePadHandle, type SignaturePadStats } from './SignaturePad';
 import AppSpinner from './AppSpinner';
 import { confirmDialog } from './ui';
-import { getConfirmSnapshot } from './ui/store';
+import { getConfirmSnapshot, settleConfirm } from './ui/store';
 import { cn } from '../lib/utils';
 
 /** What the "or sign on a phone" section shows. */
@@ -60,7 +60,17 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
   // signature arrived, a navigation) must not close the NEXT one.
   const aliveRef = useRef(true);
   const confirmingRef = useRef(false);
-  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
+  // The id of our own discard question while it is on screen. A dialog that
+  // goes away under it (a Back swipe, the phone's signature) takes the
+  // question with it instead of leaving it asking about nothing.
+  const confirmIdRef = useRef(0);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      if (confirmIdRef.current) settleConfirm(confirmIdRef.current, false);
+    };
+  }, []);
 
   const callbacks = useRef({ onDiscard });
   callbacks.current = { onDiscard };
@@ -69,7 +79,8 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
     const pad = padRef.current;
     if (!pad || pad.isEmpty()) { callbacks.current.onDiscard(); return; }
     confirmingRef.current = true;
-    const ok = await confirmDialog({
+    const queuedBefore = getConfirmSnapshot();
+    const answer = confirmDialog({
       title: de ? 'Unterschrift verwerfen?' : 'Discard the signature?',
       message: de ? 'Was du gezeichnet hast, wird gelöscht.' : 'What you have drawn is deleted.',
       confirmLabel: de ? 'Verwerfen' : 'Discard',
@@ -77,6 +88,9 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
       tone: 'danger',
       lang,
     });
+    if (!queuedBefore) confirmIdRef.current = getConfirmSnapshot()?.id ?? 0;
+    const ok = await answer;
+    confirmIdRef.current = 0;
     confirmingRef.current = false;
     if (ok && aliveRef.current) callbacks.current.onDiscard();
   };
@@ -97,13 +111,19 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
     return () => window.removeEventListener('keydown', onKey, true);
   }, []);
 
-  // Body scroll lock and focus restore, the ConfirmDialog way.
+  // Scroll lock and focus restore, the ConfirmDialog way, but on <html>: the
+  // discard confirm locks <body> and restores whatever it found there, so had
+  // both used <body>, a dialog closed under its confirm would leave the page
+  // locked for good once the confirm restored the "hidden" it saw.
   useEffect(() => {
+    const root = document.documentElement;
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    const previousOverflow = root.style.overflow;
+    root.style.overflow = 'hidden';
+    // Into the dialog, so Enter on the button that opened it cannot open it again.
+    panelRef.current?.focus({ preventScroll: true });
     return () => {
-      document.body.style.overflow = previousOverflow;
+      root.style.overflow = previousOverflow;
       if (previouslyFocused && document.contains(previouslyFocused) && typeof previouslyFocused.focus === 'function') previouslyFocused.focus();
     };
   }, []);
@@ -161,9 +181,10 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
         aria-modal="true"
         aria-labelledby={titleId}
         data-testid="signature-dialog"
+        tabIndex={-1}
         onPointerDownCapture={onPointerDownCapture}
         onClickCapture={onClickCapture}
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-sm sm:max-w-2xl p-4 max-h-[90vh] overflow-y-auto overscroll-contain select-none [-webkit-touch-callout:none]"
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-sm sm:max-w-2xl p-4 max-h-[90vh] overflow-y-auto overscroll-contain select-none [-webkit-touch-callout:none] outline-none"
       >
         <div className="flex items-center justify-between gap-2 mb-3">
           <h3 id={titleId} className="text-base font-bold text-stone-900 min-w-0">{title}</h3>

@@ -1,10 +1,11 @@
-// The one place a list of pen samples becomes a filled outline. Shared by the
-// notebook's pen page (InkPad) and the signature pad, so a Pencil line looks
-// the same in both and the signature pad does not have to pull InkPad's lazy
-// chunk into the main bundle to get it.
+// One outline-to-Path2D conversion, shared by the notebook's pen page (InkPad)
+// and the signature pad; each caller picks its own perfect-freehand options
+// (the pen page's are in inkStyle.ts, the signature pad's in SignaturePad.tsx),
+// so the two lines are drawn alike but not identically. Kept here, not in
+// InkPad, so the signature pad does not pull InkPad's lazy chunk into the main
+// bundle to get it.
 //
-// Points are [x, y, pressure 0..1] in whatever units the caller draws in; the
-// options are perfect-freehand's, chosen by the caller.
+// Points are [x, y, pressure 0..1] in whatever units the caller draws in.
 
 import { getStroke, type StrokeOptions } from 'perfect-freehand';
 

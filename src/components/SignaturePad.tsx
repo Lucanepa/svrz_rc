@@ -3,18 +3,28 @@
 // them. A resize, a rotation or the keyboard opening re-renders the same
 // strokes at the new size; nothing is stretched, nothing is lost.
 //
-// The pointer policy is the notebook's (InkPad.tsx), adapted so a finger can
-// still sign: one pointer draws at a time, tracked by its id, and a pen is
-// authoritative. Before this, one shared "drawing" flag took every pointer, so
-// a palm landing on the pad drew a straight line into the Pencil's stroke and a
-// palm lifting anywhere on screen ended it (Jennifer, 23.10.2026).
+// One pointer draws at a time, tracked by its id, and a pen is authoritative.
+// Before this, one shared "drawing" flag took every pointer, so a palm landing
+// on the pad drew a straight line into the Pencil's stroke and a palm lifting
+// anywhere on screen ended it (Jennifer, 23.10.2026).
 //
-// The line is perfect-freehand through the shared helper (src/lib/inkPath.ts):
-// real pressure for the Pencil, simulated from speed for a finger or a mouse.
+// Two palm rules are the notebook pen page's too, from src/lib/inkInput.ts: a
+// contact wider than a fingertip is a palm, and a touch right after the pen is
+// the writing hand. The rest is this pad's own, because a finger must still be
+// able to sign here: the pen lock (after a pen, only the pen draws unless the
+// signer allows the finger), the purge (touch strokes made just before the
+// first pen-down go), and the settle (a contact that spreads past a fingertip
+// as it lands is a palm; later, it is a finger pressed flat).
+//
+// The line is perfect-freehand through src/lib/inkPath.ts with this pad's own
+// options: real pressure for the Pencil, through the pen page's pressure curve,
+// simulated from speed for a finger or a mouse.
 
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef } from 'react';
 import type { StrokeOptions } from 'perfect-freehand';
 import { freehandPath, type InkSample } from '../lib/inkPath';
+import { PEN_TRAILING_MS, captureQuietly, coalescedOf, isLargeContact } from '../lib/inkInput';
+import { penPressure } from '../lib/inkStyle';
 
 const PAD_W = 1000;
 const PAD_H = 400;
@@ -66,28 +76,26 @@ type Props = {
 const INK = '#1c1917';
 // Pad units. Measured on an iPad-sized pad (636 CSS px): a Pencil line of 2.5
 // px at light pressure (0.1) and 3.3 px at a normal 0.25, where the old pad
-// drew a flat 2.2 px and the notebook 1.0-1.4 px. Half that on a phone's pad.
+// drew a flat 2.2 px. Half that on a phone's pad.
 const SIZE = 6;
 // Less ink than this is a stray dot or a twitch, not a signature: it does not
 // satisfy the mandatory-signature check.
 const MIN_INK_UNITS = 20;
-const PEN_TRAILING_MS = 500;   // touch stays ignored this long after the pen moved
 const PALM_PURGE_MS = 1000;    // touch strokes on the glass this recently are the hand that came down ahead of the pen
-// A contact that grows past a fingertip this soon after landing is a palm
-// settling; later, it is a finger pressed flat while signing.
+// A contact that grows past a fingertip (inkInput's PALM_MAX_CONTACT_PX) this
+// soon after landing is a palm settling; later, it is a finger pressed flat
+// while signing.
 const PALM_SETTLE_MS = 150;
-// WebKit reports a contact's width as twice its major radius: about 42 px for
-// a light fingertip, hundreds for a palm. InkPad's 40 would refuse a finger.
-const PALM_MAX_CONTACT_PX = 80;
 const HISTORY_MAX = 50;
 const EXPORT_PX_PER_UNIT = 1.2;
 const EXPORT_MAX_W = 1400;
 // The phone page's POST goes through the server's 256 kB JSON parser.
 const EXPORT_MAX_CHARS = 240_000;
 
-// tldraw's pen curve and pressure boost: Safari reports normal handwriting at
-// about 0.1-0.35, which a linear curve turns into a faint line.
-const PEN_EASING = (t: number) => t * 0.65 + Math.sin((t * Math.PI) / 2) * 0.35;
+// The Pencil's pressure goes through the pen page's curve (penPressure, tldraw's
+// boost and easing): Safari reports normal handwriting at about 0.1-0.35,
+// which a linear curve turns into a faint line. Size, thinning and smoothing
+// are this pad's own, for a signature line on a 1000-unit-wide pad.
 const EASE_OUT_SINE = (t: number) => Math.sin((t * Math.PI) / 2);
 const PEN_OPTIONS: StrokeOptions = { size: SIZE, thinning: 0.5, smoothing: 0.6, streamline: 0.4, simulatePressure: false };
 // A finger's or a mouse's width comes from its speed, which thins a quick
@@ -101,7 +109,7 @@ function strokePath(stroke: SigStroke, last: boolean): Path2D | null {
   if (stroke.by === 'pen') for (let i = 2; i < pts.length; i += 3) if (pts[i] > 0) { real = true; break; }
   const samples: InkSample[] = [];
   for (let i = 0; i + 2 < pts.length; i += 3) {
-    samples.push([pts[i], pts[i + 1], real ? PEN_EASING(Math.min(1, 1.25 * pts[i + 2])) : 0.5]);
+    samples.push([pts[i], pts[i + 1], real ? penPressure(pts[i + 2]) : 0.5]);
   }
   return freehandPath(samples, { ...(real ? PEN_OPTIONS : SIMULATED_OPTIONS), last });
 }
@@ -145,6 +153,9 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
   const propsRef = useRef({ onChange, onPenLockChange, fingerToo: !!fingerToo });
   propsRef.current = { onChange, onPenLockChange, fingerToo: !!fingerToo };
 
+  // The helpers below run from mount-time closures (the layout effect, the
+  // pointer effect and the handle are all made once), so they read refs only:
+  // a prop or state read here would stay its value from the first render.
   const pathOf = (stroke: SigStroke): Path2D | null => {
     const cache = pathsRef.current;
     if (!cache.has(stroke)) cache.set(stroke, strokePath(stroke, true));
@@ -213,7 +224,7 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
     };
     // Only when the browser reports a size at all; a mouse or a pen reports 1 or 0.
     const tooBig = (e: PointerEvent) => {
-      if (e.width <= PALM_MAX_CONTACT_PX && e.height <= PALM_MAX_CONTACT_PX) return false;
+      if (!isLargeContact(e)) return false;
       const px = Math.round(Math.max(e.width, e.height));
       const counts = countsRef.current;
       if (!counts.tooBigMinPx || px < counts.tooBigMinPx) counts.tooBigMinPx = px;
@@ -254,10 +265,7 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
       const [x, y] = toPad(e);
       addSample(active, x, y, e.pressure);
       if (by === 'touch') noteTouch(stroke, e);
-      // Capture AFTER the stroke started: setPointerCapture throws NotFoundError
-      // for a pointer that is not active (every synthetic dispatch), and
-      // unguarded it filed a js.error.
-      try { canvas.setPointerCapture(e.pointerId); } catch { /* see above */ }
+      captureQuietly(canvas, e.pointerId);
       schedule();
     };
 
@@ -367,8 +375,7 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
         }
         noteTouch(active.stroke, e);
       }
-      const list = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
-      for (const ev of (list.length ? list : [e])) {
+      for (const ev of coalescedOf(e)) {
         const [x, y] = toPad(ev);
         addSample(active, x, y, ev.pressure);
       }

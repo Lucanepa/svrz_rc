@@ -94,6 +94,50 @@ async function nonBlank(page: Page): Promise<boolean> {
   });
 }
 
+type Step =
+  | { pad: string; init: Record<string, unknown>; at: [number, number] }
+  | { el: 'undo'; type: string; init?: Record<string, unknown> }
+  | { window: string }
+  | { wait: number };
+
+const padSteps = (init: Record<string, unknown>, points: [number, number][], lift = true): Step[] => [
+  { pad: 'pointerdown', init, at: points[0] },
+  ...points.slice(1).map((at): Step => ({ pad: 'pointermove', init, at })),
+  ...(lift ? [{ pad: 'pointerup', init, at: points[points.length - 1] } as Step] : []),
+];
+const line = (y: number, from = 0.1, to = 0.9, n = 8): [number, number][] =>
+  Array.from({ length: n + 1 }, (_, i) => [from + ((to - from) * i) / n, y] as [number, number]);
+
+/** Runs the steps inside the page, back to back, so the 150 / 500 ms windows
+ *  under test are measured against what the steps say and not against the
+ *  runner's round trips. `pad` points are fractions of the paper; downs and
+ *  moves go to the page canvas (what a real contact hits), ups and cancels to
+ *  the window. */
+async function burst(page: Page, steps: Step[]): Promise<void> {
+  await page.evaluate(async (list) => {
+    const stageEl = document.querySelector('[data-testid="ink-stage"]')!;
+    const canvas = stageEl.querySelector('canvas')!;
+    const r = stageEl.querySelector('[data-testid="ink-page"]')!.getBoundingClientRect();
+    for (const s of list) {
+      if ('wait' in s) { await new Promise((done) => setTimeout(done, s.wait)); continue; }
+      if ('window' in s) { window.dispatchEvent(new Event(s.window)); continue; }
+      if ('pad' in s) {
+        const up = s.pad === 'pointerup' || s.pad === 'pointercancel';
+        const ev = new PointerEvent(s.pad, { bubbles: true, cancelable: true, isPrimary: true, buttons: up ? 0 : 1, ...s.init, clientX: r.left + r.width * s.at[0], clientY: r.top + r.height * s.at[1] });
+        (up ? window : canvas).dispatchEvent(ev);
+        continue;
+      }
+      const el = [...document.querySelectorAll('button')].find((b) => /^(Rückgängig|Undo)$/.test(b.getAttribute('aria-label') || ''))!;
+      const init = { bubbles: true, cancelable: true, ...s.init };
+      el.dispatchEvent(s.type === 'click' && !s.init?.pointerType ? new MouseEvent('click', init) : new PointerEvent(s.type, init));
+    }
+  }, steps);
+}
+
+const PEN = { pointerType: 'pen', pressure: 0.4 };
+const strokeCount = async (page: Page) => (await storedInk(page))[0]?.page.strokes.length;
+const zoomLevel = (page: Page) => stage(page).getAttribute('data-zoom');
+
 test('a mouse stroke is stored as integer strokes, not a PNG, and the page counts its points', async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');
@@ -483,6 +527,73 @@ test('a real tap on Rückgängig right after the pen is the writing hand, a tap 
   await page.waitForTimeout(600);
   await page.touchscreen.tap(u.x + u.width / 2, u.y + u.height / 2);
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+});
+
+test.describe('a stroke whose pointerup never came', () => {
+  test('the next pen ends it with what it drew, and draws; so does a mouse; the zoom buttons work again', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPenPage(page);
+    // Its up and its cancel both lost (the app switcher, a system sheet).
+    const next = padSteps({ ...PEN, pointerId: 102 }, line(0.4));
+    await burst(page, [
+      ...padSteps({ ...PEN, pointerId: 101 }, line(0.2, 0.1, 0.5, 4), false),
+      // The next stroke's first event ends the lost one; the rest of it comes
+      // in later tasks, after the sheet has rendered what that commit made.
+      next[0], { wait: 30 }, ...next.slice(1),
+    ]);
+    await expect.poll(() => strokeCount(page), SYNC).toBe(2);
+    const first = (await storedInk(page))[0].page.strokes[0].d;
+    // The lost stroke kept all it drew: five samples, 0.1 to 0.5 of the page.
+    expect(first.length / 4).toBe(5);
+    await burst(page, padSteps({ pointerType: 'mouse', pointerId: 1, button: 0 }, line(0.6, 0.1, 0.5, 4), false));
+    await page.waitForTimeout(600);
+    await mouseStroke(page, 0.1, 0.8, 0.9, 0.8);
+    await expect.poll(() => strokeCount(page), SYNC).toBe(4);
+    const before = await zoomLevel(page);
+    await sheet(page).getByRole('button', { name: /^(Vergrössern|Zoom in)$/ }).click();
+    await expect.poll(() => zoomLevel(page)).not.toBe(before);
+  });
+
+  test('a real pointer moving with no button pressed ends it, and draws nothing', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPenPage(page);
+    // The stroke starts synthetic (no up will come)…
+    await burst(page, padSteps({ pointerType: 'mouse', pointerId: 1, button: 0 }, line(0.2, 0.1, 0.5, 4), false));
+    // …then a real (trusted) move with no button down, as a Pencil hovering or
+    // a mouse released outside the window reports it.
+    const box = (await pad(page).boundingBox())!;
+    await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.7);
+    await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.7, { steps: 8 });
+    await expect.poll(() => strokeCount(page), SYNC).toBe(1);
+    const d = (await storedInk(page))[0].page.strokes[0].d;
+    // Only the five samples it drew: none from where the free pointer went.
+    expect(d.length / 4).toBe(5);
+    const before = await zoomLevel(page);
+    await sheet(page).getByRole('button', { name: /^(Vergrössern|Zoom in)$/ }).click();
+    await expect.poll(() => zoomLevel(page)).not.toBe(before);
+  });
+
+  test('the app going to the background ends it, keeping its ink', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPenPage(page);
+    await burst(page, [...padSteps({ ...PEN, pointerId: 103 }, line(0.2, 0.1, 0.5, 4), false), { window: 'blur' }]);
+    await expect.poll(() => strokeCount(page), SYNC).toBe(1);
+    const before = await zoomLevel(page);
+    await sheet(page).getByRole('button', { name: /^(Vergrössern|Zoom in)$/ }).click();
+    await expect.poll(() => zoomLevel(page)).not.toBe(before);
+    // And with the page hidden: the next stroke's end comes from there.
+    await burst(page, padSteps({ ...PEN, pointerId: 104 }, line(0.6, 0.1, 0.5, 4), false));
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+      document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+    });
+    await expect.poll(() => strokeCount(page), SYNC).toBe(2);
+  });
 });
 
 test('the size guard counts a page exactly as the server does', async ({ page }) => {

@@ -472,12 +472,17 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     clearLive();
   };
 
-  const finish = (e: PointerEvent, cancelled: boolean) => {
+  /** Ends the stroke in progress. 'lost' is a stroke whose pointerup and
+   *  pointercancel never came: the next pen or mouse went down, or the app
+   *  went away. It keeps what it drew, like a cancelled pen stroke, but it is
+   *  no sign of Scribble. */
+  const finish = (how: 'up' | 'cancel' | 'lost') => {
     const a = active;
     if (!a) return;
     active = null;
-    try { stage.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
+    try { stage.releasePointerCapture(a.pointerId); } catch { /* not captured */ }
     const p = props();
+    const cancelled = how === 'cancel';
     if (cancelled) stats.cancels += 1;
     // A cancelled touch was not the coach's: iPadOS cancels a contact it took
     // for the palm under the Pencil, and one an edge swipe claimed. It goes
@@ -490,7 +495,9 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     // looked exactly like "it does not recognise my handwriting". Scribble is
     // the Pencil's, so only the pen counts for its hint.
     if (cancelled && a.kind === 'pen') p.onCancelledStroke();
-    if (a.samples.length === 0 || (cancelled && a.samples.length < 2)) { clearLive(); return; }
+    // A tap's one sample is a dot; a stroke cut short at its first sample is
+    // not worth one.
+    if (a.samples.length === 0 || (how !== 'up' && a.samples.length < 2)) { clearLive(); return; }
     const realPressure = a.kind === 'pen' && a.pressureSeen;
     const stroke: InkStroke = { c: p.tool.kind === 'pen' ? p.tool.colour : 0, w: NEW_STROKE_W, p: realPressure ? 1 : 0, d: [] };
     let px = 0; let py = 0; let pms = 0;
@@ -620,6 +627,13 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   const onDown = (e: PointerEvent) => {
     const now = performance.now();
     const p = props();
+    // A pen or a mouse going down while a pen or mouse stroke is still open:
+    // that stroke lost its up and its cancel, since nobody holds two. It ends
+    // with what it drew. It used to stay open and block every later stroke
+    // and the zoom buttons until the sheet closed or the page turned, which
+    // on an iPad reads as "the Pencil stopped writing" (the signature pad's
+    // rule since f137ba9).
+    if ((e.pointerType === 'pen' || e.pointerType === 'mouse') && active && active.kind !== 'touch') finish('lost');
     if (e.pointerType === 'pen') {
       penAt = now; penContactAt = now;
       if (!penSeen) { penSeen = true; p.onPenSeen(); }
@@ -646,6 +660,12 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       penAt = now;
       if (e.buttons > 0 || (a && a.pointerId === e.pointerId)) penContactAt = now;
     }
+    // A real pen or mouse moving with no button and no pressure is not on the
+    // glass, so the open stroke's up got lost (the Pencil hovering after it, a
+    // mouse released outside the window): it ends there, and this move draws
+    // nothing. Trusted events only: synthetic moves carry buttons 0, which is
+    // also why drawing is gated on the tracked pointer and never on e.buttons.
+    if (a && e.isTrusted && a.kind !== 'touch' && e.pointerType === a.kind && e.buttons === 0 && e.pressure === 0) { finish('up'); return; }
     if (a && e.pointerId === a.pointerId) {
       // Gated on the tracked pointer, never on e.buttons (synthetic moves carry 0).
       e.preventDefault();
@@ -666,7 +686,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   const onEnd = (e: PointerEvent, cancelled: boolean) => {
     const now = performance.now();
     if (e.pointerType === 'pen') { penAt = now; penContactAt = now; }
-    if (active && e.pointerId === active.pointerId) finish(e, cancelled);
+    if (active && e.pointerId === active.pointerId) finish(cancelled ? 'cancel' : 'up');
     if (touches.has(e.pointerId)) {
       touches.delete(e.pointerId);
       if (gesture && gesture.ids.includes(e.pointerId)) touchLeftGesture(e.pointerId, cancelled, now);
@@ -756,13 +776,16 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     stats = freshStats();
   };
 
-  /** The app went away mid-gesture: a missed pointerup must not leave a
-   *  finger "down" that blocks the next pinch. */
-  const forgetTouches = () => {
+  /** The app went away mid-stroke or mid-gesture, and the pointerups may
+   *  never come: a stroke left open would block the pen and the zoom buttons,
+   *  a finger left "down" the next pinch. The open stroke ends with what it
+   *  drew. */
+  const forgetPointers = () => {
+    finish('lost');
     touches.clear();
     if (gesture) endGesture();
   };
-  const onVisibility = () => { if (document.visibilityState === 'hidden') { forgetTouches(); logVisit(); } };
+  const onVisibility = () => { if (document.visibilityState === 'hidden') { forgetPointers(); logVisit(); } };
 
   stage.addEventListener('pointerdown', onDown);
   stage.addEventListener('pointermove', onMove);
@@ -774,7 +797,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   stage.addEventListener('gesturestart', onGestureStart);
   stage.addEventListener('gesturechange', onGestureChange);
   stage.addEventListener('gestureend', onGestureEnd);
-  window.addEventListener('blur', forgetTouches);
+  window.addEventListener('blur', forgetPointers);
   // On the window, in the capture phase: ahead of the logger's listener on the
   // document, which ships what is queued as the app goes to the background.
   window.addEventListener('visibilitychange', onVisibility, true);
@@ -811,7 +834,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       stage.removeEventListener('gesturestart', onGestureStart);
       stage.removeEventListener('gesturechange', onGestureChange);
       stage.removeEventListener('gestureend', onGestureEnd);
-      window.removeEventListener('blur', forgetTouches);
+      window.removeEventListener('blur', forgetPointers);
       window.removeEventListener('visibilitychange', onVisibility, true);
       if (ro) ro.disconnect();
       window.removeEventListener('resize', measure);

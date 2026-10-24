@@ -1829,11 +1829,29 @@ export async function putSettings(payload: { default_season?: number; test_mode?
 
 
 // ---- Signature sessions ----
+/** How long the phone hand-off may take to start. A POST is not covered by
+ *  the service worker's network timeout, and on a gym's weak signal (online in
+ *  name only) it used to hang until the browser gave up; the pad never needs
+ *  it, only the QR does. */
+const SIGNATURE_START_TIMEOUT_MS = 8_000;
 export async function startSignature(context: string, signer?: string): Promise<{ slug: string }> {
   if (isDemoMode()) return demo.startSignature();
-  const res = await fetch(apiUrl('/api/signature/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ context, signer }) });
-  if (!res.ok) throw new Error('Could not start signature');
-  return res.json();
+  let signal: AbortSignal | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') signal = AbortSignal.timeout(SIGNATURE_START_TIMEOUT_MS);
+  else if (typeof AbortController !== 'undefined') {
+    // Safari before 16 has no AbortSignal.timeout.
+    const controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), SIGNATURE_START_TIMEOUT_MS);
+    signal = controller.signal;
+  }
+  try {
+    const res = await fetch(apiUrl('/api/signature/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ context, signer }), signal });
+    if (!res.ok) throw new Error('Could not start signature');
+    return await res.json();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 export async function getSignatureSession(slug: string): Promise<{ context: string; signer: string; signed: boolean; data: string }> {
   if (isDemoMode()) return demo.getSignatureSession();

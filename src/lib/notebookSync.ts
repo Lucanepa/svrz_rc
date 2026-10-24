@@ -52,6 +52,11 @@ let booted = '';                       // the owner the cache was loaded for
 const cache = new Map<string, NotebookPage>();   // every stored page of the booted owner, tombstones included
 const inkCache = new Map<string, InkPage>();     // strokes we hold locally (keyed like the store)
 const inkStale = new Set<string>();              // pages whose strokes the server has newer than ours
+/** Bumped whenever a page's strokes change under a read: a local commit, or a
+ *  pull that marks them stale or drops them. A read that started before the
+ *  bump holds an older truth than the cache. */
+const inkGen = new Map<string, number>();
+const bumpInk = (id: string) => { inkGen.set(id, (inkGen.get(id) || 0) + 1); };
 const pending = new Map<string, Pending>();      // local commits not yet in IndexedDB
 let pushTimer = 0;
 let pushing: Promise<void> | null = null;
@@ -134,6 +139,7 @@ export function commit(page: NotebookPage, ink?: InkPage | null, debounceMs = NO
   if (ink !== undefined) {
     if (ink) inkCache.set(next.id, ink); else inkCache.delete(next.id);
     inkStale.delete(next.id);
+    bumpInk(next.id);
   }
   const existing = pending.get(next.id);
   if (existing) window.clearTimeout(existing.timer);
@@ -175,8 +181,9 @@ export function markUsed(pageIds: string[], use: PageUse): void {
   }
 }
 
-/** Reads of a page's strokes that are still running, by store key. */
-const inkInFlight = new Map<string, Promise<InkPage | null>>();
+/** Reads of a page's strokes that are still running, by store key, with the
+ *  generation they started at. */
+const inkInFlight = new Map<string, { gen: number; read: Promise<InkPage | null> }>();
 
 /** The strokes of a pen page: local first, the server when ours are missing or
  *  older. Null when neither has them (a brand-new page).
@@ -184,25 +191,35 @@ const inkInFlight = new Map<string, Promise<InkPage | null>>();
  *  A second ask for the same page while the first is still out shares it.
  *  React's StrictMode runs the sheet's ink effect twice on mount, and in
  *  WebKit both runs reached the network before either had stored what it
- *  fetched: two GETs for one page (notebook-ink spec, mobile-safari). */
+ *  fetched: two GETs for one page (notebook-ink spec, mobile-safari). Only
+ *  while nothing changed in between, though: the sheet asks again after every
+ *  stroke, and a fetch of a stale page that started before the stroke would
+ *  have answered with the server's strokes, the new one missing — on screen,
+ *  in IndexedDB and in the next push. */
 export function getInk(pageId: string): Promise<InkPage | null> {
   const id = `${owner()}|${pageId}`;
+  const gen = inkGen.get(id) || 0;
   const running = inkInFlight.get(id);
-  if (running) return running;
-  const read = readInk(pageId).finally(() => { if (inkInFlight.get(id) === read) inkInFlight.delete(id); });
-  inkInFlight.set(id, read);
+  if (running && running.gen === gen) return running.read;
+  const read = readInk(pageId, gen).finally(() => { if (inkInFlight.get(id)?.read === read) inkInFlight.delete(id); });
+  inkInFlight.set(id, { gen, read });
   return read;
 }
 
-async function readInk(pageId: string): Promise<InkPage | null> {
+async function readInk(pageId: string, gen: number): Promise<InkPage | null> {
   const o = owner();
   const id = `${o}|${pageId}`;
   const page = cache.get(id);
   if (!page || page.kind !== 'ink' || page.deleted) return null;
+  // Overtaken: the strokes changed while this read waited. What the cache
+  // holds now is newer than anything this read found, and is left alone.
+  const overtaken = () => (inkGen.get(id) || 0) !== gen;
   const local = inkCache.get(id) || (storeOk ? await getStoredInk(o, pageId).catch(() => null) : null);
+  if (overtaken()) return inkCache.get(id) || local;
   if (local && !inkStale.has(id)) { inkCache.set(id, local); return local; }
   try {
     const remote = await fetchNotebookInk(pageId);
+    if (overtaken()) return inkCache.get(id) || local;
     if (remote && remote.ownerId === o && remote.page.ink) {
       const ink = remote.page.ink;
       inkCache.set(id, ink);
@@ -359,8 +376,8 @@ export async function pullIndex(opts: { force?: boolean } = {}): Promise<void> {
     const local = cache.get(server.id) || null;
     const d = mergeFromServer(local, server);
     if (d.write) { cache.set(d.write.id, d.write); writes.push({ page: d.write, ink: d.dropInk ? null : undefined }); }
-    if (d.dropInk) { inkCache.delete(server.id); inkStale.delete(server.id); }
-    if (d.fetchInk && d.write) inkStale.add(server.id);
+    if (d.dropInk) { inkCache.delete(server.id); inkStale.delete(server.id); bumpInk(server.id); }
+    if (d.fetchInk && d.write) { inkStale.add(server.id); bumpInk(server.id); }
   }
   if (storeOk && writes.length) await putPages(writes).catch(() => {});
   emitPages();

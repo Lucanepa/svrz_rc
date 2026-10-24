@@ -229,6 +229,68 @@ test('a page whose ink is not local is fetched when opened', async ({ page }) =>
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
 });
 
+test('a stroke written while the newer server copy of its page is on the way stays: on screen, in IndexedDB and in the push', async ({ page }) => {
+  // Another device wrote on the page; the pull says so and its strokes are
+  // fetched, slowly (a gym). The coach goes on writing meanwhile. That stroke
+  // used to vanish: the sheet's next read shared the fetch that started
+  // before it, and the server's strokes replaced the page.
+  const at = suiteNow() - 60_000;
+  const id = `${RC.id}|page-ink-race`;
+  const mine = { c: 0, w: 4, p: 0, d: [1000, 2000, 0, 0, 3000, 0, 0, 16] };
+  const row = { id, schema: 1, ownerId: RC.id, pageId: 'page-ink-race', kind: 'ink', title: '', text: '', bg: '', points: 2, usedIn: [], createdAt: at, updatedAt: at, deleted: false, dirty: false, savedAt: new Date(at).toISOString(), rejectedReason: '' };
+  await page.addInitScript(([db, r, ink]) => {
+    const open = indexedDB.open(db, 1);
+    open.onupgradeneeded = () => {
+      if (!open.result.objectStoreNames.contains('pages')) open.result.createObjectStore('pages', { keyPath: 'id' });
+      if (!open.result.objectStoreNames.contains('ink')) open.result.createObjectStore('ink', { keyPath: 'id' });
+    };
+    open.onsuccess = () => {
+      const d = open.result;
+      const tx = d.transaction(['pages', 'ink'], 'readwrite');
+      tx.objectStore('pages').put(r);
+      tx.objectStore('ink').put(ink);
+      tx.oncomplete = () => d.close();
+    };
+  }, [PAD_DB, row, { id, ownerId: RC.id, page: { w: 1000, h: 1414, strokes: [mine] } }] as const);
+  await stubSignedInApp(page);
+  const server = { pageId: 'page-ink-race', kind: 'ink', bg: '', points: 1, createdAt: at, updatedAt: at + 1000, deleted: false, schema: 1, savedAt: new Date(at + 1000).toISOString() };
+  let releaseIndex!: () => void;
+  const indexGate = new Promise<void>((resolve) => { releaseIndex = resolve; });
+  await page.route('**/api/notebook', async (r) => { await indexGate; await r.fulfill({ json: { ownerId: RC.id, pages: [server] } }); });
+  let fetched = 0; let answered = false;
+  let releaseInk!: () => void;
+  const inkGate = new Promise<void>((resolve) => { releaseInk = resolve; });
+  await page.route('**/api/notebook/pages/page-ink-race', async (r) => {
+    fetched += 1;
+    await inkGate;
+    await r.fulfill({ json: { ownerId: RC.id, page: { ...server, ink: { w: 1000, h: 1414, strokes: [{ c: 0, w: 7, p: 0, d: [5000, 9000, 0, 0, 1000, 0, 0, 16] }] } } } });
+    answered = true;
+  });
+  const pushed: number[] = [];
+  await page.route('**/api/notebook/pages', async (r) => {
+    const body = JSON.parse(r.request().postData() || '{"pages":[]}') as { pages: { pageId: string; updatedAt: number; createdAt: number; ink?: { strokes: unknown[] } }[] };
+    for (const p of body.pages) if (p.ink) pushed.push(p.ink.strokes.length);
+    await r.fulfill({ json: { ok: true, ownerId: RC.id, saved: body.pages.map((p) => ({ pageId: p.pageId, savedAt: new Date(suiteNow()).toISOString(), updatedAt: p.updatedAt, createdAt: p.createdAt })), stale: [], rejected: [] } });
+  });
+  await page.goto('/');
+  await launcher(page).click();
+  await expect(pad(page)).toBeVisible();
+  await sheet(page).getByTestId('ink-zoom').click();
+  // The pull answers: the server's copy is newer, and its strokes are asked for.
+  releaseIndex();
+  await expect.poll(() => fetched, SYNC).toBe(1);
+  await mouseStroke(page, 0.1, 0.4, 0.5, 0.45);
+  await page.waitForTimeout(300);
+  releaseInk();
+  await expect.poll(() => answered, SYNC).toBe(true);
+  await page.waitForTimeout(500);
+  await mouseStroke(page, 0.1, 0.6, 0.5, 0.65);
+  const strokes = async () => (await storedInk(page)).find((i) => i.id === id)?.page.strokes;
+  await expect.poll(async () => (await strokes())?.length, SYNC).toBe(3);
+  expect((await strokes())!.map((st) => st.w)).toEqual([4, 4, 4]);
+  await expect.poll(() => pushed[pushed.length - 1], { timeout: 15_000 }).toBe(3);
+});
+
 /** A pen stroke with a pressure per event: [fx, fy, pressure] of the page. */
 async function penStroke(page: Page, pointerId: number, points: [number, number, number][]): Promise<void> {
   const box = (await pad(page).boundingBox())!;

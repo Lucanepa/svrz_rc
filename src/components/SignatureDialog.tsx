@@ -219,7 +219,7 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
 
         {remembered && (
           <div className="flex items-center gap-3 mb-3 p-2 rounded-lg border border-stone-200 bg-stone-50">
-            <img src={remembered.image} alt="" className="h-10 w-24 object-contain shrink-0" />
+            <img src={remembered.image} alt={de ? 'Vorschau: gemerkte Unterschrift' : 'Preview: remembered signature'} className="h-10 w-24 object-contain shrink-0" />
             <button type="button" onClick={remembered.onUse} className="ml-auto h-9 px-3 rounded-lg border border-stone-300 bg-white text-xs font-medium text-stone-700 hover:bg-stone-100">
               {de ? 'Gemerkte Unterschrift verwenden' : 'Use remembered signature'}
             </button>

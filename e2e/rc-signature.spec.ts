@@ -89,6 +89,11 @@ test('taken off a report it stays off, and the report asks for the coach\'s sign
 test('over the kept signature the coach\'s button says it signs again; taken off, the kept one is one tap away', async ({ page }) => {
   await stubSignedInApp(page);
   await keptOnServer(page, { enabled: true, data: KEPT });
+  // The phone hand-off still starting, its spinner on screen, as on a slow
+  // network: the spinner's logo is an image in the dialog as well.
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/api/signature/start', async (route) => { await gate; await route.fulfill({ json: { slug: 'sig-test' } }); });
   await page.goto('/');
   await openFeedbackForm(page);
   await expect(remembered(page)).toBeVisible();
@@ -101,7 +106,8 @@ test('over the kept signature the coach\'s button says it signs again; taken off
   await page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).nth(1).click();
   // …and the dialog offers the kept signature back, without signing anew.
   const dialog = page.getByTestId('signature-dialog');
-  await expect(dialog.locator('img')).toHaveAttribute('src', KEPT);
+  await expect(dialog.getByAltText(/^(Preview: remembered signature|Vorschau: gemerkte Unterschrift)$/)).toHaveAttribute('src', KEPT);
+  release();
   await dialog.getByRole('button', { name: /^(Use remembered signature|Gemerkte Unterschrift verwenden)$/ }).click();
   await expect(dialog).toHaveCount(0);
   await expect(rcSig(page)).toHaveAttribute('src', KEPT);

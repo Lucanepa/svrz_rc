@@ -9,6 +9,8 @@ import { stubSignedInApp, RC, suiteNow } from './support/app';
  *
  * Playwright has no stylus: pen and touch input are dispatched as synthetic
  * pointer events (which is also why setPointerCapture has to be guarded).
+ * Zoom and pan have their own spec (notebook-ink-zoom.spec.ts); here every
+ * page is shown whole, so a fraction of the page is a point on screen.
  */
 
 const PAD_DB = 'svrz-notebook';
@@ -34,13 +36,20 @@ function storedPages(page: Page): Promise<StoredPage[]> {
 
 const launcher = (page: Page) => page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ });
 const sheet = (page: Page) => page.getByRole('dialog', { name: /^(Notizblock|Notebook)$/ });
+/** The paper: its box is the page, wherever the view puts it. */
 const pad = (page: Page) => sheet(page).getByTestId('ink-page');
+/** The grey area the pad fills; the canvases are its children. */
+const stage = (page: Page) => sheet(page).getByTestId('ink-stage');
 
+/** A new pen page, shown whole. A page opens at fit-width, taller than the
+ *  stage, and the helpers below aim at fractions of the page. */
 async function openPenPage(page: Page, court = false): Promise<void> {
   await launcher(page).click();
   // By test id: the black pen in the toolbar is called "Stift" too.
   await sheet(page).getByTestId('pad-new-ink').click();
   await expect(pad(page)).toBeVisible();
+  await sheet(page).getByTestId('ink-zoom').click();
+  await expect(sheet(page).getByRole('button', { name: /^(Verkleinern|Zoom out)$/ })).toBeDisabled();
   if (court) await sheet(page).getByRole('button', { name: /^(Spielfeld|Court)$/ }).click();
 }
 
@@ -64,7 +73,7 @@ async function syntheticStroke(page: Page, init: PointerInit, points: [number, n
 }
 
 async function nonBlank(page: Page): Promise<boolean> {
-  return pad(page).locator('canvas').first().evaluate((c: HTMLCanvasElement) => {
+  return stage(page).locator('canvas').first().evaluate((c: HTMLCanvasElement) => {
     const ctx = c.getContext('2d', { willReadFrequently: true });
     if (!ctx) return false;
     const { data } = ctx.getImageData(0, 0, c.width, c.height);
@@ -126,7 +135,8 @@ test('touch is ignored while a pen was just used; a palm never draws; the finger
   await page.waitForTimeout(600);
   await syntheticStroke(page, { pointerType: 'touch', pointerId: 9, width: 10, height: 10 }, [[0.3, 0.7], [0.6, 0.8]]);
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(2);
-  await syntheticStroke(page, { pointerType: 'touch', pointerId: 10, width: 60, height: 60 }, [[0.3, 0.9], [0.6, 0.95]]);
+  // A palm is hundreds of px; a light fingertip reads about 42 on an iPad.
+  await syntheticStroke(page, { pointerType: 'touch', pointerId: 10, width: 120, height: 120 }, [[0.3, 0.9], [0.6, 0.95]]);
   await page.waitForTimeout(300);
   expect((await storedInk(page))[0].page.strokes.length).toBe(2);
 });
@@ -208,6 +218,8 @@ test('a page whose ink is not local is fetched when opened', async ({ page }) =>
   await launcher(page).click();
   await expect(pad(page)).toBeVisible();
   await expect.poll(() => asked.length, SYNC).toBe(1);
+  // The stroke is halfway down the page, below a page opened at its top.
+  await sheet(page).getByTestId('ink-zoom').click();
   await expect.poll(() => nonBlank(page), SYNC).toBe(true);
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
 });

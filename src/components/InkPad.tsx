@@ -2,25 +2,50 @@
 // with a stylus, a finger or a mouse, stored as strokes (never as a bitmap) so
 // it survives any resize, any DPR and any device, and is small enough to sync.
 //
-// Two canvases: the PAGE holds the committed strokes and is re-rendered from
-// the vectors whenever its size changes (the SignaturePad's snapshot-and-
-// stretch trick is not needed when the source of truth is the stroke list);
-// the LIVE canvas on top shows only the stroke in progress, once per frame,
-// and is cleared when the stroke lands on the page.
+// The pad is a STAGE that fills the grey area of the sheet. On it lie the
+// PAPER (a white div, placed by the view) and two canvases the size of the
+// stage: the PAGE canvas holds the committed strokes, the LIVE canvas on top
+// only the stroke in progress. Both are drawn through the view's transform
+// (lib/inkView.ts), so zooming never grows a bitmap: a page-sized canvas at
+// 2.5× passes iPadOS's 16.7 MP per-canvas limit and stays blank. Each stroke's
+// outline is computed once, in page units, and a frame of a pinch is only
+// fills.
 //
-// Pointer Events only. A pen is authoritative: once one has been seen, touch
-// is ignored for drawing (the resting palm) unless the coach turns the finger
-// back on; a mouse always draws (the desktop, and the test suite).
+// Who may do what (the input router): the pen always draws. Two fingers pinch
+// and move the page together. One finger moves the page while the finger
+// does not draw (the default once a pen was seen) and draws when it does. A
+// touch that starts while the pen is busy, within PEN_TRAILING_MS of it, or as
+// a large contact, is a palm: ignored until it lifts. A mouse draws (the
+// desktop, and the test suite); its wheel pans, and zooms with Ctrl or a
+// trackpad pinch.
 //
 // Ink is checked against the SAME size predicate the server enforces, at
 // stroke end, so a stroke that would not sync is refused at once rather than
 // silently dropped hours later by a 413.
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { freehandPath } from '../lib/inkPath';
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, type RefObject } from 'react';
+import { freehandPath, type InkSample } from '../lib/inkPath';
+import { INK_COLOURS, NEW_STROKE_W, minRadiusFor, outlineSamples, strokeOptions } from '../lib/inkStyle';
+import {
+  PAGE_H, PAGE_W, clampZoom, fitPageScale, pageVisibleWhole, panBy, pinchView, resizeView, scaleOf, toPage, topView, visibleRect, zoomAbout,
+  zoomRange, zoomStepIn, zoomStepOut, type Point, type Stage, type View,
+} from '../lib/inkView';
 import { NOTEBOOK_INK_MAX_CHARS, NOTEBOOK_INK_MAX_STROKES, inkSize, type InkPage, type InkStroke, type PageBackground } from '../lib/notebook';
 
 export type InkTool = { kind: 'pen'; colour: 0 | 1 } | { kind: 'eraser' };
+
+/** The zoom level (relative to fit-width) and its range on this stage. */
+export type InkZoom = { z: number; min: number; max: number };
+
+/** What the sheet around the pad may ask of it. */
+export type InkPadControl = {
+  zoomIn(): void;
+  zoomOut(): void;
+  /** The whole page. */
+  zoomFit(): void;
+  /** performance.now() of the last pen event, touching or hovering; 0 = none yet. */
+  lastPenAt(): number;
+};
 
 export type InkPadProps = {
   page: InkPage;
@@ -29,9 +54,18 @@ export type InkPadProps = {
   tool: InkTool;
   /** Touch draws. Off by default once a pen has been seen on this device. */
   fingerDraws: boolean;
+  /** The zoom level to open at, relative to fit-width. Read once, at the first layout. */
+  initialZoom?: number;
+  controlRef?: RefObject<InkPadControl | null>;
+  /** The view's zoom changed, or its range did (a resize). `byUser` when the
+   *  coach zoomed: a pinch, a wheel, a button. */
+  onZoomChange?(zoom: InkZoom, byUser: boolean): void;
   onPenSeen(): void;
   onStrokeEnd(stroke: InkStroke): void;
-  onEraseStroke(index: number): void;
+  /** The eraser touched these strokes. Every call carries ALL the strokes this
+   *  drag has touched so far, so a call made before the previous one was
+   *  rendered loses nothing. */
+  onErase(strokes: InkStroke[]): void;
   /** The page cannot take this stroke (size or stroke count). */
   onFull(): void;
   /** The browser cancelled a stroke (Scribble, a gesture) — counted by the parent. */
@@ -39,16 +73,25 @@ export type InkPadProps = {
   className?: string;
 };
 
-const COLOURS = ['#1c1917', '#b91c1c'];        // the app's ink, and Swiss Volley red
-const PALM_MAX_CONTACT_PX = 40;                // a finger tip is smaller; a palm is not
-const PEN_TRAILING_MS = 500;                   // touch stays ignored this long after the pen lifted
-const ERASE_RADIUS_UNITS = 12;
-const PAGE_W = 1000;
-const PAGE_H = 1414;
+/** A fingertip is smaller; a palm is hundreds of px. Not 40: WebKit reports
+ *  width = 2 × UITouch.majorRadius, about 42 for a light fingertip, so the old
+ *  rule took every finger for a palm. */
+const PALM_MAX_CONTACT_PX = 80;
+/** Touch stays a palm this long after the pen was last seen. */
+const PEN_TRAILING_MS = 500;
+/** A gesture that started moving this soon before the pen landed was the
+ *  writing hand arriving first: it is undone. */
+const PALM_LEAD_MS = 300;
+/** A second finger this soon after the first turns a young finger stroke into a pinch. */
+const PINCH_GRACE_MS = 250;
+/** Fingers must move this far before the page moves: a resting hand stays still. */
+const SLOP_PX = 8;
+const ERASE_RADIUS_PX = 10;
+const WHEEL_REPORT_MS = 150;
 
 /** Absolute samples of one stroke: [x, y, p01][] in page units. */
-export function strokePoints(stroke: InkStroke): [number, number, number][] {
-  const out: [number, number, number][] = [];
+export function strokePoints(stroke: InkStroke): InkSample[] {
+  const out: InkSample[] = [];
   const d = stroke.d;
   let x = 0; let y = 0;
   for (let i = 0; i + 3 < d.length; i += 4) {
@@ -59,257 +102,671 @@ export function strokePoints(stroke: InkStroke): [number, number, number][] {
   return out;
 }
 
-function outlinePath(points: [number, number, number][], scale: number, stroke: { w: number; p: 0 | 1 }, live: boolean): Path2D | null {
-  return freehandPath(points.map(([x, y, p]) => [x * scale, y * scale, p]), {
-    size: Math.max(2, stroke.w * scale),
-    thinning: 0.6,
-    smoothing: 0.5,
-    streamline: 0.5,
-    simulatePressure: stroke.p === 0,
-    last: !live,
-  });
+// ── outlines, once per stroke ─────────────────────────────────────────
+// Strokes are immutable and keep their identity through [...strokes, s],
+// filter and slice, so a WeakMap keyed by the stroke object is the cache, and
+// an erased or undone stroke takes its entry with it. Never one Path2D for
+// several strokes: perfect-freehand outlines wind either way, and an overlap
+// of opposite windings would be a hole.
+type Shape = { path: Path2D; bbox: [number, number, number, number]; minR: number };
+const shapes = new WeakMap<InkStroke, Shape | null>();
+
+function shapeOf(stroke: InkStroke, minR: number): Shape | null {
+  const hit = shapes.get(stroke);
+  if (hit === null || (hit && hit.minR === minR)) return hit;
+  const points = strokePoints(stroke);
+  const path = freehandPath(outlineSamples(points, stroke.p === 1), strokeOptions(stroke, minR, true));
+  if (!path) { shapes.set(stroke, null); return null; }
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+  for (const [x, y] of points) {
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  // The radius never exceeds the size (the easing is at most 1) or the floor;
+  // +2 covers perfect-freehand's [1, 1] offset for a single dot.
+  const pad = Math.max(stroke.w, minR) + 2;
+  const shape: Shape = { path, bbox: [x0 - pad, y0 - pad, x1 + pad, y1 + pad], minR };
+  shapes.set(stroke, shape);
+  return shape;
 }
 
-export function renderStroke(ctx: CanvasRenderingContext2D, stroke: InkStroke, scale: number, live = false): void {
-  const path = outlinePath(strokePoints(stroke), scale, stroke, live);
-  if (!path) return;
-  ctx.fillStyle = COLOURS[stroke.c] || COLOURS[0];
-  ctx.fill(path);
+/** Distance from a point to the segment a–b. */
+function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax; const dy = by - ay;
+  const len = dx * dx + dy * dy;
+  const t = len > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len)) : 0;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/** Whether the eraser at (x, y) with this radius touches the stroke: its
+ *  segments, not only its samples, so a fast stroke with sparse samples is
+ *  still hit. */
+function eraserHits(stroke: InkStroke, x: number, y: number, radius: number, minR: number): boolean {
+  const shape = shapeOf(stroke, minR);
+  if (!shape) return false;
+  const [b0, b1, b2, b3] = shape.bbox;
+  if (x < b0 - radius || x > b2 + radius || y < b1 - radius || y > b3 + radius) return false;
+  const reach = radius + stroke.w / 2;
+  const pts = strokePoints(stroke);
+  if (pts.length === 1) return Math.hypot(pts[0][0] - x, pts[0][1] - y) <= reach;
+  for (let i = 1; i < pts.length; i += 1) {
+    if (segmentDistance(x, y, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) <= reach) return true;
+  }
+  return false;
 }
 
 /** The court a coach sketches positions on: 9 × 18 m, portrait, net across the
- *  middle, attack lines 3 m from it. Light lines under the ink, never part of it. */
+ *  middle, attack lines 3 m from it. Light lines under the ink, never part of
+ *  it. Drawn in page units under the view's transform; `scale` (CSS px per
+ *  unit) keeps the lines at least a pixel wide at any zoom. */
 export function renderBackground(ctx: CanvasRenderingContext2D, bg: PageBackground, scale: number): void {
   if (bg !== 'court') return;
-  const left = 175 * scale; const right = 825 * scale;
-  const top = 57 * scale; const bottom = 1357 * scale;
+  const left = 175; const right = 825;
+  const top = 57; const bottom = 1357;
   const mid = (top + bottom) / 2;
   const attack = ((bottom - top) / 6);
   ctx.save();
   ctx.strokeStyle = '#d6d3d1';
-  ctx.lineWidth = Math.max(1, 2 * scale);
+  ctx.lineWidth = Math.max(2, 1 / scale);
   ctx.strokeRect(left, top, right - left, bottom - top);
   ctx.beginPath(); ctx.moveTo(left, mid - attack); ctx.lineTo(right, mid - attack);
   ctx.moveTo(left, mid + attack); ctx.lineTo(right, mid + attack); ctx.stroke();
   // The net: heavier, and a little wider than the court like the real one.
   ctx.strokeStyle = '#a8a29e';
-  ctx.lineWidth = Math.max(2, 5 * scale);
-  ctx.beginPath(); ctx.moveTo(left - 30 * scale, mid); ctx.lineTo(right + 30 * scale, mid); ctx.stroke();
+  ctx.lineWidth = Math.max(5, 2 / scale);
+  ctx.beginPath(); ctx.moveTo(left - 30, mid); ctx.lineTo(right + 30, mid); ctx.stroke();
   ctx.restore();
 }
 
-export function renderPage(canvas: HTMLCanvasElement, page: InkPage, bg: PageBackground, dpr: number): void {
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.scale(dpr, dpr);
-  const scale = canvas.width / dpr / PAGE_W;
-  renderBackground(ctx, bg, scale);
-  for (const stroke of page.strokes) renderStroke(ctx, stroke, scale);
-}
+// ── the engine: everything per frame lives here, outside React ─────────
 
-export default function InkPad({ page, bg, readOnly, tool, fingerDraws, onPenSeen, onStrokeEnd, onEraseStroke, onFull, onCancelledStroke, className }: InkPadProps) {
-  const boxRef = useRef<HTMLDivElement>(null);
-  const pageRef = useRef<HTMLCanvasElement>(null);
-  const liveRef = useRef<HTMLCanvasElement>(null);
-  const [size, setSize] = useState({ w: 0, h: 0, dpr: 1 });
+type Sample = { x: number; y: number; p: number };
+type Active = {
+  pointerId: number;
+  kind: 'pen' | 'touch' | 'mouse';
+  startedAt: number;
+  eraser: boolean;
+  samples: Sample[];
+  /** Real pressure: a pen whose first event reported one. */
+  p: 0 | 1;
+  t0: number;
+  /** Strokes the eraser touched in this drag. */
+  erased: Set<InkStroke>;
+};
+type TouchState = { x: number; y: number; tainted: boolean };
+type Gesture = {
+  kind: 'pan' | 'pinch';
+  ids: number[];
+  /** The view this motion is computed from, and the fingers' centroid and distance then. */
+  start: View;
+  c0: Point;
+  d0: number;
+  /** The view before the hand touched: what a palm-first gesture is undone to. */
+  origin: View;
+  engaged: boolean;
+  engagedAt: number;
+};
 
-  // Everything about the stroke in progress lives in refs: pointer handlers are
-  // attached once and must not close over a render.
-  const activeRef = useRef<{ pointerId: number; samples: [number, number, number][]; t0: number; p: 0 | 1 } | null>(null);
-  const penSeenAtRef = useRef(0);
-  const rafRef = useRef(0);
-  const propsRef = useRef({ page, bg, readOnly: !!readOnly, tool, fingerDraws, onPenSeen, onStrokeEnd, onEraseStroke, onFull, onCancelledStroke });
-  propsRef.current = { page, bg, readOnly: !!readOnly, tool, fingerDraws, onPenSeen, onStrokeEnd, onEraseStroke, onFull, onCancelledStroke };
+type Engine = {
+  pageChanged(): void;
+  zoomStep(dir: 1 | -1): void;
+  zoomFit(): void;
+  lastPenAt(): number;
+  destroy(): void;
+};
 
-  // Size the canvases to the box. width/height are reassigned ONLY when the
-  // computed size changed (assigning them resets the bitmap even for the same
-  // value — the on-screen keyboard opening used to wipe the SignaturePad), and
-  // a zero-width box (not laid out yet) is left alone.
-  useLayoutEffect(() => {
-    const box = boxRef.current;
-    if (!box) return;
-    const measure = () => {
-      const rect = box.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
-      const w = Math.round(rect.width * dpr);
-      const h = Math.round(rect.height * dpr);
-      setSize((prev) => (prev.w === w && prev.h === h && prev.dpr === dpr ? prev : { w, h, dpr }));
-    };
-    measure();
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
-    if (ro) ro.observe(box);
-    window.addEventListener('resize', measure);
-    return () => { if (ro) ro.disconnect(); window.removeEventListener('resize', measure); };
-  }, []);
+function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageCanvas: HTMLCanvasElement; liveCanvas: HTMLCanvasElement }, props: () => InkPadProps): Engine {
+  const { stage, paper, pageCanvas, liveCanvas } = els;
+  let stageSize: Stage | null = null;
+  let rect = { left: 0, top: 0 };
+  let view: View = { z: 1, ox: 0, oy: 0 };
+  /** Bitmap px per CSS px, per axis: exact, so toPage inverts the drawing. */
+  let kx = 1; let ky = 1;
+  /** The thinnest radius a line draws with on this stage (lib/inkStyle.ts). */
+  let minR = 0;
+  /** What the page canvas shows now, so a stroke end can draw just that stroke. */
+  let drawn: { strokes: InkStroke[]; bg: PageBackground; view: View; minR: number; w: number; h: number } | null = null;
+  /** Strokes handed to onStrokeEnd that the page prop does not carry yet. */
+  let pending: InkStroke[] = [];
+  let frame = 0; let pageDirty = true; let liveDirty = false;
+  let active: Active | null = null;
+  const touches = new Map<number, TouchState>();
+  let gesture: Gesture | null = null;
+  let penAt = 0;
+  let penSeen = false;
+  let wheelTimer = 0; let wheelZ0: number | null = null;
+  let webkitGesture: { z0: number } | null = null;
 
-  // Re-render the page from its vectors whenever the size or the page changes.
-  useEffect(() => {
-    const canvas = pageRef.current; const live = liveRef.current;
-    if (!canvas || !live || size.w === 0) return;
-    for (const c of [canvas, live]) {
-      if (c.width !== size.w || c.height !== size.h) { c.width = size.w; c.height = size.h; }
-    }
-    renderPage(canvas, page, bg, size.dpr);
-    const lctx = live.getContext('2d');
-    if (lctx) { lctx.setTransform(1, 0, 0, 1, 0, 0); lctx.clearRect(0, 0, live.width, live.height); }
-  }, [page, bg, size]);
+  const scale = () => (stageSize ? scaleOf(stageSize, view.z) : 1);
+  const refreshRect = () => { const r = stage.getBoundingClientRect(); rect = { left: r.left, top: r.top }; };
+  const stagePoint = (cx: number, cy: number): Point => ({ x: cx - rect.left, y: cy - rect.top });
+  const pagePoint = (cx: number, cy: number): [number, number] => (stageSize ? toPage(stageSize, view, cx - rect.left, cy - rect.top) : [0, 0]);
 
-  // Release the bitmaps when the pad goes away: a phone runs out of canvas
-  // memory long before it runs out of pages.
-  useEffect(() => () => {
-    for (const c of [pageRef.current, liveRef.current]) if (c) { c.width = 1; c.height = 1; }
-  }, []);
+  const report = (byUser: boolean) => {
+    if (!stageSize) return;
+    const r = zoomRange(stageSize);
+    props().onZoomChange?.({ z: view.z, min: r.min, max: r.max }, byUser);
+  };
 
-  const drawLive = useCallback(() => {
-    rafRef.current = 0;
-    const live = liveRef.current; const active = activeRef.current;
-    if (!live || !active) return;
-    const ctx = live.getContext('2d');
-    if (!ctx) return;
-    const dpr = size.dpr || 1;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, live.width, live.height);
-    ctx.scale(dpr, dpr);
-    const scale = live.width / dpr / PAGE_W;
-    const t = propsRef.current.tool;
-    const colour = t.kind === 'pen' ? t.colour : 0;
-    const path = outlinePath(active.samples, scale, { w: 4, p: active.p }, true);
-    if (path) { ctx.fillStyle = COLOURS[colour]; ctx.fill(path); }
-  }, [size.dpr]);
+  // ── drawing ──────────────────────────────────────────────────────────
+  const withPageTransform = (ctx: CanvasRenderingContext2D, draw: (s: number) => void) => {
+    const s = scale();
+    ctx.save();
+    ctx.setTransform(kx * s, 0, 0, ky * s, kx * view.ox, ky * view.oy);
+    ctx.beginPath(); ctx.rect(0, 0, PAGE_W, PAGE_H); ctx.clip();
+    draw(s);
+    ctx.restore();
+  };
 
-  useEffect(() => {
-    const box = boxRef.current;
-    if (!box) return;
+  const strokesOnPage = (): InkStroke[] => {
+    const strokes = props().page.strokes;
+    return pending.length ? [...strokes, ...pending.filter((s) => !strokes.includes(s))] : strokes;
+  };
 
-    const toPage = (e: PointerEvent): [number, number] => {
-      const rect = box.getBoundingClientRect();
-      return [((e.clientX - rect.left) / rect.width) * PAGE_W, ((e.clientY - rect.top) / rect.height) * PAGE_H];
-    };
-
-    const eraseAt = (x: number, y: number) => {
-      const strokes = propsRef.current.page.strokes;
-      for (let i = strokes.length - 1; i >= 0; i -= 1) {
-        for (const [sx, sy] of strokePoints(strokes[i])) {
-          if (Math.hypot(sx - x, sy - y) <= ERASE_RADIUS_UNITS) { propsRef.current.onEraseStroke(i); return; }
-        }
-      }
-    };
-
-    // The policy: who may draw right now.
-    const mayDraw = (e: PointerEvent): boolean => {
-      if (propsRef.current.readOnly) return false;
-      if (e.pointerType === 'pen') { penSeenAtRef.current = performance.now(); return true; }
-      if (e.pointerType === 'touch') {
-        if (!propsRef.current.fingerDraws) return false;
-        if (performance.now() - penSeenAtRef.current < PEN_TRAILING_MS) return false;
-        if (e.width > PALM_MAX_CONTACT_PX || e.height > PALM_MAX_CONTACT_PX) return false;
-        return true;
-      }
-      return true;   // mouse
-    };
-
-    const down = (e: PointerEvent) => {
-      if (e.pointerType === 'pen' && !penSeenAtRef.current) propsRef.current.onPenSeen();
-      if (e.pointerType === 'pen') penSeenAtRef.current = performance.now();
-      if (!mayDraw(e) || activeRef.current) return;
-      e.preventDefault();
-      const [x, y] = toPage(e);
-      const eraserEnd = e.pointerType === 'pen' && e.button === 5;
-      if (propsRef.current.tool.kind === 'eraser' || eraserEnd) {
-        activeRef.current = { pointerId: e.pointerId, samples: [], t0: e.timeStamp, p: 0 };
-        eraseAt(x, y);
-        try { box.setPointerCapture(e.pointerId); } catch { /* a synthetic pointer has no capture */ }
+  const drawPage = () => {
+    pageDirty = false;
+    const ctx = pageCanvas.getContext('2d');
+    if (!ctx || !stageSize) return;
+    const bg = props().bg;
+    const strokes = strokesOnPage();
+    const prev = drawn;
+    if (prev && prev.bg === bg && prev.view === view && prev.minR === minR && prev.w === pageCanvas.width && prev.h === pageCanvas.height && strokes.length >= prev.strokes.length) {
+      let same = true;
+      for (let i = 0; i < prev.strokes.length; i += 1) if (prev.strokes[i] !== strokes[i]) { same = false; break; }
+      if (same && strokes.length === prev.strokes.length) return;
+      // The page plus one stroke (a stroke end, or a pull that brought one):
+      // that stroke alone, on top, as a full render would have put it.
+      if (same && strokes.length === prev.strokes.length + 1) {
+        const shape = shapeOf(strokes[strokes.length - 1], minR);
+        if (shape) withPageTransform(ctx, () => { ctx.fillStyle = INK_COLOURS[strokes[strokes.length - 1].c] || INK_COLOURS[0]; ctx.fill(shape.path); });
+        drawn = { ...prev, strokes };
         return;
       }
-      const p: 0 | 1 = e.pointerType === 'pen' && e.pressure > 0 ? 1 : 0;
-      activeRef.current = { pointerId: e.pointerId, samples: [[x, y, p ? e.pressure : 0]], t0: e.timeStamp, p };
-      // Capture AFTER the stroke started: setPointerCapture throws NotFoundError
-      // for a pointer that is not active — every synthetic dispatch — and
-      // unguarded it would abort the stroke and file a js.error.
-      try { box.setPointerCapture(e.pointerId); } catch { /* see above */ }
-      if (!rafRef.current) rafRef.current = requestAnimationFrame(drawLive);
-    };
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, pageCanvas.width, pageCanvas.height);
+    withPageTransform(ctx, (s) => {
+      renderBackground(ctx, bg, s);
+      const [x0, y0, x1, y1] = visibleRect(stageSize!, view);
+      let colour = -1;
+      for (const stroke of strokes) {
+        const shape = shapeOf(stroke, minR);
+        if (!shape) continue;
+        const b = shape.bbox;
+        if (b[2] < x0 || b[0] > x1 || b[3] < y0 || b[1] > y1) continue;
+        if (stroke.c !== colour) { ctx.fillStyle = INK_COLOURS[stroke.c] || INK_COLOURS[0]; colour = stroke.c; }
+        ctx.fill(shape.path);
+      }
+    });
+    drawn = { strokes, bg, view, minR, w: pageCanvas.width, h: pageCanvas.height };
+  };
 
-    const move = (e: PointerEvent) => {
-      if (e.pointerType === 'pen') penSeenAtRef.current = performance.now();
-      const active = activeRef.current;
+  const drawLive = () => {
+    liveDirty = false;
+    const ctx = liveCanvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+    const a = active;
+    if (!a || a.eraser || a.samples.length === 0 || !stageSize) return;
+    const t = props().tool;
+    const style = { w: NEW_STROKE_W, p: a.p };
+    const path = freehandPath(outlineSamples(a.samples.map((s) => [s.x, s.y, s.p]), style.p === 1), strokeOptions(style, minR, false));
+    if (path) withPageTransform(ctx, () => { ctx.fillStyle = INK_COLOURS[t.kind === 'pen' ? t.colour : 0]; ctx.fill(path); });
+  };
+
+  /** Paper and ink in the same frame, or the page would lag its own ink. */
+  const renderNow = () => {
+    if (frame) { cancelAnimationFrame(frame); frame = 0; }
+    if (!stageSize) return;
+    const s = scale();
+    paper.style.width = `${PAGE_W * s}px`;
+    paper.style.height = `${PAGE_H * s}px`;
+    paper.style.transform = `translate(${view.ox}px, ${view.oy}px)`;
+    stage.dataset.zoom = view.z.toFixed(2);
+    if (pageDirty) drawPage();
+    if (liveDirty) drawLive();
+  };
+  const schedule = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; renderNow(); }); };
+
+  const setView = (v: View, now = false) => {
+    view = v;
+    pageDirty = true;
+    if (now) renderNow(); else schedule();
+  };
+
+  // ── the stage's size ─────────────────────────────────────────────────
+  // The canvases are reassigned ONLY when their size changed (assigning
+  // resets the bitmap even for the same value — the on-screen keyboard
+  // opening used to wipe the SignaturePad), and a stage not laid out yet is
+  // left alone. Zoom never changes them.
+  const measure = () => {
+    const r = stage.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return;
+    rect = { left: r.left, top: r.top };
+    const next: Stage = { w: r.width, h: r.height };
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const bw = Math.round(next.w * dpr); const bh = Math.round(next.h * dpr);
+    let resized = false;
+    for (const c of [pageCanvas, liveCanvas]) if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh; resized = true; }
+    const moved = !stageSize || stageSize.w !== next.w || stageSize.h !== next.h;
+    if (!moved && !resized) return;
+    kx = bw / next.w; ky = bh / next.h;
+    if (moved) {
+      view = stageSize ? resizeView(stageSize, next, view) : topView(next, clampZoom(next, props().initialZoom ?? 1));
+      stageSize = next;
+      minR = minRadiusFor(fitPageScale(next));
+    }
+    pageDirty = true; liveDirty = !!active;
+    renderNow();
+    if (moved) report(false);
+  };
+
+  // ── strokes ──────────────────────────────────────────────────────────
+  const clearLive = () => { liveDirty = true; drawLive(); };
+
+  const addSample = (a: Active, x: number, y: number, raw: number) => {
+    const last = a.samples[a.samples.length - 1];
+    if (last && Math.hypot(x - last.x, y - last.y) < 1) return;
+    a.samples.push({ x, y, p: a.p ? raw : 0 });
+  };
+
+  const coalesced = (e: PointerEvent): PointerEvent[] => {
+    const list = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+    return list.length ? list : [e];
+  };
+
+  const flushErase = (force: boolean) => {
+    const a = active;
+    if (!a || a.erased.size === 0) return;
+    // A finger may still become a pinch: what it rubbed out waits until then.
+    if (a.kind === 'touch' && !force && performance.now() - a.startedAt < PINCH_GRACE_MS) return;
+    props().onErase([...a.erased]);
+  };
+
+  const eraseAt = (x: number, y: number) => {
+    const a = active;
+    if (!a) return;
+    const radius = ERASE_RADIUS_PX / scale();
+    let hit = false;
+    for (const s of props().page.strokes) {
+      if (!a.erased.has(s) && eraserHits(s, x, y, radius, minR)) { a.erased.add(s); hit = true; }
+    }
+    if (hit) flushErase(false);
+  };
+
+  const startStroke = (e: PointerEvent, kind: Active['kind'], now: number): boolean => {
+    if (!stageSize) return false;
+    refreshRect();
+    const [x, y] = pagePoint(e.clientX, e.clientY);
+    // The grey around the paper starts nothing.
+    if (x < 0 || x > PAGE_W || y < 0 || y > PAGE_H) return false;
+    e.preventDefault();
+    const eraser = props().tool.kind === 'eraser' || (kind === 'pen' && e.button === 5);
+    active = { pointerId: e.pointerId, kind, startedAt: now, eraser, samples: [], p: kind === 'pen' && e.pressure > 0 ? 1 : 0, t0: e.timeStamp, erased: new Set() };
+    // Capture AFTER the stroke started: setPointerCapture throws NotFoundError
+    // for a pointer that is not active — every synthetic dispatch — and
+    // unguarded it would abort the stroke and file a js.error.
+    try { stage.setPointerCapture(e.pointerId); } catch { /* see above */ }
+    if (eraser) { eraseAt(x, y); return true; }
+    addSample(active, x, y, e.pressure);
+    liveDirty = true; schedule();
+    return true;
+  };
+
+  /** A finger stroke that turned out to be the start of a pinch, or that the
+   *  pen overrode: gone without a trace, and not a cancelled stroke (that
+   *  counter is the Scribble hint's). */
+  const dropActive = () => {
+    const a = active;
+    if (!a) return;
+    active = null;
+    try { stage.releasePointerCapture(a.pointerId); } catch { /* not captured */ }
+    clearLive();
+  };
+
+  const finish = (e: PointerEvent, cancelled: boolean) => {
+    const a = active;
+    if (!a) return;
+    active = null;
+    try { stage.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
+    const p = props();
+    if (a.eraser) { flushErase(true); clearLive(); return; }
+    if (a.samples.length === 0) { clearLive(); return; }
+    if (cancelled) { p.onCancelledStroke(); clearLive(); return; }
+    const stroke: InkStroke = { c: p.tool.kind === 'pen' ? p.tool.colour : 0, w: NEW_STROKE_W, p: a.p, d: [] };
+    let px = 0; let py = 0;
+    a.samples.forEach((s, i) => {
+      const X = Math.round(s.x * 10); const Y = Math.round(s.y * 10); const P = Math.round(Math.max(0, Math.min(1, s.p)) * 100);
+      if (i === 0) stroke.d.push(X, Y, P, 0);
+      else stroke.d.push(X - px, Y - py, P, Math.max(0, Math.round(e.timeStamp - a.t0)));
+      px = X; py = Y;
+    });
+    const current = p.page;
+    const next: InkPage = { w: PAGE_W, h: PAGE_H, strokes: [...current.strokes, stroke] };
+    if (next.strokes.length > NOTEBOOK_INK_MAX_STROKES || inkSize(next) > NOTEBOOK_INK_MAX_CHARS) { clearLive(); p.onFull(); return; }
+    // On the page canvas now, in the frame the live layer clears: the line
+    // never blinks while the sheet re-renders.
+    pending.push(stroke);
+    pageDirty = true;
+    liveDirty = true;
+    renderNow();
+    p.onStrokeEnd(stroke);
+  };
+
+  // ── gestures ─────────────────────────────────────────────────────────
+  const fingerPoints = (ids: number[]): Point[] | null => {
+    const pts: Point[] = [];
+    for (const id of ids) { const t = touches.get(id); if (!t) return null; pts.push(stagePoint(t.x, t.y)); }
+    return pts;
+  };
+  const centroid = (pts: Point[]): Point => ({ x: pts.reduce((n, q) => n + q.x, 0) / pts.length, y: pts.reduce((n, q) => n + q.y, 0) / pts.length });
+
+  const startGesture = (kind: Gesture['kind'], ids: number[]) => {
+    refreshRect();
+    const pts = fingerPoints(ids);
+    if (!pts) return;
+    const prev = gesture;
+    gesture = {
+      kind, ids, start: view, c0: centroid(pts), d0: kind === 'pinch' ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : 0,
+      origin: prev ? prev.origin : view,
+      // A pan already moving goes on moving as a pinch, from where it is.
+      engaged: !!prev && prev.engaged, engagedAt: prev ? prev.engagedAt : 0,
+    };
+  };
+
+  const endGesture = () => {
+    const g = gesture;
+    gesture = null;
+    if (g && g.engaged && view.z !== g.origin.z) report(true);
+  };
+
+  const taintAll = () => {
+    for (const t of touches.values()) t.tainted = true;
+  };
+
+  const onTouchDown = (e: PointerEvent, now: number) => {
+    const p = props();
+    const palm = e.width > PALM_MAX_CONTACT_PX || e.height > PALM_MAX_CONTACT_PX;
+    const penBusy = !p.readOnly && ((!!active && active.kind === 'pen') || now - penAt < PEN_TRAILING_MS);
+    const t: TouchState = { x: e.clientX, y: e.clientY, tainted: palm || penBusy };
+    touches.set(e.pointerId, t);
+    try { stage.setPointerCapture(e.pointerId); } catch { /* a synthetic pointer has no capture */ }
+    e.preventDefault();
+    if (t.tainted) return;
+    if (active) {
+      if (active.kind === 'touch' && now - active.startedAt < PINCH_GRACE_MS) dropActive();
+      else { t.tainted = true; return; }
+    }
+    const free = [...touches.entries()].filter(([, v]) => !v.tainted).map(([id]) => id);
+    if (free.length >= 2) {
+      if (gesture && gesture.kind === 'pinch') return;   // a third finger changes nothing
+      startGesture('pinch', gesture ? [gesture.ids[0], e.pointerId] : [free[0], free[1]]);
+      return;
+    }
+    // One finger: it draws when the finger draws (and the margin around the
+    // paper, where nothing draws, moves the page); otherwise it moves the page.
+    if (p.fingerDraws && !p.readOnly && startStroke(e, 'touch', now)) return;
+    startGesture('pan', [e.pointerId]);
+  };
+
+  const onTouchMove = (e: PointerEvent, now: number) => {
+    const t = touches.get(e.pointerId);
+    if (!t) return;
+    e.preventDefault();
+    t.x = e.clientX; t.y = e.clientY;
+    const g = gesture;
+    if (t.tainted || !g || !g.ids.includes(e.pointerId) || !stageSize) return;
+    const pts = fingerPoints(g.ids);
+    if (!pts) return;
+    const c = centroid(pts);
+    const d = g.kind === 'pinch' ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : 0;
+    if (!g.engaged) {
+      if (Math.hypot(c.x - g.c0.x, c.y - g.c0.y) <= SLOP_PX && Math.abs(d - g.d0) <= SLOP_PX) return;
+      g.engaged = true; g.engagedAt = now;
+    }
+    setView(g.kind === 'pinch' ? pinchView(stageSize, g.start, g.c0, g.d0, c, d) : panBy(stageSize, g.start, c.x - g.c0.x, c.y - g.c0.y));
+  };
+
+  const touchLeftGesture = (id: number, cancelled: boolean, now: number) => {
+    const g = gesture;
+    if (!g) return;
+    // iPadOS cancels a touch it decided was a palm: what it moved is undone.
+    if (cancelled && g.engaged && now - g.engagedAt < PALM_LEAD_MS) setView(g.origin);
+    const rest = g.ids.filter((x) => x !== id && touches.has(x) && !touches.get(x)!.tainted);
+    const p = props();
+    if (g.kind === 'pinch' && rest.length === 1) {
+      if (!p.fingerDraws || p.readOnly) {
+        refreshRect();
+        const t = touches.get(rest[0])!;
+        gesture = { kind: 'pan', ids: rest, start: view, c0: stagePoint(t.x, t.y), d0: 0, origin: g.origin, engaged: true, engagedAt: g.engagedAt };
+        return;
+      }
+      // A pinch never turns into a stroke.
+      touches.get(rest[0])!.tainted = true;
+    }
+    endGesture();
+  };
+
+  // ── pointer listeners ────────────────────────────────────────────────
+  const onDown = (e: PointerEvent) => {
+    const now = performance.now();
+    const p = props();
+    if (e.pointerType === 'pen') {
+      penAt = now;
+      if (!penSeen) { penSeen = true; p.onPenSeen(); }
+      // The hand landed first and moved the page: put it back.
+      if (gesture) { if (gesture.engaged && now - gesture.engagedAt < PALM_LEAD_MS) setView(gesture.origin, true); endGesture(); }
+      taintAll();
+      // The pen wins over a finger stroke (the palm got there first).
+      if (active && active.kind === 'touch') dropActive();
+      if (active || p.readOnly) return;
+      startStroke(e, 'pen', now);
+      return;
+    }
+    if (e.pointerType === 'touch') { onTouchDown(e, now); return; }
+    if (p.readOnly || active || gesture || e.button !== 0) return;
+    startStroke(e, 'mouse', now);
+  };
+
+  const onMove = (e: PointerEvent) => {
+    const now = performance.now();
+    // Hovering counts: an iPad Pro sees the Pencil before it touches.
+    if (e.pointerType === 'pen') penAt = now;
+    const a = active;
+    if (a && e.pointerId === a.pointerId) {
       // Gated on the tracked pointer, never on e.buttons (synthetic moves carry 0).
-      if (!active || e.pointerId !== active.pointerId) return;
       e.preventDefault();
-      if (active.samples.length === 0 && (propsRef.current.tool.kind === 'eraser' || active.p === 0 && e.pointerType === 'pen' && e.button === 5)) {
-        const [x, y] = toPage(e); eraseAt(x, y); return;
+      if (a.kind === 'touch') { const t = touches.get(e.pointerId); if (t) { t.x = e.clientX; t.y = e.clientY; } }
+      const list = coalesced(e);
+      if (a.eraser) { for (const ev of list) { const [x, y] = pagePoint(ev.clientX, ev.clientY); eraseAt(x, y); } flushErase(false); return; }
+      for (const ev of list) {
+        const [x, y] = pagePoint(ev.clientX, ev.clientY);
+        addSample(a, x, y, ev.pressure);
       }
-      if (active.samples.length === 0) return;   // an eraser drag
-      const list = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
-      for (const ev of (list.length ? list : [e])) {
-        const [x, y] = toPage(ev);
-        const last = active.samples[active.samples.length - 1];
-        if (last && Math.hypot(x - last[0], y - last[1]) < 1) continue;
-        active.samples.push([x, y, active.p ? ev.pressure : 0]);
-      }
-      if (!rafRef.current) rafRef.current = requestAnimationFrame(drawLive);
-    };
+      liveDirty = true; schedule();
+      return;
+    }
+    if (e.pointerType === 'touch') onTouchMove(e, now);
+  };
 
-    const finish = (e: PointerEvent, cancelled: boolean) => {
-      const active = activeRef.current;
-      if (!active || e.pointerId !== active.pointerId) return;
-      activeRef.current = null;
-      try { box.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
-      const live = liveRef.current;
-      if (live) { const ctx = live.getContext('2d'); if (ctx) { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, live.width, live.height); } }
-      if (active.samples.length === 0) return;   // the eraser
-      if (cancelled) { propsRef.current.onCancelledStroke(); return; }
-      const t = propsRef.current.tool;
-      const stroke: InkStroke = { c: t.kind === 'pen' ? t.colour : 0, w: 4, p: active.p, d: [] };
-      let px = 0; let py = 0;
-      active.samples.forEach(([x, y, p], i) => {
-        const X = Math.round(x * 10); const Y = Math.round(y * 10); const P = Math.round(Math.max(0, Math.min(1, p)) * 100);
-        if (i === 0) stroke.d.push(X, Y, P, 0);
-        else stroke.d.push(X - px, Y - py, P, Math.max(0, Math.round(e.timeStamp - active.t0)));
-        px = X; py = Y;
-      });
-      const current = propsRef.current.page;
-      const next: InkPage = { w: PAGE_W, h: PAGE_H, strokes: [...current.strokes, stroke] };
-      if (next.strokes.length > NOTEBOOK_INK_MAX_STROKES || inkSize(next) > NOTEBOOK_INK_MAX_CHARS) { propsRef.current.onFull(); return; }
-      propsRef.current.onStrokeEnd(stroke);
-    };
+  const onEnd = (e: PointerEvent, cancelled: boolean) => {
+    const now = performance.now();
+    if (e.pointerType === 'pen') penAt = now;
+    if (active && e.pointerId === active.pointerId) finish(e, cancelled);
+    if (touches.has(e.pointerId)) {
+      touches.delete(e.pointerId);
+      if (gesture && gesture.ids.includes(e.pointerId)) touchLeftGesture(e.pointerId, cancelled, now);
+    }
+  };
+  const onUp = (e: PointerEvent) => onEnd(e, false);
+  const onCancel = (e: PointerEvent) => onEnd(e, true);
 
-    const up = (e: PointerEvent) => finish(e, false);
-    const cancel = (e: PointerEvent) => finish(e, true);
-    // The documented iPadOS Scribble workaround: a touchmove that is not
-    // prevented lets the system claim the gesture.
-    const touchMove = (e: TouchEvent) => { if (activeRef.current) e.preventDefault(); };
+  // The documented iPadOS Scribble workaround: a touchmove that is not
+  // prevented lets the system claim the Pencil's gesture. Every touch on the
+  // stage is the pad's (a pan, a pinch, a palm), so every one is prevented.
+  const onTouchMoveNative = (e: TouchEvent) => { e.preventDefault(); };
 
-    box.addEventListener('pointerdown', down);
-    box.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    window.addEventListener('pointercancel', cancel);
-    box.addEventListener('touchmove', touchMove, { passive: false });
-    return () => {
-      box.removeEventListener('pointerdown', down);
-      box.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      window.removeEventListener('pointercancel', cancel);
-      box.removeEventListener('touchmove', touchMove);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-  }, [drawLive]);
+  // ── wheel and WebKit gestures (desktop, Mac trackpad) ────────────────
+  const onWheel = (e: WheelEvent) => {
+    // Chrome, Edge and Firefox send a trackpad pinch as Ctrl + wheel; on the
+    // pad it must never zoom the whole app instead, not even mid-stroke.
+    if (e.ctrlKey) e.preventDefault();
+    if (!stageSize || active || gesture) return;
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? stageSize.h : 1;
+    if (e.ctrlKey) {
+      if (webkitGesture) return;
+      refreshRect();
+      const dy = Math.max(-100, Math.min(100, e.deltaY * unit));
+      const c = stagePoint(e.clientX, e.clientY);
+      if (wheelZ0 === null) wheelZ0 = view.z;
+      setView(zoomAbout(stageSize, view, view.z * Math.exp(-dy * 0.004), c.x, c.y));
+    } else {
+      // Scrolling moves a page bigger than the stage; a page that fits lets
+      // the wheel through.
+      if (pageVisibleWhole(stageSize, view)) return;
+      e.preventDefault();
+      if (wheelZ0 === null) wheelZ0 = view.z;
+      setView(panBy(stageSize, view, -e.deltaX * unit, -e.deltaY * unit));
+    }
+    window.clearTimeout(wheelTimer);
+    wheelTimer = window.setTimeout(() => { const z0 = wheelZ0; wheelZ0 = null; if (z0 !== null && z0 !== view.z) report(true); }, WHEEL_REPORT_MS);
+  };
+
+  type WebKitGestureEvent = Event & { scale?: number; clientX?: number; clientY?: number };
+  // Safari's own pinch would zoom the whole app around the pad. On an iPad
+  // the pointer path above does the pinch, so these are only prevented; with
+  // no touch pointer down they are a Mac trackpad (or a Magic Keyboard's), and
+  // drive the zoom.
+  const onGestureStart = (e: Event) => { e.preventDefault(); webkitGesture = { z0: view.z }; };
+  const onGestureChange = (e: Event) => {
+    e.preventDefault();
+    const g = e as WebKitGestureEvent;
+    if (!webkitGesture || !stageSize || touches.size || active || gesture || typeof g.scale !== 'number') return;
+    refreshRect();
+    const c = typeof g.clientX === 'number' && typeof g.clientY === 'number' ? stagePoint(g.clientX, g.clientY) : { x: stageSize.w / 2, y: stageSize.h / 2 };
+    setView(zoomAbout(stageSize, view, webkitGesture.z0 * g.scale, c.x, c.y));
+  };
+  const onGestureEnd = (e: Event) => {
+    e.preventDefault();
+    const g = webkitGesture;
+    webkitGesture = null;
+    if (g && g.z0 !== view.z) report(true);
+  };
+
+  /** The app went away mid-gesture: a missed pointerup must not leave a
+   *  finger "down" that blocks the next pinch. */
+  const forgetTouches = () => {
+    touches.clear();
+    if (gesture) endGesture();
+  };
+  const onVisibility = () => { if (document.visibilityState === 'hidden') forgetTouches(); };
+
+  stage.addEventListener('pointerdown', onDown);
+  stage.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onCancel);
+  stage.addEventListener('touchmove', onTouchMoveNative, { passive: false });
+  // Natively and not passive: React's onWheel cannot prevent the browser's zoom.
+  stage.addEventListener('wheel', onWheel, { passive: false });
+  stage.addEventListener('gesturestart', onGestureStart);
+  stage.addEventListener('gesturechange', onGestureChange);
+  stage.addEventListener('gestureend', onGestureEnd);
+  window.addEventListener('blur', forgetTouches);
+  document.addEventListener('visibilitychange', onVisibility);
+  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+  if (ro) ro.observe(stage);
+  window.addEventListener('resize', measure);
+  measure();
+
+  return {
+    pageChanged() {
+      pending = [];
+      pageDirty = true;
+      renderNow();
+    },
+    zoomStep(dir) {
+      if (!stageSize || active) return;
+      const z = dir > 0 ? zoomStepIn(stageSize, view.z) : zoomStepOut(stageSize, view.z);
+      setView(zoomAbout(stageSize, view, z, stageSize.w / 2, stageSize.h / 2), true);
+      report(true);
+    },
+    zoomFit() {
+      if (!stageSize || active) return;
+      setView(zoomAbout(stageSize, view, zoomRange(stageSize).min, stageSize.w / 2, stageSize.h / 2), true);
+      report(true);
+    },
+    lastPenAt: () => penAt,
+    destroy() {
+      stage.removeEventListener('pointerdown', onDown);
+      stage.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      stage.removeEventListener('touchmove', onTouchMoveNative);
+      stage.removeEventListener('wheel', onWheel);
+      stage.removeEventListener('gesturestart', onGestureStart);
+      stage.removeEventListener('gesturechange', onGestureChange);
+      stage.removeEventListener('gestureend', onGestureEnd);
+      window.removeEventListener('blur', forgetTouches);
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (ro) ro.disconnect();
+      window.removeEventListener('resize', measure);
+      if (frame) cancelAnimationFrame(frame);
+      window.clearTimeout(wheelTimer);
+      touches.clear(); gesture = null; active = null;
+      // Release the bitmaps: a phone runs out of canvas memory long before it
+      // runs out of pages.
+      for (const c of [pageCanvas, liveCanvas]) { c.width = 1; c.height = 1; }
+    },
+  };
+}
+
+export default function InkPad(props: InkPadProps) {
+  const { tool, controlRef, className } = props;
+  const stageRef = useRef<HTMLDivElement>(null);
+  const paperRef = useRef<HTMLDivElement>(null);
+  const pageRef = useRef<HTMLCanvasElement>(null);
+  const liveRef = useRef<HTMLCanvasElement>(null);
+  const engineRef = useRef<Engine | null>(null);
+  // The engine's listeners are attached once and read the props through this.
+  const propsRef = useRef(props);
+  propsRef.current = props;
+
+  useLayoutEffect(() => {
+    const stage = stageRef.current; const paper = paperRef.current; const pageCanvas = pageRef.current; const liveCanvas = liveRef.current;
+    if (!stage || !paper || !pageCanvas || !liveCanvas) return;
+    const engine = createEngine({ stage, paper, pageCanvas, liveCanvas }, () => propsRef.current);
+    engineRef.current = engine;
+    return () => { engine.destroy(); engineRef.current = null; };
+  }, []);
+
+  useEffect(() => { engineRef.current?.pageChanged(); }, [props.page, props.bg]);
+
+  useImperativeHandle(controlRef, () => ({
+    zoomIn: () => engineRef.current?.zoomStep(1),
+    zoomOut: () => engineRef.current?.zoomStep(-1),
+    zoomFit: () => engineRef.current?.zoomFit(),
+    lastPenAt: () => engineRef.current?.lastPenAt() ?? 0,
+  }), []);
 
   return (
     <div
-      ref={boxRef}
-      data-testid="ink-page"
+      ref={stageRef}
+      data-testid="ink-stage"
       className={className}
       style={{
-        position: 'relative', aspectRatio: `${PAGE_W} / ${PAGE_H}`, maxWidth: '100%', maxHeight: '100%',
-        touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
-        background: '#fff', boxShadow: '0 0 0 1px #e7e5e4',
+        position: 'absolute', inset: 0, overflow: 'hidden',
+        touchAction: 'none', overscrollBehavior: 'contain',
+        userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
         cursor: tool.kind === 'eraser' ? 'cell' : 'crosshair',
       }}
     >
+      <div
+        ref={paperRef}
+        data-testid="ink-page"
+        aria-hidden="true"
+        style={{ position: 'absolute', left: 0, top: 0, background: '#fff', boxShadow: '0 0 0 1px #e7e5e4', pointerEvents: 'none', transformOrigin: '0 0' }}
+      />
       <canvas ref={pageRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }} />
       <canvas ref={liveRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block', pointerEvents: 'none' }} />
     </div>

@@ -10,7 +10,7 @@
 // so opening and closing the sheet never syncs an empty row.
 
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Clock, Eraser, Hand, LayoutTemplate, Maximize2, Minimize2, NotebookPen, PenLine, Pencil, Plus, Trash2, Undo2, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Clock, Eraser, Hand, LayoutTemplate, Maximize2, Minimize2, NotebookPen, PenLine, Pencil, Plus, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clockLabel, dayLabel, dayTimeLabel } from '../lib/appTime';
 import { PAD_STRINGS, fill, type PadLang } from '../lib/notepadStrings';
@@ -29,7 +29,7 @@ import AppSpinner from './AppSpinner';
 import StaleBuildNotice from './StaleBuildNotice';
 import NoteTimes from './NoteTimes';
 import { importFresh } from '../lib/freshImport';
-import type { InkTool } from './InkPad';
+import type { InkPadControl, InkTool, InkZoom } from './InkPad';
 
 // perfect-freehand and the canvas code load the first time a coach opens a
 // pen page, never for one who only types.
@@ -66,6 +66,10 @@ const LAST_PAGE_KEY = 'svrz_pad_last_page';
 const PEN_SEEN_KEY = 'svrz_ink_pen_seen';
 /** The time column beside a text page: on unless this device turned it off. */
 const TIMES_KEY = 'svrz_pad_times';
+/** The pen page's zoom level on this device (relative to fit-width), like
+ *  svrz_pad_full: a coach who writes zoomed in should not pinch on every new
+ *  page. The level, never the position — each page opens at its top. */
+const ZOOM_KEY = 'svrz_ink_zoom';
 
 function readPref(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -110,6 +114,20 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const surfaceRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pressedBackdrop = useRef(false);
+  const inkControl = useRef<InkPadControl | null>(null);
+  // A fresh pad, and with it a fresh view at the top of the page, for every
+  // page the coach turns to. Not for the first stroke on a page not yet
+  // written: that stroke MAKES the page, and the view she is writing in stays.
+  const [viewKey, setViewKey] = useState(0);
+  const turnPage = () => setViewKey((k) => k + 1);
+  const [inkZoom, setInkZoom] = useState<InkZoom | null>(null);
+  const zoomLevel = useRef<number | null>(null);
+  if (zoomLevel.current === null) {
+    const stored = parseFloat(readPref(ZOOM_KEY) || '');
+    zoomLevel.current = Number.isFinite(stored) && stored > 0 ? stored : 1;
+  }
+  /** The two-finger hint shows until this device has zoomed once. */
+  const [zoomedOnce, setZoomedOnce] = useState(() => readPref(ZOOM_KEY) !== null);
 
   const current = pages.find((p) => p.pageId === currentId) || null;
   // Before the boot's first pull has answered, an empty list is only the
@@ -125,10 +143,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
 
   // A page that expired or was deleted while on screen: move to the newest.
   useEffect(() => {
-    if (currentId && !pages.some((p) => p.pageId === currentId)) setCurrentId(pages[0] ? pages[0].pageId : '');
+    if (currentId && !pages.some((p) => p.pageId === currentId)) { setCurrentId(pages[0] ? pages[0].pageId : ''); turnPage(); }
     // Pages arrive after the first render (IndexedDB, then the server), so the
     // remembered one is looked for again here and not only in the initial state.
-    if (!currentId && !virtual && pages[0]) setCurrentId(rememberedPage(pages) || pages[0].pageId);
+    if (!currentId && !virtual && pages[0]) { setCurrentId(rememberedPage(pages) || pages[0].pageId); turnPage(); }
   }, [pages, currentId, virtual]);
 
   // Escape peels this menu first. App.tsx keeps a window-level Escape handler
@@ -288,7 +306,11 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   };
   const inkPage: InkPage = ink || { w: 1000, h: 1414, strokes: [] };
   const onStrokeEnd = (stroke: InkStroke) => commitInk({ ...inkPage, strokes: [...inkPage.strokes, stroke] });
-  const onEraseStroke = (index: number) => commitInk({ ...inkPage, strokes: inkPage.strokes.filter((_, i) => i !== index) });
+  const onErase = (strokes: InkStroke[]) => {
+    const gone = new Set(strokes);
+    const kept = inkPage.strokes.filter((s) => !gone.has(s));
+    if (kept.length !== inkPage.strokes.length) commitInk({ ...inkPage, strokes: kept });
+  };
   const undo = () => { if (inkPage.strokes.length) commitInk({ ...inkPage, strokes: inkPage.strokes.slice(0, -1) }); };
   const clearPage = async () => {
     if (inkPage.strokes.length === 0) return;
@@ -301,6 +323,13 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     if (readPref(FINGER_KEY) === null) { setFingerDraws(false); toast.info(tp.padPenSeen, { lang }); }
   };
   const toggleFinger = () => { setFingerDraws((v) => { writePref(FINGER_KEY, v ? '0' : '1'); return !v; }); };
+  const onZoomChange = (zoom: InkZoom, byUser: boolean) => {
+    setInkZoom(zoom);
+    if (!byUser) return;
+    zoomLevel.current = zoom.z;
+    writePref(ZOOM_KEY, zoom.z.toFixed(2));
+    setZoomedOnce(true);
+  };
 
   // ── pages ───────────────────────────────────────────────────────────
   const newPage = (kind: PageKind) => {
@@ -308,6 +337,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     setVirtual({ kind, bg: '' });
     setCurrentId('');
     setInk(null);
+    turnPage();
   };
   // The court outline under a pen page: a toggle, so a coach who started
   // sketching can still put the lines under what is already there.
@@ -317,12 +347,13 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     else if (virtual) setVirtual({ ...virtual, bg: next });
   };
   const deletePage = async () => {
-    if (!current) { setVirtual(null); return; }
+    if (!current) { setVirtual(null); turnPage(); return; }
     if (!(await confirmDialog({ title: tp.padDeleteTitle, message: tp.padDeleteMsg, tone: 'danger', lang }))) return;
     const idx = pages.findIndex((p) => p.pageId === current.pageId);
     const next = pages[idx + 1] || pages[idx - 1] || null;
     notebookSync.deletePage(current.pageId);
     setCurrentId(next ? next.pageId : '');
+    turnPage();
   };
 
   // ── import ──────────────────────────────────────────────────────────
@@ -377,7 +408,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     <button
       key={p.pageId}
       type="button"
-      onClick={() => { setVirtual(null); setCurrentId(p.pageId); setMode('pages'); }}
+      onClick={() => { setVirtual(null); setCurrentId(p.pageId); setMode('pages'); turnPage(); }}
       aria-current={current && current.pageId === p.pageId ? 'page' : undefined}
       title={p.updatedAt - p.createdAt > 60_000
         ? `${fill(tp.padCreated, { date: dayTimeLabel(p.createdAt) })} · ${fill(tp.padEdited, { time: clockLabel(p.updatedAt) })}`
@@ -410,6 +441,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     if (!target) return;
     setVirtual(null);
     setCurrentId(target.pageId);
+    turnPage();
   };
   const pageNav = total > 0 && (
     <div className="flex items-center gap-1 shrink-0" role="group">
@@ -676,22 +708,27 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                 </div>
               ) : (
                 <div className="flex-1 min-h-0 flex flex-col">
-                  <div className="flex-1 min-h-0 flex items-center justify-center bg-stone-100 p-2">
+                  {/* The pad fills the grey and places the page in it itself:
+                      where the page sits and how big it is IS the zoom. */}
+                  <div className="relative flex-1 min-h-0 bg-stone-100 overflow-hidden">
                     {inkLoading ? (
-                      <p className="text-sm text-stone-500">{tp.padInkLoading}</p>
+                      <p className="absolute inset-0 flex items-center justify-center text-sm text-stone-500">{tp.padInkLoading}</p>
                     ) : (
-                      <Suspense fallback={<AppSpinner size={64} />}>
+                      <Suspense fallback={<div className="absolute inset-0 flex items-center justify-center"><AppSpinner size={64} /></div>}>
                         <InkPad
+                          key={viewKey}
                           page={inkPage}
                           bg={activeBg}
                           tool={tool}
                           fingerDraws={fingerDraws}
+                          initialZoom={zoomLevel.current ?? 1}
+                          controlRef={inkControl}
+                          onZoomChange={onZoomChange}
                           onPenSeen={onPenSeen}
                           onStrokeEnd={onStrokeEnd}
-                          onEraseStroke={onEraseStroke}
+                          onErase={onErase}
                           onFull={() => toast.error(tp.padPageFull, { lang })}
                           onCancelledStroke={() => setCancelled((n) => n + 1)}
-                          className="h-full"
                         />
                       </Suspense>
                     )}
@@ -709,9 +746,17 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                     <button type="button" onClick={toggleCourt} aria-pressed={activeBg === 'court'} title={tp.padCourt} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium', activeBg === 'court' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><LayoutTemplate size={14} /> {tp.padCourt}</button>
                     <button type="button" onClick={undo} disabled={inkPage.strokes.length === 0} aria-label={tp.padUndo} title={tp.padUndo} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><Undo2 size={14} /> {tp.padUndo}</button>
                     <button type="button" onClick={() => void clearPage()} disabled={inkPage.strokes.length === 0} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40">{tp.padClearPage}</button>
-                    <button type="button" onClick={toggleFinger} aria-pressed={fingerDraws} title={fingerDraws ? tp.padFingerOn : tp.padFingerOff} className={cn('shrink-0 ml-auto h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium', fingerDraws ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><Hand size={14} /> {tp.padFinger}</button>
+                    {/* Zoom for whoever does not think to pinch, and for a
+                        mouse without a wheel. The middle shows the level and
+                        goes to the whole page. */}
+                    <div role="group" aria-label={tp.padZoom} className="shrink-0 ml-auto inline-flex items-center gap-1">
+                      <button type="button" onClick={() => inkControl.current?.zoomOut()} disabled={!inkZoom || inkZoom.z <= inkZoom.min + 0.001} aria-label={tp.padZoomOut} title={tp.padZoomOut} className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-stone-700 hover:bg-stone-50 disabled:opacity-40"><ZoomOut size={14} /></button>
+                      <button type="button" onClick={() => inkControl.current?.zoomFit()} disabled={!inkZoom} aria-label={tp.padZoomFit} title={tp.padZoomFit} data-testid="ink-zoom" className="h-9 min-w-[3.5rem] px-1.5 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-xs font-medium text-stone-700 tabular-nums hover:bg-stone-50 disabled:opacity-40">{`${Math.round((inkZoom ? inkZoom.z : 1) * 100)} %`}</button>
+                      <button type="button" onClick={() => inkControl.current?.zoomIn()} disabled={!inkZoom || inkZoom.z >= inkZoom.max - 0.001} aria-label={tp.padZoomIn} title={tp.padZoomIn} className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-stone-700 hover:bg-stone-50 disabled:opacity-40"><ZoomIn size={14} /></button>
+                    </div>
+                    <button type="button" onClick={toggleFinger} aria-pressed={fingerDraws} title={fingerDraws ? tp.padFingerOn : tp.padFingerOff} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium', fingerDraws ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><Hand size={14} /> {tp.padFinger}</button>
                   </div>
-                  <p className="px-4 pb-1 text-[11px] text-stone-500">{cancelled >= 2 ? tp.padScribbleHint : tp.padInkNotImported}</p>
+                  <p className="px-4 pb-1 text-[11px] text-stone-500">{cancelled >= 2 ? tp.padScribbleHint : !zoomedOnce ? tp.padZoomHint : tp.padInkNotImported}</p>
                 </div>
               )}
             </div>

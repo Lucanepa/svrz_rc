@@ -125,6 +125,8 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const pressedBackdrop = useRef(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const inkControl = useRef<InkPadControl | null>(null);
+  /** The grey box the pen page fills: touches in it are the pad's. */
+  const inkBoxRef = useRef<HTMLDivElement>(null);
   // A fresh pad, and with it a fresh view at the top of the page, for every
   // page the coach turns to. Not for the first stroke on a page not yet
   // written: that stroke MAKES the page, and the view she is writing in stays.
@@ -168,11 +170,14 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   // Finger turned finger drawing on. A touch's click is swallowed here, in the
   // capture phase, before any button sees it — the signature dialog's
   // failure, on the notebook (Jennifer, 23.10.2026) — when the pen was on the
-  // glass within PEN_TRAILING_MS of the click, or of that touch going down: a
-  // palm that lands on Rückgängig mid-letter can lift long after the pen did,
-  // and its click then undid the letter (final review, 24.10.2026). Only
-  // contact counts, never hover: a coach holding the Pencil over the page
-  // still taps the toolbar with the other hand.
+  // glass at any time from PEN_TRAILING_MS before that touch went down until
+  // the click. That one window holds the palm whose heel lands just before
+  // the Pencil's tip (the usual order, InkPad's PALM_LEAD_MS is there for
+  // it), the palm that lands mid-letter and lifts long after the pen did
+  // (its click undid the letter, final review), and the hand right after the
+  // pen; a flag taken at the touch's pointerdown missed the first (final
+  // check, 24.10.2026). Only contact counts, never hover: a coach holding the
+  // Pencil over the page still taps the toolbar with the other hand.
   //
   // Which pointer made a click is read from the touches themselves, by the
   // element they landed on. The click's own pointerType cannot be trusted:
@@ -183,37 +188,42 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
-    const penBusy = (now: number) => {
-      const at = inkControl.current?.lastPenAt() ?? 0;
-      return !!at && now - at < PEN_TRAILING_MS;
-    };
-    /** The last few touches on the panel, by pointer, in the order they were
-     *  last seen: what they landed on, and whether the pen was busy then. */
-    const touched = new Map<number, { target: Node; busyAtDown: boolean; at: number }>();
-    const seen = (id: number, t: { target: Node; busyAtDown: boolean; at: number }) => {
+    /** The last few touches on the panel's controls, by pointer, in the order
+     *  they were last seen: what they landed on, when they went down, and
+     *  when they were last seen. */
+    type Touch = { target: Node; downAt: number; at: number };
+    const touched = new Map<number, Touch>();
+    const seen = (id: number, t: Touch) => {
       touched.delete(id);
       touched.set(id, t);
       if (touched.size > 8) touched.delete(touched.keys().next().value as number);
     };
+    // A touch on the pen page itself is the pad's, never a button's click:
+    // kept here, the rest of a resting hand pushed the palm on Rückgängig out
+    // of the list before it lifted (final check, 24.10.2026).
+    const onControls = (e: PointerEvent): e is PointerEvent & { target: Node } =>
+      e.pointerType === 'touch' && e.target instanceof Node && !inkBoxRef.current?.contains(e.target);
     const onTouchDown = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch' || !(e.target instanceof Node)) return;
+      if (!onControls(e)) return;
       const now = performance.now();
-      seen(e.pointerId, { target: e.target, busyAtDown: penBusy(now), at: now });
+      seen(e.pointerId, { target: e.target, downAt: now, at: now });
     };
     const onTouchUp = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch' || !(e.target instanceof Node)) return;
+      if (!onControls(e)) return;
+      const now = performance.now();
       const down = touched.get(e.pointerId);
-      seen(e.pointerId, { target: down ? down.target : e.target, busyAtDown: !!down && down.busyAtDown, at: performance.now() });
+      seen(e.pointerId, down ? { ...down, at: now } : { target: e.target, downAt: now, at: now });
     };
     const onClick = (e: MouseEvent) => {
       const target = e.target instanceof Node ? e.target : null;
       const now = performance.now();
       // The touch this click is from: the last one seen on the element the
       // click went to, or on one inside it.
-      let tap: { busyAtDown: boolean } | null = null;
+      let tap: Touch | null = null;
       if (target) for (const t of touched.values()) if (now - t.at < TAP_CLICK_MS && target.contains(t.target)) tap = t;
       if (!tap && (e as PointerEvent).pointerType !== 'touch') return;
-      if (!(tap && tap.busyAtDown) && !penBusy(now)) return;
+      const penAt = inkControl.current?.lastPenAt() ?? 0;
+      if (!penAt || penAt < (tap ? tap.downAt : now) - PEN_TRAILING_MS) return;
       e.preventDefault();
       e.stopPropagation();
     };
@@ -802,7 +812,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                 <div className="flex-1 min-h-0 flex flex-col">
                   {/* The pad fills the grey and places the page in it itself:
                       where the page sits and how big it is IS the zoom. */}
-                  <div className="relative flex-1 min-h-0 bg-stone-100 overflow-hidden">
+                  <div ref={inkBoxRef} className="relative flex-1 min-h-0 bg-stone-100 overflow-hidden">
                     {inkLoading ? (
                       <p className="absolute inset-0 flex items-center justify-center text-sm text-stone-500">{tp.padInkLoading}</p>
                     ) : (

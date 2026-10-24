@@ -531,6 +531,14 @@ test('a real tap on Rückgängig right after the pen is the writing hand, a tap 
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
 });
 
+/** Nine contacts of the rest of the hand on the page itself, palm-sized,
+ *  each down and up: what touches the glass beside the pen while a palm lies
+ *  on a button. */
+const handOnPage = (from: number): Step[] => Array.from({ length: 9 }, (_, i): Step[] => {
+  const contact = { pointerType: 'touch', pointerId: from + i, width: 120, height: 120 };
+  return [{ pad: 'pointerdown', init: contact, at: [0.5, 0.85] }, { pad: 'pointerup', init: contact, at: [0.5, 0.85] }];
+}).flat();
+
 test('a palm that landed on Rückgängig while the pen wrote stays a palm, however late it lifts', async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');
@@ -546,7 +554,10 @@ test('a palm that landed on Rückgängig while the pen wrote stays a palm, howev
     { el: 'undo', type: 'pointerdown', init: palm },
     { pad: 'pointermove', init: { ...PEN, pointerId: 7 }, at: [0.4, 0.5] },
     { pad: 'pointerup', init: { ...PEN, pointerId: 7, pressure: 0 }, at: [0.4, 0.5] },
-    // …and lifts long after the pen did. iPadOS still makes it a click.
+    // …the rest of the hand touches the page while it rests there (these
+    // used to push the palm out of the sheet's short list of touches)…
+    ...handOnPage(50),
+    // …and it lifts long after the pen did. iPadOS still makes it a click.
     { wait: 700 },
     { el: 'undo', type: 'pointerup', init: palm },
     { el: 'undo', type: 'click', init: { pointerType: 'mouse' } },
@@ -556,6 +567,40 @@ test('a palm that landed on Rückgängig while the pen wrote stays a palm, howev
   await expect.poll(() => strokeCount(page), SYNC).toBe(2);
   await page.waitForTimeout(2_500);
   expect(await strokeCount(page)).toBe(2);
+});
+
+test('a palm that landed on Rückgängig just before the pen stays a palm; a finger tap well after the pen is a tap', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await mouseStroke(page, 0.1, 0.2, 0.5, 0.25);
+  await expect.poll(() => strokeCount(page), SYNC).toBe(1);
+  await page.waitForTimeout(600);
+  const palm = { pointerType: 'touch', pointerId: 40, width: 30, height: 30 };
+  await burst(page, [
+    // The heel of the writing hand usually lands before the Pencil's tip:
+    // here on the button, 100 ms ahead of the letter…
+    { el: 'undo', type: 'pointerdown', init: palm },
+    { wait: 100 },
+    ...padSteps({ ...PEN, pointerId: 7 }, line(0.5, 0.2, 0.4, 3)),
+    ...handOnPage(50),
+    // …and it lifts 700 ms after the pen did, a click as it goes.
+    { wait: 700 },
+    { el: 'undo', type: 'pointerup', init: palm },
+    { el: 'undo', type: 'click', init: { pointerType: 'mouse' } },
+  ]);
+  await expect.poll(() => strokeCount(page), SYNC).toBe(2);
+  await page.waitForTimeout(2_500);
+  expect(await strokeCount(page)).toBe(2);
+  // A finger tapping the button long after the pen, with no pen around its
+  // touch: that one is meant.
+  const finger = { pointerType: 'touch', pointerId: 41, width: 30, height: 30 };
+  await burst(page, [
+    { el: 'undo', type: 'pointerdown', init: finger },
+    { el: 'undo', type: 'pointerup', init: finger },
+    { el: 'undo', type: 'click', init: { pointerType: 'mouse' } },
+  ]);
+  await expect.poll(() => strokeCount(page), SYNC).toBe(1);
 });
 
 test.describe('a stroke whose pointerup never came', () => {

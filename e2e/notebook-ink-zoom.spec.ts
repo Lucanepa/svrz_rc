@@ -406,3 +406,28 @@ test('a phone in fullscreen: the page keeps the A4 shape, so the ink lands under
   const d = (await storedInk(page))[0].page.strokes[0].d;
   expect(Math.abs(d[1] / 10 - 1414 * 0.85)).toBeLessThan(2);
 });
+
+test.describe('the pen toolbar on an iPad, in German (its longest labels)', () => {
+  test.use({ locale: 'de-CH' });
+  // An iPad mini in portrait (744 wide) cut 'Finger' to 'F' once the zoom
+  // group came in (final review, 24.10.2026). A 9.7" iPad upright is 768 wide,
+  // its sheet 736; the last two are every larger iPad's sheet, 768 px wide,
+  // with every label shown.
+  for (const vp of [{ width: 744, height: 1133 }, { width: 768, height: 1024 }, { width: 820, height: 1180 }, { width: 1180, height: 820 }]) {
+    test(`fits on one row at ${vp.width} × ${vp.height}, at the page width and at the whole page`, async ({ page }) => {
+      await page.setViewportSize(vp);
+      await stubSignedInApp(page);
+      await page.goto('/');
+      await openPenPage(page);
+      const bar = sheet(page).getByRole('group', { name: /^Zoom$/ }).locator('xpath=..');
+      const finger = sheet(page).getByRole('button', { name: /^(Finger)$/ });
+      for (const view of ['page width', 'whole page']) {
+        if (view === 'whole page') { await wholePage(page).click(); await expect(zoomOut(page)).toBeDisabled(); }
+        const { client, scroll } = await bar.evaluate((el) => ({ client: el.clientWidth, scroll: el.scrollWidth }));
+        expect(scroll, `${view}: ${scroll} px of toolbar in ${client}`).toBeLessThanOrEqual(client + 1);
+        const b = (await bar.boundingBox())!; const f = (await finger.boundingBox())!;
+        expect(f.x + f.width).toBeLessThanOrEqual(b.x + b.width + 0.5);
+      }
+    });
+  }
+});

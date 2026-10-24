@@ -10,7 +10,7 @@
 // so opening and closing the sheet never syncs an empty row.
 
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Clock, Eraser, FileIcon, Hand, LayoutTemplate, Maximize2, Minimize2, MoveHorizontal, NotebookPen, PenLine, Pencil, Plus, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { BrushCleaning, ChevronLeft, ChevronRight, Clock, Eraser, FileIcon, Hand, LayoutTemplate, Maximize2, Minimize2, MoveHorizontal, NotebookPen, PenLine, Pencil, Plus, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clockLabel, dayLabel, dayTimeLabel } from '../lib/appTime';
 import { PAD_STRINGS, fill, type PadLang } from '../lib/notepadStrings';
@@ -825,19 +825,25 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       </Suspense>
                     )}
                   </div>
-                  <div className="flex items-center gap-1.5 px-3 py-2 border-t border-stone-200 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+                  {/* One row on every iPad. In German it needs about 760 px,
+                      and the sheet is 768 wide only from an 800 px screen up:
+                      below that (an iPad mini or a 9.7" iPad upright, 744 and
+                      768) Spielfeld, Rückgängig and Seite leeren show their
+                      icon alone, named as before. A phone still scrolls the
+                      row sideways. */}
+                  <div className="flex items-center gap-1 px-3 py-2 border-t border-stone-200 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
                     {([
                       { key: 'black', label: tp.padPenBlack, icon: <PenLine size={14} />, active: tool.kind === 'pen' && tool.colour === 0, on: () => setTool({ kind: 'pen', colour: 0 }) },
                       { key: 'red', label: tp.padPenRed, icon: <span className="inline-block w-3 h-3 rounded-full bg-red-700" />, active: tool.kind === 'pen' && tool.colour === 1, on: () => setTool({ kind: 'pen', colour: 1 }) },
                       { key: 'eraser', label: tp.padEraser, icon: <Eraser size={14} />, active: tool.kind === 'eraser', on: () => setTool({ kind: 'eraser' }) },
                     ]).map((b) => (
-                      <button key={b.key} type="button" onClick={b.on} aria-pressed={b.active} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium', b.active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}>
+                      <button key={b.key} type="button" onClick={b.on} aria-pressed={b.active} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border text-xs font-medium', b.active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}>
                         {b.icon} {b.label}
                       </button>
                     ))}
-                    <button type="button" onClick={toggleCourt} aria-pressed={activeBg === 'court'} title={tp.padCourt} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium', activeBg === 'court' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><LayoutTemplate size={14} /> {tp.padCourt}</button>
-                    <button type="button" onClick={undo} disabled={inkPage.strokes.length === 0} aria-label={tp.padUndo} title={tp.padUndo} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><Undo2 size={14} /> {tp.padUndo}</button>
-                    <button type="button" onClick={() => void clearPage()} disabled={inkPage.strokes.length === 0} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40">{tp.padClearPage}</button>
+                    <button type="button" onClick={toggleCourt} aria-pressed={activeBg === 'court'} aria-label={tp.padCourt} title={tp.padCourt} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border text-xs font-medium', activeBg === 'court' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><LayoutTemplate size={14} /><span className="hidden min-[50rem]:inline">{tp.padCourt}</span></button>
+                    <button type="button" onClick={undo} disabled={inkPage.strokes.length === 0} aria-label={tp.padUndo} title={tp.padUndo} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><Undo2 size={14} /><span className="hidden min-[50rem]:inline">{tp.padUndo}</span></button>
+                    <button type="button" onClick={() => void clearPage()} disabled={inkPage.strokes.length === 0} aria-label={tp.padClearPage} title={tp.padClearPage} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><BrushCleaning size={14} className="min-[50rem]:hidden" /><span className="hidden min-[50rem]:inline">{tp.padClearPage}</span></button>
                     {/* Zoom for whoever does not think to pinch, and for a
                         mouse without a wheel. The middle shows the level, and
                         an icon for where a tap goes: the whole page, or back
@@ -854,14 +860,14 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                         aria-label={`${zoomPct} — ${zoomAction}`}
                         title={zoomAction}
                         data-testid="ink-zoom"
-                        className="h-9 min-w-[3.5rem] px-1.5 inline-flex items-center justify-center gap-1 rounded-lg border border-stone-300 bg-white text-xs font-medium text-stone-700 tabular-nums hover:bg-stone-50 disabled:opacity-40"
+                        className="h-9 min-w-[3.75rem] px-1 inline-flex items-center justify-center gap-0.5 rounded-lg border border-stone-300 bg-white text-xs font-medium text-stone-700 tabular-nums hover:bg-stone-50 disabled:opacity-40"
                       >
                         {zoomPct}
                         {zoomAtWhole ? <MoveHorizontal size={12} className="shrink-0" /> : <FileIcon size={12} className="shrink-0" />}
                       </button>
                       <button type="button" onClick={() => inkControl.current?.zoomIn()} disabled={!inkZoom || inkZoom.z >= inkZoom.max - 0.001} aria-label={tp.padZoomIn} title={tp.padZoomIn} className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-stone-700 hover:bg-stone-50 disabled:opacity-40"><ZoomIn size={14} /></button>
                     </div>
-                    <button type="button" onClick={toggleFinger} aria-pressed={fingerDraws} title={fingerDraws ? tp.padFingerOn : tp.padFingerOff} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium', fingerDraws ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><Hand size={14} /> {tp.padFinger}</button>
+                    <button type="button" onClick={toggleFinger} aria-pressed={fingerDraws} title={fingerDraws ? tp.padFingerOn : tp.padFingerOff} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border text-xs font-medium', fingerDraws ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><Hand size={14} /> {tp.padFinger}</button>
                   </div>
                   <p className="px-4 pb-1 text-[11px] text-stone-500">{cancelled >= 2 ? tp.padScribbleHint : !zoomedOnce && touchScreen ? tp.padZoomHint : tp.padInkNotImported}</p>
                 </div>

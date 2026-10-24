@@ -70,6 +70,8 @@ const TIMES_KEY = 'svrz_pad_times';
  *  svrz_pad_full: a coach who writes zoomed in should not pinch on every new
  *  page. The level, never the position — each page opens at its top. */
 const ZOOM_KEY = 'svrz_ink_zoom';
+/** A touch on the sheet's buttons this soon after the pen is the writing hand. */
+const PALM_CLICK_MS = 500;
 
 function readPref(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -114,6 +116,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const surfaceRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pressedBackdrop = useRef(false);
+  const panelRef = useRef<HTMLDivElement>(null);
   const inkControl = useRef<InkPadControl | null>(null);
   // A fresh pad, and with it a fresh view at the top of the page, for every
   // page the coach turns to. Not for the first stroke on a page not yet
@@ -148,6 +151,32 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     // remembered one is looked for again here and not only in the initial state.
     if (!currentId && !virtual && pages[0]) { setCurrentId(rememberedPage(pages) || pages[0].pageId); turnPage(); }
   }, [pages, currentId, virtual]);
+
+  // The writing hand rests on the sheet: on the toolbar right under the page,
+  // on the page strip, by the header's buttons. iOS turns a short palm contact
+  // into a click, and a click on Rückgängig took the last stroke away, one on
+  // Finger turned finger drawing on. A touch's click this soon after the pen is
+  // swallowed here, in the capture phase, before any button sees it — the
+  // signature dialog's failure, on the notebook (Jennifer, 23.10.2026).
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    let downType = ''; let downAt = 0;
+    const onDown = (e: PointerEvent) => { downType = e.pointerType; downAt = performance.now(); };
+    const onClick = (e: MouseEvent) => {
+      // Chrome and Safari 18.2 make the click itself a PointerEvent; before
+      // that, the pointerdown that led to it says what it was.
+      const type = 'pointerType' in e ? (e as PointerEvent).pointerType : performance.now() - downAt < 1000 ? downType : '';
+      if (type !== 'touch') return;
+      const penAt = inkControl.current?.lastPenAt() ?? 0;
+      if (!penAt || performance.now() - penAt >= PALM_CLICK_MS) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    panel.addEventListener('pointerdown', onDown, true);
+    panel.addEventListener('click', onClick, true);
+    return () => { panel.removeEventListener('pointerdown', onDown, true); panel.removeEventListener('click', onClick, true); };
+  }, []);
 
   // Escape peels this menu first. App.tsx keeps a window-level Escape handler
   // that closes the whole sheet, and losing the page you are writing on is a
@@ -466,10 +495,13 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   return (
     <div
       className={wrapper}
-      onMouseDown={(e) => { pressedBackdrop.current = e.target === e.currentTarget; }}
+      // Only a real mouse press closes the sheet from out here. iOS makes a
+      // click of a palm or a stray finger beside the panel too, and in
+      // landscape the hand rests on 200 px of backdrop either side of it.
+      onPointerDown={(e) => { pressedBackdrop.current = e.target === e.currentTarget && e.pointerType === 'mouse'; }}
       onClick={(e) => { if (!full && e.target === e.currentTarget && pressedBackdrop.current) onClose(); }}
     >
-      <div role="dialog" aria-modal="true" aria-label={tp.padTitle} data-full={full ? 'true' : 'false'} className={panel}>
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={tp.padTitle} data-full={full ? 'true' : 'false'} className={panel}>
         {/* header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-200">
           <NotebookPen size={18} className="shrink-0 text-stone-700" />

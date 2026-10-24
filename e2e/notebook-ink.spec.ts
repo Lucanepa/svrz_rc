@@ -5,7 +5,8 @@ import { stubSignedInApp, RC, suiteNow } from './support/app';
  * The pen page: strokes are stored as vectors (never a bitmap), a pen draws
  * with pressure, a finger is ignored once a pen was seen, a palm never draws,
  * undo works, the court background is kept with the page, and an ink page is
- * pushed in a request of its own, with its strokes.
+ * pushed in a request of its own, with its strokes. The writing hand on the
+ * sheet around the page changes nothing.
  *
  * Playwright has no stylus: pen and touch input are dispatched as synthetic
  * pointer events (which is also why setPointerCapture has to be guarded).
@@ -282,4 +283,41 @@ test('each sample stores its own time since the one before it', async ({ page })
   for (const dt of dts) expect(dt).toBeGreaterThanOrEqual(30);
   // Every delta used to be the whole stroke's duration.
   expect(dts.reduce((n, dt) => n + dt, 0)).toBeLessThanOrEqual(elapsed + 20);
+});
+
+test('the writing hand on the sheet: a touch on its buttons right after the pen does nothing, a touch beside it never closes it', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  const undo = sheet(page).getByRole('button', { name: /^(Rückgängig|Undo)$/ });
+  await mouseStroke(page, 0.1, 0.2, 0.5, 0.25);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+  // In one go: the pen writes, and the palm lands on Rückgängig as it lifts.
+  const box = (await pad(page).boundingBox())!;
+  await page.evaluate((b) => {
+    const target = document.querySelector('[data-testid="ink-stage"] canvas')!;
+    const pen = (type: string, fx: number) => new PointerEvent(type, { bubbles: true, cancelable: true, isPrimary: true, buttons: type === 'pointerup' ? 0 : 1, pointerType: 'pen', pointerId: 7, pressure: 0.4, clientX: b.x + b.width * fx, clientY: b.y + b.height * 0.5 });
+    target.dispatchEvent(pen('pointerdown', 0.2));
+    target.dispatchEvent(pen('pointermove', 0.4));
+    window.dispatchEvent(pen('pointerup', 0.4));
+    const button = [...document.querySelectorAll('button')].find((el) => /^(Rückgängig|Undo)$/.test(el.getAttribute('aria-label') || ''))!;
+    button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'touch', pointerId: 30, width: 60, height: 60 }));
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  }, box);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(2);
+  await page.waitForTimeout(300);
+  expect((await storedInk(page))[0].page.strokes).toHaveLength(2);
+  // Once the pen has been away for a moment, a finger's tap is a tap again.
+  await page.waitForTimeout(300);
+  await undo.dispatchEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'touch', pointerId: 31, width: 20, height: 20 });
+  await undo.dispatchEvent('click');
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+  // A palm beside the sheet does not close it; a mouse click there does.
+  const backdrop = sheet(page).locator('xpath=..');
+  await backdrop.dispatchEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'touch', pointerId: 32, width: 120, height: 120 });
+  await backdrop.dispatchEvent('click');
+  await page.waitForTimeout(200);
+  await expect(sheet(page)).toBeVisible();
+  await page.mouse.click(5, 5);
+  await expect(sheet(page)).toHaveCount(0);
 });

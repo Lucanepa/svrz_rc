@@ -147,11 +147,14 @@ export function pageVisibleWhole(st: Stage, v: View): boolean {
   return PAGE_W * s + 2 * VIEW_MARGIN <= st.w + EPS && PAGE_H * s + 2 * VIEW_MARGIN <= st.h + EPS;
 }
 
-/** Vergrössern: one step, stopping at fit-width on the way up from the whole page. */
+/** Vergrössern: one step, stopping at fit-width on the way up from the whole
+ *  page — unless fit-width snaps down to the whole page (clampZoom): that
+ *  stop was the view the page was already in, and the button did nothing
+ *  (390 × 810 in fullscreen, 24.10.2026). */
 export function zoomStepIn(st: Stage, z: number): number {
   const { max } = zoomRange(st);
   let next = z * ZOOM_STEP;
-  if (z < 1 - EPS && next > 1 + EPS) next = 1;
+  if (z < 1 - EPS && next > 1 + EPS && clampZoom(st, 1) === 1) next = 1;
   return Math.min(max, next);
 }
 

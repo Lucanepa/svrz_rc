@@ -416,7 +416,7 @@ test('a phone in fullscreen: the page keeps the A4 shape, so the ink lands under
   expect(Math.abs(d[1] / 10 - 1414 * 0.85)).toBeLessThan(2);
 });
 
-test('a whole page within a hair of the page width is the same view: the level button is off there', async ({ page }) => {
+test('a whole page within a hair of the page width is the same view: the level button is off there, and brings a zoomed page back', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addInitScript(() => {
     try { localStorage.setItem('svrz_pad_full', '1'); } catch { /* private mode */ }
@@ -445,6 +445,13 @@ test('a whole page within a hair of the page width is the same view: the level b
   await expect(stage(page)).toHaveAttribute('data-zoom', '1.00');
   await expect(level).toHaveAccessibleName(/^100 % — (Seitenbreite|Page width)$/);
   // It was on, and a tap did nothing: the page width snapped back to this view.
+  await expect(level).toBeDisabled();
+  await zoomIn(page).click();
+  await expect(stage(page)).toHaveAttribute('data-zoom', '1.50');
+  await expect(level).toBeEnabled();
+  await expect(level).toHaveAccessibleName(/^150 % — (Seitenbreite|Page width)$/);
+  await level.click();
+  await expect(stage(page)).toHaveAttribute('data-zoom', '1.00');
   await expect(level).toBeDisabled();
 });
 

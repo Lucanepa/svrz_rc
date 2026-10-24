@@ -191,3 +191,20 @@ test('the zoom buttons step by half again, stop at fit-width on the way, and at 
   expect(zoomStepOut(st, 1)).toBe(r.min);
   expect(zoomStepOut(st, r.min)).toBe(r.min);
 });
+
+test('Vergrössern from the whole page always moves: where the page width snaps to the whole page, it goes past it', () => {
+  // 390 × 810 in fullscreen: the stop at fit-width on the way up was the
+  // view the page was already in, so the button was on and did nothing.
+  const st: Stage = { w: 390, h: 543.5 };
+  const { min } = zoomRange(st);
+  expect(zoomStepIn(st, min)).toBeCloseTo(min * 1.5, 12);
+  // Every phone height around it, and the stages the iPad has.
+  for (let h = 300; h <= 900; h += 0.25) {
+    const s: Stage = { w: 390, h };
+    const r = zoomRange(s);
+    expect(clampZoom(s, zoomStepIn(s, r.min)), `stage 390 × ${h}`).toBeGreaterThan(r.min);
+  }
+  for (const s of STAGES) expect(clampZoom(s, zoomStepIn(s, zoomRange(s).min))).toBeGreaterThan(zoomRange(s).min);
+  // Where fit-width is a view of its own, the stop on the way stays.
+  expect(zoomStepIn(IPAD_PORTRAIT, zoomRange(IPAD_PORTRAIT).min)).toBe(1);
+});

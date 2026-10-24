@@ -44,13 +44,19 @@ const stage = (page: Page) => sheet(page).getByTestId('ink-stage');
 /** The zoom level button while a tap on it shows the whole page. */
 const toWholePage = (page: Page) => sheet(page).getByRole('button', { name: /^\d+ % — (Ganze Seite|Whole page)$/ });
 
+/** A new page on its handwritten side: one button makes a page, the switch on
+ *  it turns to Handschrift (a no-op once this device remembers that side). */
+async function newPenPage(page: Page): Promise<void> {
+  await sheet(page).getByTestId('pad-new-page').click();
+  await sheet(page).getByTestId('pad-side-ink').click();
+  await expect(pad(page)).toBeVisible();
+}
+
 /** A new pen page, shown whole. A page opens at fit-width, taller than the
  *  stage, and the helpers below aim at fractions of the page. */
 async function openPenPage(page: Page, court = false): Promise<void> {
   await launcher(page).click();
-  // By test id: the black pen in the toolbar is called "Stift" too.
-  await sheet(page).getByTestId('pad-new-ink').click();
-  await expect(pad(page)).toBeVisible();
+  await newPenPage(page);
   await toWholePage(page).click();
   await expect(sheet(page).getByRole('button', { name: /^(Verkleinern|Zoom out)$/ })).toBeDisabled();
   if (court) await sheet(page).getByRole('button', { name: /^(Spielfeld|Court)$/ }).click();
@@ -242,7 +248,7 @@ test('pointercancel: a pen stroke keeps what was drawn and counts for the Scribb
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(4);
   await sheet(page).getByRole('button', { name: /^(Rückgängig|Undo)$/ }).click();
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(3);
-  await sheet(page).getByRole('button', { name: /^(Seite leeren|Clear page)$/ }).click();
+  await sheet(page).getByRole('button', { name: /^(Handschrift leeren|Clear handwriting)$/ }).click();
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(0);
   expect((await storedPages(page))[0].bg).toBe('court');
   // The court lines are drawn even with no ink on the page.
@@ -614,8 +620,7 @@ test('a palm resting on Rückgängig stays a palm when the other hand turns the 
   await expect.poll(() => strokeCount(page), SYNC).toBe(1);
   // A second page, written with the pen while the heel of the hand rests on
   // the button under it.
-  await sheet(page).getByTestId('pad-new-ink').click();
-  await expect(pad(page)).toBeVisible();
+  await newPenPage(page);
   const total = async () => (await storedInk(page)).reduce((n, ink) => n + ink.page.strokes.length, 0);
   const palm = { pointerType: 'touch', pointerId: 40, width: 30, height: 30 };
   const finger = { pointerType: 'touch', pointerId: 41, width: 30, height: 30 };

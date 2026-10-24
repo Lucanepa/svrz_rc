@@ -32,7 +32,9 @@ async function openPenPage(page: Page, viewport: { width: number; height: number
   await stubSignedInApp(page);
   await page.goto('/');
   await launcher(page).click();
-  await sheet(page).getByTestId('pad-new-ink').click();
+  // One new-page button; the switch on the page turns it to Handschrift.
+  await sheet(page).getByTestId('pad-new-page').click();
+  await sheet(page).getByTestId('pad-side-ink').click();
   await expect(paper(page)).toBeVisible();
   if (whole) {
     await sheet(page).getByRole('button', { name: /(Ganze Seite|Whole page)$/ }).click();

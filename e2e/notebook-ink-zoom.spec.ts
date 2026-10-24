@@ -44,10 +44,17 @@ const zoomOut = (page: Page) => sheet(page).getByRole('button', { name: /^(Verkl
 const wholePage = (page: Page) => sheet(page).getByRole('button', { name: /^\d+ % — (Ganze Seite|Whole page)$/ });
 const pageWidth = (page: Page) => sheet(page).getByRole('button', { name: /^\d+ % — (Seitenbreite|Page width)$/ });
 
+/** A new page on its handwritten side (the switch is a no-op once this
+ *  device remembers that side). */
+async function newPenPage(page: Page): Promise<void> {
+  await sheet(page).getByTestId('pad-new-page').click();
+  await sheet(page).getByTestId('pad-side-ink').click();
+  await expect(paper(page)).toBeVisible();
+}
+
 async function openPenPage(page: Page): Promise<void> {
   await launcher(page).click();
-  await sheet(page).getByTestId('pad-new-ink').click();
-  await expect(paper(page)).toBeVisible();
+  await newPenPage(page);
   await expect(stage(page)).toHaveAttribute('data-zoom', /\d/);
 }
 
@@ -324,10 +331,10 @@ test('the zoom level is remembered on this device, and every page opens at its t
   await page.goto('/');
   await openPenPage(page);
   // The two-finger hint is for a touch screen; a desktop keeps the line that
-  // says pen pages are not inserted.
+  // says the handwriting is not inserted.
   const touchScreen = await page.evaluate(() => matchMedia('(any-pointer: coarse)').matches);
   const zoomHint = sheet(page).getByText(/Mit zwei Fingern|Pinch with two fingers/);
-  const notInserted = sheet(page).getByText(/Stiftseiten werden nicht übernommen|Pen pages are not inserted/);
+  const notInserted = sheet(page).getByText(/Handschrift wird nicht übernommen|Handwriting is not inserted/);
   await expect(zoomHint).toHaveCount(touchScreen ? 1 : 0);
   await expect(notInserted).toHaveCount(touchScreen ? 0 : 1);
   await zoomIn(page).click();
@@ -338,7 +345,7 @@ test('the zoom level is remembered on this device, and every page opens at its t
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
   // The stroke made the page; the view she is writing in stayed.
   await expect(stage(page)).toHaveAttribute('data-zoom', '1.50');
-  await sheet(page).getByTestId('pad-new-ink').click();
+  await newPenPage(page);
   await expect(stage(page)).toHaveAttribute('data-zoom', '1.50');
   const s = await box(page, 'stage');
   await expect.poll(async () => Math.abs((await box(page, 'paper')).y - (s.y + 8))).toBeLessThan(0.5);
@@ -360,8 +367,7 @@ test('the whole page, remembered, reopens whole after a reload: not a few px too
   await expect(zoomOut(page)).toBeDisabled();
   await page.reload();
   await launcher(page).click();
-  await sheet(page).getByTestId('pad-new-ink').click();
-  await expect(paper(page)).toBeVisible();
+  await newPenPage(page);
   await expect(zoomOut(page)).toBeDisabled();
   const s = await box(page, 'stage'); const p = await box(page, 'paper');
   expect(p.y).toBeGreaterThanOrEqual(s.y + 7.5);

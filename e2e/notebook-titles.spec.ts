@@ -60,6 +60,11 @@ const sheet = (page: Page) => page.getByRole('dialog', { name: /^(Notizblock|Not
 const pageBox = (page: Page) => sheet(page).locator('.rich-surface');
 const titleBox = (page: Page) => sheet(page).getByTestId('pad-title');
 const closeSheet = (page: Page) => sheet(page).getByRole('button', { name: /^(Schliessen|Close)$/ }).click();
+/** A new page, on its typed side. */
+async function newTypedPage(page: Page): Promise<void> {
+  await sheet(page).getByTestId('pad-new-page').click();
+  await sheet(page).getByTestId('pad-side-text').click();
+}
 
 const NEWER = padPage({ pageId: 'p-newer', text: 'newer page', createdAt: suiteNow() - 60 * 60 * 1000 });
 const OLDER = padPage({ pageId: 'p-older', text: 'older page', createdAt: suiteNow() - 3 * 60 * 60 * 1000 });
@@ -112,7 +117,7 @@ test("a page with no title of its own never wears the last page's", async ({ pag
   await expect(titleBox(page)).toHaveValue('Urs 2SR');
 
   // A page not yet written is nameless too, however it was reached.
-  await sheet(page).getByTestId('pad-new-text').click();
+  await newTypedPage(page);
   await expect(titleBox(page)).toHaveValue('');
 });
 
@@ -124,7 +129,7 @@ test('naming a new page keeps the caret in the name, and makes one page', async 
   await seedPad(page, [OLDER, NEWER]);
   await page.goto('/');
   await launcher(page).click();
-  await sheet(page).getByTestId('pad-new-text').click();
+  await newTypedPage(page);
 
   await titleBox(page).click();
   await page.keyboard.type('Halbzeit');

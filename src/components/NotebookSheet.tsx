@@ -1,8 +1,12 @@
 // The Notizblock sheet: the coach's pages, newest on top, one on screen at a
-// time — a text page (a plain textarea, so iPadOS Scribble, Samsung's S Pen
-// and Gboard write into it natively) or a pen page (InkPad). On the
-// observation form the footer also offers "Übernehmen…", the only way a page
-// ever reaches the report.
+// time. A page has two sides, and a switch at the top of it says which one is
+// on screen: Tippen (the rich editor, so iPadOS Scribble, Samsung's S Pen and
+// Gboard write into it natively) or Handschrift (InkPad). One "Neue Seite"
+// opens a page on the side last used on this device; the "+ Text" / "+ Stift"
+// pair it replaced made a coach choose a kind of page before writing anything
+// (Jennifer, 23.10.2026). On the observation form the footer also offers
+// "Übernehmen…", the only way a page ever reaches the report — its typed side,
+// never the handwriting.
 //
 // Rendering and state come from notebookSync: this component never touches
 // IndexedDB or the network itself. A page that does not exist yet (the empty
@@ -10,7 +14,7 @@
 // so opening and closing the sheet never syncs an empty row.
 
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { BrushCleaning, ChevronLeft, ChevronRight, Clock, Eraser, FileIcon, Hand, LayoutTemplate, Maximize2, Minimize2, MoveHorizontal, NotebookPen, PenLine, Pencil, Plus, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { BrushCleaning, ChevronLeft, ChevronRight, Clock, Eraser, FileIcon, Hand, Keyboard, LayoutTemplate, Maximize2, Minimize2, MoveHorizontal, NotebookPen, PenLine, Plus, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clockLabel, dayLabel, dayTimeLabel } from '../lib/appTime';
 import { PAD_STRINGS, fill, type PadLang } from '../lib/notepadStrings';
@@ -66,6 +70,9 @@ const FINGER_KEY = 'svrz_ink_finger';
  *  reopen one coach's notebook on another's page. */
 const LAST_PAGE_KEY = 'svrz_pad_last_page';
 const PEN_SEEN_KEY = 'svrz_ink_pen_seen';
+/** The side the last page was switched to on this device, which a new page
+ *  opens on: a coach who writes with the Pencil should not switch every page. */
+const SIDE_KEY = 'svrz_pad_side';
 /** The time column beside a text page: on unless this device turned it off. */
 const TIMES_KEY = 'svrz_pad_times';
 /** The pen page's zoom level on this device (relative to fit-width), like
@@ -84,6 +91,18 @@ function writePref(key: string, value: string): void {
 }
 
 const FIELD_KEYS: PadField[] = ['bemerkungen', 'highlights', 'improvements', 'goals', 'tips'];
+
+/** The side a new page opens on: the one last switched to here, else the
+ *  handwriting where a pen has been seen, else typing. */
+function initialSide(): PageKind {
+  const pref = readPref(SIDE_KEY);
+  if (pref === 'text' || pref === 'ink') return pref;
+  return readPref(PEN_SEEN_KEY) === '1' ? 'ink' : 'text';
+}
+
+/** Whether a page's handwritten side carries strokes. The typed side is
+ *  asked of `typedIds` in the sheet, worked out once per change of the pages. */
+const hasInk = (p: NotebookPage): boolean => p.points > 0;
 
 /** A pen page with no strokes yet. One object, not one per render: the pad
  *  redraws when its page prop changes identity, and every commit makes a new
@@ -106,6 +125,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   useEffect(() => { if (currentId) writePref(lastPageKey, currentId); }, [currentId, lastPageKey]);
   const [sectionMenu, setSectionMenu] = useState(false);
   const [virtual, setVirtual] = useState<{ kind: PageKind; bg: PageBackground } | null>(null);
+  const [sideDefault, setSideDefault] = useState<PageKind>(initialSide);
   const [ink, setInk] = useState<InkPage | null>(null);
   const [inkLoading, setInkLoading] = useState(false);
   const [tool, setTool] = useState<InkTool>({ kind: 'pen', colour: 0 });
@@ -155,13 +175,17 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const [touchScreen] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(any-pointer: coarse)').matches);
 
   const current = pages.find((p) => p.pageId === currentId) || null;
+  /** The pages with typed text that would be inserted: one pass over the
+   *  pages per change, not one per pill, switch and list row per render. */
+  const typedIds = useMemo(() => new Set(pages.filter((p) => pageBlock(p)).map((p) => p.pageId)), [pages]);
+  const hasTyped = (p: NotebookPage): boolean => typedIds.has(p.pageId);
   // Before the boot's first pull has answered, an empty list is only the
   // local cache — empty on a wiped device or a new sign-in. A blank writable
   // "Seite 1 von 1" in that window committed a new page next to the real
   // ones, so the page area waits. A page the coach asked for still shows.
   const pagesPending = !status.loaded && pages.length === 0 && !virtual;
   const showVirtual = !!virtual || (pages.length === 0 && !current && !pagesPending);
-  const virtualKind: PageKind = virtual ? virtual.kind : 'text';
+  const virtualKind: PageKind = virtual ? virtual.kind : sideDefault;
   const virtualBg: PageBackground = virtual ? virtual.bg : '';
   const activeKind: PageKind = current ? current.kind : virtualKind;
   const activeBg: PageBackground = current ? current.bg : virtualBg;
@@ -283,11 +307,14 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   // Warm the pen chunk while the coach is still typing.
   useEffect(() => { void import('./InkPad').catch(() => { /* warmed on the next open */ }); }, []);
 
-  // The strokes of the pen page on screen: local first, the server if newer.
+  // The strokes of the page on screen, while its handwriting is: local first,
+  // the server if newer.
   useEffect(() => {
     let alive = true;
     if (!current || current.kind !== 'ink') { setInk(null); setInkLoading(false); return; }
-    setInkLoading(!notebookSync.hasLocalInk(current.pageId));
+    // The wait shows only where strokes are expected: a typed page switched to
+    // Handschrift is written on at once, while any ask for its strokes is out.
+    setInkLoading(!notebookSync.hasLocalInk(current.pageId) && current.points > 0);
     void notebookSync.getInk(current.pageId).then((page) => {
       if (!alive) return;
       setInk(page || EMPTY_INK);
@@ -305,7 +332,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const madePage = useRef<NotebookPage | null>(null);
   useEffect(() => { if (current || virtual) madePage.current = null; }, [current, virtual]);
   const handleText = (value: string) => {
-    const open = current && current.kind === 'text' ? current : madePage.current;
+    const open = current || madePage.current;
     // Every change stamps the lines it made: kept whether or not the column is
     // on, so turning it back on shows the evening as it was written.
     if (open) {
@@ -317,7 +344,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
       return;
     }
     if (!value) return;
-    const page = makePage(ownerId, 'text');
+    const page = makePage(ownerId, 'text', virtualBg);
     page.text = value;
     const extra = withLineTimes('', undefined, value, page.createdAt);
     if (extra) page.extra = extra;
@@ -348,8 +375,8 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     setCurrentId(page.pageId);
   };
 
-  const currentText = current && current.kind === 'text' ? current.text : '';
-  const currentExtra = current && current.kind === 'text' ? current.extra : undefined;
+  const currentText = current ? current.text : '';
+  const currentExtra = current ? current.extra : undefined;
   const times = useMemo(() => lineTimes(currentText, currentExtra), [currentText, currentExtra]);
   /** The evening in the order it happens. A coach taking notes through a match
    *  writes the same handful of headings every time and writes them badly with
@@ -398,7 +425,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
 
   // ── ink ─────────────────────────────────────────────────────────────
   const commitInk = (next: InkPage) => {
-    if (current && current.kind === 'ink') {
+    if (current) {
       notebookSync.commit({ ...current, points: inkPoints(next) }, next, NOTEBOOK_INK_DEBOUNCE_MS);
     } else {
       const page = makePage(ownerId, 'ink', virtualBg);
@@ -435,9 +462,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     if (kept.length !== inkPage.strokes.length) commitInk({ ...inkPage, strokes: kept });
   };
   const undo = () => { if (inkPage.strokes.length) commitInk({ ...inkPage, strokes: inkPage.strokes.slice(0, -1) }); };
-  const clearPage = async () => {
+  // The strokes only: what was typed on the page stays.
+  const clearInk = async () => {
     if (inkPage.strokes.length === 0) return;
-    if (inkPage.strokes.length > 3 && !(await confirmDialog({ title: tp.padClearPageTitle, message: tp.padClearPageMsg, tone: 'danger', lang }))) return;
+    if (inkPage.strokes.length > 3 && !(await confirmDialog({ title: tp.padClearInkTitle, message: tp.padClearInkMsg, tone: 'danger', lang }))) return;
     commitInk({ ...inkPage, strokes: [] });
   };
   const onPenSeen = () => {
@@ -457,18 +485,30 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   };
 
   // ── pages ───────────────────────────────────────────────────────────
-  const newPage = (kind: PageKind) => {
+  const newPage = () => {
     if (pages.length >= NOTEBOOK_MAX_PAGES) { toast.error(tp.padPagesFull, { lang }); return; }
-    setVirtual({ kind, bg: '' });
+    setVirtual({ kind: sideDefault, bg: '' });
     setCurrentId('');
     setInk(null);
     turnPage();
+  };
+  // The side on screen is the page's `kind`, so a switch is an edit of the
+  // page (a new version, synced like any other) — or, on a page not yet
+  // written, of the page it will become. Either side keeps what is on it.
+  const switchSide = (kind: PageKind) => {
+    if (kind === activeKind) return;
+    lastPenAt();
+    writePref(SIDE_KEY, kind);
+    setSideDefault(kind);
+    setSectionMenu(false);
+    if (current) notebookSync.commit({ ...current, kind }, undefined, 0);
+    else setVirtual({ kind, bg: virtualBg });
   };
   // The court outline under a pen page: a toggle, so a coach who started
   // sketching can still put the lines under what is already there.
   const toggleCourt = () => {
     const next: PageBackground = activeBg === 'court' ? '' : 'court';
-    if (current && current.kind === 'ink') notebookSync.commit({ ...current, bg: next }, undefined, 0);
+    if (current) notebookSync.commit({ ...current, bg: next }, undefined, 0);
     else if (virtual) setVirtual({ ...virtual, bg: next });
   };
   const deletePage = async () => {
@@ -482,15 +522,17 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   };
 
   // ── import ──────────────────────────────────────────────────────────
-  const textPages = useMemo(() => pages.filter((p) => p.kind === 'text' && pageBlock(p)), [pages]);
+  // A page is offered by its typed side, whichever side it shows; a page with
+  // handwriting only is listed greyed, to say why it cannot go in.
+  const textPages = pages.filter(hasTyped);
   const usedHere = (p: NotebookPage) => !!insert && p.usedIn.some((u) => u.f === field && u.r === insert.role && u.g === insert.gameId);
-  const importList = pages.filter((p) => p.kind === 'ink' || (pageBlock(p) && (showUsed || !usedHere(p))));
+  const importList = pages.filter((p) => (hasTyped(p) ? showUsed || !usedHere(p) : hasInk(p)));
   const openImport = () => {
     if (!insert) return;
     // The page on screen is pre-ticked — unless it already went into this
     // field, in which case it is hidden and the newest unused one is offered.
     const candidates = textPages.filter((p) => !usedHere(p));
-    const first = current && current.kind === 'text' && pageBlock(current) && !usedHere(current) ? current.pageId : (candidates[0] ? candidates[0].pageId : '');
+    const first = current && hasTyped(current) && !usedHere(current) ? current.pageId : (candidates[0] ? candidates[0].pageId : '');
     setSelected(new Set(first ? [first] : []));
     setShowUsed(false);
     setMode('import');
@@ -529,6 +571,19 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     return { text: soon ? tp.padExpiresSoon : fill(tp.padExpires, { date: dayLabel(at) }), soon };
   };
 
+  /** What a pill shows of a page: an icon per side that carries something,
+   *  or the side it shows while neither does. */
+  const sideIcons = (p: NotebookPage) => {
+    const typed = hasTyped(p);
+    const inked = hasInk(p);
+    return (
+      <>
+        {(typed || (!inked && p.kind === 'text')) && <Keyboard size={12} className="shrink-0" data-side="text" />}
+        {(inked || (!typed && p.kind === 'ink')) && <PenLine size={12} className="shrink-0" data-side="ink" />}
+      </>
+    );
+  };
+
   const pill = (p: NotebookPage) => (
     <button
       key={p.pageId}
@@ -543,7 +598,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
         current && current.pageId === p.pageId && !virtual ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-600 border-stone-300 hover:bg-stone-50',
       )}
     >
-      {p.kind === 'ink' ? <PenLine size={12} className="shrink-0" /> : <Pencil size={12} className="shrink-0" />}
+      {sideIcons(p)}
       {/* A named page is found by its name; the time stays beside it, quieter,
           because two pages from one evening are still told apart by it. */}
       {p.title && <span className="max-w-[7rem] truncate">{p.title}</span>}
@@ -577,6 +632,39 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
       <button type="button" onClick={() => goTo(onVirtual ? 0 : currentIndex + 1)} disabled={position >= total} aria-label={tp.padNextPage} title={tp.padNextPage} className="h-7 w-7 inline-flex items-center justify-center rounded border border-stone-300 bg-white text-stone-600 hover:bg-stone-50 disabled:opacity-40">
         <ChevronRight size={14} />
       </button>
+    </div>
+  );
+
+  // Tippen | Handschrift, at the start of the page's own line in either mode,
+  // so the way back is where the way there was. A dot on the side NOT shown
+  // says something is written there.
+  const sideButton = (side: PageKind) => {
+    const on = activeKind === side;
+    const filled = !on && !!current && (side === 'text' ? hasTyped(current) : hasInk(current));
+    const label = side === 'text' ? tp.padSideText : tp.padSideInk;
+    return (
+      <button
+        type="button"
+        onClick={() => switchSide(side)}
+        aria-pressed={on}
+        aria-label={label}
+        title={filled ? (side === 'text' ? tp.padSideHasText : tp.padSideHasInk) : label}
+        data-testid={side === 'text' ? 'pad-side-text' : 'pad-side-ink'}
+        className={cn(
+          'relative h-7 px-2 inline-flex items-center gap-1 text-[11px] font-medium transition-colors',
+          on ? 'bg-slate-900 text-white' : 'text-stone-600 hover:bg-stone-50',
+        )}
+      >
+        {side === 'text' ? <Keyboard size={13} className="shrink-0" /> : <PenLine size={13} className="shrink-0" />}
+        <span>{label}</span>
+        {filled && <span data-testid="pad-side-dot" aria-hidden="true" className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-red-600" />}
+      </button>
+    );
+  };
+  const sideSwitch = (
+    <div role="group" aria-label={tp.padSide} className="shrink-0 inline-flex rounded-lg border border-stone-300 bg-white overflow-hidden">
+      {sideButton('text')}
+      {sideButton('ink')}
     </div>
   );
 
@@ -658,7 +746,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
               {importList.length === 0 && <p className="text-sm text-stone-500 py-6 text-center">{tp.padEmpty}</p>}
               <ul className="space-y-1.5">
                 {importList.map((p) => {
-                  const isInk = p.kind === 'ink';
+                  const isInk = !hasTyped(p);
                   const used = usedHere(p);
                   return (
                     <li key={p.pageId} className={cn('rounded-lg border px-3 py-2 text-sm', isInk ? 'border-stone-200 bg-stone-50 text-stone-400' : selected.has(p.pageId) ? 'border-slate-900 bg-white' : 'border-stone-200 bg-white')}>
@@ -675,6 +763,9 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                           {isInk
                             ? <span className="block text-xs">{tp.padInkOnly}</span>
                             : <span className="block whitespace-pre-wrap break-words line-clamp-3 text-stone-800">{richToPlain(pageBlock(p))}</span>}
+                          {/* Both sides: only the typed one goes in, and the
+                              list says so where the choice is made. */}
+                          {!isInk && hasInk(p) && <span className="block text-[10.5px] text-stone-500">{tp.padInkNotImported}</span>}
                         </span>
                       </label>
                     </li>
@@ -710,43 +801,47 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                     to come back from. */}
                 {showVirtual && pages.length > 0 && (
                   <span aria-current="page" className="shrink-0 inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border border-slate-900 bg-slate-900 text-white text-[11px] font-medium">
-                    {virtualKind === 'ink' ? <PenLine size={12} /> : <Pencil size={12} />}{clockLabel(Date.now())}
+                    {virtualKind === 'ink' ? <PenLine size={12} /> : <Keyboard size={12} />}{clockLabel(Date.now())}
                   </span>
                 )}
                 {pages.map(pill)}
               </div>
-              <div className="shrink-0 flex items-center gap-1.5">
-                <button type="button" onClick={() => newPage('text')} disabled={pagesPending} data-testid="pad-new-text" className="disabled:opacity-40 h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
-                  <Plus size={13} /><Pencil size={12} /> {tp.padTextPageShort}
-                </button>
-                <button type="button" onClick={() => newPage('ink')} disabled={pagesPending} data-testid="pad-new-ink" className="disabled:opacity-40 h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
-                  <Plus size={13} /><PenLine size={12} /> {tp.padInkPageShort}
-                </button>
-              </div>
+              {/* One kind of page: what goes on it is chosen on the page, by
+                  the switch below, and can change while writing. */}
+              <button type="button" onClick={newPage} disabled={pagesPending} data-testid="pad-new-page" className="shrink-0 disabled:opacity-40 h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
+                <Plus size={13} /> {tp.padNewPage}
+              </button>
             </div>
 
             {/* meta line */}
             {(current || showVirtual) && (
-              <div className="flex items-center gap-2 px-4 py-1 text-[10.5px] text-stone-500">
-                {current ? (
-                  <>
-                    <span>{fill(tp.padCreated, { date: dayTimeLabel(current.createdAt) })}</span>
-                    {/* Only once it says something the line above does not: a
-                        page written in ten minutes ago was not "created" then. */}
-                    {current.updatedAt - current.createdAt > 60_000 && (
-                      <>
-                        <span className="hidden sm:inline">·</span>
-                        <span className="hidden sm:inline">{fill(tp.padEdited, { time: clockLabel(current.updatedAt) })}</span>
-                      </>
-                    )}
-                    <span>·</span>
-                    <span className={expiryLine(current).soon ? 'text-amber-700 font-semibold' : ''}>{expiryLine(current).text}</span>
-                    {current.rejectedReason && <span className="text-amber-700">· {fill(tp.padSyncRejected, { reason: current.rejectedReason })}</span>}
-                    {current.usedIn.length > 0 && (
-                      <span className="text-emerald-700 truncate">· {fill(tp.padUsedIn, { field: fieldLabel(current.usedIn[current.usedIn.length - 1].f), role: current.usedIn[current.usedIn.length - 1].r, label: current.usedIn[current.usedIn.length - 1].label })}</span>
-                    )}
-                  </>
-                ) : <span>{fill(tp.padExpires, { date: dayLabel(Date.now() + NOTEBOOK_TTL_MS) })}</span>}
+              <div className="flex flex-wrap sm:flex-nowrap items-center gap-x-2 gap-y-1 px-4 py-1 text-[10.5px] text-stone-500">
+                {sideSwitch}
+                {/* On a phone the switch and the page turner share the first
+                    row, and what the page says goes under them: between the
+                    two it was squeezed to three lines and pushed the turner
+                    off the edge. */}
+                <span className="order-last basis-full min-w-0 flex items-center gap-2 leading-4 sm:order-none sm:basis-auto">
+                  {current ? (
+                    <>
+                      <span>{fill(tp.padCreated, { date: dayTimeLabel(current.createdAt) })}</span>
+                      {/* Only once it says something the line above does not: a
+                          page written in ten minutes ago was not "created" then. */}
+                      {current.updatedAt - current.createdAt > 60_000 && (
+                        <>
+                          <span className="hidden sm:inline">·</span>
+                          <span className="hidden sm:inline">{fill(tp.padEdited, { time: clockLabel(current.updatedAt) })}</span>
+                        </>
+                      )}
+                      <span>·</span>
+                      <span className={expiryLine(current).soon ? 'text-amber-700 font-semibold' : ''}>{expiryLine(current).text}</span>
+                      {current.rejectedReason && <span className="text-amber-700">· {fill(tp.padSyncRejected, { reason: current.rejectedReason })}</span>}
+                      {current.usedIn.length > 0 && (
+                        <span className="text-emerald-700 truncate">· {fill(tp.padUsedIn, { field: fieldLabel(current.usedIn[current.usedIn.length - 1].f), role: current.usedIn[current.usedIn.length - 1].r, label: current.usedIn[current.usedIn.length - 1].label })}</span>
+                      )}
+                    </>
+                  ) : <span>{fill(tp.padExpires, { date: dayLabel(Date.now() + NOTEBOOK_TTL_MS) })}</span>}
+                </span>
                 <span className="ml-auto flex items-center gap-2">
                   {pageNav}
                 </span>
@@ -865,8 +960,11 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       needs about 750 px, and the sheet is 768 wide only from
                       an 800 px screen up: below that (an iPad mini or a 9.7"
                       iPad upright, 744 and 768) Spielfeld, Rückgängig and
-                      Seite leeren show their icon alone, named as before. A
-                      phone still scrolls the row sideways. */}
+                      Leeren show their icon alone, named as before. A phone
+                      still scrolls the row sideways. Leeren, not "Handschrift
+                      leeren" on the button itself: the whole name pushed
+                      Finger off a 768 px sheet (24.10.2026), and the button
+                      sits in the handwriting's own toolbar. */}
                   <div className="flex items-center gap-1 px-3 py-2 border-t border-stone-200 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
                     {([
                       { key: 'black', label: tp.padPenBlack, icon: <PenLine size={14} />, active: tool.kind === 'pen' && tool.colour === 0, on: () => setTool({ kind: 'pen', colour: 0 }) },
@@ -879,7 +977,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                     ))}
                     <button type="button" onClick={toggleCourt} aria-pressed={activeBg === 'court'} aria-label={tp.padCourt} title={tp.padCourt} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border text-xs font-medium', activeBg === 'court' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><LayoutTemplate size={14} /><span className="hidden min-[50rem]:inline">{tp.padCourt}</span></button>
                     <button type="button" onClick={undo} disabled={inkPage.strokes.length === 0} aria-label={tp.padUndo} title={tp.padUndo} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><Undo2 size={14} /><span className="hidden min-[50rem]:inline">{tp.padUndo}</span></button>
-                    <button type="button" onClick={() => void clearPage()} disabled={inkPage.strokes.length === 0} aria-label={tp.padClearPage} title={tp.padClearPage} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><BrushCleaning size={14} className="min-[50rem]:hidden" /><span className="hidden min-[50rem]:inline">{tp.padClearPage}</span></button>
+                    <button type="button" onClick={() => void clearInk()} disabled={inkPage.strokes.length === 0} aria-label={tp.padClearInk} title={tp.padClearInk} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><BrushCleaning size={14} /><span className="hidden min-[50rem]:inline">{tp.padClearInkShort}</span></button>
                     {/* Zoom for whoever does not think to pinch, and for a
                         mouse without a wheel. The middle shows the level, and
                         an icon for where a tap goes: the whole page, or back

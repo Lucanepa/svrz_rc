@@ -2172,7 +2172,7 @@ export default function App() {
     if (target.gameId !== selectedGameId || (target.target === 'referee' && target.role !== formData.role)) {
       closeSignatureDialog();
       toast.error(de
-        ? 'Das Formular hat gewechselt. Die Unterschrift ist aufbewahrt: im richtigen Formular erneut öffnen.'
+        ? 'Ein anderes Formular ist offen. Die Unterschrift bleibt aufbewahrt — im richtigen Formular erneut öffnen.'
         : 'The form changed. The signature is kept: open it again on the right form.', { lang: formData.lang });
       return;
     }

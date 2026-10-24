@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type ElementHandle, type Locator, type Page } from '@playwright/test';
 import { stubSignedInApp, openFeedbackForm, signatureDialog } from './support/app';
 
 /**
@@ -65,6 +65,47 @@ async function stroke(page: Page, init: Record<string, unknown>, points: [number
   await ptr(page, 'pointerdown', init, ...points[0]);
   for (const p of points.slice(1)) await ptr(page, 'pointermove', init, ...p);
   if (lift) await ptr(page, 'pointerup', init, ...points[points.length - 1]);
+}
+
+/** One step of a burst: a pointer event on the pad (up and cancel go to
+ *  window), an event on a named element, or a pause. */
+type Step =
+  | { pad: string; init: Record<string, unknown>; at: [number, number] }
+  | { el: string; type: string; init?: Record<string, unknown> }
+  | { wait: number };
+
+const padSteps = (init: Record<string, unknown>, points: [number, number][], lift = true): Step[] => [
+  { pad: 'pointerdown', init, at: points[0] },
+  ...points.slice(1).map((at): Step => ({ pad: 'pointermove', init, at })),
+  ...(lift ? [{ pad: 'pointerup', init, at: points[points.length - 1] } as Step] : []),
+];
+
+/**
+ * Runs the steps inside the page, back to back. The pad's time windows (500 ms
+ * after the pen, 1000 ms for the palm purge) are then measured against what
+ * the steps say, not against Playwright round trips, which under a loaded
+ * runner took longer than a second (the purge test failed that way).
+ */
+async function burst(page: Page, steps: Step[], els: Record<string, Locator> = {}) {
+  const handles: Record<string, ElementHandle> = {};
+  for (const [key, locator] of Object.entries(els)) handles[key] = (await locator.elementHandle())!;
+  const canvas = (await pad(page).elementHandle())!;
+  await page.evaluate(async ({ canvas, steps, handles }) => {
+    const r = (canvas as Element).getBoundingClientRect();
+    for (const s of steps) {
+      if ('wait' in s) { await new Promise((done) => setTimeout(done, s.wait)); continue; }
+      if ('pad' in s) {
+        const up = s.pad === 'pointerup' || s.pad === 'pointercancel';
+        const ev = new PointerEvent(s.pad, { bubbles: true, cancelable: true, buttons: up ? 0 : 1, ...s.init, clientX: r.left + r.width * s.at[0], clientY: r.top + r.height * s.at[1] });
+        (up ? window : canvas as Element).dispatchEvent(ev);
+        continue;
+      }
+      const el = handles[s.el] as Element;
+      const b = el.getBoundingClientRect();
+      const init = { bubbles: true, cancelable: true, ...s.init, clientX: b.left + b.width / 2, clientY: b.top + b.height / 2 };
+      el.dispatchEvent(s.type === 'click' ? new MouseEvent('click', init) : new PointerEvent(s.type, init));
+    }
+  }, { canvas, steps, handles });
 }
 
 const line = (y: number, from = 0.1, to = 0.9, n = 10): [number, number][] =>
@@ -236,13 +277,14 @@ test.describe('the pen and the palm', () => {
 
   test('the hand that came down before the pen leaves no ink: neither a finished touch stroke nor one still on the glass', async ({ page }) => {
     const touch = { pointerType: 'touch', pointerId: 30, isPrimary: true, width: 30, height: 30 };
-    // A touch stroke that finished just before the first pen-down…
-    await stroke(page, touch, line(0.8, 0.1, 0.5, 4));
-    expect(await inkAt(page, 0.3, 0.8)).toBe(true);
-    // …and one still on the glass when the pen lands.
-    await stroke(page, { ...touch, pointerId: 31 }, line(0.6, 0.1, 0.5, 4), false);
-    await stroke(page, PEN, line(0.2));
-    await ptr(page, 'pointerup', { ...touch, pointerId: 31 }, 0.5, 0.6);
+    await burst(page, [
+      // A touch stroke that finished just before the first pen-down…
+      ...padSteps(touch, line(0.8, 0.1, 0.5, 4)),
+      // …and one still on the glass when the pen lands.
+      ...padSteps({ ...touch, pointerId: 31 }, line(0.6, 0.1, 0.5, 4), false),
+      ...padSteps(PEN, line(0.2)),
+      { pad: 'pointerup', init: { ...touch, pointerId: 31 }, at: [0.5, 0.6] },
+    ]);
     expect(await inkAt(page, 0.3, 0.8)).toBe(false);
     expect(await inkAt(page, 0.3, 0.6)).toBe(false);
     expect(await inkAt(page, 0.5, 0.2)).toBe(true);
@@ -277,16 +319,26 @@ test.describe('the pen and the palm', () => {
     expect(await inkAt(page, 0.5, 0.4)).toBe(false);
   });
 
+  // The touches below land while a pen stroke is still down, so the pad is
+  // busy however long the runner takes between steps; waits only ever make a
+  // pause longer than it has to be.
   test('a finger tap on Save while the pen writes is the palm and is ignored; a pen tap saves', async ({ page }) => {
-    await stroke(page, PEN, line(0.4));
     const save = saveButton(page);
+    await stroke(page, PEN, line(0.4));
     await expect(save).toBeEnabled();
-    await save.dispatchEvent('pointerdown', { pointerType: 'touch', pointerId: 50, bubbles: true, isPrimary: true });
-    await save.dispatchEvent('click');
+    await burst(page, [
+      ...padSteps({ ...PEN, pointerId: 8 }, line(0.6), false),
+      { el: 'save', type: 'pointerdown', init: { pointerType: 'touch', pointerId: 50, isPrimary: false } },
+      { el: 'save', type: 'pointerup', init: { pointerType: 'touch', pointerId: 50, isPrimary: false } },
+      { el: 'save', type: 'click' },
+      { pad: 'pointerup', init: { ...PEN, pointerId: 8 }, at: [0.9, 0.6] },
+    ], { save });
     await expect(signatureDialog(page)).toBeVisible();
     await expect(rcSig(page)).toHaveCount(0);
-    await save.dispatchEvent('pointerdown', { pointerType: 'pen', pointerId: 7, bubbles: true, isPrimary: true });
-    await save.dispatchEvent('click');
+    await burst(page, [
+      { el: 'save', type: 'pointerdown', init: { pointerType: 'pen', pointerId: 7, isPrimary: true } },
+      { el: 'save', type: 'click' },
+    ], { save });
     await expect(signatureDialog(page)).toHaveCount(0);
     await expect(rcSig(page)).toBeVisible();
   });

@@ -187,3 +187,26 @@ test('both signature lines sit at one height, the refusal beside the referee\'s 
   expect(refuse.y + refuse.height).toBeLessThanOrEqual(referee.y);
   expect(refuse.x).toBeGreaterThan(label.x + label.width);
 });
+
+// What a coach signs here is what the server keeps once the report is filed
+// (keepRcSignature, on every filing unless turned off under Optionen), so the
+// coach's dialog says so — and only while it is true (24.10.2026).
+for (const enabled of [true, false]) {
+  test(`the coach's dialog ${enabled ? 'says' : 'does not say'} the signature is kept once sent, with remembering ${enabled ? 'on' : 'off'}; the referee's never does`, async ({ page }) => {
+    await stubSignedInApp(page);
+    await keptOnServer(page, { enabled, data: '' });
+    await page.goto('/');
+    await openFeedbackForm(page);
+    const dialog = page.getByTestId('signature-dialog');
+    const note = dialog.getByText(/^(Kept for your next forms once sent\.|Wird nach dem Senden für deine nächsten Formulare gemerkt\.)$/);
+    await page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).nth(1).click();
+    await expect(dialog.locator('canvas')).toBeVisible();
+    if (enabled) await expect(note).toBeVisible();
+    else await expect(note).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).first().click();
+    await expect(dialog.locator('canvas')).toBeVisible();
+    await expect(note).toHaveCount(0);
+  });
+}

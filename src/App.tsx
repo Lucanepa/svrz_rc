@@ -11234,6 +11234,10 @@ export default function App() {
             onSave={saveSignatureHere}
             onDiscard={discardSignature}
             remembered={rememberedOffer}
+            // The server keeps the coach's signature when a report is filed,
+            // unless remembering is off (keepRcSignature in server/index.ts).
+            // Not in the demo, which files nothing.
+            keptOnceSent={sigFor.target === 'rc' && !!rcAuth.rcId && !isDemoMode() && savedRcSig.enabled}
             relay={relay}
           />
         );

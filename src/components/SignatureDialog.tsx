@@ -45,10 +45,13 @@ type Props = {
   onDiscard(): void;
   /** The coach's kept signature, offered when it was taken off this form. */
   remembered?: { image: string; onUse(): void } | null;
+  /** The coach's own signature with "Unterschrift merken" on: the server
+   *  keeps what is signed here when the report is filed. */
+  keptOnceSent?: boolean;
   relay: SignatureRelay;
 };
 
-export default function SignatureDialog({ lang, title, initialStrokes, onDraftChange, onSave, onDiscard, remembered, relay }: Props) {
+export default function SignatureDialog({ lang, title, initialStrokes, onDraftChange, onSave, onDiscard, remembered, keptOnceSent, relay }: Props) {
   const de = lang === 'DE';
   const titleId = `${useId()}-title`;
   const panelRef = useRef<HTMLDivElement>(null);
@@ -286,6 +289,13 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
             ? (de ? 'Stift erkannt — nur der Stift zeichnet.' : 'Pen detected — only the pen draws.')
             : (de ? 'Im Feld oben unterschreiben.' : 'Sign in the box above.')}
         </p>
+        {/* Nothing said that this signature replaces the kept one at the next
+            filing (24.10.2026); the toggle is far away, under Optionen. */}
+        {keptOnceSent && (
+          <p className="text-[11px] text-stone-400">
+            {de ? 'Wird nach dem Senden für deine nächsten Formulare gemerkt.' : 'Kept for your next forms once sent.'}
+          </p>
+        )}
 
         <RelaySection lang={lang} relay={relay} />
       </div>

@@ -321,3 +321,23 @@ test('the writing hand on the sheet: a touch on its buttons right after the pen 
   await page.mouse.click(5, 5);
   await expect(sheet(page)).toHaveCount(0);
 });
+
+test('a pen page files one line of counts when it is left, never a coordinate', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await syntheticStroke(page, { pointerType: 'pen', pointerId: 7, pressure: 0.3 }, [[0.2, 0.2], [0.4, 0.3], [0.6, 0.35]]);
+  await mouseStroke(page, 0.1, 0.6, 0.5, 0.7);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(2);
+  await sheet(page).getByRole('button', { name: /^(Schliessen|Close)$/ }).click();
+  await expect(sheet(page)).toHaveCount(0);
+  const lines = await page.evaluate(() => {
+    const w = window as unknown as { svrzLogs?: () => { evt: string; data?: Record<string, unknown> }[] };
+    return (w.svrzLogs ? w.svrzLogs() : []).filter((e) => e.evt === 'ink.page');
+  });
+  expect(lines).toHaveLength(1);
+  const data = lines[0].data!;
+  expect(data).toMatchObject({ pen: 1, mouse: 1, touch: 0, cancels: 0, pressureMedian: 0.3 });
+  for (const v of Object.values(data)) expect(v === null || typeof v === 'number').toBe(true);
+  expect(Object.keys(data).sort()).toEqual(['cancels', 'coalescedPerMove', 'mouse', 'palms', 'pen', 'penZeroStart', 'pressureMedian', 'slowFrameMs', 'touch', 'zoomMax'].sort());
+});

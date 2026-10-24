@@ -30,6 +30,7 @@ import {
   PAGE_H, PAGE_W, clampZoom, fitPageScale, pageVisibleWhole, panBy, pinchView, resizeView, scaleOf, toPage, topView, visibleRect, zoomAbout,
   zoomRange, zoomStepIn, zoomStepOut, type Point, type Stage, type View,
 } from '../lib/inkView';
+import { clientLog } from '../lib/logger';
 import { NOTEBOOK_INK_MAX_CHARS, NOTEBOOK_INK_MAX_STROKES, inkSize, type InkPage, type InkStroke, type PageBackground } from '../lib/notebook';
 
 export type InkTool = { kind: 'pen'; colour: 0 | 1 } | { kind: 'eraser' };
@@ -230,6 +231,11 @@ type Gesture = {
   engaged: boolean;
   engagedAt: number;
 };
+type Stats = {
+  pen: number; touch: number; mouse: number;
+  penZeroStart: number; penMoves: number; penCoalesced: number;
+  cancels: number; palms: number; hist: number[]; zoomMax: number; slowFrameMs: number;
+};
 
 type Engine = {
   pageChanged(): void;
@@ -260,6 +266,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   let penSeen = false;
   let wheelTimer = 0; let wheelZ0: number | null = null;
   let webkitGesture: { z0: number } | null = null;
+  const stats: Stats = { pen: 0, touch: 0, mouse: 0, penZeroStart: 0, penMoves: 0, penCoalesced: 0, cancels: 0, palms: 0, hist: new Array(10).fill(0), zoomMax: 0, slowFrameMs: 0 };
 
   const scale = () => (stageSize ? scaleOf(stageSize, view.z) : 1);
   const refreshRect = () => { const r = stage.getBoundingClientRect(); rect = { left: r.left, top: r.top }; };
@@ -307,6 +314,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
         return;
       }
     }
+    const t0 = performance.now();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, pageCanvas.width, pageCanvas.height);
     withPageTransform(ctx, (s) => {
@@ -322,6 +330,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
         ctx.fill(shape.path);
       }
     });
+    stats.slowFrameMs = Math.max(stats.slowFrameMs, performance.now() - t0);
     drawn = { strokes, bg, view, minR, w: pageCanvas.width, h: pageCanvas.height };
   };
 
@@ -355,6 +364,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
 
   const setView = (v: View, now = false) => {
     view = v;
+    stats.zoomMax = Math.max(stats.zoomMax, v.z);
     pageDirty = true;
     if (now) renderNow(); else schedule();
   };
@@ -378,6 +388,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     kx = bw / next.w; ky = bh / next.h;
     if (moved) {
       view = stageSize ? resizeView(stageSize, next, view) : topView(next, clampZoom(next, props().initialZoom ?? 1));
+      if (!stageSize) stats.zoomMax = view.z;
       stageSize = next;
       minR = minRadiusFor(fitPageScale(next));
     }
@@ -396,6 +407,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       // the Pencil on some moves), never a pressure: the stroke's first real
       // value is backfilled over the zeros before it.
       if (raw > 0) {
+        stats.hist[Math.min(9, Math.floor(raw * 10))] += 1;
         if (!a.pressureSeen) { a.pressureSeen = true; a.ema = raw; for (const s of a.samples) s.p = raw; }
         else a.ema = PRESSURE_EMA * raw + (1 - PRESSURE_EMA) * a.ema;
       }
@@ -447,6 +459,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     // unguarded it would abort the stroke and file a js.error.
     try { stage.setPointerCapture(e.pointerId); } catch { /* see above */ }
     if (eraser) { eraseAt(x, y); return true; }
+    if (kind === 'pen' && !(e.pressure > 0)) stats.penZeroStart += 1;
     addSample(active, x, y, kind === 'pen' ? e.pressure : 0, e.timeStamp);
     liveDirty = true; schedule();
     return true;
@@ -470,7 +483,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     try { stage.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
     const p = props();
     if (a.eraser) { flushErase(true); clearLive(); return; }
-    if (cancelled) p.onCancelledStroke();
+    if (cancelled) { stats.cancels += 1; p.onCancelledStroke(); }
     // A cancelled stroke keeps what was drawn: iPadOS cancels a stroke it
     // hands to Scribble or a system gesture, and the coach's ink vanishing
     // looked exactly like "it does not recognise my handwriting".
@@ -492,6 +505,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     const current = p.page;
     const size = pageChars(current) + JSON.stringify(stroke).length + (current.strokes.length ? 1 : 0);
     if (current.strokes.length + 1 > NOTEBOOK_INK_MAX_STROKES || size > NOTEBOOK_INK_MAX_CHARS) { clearLive(); p.onFull(); return; }
+    stats[a.kind] += 1;
     // On the page canvas now, in the frame the live layer clears: the line
     // never blinks while the sheet re-renders.
     pending.push(stroke);
@@ -529,7 +543,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   };
 
   const taintAll = () => {
-    for (const t of touches.values()) t.tainted = true;
+    for (const t of touches.values()) if (!t.tainted) { t.tainted = true; stats.palms += 1; }
   };
 
   const onTouchDown = (e: PointerEvent, now: number) => {
@@ -540,10 +554,10 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     touches.set(e.pointerId, t);
     try { stage.setPointerCapture(e.pointerId); } catch { /* a synthetic pointer has no capture */ }
     e.preventDefault();
-    if (t.tainted) return;
+    if (t.tainted) { stats.palms += 1; return; }
     if (active) {
       if (active.kind === 'touch' && now - active.startedAt < PINCH_GRACE_MS) dropActive();
-      else { t.tainted = true; return; }
+      else { t.tainted = true; stats.palms += 1; return; }
     }
     const free = [...touches.entries()].filter(([, v]) => !v.tainted).map(([id]) => id);
     if (free.length >= 2) {
@@ -627,6 +641,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       if (a.kind === 'touch') { const t = touches.get(e.pointerId); if (t) { t.x = e.clientX; t.y = e.clientY; } }
       const list = coalesced(e);
       if (a.eraser) { for (const ev of list) { const [x, y] = pagePoint(ev.clientX, ev.clientY); eraseAt(x, y); } flushErase(false); return; }
+      if (a.kind === 'pen') { stats.penMoves += 1; stats.penCoalesced += list.length; }
       for (const ev of list) {
         const [x, y] = pagePoint(ev.clientX, ev.clientY);
         addSample(a, x, y, a.kind === 'pen' ? ev.pressure : 0, ev.timeStamp);
@@ -726,6 +741,29 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   window.addEventListener('resize', measure);
   measure();
 
+  /** One line per page visit, numbers only: which of the causes behind thin or
+   *  missing ink (a first pressure of 0, 60 Hz sampling, cancels, palms) a
+   *  real iPad has, without reading a private notebook. Never a coordinate. */
+  const logVisit = () => {
+    const strokes = stats.pen + stats.touch + stats.mouse;
+    if (!strokes && !stats.cancels && !stats.palms) return;
+    const total = stats.hist.reduce((n, c) => n + c, 0);
+    let median: number | null = null;
+    for (let i = 0, run = 0; total && i < 10; i += 1) { run += stats.hist[i]; if (run >= total / 2) { median = i / 10; break; } }
+    clientLog.info('ink.page', 'pen page input', {
+      pen: stats.pen,
+      touch: stats.touch,
+      mouse: stats.mouse,
+      penZeroStart: stats.penZeroStart,
+      coalescedPerMove: stats.penMoves ? Math.round((stats.penCoalesced / stats.penMoves) * 10) / 10 : null,
+      cancels: stats.cancels,
+      palms: stats.palms,
+      pressureMedian: median,
+      zoomMax: Math.round(stats.zoomMax * 100) / 100,
+      slowFrameMs: Math.round(stats.slowFrameMs),
+    });
+  };
+
   return {
     pageChanged() {
       pending = [];
@@ -761,6 +799,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       if (frame) cancelAnimationFrame(frame);
       window.clearTimeout(wheelTimer);
       touches.clear(); gesture = null; active = null;
+      logVisit();
       // Release the bitmaps: a phone runs out of canvas memory long before it
       // runs out of pages.
       for (const c of [pageCanvas, liveCanvas]) { c.width = 1; c.height = 1; }

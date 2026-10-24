@@ -636,6 +636,42 @@ test.describe('a stroke whose pointerup never came', () => {
     await expect.poll(() => zoomLevel(page)).not.toBe(before);
   });
 
+  test('a Pencil or a mouse pressing a zoom button ends it there, keeping its ink, and the button works at once', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPenPage(page);
+    type Part = 'pointerdown' | 'pointerup' | 'click';
+    /** A press on Vergrössern, off the page: down, up, and the click, which
+     *  says 'mouse' as on iPadOS since 18.2 — or only some of it. */
+    const pressZoomIn = (pointerType: 'pen' | 'mouse', pointerId: number, parts: Part[] = ['pointerdown', 'pointerup', 'click']) => page.evaluate(([type, id, list]) => {
+      const button = [...document.querySelectorAll('button')].find((b) => /^(Vergrössern|Zoom in)$/.test(b.getAttribute('aria-label') || ''))!;
+      const init = { bubbles: true, cancelable: true, isPrimary: true, pointerType: type, pointerId: id, button: 0 };
+      for (const part of list) {
+        if (part === 'pointerdown') button.dispatchEvent(new PointerEvent(part, { ...init, buttons: 1, pressure: type === 'pen' ? 0.4 : 0.5 }));
+        else if (part === 'pointerup') button.dispatchEvent(new PointerEvent(part, { ...init, buttons: 0, pressure: 0 }));
+        else button.dispatchEvent(new PointerEvent('click', { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+      }
+    }, [pointerType, pointerId, parts] as const);
+    // The pen's up lost, then the Pencil goes straight to the toolbar: no
+    // contact with the page in between, so nothing there can end the stroke.
+    await burst(page, padSteps({ ...PEN, pointerId: 105 }, line(0.2, 0.1, 0.5, 4), false));
+    const z0 = await zoomLevel(page);
+    await pressZoomIn('pen', 106);
+    await expect.poll(() => zoomLevel(page)).not.toBe(z0);
+    await expect.poll(() => strokeCount(page), SYNC).toBe(1);
+    expect((await storedInk(page))[0].page.strokes[0].d.length / 4).toBe(5);
+    // A mouse released outside the window, then pressed on the button. The
+    // press alone ends it: its up would too, a mouse having one pointer id,
+    // so the up comes only once the stroke is stored.
+    await burst(page, padSteps({ pointerType: 'mouse', pointerId: 1, button: 0 }, line(0.6, 0.1, 0.5, 4), false));
+    const z1 = await zoomLevel(page);
+    await pressZoomIn('mouse', 1, ['pointerdown']);
+    await expect.poll(() => strokeCount(page), SYNC).toBe(2);
+    expect((await storedInk(page))[0].page.strokes[1].d.length / 4).toBe(5);
+    await pressZoomIn('mouse', 1, ['pointerup', 'click']);
+    await expect.poll(() => zoomLevel(page)).not.toBe(z1);
+  });
+
   test('a real pointer moving with no button pressed ends it, and draws nothing', async ({ page }) => {
     await stubSignedInApp(page);
     await page.goto('/');

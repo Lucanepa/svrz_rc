@@ -632,16 +632,23 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   };
 
   // ── pointer listeners ────────────────────────────────────────────────
+  /** A pen or a mouse going down anywhere while a pen or mouse stroke is
+   *  still open: that stroke lost its up and its cancel, since nobody holds
+   *  two. It ends with what it drew. It used to stay open and block every
+   *  later stroke and the zoom buttons until the sheet closed or the page
+   *  turned, which on an iPad reads as "the Pencil stopped writing" (the
+   *  signature pad's rule since f137ba9). Anywhere, not only on the page: a
+   *  Pencil that went from the lost stroke straight to Vergrössern found the
+   *  button dead until it touched the page again (final check, 24.10.2026).
+   *  On the window, in the capture phase, so it runs before the stage's own
+   *  listener and never ends the stroke this very pointer starts. */
+  const onAnyDown = (e: PointerEvent) => {
+    if ((e.pointerType === 'pen' || e.pointerType === 'mouse') && active && active.kind !== 'touch') finish('lost');
+  };
+
   const onDown = (e: PointerEvent) => {
     const now = performance.now();
     const p = props();
-    // A pen or a mouse going down while a pen or mouse stroke is still open:
-    // that stroke lost its up and its cancel, since nobody holds two. It ends
-    // with what it drew. It used to stay open and block every later stroke
-    // and the zoom buttons until the sheet closed or the page turned, which
-    // on an iPad reads as "the Pencil stopped writing" (the signature pad's
-    // rule since f137ba9).
-    if ((e.pointerType === 'pen' || e.pointerType === 'mouse') && active && active.kind !== 'touch') finish('lost');
     if (e.pointerType === 'pen') {
       penAt = now; penContactAt = now;
       if (!penSeen) { penSeen = true; p.onPenSeen(); }
@@ -807,6 +814,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   };
   const onVisibility = () => { if (document.visibilityState === 'hidden') { forgetPointers(); logVisit(); } };
 
+  window.addEventListener('pointerdown', onAnyDown, true);
   stage.addEventListener('pointerdown', onDown);
   stage.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
@@ -850,6 +858,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     },
     lastPenAt: () => penContactAt,
     destroy() {
+      window.removeEventListener('pointerdown', onAnyDown, true);
       stage.removeEventListener('pointerdown', onDown);
       stage.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);

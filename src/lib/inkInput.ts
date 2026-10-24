@@ -10,8 +10,10 @@
  *  fingertip, so a 40 px rule took every finger for a palm. */
 export const PALM_MAX_CONTACT_PX = 80;
 
-/** A touch stays a palm this long after the pen was last on (or over) the
- *  glass, and a finger tap on a button counts as the writing hand's. */
+/** On a pad, a touch stays a palm this long after the pen was last on (or
+ *  over) the glass. For the buttons around it only the pen ON the glass
+ *  counts: a finger tap that close to the pen's contact is the writing hand's,
+ *  while a hovering Pencil must not swallow a deliberate tap of the other hand. */
 export const PEN_TRAILING_MS = 500;
 
 /** A contact wider or taller than a fingertip, when the browser reports one. */

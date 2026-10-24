@@ -531,8 +531,10 @@ test.describe('the "Finger too" switch', () => {
     await expect(signatureDialog(page).getByText(/^(Pen detected — only the pen draws\.|Stift erkannt — nur der Stift zeichnet\.)$/)).toBeVisible();
   });
 
-  test.describe('on a 360 px phone', () => {
-    test.use({ viewport: { width: 360, height: 740 } });
+  // In both languages: the full German label is the one that wrapped here, and
+  // without a locale the suite reads the English one.
+  for (const locale of ['de-CH', 'en-US']) test.describe(`on a 360 px phone (${locale})`, () => {
+    test.use({ viewport: { width: 360, height: 740 }, locale });
     test('the row with the switch fits: nothing sticks out or scrolls sideways', async ({ page }) => {
       await page.goto('/');
       await openFeedbackForm(page);

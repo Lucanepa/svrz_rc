@@ -10,7 +10,7 @@
 // so opening and closing the sheet never syncs an empty row.
 
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Clock, Eraser, Hand, LayoutTemplate, Maximize2, Minimize2, NotebookPen, PenLine, Pencil, Plus, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Clock, Eraser, FileIcon, Hand, LayoutTemplate, Maximize2, Minimize2, MoveHorizontal, NotebookPen, PenLine, Pencil, Plus, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clockLabel, dayLabel, dayTimeLabel } from '../lib/appTime';
 import { PAD_STRINGS, fill, type PadLang } from '../lib/notepadStrings';
@@ -384,6 +384,14 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   };
   const inkPage: InkPage = ink || EMPTY_INK;
   const zoomPct = `${Math.round((inkZoom ? inkZoom.z : 1) * 100)} %`;
+  // The level button switches between the page width (100 %) and the whole
+  // page: to the whole page from any other view, back to the width from
+  // there. It showed '100 %' and made the page smaller, and a second tap did
+  // nothing (final review, 24.10.2026). Where the whole page fits at its
+  // width (a phone held upright, in fullscreen) there is nothing to switch.
+  const zoomAtWhole = !!inkZoom && inkZoom.z <= inkZoom.min + 0.001;
+  const zoomSwitches = !!inkZoom && inkZoom.min < 1 - 0.001;
+  const zoomAction = zoomAtWhole ? tp.padZoomWidth : tp.padZoomFit;
   const onStrokeEnd = (stroke: InkStroke) => commitInk({ ...inkPage, strokes: [...inkPage.strokes, stroke] });
   const onErase = (strokes: InkStroke[]) => {
     const gone = new Set(strokes);
@@ -831,14 +839,26 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                     <button type="button" onClick={undo} disabled={inkPage.strokes.length === 0} aria-label={tp.padUndo} title={tp.padUndo} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><Undo2 size={14} /> {tp.padUndo}</button>
                     <button type="button" onClick={() => void clearPage()} disabled={inkPage.strokes.length === 0} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40">{tp.padClearPage}</button>
                     {/* Zoom for whoever does not think to pinch, and for a
-                        mouse without a wheel. The middle shows the level and
-                        goes to the whole page. */}
+                        mouse without a wheel. The middle shows the level, and
+                        an icon for where a tap goes: the whole page, or back
+                        to the page width. */}
                     <div role="group" aria-label={tp.padZoom} className="shrink-0 ml-auto inline-flex items-center gap-1">
                       <button type="button" onClick={() => inkControl.current?.zoomOut()} disabled={!inkZoom || inkZoom.z <= inkZoom.min + 0.001} aria-label={tp.padZoomOut} title={tp.padZoomOut} className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-stone-700 hover:bg-stone-50 disabled:opacity-40"><ZoomOut size={14} /></button>
                       {/* The name starts with what the button shows, so a screen
                           reader says the level and voice control finds it by
                           what is on it. */}
-                      <button type="button" onClick={() => inkControl.current?.zoomFit()} disabled={!inkZoom} aria-label={`${zoomPct} – ${tp.padZoomFit}`} title={tp.padZoomFit} data-testid="ink-zoom" className="h-9 min-w-[3.5rem] px-1.5 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-xs font-medium text-stone-700 tabular-nums hover:bg-stone-50 disabled:opacity-40">{zoomPct}</button>
+                      <button
+                        type="button"
+                        onClick={() => (zoomAtWhole ? inkControl.current?.zoomWidth() : inkControl.current?.zoomFit())}
+                        disabled={!zoomSwitches}
+                        aria-label={`${zoomPct} — ${zoomAction}`}
+                        title={zoomAction}
+                        data-testid="ink-zoom"
+                        className="h-9 min-w-[3.5rem] px-1.5 inline-flex items-center justify-center gap-1 rounded-lg border border-stone-300 bg-white text-xs font-medium text-stone-700 tabular-nums hover:bg-stone-50 disabled:opacity-40"
+                      >
+                        {zoomPct}
+                        {zoomAtWhole ? <MoveHorizontal size={12} className="shrink-0" /> : <FileIcon size={12} className="shrink-0" />}
+                      </button>
                       <button type="button" onClick={() => inkControl.current?.zoomIn()} disabled={!inkZoom || inkZoom.z >= inkZoom.max - 0.001} aria-label={tp.padZoomIn} title={tp.padZoomIn} className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-stone-700 hover:bg-stone-50 disabled:opacity-40"><ZoomIn size={14} /></button>
                     </div>
                     <button type="button" onClick={toggleFinger} aria-pressed={fingerDraws} title={fingerDraws ? tp.padFingerOn : tp.padFingerOff} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium', fingerDraws ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><Hand size={14} /> {tp.padFinger}</button>

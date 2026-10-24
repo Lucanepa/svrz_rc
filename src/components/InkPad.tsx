@@ -46,6 +46,8 @@ export type InkPadControl = {
   zoomOut(): void;
   /** The whole page. */
   zoomFit(): void;
+  /** The page's width: 100 %. */
+  zoomWidth(): void;
   /** performance.now() of the pen's last contact with the page (down, a move
    *  while touching, up); 0 = none yet. Hover does not count: a coach holding
    *  the Pencil over the page still taps the toolbar with the other hand. */
@@ -246,6 +248,7 @@ type Engine = {
   pageChanged(): void;
   zoomStep(dir: 1 | -1): void;
   zoomFit(): void;
+  zoomWidth(): void;
   lastPenAt(): number;
   destroy(): void;
 };
@@ -823,6 +826,13 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   window.addEventListener('resize', measure);
   measure();
 
+  /** A zoom button: about the middle of the stage, never mid-stroke. */
+  const zoomTo = (z: number) => {
+    if (!stageSize || active) return;
+    setView(zoomAbout(stageSize, view, z, stageSize.w / 2, stageSize.h / 2), true);
+    report(true);
+  };
+
   return {
     pageChanged() {
       pending = [];
@@ -830,15 +840,13 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       renderNow();
     },
     zoomStep(dir) {
-      if (!stageSize || active) return;
-      const z = dir > 0 ? zoomStepIn(stageSize, view.z) : zoomStepOut(stageSize, view.z);
-      setView(zoomAbout(stageSize, view, z, stageSize.w / 2, stageSize.h / 2), true);
-      report(true);
+      if (stageSize) zoomTo(dir > 0 ? zoomStepIn(stageSize, view.z) : zoomStepOut(stageSize, view.z));
     },
     zoomFit() {
-      if (!stageSize || active) return;
-      setView(zoomAbout(stageSize, view, zoomRange(stageSize).min, stageSize.w / 2, stageSize.h / 2), true);
-      report(true);
+      if (stageSize) zoomTo(zoomRange(stageSize).min);
+    },
+    zoomWidth() {
+      zoomTo(1);
     },
     lastPenAt: () => penContactAt,
     destroy() {
@@ -891,6 +899,7 @@ export default function InkPad(props: InkPadProps) {
     zoomIn: () => engineRef.current?.zoomStep(1),
     zoomOut: () => engineRef.current?.zoomStep(-1),
     zoomFit: () => engineRef.current?.zoomFit(),
+    zoomWidth: () => engineRef.current?.zoomWidth(),
     lastPenAt: () => engineRef.current?.lastPenAt() ?? 0,
   }), []);
 

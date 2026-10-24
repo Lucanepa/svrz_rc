@@ -41,6 +41,8 @@ const sheet = (page: Page) => page.getByRole('dialog', { name: /^(Notizblock|Not
 const pad = (page: Page) => sheet(page).getByTestId('ink-page');
 /** The grey area the pad fills; the canvases are its children. */
 const stage = (page: Page) => sheet(page).getByTestId('ink-stage');
+/** The zoom level button while a tap on it shows the whole page. */
+const toWholePage = (page: Page) => sheet(page).getByRole('button', { name: /^\d+ % — (Ganze Seite|Whole page)$/ });
 
 /** A new pen page, shown whole. A page opens at fit-width, taller than the
  *  stage, and the helpers below aim at fractions of the page. */
@@ -49,7 +51,7 @@ async function openPenPage(page: Page, court = false): Promise<void> {
   // By test id: the black pen in the toolbar is called "Stift" too.
   await sheet(page).getByTestId('pad-new-ink').click();
   await expect(pad(page)).toBeVisible();
-  await sheet(page).getByTestId('ink-zoom').click();
+  await toWholePage(page).click();
   await expect(sheet(page).getByRole('button', { name: /^(Verkleinern|Zoom out)$/ })).toBeDisabled();
   if (court) await sheet(page).getByRole('button', { name: /^(Spielfeld|Court)$/ }).click();
 }
@@ -291,7 +293,7 @@ test('a page whose ink is not local is fetched when opened', async ({ page }) =>
   await expect(pad(page)).toBeVisible();
   await expect.poll(() => asked.length, SYNC).toBe(1);
   // The stroke is halfway down the page, below a page opened at its top.
-  await sheet(page).getByTestId('ink-zoom').click();
+  await toWholePage(page).click();
   await expect.poll(() => nonBlank(page), SYNC).toBe(true);
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
 });
@@ -342,7 +344,7 @@ test('a stroke written while the newer server copy of its page is on the way sta
   await page.goto('/');
   await launcher(page).click();
   await expect(pad(page)).toBeVisible();
-  await sheet(page).getByTestId('ink-zoom').click();
+  await toWholePage(page).click();
   // The pull answers: the server's copy is newer, and its strokes are asked for.
   releaseIndex();
   await expect.poll(() => fetched, SYNC).toBe(1);

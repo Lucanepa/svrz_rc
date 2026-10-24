@@ -39,8 +39,10 @@ const stage = (page: Page) => sheet(page).getByTestId('ink-stage');
 const paper = (page: Page) => sheet(page).getByTestId('ink-page');
 const zoomIn = (page: Page) => sheet(page).getByRole('button', { name: /^(Vergrössern|Zoom in)$/ });
 const zoomOut = (page: Page) => sheet(page).getByRole('button', { name: /^(Verkleinern|Zoom out)$/ });
-/** Named for what it shows first, the level, then what it does. */
-const wholePage = (page: Page) => sheet(page).getByRole('button', { name: /^\d+ % – (Ganze Seite|Whole page)$/ });
+/** The middle button, named for what it shows first, the level, then what a
+ *  tap does: the whole page from any other view, the page width from there. */
+const wholePage = (page: Page) => sheet(page).getByRole('button', { name: /^\d+ % — (Ganze Seite|Whole page)$/ });
+const pageWidth = (page: Page) => sheet(page).getByRole('button', { name: /^\d+ % — (Seitenbreite|Page width)$/ });
 
 async function openPenPage(page: Page): Promise<void> {
   await launcher(page).click();
@@ -252,17 +254,30 @@ test('a resting hand: of two still contacts one lifts, and the other drifting a 
   expect(Math.abs(d[1] / 10 - anchor[1])).toBeLessThan(2);
 });
 
-test('the zoom buttons: in, the whole page, out; the canvases never grow', async ({ page }) => {
+test('the zoom buttons: in, the whole page, the page width, out; the canvases never grow', async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');
   await openPenPage(page);
   const width = () => stage(page).locator('canvas').first().evaluate((c: HTMLCanvasElement) => c.width);
   const w0 = await width();
-  await expect(sheet(page).getByTestId('ink-zoom')).toHaveAccessibleName(/^100 % – (Ganze Seite|Whole page)$/);
+  const level = sheet(page).getByTestId('ink-zoom');
+  await expect(level).toHaveAccessibleName(/^100 % — (Ganze Seite|Whole page)$/);
   await zoomIn(page).click();
   await zoomIn(page).click();
   await expect(stage(page)).toHaveAttribute('data-zoom', '2.25');
+  await expect(level).toHaveAccessibleName(/^225 % — (Ganze Seite|Whole page)$/);
   expect(await width()).toBe(w0);
+  await wholePage(page).click();
+  await expect(zoomOut(page)).toBeDisabled();
+  // The button says what it shows and, by its icon, what it will do: from
+  // the whole page, back to the page width. A second tap there used to do
+  // nothing.
+  await expect(level).toHaveAccessibleName(/^\d+ % — (Seitenbreite|Page width)$/);
+  await expect(level).toHaveText(/^\d+ %$/);
+  await expect(level.locator('svg')).toHaveCount(1);
+  await pageWidth(page).click();
+  await expect(stage(page)).toHaveAttribute('data-zoom', '1.00');
+  await expect(level).toHaveAccessibleName(/^100 % — (Ganze Seite|Whole page)$/);
   await wholePage(page).click();
   await expect(zoomOut(page)).toBeDisabled();
   const s = await box(page, 'stage'); const p = await box(page, 'paper');
@@ -374,11 +389,13 @@ test('a phone in fullscreen: the page keeps the A4 shape, so the ink lands under
   await page.goto('/');
   await openPenPage(page);
   await expect(sheet(page)).toHaveAttribute('data-full', 'true');
-  for (const view of ['fit-width', 'whole page']) {
-    if (view === 'whole page') { await wholePage(page).click(); await expect(zoomOut(page)).toBeDisabled(); }
-    const p = await box(page, 'paper');
-    expect(Math.abs(p.width / p.height - 1000 / 1414)).toBeLessThan(0.002);
-  }
+  // The stage is taller than the page at its width: the page width IS the
+  // whole page, nothing to switch between, and the button says so by being off.
+  await expect(stage(page)).toHaveAttribute('data-zoom', '1.00');
+  await expect(zoomOut(page)).toBeDisabled();
+  await expect(sheet(page).getByTestId('ink-zoom')).toBeDisabled();
+  const whole = await box(page, 'paper');
+  expect(Math.abs(whole.width / whole.height - 1000 / 1414)).toBeLessThan(0.002);
   // Drawn at 85 % of the page's height, it is stored there (it landed up to
   // 28 px above the finger when the box was stretched).
   const p = await box(page, 'paper'); const s = await box(page, 'stage');

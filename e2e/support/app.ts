@@ -372,7 +372,7 @@ export async function stubSignedInApp(page: Page, opts: StubOptions = {}): Promi
   await page.route('**/api/admin/survey-config', (r) => r.fulfill({
     json: { config: DEFAULT_SURVEY_CONFIG, defaults: DEFAULT_SURVEY_CONFIG },
   }));
-  // The signature pad only renders once a signing session exists.
+  // The phone hand-off (the QR) needs a signing session; the pad itself shows at once.
   await page.route('**/api/signature/start', (r) => r.fulfill({ json: { slug: 'sig-test' } }));
   await page.route('**/api/signature/sig-test', (r) => r.fulfill({
     json: { context: '', signer: '', signed: false, data: '' },
@@ -425,16 +425,24 @@ export async function ratingControl(
   return page.locator('div.sm\\:hidden.divide-y > div').nth(criterionIndex).locator('button').nth(column);
 }
 
-/** Draw a stroke on the open signature pad and keep it. */
+/** The open signature dialog (SignatureDialog.tsx). */
+export const signatureDialog = (page: Page) => page.getByTestId('signature-dialog');
+
+/**
+ * Draw a stroke on the open signature pad and keep it. Scoped to the dialog
+ * and anchored: any other canvas on the page, or a discard confirm that
+ * mentions the signature, must not be what this finds.
+ */
 export async function signOpenPad(page: Page): Promise<void> {
-  const pad = page.locator('canvas');
+  const dialog = signatureDialog(page);
+  const pad = dialog.locator('canvas');
   await expect(pad).toBeVisible();
   const box = (await pad.boundingBox())!;
   await page.mouse.move(box.x + 20, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width - 20, box.y + box.height / 3, { steps: 8 });
   await page.mouse.up();
-  await page.getByRole('button', { name: /Save signature|Unterschrift speichern/ }).click();
+  await dialog.getByRole('button', { name: /^(Save signature|Unterschrift speichern)$/ }).click();
 }
 
 /**

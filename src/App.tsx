@@ -1,6 +1,5 @@
 import React, { useCallback, useState, useEffect, useRef, useMemo, useId, Suspense, lazy, type MutableRefObject } from 'react';
 import { Maximize2, Minimize2, Download, ExternalLink, FileJson, Video, Loader2, ArrowLeftRight, RotateCcw, ClipboardCheck, MessageSquare, Target, Info, Languages, LogOut, ShieldAlert, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, List, CalendarDays, CalendarPlus, Copy, SlidersHorizontal, Home, Clock, Users, Eye, Send, Upload, X, CloudOff, Star, Pencil, PenLine, Lock, Mail, AlertTriangle, Check, CheckCircle2, Paperclip, Menu, CalendarCheck, Search } from 'lucide-react';
-import { QRCodeSVG } from 'qrcode.react';
 // About a megabyte of renderer, fetched the first time a coach opens a
 // document and never for anyone who does not.
 // Lazy chunks go through importFresh: after a deploy the old page's chunk
@@ -63,7 +62,8 @@ import {
   type MyRcGame,
   type IcalSubscription,
 } from './lib/pocketbase';
-import SignaturePad, { type SignaturePadHandle } from './components/SignaturePad';
+import SignatureDialog, { type SignatureRelay, type SignatureSaveStats } from './components/SignatureDialog';
+import type { SigStroke } from './components/SignaturePad';
 import { BoerseChip, BoerseNote, SyncFreshness, boerseRowClass, inBoerse } from './components/BoerseNote';
 import {
   parsePath, routeToPath, isForeignPath,
@@ -2064,17 +2064,28 @@ export default function App() {
     }
   };
   const [sigModalOpen, setSigModalOpen] = useState(false);
+  const sigModalOpenRef = useRef(false);
+  sigModalOpenRef.current = sigModalOpen;
   const [sigSlug, setSigSlug] = useState('');
   const [sigError, setSigError] = useState('');
-  // Which of the two signatures the open modal is collecting. The referee signs
-  // to acknowledge the discussion, the coach for what the form says; both use
-  // the same pad and the same QR hand-off to a phone.
-  const [sigTarget, setSigTarget] = useState<'referee' | 'rc'>('referee');
+  /** The form the open dialog signs, captured when it opened, so a save can
+   *  never land on another form than the one it was opened for. The referee
+   *  signs to acknowledge the discussion, the coach for what the form says;
+   *  both use the same pad and the same QR hand-off to a phone. */
+  const [sigFor, setSigFor] = useState<{ gameId: string; role: string; target: 'referee' | 'rc'; key: string } | null>(null);
+  const sigTarget = sigFor?.target ?? 'referee';
+  /** Half-drawn signatures per form, so a close nobody chose (a Back swipe, a
+   *  navigation, the dialog unmounting) does not cost the ink: reopening the
+   *  same form brings it back. Memory only — half a signature on disk helps
+   *  nobody. Keyed per visit for the coach, per role for the referee. */
+  const sigDraftsRef = useRef(new Map<string, SigStroke[]>());
+  /** Bumped on every open and close: a startSignature answer that arrives
+   *  after its dialog closed or another one opened is ignored. */
+  const sigOpenSeqRef = useRef(0);
   /** Bumped by updateSignature; see the comment there for why a token and not a
    *  direct call. Batched with the form update, so the effect that watches it
    *  runs on the commit that contains the signature. */
   const [sigFlushToken, setSigFlushToken] = useState(0);
-  const sigPadRef = useRef<SignaturePadHandle>(null);
   const sigSignerName = (target: 'referee' | 'rc') =>
     target === 'rc' ? (formData.meta.rc || '') : formData.meta.srName;
   const updateSignature = (data: string, target: 'referee' | 'rc' = sigTarget) => {
@@ -2128,42 +2139,78 @@ export default function App() {
     }
   };
 
+  const sigDraftKey = (gameId: string, role: string, target: 'referee' | 'rc') =>
+    (target === 'rc' ? `${gameId}|rc` : `${gameId}|${role}|referee`);
+  const closeSignatureDialog = () => {
+    sigOpenSeqRef.current += 1;
+    setSigModalOpen(false);
+  };
   const openSignatureModal = async (target: 'referee' | 'rc') => {
-    setSigTarget(target);
+    const seq = ++sigOpenSeqRef.current;
+    setSigFor({ gameId: selectedGameId, role: formData.role, target, key: sigDraftKey(selectedGameId, formData.role, target) });
     setSigModalOpen(true); setSigSlug(''); setSigError('');
+    const failed = formData.lang === 'DE' ? 'Konnte nicht gestartet werden.' : 'Could not start.';
+    // Offline there is no phone to relay through; say so at once instead of
+    // waiting for a request that cannot answer. The pad works either way.
+    if (isOffline && !isDemoMode()) { setSigError(failed); return; }
     try {
       const who = target === 'rc'
         ? `${formData.lang === 'DE' ? 'Referee Coach' : 'Referee Coach'} ${sigSignerName('rc')}`.trim()
         : `${formData.role} ${formData.meta.srName}`.trim();
       const context = [formData.meta.mannschaften, formData.meta.liga, who].filter(Boolean).join(' · ');
       const started = await startSignature(context, sigSignerName(target));
-      setSigSlug(started.slug);
-    } catch { setSigError(formData.lang === 'DE' ? 'Konnte nicht gestartet werden.' : 'Could not start.'); }
+      if (seq === sigOpenSeqRef.current) setSigSlug(started.slug);
+    } catch { if (seq === sigOpenSeqRef.current) setSigError(failed); }
   };
-  const saveSignatureHere = () => {
-    if (!sigPadRef.current || sigPadRef.current.isEmpty()) return;
-    const data = sigPadRef.current.toDataURL();
-    updateSignature(data);
+  const saveSignatureHere = (data: string, stats: SignatureSaveStats) => {
+    const target = sigFor;
+    if (!target || !data) return;
+    const de = formData.lang === 'DE';
+    // The form under the dialog is not the one it was opened for (the
+    // navigation effect below closes the dialog on a switch, so this is the
+    // belt to its braces). The ink stays as that form's draft.
+    if (target.gameId !== selectedGameId || (target.target === 'referee' && target.role !== formData.role)) {
+      closeSignatureDialog();
+      toast.error(de
+        ? 'Das Formular hat gewechselt. Die Unterschrift ist aufbewahrt: im richtigen Formular erneut öffnen.'
+        : 'The form changed. The signature is kept: open it again on the right form.', { lang: formData.lang });
+      return;
+    }
+    sigDraftsRef.current.delete(target.key);
+    updateSignature(data, target.target);
     // Closed at once: the ink is on the form already. The dialog used to wait
     // for the copy below, which in a gym took up to a minute (22.10.2026) — the
     // coach tapped again, and every extra tap sent the same signature into a
     // 409. The copy only tells a phone that scanned the QR it is done; its
     // answer was never read.
-    setSigModalOpen(false);
-    if (sigSlug) void submitSignatureSession(sigSlug, data, sigSignerName(sigTarget)).catch(() => { /* see above */ });
+    closeSignatureDialog();
+    // Counts only, to calibrate the palm rule on real iPads: never a
+    // coordinate, never the image.
+    clientLog.info('sig.saved', 'signature saved on this device', { target: target.target, ...stats });
+    if (sigSlug) void submitSignatureSession(sigSlug, data, sigSignerName(target.target)).catch(() => { /* see above */ });
+  };
+  /** Closing with nothing worth keeping, or after an explicit "Verwerfen". */
+  const discardSignature = () => {
+    if (sigFor) sigDraftsRef.current.delete(sigFor.key);
+    closeSignatureDialog();
   };
   useEffect(() => {
-    if (!sigModalOpen || !sigSlug) return;
+    if (!sigModalOpen || !sigSlug || !sigFor) return;
     const id = setInterval(async () => {
       try {
         const sess = await getSignatureSession(sigSlug);
         // The phone that scanned the QR is signing for whichever party the modal
         // was opened for, so the relayed image lands in that slot.
-        if (sess.signed && sess.data) { updateSignature(sess.data, sigTarget); setSigModalOpen(false); }
+        if (sess.signed && sess.data) {
+          sigDraftsRef.current.delete(sigFor.key);
+          updateSignature(sess.data, sigFor.target);
+          closeSignatureDialog();
+          toast.success(formData.lang === 'DE' ? 'Unterschrift vom Handy übernommen.' : 'Signature taken from the phone.', { lang: formData.lang });
+        }
       } catch { /* ignore */ }
     }, 3000);
     return () => clearInterval(id);
-  }, [sigModalOpen, sigSlug, sigTarget]);
+  }, [sigModalOpen, sigSlug, sigFor]);
   const [downloadingEmptyForm, setDownloadingEmptyForm] = useState(false);
   const [manualUploadCoachee, setManualUploadCoachee] = useState<Coachee | null>(null);
   const [manualUploadSubmitting, setManualUploadSubmitting] = useState(false);
@@ -4891,7 +4938,8 @@ export default function App() {
       if (padOpen) { closeNotebook(); return; }
       if (optionsOpen) { setOptionsOpen(false); return; }
       if (showConfirmModal !== null) { setShowConfirmModal(null); return; }
-      if (sigModalOpen) { setSigModalOpen(false); return; }
+      // The signature dialog is not here: it takes Escape itself, in the
+      // capture phase, and asks before it drops any ink (SignatureDialog.tsx).
       if (demoMailOpen) { setDemoMailOpen(false); return; }
       if (showCalendarModal) { setShowCalendarModal(false); return; }
       if (showEmptyFormModal) { setShowEmptyFormModal(false); return; }
@@ -4899,12 +4947,15 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [padOpen, optionsOpen, closeNotebook, showConfirmModal, sigModalOpen, demoMailOpen, showCalendarModal, showEmptyFormModal, expandedCoacheeId]);
+  }, [padOpen, optionsOpen, closeNotebook, showConfirmModal, demoMailOpen, showCalendarModal, showEmptyFormModal, expandedCoacheeId]);
 
   // The sheet closes on any navigation under it — a Back that pops the URL, a
   // link, a game switch — or it would sit over a screen it was not opened on.
+  // So does the signature dialog: its ink stays as that form's draft and comes
+  // back when the same form is signed again (Safari's edge swipe is a Back).
   useEffect(() => {
     if (padOpenRef.current) closeNotebook();
+    if (sigModalOpenRef.current) closeSignatureDialog();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGameId, feedbackSubView, listTab, selectedCoacheeId]);
 
@@ -11132,78 +11183,31 @@ export default function App() {
         </div>
       )}
 
-      {/* Empty Form Modal */}
-      {sigModalOpen && (
-        <div onClick={() => setSigModalOpen(false)} className="fixed inset-0 bg-stone-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print">
-          <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-4 max-h-[85vh] overflow-y-auto">
-            <div className="flex items-start justify-between mb-3">
-              <h3 className="text-base font-bold text-stone-900">
-                {sigTarget === 'rc'
-                  ? (formData.lang === 'DE' ? 'Unterschrift Referee Coach' : 'Referee Coach signature')
-                  : (formData.lang === 'DE' ? 'Unterschrift Schiedsrichter' : 'Referee signature')}
-              </h3>
-              <button onClick={() => setSigModalOpen(false)} aria-label="Close" className="text-stone-400 hover:text-stone-600 text-2xl leading-none -mt-1 -mr-1 px-1">&times;</button>
-            </div>
-            {/* The pad appears once startSignature has SETTLED — on success
-                (sigSlug) or on failure (sigError, e.g. offline). Gating it on the
-                slug alone left an offline coach without a pad, unable to satisfy
-                the mandatory-signature check; showing it on the error too fixes
-                that. It never mounts before the call resolves, so no stroke can
-                land before the canvas is sized. */}
-            {!sigSlug && !sigError ? (
-              <div className="py-6 flex justify-center"><AppSpinner size={104} /></div>
-            ) : (
-              <>
-                <p className="text-[11px] text-stone-400 mb-1.5">{formData.lang === 'DE' ? 'Hier unterschreiben:' : 'Sign here:'}</p>
-                <div className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50/50 h-36 overflow-hidden"><SignaturePad ref={sigPadRef} /></div>
-                <div className="flex gap-2 mt-2">
-                  <button onClick={() => sigPadRef.current?.clear()} className="h-9 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100">{formData.lang === 'DE' ? 'Löschen' : 'Clear'}</button>
-                  <button onClick={saveSignatureHere} className="flex-1 h-9 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700">{formData.lang === 'DE' ? 'Unterschrift speichern' : 'Save signature'}</button>
-                </div>
-                {/* Signing on a second device needs the server to relay the
-                    signature back, so the QR can't work in the demo — scanning
-                    it lands on a device with no demo session and no session
-                    record, i.e. "link invalid or expired". Offer only what works. */}
-                {isDemoMode() ? (
-                  <p className="mt-3 pt-3 border-t border-stone-200 text-[11px] text-stone-500 text-center">
-                    {formData.lang === 'DE'
-                      ? 'Im Demo-Modus kannst du nur hier unterschreiben. Der QR-Code zum Unterschreiben auf dem Handy braucht den Server.'
-                      : 'In the demo you can only sign here. The QR code for signing on a phone needs the server.'}
-                  </p>
-                ) : sigError ? (
-                  <p className="mt-3 pt-3 border-t border-stone-200 text-[11px] text-stone-500 text-center">
-                    {formData.lang === 'DE'
-                      ? 'Unterschreiben auf dem Handy ist gerade nicht möglich (offline). Hier unterschreiben funktioniert.'
-                      : 'Signing on a phone isn’t available right now (offline). Signing here works.'}
-                  </p>
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2 my-3"><div className="flex-1 h-px bg-stone-200" /><span className="text-[10px] uppercase text-stone-400 font-semibold">{formData.lang === 'DE' ? 'oder' : 'or'}</span><div className="flex-1 h-px bg-stone-200" /></div>
-                    <div className="flex flex-col items-center gap-2">
-                      <div className="p-2 bg-white border border-stone-200 rounded-lg"><QRCodeSVG value={signUrlFor(sigSlug)} size={116} level="M" /></div>
-                      <p className="text-[11px] text-stone-500 text-center">{formData.lang === 'DE' ? 'Mit dem Handy scannen und dort unterschreiben.' : 'Scan with a phone and sign there.'}</p>
-                      {/* Faster than holding a QR up at someone who is already
-                          packing their bag: the link lands in the referee's own
-                          phone. Still the same visit — this dialog is what
-                          watches the session, so it stays open until the ink
-                          arrives. */}
-                      <button
-                        onClick={() => void shareSignatureLink(sigSlug)}
-                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-stone-200 text-xs font-medium text-stone-600 hover:bg-stone-100"
-                      >
-                        {canShareLink ? <Send size={13} /> : <Copy size={13} />}
-                        {canShareLink ? t.sigShareLink : t.sigCopyLink}
-                      </button>
-                      <p className="text-[11px] text-stone-400 text-center">{t.sigLinkHint}</p>
-                      <p className="text-[11px] text-amber-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> {formData.lang === 'DE' ? 'Warte auf Unterschrift…' : 'Waiting for signature…'}</p>
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Signature dialog — the markup and the close policy are in
+          SignatureDialog.tsx; which form it signs and its draft are here. */}
+      {sigModalOpen && sigFor && (() => {
+        const de = formData.lang === 'DE';
+        const relay: SignatureRelay = isDemoMode() ? { kind: 'demo' }
+          : sigError ? { kind: 'offline' }
+          : !sigSlug ? { kind: 'loading' }
+          : { kind: 'ready', url: signUrlFor(sigSlug), canShare: canShareLink, shareLabel: canShareLink ? t.sigShareLink : t.sigCopyLink, hint: t.sigLinkHint, onShare: () => void shareSignatureLink(sigSlug) };
+        return (
+          <SignatureDialog
+            lang={formData.lang}
+            title={sigFor.target === 'rc'
+              ? (de ? 'Unterschrift Referee Coach' : 'Referee Coach signature')
+              : (de ? 'Unterschrift Schiedsrichter' : 'Referee signature')}
+            initialStrokes={sigDraftsRef.current.get(sigFor.key)}
+            onDraftChange={(strokes) => {
+              if (strokes.length) sigDraftsRef.current.set(sigFor.key, strokes);
+              else sigDraftsRef.current.delete(sigFor.key);
+            }}
+            onSave={saveSignatureHere}
+            onDiscard={discardSignature}
+            relay={relay}
+          />
+        );
+      })()}
 
       {readerDoc && (
         <Suspense fallback={(

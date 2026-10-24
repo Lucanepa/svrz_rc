@@ -15,7 +15,8 @@
 // and move the page together. One finger moves the page while the finger
 // does not draw (the default once a pen was seen) and draws when it does. A
 // touch that starts while the pen is busy, within PEN_TRAILING_MS of it, or as
-// a large contact, is a palm: ignored until it lifts. A mouse draws (the
+// a large contact, or that spreads into one right after landing, is a palm:
+// ignored until it lifts. A mouse draws (the
 // desktop, and the test suite); its wheel pans, and zooms with Ctrl or a
 // trackpad pinch.
 //
@@ -81,6 +82,10 @@ export type InkPadProps = {
 /** A gesture that started moving this soon before the pen landed was the
  *  writing hand arriving first: it is undone. */
 const PALM_LEAD_MS = 300;
+/** A finger stroke whose contact grows past a fingertip this soon after
+ *  landing was a palm settling; later, it is a finger pressed flat while
+ *  writing (the signature pad's rule). */
+const PALM_SETTLE_MS = 150;
 /** A second finger this soon after the first turns a young finger stroke into a pinch. */
 const PINCH_GRACE_MS = 250;
 /** Fingers must move this far before the page moves: a resting hand stays still. */
@@ -669,7 +674,19 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     if (a && e.pointerId === a.pointerId) {
       // Gated on the tracked pointer, never on e.buttons (synthetic moves carry 0).
       e.preventDefault();
-      if (a.kind === 'touch') { const t = touches.get(e.pointerId); if (t) { t.x = e.clientX; t.y = e.clientY; } }
+      if (a.kind === 'touch') {
+        const t = touches.get(e.pointerId);
+        if (t) { t.x = e.clientX; t.y = e.clientY; }
+        if (isLargeContact(e)) {
+          // Right after landing, a contact that spreads past a fingertip is a
+          // palm settling, and its "stroke" goes. Later, it is a finger
+          // pressed flat: the line stops there and keeps what it drew. Either
+          // way the contact draws no more, nor pinches with another finger.
+          if (t) t.tainted = true;
+          if (now - a.startedAt < PALM_SETTLE_MS) { stats.palms += 1; dropActive(); } else finish('up');
+          return;
+        }
+      }
       const list = coalescedOf(e);
       if (a.eraser) { for (const ev of list) { const [x, y] = pagePoint(ev.clientX, ev.clientY); eraseAt(x, y); } flushErase(false); return; }
       if (a.kind === 'pen') { stats.penMoves += 1; stats.penCoalesced += list.length; }

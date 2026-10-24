@@ -596,6 +596,42 @@ test.describe('a stroke whose pointerup never came', () => {
   });
 });
 
+test('with the finger on, a contact that spreads right after landing is a palm; later, a finger pressed flat stops the line and keeps it', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await expect(sheet(page).getByRole('button', { name: /^(Finger)$/ })).toHaveAttribute('aria-pressed', 'true');
+  const finger = { pointerType: 'touch', pointerId: 70, width: 40, height: 40 };
+  const flat = { ...finger, width: 120, height: 120 };
+  await burst(page, [
+    ...padSteps(finger, line(0.3, 0.1, 0.4, 4), false),
+    { wait: 250 },
+    { pad: 'pointermove', init: flat, at: [0.6, 0.3] },
+    { pad: 'pointermove', init: flat, at: [0.8, 0.3] },
+    { pad: 'pointerup', init: flat, at: [0.8, 0.3] },
+  ]);
+  await expect.poll(() => strokeCount(page), SYNC).toBe(1);
+  const xs = (await storedInk(page))[0].page.strokes[0].d.filter((_, i) => i % 4 === 0).reduce<number[]>((acc, dx, i) => [...acc, i === 0 ? dx : acc[i - 1] + dx], []);
+  // The line stops where the finger went flat, at 0.4 of the page.
+  expect(Math.max(...xs) / 10).toBeLessThan(410);
+  const palm = { pointerType: 'touch', pointerId: 71, width: 40, height: 40 };
+  await burst(page, [
+    { pad: 'pointerdown', init: palm, at: [0.1, 0.8] },
+    { pad: 'pointermove', init: palm, at: [0.2, 0.8] },
+    { pad: 'pointermove', init: { ...palm, width: 200, height: 200 }, at: [0.25, 0.8] },
+    { pad: 'pointermove', init: { ...palm, width: 200, height: 200 }, at: [0.5, 0.8] },
+    { pad: 'pointerup', init: { ...palm, width: 200, height: 200 }, at: [0.5, 0.8] },
+  ]);
+  await page.waitForTimeout(2_500);
+  expect(await strokeCount(page)).toBe(1);
+  await sheet(page).getByRole('button', { name: /^(Schliessen|Close)$/ }).click();
+  const lines = await page.evaluate(() => {
+    const w = window as unknown as { svrzLogs?: () => { evt: string; data?: Record<string, unknown> }[] };
+    return (w.svrzLogs ? w.svrzLogs() : []).filter((e) => e.evt === 'ink.page');
+  });
+  expect(lines[0].data).toMatchObject({ touch: 1, palms: 1 });
+});
+
 test('the size guard counts a page exactly as the server does', async ({ page }) => {
   // InkPad counts a page from cached per-stroke lengths, on every stroke end;
   // the server counts JSON.stringify(page).length. A drift here is a stroke

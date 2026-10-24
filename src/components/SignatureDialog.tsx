@@ -139,17 +139,33 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
   }, []);
 
   // A touch outside the pad while the pen is busy is the writing hand, not a
-  // tap on Save or Löschen: its click is swallowed. Decided per pointerdown, so
-  // it never goes stale; a Pencil tap on a button always counts.
-  const suppressClickRef = useRef(false);
+  // tap on Save or Löschen: its click is swallowed. Kept per pointer: one flag
+  // for the whole panel was reset by the pen's next pointerdown on the pad, so
+  // a palm resting on Save saved half a signature when it lifted. A click is
+  // matched to the pointer that went down on what it hits (its own pointerType
+  // reads "mouse" after a tap in WebKit), and a touch's click is swallowed if
+  // the pen was busy when it went down or is busy now. A Pencil tap on a
+  // button always counts.
+  const downsRef = useRef<{ type: string; target: Node; busy: boolean; at: number }[]>([]);
   const onPointerDownCapture = (e: ReactPointerEvent) => {
-    suppressClickRef.current = e.pointerType === 'touch'
-      && !padBoxRef.current?.contains(e.target as Node)
-      && !!padRef.current?.isBusy();
+    const target = e.target as Node;
+    // Strokes on the pad never become a click on a button.
+    if (padBoxRef.current?.contains(target)) return;
+    const now = performance.now();
+    downsRef.current = [
+      ...downsRef.current.filter((d) => now - d.at < 10_000).slice(-7),
+      { type: e.pointerType, target, busy: e.pointerType === 'touch' && !!padRef.current?.isBusy(), at: now },
+    ];
   };
   const onClickCapture = (e: ReactMouseEvent) => {
-    if (!suppressClickRef.current) return;
-    suppressClickRef.current = false;
+    const hit = e.target as Node;
+    const downs = downsRef.current;
+    let i = downs.length - 1;
+    while (i >= 0 && !(hit === downs[i].target || hit.contains(downs[i].target))) i -= 1;
+    if (i < 0) return;
+    const from = downs[i];
+    downsRef.current = downs.filter((_, j) => j !== i);
+    if (from.type !== 'touch' || !(from.busy || padRef.current?.isBusy())) return;
     e.preventDefault();
     e.stopPropagation();
   };

@@ -343,6 +343,52 @@ test.describe('the pen and the palm', () => {
     await expect(rcSig(page)).toBeVisible();
   });
 
+  test('a palm that went down on Save while the pen wrote stays the palm when the pen writes on and stops', async ({ page }) => {
+    const save = saveButton(page);
+    await stroke(page, PEN, line(0.3));
+    await expect(save).toBeEnabled();
+    await burst(page, [
+      ...padSteps({ ...PEN, pointerId: 8 }, line(0.5), false),
+      { el: 'save', type: 'pointerdown', init: { pointerType: 'touch', pointerId: 52, isPrimary: false } },
+      { pad: 'pointerup', init: { ...PEN, pointerId: 8 }, at: [0.9, 0.5] },
+      // The pen writes on while the palm rests…
+      ...padSteps({ ...PEN, pointerId: 9 }, line(0.7)),
+    ], { save });
+    // …then pauses past its 500 ms, and only then the palm lifts.
+    await page.waitForTimeout(600);
+    await burst(page, [
+      { el: 'save', type: 'pointerup', init: { pointerType: 'touch', pointerId: 52, isPrimary: false } },
+      { el: 'save', type: 'click' },
+    ], { save });
+    await page.waitForTimeout(100);
+    await expect(signatureDialog(page)).toBeVisible();
+    await expect(rcSig(page)).toHaveCount(0);
+  });
+
+  test('a palm that touched "Finger too" before the pen came down cannot switch it while the pen writes', async ({ page }) => {
+    await stroke(page, PEN, line(0.2));
+    const toggle = signatureDialog(page).getByRole('button', { name: /^(Finger too|Auch mit Finger)$/ });
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    // The pen rests long enough that a touch is no longer "right after the pen".
+    await page.waitForTimeout(600);
+    await burst(page, [
+      { el: 'toggle', type: 'pointerdown', init: { pointerType: 'touch', pointerId: 53, isPrimary: true } },
+      ...padSteps({ ...PEN, pointerId: 9 }, line(0.5), false),
+      { el: 'toggle', type: 'pointerup', init: { pointerType: 'touch', pointerId: 53, isPrimary: true } },
+      { el: 'toggle', type: 'click' },
+      { pad: 'pointerup', init: { ...PEN, pointerId: 9 }, at: [0.9, 0.5] },
+    ], { toggle });
+    await page.waitForTimeout(100);
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    // A deliberate pen tap on it still switches it.
+    await page.waitForTimeout(600);
+    await burst(page, [
+      { el: 'toggle', type: 'pointerdown', init: { pointerType: 'pen', pointerId: 10, isPrimary: true } },
+      { el: 'toggle', type: 'click' },
+    ], { toggle });
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  });
+
   test('a touch stroke on the glass until just before the pen is purged, however long ago it began', async ({ page }) => {
     const touch = { pointerType: 'touch', pointerId: 32, isPrimary: true, width: 30, height: 30 };
     await burst(page, [

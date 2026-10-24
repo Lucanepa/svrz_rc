@@ -39,10 +39,12 @@ type Props = {
   onSave(dataUrl: string, stats: SignatureSaveStats): void;
   /** Closing with nothing worth keeping, or after "Verwerfen". */
   onDiscard(): void;
+  /** The coach's kept signature, offered when it was taken off this form. */
+  remembered?: { image: string; onUse(): void } | null;
   relay: SignatureRelay;
 };
 
-export default function SignatureDialog({ lang, title, initialStrokes, onDraftChange, onSave, onDiscard, relay }: Props) {
+export default function SignatureDialog({ lang, title, initialStrokes, onDraftChange, onSave, onDiscard, remembered, relay }: Props) {
   const de = lang === 'DE';
   const titleId = `${useId()}-title`;
   const panelRef = useRef<HTMLDivElement>(null);
@@ -172,6 +174,15 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
             <button type="button" onClick={() => void requestClose()} aria-label={de ? 'Schliessen' : 'Close'} className="h-9 w-9 rounded-lg text-stone-400 hover:text-stone-600 hover:bg-stone-100 text-2xl leading-none">&times;</button>
           </div>
         </div>
+
+        {remembered && (
+          <div className="flex items-center gap-3 mb-3 p-2 rounded-lg border border-stone-200 bg-stone-50">
+            <img src={remembered.image} alt="" className="h-10 w-24 object-contain shrink-0" />
+            <button type="button" onClick={remembered.onUse} className="ml-auto h-9 px-3 rounded-lg border border-stone-300 bg-white text-xs font-medium text-stone-700 hover:bg-stone-100">
+              {de ? 'Gemerkte Unterschrift verwenden' : 'Use remembered signature'}
+            </button>
+          </div>
+        )}
 
         {/* Above the pad, out from under the hand that writes on it. */}
         <div className="flex items-center gap-2 mb-2">

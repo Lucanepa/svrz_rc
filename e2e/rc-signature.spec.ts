@@ -86,6 +86,44 @@ test('taken off a report it stays off, and the report asks for the coach\'s sign
   await expect(page.getByRole('button', { name: /^(Speichern|Save)$/ })).toHaveCount(0);
 });
 
+test('over the kept signature the coach\'s button says it signs again; taken off, the kept one is one tap away', async ({ page }) => {
+  await stubSignedInApp(page);
+  await keptOnServer(page, { enabled: true, data: KEPT });
+  await page.goto('/');
+  await openFeedbackForm(page);
+  await expect(remembered(page)).toBeVisible();
+  await expect(page.getByRole('button', { name: /^(Sign again|Neu unterschreiben)$/ })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ })).toHaveCount(1);
+
+  // Taken off: the box is empty and its button is the plain one again…
+  await removeButtons(page).last().click();
+  await expect(rcSig(page)).toHaveCount(0);
+  await page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).nth(1).click();
+  // …and the dialog offers the kept signature back, without signing anew.
+  const dialog = page.getByTestId('signature-dialog');
+  await expect(dialog.locator('img')).toHaveAttribute('src', KEPT);
+  await dialog.getByRole('button', { name: /^(Use remembered signature|Gemerkte Unterschrift verwenden)$/ }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(rcSig(page)).toHaveAttribute('src', KEPT);
+  await expect(remembered(page)).toBeVisible();
+});
+
+test('the referee\'s dialog never offers the coach\'s kept signature, nor does the coach\'s while it stands', async ({ page }) => {
+  await stubSignedInApp(page);
+  await keptOnServer(page, { enabled: true, data: KEPT });
+  await page.goto('/');
+  await openFeedbackForm(page);
+  await expect(remembered(page)).toBeVisible();
+  const offer = page.getByRole('button', { name: /^(Use remembered signature|Gemerkte Unterschrift verwenden)$/ });
+  await page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).first().click();
+  await expect(page.getByTestId('signature-dialog').locator('canvas')).toBeVisible();
+  await expect(offer).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: /^(Sign again|Neu unterschreiben)$/ }).click();
+  await expect(page.getByTestId('signature-dialog').locator('canvas')).toBeVisible();
+  await expect(offer).toHaveCount(0);
+});
+
 test('Optionen turns it off: the server is told, and the next form starts empty', async ({ page }) => {
   await stubSignedInApp(page);
   const puts = await keptOnServer(page, { enabled: true, data: KEPT });

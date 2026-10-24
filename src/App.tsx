@@ -10659,7 +10659,11 @@ export default function App() {
                   )}
                 </div>
                 <div className="no-print flex flex-col gap-1.5 shrink-0">
-                  <button type="button" onClick={() => void openSignatureModal(sig.target)} className="h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700">{formData.lang === 'DE' ? 'Unterschreiben' : 'Sign'}</button>
+                  {/* Over the kept signature it says what it does: the kept
+                      one already counts, signing replaces it. */}
+                  <button type="button" onClick={() => void openSignatureModal(sig.target)} className="h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700">
+                    {kept ? (formData.lang === 'DE' ? 'Neu unterschreiben' : 'Sign again') : (formData.lang === 'DE' ? 'Unterschreiben' : 'Sign')}
+                  </button>
                   {sig.image && <button type="button" onClick={() => (kept ? setRcSigDropped((s) => new Set(s).add(selectedGameId)) : updateSignature('', sig.target))} className="h-8 px-3 rounded-lg border border-stone-200 text-xs text-stone-500 hover:bg-stone-100">{formData.lang === 'DE' ? 'Entfernen' : 'Remove'}</button>}
                 </div>
               </div>
@@ -11191,6 +11195,18 @@ export default function App() {
           : sigError ? { kind: 'offline' }
           : !sigSlug ? { kind: 'loading' }
           : { kind: 'ready', url: signUrlFor(sigSlug), canShare: canShareLink, shareLabel: canShareLink ? t.sigShareLink : t.sigCopyLink, hint: t.sigLinkHint, onShare: () => void shareSignatureLink(sigSlug) };
+        // Taken off this form with Entfernen, the coach's kept signature is one
+        // tap away again instead of only by signing anew.
+        const rememberedOffer = sigFor.target === 'rc' && !formData.rcSignature && savedRcSig.enabled && !!savedRcSig.data && rcSigDropped.has(sigFor.gameId)
+          ? {
+            image: savedRcSig.data,
+            onUse: () => {
+              const gameId = sigFor.gameId;
+              setRcSigDropped((prev) => { const next = new Set(prev); next.delete(gameId); return next; });
+              discardSignature();
+            },
+          }
+          : null;
         return (
           <SignatureDialog
             lang={formData.lang}
@@ -11204,6 +11220,7 @@ export default function App() {
             }}
             onSave={saveSignatureHere}
             onDiscard={discardSignature}
+            remembered={rememberedOffer}
             relay={relay}
           />
         );

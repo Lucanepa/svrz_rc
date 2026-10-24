@@ -482,9 +482,10 @@ export async function fillWholeForm(page: Page): Promise<void> {
     await page.getByLabel(new RegExp(`(Set|Satz) ${set} (home|Heim)`)).fill('25');
     await page.getByLabel(new RegExp(`(Set|Satz) ${set} (away|Gast)`)).fill('20');
   }
-  // Both parties sign; neither is optional.
+  // Both parties sign; neither is optional. Over a remembered coach signature
+  // the coach's button reads "Sign again".
   for (const index of [0, 1]) {
-    await page.getByRole('button', { name: /^(Sign|Unterschreiben)$/ }).nth(index).click();
+    await page.getByRole('button', { name: /^(Sign|Unterschreiben|Sign again|Neu unterschreiben)$/ }).nth(index).click();
     await signOpenPad(page);
   }
 }

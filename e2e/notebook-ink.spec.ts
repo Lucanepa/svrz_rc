@@ -504,3 +504,40 @@ test('a pen page files one line of counts when it is left, never a coordinate', 
   for (const v of Object.values(data)) expect(v === null || typeof v === 'number').toBe(true);
   expect(Object.keys(data).sort()).toEqual(['cancels', 'coalescedPerMove', 'mouse', 'palms', 'pen', 'penZeroStart', 'pressureMedian', 'slowFrameMs', 'touch', 'zoomMax'].sort());
 });
+
+test('a pen page sent to the background files its counts then, in the batch that ships as the app goes', async ({ page }) => {
+  // iOS may end a suspended PWA without another event: what was counted until
+  // the coach locked the iPad must leave with the logger's flush on hide.
+  await page.addInitScript(() => {
+    const sent: string[] = [];
+    (window as unknown as { __beacons: string[] }).__beacons = sent;
+    navigator.sendBeacon = (_url: string | URL, data?: BodyInit | null) => { void new Response(data ?? '').text().then((t) => sent.push(t)); return true; };
+  });
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await syntheticStroke(page, { pointerType: 'pen', pointerId: 7, pressure: 0.3 }, [[0.2, 0.2], [0.4, 0.3], [0.6, 0.35]]);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+  });
+  type Line = { evt: string; data?: Record<string, unknown> };
+  const beaconed = () => page.evaluate(() => (window as unknown as { __beacons: string[] }).__beacons
+    .flatMap((b) => (JSON.parse(b) as { entries: Line[] }).entries).filter((e) => e.evt === 'ink.page'));
+  await expect.poll(async () => (await beaconed()).length).toBe(1);
+  expect((await beaconed())[0].data).toMatchObject({ pen: 1, mouse: 0 });
+  // Back in the app: the next line holds only what came after.
+  await mouseStroke(page, 0.1, 0.6, 0.5, 0.7);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(2);
+  await sheet(page).getByRole('button', { name: /^(Schliessen|Close)$/ }).click();
+  await expect(sheet(page)).toHaveCount(0);
+  const lines = await page.evaluate(() => {
+    const w = window as unknown as { svrzLogs?: () => { evt: string; data?: Record<string, unknown> }[] };
+    return (w.svrzLogs ? w.svrzLogs() : []).filter((e) => e.evt === 'ink.page');
+  });
+  expect(lines).toHaveLength(2);
+  expect(lines[1].data).toMatchObject({ pen: 0, mouse: 1 });
+});

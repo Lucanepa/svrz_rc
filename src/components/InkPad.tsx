@@ -271,7 +271,8 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   let penSeen = false;
   let wheelTimer = 0; let wheelZ0: number | null = null;
   let webkitGesture: { z0: number } | null = null;
-  const stats: Stats = { pen: 0, touch: 0, mouse: 0, penZeroStart: 0, penMoves: 0, penCoalesced: 0, cancels: 0, palms: 0, hist: new Array(10).fill(0), zoomMax: 0, slowFrameMs: 0 };
+  const freshStats = (): Stats => ({ pen: 0, touch: 0, mouse: 0, penZeroStart: 0, penMoves: 0, penCoalesced: 0, cancels: 0, palms: 0, hist: new Array(10).fill(0), zoomMax: view.z, slowFrameMs: 0 });
+  let stats = freshStats();
 
   const scale = () => (stageSize ? scaleOf(stageSize, view.z) : 1);
   const refreshRect = () => { const r = stage.getBoundingClientRect(); rect = { left: r.left, top: r.top }; };
@@ -742,7 +743,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     touches.clear();
     if (gesture) endGesture();
   };
-  const onVisibility = () => { if (document.visibilityState === 'hidden') forgetTouches(); };
+  const onVisibility = () => { if (document.visibilityState === 'hidden') { forgetTouches(); logVisit(); } };
 
   stage.addEventListener('pointerdown', onDown);
   stage.addEventListener('pointermove', onMove);
@@ -755,7 +756,9 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   stage.addEventListener('gesturechange', onGestureChange);
   stage.addEventListener('gestureend', onGestureEnd);
   window.addEventListener('blur', forgetTouches);
-  document.addEventListener('visibilitychange', onVisibility);
+  // On the window, in the capture phase: ahead of the logger's listener on the
+  // document, which ships what is queued as the app goes to the background.
+  window.addEventListener('visibilitychange', onVisibility, true);
   const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
   if (ro) ro.observe(stage);
   window.addEventListener('resize', measure);
@@ -763,7 +766,11 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
 
   /** One line per page visit, numbers only: which of the causes behind thin or
    *  missing ink (a first pressure of 0, 60 Hz sampling, cancels, palms) a
-   *  real iPad has, without reading a private notebook. Never a coordinate. */
+   *  real iPad has, without reading a private notebook. Never a coordinate.
+   *  Also filed when the app goes to the background, with the counts since the
+   *  last line: iOS may end a suspended PWA without another event, and these
+   *  numbers are the ones that settle the palm width and the first pressure of
+   *  0 on a real iPad. */
   const logVisit = () => {
     const strokes = stats.pen + stats.touch + stats.mouse;
     if (!strokes && !stats.cancels && !stats.palms) return;
@@ -782,6 +789,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       zoomMax: Math.round(stats.zoomMax * 100) / 100,
       slowFrameMs: Math.round(stats.slowFrameMs),
     });
+    stats = freshStats();
   };
 
   return {
@@ -813,7 +821,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       stage.removeEventListener('gesturechange', onGestureChange);
       stage.removeEventListener('gestureend', onGestureEnd);
       window.removeEventListener('blur', forgetTouches);
-      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('visibilitychange', onVisibility, true);
       if (ro) ro.disconnect();
       window.removeEventListener('resize', measure);
       if (frame) cancelAnimationFrame(frame);

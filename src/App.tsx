@@ -2078,8 +2078,9 @@ export default function App() {
    *  same form brings it back. Memory only — half a signature on disk helps
    *  nobody. Keyed per visit for the coach, per role for the referee. */
   const sigDraftsRef = useRef(new Map<string, SigStroke[]>());
-  /** Bumped on every open and close: a startSignature answer that arrives
-   *  after its dialog closed or another one opened is ignored. */
+  /** Bumped on every open and close: a startSignature answer, or a poll's
+   *  answer from the phone, that arrives after its dialog closed or another
+   *  one opened is ignored. */
   const sigOpenSeqRef = useRef(0);
   /** Bumped by updateSignature; see the comment there for why a token and not a
    *  direct call. Batched with the form update, so the effect that watches it
@@ -2195,9 +2196,15 @@ export default function App() {
   };
   useEffect(() => {
     if (!sigModalOpen || !sigSlug || !sigFor) return;
+    // The open this poll belongs to. A request already on its way when the
+    // dialog closes (a Back, a game switch, a save here) still answers, and
+    // clearInterval cannot stop that: its signature would land on whatever
+    // form is open by then (24.10.2026, the same shape as on main).
+    const seq = sigOpenSeqRef.current;
     const id = setInterval(async () => {
       try {
         const sess = await getSignatureSession(sigSlug);
+        if (seq !== sigOpenSeqRef.current) return;
         // The phone that scanned the QR is signing for whichever party the modal
         // was opened for, so the relayed image lands in that slot.
         if (sess.signed && sess.data) {

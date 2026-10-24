@@ -686,6 +686,34 @@ test('a late answer from an earlier open does not take over the dialog that is o
   expect(new Set(polled)).toEqual(new Set(['fresh']));
 });
 
+test('a phone signature that answers after the dialog closed stays off the form, and no toast claims it', async ({ page }) => {
+  const PHONE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let polls = 0;
+  await page.route('**/api/signature/sig-test', async (route) => {
+    polls += 1;
+    // Gym Wi-Fi: the poll is on its way while the coach leaves the form.
+    await gate;
+    await route.fulfill({ json: { context: '', signer: '', signed: true, data: PHONE } });
+  });
+  await page.goto('/');
+  await openFeedbackForm(page);
+  await openSign(page, 'rc');
+  await expect.poll(() => polls, { timeout: 8000 }).toBe(1);
+  await page.evaluate(() => history.back());
+  await expect(signatureDialog(page)).toHaveCount(0);
+  const answer = page.waitForResponse('**/api/signature/sig-test');
+  release();
+  await answer;
+  await page.waitForTimeout(500);
+  // Counted once, not awaited: a toast that did show goes again by itself.
+  expect(await page.getByTestId('toast').filter({ hasText: /Signature taken from the phone|Unterschrift vom Handy übernommen/ }).count()).toBe(0);
+  await page.evaluate(() => history.forward());
+  await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
+  await expect(rcSig(page)).toHaveCount(0);
+});
+
 test('a signature made on the phone closes the dialog, says so, and drops the half-drawn one here', async ({ page }) => {
   const PHONE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
   let signed = false;

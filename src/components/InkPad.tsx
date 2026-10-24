@@ -17,7 +17,7 @@
 // silently dropped hours later by a 413.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { getStroke } from 'perfect-freehand';
+import { freehandPath } from '../lib/inkPath';
 import { NOTEBOOK_INK_MAX_CHARS, NOTEBOOK_INK_MAX_STROKES, inkSize, type InkPage, type InkStroke, type PageBackground } from '../lib/notebook';
 
 export type InkTool = { kind: 'pen'; colour: 0 | 1 } | { kind: 'eraser' };
@@ -60,8 +60,7 @@ export function strokePoints(stroke: InkStroke): [number, number, number][] {
 }
 
 function outlinePath(points: [number, number, number][], scale: number, stroke: { w: number; p: 0 | 1 }, live: boolean): Path2D | null {
-  if (points.length === 0) return null;
-  const outline = getStroke(points.map(([x, y, p]) => [x * scale, y * scale, p]), {
+  return freehandPath(points.map(([x, y, p]) => [x * scale, y * scale, p]), {
     size: Math.max(2, stroke.w * scale),
     thinning: 0.6,
     smoothing: 0.5,
@@ -69,17 +68,6 @@ function outlinePath(points: [number, number, number][], scale: number, stroke: 
     simulatePressure: stroke.p === 0,
     last: !live,
   });
-  if (outline.length === 0) return null;
-  const path = new Path2D();
-  const [x0, y0] = outline[0];
-  path.moveTo(x0, y0);
-  for (let i = 1; i < outline.length; i += 1) {
-    const [x1, y1] = outline[i];
-    const [x2, y2] = outline[(i + 1) % outline.length];
-    path.quadraticCurveTo(x1, y1, (x1 + x2) / 2, (y1 + y2) / 2);
-  }
-  path.closePath();
-  return path;
 }
 
 export function renderStroke(ctx: CanvasRenderingContext2D, stroke: InkStroke, scale: number, live = false): void {

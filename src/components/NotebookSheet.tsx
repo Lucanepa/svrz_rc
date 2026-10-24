@@ -825,12 +825,12 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       </Suspense>
                     )}
                   </div>
-                  {/* One row on every iPad. In German it needs about 760 px,
-                      and the sheet is 768 wide only from an 800 px screen up:
-                      below that (an iPad mini or a 9.7" iPad upright, 744 and
-                      768) Spielfeld, Rückgängig and Seite leeren show their
-                      icon alone, named as before. A phone still scrolls the
-                      row sideways. */}
+                  {/* One row on every iPad. With every label, in German, it
+                      needs about 750 px, and the sheet is 768 wide only from
+                      an 800 px screen up: below that (an iPad mini or a 9.7"
+                      iPad upright, 744 and 768) Spielfeld, Rückgängig and
+                      Seite leeren show their icon alone, named as before. A
+                      phone still scrolls the row sideways. */}
                   <div className="flex items-center gap-1 px-3 py-2 border-t border-stone-200 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
                     {([
                       { key: 'black', label: tp.padPenBlack, icon: <PenLine size={14} />, active: tool.kind === 'pen' && tool.colour === 0, on: () => setTool({ kind: 'pen', colour: 0 }) },

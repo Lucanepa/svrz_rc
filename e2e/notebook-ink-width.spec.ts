@@ -11,6 +11,13 @@ import { stubSignedInApp } from './support/app';
  * handwriting (Safari reports a Pencil's pressure at about 0.1–0.35) must be
  * a clear line there. Shown whole, in landscape, the page is under 300 px
  * wide, and no line may vanish to a hairline.
+ *
+ * The floor that keeps that line is in page units, from the stage's
+ * whole-page scale, and recomputed only when the stage changes size (every
+ * cached outline depends on it). So at fit-width in landscape, where the
+ * whole page is smallest, the floor shows: light handwriting draws at about
+ * 3.2 px instead of 2.2–2.9. That is pinned below, as accepted, until a
+ * product decision says otherwise.
  */
 
 test.use({ deviceScaleFactor: 2 });
@@ -74,13 +81,31 @@ test('an iPad in portrait, at fit-width: light handwriting is a clear line, a fi
   for (const [i, [fy, p]] of rows.entries()) await stroke(page, 'pen', fy, p, 10 + i);
   const widths = new Map<number, number>();
   for (const [fy, p] of rows) widths.set(p, await widthAt(page, fy));
-  console.log('portrait fit-width', JSON.stringify(Object.fromEntries([...widths].map(([p, w]) => [p, +w.toFixed(2)]))));
-  expect(widths.get(0.2)!).toBeGreaterThanOrEqual(2.2);
-  expect(widths.get(0.5)!).toBeGreaterThan(2.6);
-  expect(widths.get(0.5)!).toBeLessThan(3.6);
+  const seen = JSON.stringify(Object.fromEntries([...widths].map(([p, w]) => [p, +w.toFixed(2)])));
+  expect(widths.get(0.2)!, seen).toBeGreaterThanOrEqual(2.2);
+  expect(widths.get(0.5)!, seen).toBeGreaterThan(2.6);
+  expect(widths.get(0.5)!, seen).toBeLessThan(3.6);
   // Pressure still shows: light, normal and firm are not one width.
-  expect(widths.get(0.1)!).toBeLessThan(widths.get(0.5)!);
-  expect(widths.get(0.5)!).toBeLessThan(widths.get(1)!);
+  expect(widths.get(0.1)!, seen).toBeLessThan(widths.get(0.5)!);
+  expect(widths.get(0.5)!, seen).toBeLessThan(widths.get(1)!);
+});
+
+test('an iPad in landscape, at fit-width: the same scale as portrait, light lines raised by the whole-page floor', async ({ page }) => {
+  await openPenPage(page, { width: 1180, height: 820 }, false);
+  const rows: [number, number][] = [[0.15, 0.1], [0.35, 0.2], [0.55, 0.5], [0.75, 1]];
+  for (const [i, [fy, p]] of rows.entries()) await stroke(page, 'pen', fy, p, 10 + i);
+  await stroke(page, 'mouse', 0.9, 0, 1);
+  const widths = new Map<number, number>();
+  for (const [fy, p] of rows) widths.set(p, await widthAt(page, fy));
+  const mouse = await widthAt(page, 0.9);
+  const seen = `${JSON.stringify(Object.fromEntries([...widths].map(([p, w]) => [p, +w.toFixed(2)])))} mouse ${mouse.toFixed(2)}`;
+  // Measured when accepted: 3.13 / 3.25 / 3.5 / 4.25, the mouse 3.25.
+  for (const w of [...widths.values(), mouse]) expect(w, seen).toBeGreaterThanOrEqual(2.9);
+  expect(widths.get(0.1)!, seen).toBeLessThan(3.5);
+  expect(widths.get(0.5)!, seen).toBeLessThan(3.9);
+  // The firm end is untouched by the floor: pressure still shows there.
+  expect(widths.get(0.1)!, seen).toBeLessThan(widths.get(1)!);
+  expect(widths.get(0.5)!, seen).toBeLessThan(widths.get(1)!);
 });
 
 test('an iPad in landscape, the whole page on screen: no line thinner than about 1.2 px', async ({ page }) => {
@@ -89,6 +114,6 @@ test('an iPad in landscape, the whole page on screen: no line thinner than about
   for (const [i, [fy, kind, p]] of rows.entries()) await stroke(page, kind, fy, p, kind === 'mouse' ? 1 : 10 + i);
   const widths: number[] = [];
   for (const [fy] of rows) widths.push(await widthAt(page, fy));
-  console.log('landscape whole page', JSON.stringify(widths.map((w) => +w.toFixed(2))));
-  for (const w of widths) expect(w).toBeGreaterThanOrEqual(1.15);
+  const seen = JSON.stringify(widths.map((w) => +w.toFixed(2)));
+  for (const w of widths) expect(w, seen).toBeGreaterThanOrEqual(1.15);
 });

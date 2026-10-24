@@ -6,12 +6,15 @@
 // A page has two sides since 24.10.2026: what the coach typed and what she
 // wrote by hand, both optional (Jennifer, 23.10.2026: "combine it to 'new
 // page' and then within a page one can switch between typing and
-// handwriting"). `kind` keeps its two wire values and now names the side the
-// page SHOWS — the one last used on it. The installed apps 1.3.6 and 1.3.7
-// carry the frontend from before, and will for a while: they read `kind`,
-// show that side only, and push the other one empty or not at all. That is
-// acceptable on their screen and must never cost the other side on the
-// server — the merge below is what keeps it.
+// handwriting"). `kind` keeps its two wire values and names the side last
+// WRITTEN on the page (25.10.2026; for a day it was the side last shown). The
+// installed apps 1.3.6 and 1.3.7 carry the frontend from before, and will for
+// a while: they read `kind`, show that side only, and push the other one
+// empty or not at all. That is acceptable on their screen — it is the side
+// with the latest writing on it — and must never cost the other side on the
+// server: the merge below is what keeps it, for every push that does not say
+// `both`. The new client says `both` only for a record it knows both sides
+// of; one the old frontend wrote on the same device goes without it.
 
 export const NOTEBOOK_MAX_TEXT_LEN = 20_000;          // a page, not a report
 export const NOTEBOOK_MAX_TITLE_LEN = 60;             // a label in the page strip, not a heading
@@ -208,6 +211,14 @@ export function notebookMergeNeedsStored(page: NotebookPagePayload, both: boolea
  *  A client that writes both sides sends what it shows: its text always wins,
  *  an empty one included, and explicit strokes — `[]` too — replace the
  *  stored ones. A tombstone stores nothing.
+ *
+ *  With nothing stored (a new row, or one revived over a tombstone), a push
+ *  without strokes stores a count of none: the count is the server's word
+ *  that it holds strokes to fetch, and here it holds none. The client said
+ *  otherwise when its strokes stayed home — a page it had pushed before, whose
+ *  row the server lost — and the next device then listed a pen page with
+ *  nothing behind it (25.10.2026). The ack's `newRow` tells that client to
+ *  send its strokes.
  */
 export function mergeNotebookPayload(stored: unknown, page: NotebookPagePayload, both: boolean): Record<string, unknown> {
   if (page.deleted) return {};
@@ -215,7 +226,10 @@ export function mergeNotebookPayload(stored: unknown, page: NotebookPagePayload,
   void _id; void _u; void _d; void _s; void _c;
   const payload: Record<string, unknown> = { ...rest, ...(ink !== undefined ? { ink } : {}) };
   const prev = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored as Record<string, unknown> : null;
-  if (!prev) return payload;
+  if (!prev) {
+    if (ink === undefined) payload.points = 0;
+    return payload;
+  }
   if (ink === undefined) {
     if (prev.ink !== undefined) payload.ink = prev.ink;
     const points = Number(prev.points);

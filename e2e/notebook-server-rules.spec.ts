@@ -143,7 +143,29 @@ test.describe('A push merged into the stored page', () => {
   });
 
   test('a stored payload that is not an object is no payload', () => {
-    const { page, both } = sane({ kind: 'text', points: 5 });
-    for (const stored of [null, [], 'x', 3]) expect(mergeNotebookPayload(stored, page, both).points).toBe(5);
+    const { page, both } = sane({ kind: 'text', text: 'neu', points: 5, both: true });
+    for (const stored of [null, [], 'x', 3]) {
+      const merged = mergeNotebookPayload(stored, page, both);
+      expect(merged.text).toBe('neu');
+      expect(merged).not.toHaveProperty('ink');
+    }
+  });
+
+  test('a push without strokes onto no stored page stores no count of strokes it does not have', () => {
+    // A new row, or one revived over a tombstone, from a push that carried no
+    // strokes: `points` said the page has some, and the next device listed it
+    // as a pen page with nothing to fetch (25.10.2026).
+    for (const extra of [{ both: true }, {}]) {
+      for (const kind of ['text', 'ink']) {
+        const { page, both } = sane({ kind, points: 37, ...extra });
+        expect(mergeNotebookPayload(null, page, both).points).toBe(0);
+      }
+    }
+    // With its strokes, a new row counts them.
+    const fresh = sane({ kind: 'ink', points: 37, ink: INK, both: true });
+    expect(mergeNotebookPayload(null, fresh.page, fresh.both).points).toBe(2);
+    // Onto a stored page the stored count stays, as before.
+    const meta = sane({ kind: 'text', points: 37, both: true });
+    expect(mergeNotebookPayload(STORED, meta.page, meta.both).points).toBe(2);
   });
 });

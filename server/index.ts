@@ -15135,7 +15135,7 @@ async function handleNotebookPush(req: Request, res: ExpressResponse): Promise<v
   try {
     const now = Date.now();
     const incoming = Array.isArray((req.body ?? {}).pages) ? ((req.body as AnyRecord).pages as unknown[]) : [];
-    const saved: { pageId: string; savedAt: string; updatedAt: number; createdAt: number }[] = [];
+    const saved: { pageId: string; savedAt: string; updatedAt: number; createdAt: number; newRow?: true }[] = [];
     const stale: { pageId: string; updatedAt: number }[] = [];
     const rejected: { pageId: string; reason: string }[] = [];
     // Deduplicated by page id BEFORE the store is touched: `existing` is read
@@ -15202,7 +15202,11 @@ async function handleNotebookPush(req: Request, res: ExpressResponse): Promise<v
             : await db.collection(NOTEBOOK_COLLECTION).create<AnyRecord>(fields);
           if (row) Object.assign(row, { updated_at: fields.updated_at, deleted, kind });
           else existing.push(written);
-          saved.push({ pageId, savedAt: asText(written.updated) || asText(written.created), updatedAt, createdAt });
+          // `newRow`: there was no live page stored under this id, so the
+          // server holds no strokes of it but the ones this push carried. A
+          // client that kept its strokes home for this push sends them next
+          // (25.10.2026). Clients from before read no such field.
+          saved.push({ pageId, savedAt: asText(written.updated) || asText(written.created), updatedAt, createdAt, ...(!page.deleted && !rowLive ? { newRow: true as const } : {}) });
         } catch (error) {
           // A column refusal the sanitiser missed is this PAGE's problem, not a
           // 500 and an alert mail for the whole batch.

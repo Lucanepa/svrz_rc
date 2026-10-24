@@ -74,7 +74,7 @@ import { boerseLevel, type BoerseSlotOffer, type BoerseVerdict } from '../src/li
 import { nameKeys, samePerson, resolveRcName, resolveRcRef, refereeSet, refereeAmong, type PersonRef, type RcPersonLike, type RefereeSet } from '../src/lib/identity.ts';
 import { say, answerInAskersLanguage } from './say.ts';
 import { parkVerdict, tombstoneTime, rolesToRemove, parseGameIds, parkKey } from './parkSync.ts';
-import { NOTEBOOK_PAGE_ID_RE, notebookPayload, sanitizeNotebookPage, type NotebookPagePayload } from './notebook.ts';
+import { NOTEBOOK_PAGE_ID_RE, mergeNotebookPayload, notebookMergeNeedsStored, sanitizeNotebookPage, type NotebookPagePayload } from './notebook.ts';
 
 // Palette and typeface for every outgoing mail, shared with server/erroralerts.ts.
 import {
@@ -14915,12 +14915,13 @@ app.delete('/api/drafts/parked/:gameId', requireRcSession, async (req: Request, 
 //
 // A referee coach in a hall wants somewhere to write — a line, a sketch, the
 // time a thing happened — without deciding first what it is for. The notebook
-// is that: pages of text or ink, kept on the device (src/lib/notebook.ts) and
-// mirrored here so a phone that throws its site data away between two games
-// does not take the evening's notes with it. It is not per game and it is not
-// a record: every page is DELETED ONE WEEK after it was written, on both sides,
-// and nothing extends that. What must outlive the week goes into the report —
-// the app lets a coach lift a page into a form field — where it belongs.
+// is that: pages a coach types on, writes on by hand, or both, kept on the
+// device (src/lib/notebook.ts) and mirrored here so a phone that throws its
+// site data away between two games does not take the evening's notes with it.
+// It is not per game and it is not a record: every page is DELETED ONE WEEK
+// after it was written, on the device and here, and nothing extends that.
+// What must outlive the week goes into the report — the app lets a coach lift
+// a page into a form field — where it belongs.
 //
 // What the server does with a page is store it, hand it back to the coach who
 // wrote it, and delete it a week later. It files nothing, mails nothing, and
@@ -15141,13 +15142,13 @@ async function handleNotebookPush(req: Request, res: ExpressResponse): Promise<v
     // once, so two copies of one new id in a batch would otherwise both miss it
     // and both create a row — the duplicate the lock exists to prevent,
     // reachable inside a single request.
-    const byId = new Map<string, NotebookPagePayload>();
+    const byId = new Map<string, { page: NotebookPagePayload; both: boolean }>();
     for (const raw of incoming) {
       const s = sanitizeNotebookPage(raw, now);
       if (!s.page) { rejected.push({ pageId: s.pageId, reason: s.reason }); continue; }
       if (!byId.has(s.page.pageId) && byId.size >= NOTEBOOK_MAX_PAGES_PER_REQUEST) { rejected.push({ pageId: s.page.pageId, reason: 'too-many' }); continue; }
       const prev = byId.get(s.page.pageId);
-      if (!prev || prev.updatedAt < s.page.updatedAt) byId.set(s.page.pageId, s.page);
+      if (!prev || prev.page.updatedAt < s.page.updatedAt) byId.set(s.page.pageId, { page: s.page, both: s.both });
     }
     if (byId.size === 0 && rejected.length === 0) { res.status(400).json({ error: say('Nichts zu sichern.', 'Nothing to back up.') }); return; }
 
@@ -15158,7 +15159,7 @@ async function handleNotebookPush(req: Request, res: ExpressResponse): Promise<v
         throw error;
       });
       let livePages = existing.filter((r) => r.deleted !== true && notebookExpiry(r) > now).length;
-      for (const page of byId.values()) {
+      for (const { page, both } of byId.values()) {
         const row = existing.find((r) => asText(r.page_id) === page.pageId);
         const rowAt = row ? Date.parse(asText(row.updated_at)) || 0 : -1;
         // Tie goes to the server: the copy that got here first stays.
@@ -15174,7 +15175,15 @@ async function handleNotebookPush(req: Request, res: ExpressResponse): Promise<v
         // or a week would restart with every keystroke.
         const createdAt = row && Date.parse(asText(row.created_at)) ? (Date.parse(asText(row.created_at)) as number) : page.createdAt;
         const { pageId, kind, updatedAt, deleted, schema } = page;
-        const payload = notebookPayload(page);
+        // The other side of the page, as it is stored: a push without strokes,
+        // or one from an installed app that shows one side only, must not
+        // replace what it did not send (server/notebook.ts). Read for this one
+        // row, and only when the merge needs it — the index read above never
+        // carries a payload.
+        const stored = rowLive && notebookMergeNeedsStored(page, both)
+          ? (await db.collection(NOTEBOOK_COLLECTION).getOne<AnyRecord>(row.id, { fields: 'payload' })).payload
+          : null;
+        const payload = mergeNotebookPayload(stored, page, both);
         const fields = {
           // Written from the session on every single upsert, so a row cannot
           // drift onto another owner even if one were somehow reached.

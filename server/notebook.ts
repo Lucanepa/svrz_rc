@@ -1,6 +1,17 @@
 // The notebook's rules for one page, kept apart from the routes so they can be
-// tested without a database: what of a pushed page may be stored. The routes,
-// the lock, the merge by version and the prune stay in index.ts.
+// tested without a database (e2e/notebook-server-rules.spec.ts): what of a
+// pushed page may be stored, and what a push does to the copy already stored.
+// The routes, the lock, the merge by version and the prune stay in index.ts.
+//
+// A page has two sides since 24.10.2026: what the coach typed and what she
+// wrote by hand, both optional (Jennifer, 23.10.2026: "combine it to 'new
+// page' and then within a page one can switch between typing and
+// handwriting"). `kind` keeps its two wire values and now names the side the
+// page SHOWS — the one last used on it. The installed apps 1.3.6 and 1.3.7
+// carry the frontend from before, and will for a while: they read `kind`,
+// show that side only, and push the other one empty or not at all. That is
+// acceptable on their screen and must never cost the other side on the
+// server — the merge below is what keeps it.
 
 export const NOTEBOOK_MAX_TEXT_LEN = 20_000;          // a page, not a report
 export const NOTEBOOK_MAX_TITLE_LEN = 60;             // a label in the page strip, not a heading
@@ -16,8 +27,8 @@ export const NOTEBOOK_KINDS = new Set(['text', 'ink']);
 export const NOTEBOOK_FIELDS = new Set(['bemerkungen', 'highlights', 'improvements', 'goals', 'tips']);
 /** The two halves of a report a page can be lifted into (FEEDBACK_ROLES). */
 const NOTEBOOK_ROLES = ['1. SR', '2. SR'];
-// A pen page may carry a printed background under the ink — today only the
-// court outline a coach sketches positions on. Not ink, not stored as ink.
+// The handwriting may lie on a printed background — today only the court
+// outline a coach sketches positions on. Not ink, not stored as ink.
 export const NOTEBOOK_BACKGROUNDS = new Set(['', 'court']);
 
 export type NotebookUse = { f: string; r: string; g: string; label: string; t: number };
@@ -37,8 +48,10 @@ export type NotebookPagePayload = {
   extra?: Record<string, unknown>;
 };
 // Flat, not a tagged union: tsconfig has no `strict`, so a union tagged by an
-// optional key does not narrow.
-export type NotebookSanitised = { page: NotebookPagePayload | null; reason: string; pageId: string };
+// optional key does not narrow. `both` is the client saying it reads and writes
+// both sides of a page; it describes the request, never the page, and is
+// never stored.
+export type NotebookSanitised = { page: NotebookPagePayload | null; reason: string; pageId: string; both: boolean };
 
 // String(), not a trim: a page has to come back exactly as the coach left it.
 // Objects and arrays become '' rather than "[object Object]". The same rule as
@@ -107,16 +120,22 @@ export function sanitizeNotebookInk(raw: unknown): { page: { w: number; h: numbe
 /**
  * One page, reduced to what may be stored. DROPPED: `ownerId` and `id` (the
  * body asserting whose page this is — the session says), `dirty`, `savedAt`,
- * `rejectedReason` (one device's bookkeeping). An unreadable page is refused
- * with a reason the client can show, never defaulted into something else.
+ * `rejectedReason` (one device's bookkeeping), and `both` (returned beside the
+ * page, never in it). An unreadable page is refused with a reason the client
+ * can show, never defaulted into something else.
+ *
+ * Both sides are kept whatever `kind` says: the typed text, the background and
+ * the strokes of either kind of page. What one client could not show is the
+ * merge's business (mergeNotebookPayload), not the sanitiser's.
  */
 export function sanitizeNotebookPage(raw: unknown, now: number): NotebookSanitised {
   const pageId = notebookRawId(raw);
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { page: null, reason: 'bad-page', pageId };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { page: null, reason: 'bad-page', pageId, both: false };
   const source = raw as Record<string, unknown>;
-  if (!NOTEBOOK_PAGE_ID_RE.test(pageId)) return { page: null, reason: 'bad-id', pageId };
+  const both = source.both === true;
+  if (!NOTEBOOK_PAGE_ID_RE.test(pageId)) return { page: null, reason: 'bad-id', pageId, both };
   const kind = cut(source.kind, 8);
-  if (!NOTEBOOK_KINDS.has(kind)) return { page: null, reason: 'bad-kind', pageId };
+  if (!NOTEBOOK_KINDS.has(kind)) return { page: null, reason: 'bad-kind', pageId, both };
   const deleted = source.deleted === true;
   const schema = Number(source.schema);
   const usedIn: NotebookUse[] = [];
@@ -130,6 +149,7 @@ export function sanitizeNotebookPage(raw: unknown, now: number): NotebookSanitis
       usedIn.push({ f, r, g: cut(use.g, 64), label: cut(use.label, NOTEBOOK_MAX_LABEL_LEN), t: notebookStamp(use.t, now) });
     }
   }
+  const bg = cut(source.bg, 16);
   const page: NotebookPagePayload = {
     pageId,
     kind: kind as 'text' | 'ink',
@@ -137,8 +157,8 @@ export function sanitizeNotebookPage(raw: unknown, now: number): NotebookSanitis
     // same way a written one is. Whitespace is collapsed here rather than
     // trusted, because this string is drawn, not parsed.
     title: deleted ? '' : cut(source.title, NOTEBOOK_MAX_TITLE_LEN).replace(/\s+/g, ' ').trim(),
-    text: deleted || kind !== 'text' ? '' : cut(source.text, NOTEBOOK_MAX_TEXT_LEN),
-    bg: !deleted && kind === 'ink' && NOTEBOOK_BACKGROUNDS.has(cut(source.bg, 16)) ? cut(source.bg, 16) : '',
+    text: deleted ? '' : cut(source.text, NOTEBOOK_MAX_TEXT_LEN),
+    bg: !deleted && NOTEBOOK_BACKGROUNDS.has(bg) ? bg : '',
     points: 0,
     usedIn: deleted ? [] : usedIn,
     createdAt: notebookStamp(source.createdAt, now),
@@ -147,13 +167,13 @@ export function sanitizeNotebookPage(raw: unknown, now: number): NotebookSanitis
     schema: Number.isFinite(schema) && schema >= 1 ? Math.floor(schema) : 1,
     extra: deleted ? undefined : notebookExtra(source.extra),
   };
-  if (!deleted && kind === 'ink') {
-    // An ink page pushed without its strokes is a metadata-only update (a
-    // usedIn mark cannot happen on ink, so in practice: nothing) — and a page
-    // whose strokes are present must pass the shape check whole.
+  if (!deleted) {
+    // A page pushed without its strokes is a metadata-only update — the merge
+    // keeps the strokes already stored — and a page whose strokes are present
+    // must pass the shape check whole.
     if (source.ink !== undefined) {
       const ink = sanitizeNotebookInk(source.ink);
-      if ('reason' in ink) return { page: null, reason: ink.reason, pageId };
+      if ('reason' in ink) return { page: null, reason: ink.reason, pageId, both };
       page.ink = ink.page;
       page.points = ink.points;
     } else {
@@ -161,14 +181,47 @@ export function sanitizeNotebookPage(raw: unknown, now: number): NotebookSanitis
       page.points = Number.isFinite(points) && points >= 0 ? Math.floor(points) : 0;
     }
   }
-  return { page, reason: '', pageId };
+  return { page, reason: '', pageId, both };
 }
 
-/** The payload a row stores for a page: everything but the row's own columns
- *  (page_id, kind, the stamps, deleted, schema). A tombstone stores nothing. */
-export function notebookPayload(page: NotebookPagePayload): Record<string, unknown> {
+/** Whether storing this page needs the payload already stored: a live page
+ *  without its strokes, or one from a client that does not write both sides.
+ *  Only then is the stored payload read — never every row's ink. */
+export function notebookMergeNeedsStored(page: NotebookPagePayload, both: boolean): boolean {
+  return !page.deleted && (page.ink === undefined || !both);
+}
+
+/**
+ * The payload to store for a pushed page, given the one stored for it (null
+ * when there is none, or when it is a tombstone). The row's own columns
+ * (page_id, kind, the stamps, deleted, schema) are not in it.
+ *
+ *  (a) A live page that carries no `ink` keeps the stored `ink` and `points`.
+ *      A push without strokes is metadata-only: a new client that never
+ *      opened the handwriting here, a title on an old one. It used to replace
+ *      the payload whole and wipe the strokes on the server.
+ *  (b) A page from a client that does not write both sides, shown as
+ *      handwriting, keeps the stored `text`: the old apps push '' for the
+ *      text they cannot show on a pen page.
+ *  (c) The same client's page shown as text keeps the stored `bg`: they push
+ *      '' for the court under a page they show as text.
+ *  A client that writes both sides sends what it shows: its text always wins,
+ *  an empty one included, and explicit strokes — `[]` too — replace the
+ *  stored ones. A tombstone stores nothing.
+ */
+export function mergeNotebookPayload(stored: unknown, page: NotebookPagePayload, both: boolean): Record<string, unknown> {
   if (page.deleted) return {};
-  const { pageId: _id, kind: _k, updatedAt: _u, deleted: _d, schema: _s, createdAt: _c, ink, ...rest } = page;
-  void _id; void _k; void _u; void _d; void _s; void _c;
-  return { ...rest, ...(ink ? { ink } : {}) };
+  const { pageId: _id, kind, updatedAt: _u, deleted: _d, schema: _s, createdAt: _c, ink, ...rest } = page;
+  void _id; void _u; void _d; void _s; void _c;
+  const payload: Record<string, unknown> = { ...rest, ...(ink !== undefined ? { ink } : {}) };
+  const prev = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored as Record<string, unknown> : null;
+  if (!prev) return payload;
+  if (ink === undefined) {
+    if (prev.ink !== undefined) payload.ink = prev.ink;
+    const points = Number(prev.points);
+    payload.points = Number.isFinite(points) && points >= 0 ? Math.floor(points) : 0;
+  }
+  if (!both && kind === 'ink') payload.text = typeof prev.text === 'string' ? prev.text : '';
+  if (!both && kind === 'text') payload.bg = typeof prev.bg === 'string' && NOTEBOOK_BACKGROUNDS.has(prev.bg) ? prev.bg : '';
+  return payload;
 }

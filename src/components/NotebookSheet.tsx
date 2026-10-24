@@ -132,7 +132,16 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   // page the coach turns to. Not for the first stroke on a page not yet
   // written: that stroke MAKES the page, and the view she is writing in stays.
   const [viewKey, setViewKey] = useState(0);
-  const turnPage = () => setViewKey((k) => k + 1);
+  /** The pen's last contact as the palm guard below reads it. Kept here, not
+   *  only in the pad: a page turn makes a new pad whose clock starts at 0, and
+   *  a palm resting on Rückgängig while the other hand turned the page then
+   *  undid a stroke on the page it landed on (final check, 24.10.2026). */
+  const penClock = useRef(0);
+  const lastPenAt = () => {
+    penClock.current = Math.max(penClock.current, inkControl.current?.lastPenAt() ?? 0);
+    return penClock.current;
+  };
+  const turnPage = () => { lastPenAt(); setViewKey((k) => k + 1); };
   const [inkZoom, setInkZoom] = useState<InkZoom | null>(null);
   const zoomLevel = useRef<number | null>(null);
   if (zoomLevel.current === null) {
@@ -205,6 +214,9 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     const onControls = (e: PointerEvent): e is PointerEvent & { target: Node } =>
       e.pointerType === 'touch' && e.target instanceof Node && !inkBoxRef.current?.contains(e.target);
     const onTouchDown = (e: PointerEvent) => {
+      // Any press may be the one that turns the page: read the pad's clock
+      // while it is still this page's.
+      lastPenAt();
       if (!onControls(e)) return;
       const now = performance.now();
       seen(e.pointerId, { target: e.target, downAt: now, at: now });
@@ -222,8 +234,12 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
       // click went to, or on one inside it.
       let tap: Touch | null = null;
       if (target) for (const t of touched.values()) if (now - t.at < TAP_CLICK_MS && target.contains(t.target)) tap = t;
+      // None on that element: the touch may have landed in the gap beside the
+      // button and had its click moved onto it, or been pushed out of the
+      // list. The latest touch on the controls stands in for it.
+      if (!tap) for (const t of touched.values()) if (now - t.at < TAP_CLICK_MS) tap = t;
       if (!tap && (e as PointerEvent).pointerType !== 'touch') return;
-      const penAt = inkControl.current?.lastPenAt() ?? 0;
+      const penAt = lastPenAt();
       if (!penAt || penAt < (tap ? tap.downAt : now) - PEN_TRAILING_MS) return;
       e.preventDefault();
       e.stopPropagation();

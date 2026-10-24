@@ -98,7 +98,7 @@ async function nonBlank(page: Page): Promise<boolean> {
 
 type Step =
   | { pad: string; init: Record<string, unknown>; at: [number, number] }
-  | { el: 'undo'; type: string; init?: Record<string, unknown> }
+  | { el: 'undo' | 'older' | 'beside-undo'; type: string; init?: Record<string, unknown> }
   | { window: string }
   | { wait: number };
 
@@ -129,7 +129,10 @@ async function burst(page: Page, steps: Step[]): Promise<void> {
         (up ? window : canvas).dispatchEvent(ev);
         continue;
       }
-      const el = [...document.querySelectorAll('button')].find((b) => /^(Rückgängig|Undo)$/.test(b.getAttribute('aria-label') || ''))!;
+      const name = s.el === 'older' ? /^(Ältere Seite|Older page)$/ : /^(Rückgängig|Undo)$/;
+      const button = [...document.querySelectorAll('button')].find((b) => name.test(b.getAttribute('aria-label') || ''))!;
+      // The row the button sits in: a contact in the gap beside it.
+      const el = s.el === 'beside-undo' ? button.parentElement! : button;
       const init = { bubbles: true, cancelable: true, ...s.init };
       el.dispatchEvent(s.type === 'click' && !s.init?.pointerType ? new MouseEvent('click', init) : new PointerEvent(s.type, init));
     }
@@ -601,6 +604,62 @@ test('a palm that landed on Rückgängig just before the pen stays a palm; a fin
     { el: 'undo', type: 'click', init: { pointerType: 'mouse' } },
   ]);
   await expect.poll(() => strokeCount(page), SYNC).toBe(1);
+});
+
+test('a palm resting on Rückgängig stays a palm when the other hand turns the page', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await mouseStroke(page, 0.1, 0.2, 0.5, 0.25);
+  await expect.poll(() => strokeCount(page), SYNC).toBe(1);
+  // A second page, written with the pen while the heel of the hand rests on
+  // the button under it.
+  await sheet(page).getByTestId('pad-new-ink').click();
+  await expect(pad(page)).toBeVisible();
+  const total = async () => (await storedInk(page)).reduce((n, ink) => n + ink.page.strokes.length, 0);
+  const palm = { pointerType: 'touch', pointerId: 40, width: 30, height: 30 };
+  const finger = { pointerType: 'touch', pointerId: 41, width: 30, height: 30 };
+  await burst(page, [
+    { pad: 'pointerdown', init: { ...PEN, pointerId: 7 }, at: [0.2, 0.5] },
+    { el: 'undo', type: 'pointerdown', init: palm },
+    { pad: 'pointermove', init: { ...PEN, pointerId: 7 }, at: [0.3, 0.5] },
+    { pad: 'pointermove', init: { ...PEN, pointerId: 7 }, at: [0.4, 0.5] },
+    { pad: 'pointerup', init: { ...PEN, pointerId: 7, pressure: 0 }, at: [0.4, 0.5] },
+    // The other hand turns back to the first page; the pad there is a new
+    // one, and the pen has never touched it…
+    { wait: 650 },
+    { el: 'older', type: 'pointerdown', init: finger },
+    { el: 'older', type: 'pointerup', init: finger },
+    { el: 'older', type: 'click', init: { pointerType: 'mouse' } },
+    // …and only then does the palm lift, a click as it goes.
+    { wait: 300 },
+    { el: 'undo', type: 'pointerup', init: palm },
+    { el: 'undo', type: 'click', init: { pointerType: 'mouse' } },
+  ]);
+  await expect.poll(total, SYNC).toBe(2);
+  await page.waitForTimeout(2_500);
+  expect(await total()).toBe(2);
+});
+
+test('a palm in the gap beside Rückgängig whose click lands on the button stays a palm', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await mouseStroke(page, 0.1, 0.2, 0.5, 0.25);
+  await expect.poll(() => strokeCount(page), SYNC).toBe(1);
+  await page.waitForTimeout(600);
+  const palm = { pointerType: 'touch', pointerId: 40, width: 30, height: 30 };
+  await burst(page, [
+    ...padSteps({ ...PEN, pointerId: 7 }, line(0.5, 0.2, 0.4, 3)),
+    { el: 'beside-undo', type: 'pointerdown', init: palm },
+    { wait: 200 },
+    { el: 'beside-undo', type: 'pointerup', init: palm },
+    // Should iPadOS move the palm's click onto the nearest button.
+    { el: 'undo', type: 'click', init: { pointerType: 'mouse' } },
+  ]);
+  await expect.poll(() => strokeCount(page), SYNC).toBe(2);
+  await page.waitForTimeout(2_500);
+  expect(await strokeCount(page)).toBe(2);
 });
 
 test.describe('a stroke whose pointerup never came', () => {

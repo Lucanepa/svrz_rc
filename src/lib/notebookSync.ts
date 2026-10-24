@@ -56,6 +56,14 @@ const inkCache = new Map<string, InkPage>();     // strokes we hold locally (key
  *  pages a push without strokes could cost theirs. */
 const inkIds = new Set<string>();
 const inkStale = new Set<string>();              // pages whose strokes the server has newer than ours
+/** Pages whose strokes changed here since the server last acknowledged them:
+ *  the only ones a push carries strokes for. Every other push of a page is
+ *  metadata-only, and the server keeps the strokes it holds — a page of
+ *  handwriting is not uploaded again with every pause in the typing on its
+ *  other side, and a page typed on here does not send back strokes another
+ *  device has added to since. At boot every page still waiting counts, since
+ *  what it waits for may be its strokes. */
+const inkDirty = new Set<string>();
 /** Bumped whenever a page's strokes change under a read: a local commit, or a
  *  pull that marks them stale or drops them. A read that started before the
  *  bump holds an older truth than the cache. */
@@ -90,16 +98,23 @@ function setStatus(patch: Partial<PadSyncStatus>): void {
 // ---------------------------------------------------------------------------
 
 async function boot(o: string): Promise<void> {
-  cache.clear(); inkCache.clear(); inkIds.clear(); inkStale.clear(); pending.clear();
+  cache.clear(); inkCache.clear(); inkIds.clear(); inkStale.clear(); inkDirty.clear(); pending.clear();
   booted = o;
   setStatus({ loaded: false });
   storeOk = await notebookStoreAvailable();
   if (storeOk) {
     try { await pruneNotebook(now()); } catch { /* a purge that fails is retried at the next boot */ }
     try {
-      for (const p of await listStoredPages(o)) cache.set(p.id, p);
-      for (const id of await listStoredInkIds(o)) inkIds.add(id);
+      for (const p of await listStoredPages(o)) {
+        cache.set(p.id, p);
+        if (p.dirty && !p.deleted) inkDirty.add(p.id);
+      }
     } catch { storeOk = false; }
+    // Apart, and failing quietly: without the list a pagehide only leaves out
+    // the pages that count strokes, and the store is no less usable.
+    if (storeOk) {
+      try { for (const id of await listStoredInkIds(o)) inkIds.add(id); } catch { /* the pages' counts still guard the keepalive */ }
+    }
   }
   if (booted !== o) return;   // the owner changed under us
   emitPages();
@@ -143,7 +158,7 @@ export function commit(page: NotebookPage, ink?: InkPage | null, debounceMs = NO
   const next: NotebookPage = { ...page, dirty: true, rejectedReason: '', updatedAt: nextVersion(prev) };
   cache.set(next.id, next);
   if (ink !== undefined) {
-    if (ink) { inkCache.set(next.id, ink); inkIds.add(next.id); } else { inkCache.delete(next.id); inkIds.delete(next.id); }
+    if (ink) { inkCache.set(next.id, ink); inkIds.add(next.id); inkDirty.add(next.id); } else { inkCache.delete(next.id); inkIds.delete(next.id); inkDirty.delete(next.id); }
     inkStale.delete(next.id);
     bumpInk(next.id);
   }
@@ -243,6 +258,7 @@ async function readInk(pageId: string, gen: number): Promise<InkPage | null> {
       // carry them.
       const ink = remote.page.ink || local;
       inkStale.delete(id);
+      if (remote.page.ink) inkDirty.delete(id); else if (ink) inkDirty.add(id);
       if (!ink) return null;
       inkCache.set(id, ink);
       inkIds.add(id);
@@ -253,12 +269,14 @@ async function readInk(pageId: string, gen: number): Promise<InkPage | null> {
   return local;
 }
 
-/** The strokes a push carries for a page: the ones this device holds — unless
- *  the server has newer ones, and then none: the push is metadata-only and the
- *  server keeps its own (server/notebook.ts). Typing on a page whose
- *  handwriting changed on another device must not put the old strokes back. */
+/** The strokes a push carries for a page: the ones this device holds, when
+ *  they changed here since the server last took them (inkDirty) — and never
+ *  while the server has newer ones. Otherwise none: the push is
+ *  metadata-only and the server keeps its own (server/notebook.ts). Typing on
+ *  a page whose handwriting changed on another device must not put the old
+ *  strokes back. */
 async function inkForPush(o: string, page: NotebookPage): Promise<InkPage | null> {
-  if (page.deleted || inkStale.has(page.id)) return null;
+  if (page.deleted || inkStale.has(page.id) || !inkDirty.has(page.id)) return null;
   const cached = inkCache.get(page.id);
   if (cached) return cached;
   if (!storeOk) return null;
@@ -300,6 +318,10 @@ async function push(): Promise<void> {
       }
       const sent = new Map<string, number>();
       for (const item of items) sent.set(item.page.pageId, item.page.updatedAt);
+      // The strokes' generation each push carried: acknowledged, they are the
+      // server's — unless a stroke came in while they were on the way.
+      const inkSent = new Map<string, number>();
+      for (const item of items) if (item.ink && !item.page.deleted) inkSent.set(item.page.id, inkGen.get(item.page.id) || 0);
       let needPull = false;
       for (const batch of batches) {
         if (owner() !== o) return;   // the coach handed the tablet over mid-push
@@ -308,6 +330,7 @@ async function push(): Promise<void> {
         for (const s of ack.saved) {
           const p = cache.get(`${o}|${s.pageId}`);
           if (!p) continue;
+          if (inkSent.has(p.id) && (inkGen.get(p.id) || 0) === inkSent.get(p.id)) inkDirty.delete(p.id);
           // Compare-and-clear: a keystroke that landed while the request was in
           // flight bumped the version, and that version is still dirty.
           if (p.updatedAt !== sent.get(s.pageId)) { cache.set(p.id, { ...p, createdAt: s.createdAt || p.createdAt, savedAt: s.savedAt || p.savedAt }); continue; }
@@ -415,6 +438,9 @@ export async function pullIndex(opts: { force?: boolean } = {}): Promise<void> {
     // The stale mark goes into the store with the page, in one transaction: a
     // reload before the strokes are fetched must still know they are old.
     if (d.write) { cache.set(d.write.id, d.write); writes.push({ page: d.write, ink: d.dropInk ? null : undefined, inkStale: stale }); }
+    // A newer copy from the server won: what this device had changed on the
+    // page, its strokes included, is not pushed over it.
+    if (d.write === server) inkDirty.delete(server.id);
     if (d.dropInk) { inkCache.delete(server.id); inkIds.delete(server.id); inkStale.delete(server.id); bumpInk(server.id); }
     if (stale) { inkStale.add(server.id); bumpInk(server.id); }
   }
@@ -449,14 +475,14 @@ export function reset(): void {
   pushBackoffMs = 0; nextPushAt = 0; lastPullAt = 0;
   const o = owner();
   if (o && o !== 'admin' && o !== 'anon' && o !== booted) void boot(o);
-  else if (!o || o === 'admin' || o === 'anon') { cache.clear(); inkCache.clear(); inkIds.clear(); inkStale.clear(); booted = ''; if (config) config.onPages([]); setStatus({ loaded: true }); }
+  else if (!o || o === 'admin' || o === 'anon') { cache.clear(); inkCache.clear(); inkIds.clear(); inkStale.clear(); inkDirty.clear(); booted = ''; if (config) config.onPages([]); setStatus({ loaded: true }); }
 }
 
 export function stop(): void {
   void flushLocal();
   if (pushTimer) { window.clearTimeout(pushTimer); pushTimer = 0; }
   config = null; booted = '';
-  cache.clear(); inkCache.clear(); inkIds.clear(); inkStale.clear();
+  cache.clear(); inkCache.clear(); inkIds.clear(); inkStale.clear(); inkDirty.clear();
 }
 
 export function currentStatus(): PadSyncStatus { return status; }

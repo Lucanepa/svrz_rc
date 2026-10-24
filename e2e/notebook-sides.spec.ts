@@ -208,9 +208,17 @@ test('typed and handwritten on one page: both stay through a reload, and both tr
   expect(rows[0].text).toBe('Netz zu hoch');
   expect(rows[0].kind).toBe('text');
 
+  // Typed on again, the strokes the server already has stay home: the push
+  // says what changed, and the server keeps the strokes it holds.
+  const before = pushes.length;
+  await pageBox(page).fill('Netz zu hoch, Antenne schief');
+  await expect.poll(() => pushes.slice(before).flatMap((p) => p.pages).some((w) => w.text === 'Netz zu hoch, Antenne schief'), SYNC).toBe(true);
+  for (const w of pushes.slice(before).flatMap((p) => p.pages)) expect(w).not.toHaveProperty('ink');
+  await expect.poll(async () => (await storedPages(page))[0]?.dirty, SYNC).toBe(false);
+
   await page.reload();
   await openPad(page);
-  await expect(pageBox(page)).toHaveText('Netz zu hoch');
+  await expect(pageBox(page)).toHaveText('Netz zu hoch, Antenne schief');
   // The strip says the page has both sides; the switch marks the one not shown.
   const pill = sheet(page).locator('button[aria-current="page"]');
   await expect(pill.locator('[data-side="text"]')).toHaveCount(1);

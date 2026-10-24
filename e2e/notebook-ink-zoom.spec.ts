@@ -39,7 +39,8 @@ const stage = (page: Page) => sheet(page).getByTestId('ink-stage');
 const paper = (page: Page) => sheet(page).getByTestId('ink-page');
 const zoomIn = (page: Page) => sheet(page).getByRole('button', { name: /^(Vergrössern|Zoom in)$/ });
 const zoomOut = (page: Page) => sheet(page).getByRole('button', { name: /^(Verkleinern|Zoom out)$/ });
-const wholePage = (page: Page) => sheet(page).getByRole('button', { name: /^(Ganze Seite|Whole page)$/ });
+/** Named for what it shows first, the level, then what it does. */
+const wholePage = (page: Page) => sheet(page).getByRole('button', { name: /^\d+ % – (Ganze Seite|Whole page)$/ });
 
 async function openPenPage(page: Page): Promise<void> {
   await launcher(page).click();
@@ -257,6 +258,7 @@ test('the zoom buttons: in, the whole page, out; the canvases never grow', async
   await openPenPage(page);
   const width = () => stage(page).locator('canvas').first().evaluate((c: HTMLCanvasElement) => c.width);
   const w0 = await width();
+  await expect(sheet(page).getByTestId('ink-zoom')).toHaveAccessibleName(/^100 % – (Ganze Seite|Whole page)$/);
   await zoomIn(page).click();
   await zoomIn(page).click();
   await expect(stage(page)).toHaveAttribute('data-zoom', '2.25');
@@ -306,10 +308,17 @@ test('the zoom level is remembered on this device, and every page opens at its t
   await stubSignedInApp(page);
   await page.goto('/');
   await openPenPage(page);
-  await expect(sheet(page).getByText(/Mit zwei Fingern|Pinch with two fingers/)).toBeVisible();
+  // The two-finger hint is for a touch screen; a desktop keeps the line that
+  // says pen pages are not inserted.
+  const touchScreen = await page.evaluate(() => matchMedia('(any-pointer: coarse)').matches);
+  const zoomHint = sheet(page).getByText(/Mit zwei Fingern|Pinch with two fingers/);
+  const notInserted = sheet(page).getByText(/Stiftseiten werden nicht übernommen|Pen pages are not inserted/);
+  await expect(zoomHint).toHaveCount(touchScreen ? 1 : 0);
+  await expect(notInserted).toHaveCount(touchScreen ? 0 : 1);
   await zoomIn(page).click();
   await expect(stage(page)).toHaveAttribute('data-zoom', '1.50');
-  await expect(sheet(page).getByText(/Mit zwei Fingern|Pinch with two fingers/)).toHaveCount(0);
+  await expect(zoomHint).toHaveCount(0);
+  await expect(notInserted).toBeVisible();
   await fire(page, penLine(7, 0.3, 0.6, 0.5));
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
   // The stroke made the page; the view she is writing in stayed.

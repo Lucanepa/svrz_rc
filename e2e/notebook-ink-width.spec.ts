@@ -28,7 +28,7 @@ async function openPenPage(page: Page, viewport: { width: number; height: number
   await sheet(page).getByTestId('pad-new-ink').click();
   await expect(paper(page)).toBeVisible();
   if (whole) {
-    await sheet(page).getByRole('button', { name: /^(Ganze Seite|Whole page)$/ }).click();
+    await sheet(page).getByRole('button', { name: /(Ganze Seite|Whole page)$/ }).click();
     await expect(sheet(page).getByRole('button', { name: /^(Verkleinern|Zoom out)$/ })).toBeDisabled();
   } else {
     await expect(stage(page)).toHaveAttribute('data-zoom', '1.00');

@@ -132,8 +132,11 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     const stored = parseFloat(readPref(ZOOM_KEY) || '');
     zoomLevel.current = Number.isFinite(stored) && stored > 0 ? stored : 1;
   }
-  /** The two-finger hint shows until this device has zoomed once. */
+  /** The two-finger hint shows until this device has zoomed once, and only on
+   *  a device with a touch screen: on a desktop it said nothing true, and it
+   *  took the place of the line saying pen pages are not inserted. */
   const [zoomedOnce, setZoomedOnce] = useState(() => readPref(ZOOM_KEY) !== null);
+  const [touchScreen] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(any-pointer: coarse)').matches);
 
   const current = pages.find((p) => p.pageId === currentId) || null;
   // Before the boot's first pull has answered, an empty list is only the
@@ -357,6 +360,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     setInk(next);
   };
   const inkPage: InkPage = ink || { w: 1000, h: 1414, strokes: [] };
+  const zoomPct = `${Math.round((inkZoom ? inkZoom.z : 1) * 100)} %`;
   const onStrokeEnd = (stroke: InkStroke) => commitInk({ ...inkPage, strokes: [...inkPage.strokes, stroke] });
   const onErase = (strokes: InkStroke[]) => {
     const gone = new Set(strokes);
@@ -808,12 +812,15 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                         goes to the whole page. */}
                     <div role="group" aria-label={tp.padZoom} className="shrink-0 ml-auto inline-flex items-center gap-1">
                       <button type="button" onClick={() => inkControl.current?.zoomOut()} disabled={!inkZoom || inkZoom.z <= inkZoom.min + 0.001} aria-label={tp.padZoomOut} title={tp.padZoomOut} className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-stone-700 hover:bg-stone-50 disabled:opacity-40"><ZoomOut size={14} /></button>
-                      <button type="button" onClick={() => inkControl.current?.zoomFit()} disabled={!inkZoom} aria-label={tp.padZoomFit} title={tp.padZoomFit} data-testid="ink-zoom" className="h-9 min-w-[3.5rem] px-1.5 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-xs font-medium text-stone-700 tabular-nums hover:bg-stone-50 disabled:opacity-40">{`${Math.round((inkZoom ? inkZoom.z : 1) * 100)} %`}</button>
+                      {/* The name starts with what the button shows, so a screen
+                          reader says the level and voice control finds it by
+                          what is on it. */}
+                      <button type="button" onClick={() => inkControl.current?.zoomFit()} disabled={!inkZoom} aria-label={`${zoomPct} – ${tp.padZoomFit}`} title={tp.padZoomFit} data-testid="ink-zoom" className="h-9 min-w-[3.5rem] px-1.5 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-xs font-medium text-stone-700 tabular-nums hover:bg-stone-50 disabled:opacity-40">{zoomPct}</button>
                       <button type="button" onClick={() => inkControl.current?.zoomIn()} disabled={!inkZoom || inkZoom.z >= inkZoom.max - 0.001} aria-label={tp.padZoomIn} title={tp.padZoomIn} className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-stone-700 hover:bg-stone-50 disabled:opacity-40"><ZoomIn size={14} /></button>
                     </div>
                     <button type="button" onClick={toggleFinger} aria-pressed={fingerDraws} title={fingerDraws ? tp.padFingerOn : tp.padFingerOff} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1.5 rounded-lg border text-xs font-medium', fingerDraws ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><Hand size={14} /> {tp.padFinger}</button>
                   </div>
-                  <p className="px-4 pb-1 text-[11px] text-stone-500">{cancelled >= 2 ? tp.padScribbleHint : !zoomedOnce ? tp.padZoomHint : tp.padInkNotImported}</p>
+                  <p className="px-4 pb-1 text-[11px] text-stone-500">{cancelled >= 2 ? tp.padScribbleHint : !zoomedOnce && touchScreen ? tp.padZoomHint : tp.padInkNotImported}</p>
                 </div>
               )}
             </div>

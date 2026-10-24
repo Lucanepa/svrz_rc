@@ -33,6 +33,11 @@ export type SignaturePadStats = {
   palmRejected: number;
   /** Strokes the browser cancelled (Scribble, a system gesture). */
   cancels: number;
+  /** The widest touch contact that drew, in CSS px (0: none). With the next
+   *  one it brackets the palm limit, which rests on community figures. */
+  touchMaxPx: number;
+  /** The narrowest touch contact refused or cut as too big (0: none). */
+  tooBigMinPx: number;
 };
 
 export type SignaturePadHandle = {
@@ -65,7 +70,10 @@ const SIZE = 6;
 // satisfy the mandatory-signature check.
 const MIN_INK_UNITS = 20;
 const PEN_TRAILING_MS = 500;   // touch stays ignored this long after the pen moved
-const PALM_PURGE_MS = 1000;    // touch strokes this recent are the hand that came down ahead of the pen
+const PALM_PURGE_MS = 1000;    // touch strokes on the glass this recently are the hand that came down ahead of the pen
+// A contact that grows past a fingertip this soon after landing is a palm
+// settling; later, it is a finger pressed flat while signing.
+const PALM_SETTLE_MS = 150;
 // WebKit reports a contact's width as twice its major radius: about 42 px for
 // a light fingertip, hundreds for a palm. InkPad's 40 would refuse a finger.
 const PALM_MAX_CONTACT_PX = 80;
@@ -112,17 +120,19 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
   const strokesRef = useRef<SigStroke[]>(initialStrokes ? [...initialStrokes] : []);
   const historyRef = useRef<SigStroke[][]>([]);
   const pathsRef = useRef(new WeakMap<SigStroke, Path2D | null>());
-  // When each touch stroke of THIS mount started, for the purge at the first
-  // pen-down. A draft's strokes have no entry, so they are never purged.
-  const touchStartedRef = useRef(new WeakMap<SigStroke, number>());
+  // When each touch stroke of THIS mount was last on the glass, for the purge
+  // at the first pen-down, and its widest contact, for the stats. A draft's
+  // strokes have no entry, so they are never purged.
+  const touchSeenRef = useRef(new WeakMap<SigStroke, number>());
+  const touchWidthRef = useRef(new WeakMap<SigStroke, number>());
   // Everything about the stroke in progress lives in refs: the pointer
   // handlers are attached once and must not close over a render.
-  const activeRef = useRef<{ pointerId: number; stroke: SigStroke; lastP: number } | null>(null);
+  const activeRef = useRef<{ pointerId: number; stroke: SigStroke; lastP: number; t0: number } | null>(null);
   const penAtRef = useRef(-Infinity);
   // Per mount, so per dialog: the referee can sign with a finger right after
   // the coach signed with the Pencil.
   const penLockRef = useRef(false);
-  const countsRef = useRef({ palmRejected: 0, cancels: 0 });
+  const countsRef = useRef({ palmRejected: 0, cancels: 0, tooBigMinPx: 0 });
   const rafRef = useRef(0);
   const propsRef = useRef({ onChange, onPenLockChange, fingerToo: !!fingerToo });
   propsRef.current = { onChange, onPenLockChange, fingerToo: !!fingerToo };
@@ -194,7 +204,18 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
       return [((e.clientX - rect.left) / rect.width) * PAD_W, ((e.clientY - rect.top) / rect.height) * PAD_H];
     };
     // Only when the browser reports a size at all; a mouse or a pen reports 1 or 0.
-    const tooBig = (e: PointerEvent) => e.width > PALM_MAX_CONTACT_PX || e.height > PALM_MAX_CONTACT_PX;
+    const tooBig = (e: PointerEvent) => {
+      if (e.width <= PALM_MAX_CONTACT_PX && e.height <= PALM_MAX_CONTACT_PX) return false;
+      const px = Math.round(Math.max(e.width, e.height));
+      const counts = countsRef.current;
+      if (!counts.tooBigMinPx || px < counts.tooBigMinPx) counts.tooBigMinPx = px;
+      return true;
+    };
+    const noteTouch = (stroke: SigStroke, e: PointerEvent) => {
+      touchSeenRef.current.set(stroke, performance.now());
+      const px = Math.max(e.width || 0, e.height || 0);
+      if (px > (touchWidthRef.current.get(stroke) ?? 0)) touchWidthRef.current.set(stroke, px);
+    };
     const schedule = () => {
       if (!rafRef.current) rafRef.current = requestAnimationFrame(() => { rafRef.current = 0; render(); });
     };
@@ -220,11 +241,11 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
     const start = (e: PointerEvent, by: SigStroke['by']) => {
       e.preventDefault();
       const stroke: SigStroke = { by, pts: [] };
-      const active = { pointerId: e.pointerId, stroke, lastP: 0 };
+      const active = { pointerId: e.pointerId, stroke, lastP: 0, t0: performance.now() };
       activeRef.current = active;
       const [x, y] = toPad(e);
       addSample(active, x, y, e.pressure);
-      if (by === 'touch') touchStartedRef.current.set(stroke, performance.now());
+      if (by === 'touch') noteTouch(stroke, e);
       // Capture AFTER the stroke started: setPointerCapture throws NotFoundError
       // for a pointer that is not active (every synthetic dispatch), and
       // unguarded it filed a js.error.
@@ -240,17 +261,49 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
       render();
     };
 
+    // Ends the stroke in progress, committed synchronously: a Save tapped right
+    // after the pointer lifts must already see it. 'lost' is a stroke whose up
+    // and cancel never came.
+    const end = (how: 'up' | 'cancel' | 'lost') => {
+      const active = activeRef.current;
+      if (!active) return;
+      if (active.stroke.by === 'pen') penAtRef.current = performance.now();
+      activeRef.current = null;
+      try { canvas.releasePointerCapture(active.pointerId); } catch { /* not captured */ }
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
+      const pts = active.stroke.pts;
+      if (how === 'cancel') {
+        countsRef.current.cancels += 1;
+        // A pen or mouse stroke the system took over was real writing up to
+        // that point. A cancelled touch is far more often the system deciding
+        // it was a palm, so it goes.
+        if (active.stroke.by === 'touch' || pts.length < 6) { render(); return; }
+      }
+      if (how === 'lost' && pts.length < 6) { render(); return; }
+      // A tap is one sample; a second one makes it a dot instead of nothing.
+      if (pts.length === 3) pts.push(pts[0] + 0.5, pts[1], pts[2]);
+      if (active.stroke.by === 'touch') touchSeenRef.current.set(active.stroke, performance.now());
+      commit([...strokesRef.current, active.stroke]);
+    };
+
     const down = (e: PointerEvent) => {
       const now = performance.now();
+      // A pen or a mouse going down while a pen or mouse stroke is still open:
+      // that stroke lost its up and its cancel, since nobody holds two. It ends
+      // with what it drew. Before, it blocked every later stroke until Löschen,
+      // which on an iPad would read as "the Pencil stopped writing".
+      const open = activeRef.current;
+      if ((e.pointerType === 'pen' || e.pointerType === 'mouse') && open && open.stroke.by !== 'touch') end('lost');
       if (e.pointerType === 'pen') {
         penAtRef.current = now;
-        const active = activeRef.current;
-        if (active && active.stroke.by !== 'touch') return;
         // The palm landed first and started a "stroke"; the pen is the writer.
-        if (active) { countsRef.current.palmRejected += 1; dropActive(); }
+        if (activeRef.current) { countsRef.current.palmRejected += 1; dropActive(); }
         if (!penLockRef.current) {
           penLockRef.current = true;
-          const recent = new Set(strokesRef.current.filter((s) => s.by === 'touch' && now - (touchStartedRef.current.get(s) ?? -Infinity) < PALM_PURGE_MS));
+          // Measured from when each touch was last on the glass, not from when
+          // it began: a heel of the hand that rested a while and lifted as the
+          // pen landed is the same hand.
+          const recent = new Set(strokesRef.current.filter((s) => s.by === 'touch' && now - (touchSeenRef.current.get(s) ?? -Infinity) < PALM_PURGE_MS));
           if (recent.size) {
             countsRef.current.palmRejected += recent.size;
             historyRef.current = historyRef.current.map((list) => list.filter((s) => !recent.has(s)));
@@ -281,11 +334,26 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
       // a hand resting while the pen hovers is still the writing hand.
       if (e.pointerType === 'pen') penAtRef.current = performance.now();
       const active = activeRef.current;
-      // Gated on the tracked pointer, never on e.buttons (synthetic moves carry 0).
-      if (!active || e.pointerId !== active.pointerId) return;
+      if (!active) return;
+      // A real pen or mouse moving with no button and no pressure is not on
+      // the glass, so its stroke's up got lost (the Pencil hovering after it, a
+      // mouse released outside the window). Trusted events only: synthetic
+      // moves carry buttons 0, which is also why drawing is gated on the
+      // tracked pointer and never on e.buttons.
+      if (e.isTrusted && active.stroke.by !== 'touch' && e.pointerType === active.stroke.by && e.buttons === 0 && e.pressure === 0) { end('up'); return; }
+      if (e.pointerId !== active.pointerId) return;
       e.preventDefault();
-      // A contact that spreads past a fingertip mid-stroke is a palm settling.
-      if (active.stroke.by === 'touch' && tooBig(e)) { countsRef.current.palmRejected += 1; dropActive(); return; }
+      if (active.stroke.by === 'touch') {
+        if (tooBig(e)) {
+          // Right after landing, a contact that spreads past a fingertip is a
+          // palm settling, and its "stroke" goes. Later, it is a finger pressed
+          // flat while signing: the line stops there and keeps what it drew,
+          // where it used to vanish whole.
+          if (performance.now() - active.t0 < PALM_SETTLE_MS) { countsRef.current.palmRejected += 1; dropActive(); } else end('up');
+          return;
+        }
+        noteTouch(active.stroke, e);
+      }
       const list = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
       for (const ev of (list.length ? list : [e])) {
         const [x, y] = toPad(ev);
@@ -294,30 +362,11 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
       schedule();
     };
 
-    // Committed synchronously: a Save tapped right after the pointer lifts must
-    // already see the stroke.
-    const finish = (e: PointerEvent, cancelled: boolean) => {
-      const active = activeRef.current;
-      if (!active || e.pointerId !== active.pointerId) return;
-      if (active.stroke.by === 'pen') penAtRef.current = performance.now();
-      activeRef.current = null;
-      try { canvas.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
-      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
-      const pts = active.stroke.pts;
-      if (cancelled) {
-        countsRef.current.cancels += 1;
-        // A pen or mouse stroke the system took over was real writing up to
-        // that point. A cancelled touch is far more often the system deciding
-        // it was a palm, so it goes.
-        if (active.stroke.by === 'touch' || pts.length < 6) { render(); return; }
-      }
-      // A tap is one sample; a second one makes it a dot instead of nothing.
-      if (pts.length === 3) pts.push(pts[0] + 0.5, pts[1], pts[2]);
-      commit([...strokesRef.current, active.stroke]);
+    const finish = (e: PointerEvent, how: 'up' | 'cancel') => {
+      if (activeRef.current?.pointerId === e.pointerId) end(how);
     };
-
-    const up = (e: PointerEvent) => finish(e, false);
-    const cancel = (e: PointerEvent) => finish(e, true);
+    const up = (e: PointerEvent) => finish(e, 'up');
+    const cancel = (e: PointerEvent) => finish(e, 'cancel');
     // The documented iPadOS Scribble workaround: a touchmove that is not
     // prevented lets the system claim the gesture (see InkPad.tsx).
     const touchMove = (e: TouchEvent) => { if (activeRef.current) e.preventDefault(); };
@@ -399,7 +448,10 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
     isBusy: () => !!activeRef.current || performance.now() - penAtRef.current < PEN_TRAILING_MS,
     stats: () => {
       const by = (kind: SigStroke['by']) => strokesRef.current.filter((s) => s.by === kind).length;
-      return { pen: by('pen'), touch: by('touch'), mouse: by('mouse'), penLock: penLockRef.current, ...countsRef.current };
+      // Of the touch strokes in the signature, so a palm purged at the first
+      // pen-down does not count as a finger.
+      const touchMaxPx = Math.round(Math.max(0, ...strokesRef.current.map((s) => touchWidthRef.current.get(s) ?? 0)));
+      return { pen: by('pen'), touch: by('touch'), mouse: by('mouse'), penLock: penLockRef.current, ...countsRef.current, touchMaxPx };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), []);

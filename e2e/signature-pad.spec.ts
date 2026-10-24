@@ -342,6 +342,83 @@ test.describe('the pen and the palm', () => {
     await expect(signatureDialog(page)).toHaveCount(0);
     await expect(rcSig(page)).toBeVisible();
   });
+
+  test('a touch stroke on the glass until just before the pen is purged, however long ago it began', async ({ page }) => {
+    const touch = { pointerType: 'touch', pointerId: 32, isPrimary: true, width: 30, height: 30 };
+    await burst(page, [
+      { pad: 'pointerdown', init: touch, at: [0.1, 0.8] },
+      { pad: 'pointermove', init: touch, at: [0.2, 0.8] },
+      // The heel of the hand rests a while, a pinky trailing…
+      { wait: 1200 },
+      { pad: 'pointermove', init: touch, at: [0.3, 0.8] },
+      { pad: 'pointerup', init: touch, at: [0.3, 0.8] },
+      // …and lifts just as the pen lands.
+      ...padSteps(PEN, line(0.2)),
+    ]);
+    expect(await inkAt(page, 0.15, 0.8)).toBe(false);
+    expect(await inkAt(page, 0.5, 0.2)).toBe(true);
+  });
+
+  test('a pen stroke whose pointerup never came does not block the next pen or the mouse', async ({ page }) => {
+    await burst(page, [
+      // Its up and its cancel both lost (the app switcher, a system sheet).
+      ...padSteps({ ...PEN, pointerId: 101 }, line(0.2, 0.1, 0.4, 4), false),
+      ...padSteps({ ...PEN, pointerId: 102 }, line(0.5)),
+    ]);
+    expect(await inkAt(page, 0.25, 0.2)).toBe(true);
+    expect(await inkAt(page, 0.7, 0.5)).toBe(true);
+    await page.waitForTimeout(600);
+    await mouseStroke(page, 0.1, 0.9, 0.85);
+    expect(await inkAt(page, 0.5, 0.775)).toBe(true);
+  });
+
+  test('a real pointer moving with no button pressed ends a stroke whose up was lost, and draws nothing', async ({ page }) => {
+    // The stroke starts synthetic (no up will come)…
+    await burst(page, padSteps({ pointerType: 'mouse', pointerId: 1, isPrimary: true, button: 0 }, line(0.2, 0.1, 0.4, 4), false));
+    // …then a real (trusted) move with no button down, as a pen hovering or
+    // a mouse released outside the window reports it.
+    const box = (await pad(page).boundingBox())!;
+    await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.7);
+    await page.mouse.move(box.x + box.width * 0.8, box.y + box.height * 0.7, { steps: 8 });
+    expect(await inkAt(page, 0.5, 0.7)).toBe(false);
+    expect(await inkAt(page, 0.25, 0.2)).toBe(true);
+    // The stroke was kept: Save works, and a new stroke draws.
+    await expect(saveButton(page)).toBeEnabled();
+    await mouseStroke(page, 0.1, 0.9, 0.95);
+    expect(await inkAt(page, 0.5, 0.875)).toBe(true);
+  });
+
+  test('a finger pressed flat mid-stroke stops the line there and keeps what it drew; a contact that spreads at once is a palm', async ({ page }) => {
+    const finger = { pointerType: 'touch', pointerId: 70, isPrimary: true, width: 40, height: 40 };
+    await burst(page, [
+      ...padSteps(finger, line(0.3, 0.1, 0.4, 4), false),
+      { wait: 250 },
+      { pad: 'pointermove', init: { ...finger, width: 120, height: 120 }, at: [0.5, 0.3] },
+      { pad: 'pointermove', init: { ...finger, width: 120, height: 120 }, at: [0.8, 0.3] },
+      { pad: 'pointerup', init: { ...finger, width: 120, height: 120 }, at: [0.8, 0.3] },
+    ]);
+    expect(await inkAt(page, 0.25, 0.3)).toBe(true);
+    expect(await inkAt(page, 0.7, 0.3)).toBe(false);
+
+    // A contact that spreads past a fingertip right as it lands is a palm settling.
+    const palm = { pointerType: 'touch', pointerId: 71, isPrimary: true, width: 40, height: 40 };
+    await burst(page, [
+      { pad: 'pointerdown', init: palm, at: [0.1, 0.8] },
+      { pad: 'pointermove', init: palm, at: [0.2, 0.8] },
+      { pad: 'pointermove', init: { ...palm, width: 200, height: 200 }, at: [0.25, 0.8] },
+      { pad: 'pointerup', init: { ...palm, width: 200, height: 200 }, at: [0.25, 0.8] },
+    ]);
+    expect(await inkAt(page, 0.15, 0.8)).toBe(false);
+
+    await saveButton(page).click();
+    await expect(rcSig(page)).toBeVisible();
+    const saved = await page.evaluate(() => {
+      const w = window as unknown as { svrzLogs?: () => { evt: string; data?: Record<string, unknown> }[] };
+      return (w.svrzLogs ? w.svrzLogs() : []).filter((e) => e.evt === 'sig.saved');
+    });
+    // The contact sizes either side of the palm limit, to calibrate it on real iPads.
+    expect(saved[0].data).toMatchObject({ touch: 1, touchMaxPx: 40, tooBigMinPx: 120 });
+  });
 });
 
 test('a finger signs alone in a fresh dialog, right after the coach used the pen', async ({ page }) => {

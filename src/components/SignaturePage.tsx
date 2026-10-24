@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Check, Eraser, Undo2 } from 'lucide-react';
+import { Loader2, Check, Eraser, Hand, Undo2 } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import SignaturePad, { isSignatureEmpty, type SigStroke, type SignaturePadHandle } from './SignaturePad';
 import { getSignatureSession, submitSignatureSession } from '../lib/pocketbase';
+import { cn } from '../lib/utils';
+
+// A little narrower on a phone, as in the coach's dialog, and Confirm drops its
+// check mark there: with the finger switch in the row, "Bestätigen / Confirm"
+// still fits on one line at 360 px (it was 7 px short with the mark).
+const iconButton = 'inline-flex shrink-0 items-center justify-center h-10 w-9 sm:w-10 rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-100 disabled:opacity-40';
 
 function slugFromHash(): string { const m = window.location.hash.match(/#\/sign\/([A-Za-z0-9]+)/); return m ? m[1] : ''; }
 
@@ -17,6 +23,12 @@ export default function SignaturePage() {
   const [saveError, setSaveError] = useState(false);
   const [strokes, setStrokes] = useState<SigStroke[]>([]);
   const [canUndo, setCanUndo] = useState(false);
+  // The pad's pen lock, as in the coach's dialog: after a pen (an S Pen, a
+  // Pencil on the referee's iPad), only the pen draws until the signer allows
+  // the finger. Without the hint and the switch, a finger stroke after any pen
+  // contact was refused with nothing on screen to say why (24.10.2026).
+  const [penLock, setPenLock] = useState(false);
+  const [fingerToo, setFingerToo] = useState(false);
 
   useEffect(() => {
     if (!slug) { setState('error'); return; }
@@ -53,16 +65,26 @@ export default function SignaturePage() {
                   close to an editable element. */}
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" className="h-10 w-full px-3 mb-4 text-sm rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-red-500" />
               {/* The buttons above the pad, as in the app's dialog: under it
-                  they sat where the writing hand rests (23.10.2026). */}
-              <div className="flex items-center gap-2 mb-2">
-                <button type="button" onClick={() => padRef.current?.undo()} disabled={!canUndo} aria-label="Rückgängig / Undo" title="Rückgängig / Undo" className="inline-flex items-center justify-center h-10 w-10 rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-100 disabled:opacity-40"><Undo2 size={16} /></button>
-                <button type="button" onClick={() => padRef.current?.clear()} disabled={strokes.length === 0} aria-label="Löschen / Clear" title="Löschen / Clear" className="inline-flex items-center justify-center h-10 w-10 rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-100 disabled:opacity-40"><Eraser size={16} /></button>
-                <button type="button" onClick={save} disabled={state === 'saving' || isSignatureEmpty(strokes)} className="flex-1 inline-flex items-center justify-center gap-2 h-10 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:bg-stone-300">{state === 'saving' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check size={16} />} Bestätigen / Confirm</button>
+                  they sat where the writing hand rests (23.10.2026). The
+                  finger switch too, at the same height, so it appears after
+                  the first pen stroke without moving the pad. */}
+              <div className="flex items-center gap-1.5 sm:gap-2 mb-2">
+                <button type="button" onClick={() => padRef.current?.undo()} disabled={!canUndo} aria-label="Rückgängig / Undo" title="Rückgängig / Undo" className={iconButton}><Undo2 size={16} /></button>
+                <button type="button" onClick={() => padRef.current?.clear()} disabled={strokes.length === 0} aria-label="Löschen / Clear" title="Löschen / Clear" className={iconButton}><Eraser size={16} /></button>
+                {penLock && (
+                  <button type="button" aria-pressed={fingerToo} onClick={() => setFingerToo((v) => !v)} aria-label="Auch mit Finger / Finger too" title="Finger zeichnet auch / Finger draws too" className={cn(iconButton, fingerToo && 'border-stone-800 bg-stone-800 text-white hover:bg-stone-700')}><Hand size={16} /></button>
+                )}
+                <button type="button" onClick={save} disabled={state === 'saving' || isSignatureEmpty(strokes)} className="flex-1 min-w-0 inline-flex items-center justify-center gap-1.5 h-10 px-2 rounded-lg bg-red-600 text-white text-sm font-semibold whitespace-nowrap hover:bg-red-700 disabled:bg-stone-300">{state === 'saving' ? <Loader2 className="h-4 w-4 animate-spin shrink-0" /> : <Check size={16} className="hidden sm:block shrink-0" />}<span className="truncate">Bestätigen / Confirm</span></button>
               </div>
               <div className="rounded-lg border-2 border-dashed border-stone-300 bg-stone-50/50 overflow-hidden">
-                <SignaturePad ref={padRef} onChange={(next, undoable) => { setStrokes(next); setCanUndo(undoable); }} />
+                <SignaturePad ref={padRef} onChange={(next, undoable) => { setStrokes(next); setCanUndo(undoable); }} onPenLockChange={setPenLock} fingerToo={fingerToo} />
               </div>
-              <p className="text-[11px] text-stone-400 mt-1.5">Im Feld oben unterschreiben / Sign in the box above.</p>
+              {/* Text only: nothing to press where the writing hand rests. */}
+              <p className="text-[11px] text-stone-400 mt-1.5">
+                {penLock
+                  ? <>Stift erkannt — nur der Stift zeichnet.<br />Pen detected — only the pen draws.</>
+                  : 'Im Feld oben unterschreiben / Sign in the box above.'}
+              </p>
             </>
           )}
         </div>

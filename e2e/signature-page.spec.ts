@@ -39,6 +39,15 @@ async function penStroke(page: Page) {
   await page.evaluate((b) => { window.dispatchEvent(new PointerEvent('pointerup', b)); }, { ...base, buttons: 0, ...at(0.94, 0.5) });
 }
 
+async function touchStroke(page: Page, y: number, pointerId: number) {
+  const box = (await pad(page).boundingBox())!;
+  const at = (fx: number) => ({ clientX: box.x + box.width * fx, clientY: box.y + box.height * y });
+  const base = { bubbles: true, cancelable: true, isPrimary: true, buttons: 1, pointerType: 'touch', pointerId, width: 30, height: 30 };
+  await pad(page).dispatchEvent('pointerdown', { ...base, ...at(0.1) });
+  for (let i = 1; i <= 8; i++) await pad(page).dispatchEvent('pointermove', { ...base, ...at(0.1 + 0.1 * i) });
+  await page.evaluate((b) => { window.dispatchEvent(new PointerEvent('pointerup', b)); }, { ...base, buttons: 0, ...at(0.9) });
+}
+
 /** Routes the page's two signature calls; POSTs answer with `status()`. */
 async function stubSession(page: Page, status: () => number = () => 200) {
   const posted: { data: string; signer: string }[] = [];
@@ -127,4 +136,50 @@ test('a send that fails keeps the strokes, and Confirm again sends them', async 
   await confirmButton(page).click();
   await expect(page.getByText('Unterschrift gespeichert.')).toBeVisible();
   expect(posted).toHaveLength(1);
+});
+
+// A pen on the referee's device (an S Pen, a Pencil) locks the pad to the pen,
+// as in the coach's dialog. Before, nothing said so and nothing undid it: a
+// finger stroke after any pen contact was refused in silence (24.10.2026).
+test('after a pen, the page says only the pen draws, and "Finger too" above the pad lets a finger sign', async ({ page }) => {
+  await stubSession(page);
+  await page.goto(`/#/sign/${SLUG}`);
+  await expect(pad(page)).toBeVisible();
+  const toggle = page.getByRole('button', { name: 'Auch mit Finger / Finger too' });
+  await expect(toggle).toHaveCount(0);
+  const before = (await pad(page).boundingBox())!;
+  await penStroke(page);
+  await expect(page.getByText(/Stift erkannt — nur der Stift zeichnet\.\s*Pen detected — only the pen draws\./)).toBeVisible();
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(toggle).toHaveAttribute('title', 'Finger zeichnet auch / Finger draws too');
+  // In the row above the pad, and the pad did not move when it appeared.
+  const box = (await pad(page).boundingBox())!;
+  expect(Math.abs(box.y - before.y)).toBeLessThan(0.5);
+  expect((await toggle.boundingBox())!.y + (await toggle.boundingBox())!.height).toBeLessThanOrEqual(box.y);
+  await expect(confirmButton(page)).toBeInViewport();
+  expect(await confirmButton(page).evaluate((b) => [...b.querySelectorAll('span')].every((el) => el.scrollWidth <= el.clientWidth))).toBe(true);
+
+  await page.waitForTimeout(600);
+  const pen = await inkCount(page);
+  await touchStroke(page, 0.85, 40);
+  expect(await inkCount(page)).toBe(pen);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.waitForTimeout(600);
+  await touchStroke(page, 0.85, 41);
+  expect(await inkCount(page)).toBeGreaterThan(pen);
+});
+
+test.describe('on a 360 px phone', () => {
+  test.use({ viewport: { width: 360, height: 740 } });
+  test('with the finger switch in the row, Confirm keeps its whole label and nothing scrolls sideways', async ({ page }) => {
+    await stubSession(page);
+    await page.goto(`/#/sign/${SLUG}`);
+    await expect(pad(page)).toBeVisible();
+    await penStroke(page);
+    await expect(page.getByRole('button', { name: 'Auch mit Finger / Finger too' })).toBeVisible();
+    expect(await confirmButton(page).evaluate((b) => [...b.querySelectorAll('span')].every((el) => el.scrollWidth <= el.clientWidth))).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+  });
 });

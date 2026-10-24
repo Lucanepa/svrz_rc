@@ -46,7 +46,9 @@ export type SignaturePadHandle = {
   undo(): void;
   isEmpty(): boolean;
   toDataURL(): string;
-  /** A stroke is in progress, or the pen was active a moment ago. */
+  /** A stroke is in progress, or the pen was on the glass a moment ago. A
+   *  hovering pen does not count: this is what the dialog's buttons ask, and
+   *  the other hand's deliberate tap must work while the Pencil hovers. */
   isBusy(): boolean;
   stats(): SignaturePadStats;
 };
@@ -128,7 +130,13 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
   // Everything about the stroke in progress lives in refs: the pointer
   // handlers are attached once and must not close over a render.
   const activeRef = useRef<{ pointerId: number; stroke: SigStroke; lastP: number; t0: number } | null>(null);
+  /** The pen's last event, hover included: a touch on the pad this soon after
+   *  is the writing hand. */
   const penAtRef = useRef(-Infinity);
+  /** The pen's last contact (down, a move while touching, up), hover not
+   *  included: what isBusy() and so the dialog's buttons go by, as the
+   *  notebook's InkPad does with its penContactAt (24.10.2026). */
+  const penContactAtRef = useRef(-Infinity);
   // Per mount, so per dialog: the referee can sign with a finger right after
   // the coach signed with the Pencil.
   const penLockRef = useRef(false);
@@ -267,7 +275,7 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
     const end = (how: 'up' | 'cancel' | 'lost') => {
       const active = activeRef.current;
       if (!active) return;
-      if (active.stroke.by === 'pen') penAtRef.current = performance.now();
+      if (active.stroke.by === 'pen') { penAtRef.current = performance.now(); penContactAtRef.current = penAtRef.current; }
       activeRef.current = null;
       try { canvas.releasePointerCapture(active.pointerId); } catch { /* not captured */ }
       if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
@@ -296,6 +304,7 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
       if ((e.pointerType === 'pen' || e.pointerType === 'mouse') && open && open.stroke.by !== 'touch') end('lost');
       if (e.pointerType === 'pen') {
         penAtRef.current = now;
+        penContactAtRef.current = now;
         // The palm landed first and started a "stroke"; the pen is the writer.
         if (activeRef.current) { countsRef.current.palmRejected += 1; dropActive(); }
         if (!penLockRef.current) {
@@ -330,10 +339,14 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
     };
 
     const move = (e: PointerEvent) => {
-      // Hover counts: an M2 iPad Pro reports the Pencil above the glass, and
-      // a hand resting while the pen hovers is still the writing hand.
-      if (e.pointerType === 'pen') penAtRef.current = performance.now();
       const active = activeRef.current;
+      // Hover counts for the pad: an M2 iPad Pro reports the Pencil above the
+      // glass, and a hand resting while the pen hovers is still the writing
+      // hand. For the buttons only a pen on the glass counts.
+      if (e.pointerType === 'pen') {
+        penAtRef.current = performance.now();
+        if (e.buttons > 0 || active?.pointerId === e.pointerId) penContactAtRef.current = penAtRef.current;
+      }
       if (!active) return;
       // A real pen or mouse moving with no button and no pressure is not on
       // the glass, so its stroke's up got lost (the Pencil hovering after it, a
@@ -445,7 +458,7 @@ const SignaturePad = forwardRef<SignaturePadHandle, Props>(function SignaturePad
     },
     isEmpty: () => isSignatureEmpty(strokesRef.current),
     toDataURL: () => exportPng(strokesRef.current, EXPORT_PX_PER_UNIT),
-    isBusy: () => !!activeRef.current || performance.now() - penAtRef.current < PEN_TRAILING_MS,
+    isBusy: () => !!activeRef.current || performance.now() - penContactAtRef.current < PEN_TRAILING_MS,
     stats: () => {
       const by = (kind: SigStroke['by']) => strokesRef.current.filter((s) => s.by === kind).length;
       // Of the touch strokes in the signature, so a palm purged at the first

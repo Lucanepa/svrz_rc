@@ -365,6 +365,41 @@ test.describe('the pen and the palm', () => {
     await expect(rcSig(page)).toHaveCount(0);
   });
 
+  // An M2 iPad Pro reports the Pencil above the glass (buttons 0, pressure 0).
+  // A hovering pen is the writing hand for the pad, not for the buttons: the
+  // other hand's deliberate tap on Save must not look dead (24.10.2026).
+  test('a finger tap on Save while the Pencil only hovers over the pad saves', async ({ page }) => {
+    const save = saveButton(page);
+    await stroke(page, PEN, line(0.4));
+    await page.waitForTimeout(800);
+    await burst(page, [
+      { pad: 'pointermove', init: { ...PEN, buttons: 0, pressure: 0 }, at: [0.5, 0.6] },
+      { el: 'save', type: 'pointerdown', init: { pointerType: 'touch', pointerId: 54, isPrimary: true } },
+      { el: 'save', type: 'pointerup', init: { pointerType: 'touch', pointerId: 54, isPrimary: true } },
+      { el: 'save', type: 'click' },
+    ], { save });
+    await expect(signatureDialog(page)).toHaveCount(0);
+    await expect(rcSig(page)).toBeVisible();
+  });
+
+  test('a hovering Pencil still keeps a touch on the pad from drawing, with "Finger too" on', async ({ page }) => {
+    await stroke(page, PEN, line(0.2));
+    await page.waitForTimeout(600);
+    const toggle = signatureDialog(page).getByRole('button', { name: /^(Finger too|Auch mit Finger)$/ });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    const finger = { pointerType: 'touch', pointerId: 55, isPrimary: true, width: 30, height: 30 };
+    await page.waitForTimeout(600);
+    await burst(page, [
+      { pad: 'pointermove', init: { ...PEN, buttons: 0, pressure: 0 }, at: [0.5, 0.4] },
+      ...padSteps(finger, line(0.7)),
+    ]);
+    expect(await inkAt(page, 0.5, 0.7)).toBe(false);
+    await page.waitForTimeout(600);
+    await stroke(page, { ...finger, pointerId: 56 }, line(0.7));
+    expect(await inkAt(page, 0.5, 0.7)).toBe(true);
+  });
+
   test('a palm that touched "Finger too" before the pen came down cannot switch it while the pen writes', async ({ page }) => {
     await stroke(page, PEN, line(0.2));
     const toggle = signatureDialog(page).getByRole('button', { name: /^(Finger too|Auch mit Finger)$/ });

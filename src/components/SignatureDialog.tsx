@@ -144,8 +144,10 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
   // a palm resting on Save saved half a signature when it lifted. A click is
   // matched to the pointer that went down on what it hits (its own pointerType
   // reads "mouse" after a tap in WebKit), and a touch's click is swallowed if
-  // the pen was busy when it went down or is busy now. A Pencil tap on a
-  // button always counts.
+  // the pen was busy when it went down or is busy now. Busy means on the glass
+  // within the pen's trailing window; a Pencil hovering over the pad is not
+  // (24.10.2026: Save looked dead to the other hand while the pen hovered).
+  // A Pencil tap on a button always counts.
   const downsRef = useRef<{ type: string; target: Node; busy: boolean; at: number }[]>([]);
   const onPointerDownCapture = (e: ReactPointerEvent) => {
     const target = e.target as Node;

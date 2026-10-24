@@ -212,6 +212,45 @@ test('with the finger off, one finger moves the page and draws nothing', async (
   expect(await storedPages(page)).toHaveLength(0);
 });
 
+test('a resting hand: of two still contacts one lifts, and the other drifting a little moves nothing; its move just before the pen is undone', async ({ page }) => {
+  await page.addInitScript(() => { try { localStorage.setItem('svrz_ink_finger', '0'); } catch { /* private mode */ } });
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await zoomIn(page).click();
+  await expect(stage(page)).toHaveAttribute('data-zoom', '1.50');
+  const s = await box(page, 'stage'); const p0 = await box(page, 'paper');
+  const px = (n: number) => n / s.width; const py = (n: number) => n / s.height;
+  const hand = (ids: [number, number]): Step[] => [
+    { type: 'down', id: ids[0], kind: 'touch', fx: 0.5, fy: 0.6, size: 40 },
+    { type: 'down', id: ids[1], kind: 'touch', fx: 0.56, fy: 0.6, size: 40 },
+    { type: 'up', id: ids[0], kind: 'touch', fx: 0.5, fy: 0.6, size: 40 },
+  ];
+  const drift = (id: number, by: number): Step => ({ type: 'move', id, kind: 'touch', fx: 0.56 + px(by), fy: 0.6 + py(by), size: 40 });
+  // Two contacts that never moved the page, one lifts, the other drifts 4 px
+  // (up and left: the page opens at its top-left corner and goes no further):
+  // under the slop, so the page stays. It used to follow from the first pixel.
+  await fire(page, [...hand([21, 22]), drift(22, -4), { type: 'up', id: 22, kind: 'touch', fx: 0.56, fy: 0.6, size: 40 }]);
+  await page.waitForTimeout(100);
+  const p1 = await box(page, 'paper');
+  expect(Math.abs(p1.x - p0.x)).toBeLessThan(0.01);
+  expect(Math.abs(p1.y - p0.y)).toBeLessThan(0.01);
+  // Past the slop it moves the page, as one finger does.
+  await fire(page, [...hand([23, 24]), drift(24, -4), drift(24, -30), { type: 'up', id: 24, kind: 'touch', fx: 0.56, fy: 0.6, size: 40 }]);
+  await expect.poll(async () => p0.y - (await box(page, 'paper')).y).toBeGreaterThan(10);
+  const p2 = await box(page, 'paper');
+  // The same, with the pen landing right after: the hand came first, and what
+  // it moved is put back (the undo never fired for a pinch turned pan). The
+  // stroke says where the page was when the pen landed; the paper itself may
+  // shift a little later, when the page the stroke made adds its meta line.
+  const anchor = [((s.x + s.width * 0.3 - p2.x) / p2.width) * 1000, ((s.y + s.height * 0.3 - p2.y) / p2.height) * 1414];
+  await fire(page, [...hand([25, 26]), drift(26, -4), drift(26, -30), ...penLine(7, 0.3, 0.4, 0.3), { type: 'up', id: 26, kind: 'touch', fx: 0.56, fy: 0.6, size: 40 }]);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+  const d = (await storedInk(page))[0].page.strokes[0].d;
+  expect(Math.abs(d[0] / 10 - anchor[0])).toBeLessThan(2);
+  expect(Math.abs(d[1] / 10 - anchor[1])).toBeLessThan(2);
+});
+
 test('the zoom buttons: in, the whole page, out; the canvases never grow', async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');

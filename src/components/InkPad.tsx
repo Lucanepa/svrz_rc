@@ -612,7 +612,11 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       if (!p.fingerDraws || p.readOnly) {
         refreshRect();
         const t = touches.get(rest[0])!;
-        gesture = { kind: 'pan', ids: rest, start: view, c0: stagePoint(t.x, t.y), d0: 0, origin: g.origin, engaged: true, engagedAt: g.engagedAt };
+        // From where the finger is now, and only as engaged as the pinch was:
+        // two contacts of a resting hand that never moved the page, one of
+        // them lifting, must not let the other drag the page from its first
+        // pixel, nor out of reach of the palm-first undo.
+        gesture = { kind: 'pan', ids: rest, start: view, c0: stagePoint(t.x, t.y), d0: 0, origin: g.origin, engaged: g.engaged, engagedAt: g.engagedAt };
         return;
       }
       // A pinch never turns into a stroke.

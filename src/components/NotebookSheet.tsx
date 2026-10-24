@@ -399,14 +399,19 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   // page: to the whole page from any other view, back to the width from
   // there. It showed '100 %' and made the page smaller, and a second tap did
   // nothing (final review, 24.10.2026). Where the whole page fits at its
-  // width (a phone held upright, in fullscreen) there is nothing to switch,
-  // nor where it is within WHOLE_PAGE_SNAP of the width: the view snaps the
-  // width down to the whole page there, and the button was on but did
-  // nothing (390 × 810 in fullscreen, final check). The test is the snap's
-  // own, 1 against the whole page (lib/inkView.ts clampZoom).
+  // width (a phone held upright, in fullscreen), or is within
+  // WHOLE_PAGE_SNAP of it, the two are one view: the view snaps the width
+  // down to the whole page there, and the button was on but did nothing
+  // (390 × 810 in fullscreen, final check). The test is the snap's own, 1
+  // against the whole page (lib/inkView.ts clampZoom). On that one view the
+  // button is off. Zoomed in, it brings the page back to it in one tap, as
+  // it did before it switched between two views: it had stayed off there,
+  // still naming the whole page (final check).
+  const zoomOneView = !!inkZoom && 1 - inkZoom.min <= WHOLE_PAGE_SNAP;
   const zoomAtWhole = !!inkZoom && inkZoom.z <= inkZoom.min + 0.001;
-  const zoomSwitches = !!inkZoom && 1 - inkZoom.min > WHOLE_PAGE_SNAP;
-  const zoomAction = zoomAtWhole ? tp.padZoomWidth : tp.padZoomFit;
+  const zoomToWidth = zoomAtWhole || zoomOneView;
+  const zoomLevelOff = !inkZoom || (zoomOneView && inkZoom.z <= 1 + 0.001);
+  const zoomAction = zoomToWidth ? tp.padZoomWidth : tp.padZoomFit;
   const onStrokeEnd = (stroke: InkStroke) => commitInk({ ...inkPage, strokes: [...inkPage.strokes, stroke] });
   const onErase = (strokes: InkStroke[]) => {
     const gone = new Set(strokes);
@@ -870,15 +875,15 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                           what is on it. */}
                       <button
                         type="button"
-                        onClick={() => (zoomAtWhole ? inkControl.current?.zoomWidth() : inkControl.current?.zoomFit())}
-                        disabled={!zoomSwitches}
+                        onClick={() => (zoomToWidth ? inkControl.current?.zoomWidth() : inkControl.current?.zoomFit())}
+                        disabled={zoomLevelOff}
                         aria-label={`${zoomPct} — ${zoomAction}`}
                         title={zoomAction}
                         data-testid="ink-zoom"
                         className="h-9 min-w-[3.75rem] px-1 inline-flex items-center justify-center gap-0.5 rounded-lg border border-stone-300 bg-white text-xs font-medium text-stone-700 tabular-nums hover:bg-stone-50 disabled:opacity-40"
                       >
                         {zoomPct}
-                        {zoomAtWhole ? <MoveHorizontal size={12} className="shrink-0" /> : <FileIcon size={12} className="shrink-0" />}
+                        {zoomToWidth ? <MoveHorizontal size={12} className="shrink-0" /> : <FileIcon size={12} className="shrink-0" />}
                       </button>
                       <button type="button" onClick={() => inkControl.current?.zoomIn()} disabled={!inkZoom || inkZoom.z >= inkZoom.max - 0.001} aria-label={tp.padZoomIn} title={tp.padZoomIn} className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-stone-300 bg-white text-stone-700 hover:bg-stone-50 disabled:opacity-40"><ZoomIn size={14} /></button>
                     </div>

@@ -391,9 +391,18 @@ test('a phone in fullscreen: the page keeps the A4 shape, so the ink lands under
   await expect(sheet(page)).toHaveAttribute('data-full', 'true');
   // The stage is taller than the page at its width: the page width IS the
   // whole page, nothing to switch between, and the button says so by being off.
+  const level = sheet(page).getByTestId('ink-zoom');
   await expect(stage(page)).toHaveAttribute('data-zoom', '1.00');
   await expect(zoomOut(page)).toBeDisabled();
-  await expect(sheet(page).getByTestId('ink-zoom')).toBeDisabled();
+  await expect(level).toBeDisabled();
+  // Zoomed in, it is the one-tap way back to the page width.
+  await zoomIn(page).click();
+  await expect(stage(page)).toHaveAttribute('data-zoom', '1.50');
+  await expect(level).toBeEnabled();
+  await expect(level).toHaveAccessibleName(/^150 % — (Seitenbreite|Page width)$/);
+  await level.click();
+  await expect(stage(page)).toHaveAttribute('data-zoom', '1.00');
+  await expect(level).toBeDisabled();
   const whole = await box(page, 'paper');
   expect(Math.abs(whole.width / whole.height - 1000 / 1414)).toBeLessThan(0.002);
   // Drawn at 85 % of the page's height, it is stored there (it landed up to

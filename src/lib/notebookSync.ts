@@ -12,7 +12,7 @@
 // LIVE owner and the LIVE pages, not whatever a render captured.
 
 import {
-  NOTEBOOK_SYNC_DELAY_MS, NOTEBOOK_TEXT_DEBOUNCE_MS, batchesFor, getStoredInk, listStoredPages, livePages, mergeFromServer,
+  NOTEBOOK_SYNC_DELAY_MS, NOTEBOOK_TEXT_DEBOUNCE_MS, batchesFor, getStoredInk, listStoredInkIds, listStoredPages, livePages, mergeFromServer,
   nextVersion, notebookStoreAvailable, pageFromServer, pageIsLive, pruneNotebook, putPages, requestPersistentStorage, wireFrom,
   type InkPage, type NotebookPage, type PageUse, type ServerPage,
 } from './notebook';
@@ -51,6 +51,10 @@ let storeOk = false;
 let booted = '';                       // the owner the cache was loaded for
 const cache = new Map<string, NotebookPage>();   // every stored page of the booted owner, tombstones included
 const inkCache = new Map<string, InkPage>();     // strokes we hold locally (keyed like the store)
+/** Pages whose strokes are in IndexedDB, read from the store's keys at boot and
+ *  kept up to date after: the pagehide send has no time to ask the store which
+ *  pages a push without strokes could cost theirs. */
+const inkIds = new Set<string>();
 const inkStale = new Set<string>();              // pages whose strokes the server has newer than ours
 /** Bumped whenever a page's strokes change under a read: a local commit, or a
  *  pull that marks them stale or drops them. A read that started before the
@@ -86,7 +90,7 @@ function setStatus(patch: Partial<PadSyncStatus>): void {
 // ---------------------------------------------------------------------------
 
 async function boot(o: string): Promise<void> {
-  cache.clear(); inkCache.clear(); inkStale.clear(); pending.clear();
+  cache.clear(); inkCache.clear(); inkIds.clear(); inkStale.clear(); pending.clear();
   booted = o;
   setStatus({ loaded: false });
   storeOk = await notebookStoreAvailable();
@@ -94,6 +98,7 @@ async function boot(o: string): Promise<void> {
     try { await pruneNotebook(now()); } catch { /* a purge that fails is retried at the next boot */ }
     try {
       for (const p of await listStoredPages(o)) cache.set(p.id, p);
+      for (const id of await listStoredInkIds(o)) inkIds.add(id);
     } catch { storeOk = false; }
   }
   if (booted !== o) return;   // the owner changed under us
@@ -129,15 +134,16 @@ function armPush(): void {
   pushTimer = window.setTimeout(() => { pushTimer = 0; void push(); }, NOTEBOOK_SYNC_DELAY_MS);
 }
 
-/** Commit a page (and, for ink, its strokes). Debounced per page; the cache and
- *  the sheet update at once, IndexedDB after `debounceMs`, the server 5 s later. */
+/** Commit a page (and, when given, its strokes). Debounced per page; the cache
+ *  and the sheet update at once, IndexedDB after `debounceMs`, the server 5 s
+ *  later. */
 export function commit(page: NotebookPage, ink?: InkPage | null, debounceMs = NOTEBOOK_TEXT_DEBOUNCE_MS): void {
   if (!config || page.ownerId !== owner()) return;
   const prev = cache.get(page.id);
   const next: NotebookPage = { ...page, dirty: true, rejectedReason: '', updatedAt: nextVersion(prev) };
   cache.set(next.id, next);
   if (ink !== undefined) {
-    if (ink) inkCache.set(next.id, ink); else inkCache.delete(next.id);
+    if (ink) { inkCache.set(next.id, ink); inkIds.add(next.id); } else { inkCache.delete(next.id); inkIds.delete(next.id); }
     inkStale.delete(next.id);
     bumpInk(next.id);
   }
@@ -185,8 +191,8 @@ export function markUsed(pageIds: string[], use: PageUse): void {
  *  generation they started at. */
 const inkInFlight = new Map<string, { gen: number; read: Promise<InkPage | null> }>();
 
-/** The strokes of a pen page: local first, the server when ours are missing or
- *  older. Null when neither has them (a brand-new page).
+/** The strokes of a page: local first, the server when ours are missing or
+ *  older. Null when neither has them (a brand-new page, a page only typed on).
  *
  *  A second ask for the same page while the first is still out shares it.
  *  React's StrictMode runs the sheet's ink effect twice on mount, and in
@@ -206,29 +212,60 @@ export function getInk(pageId: string): Promise<InkPage | null> {
   return read;
 }
 
+/** Whether the server may hold strokes of this page: it reached the server,
+ *  and counts some or shows them. A page this device made and has not synced
+ *  yet has nothing there to ask for — switching it to Handschrift is not a
+ *  round trip. */
+const inkOnServer = (page: NotebookPage): boolean => !!page.savedAt && (page.points > 0 || page.kind === 'ink');
+
 async function readInk(pageId: string, gen: number): Promise<InkPage | null> {
   const o = owner();
   const id = `${o}|${pageId}`;
   const page = cache.get(id);
-  if (!page || page.kind !== 'ink' || page.deleted) return null;
+  if (!page || page.deleted) return null;
   // Overtaken: the strokes changed while this read waited. What the cache
   // holds now is newer than anything this read found, and is left alone.
   const overtaken = () => (inkGen.get(id) || 0) !== gen;
-  const local = inkCache.get(id) || (storeOk ? await getStoredInk(o, pageId).catch(() => null) : null);
+  const cached = inkCache.get(id);
+  const stored = cached || !storeOk ? null : await getStoredInk(o, pageId).catch(() => null);
+  const local = cached || (stored ? stored.page : null);
   if (overtaken()) return inkCache.get(id) || local;
+  // Marked older than the server's by a pull before a reload.
+  if (stored && stored.stale) inkStale.add(id);
   if (local && !inkStale.has(id)) { inkCache.set(id, local); return local; }
+  if (!local && !inkStale.has(id) && !inkOnServer(page)) return null;
   try {
     const remote = await fetchNotebookInk(pageId);
     if (overtaken()) return inkCache.get(id) || local;
-    if (remote && remote.ownerId === o && remote.page.ink) {
-      const ink = remote.page.ink;
-      inkCache.set(id, ink);
+    if (remote && remote.ownerId === o) {
+      // The server's strokes — or, where it has none at all, the ones this
+      // device holds: the only copy, current again, and the next push may
+      // carry them.
+      const ink = remote.page.ink || local;
       inkStale.delete(id);
+      if (!ink) return null;
+      inkCache.set(id, ink);
+      inkIds.add(id);
       if (storeOk) await putPages([{ page: cache.get(id) || page, ink }]).catch(() => {});
       return ink;
     }
   } catch { /* offline: whatever we hold is what the coach gets */ }
   return local;
+}
+
+/** The strokes a push carries for a page: the ones this device holds — unless
+ *  the server has newer ones, and then none: the push is metadata-only and the
+ *  server keeps its own (server/notebook.ts). Typing on a page whose
+ *  handwriting changed on another device must not put the old strokes back. */
+async function inkForPush(o: string, page: NotebookPage): Promise<InkPage | null> {
+  if (page.deleted || inkStale.has(page.id)) return null;
+  const cached = inkCache.get(page.id);
+  if (cached) return cached;
+  if (!storeOk) return null;
+  const stored = await getStoredInk(o, page.pageId).catch(() => null);
+  if (!stored) return null;
+  if (stored.stale) { inkStale.add(page.id); return null; }
+  return stored.page;
 }
 
 export function hasLocalInk(pageId: string): boolean {
@@ -255,12 +292,7 @@ async function push(): Promise<void> {
       const t = now();
       const dirty = [...cache.values()].filter((p) => p.ownerId === o && p.dirty && !p.rejectedReason && (p.deleted || pageIsLive(p, t)));
       if (dirty.length === 0) { setStatus({ server: status.server === 'failed' ? 'failed' : 'synced' }); return; }
-      const items = await Promise.all(dirty.map(async (page) => ({
-        page,
-        ink: page.kind === 'ink' && !page.deleted
-          ? (inkCache.get(page.id) || (storeOk ? await getStoredInk(o, page.pageId).catch(() => null) : null))
-          : null,
-      })));
+      const items = await Promise.all(dirty.map(async (page) => ({ page, ink: await inkForPush(o, page) })));
       const { batches, tooBig } = batchesFor(items);
       for (const pageId of tooBig) {
         const p = cache.get(`${o}|${pageId}`);
@@ -339,13 +371,17 @@ export async function flushNow(): Promise<void> {
 }
 
 /** The page is going away: everything pending into IndexedDB first, then a
- *  best-effort keepalive POST for a small text-only body. Ink never rides it. */
+ *  best-effort keepalive POST for a small text-only body. Ink never rides it,
+ *  and neither does a page that has strokes, whichever side it shows: sent
+ *  without them and acknowledged, its strokes would never be pushed. Those go
+ *  with the next regular push. */
 export function flushOnHide(): void {
   void flushLocal();
   const o = owner();
   if (!o || isOffline()) return;
   const t = now();
-  const dirty = [...cache.values()].filter((p) => p.ownerId === o && p.dirty && !p.rejectedReason && p.kind === 'text' && (p.deleted || pageIsLive(p, t)));
+  const noInk = (p: NotebookPage) => !(p.points > 0) && !inkCache.has(p.id) && !inkIds.has(p.id);
+  const dirty = [...cache.values()].filter((p) => p.ownerId === o && p.dirty && !p.rejectedReason && (p.deleted || (pageIsLive(p, t) && noInk(p))));
   if (dirty.length === 0) return;
   const wire = dirty.map((p) => wireFrom(p));
   if (JSON.stringify({ pages: wire }).length > KEEPALIVE_MAX_BYTES) return;
@@ -369,15 +405,18 @@ export async function pullIndex(opts: { force?: boolean } = {}): Promise<void> {
   try { result = await listNotebook(); } catch { return; }
   if (owner() !== o) return;
   if (!result.ownerId || result.ownerId !== o) return;
-  const writes: { page: NotebookPage; ink?: InkPage | null }[] = [];
+  const writes: { page: NotebookPage; ink?: InkPage | null; inkStale?: boolean }[] = [];
   for (const row of result.pages) {
     const server = pageFromServer(o, row);
     if (!server) continue;
     const local = cache.get(server.id) || null;
-    const d = mergeFromServer(local, server);
-    if (d.write) { cache.set(d.write.id, d.write); writes.push({ page: d.write, ink: d.dropInk ? null : undefined }); }
-    if (d.dropInk) { inkCache.delete(server.id); inkStale.delete(server.id); bumpInk(server.id); }
-    if (d.fetchInk && d.write) { inkStale.add(server.id); bumpInk(server.id); }
+    const d = mergeFromServer(local, server, inkCache.has(server.id) || inkIds.has(server.id));
+    const stale = d.fetchInk && !!d.write;
+    // The stale mark goes into the store with the page, in one transaction: a
+    // reload before the strokes are fetched must still know they are old.
+    if (d.write) { cache.set(d.write.id, d.write); writes.push({ page: d.write, ink: d.dropInk ? null : undefined, inkStale: stale }); }
+    if (d.dropInk) { inkCache.delete(server.id); inkIds.delete(server.id); inkStale.delete(server.id); bumpInk(server.id); }
+    if (stale) { inkStale.add(server.id); bumpInk(server.id); }
   }
   if (storeOk && writes.length) await putPages(writes).catch(() => {});
   emitPages();
@@ -410,14 +449,14 @@ export function reset(): void {
   pushBackoffMs = 0; nextPushAt = 0; lastPullAt = 0;
   const o = owner();
   if (o && o !== 'admin' && o !== 'anon' && o !== booted) void boot(o);
-  else if (!o || o === 'admin' || o === 'anon') { cache.clear(); inkCache.clear(); inkStale.clear(); booted = ''; if (config) config.onPages([]); setStatus({ loaded: true }); }
+  else if (!o || o === 'admin' || o === 'anon') { cache.clear(); inkCache.clear(); inkIds.clear(); inkStale.clear(); booted = ''; if (config) config.onPages([]); setStatus({ loaded: true }); }
 }
 
 export function stop(): void {
   void flushLocal();
   if (pushTimer) { window.clearTimeout(pushTimer); pushTimer = 0; }
   config = null; booted = '';
-  cache.clear(); inkCache.clear(); inkStale.clear();
+  cache.clear(); inkCache.clear(); inkIds.clear(); inkStale.clear();
 }
 
 export function currentStatus(): PadSyncStatus { return status; }

@@ -14,7 +14,7 @@
 // markup and the close policy.
 
 import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Check, Copy, Eraser, Send, Undo2, Loader2 } from 'lucide-react';
+import { Check, Copy, Eraser, Hand, Send, Undo2, Loader2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import SignaturePad, { isSignatureEmpty, type SigStroke, type SignaturePadHandle, type SignaturePadStats } from './SignaturePad';
 import AppSpinner from './AppSpinner';
@@ -228,7 +228,11 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
           </div>
         )}
 
-        {/* Above the pad, out from under the hand that writes on it. */}
+        {/* Above the pad, out from under the hand that writes on it. The
+            finger switch too: under the pad's corner, where a right hand
+            rests, a palm lifting after a pause turned finger drawing on
+            (24.10.2026). It appears in this row without moving the pad: same
+            height as its neighbours, and Save keeps its place at the right. */}
         <div className="flex items-center gap-2 mb-2">
           <button type="button" onClick={() => padRef.current?.undo()} disabled={!canUndo} aria-label={de ? 'Rückgängig' : 'Undo'} title={de ? 'Rückgängig' : 'Undo'} className={smallButton}>
             <Undo2 size={15} /><span className="hidden sm:inline">{de ? 'Rückgängig' : 'Undo'}</span>
@@ -236,8 +240,26 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
           <button type="button" onClick={() => padRef.current?.clear()} disabled={strokes.length === 0} aria-label={de ? 'Löschen' : 'Clear'} title={de ? 'Löschen' : 'Clear'} className={smallButton}>
             <Eraser size={15} /><span className="hidden sm:inline">{de ? 'Löschen' : 'Clear'}</span>
           </button>
-          <button type="button" onClick={save} disabled={empty} className="ml-auto inline-flex items-center justify-center gap-1.5 h-10 px-4 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:bg-stone-300">
-            <Check size={16} />{de ? 'Unterschrift speichern' : 'Save signature'}
+          {penLock && (
+            // Only after a pen, and per open: the notebook's Finger switch is
+            // always there and remembered per device, because a coach writes
+            // pages with the Pencil for a whole season; this pad is signed by
+            // whoever holds the iPad, and the next signer may have no pen.
+            <button
+              type="button"
+              aria-pressed={fingerToo}
+              onClick={() => setFingerToo((v) => !v)}
+              aria-label={de ? 'Auch mit Finger' : 'Finger too'}
+              title={de ? 'Finger zeichnet auch' : 'Finger draws too'}
+              className={cn(smallButton, fingerToo && 'border-stone-800 bg-stone-800 text-white hover:bg-stone-700')}
+            >
+              <Hand size={15} /><span className="hidden sm:inline">{de ? 'Auch mit Finger' : 'Finger too'}</span>
+            </button>
+          )}
+          {/* Short on a phone: with the switch beside it, the full German
+              label wrapped onto two lines at 360-393 px. */}
+          <button type="button" onClick={save} disabled={empty} aria-label={de ? 'Unterschrift speichern' : 'Save signature'} className="ml-auto shrink-0 whitespace-nowrap inline-flex items-center justify-center gap-1.5 h-10 px-4 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:bg-stone-300">
+            <Check size={16} /><span className="sm:hidden">{de ? 'Speichern' : 'Save'}</span><span className="hidden sm:inline">{de ? 'Unterschrift speichern' : 'Save signature'}</span>
           </button>
         </div>
 
@@ -254,23 +276,12 @@ export default function SignatureDialog({ lang, title, initialStrokes, onDraftCh
           <SignaturePad ref={padRef} initialStrokes={initialStrokes} onChange={onPadChange} onPenLockChange={setPenLock} fingerToo={fingerToo} />
         </div>
 
-        <div className="flex items-center justify-between gap-2 min-h-8 mt-1.5">
-          <p className="text-[11px] text-stone-400">
-            {penLock
-              ? (de ? 'Stift erkannt – nur der Stift schreibt.' : 'Pen detected – only the pen writes.')
-              : (de ? 'Im Feld oben unterschreiben.' : 'Sign in the box above.')}
-          </p>
-          {penLock && (
-            <button
-              type="button"
-              aria-pressed={fingerToo}
-              onClick={() => setFingerToo((v) => !v)}
-              className={cn('h-8 px-2.5 rounded-lg border text-[11px] font-medium shrink-0', fingerToo ? 'border-stone-700 bg-stone-800 text-white' : 'border-stone-200 text-stone-600 hover:bg-stone-100')}
-            >
-              {de ? 'Auch mit Finger' : 'Finger too'}
-            </button>
-          )}
-        </div>
+        {/* Text only: nothing to press where the writing hand rests. */}
+        <p className="mt-1.5 text-[11px] text-stone-400">
+          {penLock
+            ? (de ? 'Stift erkannt — nur der Stift zeichnet.' : 'Pen detected — only the pen draws.')
+            : (de ? 'Im Feld oben unterschreiben.' : 'Sign in the box above.')}
+        </p>
 
         <RelaySection lang={lang} relay={relay} />
       </div>

@@ -20,6 +20,7 @@ const refereeSig = (page: Page) => page.getByAltText(/^(Referee signature|Unters
 const pad = (page: Page) => signatureDialog(page).locator('canvas');
 const saveButton = (page: Page) => signatureDialog(page).getByRole('button', { name: /^(Save signature|Unterschrift speichern)$/ });
 const confirmBox = (page: Page) => page.getByTestId('confirm-dialog');
+const fingerToggle = (page: Page) => signatureDialog(page).getByRole('button', { name: /^(Finger too|Auch mit Finger)$/ });
 
 async function openSign(page: Page, who: 'referee' | 'rc') {
   await page.getByRole('button', { name: /^(Sign|Unterschreiben|Sign again|Neu unterschreiben)$/ }).nth(who === 'referee' ? 0 : 1).click();
@@ -288,7 +289,7 @@ test.describe('the pen and the palm', () => {
     expect(await inkAt(page, 0.3, 0.8)).toBe(false);
     expect(await inkAt(page, 0.3, 0.6)).toBe(false);
     expect(await inkAt(page, 0.5, 0.2)).toBe(true);
-    await expect(signatureDialog(page).getByText(/^(Pen detected – only the pen writes\.|Stift erkannt – nur der Stift schreibt\.)$/)).toBeVisible();
+    await expect(signatureDialog(page).getByText(/^(Pen detected — only the pen draws\.|Stift erkannt — nur der Stift zeichnet\.)$/)).toBeVisible();
     // Undo takes back the pen stroke, not the palm's ink back.
     await signatureDialog(page).getByRole('button', { name: /^(Undo|Rückgängig)$/ }).click();
     expect(await inkCount(page)).toBe(0);
@@ -300,7 +301,7 @@ test.describe('the pen and the palm', () => {
     const finger = { pointerType: 'touch', pointerId: 40, isPrimary: true, width: 30, height: 30 };
     await stroke(page, finger, line(0.7));
     expect(await inkAt(page, 0.5, 0.7)).toBe(false);
-    const toggle = signatureDialog(page).getByRole('button', { name: /^(Finger too|Auch mit Finger)$/ });
+    const toggle = fingerToggle(page);
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-pressed', 'true');
     await page.waitForTimeout(600);
@@ -385,7 +386,7 @@ test.describe('the pen and the palm', () => {
   test('a hovering Pencil still keeps a touch on the pad from drawing, with "Finger too" on', async ({ page }) => {
     await stroke(page, PEN, line(0.2));
     await page.waitForTimeout(600);
-    const toggle = signatureDialog(page).getByRole('button', { name: /^(Finger too|Auch mit Finger)$/ });
+    const toggle = fingerToggle(page);
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-pressed', 'true');
     const finger = { pointerType: 'touch', pointerId: 55, isPrimary: true, width: 30, height: 30 };
@@ -402,7 +403,7 @@ test.describe('the pen and the palm', () => {
 
   test('a palm that touched "Finger too" before the pen came down cannot switch it while the pen writes', async ({ page }) => {
     await stroke(page, PEN, line(0.2));
-    const toggle = signatureDialog(page).getByRole('button', { name: /^(Finger too|Auch mit Finger)$/ });
+    const toggle = fingerToggle(page);
     await expect(toggle).toHaveAttribute('aria-pressed', 'false');
     // The pen rests long enough that a touch is no longer "right after the pen".
     await page.waitForTimeout(600);
@@ -499,6 +500,57 @@ test.describe('the pen and the palm', () => {
     });
     // The contact sizes either side of the palm limit, to calibrate it on real iPads.
     expect(saved[0].data).toMatchObject({ touch: 1, touchMaxPx: 40, tooBigMinPx: 120 });
+  });
+});
+
+// Under the pad is where the writing hand rests: the switch that turns finger
+// drawing on sat there, 6 px under the pad's corner (24.10.2026).
+test.describe('the "Finger too" switch', () => {
+  test('shows in the row above the pad, left of Save, without moving the pad; under the pad there is only text', async ({ page }) => {
+    // Offline, the phone hand-off is a line of text, so every button left in
+    // the dialog is one the writing hand could hit.
+    await page.route('**/api/signature/start', (r) => r.abort());
+    await page.goto('/');
+    await openFeedbackForm(page);
+    await openSign(page, 'rc');
+    await expect(signatureDialog(page).getByText(/offline/)).toBeVisible();
+    const before = (await pad(page).boundingBox())!;
+    await expect(fingerToggle(page)).toHaveCount(0);
+    await stroke(page, PEN, line(0.4));
+    await expect(fingerToggle(page)).toBeVisible();
+    const after = (await pad(page).boundingBox())!;
+    expect(Math.abs(after.y - before.y)).toBeLessThan(0.5);
+    const toggle = (await fingerToggle(page).boundingBox())!;
+    const save = (await saveButton(page).boundingBox())!;
+    expect(toggle.x + toggle.width).toBeLessThanOrEqual(save.x);
+    expect(Math.abs(toggle.y + toggle.height / 2 - (save.y + save.height / 2))).toBeLessThan(1);
+    const bottoms = await signatureDialog(page).getByRole('button').evaluateAll((els) => els.map((el) => el.getBoundingClientRect().bottom));
+    expect(bottoms.length).toBeGreaterThan(0);
+    for (const bottom of bottoms) expect(bottom).toBeLessThanOrEqual(after.y);
+    await expect(fingerToggle(page)).toHaveAttribute('title', /^(Finger draws too|Finger zeichnet auch)$/);
+    await expect(signatureDialog(page).getByText(/^(Pen detected — only the pen draws\.|Stift erkannt — nur der Stift zeichnet\.)$/)).toBeVisible();
+  });
+
+  test.describe('on a 360 px phone', () => {
+    test.use({ viewport: { width: 360, height: 740 } });
+    test('the row with the switch fits: nothing sticks out or scrolls sideways', async ({ page }) => {
+      await page.goto('/');
+      await openFeedbackForm(page);
+      await openSign(page, 'rc');
+      await stroke(page, PEN, line(0.4));
+      await expect(fingerToggle(page)).toBeVisible();
+      const panel = (await signatureDialog(page).boundingBox())!;
+      for (const button of [fingerToggle(page), saveButton(page)]) {
+        const box = (await button.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(panel.x);
+        expect(box.x + box.width).toBeLessThanOrEqual(panel.x + panel.width);
+      }
+      expect(await signatureDialog(page).evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+      // Save's label stays on one line (the full German one wrapped here).
+      const lines = await saveButton(page).evaluate((b) => [...b.querySelectorAll('span')].filter((el) => el.getClientRects().length > 0).map((el) => el.getBoundingClientRect().height));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toBeLessThan(24);
+    });
   });
 });
 

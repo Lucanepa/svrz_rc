@@ -7,9 +7,16 @@
 // (`text`) and what she wrote by hand (the strokes, in a store of their own,
 // with `bg` under them and `points` counting them). One "Neue Seite" and a
 // switch inside the page replaced the "+ Text" / "+ Stift" pair (Jennifer,
-// 23.10.2026). `kind` keeps its two values and names the side the page SHOWS,
-// the one last used on it — which is all the installed apps from before read,
-// so they show that side and the server keeps the other (server/notebook.ts).
+// 23.10.2026). The switch is a view (25.10.2026): `kind` keeps its two values
+// and names the side last WRITTEN on the page — which is all the installed
+// apps from before read, so they show the side with the latest writing on it
+// and the server keeps the other (server/notebook.ts).
+//
+// Records the frontend before wrote are still on the coaches' devices, with
+// one side each: '' for the text of a pen page, '' and 0 for the court and the
+// stroke count of a typed one, whatever the server held. They carry no
+// `sides` mark, and are never taken at their word for the side they could not
+// show (sidesKnown, mergeFromServer, wireFrom).
 //
 // A page is NOT a record. It is deleted one week after it was written, on this
 // device and on the server, and nothing extends that: what must outlive the
@@ -24,7 +31,7 @@
 // identity that may ever read it back on a shared tablet.
 
 import { requestPersistentStorage } from './formDraft';
-import { sanitizeRich } from './richText';
+import { richToPlain, sanitizeRich } from './richText';
 
 // Still 1 with two sides: an older build skips a schema-newer page, and the
 // installed apps would have lost every page written since. They read `kind`.
@@ -74,6 +81,14 @@ export type NotebookPage = {
   dirty: boolean;         // LOCAL ONLY — not yet acknowledged by the server; stripped from the wire
   savedAt: string;        // LOCAL ONLY — server autodate of the last ack; '' = never reached the server
   rejectedReason: string; // LOCAL ONLY — a terminal server refusal; skipped until an edit clears it
+  /** LOCAL ONLY — 2: this frontend wrote the record and knows both its sides.
+   *  Absent on a record the frontend before 25.10.2026 wrote, whose other
+   *  side may be on the server only. Never on the wire (`both` says it there). */
+  sides?: 2;
+  /** LOCAL ONLY — the server refused these strokes (its reason, or 'too-big'
+   *  from this device's own check). The page syncs without them, and they are
+   *  not sent again until they change. */
+  inkRejected?: string;
   extra?: Record<string, unknown>;   // forward-compat bag, never for content
 };
 
@@ -88,11 +103,11 @@ export type InkPage = { w: 1000; h: 1414; strokes: InkStroke[] };
  *  before they are fetched cannot push the old strokes over the newer ones. */
 export type NotebookInk = { id: string; ownerId: string; page: InkPage; stale?: boolean };
 
-/** What travels. NO id, ownerId, dirty, savedAt, rejectedReason. `both` says
- *  this client reads and writes both sides of a page — the server keeps the
- *  side an older app could not show only for those that do not (it is about
- *  the request, and never stored). */
-export type PageWire = Omit<NotebookPage, 'id' | 'ownerId' | 'dirty' | 'savedAt' | 'rejectedReason'> & { ink?: InkPage; both?: true };
+/** What travels. NO id, ownerId, dirty, savedAt, rejectedReason, sides,
+ *  inkRejected. `both` says this client vouches for both sides of the page —
+ *  the server keeps the side an older app could not show only for pushes
+ *  that do not (it is about the request, and never stored). */
+export type PageWire = Omit<NotebookPage, 'id' | 'ownerId' | 'dirty' | 'savedAt' | 'rejectedReason' | 'sides' | 'inkRejected'> & { ink?: InkPage; both?: true };
 
 /** What the server hands back for one page (the index carries no ink, for
  *  either side shown; `points` says whether there is some to fetch). */
@@ -103,7 +118,9 @@ export type ServerPage = {
 
 export type PageAck = {
   ownerId: string;
-  saved: { pageId: string; savedAt: string; updatedAt: number; createdAt: number }[];
+  /** `newRow`: the server had no live page under this id, so it holds no
+   *  strokes of it but the ones this push carried (since 25.10.2026). */
+  saved: { pageId: string; savedAt: string; updatedAt: number; createdAt: number; newRow?: boolean }[];
   stale: { pageId: string; updatedAt: number }[];
   rejected: { pageId: string; reason: string }[];
 };
@@ -140,8 +157,31 @@ export function makePage(ownerId: string, kind: PageKind, bg: PageBackground = '
   return {
     id: pageKey(ownerId, pageId), schema: NOTEBOOK_SCHEMA, ownerId, pageId, kind,
     title: '', text: '', bg, points: 0, usedIn: [],
-    createdAt: now, updatedAt: now, deleted: false, dirty: true, savedAt: '', rejectedReason: '',
+    createdAt: now, updatedAt: now, deleted: false, dirty: true, savedAt: '', rejectedReason: '', sides: 2,
   };
+}
+
+/** Whether this device knows both sides of a page: the record is this
+ *  frontend's, or the page never reached the server (so there is no other
+ *  copy of either side to lose). A record the frontend before wrote, once on
+ *  the server, may show '' for a side the server holds. */
+export const sidesKnown = (p: NotebookPage): boolean => p.sides === 2 || !p.savedAt;
+
+/** Whether the typed side holds anything: markup with no letters is nothing. */
+export const hasTypedText = (p: { text: string }): boolean => richToPlain(p.text || '').trim() !== '';
+
+/**
+ * The side a write on `side` leaves the page on — its `kind`, which the
+ * installed apps show. The side written on, as a rule; but a side written
+ * empty (Rückgängig on the last stroke, every letter deleted) hands the page
+ * to the other side when that one holds something, or an installed app shows
+ * an empty page that the coach deletes, the other side and all.
+ */
+export function kindAfterWrite(p: { text: string; points: number }, side: PageKind): PageKind {
+  const typed = hasTypedText(p);
+  const inked = p.points > 0;
+  if (side === 'ink') return inked || !typed ? 'ink' : 'text';
+  return typed || !inked ? 'text' : 'ink';
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +381,8 @@ export function pageFromServer(ownerId: string, s: ServerPage): NotebookPage | n
     usedIn: SAFE_USES(s.usedIn),
     createdAt: Number(s.createdAt) || 0, updatedAt: Number(s.updatedAt) || 0,
     deleted: s.deleted === true, dirty: false, savedAt: typeof s.savedAt === 'string' ? s.savedAt : '', rejectedReason: '',
+    // The server's copy has both sides, whichever one an installed app wrote last.
+    sides: 2,
     ...(s.extra && typeof s.extra === 'object' ? { extra: s.extra } : {}),
   };
 }
@@ -352,9 +394,16 @@ export function pageFromServer(ownerId: string, s: ServerPage): NotebookPage | n
  *     elsewhere wins; the loss is bounded to one page).
  *  3. local newer → keep (the next push carries it).
  *  4. tie → the server's copy: this is our own push acknowledged late, so the
- *     dirty flag clears.
+ *     dirty flag clears. A record the frontend before 25.10.2026 wrote takes
+ *     the server's sides at the tie as well, and is marked: its '' for the
+ *     side it could not show was a blank, not a deletion, and pushed with
+ *     `both` it wiped the typed text (or the court) the server had kept
+ *     (data-loss review, 25.10.2026). Its strokes are asked for when the
+ *     server counts some it does not.
  *  Absence from the server is handled by the CALLER never calling this for a
- *  page the server did not mention: absence never deletes.
+ *  page the server did not mention: absence never deletes. A record of the
+ *  frontend before that is newer than the server's keeps its copy and goes
+ *  without `both` (wireFrom), and the server keeps the side it did not show.
  */
 export function mergeFromServer(local: NotebookPage | null, server: NotebookPage, holdsInk = false): MergeDecision {
   // Strokes to fetch: the server counts some, or the page shows the
@@ -368,6 +417,10 @@ export function mergeFromServer(local: NotebookPage | null, server: NotebookPage
     return { write: server, dropInk: server.deleted, fetchInk: inkLive || (holdsInk && !server.deleted) };
   }
   if (server.updatedAt < local.updatedAt) return { write: null, dropInk: false, fetchInk: false };
+  if (local.sides !== 2 && !server.deleted && !local.deleted) {
+    const write: NotebookPage = { ...local, text: server.text, bg: server.bg, points: server.points, sides: 2, dirty: false, savedAt: server.savedAt || local.savedAt, rejectedReason: '' };
+    return { write, dropInk: false, fetchInk: server.points > 0 && server.points !== local.points };
+  }
   // Tie: same version on both sides. Nothing to fetch — the strokes we hold ARE
   // this version — but a dirty flag or a missing savedAt is worth clearing.
   if (local.dirty || local.savedAt !== server.savedAt) {
@@ -379,11 +432,14 @@ export function mergeFromServer(local: NotebookPage | null, server: NotebookPage
 /** The page as it travels. The server takes the owner from the session and the
  *  bookkeeping fields are one device's business. The strokes travel with any
  *  live page that has them, whichever side it shows; without them the push
- *  is metadata-only and the server keeps what it holds. */
+ *  is metadata-only and the server keeps what it holds. `both` only for a
+ *  record this frontend vouches for: one the frontend before wrote is pushed
+ *  as the installed apps push, and the server keeps the side it could not
+ *  show. */
 export function wireFrom(page: NotebookPage, ink?: InkPage | null): PageWire {
-  const { id: _id, ownerId: _o, dirty: _d, savedAt: _s, rejectedReason: _r, ...rest } = page;
-  void _id; void _o; void _d; void _s; void _r;
-  const wire: PageWire = { ...rest, both: true };
+  const { id: _id, ownerId: _o, dirty: _d, savedAt: _s, rejectedReason: _r, sides, inkRejected: _k, ...rest } = page;
+  void _id; void _o; void _d; void _s; void _r; void _k;
+  const wire: PageWire = sides === 2 ? { ...rest, both: true } : rest;
   return ink && !page.deleted ? { ...wire, ink } : wire;
 }
 

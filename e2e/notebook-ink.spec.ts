@@ -149,22 +149,26 @@ test('a phone with no pen draws with the finger by default', async ({ page }) =>
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
 });
 
-test('pointercancel drops the stroke; undo and clear work; the court stays with the page', async ({ page }) => {
+test('pointercancel keeps what was drawn and counts for the Scribble hint; undo and clear work; the court stays with the page', async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');
   await openPenPage(page, true);
-  // A cancelled stroke never lands.
+  // iPadOS cancels a stroke it hands to Scribble or a system gesture: the ink
+  // drawn until then stays (it vanishing looked like lost handwriting), and
+  // the second cancel brings the hint about Scribble.
   const box = (await pad(page).boundingBox())!;
-  await pad(page).dispatchEvent('pointerdown', { bubbles: true, pointerType: 'mouse', pointerId: 1, isPrimary: true, buttons: 1, clientX: box.x + 10, clientY: box.y + 10 });
-  await pad(page).dispatchEvent('pointermove', { bubbles: true, pointerType: 'mouse', pointerId: 1, isPrimary: true, buttons: 1, clientX: box.x + 60, clientY: box.y + 60 });
-  await page.evaluate(() => window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: 1, pointerType: 'mouse', bubbles: true })));
-  await page.waitForTimeout(200);
-  expect(await storedInk(page)).toHaveLength(0);
-  await mouseStroke(page, 0.1, 0.1, 0.5, 0.2);
+  for (const [n, y] of [[1, 10], [2, 80]] as const) {
+    await pad(page).dispatchEvent('pointerdown', { bubbles: true, pointerType: 'mouse', pointerId: 1, isPrimary: true, buttons: 1, clientX: box.x + 10, clientY: box.y + y });
+    await pad(page).dispatchEvent('pointermove', { bubbles: true, pointerType: 'mouse', pointerId: 1, isPrimary: true, buttons: 1, clientX: box.x + 60, clientY: box.y + y + 50 });
+    await page.evaluate(() => window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: 1, pointerType: 'mouse', bubbles: true })));
+    await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(n);
+  }
+  await expect(sheet(page).getByText(/Kritzeln aus|Scribble off/)).toBeVisible();
   await mouseStroke(page, 0.1, 0.4, 0.5, 0.5);
-  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(2);
+  await mouseStroke(page, 0.1, 0.6, 0.5, 0.7);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(4);
   await sheet(page).getByRole('button', { name: /^(Rückgängig|Undo)$/ }).click();
-  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(3);
   await sheet(page).getByRole('button', { name: /^(Seite leeren|Clear page)$/ }).click();
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(0);
   expect((await storedPages(page))[0].bg).toBe('court');
@@ -222,4 +226,60 @@ test('a page whose ink is not local is fetched when opened', async ({ page }) =>
   await sheet(page).getByTestId('ink-zoom').click();
   await expect.poll(() => nonBlank(page), SYNC).toBe(true);
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+});
+
+/** A pen stroke with a pressure per event: [fx, fy, pressure] of the page. */
+async function penStroke(page: Page, pointerId: number, points: [number, number, number][]): Promise<void> {
+  const box = (await pad(page).boundingBox())!;
+  await page.evaluate(([b, id, pts]) => {
+    const target = document.querySelector('[data-testid="ink-stage"] canvas')!;
+    const init = (fx: number, fy: number, pressure: number) => ({ bubbles: true, cancelable: true, isPrimary: true, buttons: 1, pointerType: 'pen', pointerId: id, pressure, clientX: b.x + b.width * fx, clientY: b.y + b.height * fy });
+    pts.forEach(([fx, fy, p], i) => target.dispatchEvent(new PointerEvent(i === 0 ? 'pointerdown' : 'pointermove', init(fx, fy, p))));
+    const [lx, ly] = pts[pts.length - 1];
+    window.dispatchEvent(new PointerEvent('pointerup', { ...init(lx, ly, 0), buttons: 0 }));
+  }, [box, pointerId, points] as const);
+}
+
+test('a pen whose first event reads no pressure keeps its real pressure; one that never reads any is drawn simulated', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  // Safari can report 0 on the Pencil's first event. That used to switch the
+  // whole stroke to speed-simulated pressure, which thins fast writing.
+  await penStroke(page, 7, [[0.2, 0.2, 0], [0.3, 0.21, 0.3], [0.4, 0.22, 0.3], [0.5, 0.23, 0.3]]);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+  const first = (await storedInk(page))[0].page.strokes[0];
+  expect(first.p).toBe(1);
+  const pressures = first.d.filter((_, i) => i % 4 === 2);
+  expect(pressures.every((p) => p > 0)).toBe(true);
+  // A pen that never reported a pressure is stored as simulated, not as a hairline.
+  await penStroke(page, 8, [[0.2, 0.5, 0], [0.4, 0.52, 0], [0.6, 0.55, 0]]);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(2);
+  const second = (await storedInk(page))[0].page.strokes[1];
+  expect(second.p).toBe(0);
+  expect(second.d.filter((_, i) => i % 4 === 2).every((p) => p === 0)).toBe(true);
+});
+
+test('each sample stores its own time since the one before it', async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  const box = (await pad(page).boundingBox())!;
+  const at = (fx: number, fy: number) => ({ clientX: box.x + box.width * fx, clientY: box.y + box.height * fy });
+  const base = { bubbles: true, cancelable: true, isPrimary: true, buttons: 1, pointerType: 'pen', pointerId: 7, pressure: 0.4 };
+  const started = Date.now();
+  await pad(page).dispatchEvent('pointerdown', { ...base, ...at(0.2, 0.3) });
+  for (let i = 1; i <= 5; i += 1) {
+    await page.waitForTimeout(40);
+    await pad(page).dispatchEvent('pointermove', { ...base, ...at(0.2 + i * 0.1, 0.3) });
+  }
+  const elapsed = Date.now() - started;
+  await page.evaluate((b) => { window.dispatchEvent(new PointerEvent('pointerup', b as PointerEventInit)); }, { ...base, buttons: 0 });
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+  const d = (await storedInk(page))[0].page.strokes[0].d;
+  const dts = d.filter((_, i) => i % 4 === 3).slice(1);
+  expect(dts).toHaveLength(5);
+  for (const dt of dts) expect(dt).toBeGreaterThanOrEqual(30);
+  // Every delta used to be the whole stroke's duration.
+  expect(dts.reduce((n, dt) => n + dt, 0)).toBeLessThanOrEqual(elapsed + 20);
 });

@@ -87,6 +87,10 @@ const PINCH_GRACE_MS = 250;
 /** Fingers must move this far before the page moves: a resting hand stays still. */
 const SLOP_PX = 8;
 const ERASE_RADIUS_PX = 10;
+/** Samples closer than this on screen are merged (keeping the higher pressure). */
+const SAMPLE_MIN_PX = 0.6;
+/** Pencil pressure is smoothed a little: its noise showed as width jitter. */
+const PRESSURE_EMA = 0.5;
 const WHEEL_REPORT_MS = 150;
 
 /** Absolute samples of one stroke: [x, y, p01][] in page units. */
@@ -155,6 +159,24 @@ function eraserHits(stroke: InkStroke, x: number, y: number, radius: number, min
   return false;
 }
 
+// ── the size guard ────────────────────────────────────────────────────
+// inkSize() is JSON.stringify(page).length — the whole page, on every stroke
+// end, on the main thread while the next letter's samples arrive. The same
+// number from cached per-stroke lengths: the page with no strokes, plus each
+// stroke as JSON, plus the commas between them.
+const strokeChars = new WeakMap<InkStroke, number>();
+
+function pageChars(page: InkPage): number {
+  let n = JSON.stringify({ ...page, strokes: [] }).length;
+  for (const s of page.strokes) {
+    if (!s || typeof s !== 'object') return inkSize(page);   // not a stroke as we know it: count it the slow, sure way
+    let c = strokeChars.get(s);
+    if (c === undefined) { c = JSON.stringify(s).length; strokeChars.set(s, c); }
+    n += c;
+  }
+  return n + Math.max(0, page.strokes.length - 1);
+}
+
 /** The court a coach sketches positions on: 9 × 18 m, portrait, net across the
  *  middle, attack lines 3 m from it. Light lines under the ink, never part of
  *  it. Drawn in page units under the view's transform; `scale` (CSS px per
@@ -180,16 +202,18 @@ export function renderBackground(ctx: CanvasRenderingContext2D, bg: PageBackgrou
 
 // ── the engine: everything per frame lives here, outside React ─────────
 
-type Sample = { x: number; y: number; p: number };
+type Sample = { x: number; y: number; p: number; t: number };
 type Active = {
   pointerId: number;
   kind: 'pen' | 'touch' | 'mouse';
   startedAt: number;
   eraser: boolean;
   samples: Sample[];
-  /** Real pressure: a pen whose first event reported one. */
-  p: 0 | 1;
-  t0: number;
+  /** Page units under which two samples are one (SAMPLE_MIN_PX at this zoom). */
+  minDist: number;
+  /** A pen has reported a pressure above 0 in this stroke. */
+  pressureSeen: boolean;
+  ema: number;
   /** Strokes the eraser touched in this drag. */
   erased: Set<InkStroke>;
 };
@@ -310,7 +334,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     const a = active;
     if (!a || a.eraser || a.samples.length === 0 || !stageSize) return;
     const t = props().tool;
-    const style = { w: NEW_STROKE_W, p: a.p };
+    const style = { w: NEW_STROKE_W, p: (a.pressureSeen ? 1 : 0) as 0 | 1 };
     const path = freehandPath(outlineSamples(a.samples.map((s) => [s.x, s.y, s.p]), style.p === 1), strokeOptions(style, minR, false));
     if (path) withPageTransform(ctx, () => { ctx.fillStyle = INK_COLOURS[t.kind === 'pen' ? t.colour : 0]; ctx.fill(path); });
   };
@@ -365,10 +389,24 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   // ── strokes ──────────────────────────────────────────────────────────
   const clearLive = () => { liveDirty = true; drawLive(); };
 
-  const addSample = (a: Active, x: number, y: number, raw: number) => {
+  const addSample = (a: Active, x: number, y: number, raw: number, t: number) => {
+    let p = 0;
+    if (a.kind === 'pen') {
+      // A 0 is "no reading" (Safari can report it on the first event, and
+      // the Pencil on some moves), never a pressure: the stroke's first real
+      // value is backfilled over the zeros before it.
+      if (raw > 0) {
+        if (!a.pressureSeen) { a.pressureSeen = true; a.ema = raw; for (const s of a.samples) s.p = raw; }
+        else a.ema = PRESSURE_EMA * raw + (1 - PRESSURE_EMA) * a.ema;
+      }
+      p = a.pressureSeen ? a.ema : 0;
+    }
     const last = a.samples[a.samples.length - 1];
-    if (last && Math.hypot(x - last.x, y - last.y) < 1) return;
-    a.samples.push({ x, y, p: a.p ? raw : 0 });
+    // A merged sample keeps the higher pressure: the force rises over the
+    // first samples while the tip barely moves, and dropping them left every
+    // stroke starting in a hairline.
+    if (last && Math.hypot(x - last.x, y - last.y) < a.minDist) { if (p > last.p) last.p = p; return; }
+    a.samples.push({ x, y, p, t });
   };
 
   const coalesced = (e: PointerEvent): PointerEvent[] => {
@@ -403,13 +441,13 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     if (x < 0 || x > PAGE_W || y < 0 || y > PAGE_H) return false;
     e.preventDefault();
     const eraser = props().tool.kind === 'eraser' || (kind === 'pen' && e.button === 5);
-    active = { pointerId: e.pointerId, kind, startedAt: now, eraser, samples: [], p: kind === 'pen' && e.pressure > 0 ? 1 : 0, t0: e.timeStamp, erased: new Set() };
+    active = { pointerId: e.pointerId, kind, startedAt: now, eraser, samples: [], minDist: SAMPLE_MIN_PX / scale(), pressureSeen: false, ema: 0, erased: new Set() };
     // Capture AFTER the stroke started: setPointerCapture throws NotFoundError
     // for a pointer that is not active — every synthetic dispatch — and
     // unguarded it would abort the stroke and file a js.error.
     try { stage.setPointerCapture(e.pointerId); } catch { /* see above */ }
     if (eraser) { eraseAt(x, y); return true; }
-    addSample(active, x, y, e.pressure);
+    addSample(active, x, y, kind === 'pen' ? e.pressure : 0, e.timeStamp);
     liveDirty = true; schedule();
     return true;
   };
@@ -432,19 +470,28 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     try { stage.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
     const p = props();
     if (a.eraser) { flushErase(true); clearLive(); return; }
-    if (a.samples.length === 0) { clearLive(); return; }
-    if (cancelled) { p.onCancelledStroke(); clearLive(); return; }
-    const stroke: InkStroke = { c: p.tool.kind === 'pen' ? p.tool.colour : 0, w: NEW_STROKE_W, p: a.p, d: [] };
-    let px = 0; let py = 0;
+    if (cancelled) p.onCancelledStroke();
+    // A cancelled stroke keeps what was drawn: iPadOS cancels a stroke it
+    // hands to Scribble or a system gesture, and the coach's ink vanishing
+    // looked exactly like "it does not recognise my handwriting".
+    if (a.samples.length === 0 || (cancelled && a.samples.length < 2)) { clearLive(); return; }
+    const realPressure = a.kind === 'pen' && a.pressureSeen;
+    const stroke: InkStroke = { c: p.tool.kind === 'pen' ? p.tool.colour : 0, w: NEW_STROKE_W, p: realPressure ? 1 : 0, d: [] };
+    let px = 0; let py = 0; let pms = 0;
+    const t0 = a.samples[0].t;
     a.samples.forEach((s, i) => {
-      const X = Math.round(s.x * 10); const Y = Math.round(s.y * 10); const P = Math.round(Math.max(0, Math.min(1, s.p)) * 100);
+      const X = Math.round(s.x * 10); const Y = Math.round(s.y * 10);
+      const P = realPressure ? Math.round(Math.max(0, Math.min(1, s.p)) * 100) : 0;
+      // Each sample's own time since the one before it, rounded on the
+      // running total so the deltas add up to the stroke's duration.
+      const ms = Math.round(s.t - t0);
       if (i === 0) stroke.d.push(X, Y, P, 0);
-      else stroke.d.push(X - px, Y - py, P, Math.max(0, Math.round(e.timeStamp - a.t0)));
-      px = X; py = Y;
+      else stroke.d.push(X - px, Y - py, P, Math.max(0, ms - pms));
+      px = X; py = Y; pms = ms;
     });
     const current = p.page;
-    const next: InkPage = { w: PAGE_W, h: PAGE_H, strokes: [...current.strokes, stroke] };
-    if (next.strokes.length > NOTEBOOK_INK_MAX_STROKES || inkSize(next) > NOTEBOOK_INK_MAX_CHARS) { clearLive(); p.onFull(); return; }
+    const size = pageChars(current) + JSON.stringify(stroke).length + (current.strokes.length ? 1 : 0);
+    if (current.strokes.length + 1 > NOTEBOOK_INK_MAX_STROKES || size > NOTEBOOK_INK_MAX_CHARS) { clearLive(); p.onFull(); return; }
     // On the page canvas now, in the frame the live layer clears: the line
     // never blinks while the sheet re-renders.
     pending.push(stroke);
@@ -582,7 +629,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       if (a.eraser) { for (const ev of list) { const [x, y] = pagePoint(ev.clientX, ev.clientY); eraseAt(x, y); } flushErase(false); return; }
       for (const ev of list) {
         const [x, y] = pagePoint(ev.clientX, ev.clientY);
-        addSample(a, x, y, ev.pressure);
+        addSample(a, x, y, a.kind === 'pen' ? ev.pressure : 0, ev.timeStamp);
       }
       liveDirty = true; schedule();
       return;

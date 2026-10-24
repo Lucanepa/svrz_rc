@@ -275,7 +275,11 @@ test('Übernehmen offers a page by its typed side even while it shows the handwr
   // Handwriting only: listed, greyed, nothing to tick.
   await expect(items.nth(1)).toContainText(/Nur Handschrift|Handwriting only/);
   await expect(items.nth(1).getByRole('checkbox')).toHaveCount(0);
-  await sheet(page).getByRole('button', { name: /1 Seite → Bemerkungen \(1\. SR\)|1 page → Remarks \(1\. SR\)/ }).click();
+  // Enabled first: a click on a button still disabled waited out the whole
+  // 30 s action timeout before it said anything.
+  const insertOne = sheet(page).getByRole('button', { name: /1 Seite → Bemerkungen \(1\. SR\)|1 page → Remarks \(1\. SR\)/ });
+  await expect(insertOne).toBeEnabled();
+  await insertOne.click();
   await expect(remarks(page)).toContainText('Getippt für den Bericht');
   await expect.poll(async () => (await storedPages(page)).find((r) => r.pageId === 'page-both-0001') as unknown as { usedIn: unknown[] } | undefined)
     .toMatchObject({ usedIn: [expect.objectContaining({ f: 'bemerkungen' })] });

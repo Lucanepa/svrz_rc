@@ -105,6 +105,16 @@ export function setCaretOffsets(root: HTMLElement, [start, end]: [number, number
   sel.addRange(range);
 }
 
+/** Nothing written: no text, and no more than the one line break a browser
+ *  leaves in a box emptied by hand. The placeholder is keyed on this, set
+ *  from here (data-empty): the CSS rule it replaced — "only a <br>" — also
+ *  matched "Hallo<br>", since a text node is no element, and put the
+ *  placeholder in front of the coach's first line (UI review, 25.10.2026). */
+function markEmpty(el: HTMLElement): void {
+  const empty = !(el.textContent || '') && el.querySelectorAll('br').length <= 1;
+  el.dataset.empty = empty ? 'true' : 'false';
+}
+
 // One editable surface, used both inline and in the full-screen editor.
 //
 // Uncontrolled on purpose: writing `value` back into the DOM on every keystroke
@@ -164,6 +174,7 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
     // the browser normalises its own markup and would otherwise look changed
     // after every keystroke.
     if (domToRich(el) !== value) el.innerHTML = next;
+    markEmpty(el);
   }, [value]);
   // Focused with the caret where it was left, or at the END of what is there:
   // focus() alone puts it in front of the first letter, and what was typed
@@ -226,7 +237,7 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
       aria-label={placeholder}
       data-placeholder={placeholder}
       onFocus={onFocus}
-      onInput={() => { const el = ref.current; if (el) onChange(domToRich(el)); }}
+      onInput={() => { const el = ref.current; if (el) { markEmpty(el); onChange(domToRich(el)); } }}
       // A box is ticked by tapping it. mousedown is held back on a box so the
       // caret stays where the coach was writing (and, on a desktop, the field
       // does not even take focus); the click then swaps the one character in

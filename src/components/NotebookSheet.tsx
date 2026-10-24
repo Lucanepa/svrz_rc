@@ -569,10 +569,12 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     if (kept.length !== inkPage.strokes.length) commitInk({ ...inkPage, strokes: kept });
   };
   const undo = () => { if (inkPage.strokes.length) commitInk({ ...inkPage, strokes: inkPage.strokes.slice(0, -1) }); };
-  // The strokes only: what was typed on the page stays.
+  // The strokes only: what was typed on the page stays — and the question
+  // says so only where something was typed.
   const clearInk = async () => {
     if (inkPage.strokes.length === 0 || !inkWritable) return;
-    if (inkPage.strokes.length > 3 && !(await confirmDialog({ title: tp.padClearInkTitle, message: tp.padClearInkMsg, tone: 'danger', lang }))) return;
+    const message = current && hasTyped(current) ? tp.padClearInkMsg : tp.padClearInkMsgNoText;
+    if (inkPage.strokes.length > 3 && !(await confirmDialog({ title: tp.padClearInkTitle, message, tone: 'danger', lang }))) return;
     commitInk({ ...inkPage, strokes: [] });
   };
   const onPenSeen = () => {
@@ -766,7 +768,13 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
 
   // Tippen | Handschrift, at the start of the page's own line in either mode,
   // so the way back is where the way there was. A dot on the side NOT shown
-  // says something is written there.
+  // says something is written there — said in words too, for whoever does
+  // not see the dot (its title was the only word for it). A neutral dot: red
+  // read as an error. 36 px tall, and 40 under a finger where the screen is
+  // tall enough to spare it (a tablet): at 28 the segments were the smallest
+  // target on the sheet (UI review, 25.10.2026). On a phone the 40 cost the
+  // page its one view in fullscreen, the whole page at its width. The ring
+  // is drawn inside the segment, where the group's rounded clip cannot cut it.
   const sideButton = (which: PageKind) => {
     const on = side === which;
     const filled = !on && !!current && (which === 'text' ? hasTyped(current) : hasInk(current));
@@ -776,17 +784,21 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
         type="button"
         onClick={() => switchSide(which)}
         aria-pressed={on}
-        aria-label={label}
         title={filled ? (which === 'text' ? tp.padSideHasText : tp.padSideHasInk) : label}
         data-testid={which === 'text' ? 'pad-side-text' : 'pad-side-ink'}
         className={cn(
-          'relative h-7 px-2 inline-flex items-center gap-1 text-[11px] font-medium transition-colors',
+          'relative h-9 [@media(pointer:coarse)_and_(min-height:56rem)]:h-10 px-2 inline-flex items-center gap-1 text-[11px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-red-400',
           on ? 'bg-slate-900 text-white' : 'text-stone-600 hover:bg-stone-50',
         )}
       >
-        {which === 'text' ? <Keyboard size={13} className="shrink-0" /> : <PenLine size={13} className="shrink-0" />}
+        {which === 'text' ? <Keyboard size={13} className="shrink-0" aria-hidden="true" /> : <PenLine size={13} className="shrink-0" aria-hidden="true" />}
         <span>{label}</span>
-        {filled && <span data-testid="pad-side-dot" aria-hidden="true" className="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-red-600" />}
+        {filled && (
+          <>
+            <span className="sr-only"> — {tp.padSideFilled}</span>
+            <span data-testid="pad-side-dot" aria-hidden="true" className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-stone-500" />
+          </>
+        )}
       </button>
     );
   };
@@ -936,8 +948,9 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                 {pages.map(pill)}
               </div>
               {/* One kind of page: what goes on it is chosen on the page, by
-                  the switch below, and can change while writing. */}
-              <button type="button" onClick={newPage} disabled={pagesPending} data-testid="pad-new-page" className="shrink-0 disabled:opacity-40 h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
+                  the switch below, and can change while writing. As tall as
+                  the switch, for the same finger. */}
+              <button type="button" onClick={newPage} disabled={pagesPending} data-testid="pad-new-page" className="shrink-0 disabled:opacity-40 h-9 [@media(pointer:coarse)_and_(min-height:56rem)]:h-10 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
                 <Plus size={13} /> {tp.padNewPage}
               </button>
             </div>
@@ -950,26 +963,32 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                     row, and what the page says goes under them: between the
                     two it was squeezed to three lines and pushed the turner
                     off the edge. */}
+                {/* The dates keep their one line each and their full width;
+                    what gives way is the "übernommen →" line (or a refusal),
+                    cut short — it squeezed the dates onto three lines (UI
+                    review, 25.10.2026). */}
                 <span className="order-last basis-full min-w-0 flex items-center gap-2 leading-4 sm:order-none sm:basis-auto">
                   {current ? (
                     <>
-                      <span>{fill(tp.padCreated, { date: dayTimeLabel(current.createdAt) })}</span>
+                      <span className="shrink-0 whitespace-nowrap">{fill(tp.padCreated, { date: dayTimeLabel(current.createdAt) })}</span>
                       {/* Only once it says something the line above does not: a
                           page written in ten minutes ago was not "created" then. */}
                       {current.updatedAt - current.createdAt > 60_000 && (
                         <>
-                          <span className="hidden sm:inline">·</span>
-                          <span className="hidden sm:inline">{fill(tp.padEdited, { time: clockLabel(current.updatedAt) })}</span>
+                          <span className="hidden sm:inline shrink-0">·</span>
+                          <span className="hidden sm:inline shrink-0 whitespace-nowrap">{fill(tp.padEdited, { time: clockLabel(current.updatedAt) })}</span>
                         </>
                       )}
-                      <span>·</span>
-                      <span className={expiryLine(current).soon ? 'text-amber-700 font-semibold' : ''}>{expiryLine(current).text}</span>
-                      {(current.rejectedReason || current.inkRejected) && <span className="text-amber-700">· {fill(tp.padSyncRejected, { reason: current.rejectedReason || current.inkRejected || '' })}</span>}
+                      <span className="shrink-0">·</span>
+                      <span className={cn('shrink-0 whitespace-nowrap', expiryLine(current).soon && 'text-amber-700 font-semibold')}>{expiryLine(current).text}</span>
+                      {(current.rejectedReason || current.inkRejected) && (
+                        <span className="min-w-0 truncate text-amber-700" title={fill(tp.padSyncRejected, { reason: current.rejectedReason || current.inkRejected || '' })}>· {fill(tp.padSyncRejected, { reason: current.rejectedReason || current.inkRejected || '' })}</span>
+                      )}
                       {current.usedIn.length > 0 && (
-                        <span className="text-emerald-700 truncate">· {fill(tp.padUsedIn, { field: fieldLabel(current.usedIn[current.usedIn.length - 1].f), role: current.usedIn[current.usedIn.length - 1].r, label: current.usedIn[current.usedIn.length - 1].label })}</span>
+                        <span className="min-w-0 truncate text-emerald-700">· {fill(tp.padUsedIn, { field: fieldLabel(current.usedIn[current.usedIn.length - 1].f), role: current.usedIn[current.usedIn.length - 1].r, label: current.usedIn[current.usedIn.length - 1].label })}</span>
                       )}
                     </>
-                  ) : <span>{fill(tp.padExpires, { date: dayLabel(Date.now() + NOTEBOOK_TTL_MS) })}</span>}
+                  ) : <span className="shrink-0 whitespace-nowrap">{fill(tp.padExpires, { date: dayLabel(Date.now() + NOTEBOOK_TTL_MS) })}</span>}
                 </span>
                 <span className="ml-auto flex items-center gap-2">
                   {pageNav}

@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp, RC, suiteNow } from './support/app';
+import { stubSignedInApp, openFeedbackForm, RC, suiteNow } from './support/app';
 
 /**
  * Tippen | Handschrift is a VIEW (25.10.2026). Switching changes what the
@@ -104,6 +104,16 @@ async function draw(page: Page): Promise<void> {
   await page.mouse.down();
   await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.12, { steps: 12 });
   await page.mouse.up();
+}
+
+/** How colourful a CSS colour is, 0 for a grey: oklch's chroma, or the spread
+ *  of an rgb triple. Tailwind 4 names its palette in oklch. */
+function chroma(css: string): number {
+  const ok = /oklch\(\s*[\d.]+%?\s+([\d.]+)/.exec(css);
+  if (ok) return Number(ok[1]);
+  const rgb = /rgba?\(\s*(\d+)[, ]+(\d+)[, ]+(\d+)/.exec(css);
+  if (rgb) { const v = [rgb[1], rgb[2], rgb[3]].map(Number); return (Math.max(...v) - Math.min(...v)) / 255; }
+  return 1;
 }
 
 test.describe('The switch is a view', () => {
@@ -279,5 +289,112 @@ test.describe('A round trip between the sides', () => {
     await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
     await sideInk(page).click();
     await expect(paper(page)).toBeVisible();
+  });
+});
+
+test.describe('The switch and the line it sits on', () => {
+  test('the side switch and Neue Seite are big enough for a finger', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    for (const el of [sideText(page), sideInk(page), newPage(page)]) expect((await el.boundingBox())!.height).toBeGreaterThanOrEqual(36);
+  });
+
+  test('the pressed side shows its focus ring when reached by keyboard', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    // By the keyboard: from Neue Seite, the switch is the next stop.
+    await expect(newPage(page)).toBeEnabled();
+    await newPage(page).focus();
+    await page.keyboard.press('Tab');
+    await expect(sideText(page)).toBeFocused();
+    await expect(sideText(page)).toHaveAttribute('aria-pressed', 'true');
+    expect(await sideText(page).evaluate((el) => getComputedStyle(el).boxShadow)).toContain('inset');
+  });
+
+  test('the dot on the other side is a neutral one, and the side says in words that it holds something', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await pageBox(page).fill('getippt');
+    await sideInk(page).click();
+    await expect(paper(page)).toBeVisible();
+    const dot = sideText(page).getByTestId('pad-side-dot');
+    await expect(dot).toHaveCount(1);
+    expect(chroma(await dot.evaluate((el) => getComputedStyle(el).backgroundColor))).toBeLessThan(0.06);
+    await expect(sideText(page)).toHaveAccessibleName(/^(Tippen — hat Inhalt|Typing — has content)$/);
+    await expect(sideInk(page)).toHaveAccessibleName(/^(Handschrift|Handwriting)$/);
+  });
+
+  test.describe('in German, its longest', () => {
+    test.use({ locale: 'de-CH' });
+    for (const vp of [{ width: 390, height: 844 }, { width: 744, height: 1133 }]) {
+      test(`at ${vp.width} px the dates stay on one line each beside "übernommen →", and the turner stays on the row`, async ({ page }) => {
+        await page.setViewportSize(vp);
+        const at = suiteNow() - 3 * HOUR;
+        await seed(page, [row({
+          pageId: 'page-used-0001', text: 'übernommen', createdAt: at, updatedAt: suiteNow() - HOUR,
+          usedIn: [{ f: 'bemerkungen', r: '1. SR', g: 'game-1', label: 'Volley Smash Wiedikon 3 vs TV Unterstrass Herren 2', t: suiteNow() - HOUR }],
+        })]);
+        await stubSignedInApp(page);
+        await page.goto('/');
+        await openPad(page);
+        await expect(pageBox(page)).toHaveText('übernommen');
+        for (const el of [sheet(page).getByText(/^Erstellt /), sheet(page).getByText(/^Wird am .* gelöscht$/)]) {
+          const b = (await el.boundingBox())!;
+          expect(b.height, `"${await el.textContent()}" on one line`).toBeLessThanOrEqual(18);
+        }
+        await expect(sheet(page).getByText(/übernommen →/)).toBeVisible();
+        const sw = (await sideInk(page).boundingBox())!;
+        const turner = (await sheet(page).getByRole('button', { name: /^Ältere Seite$/ }).boundingBox())!;
+        expect(Math.abs((sw.y + sw.height / 2) - (turner.y + turner.height / 2))).toBeLessThan(8);
+        expect(turner.x + turner.width).toBeLessThanOrEqual(vp.width);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+      });
+    }
+  });
+});
+
+test.describe('What the page and the dialogs say', () => {
+  test('one line break after the text does not bring the placeholder back; an empty page and an empty form field still show it', async ({ page }) => {
+    await seed(page, [row({ pageId: 'page-br-0001', text: 'Hallo\n' })]);
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openFeedbackForm(page);
+    const before = (el: ReturnType<Page['locator']>) => el.evaluate((n) => getComputedStyle(n, '::before').content);
+    const remarks = page.locator('.rich-surface:not(.notebook-surface)').first();
+    expect(await before(remarks)).not.toBe('none');
+    await remarks.click();
+    await page.keyboard.type('x');
+    await expect.poll(() => before(remarks)).toBe('none');
+    await openPad(page);
+    await expect(pageBox(page)).toContainText('Hallo');
+    expect(await before(pageBox(page))).not.toMatch(/Schreib|Write/);
+    await newPage(page).click();
+    await expect(pageBox(page)).toHaveText('');
+    expect(await before(pageBox(page))).toMatch(/Schreib hier|Write here/);
+  });
+
+  test('Handschrift leeren says the typed text stays only where there is some', async ({ page }) => {
+    const at = suiteNow() - HOUR;
+    await seed(page, [
+      row({ pageId: 'page-inkonly-001', kind: 'ink', points: 12, createdAt: at }),
+      row({ pageId: 'page-inktext-001', kind: 'ink', text: 'bleibt', points: 12, createdAt: at - 10 * 60_000 }),
+    ], [{ pageId: 'page-inkonly-001', strokes: [STROKE, STROKE, STROKE, STROKE] }, { pageId: 'page-inktext-001', strokes: [STROKE, STROKE, STROKE, STROKE] }]);
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await expect(paper(page)).toBeVisible();
+    const clear = sheet(page).getByRole('button', { name: /^(Handschrift leeren|Clear handwriting)$/ });
+    await expect(clear).toBeEnabled();
+    await clear.click();
+    await expect(page.getByTestId('confirm-message')).toHaveText(/^(Alle Striche auf dieser Seite werden gelöscht\.|Every stroke on this page is removed\.)$/);
+    await page.getByTestId('confirm-cancel').click();
+    await sheet(page).getByRole('button', { name: /^(Ältere Seite|Older page)$/ }).click();
+    await expect(clear).toBeEnabled();
+    await clear.click();
+    await expect(page.getByTestId('confirm-message')).toHaveText(/getippte Text bleibt|typed text stays/);
+    await page.getByTestId('confirm-cancel').click();
   });
 });

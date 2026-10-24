@@ -407,6 +407,38 @@ test('a phone in fullscreen: the page keeps the A4 shape, so the ink lands under
   expect(Math.abs(d[1] / 10 - 1414 * 0.85)).toBeLessThan(2);
 });
 
+test('a whole page within a hair of the page width is the same view: the level button is off there', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    try { localStorage.setItem('svrz_pad_full', '1'); } catch { /* private mode */ }
+    // An iPhone: no fullscreen API, the sheet's own fullscreen layout is the
+    // whole feature, and Safari's toolbar changes the height under it. (A
+    // browser in real fullscreen would not let the window be resized here.)
+    Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, get: () => false });
+  });
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await expect(sheet(page)).toHaveAttribute('data-full', 'true');
+  // In fullscreen the stage grows with the window's height one for one. The
+  // window is made as tall as puts the whole page at 0.997 of the width
+  // (about 390 × 810): inside the snap, so the page width opens as the whole
+  // page and the two are one view.
+  const s0 = await box(page, 'stage');
+  const target = 16 + ((s0.width - 16) / 1000) * 1414 * 0.997;
+  await page.setViewportSize({ width: 390, height: Math.round(844 - s0.height + target) });
+  await expect.poll(async () => Math.abs((await box(page, 'stage')).height - target)).toBeLessThan(1);
+  const s = await box(page, 'stage');
+  const min = ((s.height - 16) / 1414) / ((s.width - 16) / 1000);
+  expect(min).toBeGreaterThan(0.995);
+  expect(min).toBeLessThan(0.999);
+  const level = sheet(page).getByTestId('ink-zoom');
+  await expect(stage(page)).toHaveAttribute('data-zoom', '1.00');
+  await expect(level).toHaveAccessibleName(/^100 % — (Seitenbreite|Page width)$/);
+  // It was on, and a tap did nothing: the page width snapped back to this view.
+  await expect(level).toBeDisabled();
+});
+
 test.describe('the pen toolbar on an iPad, in German (its longest labels)', () => {
   test.use({ locale: 'de-CH' });
   // An iPad mini in portrait (744 wide) cut 'Finger' to 'F' once the zoom

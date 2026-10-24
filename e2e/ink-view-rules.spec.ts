@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import {
-  PAGE_H, PAGE_W, VIEW_MARGIN, clampView, clampZoom, fitPageScale, fitWidthScale, fromPage, pageVisibleWhole, pinchView, panBy, resizeView, scaleOf,
+  PAGE_H, PAGE_W, VIEW_MARGIN, WHOLE_PAGE_SNAP, clampView, clampZoom, fitPageScale, fitWidthScale, fromPage, pageVisibleWhole, pinchView, panBy, resizeView, scaleOf,
   toPage, topView, visibleRect, zoomAbout, zoomRange, zoomStepIn, zoomStepOut, type Stage, type View,
 } from '../src/lib/inkView';
 
@@ -91,6 +91,23 @@ test('a level a hair above the whole page is the whole page: a remembered level 
     }
     // A level the coach chose just above it stays hers.
     if (min < 1) expect(clampZoom(st, min * 1.02)).toBeCloseTo(min * 1.02, 12);
+  }
+});
+
+test('a whole page within the snap of the page width IS the page width: one view, nothing for the level button to switch', () => {
+  // 390 × 810 in fullscreen: the whole page is 0.9975 of the width, and the
+  // page width snaps down to it. The sheet's level button asks the same
+  // question (1 - min against WHOLE_PAGE_SNAP), so it is off there.
+  const st: Stage = { w: 390, h: 543.5 };
+  const { min } = zoomRange(st);
+  expect(min).toBeGreaterThan(0.995);
+  expect(min).toBeLessThan(0.999);
+  expect(clampZoom(st, 1)).toBe(min);
+  // Over a phone's heights around it, the snap and that question agree.
+  for (let h = 530; h <= 560; h += 0.25) {
+    const s: Stage = { w: 390, h };
+    const r = zoomRange(s);
+    expect(clampZoom(s, 1) === r.min, `stage 390 × ${h}`).toBe(1 - r.min <= WHOLE_PAGE_SNAP);
   }
 });
 

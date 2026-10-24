@@ -30,6 +30,7 @@ import StaleBuildNotice from './StaleBuildNotice';
 import NoteTimes from './NoteTimes';
 import { importFresh } from '../lib/freshImport';
 import { PEN_TRAILING_MS } from '../lib/inkInput';
+import { WHOLE_PAGE_SNAP } from '../lib/inkView';
 import type { InkPadControl, InkTool, InkZoom } from './InkPad';
 
 // perfect-freehand and the canvas code load the first time a coach opens a
@@ -398,9 +399,13 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   // page: to the whole page from any other view, back to the width from
   // there. It showed '100 %' and made the page smaller, and a second tap did
   // nothing (final review, 24.10.2026). Where the whole page fits at its
-  // width (a phone held upright, in fullscreen) there is nothing to switch.
+  // width (a phone held upright, in fullscreen) there is nothing to switch,
+  // nor where it is within WHOLE_PAGE_SNAP of the width: the view snaps the
+  // width down to the whole page there, and the button was on but did
+  // nothing (390 × 810 in fullscreen, final check). The test is the snap's
+  // own, 1 against the whole page (lib/inkView.ts clampZoom).
   const zoomAtWhole = !!inkZoom && inkZoom.z <= inkZoom.min + 0.001;
-  const zoomSwitches = !!inkZoom && inkZoom.min < 1 - 0.001;
+  const zoomSwitches = !!inkZoom && 1 - inkZoom.min > WHOLE_PAGE_SNAP;
   const zoomAction = zoomAtWhole ? tp.padZoomWidth : tp.padZoomFit;
   const onStrokeEnd = (stroke: InkStroke) => commitInk({ ...inkPage, strokes: [...inkPage.strokes, stroke] });
   const onErase = (strokes: InkStroke[]) => {

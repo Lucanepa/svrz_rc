@@ -875,10 +875,18 @@ test('a pen page sent to the background files its counts then, in the batch that
     navigator.sendBeacon = (_url: string | URL, data?: BodyInit | null) => { void new Response(data ?? '').text().then((t) => sent.push(t)); return true; };
   });
   await stubSignedInApp(page);
+  let shipped = 0;
+  await page.route('**/api/client-logs', (r) => { shipped += 1; return r.fulfill({ json: { ok: true } }); });
   await page.goto('/');
   await openPenPage(page);
   await syntheticStroke(page, { pointerType: 'pen', pointerId: 7, pressure: 0.3 }, [[0.2, 0.2], [0.4, 0.3], [0.6, 0.35]]);
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+  // The boot's lines go first, with the logger's own five-second flush: a
+  // batch is 60 lines, and a run slow enough to reach the hide before that
+  // flush had 57 waiting — the new-page click and the side switch (two
+  // clicks where there was one) pushed the counts into the next batch, not
+  // the beacon (24.10.2026). What is under test is the line the hide adds.
+  await expect.poll(() => shipped, SYNC).toBeGreaterThan(0);
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
     document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));

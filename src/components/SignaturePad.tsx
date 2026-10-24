@@ -16,8 +16,8 @@ import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef } f
 import type { StrokeOptions } from 'perfect-freehand';
 import { freehandPath, type InkSample } from '../lib/inkPath';
 
-export const PAD_W = 1000;
-export const PAD_H = 400;
+const PAD_W = 1000;
+const PAD_H = 400;
 
 /** One stroke: who drew it, and flat [x, y, pressure] triples in pad units.
  *  Pressure is what the pen reported (0 = none); finger and mouse store 0. */
@@ -105,7 +105,7 @@ function strokePath(stroke: SigStroke, last: boolean): Path2D | null {
 }
 
 /** Total length of the ink, in pad units. */
-export function inkLength(strokes: SigStroke[]): number {
+function inkLength(strokes: SigStroke[]): number {
   let total = 0;
   for (const { pts } of strokes) {
     for (let i = 3; i + 1 < pts.length; i += 3) total += Math.hypot(pts[i] - pts[i - 3], pts[i + 1] - pts[i - 2]);

@@ -2073,7 +2073,6 @@ export default function App() {
    *  signs to acknowledge the discussion, the coach for what the form says;
    *  both use the same pad and the same QR hand-off to a phone. */
   const [sigFor, setSigFor] = useState<{ gameId: string; role: string; target: 'referee' | 'rc'; key: string } | null>(null);
-  const sigTarget = sigFor?.target ?? 'referee';
   /** Half-drawn signatures per form, so a close nobody chose (a Back swipe, a
    *  navigation, the dialog unmounting) does not cost the ink: reopening the
    *  same form brings it back. Memory only — half a signature on disk helps
@@ -2088,7 +2087,7 @@ export default function App() {
   const [sigFlushToken, setSigFlushToken] = useState(0);
   const sigSignerName = (target: 'referee' | 'rc') =>
     target === 'rc' ? (formData.meta.rc || '') : formData.meta.srName;
-  const updateSignature = (data: string, target: 'referee' | 'rc' = sigTarget) => {
+  const updateSignature = (data: string, target: 'referee' | 'rc') => {
     setFormData(prev => (target === 'rc'
       ? { ...prev, rcSignature: data }
       // Ink from the referee answers the refusal: the two never stand together.

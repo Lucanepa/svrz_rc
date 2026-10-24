@@ -112,7 +112,7 @@ test("a page with no title of its own never wears the last page's", async ({ pag
   await expect(titleBox(page)).toHaveValue('Urs 2SR');
 
   // A page not yet written is nameless too, however it was reached.
-  await sheet(page).getByRole('button', { name: /^(Text)$/ }).click();
+  await sheet(page).getByTestId('pad-new-text').click();
   await expect(titleBox(page)).toHaveValue('');
 });
 
@@ -124,7 +124,7 @@ test('naming a new page keeps the caret in the name, and makes one page', async 
   await seedPad(page, [OLDER, NEWER]);
   await page.goto('/');
   await launcher(page).click();
-  await sheet(page).getByRole('button', { name: /^(Text)$/ }).click();
+  await sheet(page).getByTestId('pad-new-text').click();
 
   await titleBox(page).click();
   await page.keyboard.type('Halbzeit');

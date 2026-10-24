@@ -38,7 +38,8 @@ const pad = (page: Page) => sheet(page).getByTestId('ink-page');
 
 async function openPenPage(page: Page, court = false): Promise<void> {
   await launcher(page).click();
-  await sheet(page).getByRole('button', { name: /^(Stift|Pen)$/ }).click();
+  // By test id: the black pen in the toolbar is called "Stift" too.
+  await sheet(page).getByTestId('pad-new-ink').click();
   await expect(pad(page)).toBeVisible();
   if (court) await sheet(page).getByRole('button', { name: /^(Spielfeld|Court)$/ }).click();
 }

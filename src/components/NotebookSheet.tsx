@@ -556,10 +556,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                 {pages.map(pill)}
               </div>
               <div className="shrink-0 flex items-center gap-1.5">
-                <button type="button" onClick={() => newPage('text')} disabled={pagesPending} className="disabled:opacity-40 h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
+                <button type="button" onClick={() => newPage('text')} disabled={pagesPending} data-testid="pad-new-text" className="disabled:opacity-40 h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
                   <Plus size={13} /><Pencil size={12} /> {tp.padTextPageShort}
                 </button>
-                <button type="button" onClick={() => newPage('ink')} disabled={pagesPending} className="disabled:opacity-40 h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
+                <button type="button" onClick={() => newPage('ink')} disabled={pagesPending} data-testid="pad-new-ink" className="disabled:opacity-40 h-8 px-2.5 inline-flex items-center gap-1 rounded-lg bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800">
                   <Plus size={13} /><PenLine size={12} /> {tp.padInkPageShort}
                 </button>
               </div>

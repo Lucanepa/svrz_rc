@@ -44,7 +44,9 @@ export type InkPadControl = {
   zoomOut(): void;
   /** The whole page. */
   zoomFit(): void;
-  /** performance.now() of the last pen event, touching or hovering; 0 = none yet. */
+  /** performance.now() of the pen's last contact with the page (down, a move
+   *  while touching, up); 0 = none yet. Hover does not count: a coach holding
+   *  the Pencil over the page still taps the toolbar with the other hand. */
   lastPenAt(): number;
 };
 
@@ -262,7 +264,10 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   let active: Active | null = null;
   const touches = new Map<number, TouchState>();
   let gesture: Gesture | null = null;
+  /** The pen's last event, hover included: a touch this soon after is a palm. */
   let penAt = 0;
+  /** The pen's last contact, hover not included: what the sheet's buttons ask. */
+  let penContactAt = 0;
   let penSeen = false;
   let wheelTimer = 0; let wheelZ0: number | null = null;
   let webkitGesture: { z0: number } | null = null;
@@ -614,7 +619,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     const now = performance.now();
     const p = props();
     if (e.pointerType === 'pen') {
-      penAt = now;
+      penAt = now; penContactAt = now;
       if (!penSeen) { penSeen = true; p.onPenSeen(); }
       // The hand landed first and moved the page: put it back.
       if (gesture) { if (gesture.engaged && now - gesture.engagedAt < PALM_LEAD_MS) setView(gesture.origin, true); endGesture(); }
@@ -632,9 +637,13 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
 
   const onMove = (e: PointerEvent) => {
     const now = performance.now();
-    // Hovering counts: an iPad Pro sees the Pencil before it touches.
-    if (e.pointerType === 'pen') penAt = now;
     const a = active;
+    // Hovering counts for the page's palm rule (an iPad Pro sees the Pencil
+    // before it touches), but only a touching pen for the sheet's buttons.
+    if (e.pointerType === 'pen') {
+      penAt = now;
+      if (e.buttons > 0 || (a && a.pointerId === e.pointerId)) penContactAt = now;
+    }
     if (a && e.pointerId === a.pointerId) {
       // Gated on the tracked pointer, never on e.buttons (synthetic moves carry 0).
       e.preventDefault();
@@ -654,7 +663,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
 
   const onEnd = (e: PointerEvent, cancelled: boolean) => {
     const now = performance.now();
-    if (e.pointerType === 'pen') penAt = now;
+    if (e.pointerType === 'pen') { penAt = now; penContactAt = now; }
     if (active && e.pointerId === active.pointerId) finish(e, cancelled);
     if (touches.has(e.pointerId)) {
       touches.delete(e.pointerId);
@@ -781,7 +790,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       setView(zoomAbout(stageSize, view, zoomRange(stageSize).min, stageSize.w / 2, stageSize.h / 2), true);
       report(true);
     },
-    lastPenAt: () => penAt,
+    lastPenAt: () => penContactAt,
     destroy() {
       stage.removeEventListener('pointerdown', onDown);
       stage.removeEventListener('pointermove', onMove);

@@ -351,29 +351,73 @@ test('the writing hand on the sheet: a touch on its buttons right after the pen 
   await stubSignedInApp(page);
   await page.goto('/');
   await openPenPage(page);
-  const undo = sheet(page).getByRole('button', { name: /^(Rückgängig|Undo)$/ });
   await mouseStroke(page, 0.1, 0.2, 0.5, 0.25);
   await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
-  // In one go: the pen writes, and the palm lands on Rückgängig as it lifts.
-  const box = (await pad(page).boundingBox())!;
-  await page.evaluate((b) => {
+  /** In one go, so the 500 ms window is not the runner's: the pen on the page
+   *  and whatever `after` names happening to Rückgängig. (One stroke ending
+   *  per call: two in one synchronous go would end before the sheet renders
+   *  the first, which no hand can do.) */
+  const penThen = (after: 'tap-18.2' | 'tap-letter-between' | 'pen-tap' | 'hover-then-finger') => page.evaluate(async ([b, kind]) => {
     const target = document.querySelector('[data-testid="ink-stage"] canvas')!;
-    const pen = (type: string, fx: number) => new PointerEvent(type, { bubbles: true, cancelable: true, isPrimary: true, buttons: type === 'pointerup' ? 0 : 1, pointerType: 'pen', pointerId: 7, pressure: 0.4, clientX: b.x + b.width * fx, clientY: b.y + b.height * 0.5 });
-    target.dispatchEvent(pen('pointerdown', 0.2));
-    target.dispatchEvent(pen('pointermove', 0.4));
-    window.dispatchEvent(pen('pointerup', 0.4));
-    const button = [...document.querySelectorAll('button')].find((el) => /^(Rückgängig|Undo)$/.test(el.getAttribute('aria-label') || ''))!;
-    button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'touch', pointerId: 30, width: 60, height: 60 }));
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-  }, box);
-  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(2);
-  await page.waitForTimeout(300);
-  expect((await storedInk(page))[0].page.strokes).toHaveLength(2);
-  // Once the pen has been away for a moment, a finger's tap is a tap again.
-  await page.waitForTimeout(300);
-  await undo.dispatchEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'touch', pointerId: 31, width: 20, height: 20 });
-  await undo.dispatchEvent('click');
-  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+    const undo = [...document.querySelectorAll('button')].find((el) => /^(Rückgängig|Undo)$/.test(el.getAttribute('aria-label') || ''))!;
+    const pen = (type: string, fx: number, buttons = type === 'pointerup' ? 0 : 1) => new PointerEvent(type, { bubbles: true, cancelable: true, isPrimary: true, buttons, pointerType: 'pen', pointerId: 7, pressure: buttons ? 0.4 : 0, clientX: b.x + b.width * fx, clientY: b.y + b.height * 0.5 });
+    const touch = (type: string) => new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: 'touch', pointerId: 30, width: 30, height: 30 });
+    if (kind === 'tap-18.2' || kind === 'pen-tap') {
+      target.dispatchEvent(pen('pointerdown', 0.2));
+      target.dispatchEvent(pen('pointermove', 0.4));
+      window.dispatchEvent(pen('pointerup', 0.4));
+    }
+    if (kind === 'tap-18.2') {
+      // iPadOS Safari 18.2 and later: the tap's click is a PointerEvent that
+      // says 'mouse' (WebKit bug 282988).
+      undo.dispatchEvent(touch('pointerdown'));
+      undo.dispatchEvent(touch('pointerup'));
+      undo.dispatchEvent(new PointerEvent('click', { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+    } else if (kind === 'tap-letter-between') {
+      // Safari before 18.2 (a MouseEvent click), and the pen's next letter
+      // starts between the palm landing and its click.
+      undo.dispatchEvent(touch('pointerdown'));
+      target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, isPrimary: true, buttons: 1, pointerType: 'pen', pointerId: 8, pressure: 0.4, clientX: b.x + b.width * 0.6, clientY: b.y + b.height * 0.5 }));
+      target.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, isPrimary: true, buttons: 1, pointerType: 'pen', pointerId: 8, pressure: 0.4, clientX: b.x + b.width * 0.7, clientY: b.y + b.height * 0.5 }));
+      undo.dispatchEvent(touch('pointerup'));
+      undo.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'pen', pointerId: 8, clientX: b.x + b.width * 0.7, clientY: b.y + b.height * 0.5 }));
+    } else if (kind === 'pen-tap') {
+      // The Pencil itself on the button is a deliberate tap, whatever the
+      // click calls itself. (After a render: a tap a person makes comes in a
+      // later task, when the sheet already holds the stroke.)
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      undo.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'pen', pointerId: 7, buttons: 1, pressure: 0.4 }));
+      undo.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'pen', pointerId: 7 }));
+      undo.dispatchEvent(new PointerEvent('click', { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+    } else {
+      // The Pencil hovering over the page (an iPad Pro sees it before it
+      // touches) while the other hand taps the button: that tap is meant.
+      for (const fx of [0.3, 0.35, 0.4]) target.dispatchEvent(pen('pointermove', fx, 0));
+      undo.dispatchEvent(touch('pointerdown'));
+      undo.dispatchEvent(touch('pointerup'));
+      undo.dispatchEvent(new PointerEvent('click', { bubbles: true, cancelable: true, pointerType: 'touch' }));
+    }
+  }, [box, after] as const);
+  const box = (await pad(page).boundingBox())!;
+  const strokes = async () => (await storedInk(page))[0]?.page.strokes.length;
+
+  // The palm lands on Rückgängig as the pen lifts: the stroke stays. (Had
+  // the tap gone through, the stroke and the undo would reach IndexedDB in
+  // one debounced write, and 2 would never be read.)
+  await penThen('tap-18.2');
+  await expect.poll(strokes, SYNC).toBe(2);
+  await penThen('tap-letter-between');
+  await expect.poll(strokes, SYNC).toBe(3);
+  // The Pencil tapping Rückgängig right after writing undoes the stroke it just wrote.
+  await penThen('pen-tap');
+  await page.waitForTimeout(2_500);
+  expect(await strokes()).toBe(3);
+  // Once the pen has been off the page for a moment, a finger's tap is a tap
+  // again, even with the Pencil hovering over the page.
+  await page.waitForTimeout(600);
+  await penThen('hover-then-finger');
+  await expect.poll(strokes, SYNC).toBe(2);
   // A palm beside the sheet does not close it; a mouse click there does.
   const backdrop = sheet(page).locator('xpath=..');
   await backdrop.dispatchEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'touch', pointerId: 32, width: 120, height: 120 });
@@ -382,6 +426,40 @@ test('the writing hand on the sheet: a touch on its buttons right after the pen 
   await expect(sheet(page)).toBeVisible();
   await page.mouse.click(5, 5);
   await expect(sheet(page)).toHaveCount(0);
+});
+
+test('a real tap on Rückgängig right after the pen is the writing hand, a tap later is a tap', async ({ page, hasTouch }) => {
+  test.skip(!hasTouch, 'A touch screen only');
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await openPenPage(page);
+  await mouseStroke(page, 0.1, 0.2, 0.5, 0.25);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+  const undo = sheet(page).getByRole('button', { name: /^(Rückgängig|Undo)$/ });
+  await undo.scrollIntoViewIfNeeded();
+  const u = (await undo.boundingBox())!;
+  const p = (await pad(page).boundingBox())!;
+  // A trusted tap: in WebKit its click says 'mouse', as on an iPad since 18.2.
+  await page.evaluate(() => {
+    const w = window as unknown as { __penUpAt: number; __clickAt: number };
+    w.__clickAt = 0;
+    document.addEventListener('click', () => { if (!w.__clickAt) w.__clickAt = performance.now(); }, true);
+  });
+  await page.evaluate((b) => {
+    (window as unknown as { __penUpAt: number }).__penUpAt = performance.now();
+    const target = document.querySelector('[data-testid="ink-stage"] canvas')!;
+    const pen = (type: string, fx: number) => new PointerEvent(type, { bubbles: true, cancelable: true, isPrimary: true, buttons: type === 'pointerup' ? 0 : 1, pointerType: 'pen', pointerId: 7, pressure: 0.4, clientX: b.x + b.width * fx, clientY: b.y + b.height * 0.5 });
+    target.dispatchEvent(pen('pointerdown', 0.2));
+    target.dispatchEvent(pen('pointermove', 0.4));
+    window.dispatchEvent(pen('pointerup', 0.4));
+  }, p);
+  await page.touchscreen.tap(u.x + u.width / 2, u.y + u.height / 2);
+  const gap = await page.evaluate(() => { const w = window as unknown as { __penUpAt: number; __clickAt: number }; return w.__clickAt - w.__penUpAt; });
+  expect(gap, 'the tap must come within the 500 ms the guard holds').toBeLessThan(450);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(2);
+  await page.waitForTimeout(600);
+  await page.touchscreen.tap(u.x + u.width / 2, u.y + u.height / 2);
+  await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
 });
 
 test('a pen page files one line of counts when it is left, never a coordinate', async ({ page }) => {

@@ -72,6 +72,9 @@ const TIMES_KEY = 'svrz_pad_times';
 const ZOOM_KEY = 'svrz_ink_zoom';
 /** A touch on the sheet's buttons this soon after the pen is the writing hand. */
 const PALM_CLICK_MS = 500;
+/** A click this soon after a touch went down or up on its button is that
+ *  touch's click (iOS sends it within a few hundred ms of the lift). */
+const TAP_CLICK_MS = 1000;
 
 function readPref(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -158,24 +161,44 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   // Finger turned finger drawing on. A touch's click this soon after the pen is
   // swallowed here, in the capture phase, before any button sees it — the
   // signature dialog's failure, on the notebook (Jennifer, 23.10.2026).
+  //
+  // Which pointer made a click is read from the touches themselves, by the
+  // element they landed on. The click's own pointerType cannot be trusted:
+  // iPadOS Safari 18.2 and later call a tap's click 'mouse' (WebKit bug
+  // 282988), and before that it was a plain MouseEvent. Nor can "the last
+  // pointerdown in the panel": the pen's next letter lands between the palm's
+  // pointerdown and its click.
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
-    let downType = ''; let downAt = 0;
-    const onDown = (e: PointerEvent) => { downType = e.pointerType; downAt = performance.now(); };
+    const touched: { target: Node; at: number }[] = [];
+    const onTouch = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' || !(e.target instanceof Node)) return;
+      touched.push({ target: e.target, at: performance.now() });
+      if (touched.length > 8) touched.shift();
+    };
+    const byTouch = (e: MouseEvent): boolean => {
+      if ((e as PointerEvent).pointerType === 'touch') return true;
+      const target = e.target instanceof Node ? e.target : null;
+      const now = performance.now();
+      // The click goes to the element the touch hit, or to one around it.
+      return !!target && touched.some((t) => now - t.at < TAP_CLICK_MS && target.contains(t.target));
+    };
     const onClick = (e: MouseEvent) => {
-      // Chrome and Safari 18.2 make the click itself a PointerEvent; before
-      // that, the pointerdown that led to it says what it was.
-      const type = 'pointerType' in e ? (e as PointerEvent).pointerType : performance.now() - downAt < 1000 ? downType : '';
-      if (type !== 'touch') return;
+      if (!byTouch(e)) return;
       const penAt = inkControl.current?.lastPenAt() ?? 0;
       if (!penAt || performance.now() - penAt >= PALM_CLICK_MS) return;
       e.preventDefault();
       e.stopPropagation();
     };
-    panel.addEventListener('pointerdown', onDown, true);
+    panel.addEventListener('pointerdown', onTouch, true);
+    panel.addEventListener('pointerup', onTouch, true);
     panel.addEventListener('click', onClick, true);
-    return () => { panel.removeEventListener('pointerdown', onDown, true); panel.removeEventListener('click', onClick, true); };
+    return () => {
+      panel.removeEventListener('pointerdown', onTouch, true);
+      panel.removeEventListener('pointerup', onTouch, true);
+      panel.removeEventListener('click', onClick, true);
+    };
   }, []);
 
   // Escape peels this menu first. App.tsx keeps a window-level Escape handler

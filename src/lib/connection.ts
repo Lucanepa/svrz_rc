@@ -64,12 +64,19 @@ export function isTimedRead(method: string, url: string): boolean {
 
 /** Priority, most urgent first. A read pending right now is fresher news than
  *  how the last one ended, so "slow" outranks "unreachable" while a retry is
- *  in flight. */
-export function deriveState(online: boolean, slowPending: number, last: Outcome): ConnectionState {
+ *  in flight.
+ *
+ *  "Showing the last-loaded data" is only true once nothing is still on its
+ *  way. On 25.10.2026 the session probe came back from the cache while the
+ *  Home dashboard — not cached yet, and only started after settings — was
+ *  still loading: the banner said "last-loaded data" over a spinner. While
+ *  any read is pending after a cached answer, the app is still waiting, and
+ *  says so. */
+export function deriveState(online: boolean, slowPending: number, last: Outcome, readsPending = 0): ConnectionState {
   if (!online) return 'offline';
   if (slowPending > 0) return 'slow';
   if (last === 'unreachable') return 'unreachable';
-  if (last === 'stale') return 'stale';
+  if (last === 'stale') return readsPending > 0 ? 'slow' : 'stale';
   return 'ok';
 }
 
@@ -84,6 +91,8 @@ type Timer = ReturnType<typeof setTimeout>;
 export class ConnectionTracker {
   private online: boolean;
   private slowPending = 0;
+  /** Timed reads in flight, slow or not yet. */
+  private readsPending = 0;
   private last: Outcome = 'ok';
   /** URL → when the service worker last said it answered it from cache. */
   private cacheHits = new Map<string, number>();
@@ -92,7 +101,7 @@ export class ConnectionTracker {
 
   constructor(online = true, private now: () => number = () => Date.now()) {
     this.online = online;
-    this.state = deriveState(this.online, 0, this.last);
+    this.state = deriveState(this.online, 0, this.last, 0);
   }
 
   get(): ConnectionState { return this.state; }
@@ -134,12 +143,16 @@ export class ConnectionTracker {
     const startedAt = this.now();
     let slowTimer: Timer | null = null;
     let slow = false;
+    let reading = false;
     if (api && isTimedRead(method, url)) {
+      reading = true;
+      this.readsPending++;
       slowTimer = setTimeout(() => { slow = true; this.slowPending++; this.emit(); }, SLOW_AFTER_MS);
     }
     const end = () => {
       if (slowTimer) clearTimeout(slowTimer);
       if (slow) { this.slowPending--; slow = false; }
+      if (reading) { this.readsPending--; reading = false; }
     };
     return {
       answered: (ms: number) => {
@@ -167,7 +180,7 @@ export class ConnectionTracker {
   }
 
   private emit(): void {
-    const next = deriveState(this.online, this.slowPending, this.last);
+    const next = deriveState(this.online, this.slowPending, this.last, this.readsPending);
     if (next === this.state) return;
     this.state = next;
     for (const listener of this.listeners) listener();

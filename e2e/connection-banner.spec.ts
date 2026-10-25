@@ -19,6 +19,9 @@ test.describe('rules', () => {
     expect(deriveState(true, 0, 'unreachable')).toBe('unreachable');
     expect(deriveState(true, 1, 'unreachable')).toBe('slow');
     expect(deriveState(false, 1, 'ok')).toBe('offline');
+    // A cached answer with another read still on its way is still waiting.
+    expect(deriveState(true, 0, 'stale', 1)).toBe('slow');
+    expect(deriveState(true, 0, 'ok', 1)).toBe('ok');
   });
 
   test('only everyday API reads start the slow clock', () => {
@@ -56,6 +59,17 @@ test.describe('rules', () => {
     tracker.noteCacheHit('https://api.example/api/settings');
     req.answered(6010);
     await new Promise((r) => setTimeout(r, 250));
+    expect(tracker.get()).toBe('stale');
+
+    // 25.10.2026: the probe came from the cache while the dashboard was still
+    // loading — "last-loaded data" over a spinner. Not while a read is pending.
+    const dashboard = tracker.start('GET', 'https://api.example/api/rc-overview');
+    const probe = tracker.start('GET', 'https://api.example/api/auth/me');
+    tracker.noteCacheHit('https://api.example/api/auth/me');
+    probe.answered(6050);
+    await new Promise((r) => setTimeout(r, 250));
+    expect(tracker.get()).toBe('slow');
+    dashboard.dropped();
     expect(tracker.get()).toBe('stale');
 
     // A cancelled request says nothing about the network.

@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { test, expect, type Page } from '@playwright/test';
 import { mergeNotebookPayload, sanitizeNotebookPage } from '../server/notebook';
 import { stubSignedInApp, RC, suiteNow } from './support/app';
@@ -562,6 +564,47 @@ test.describe('Strokes that are not known to be current', () => {
     expect(pushedFor(pushes, id).filter((w) => !(w as { deleted?: boolean }).deleted)).toEqual([]);
     expect((await pageRow(page, id))?.deleted).toBe(true);
     expect(await inkWidths(page, id)).toBeUndefined();
+  });
+
+  test('a big page on a slow link loads: the wait ends when the answer stops coming, not while it comes', async ({ page, browserName }) => {
+    // 773 kB at 24 kB/s takes half a minute, and a cap on the whole fetch cut
+    // it at 25 s on every try (N2). The page's clock is Playwright's: it runs
+    // on by 3 s at a time while the answer trickles in, 40 s in all. The
+    // answer comes from a server of the test's own, in pieces, by way of the
+    // route: WebKit's interception fails a request sent on to another host
+    // ("Load failed", probed 25.10.2026), so there the rule — the fetch
+    // code's, not the engine's — goes unchecked.
+    test.skip(browserName === 'webkit', 'WebKit cannot route a request on to the slow server');
+    await page.clock.install({ time: suiteNow() });
+    const at = suiteNow() - HOUR;
+    const id = 'page-slow-00001';
+    const strokes = Array.from({ length: 30 }, () => THEIRS);
+    const listedRow = listed({ pageId: id, kind: 'ink', points: 90, createdAt: at });
+    const body = JSON.stringify({ ownerId: RC.id, page: { ...listedRow, ink: { w: 1000, h: 1414, strokes } } });
+    const parts = 16;
+    const size = Math.ceil(body.length / parts);
+    const slow = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': String(req.headers.origin || '*'), 'Access-Control-Allow-Credentials': 'true' });
+      let i = 0;
+      const next = () => { res.write(body.slice(i * size, (i + 1) * size)); i += 1; if (i < parts) setTimeout(next, 250); else res.end(); };
+      next();
+    });
+    await new Promise<void>((resolve) => slow.listen(0, '127.0.0.1', resolve));
+    const port = (slow.address() as AddressInfo).port;
+    try {
+      await stubSignedInApp(page);
+      await stubNotebook(page, { index: [listedRow] });
+      await page.route('**/api/notebook/pages/*', (r) => (r.request().method() === 'GET' ? r.continue({ url: `http://127.0.0.1:${port}/ink` }) : r.fallback()));
+      await page.goto('/');
+      await openPad(page);
+      await expect(inkLoading(page)).toBeVisible(SYNC);
+      for (let k = 0; k < 14; k += 1) { await page.clock.fastForward(3_000); await page.waitForTimeout(300); }
+      await expect.poll(() => inkWidths(page, id), SYNC).toEqual(strokes.map(() => 7));
+      await expect(inkFailed(page)).toHaveCount(0);
+      await expect(paper(page)).toBeVisible();
+    } finally {
+      slow.close();
+    }
   });
 
   test('a page that never reached the server stays writable with the network gone', async ({ page }) => {

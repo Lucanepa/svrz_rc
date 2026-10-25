@@ -62,9 +62,11 @@
 /* The contenteditable the remarks are written in. A placeholder needs faking —
    there is no attribute for it — and the formatting has to look on screen like
    it will in the PDF, so <s> and <u> are spelled out rather than left to the
-   browser's defaults. */
+   browser's defaults. "Nothing written" is the surface's own word for it
+   (data-empty, set in RichText.tsx): a rule for "only a <br>" also matched a
+   line of text followed by one, a text node being no element (25.10.2026). */
 .rich-surface:empty::before,
-.rich-surface:has(> br:only-child)::before {
+.rich-surface[data-empty="true"]::before {
   content: attr(data-placeholder);
   color: var(--color-stone-300, #d6d3d1);
   pointer-events: none;

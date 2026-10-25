@@ -10,7 +10,7 @@ Where v1 had one pad per game with referee/set/tone tags, chips on game rows, a 
 
 ## 1. Summary
 
-- **One Notizblock per coach**, reachable from every RC screen through a launcher in the app's chrome. It is a stack of **pages**, newest on top: a **Textseite** (one free-form `<textarea>` — iPadOS Scribble, Samsung S Pen and Gboard write into it natively) or a **Stiftseite** (vector ink, pen-first, finger toggle). No game, no referee, no tags; a page carries only when it was written.
+- **One Notizblock per coach**, reachable from every RC screen through a launcher in the app's chrome. It is a stack of **pages**, newest on top. Every page has two sides (since 24.10.2026, §3.6): **Tippen**, one free-form editor (iPadOS Scribble, Samsung S Pen and Gboard write into it natively), and **Handschrift**, vector ink (pen-first, finger toggle); a switch on the page shows one or the other. No game, no referee, no tags; a page carries only when it was written.
 - **A page lives one week.** Every page shows "wird am {date} gelöscht"; the server deletes rows seven days after they were created, the device purges the same way, and nothing extends it. What must outlive the week goes into the report (import) — that is the whole point of the notebook.
 - **The server is the source of truth** (PocketBase `rc_notebook`, one row per page, owner from the session only, chair and admin console refused); the device store (IndexedDB `svrz-notebook`) is a cache/offline buffer. A wiped phone gets its pages back at the next sign-in. Two devices merge per page (last writer wins per page, tombstones, absence never deletes).
 - **Into the form only on purpose**: on the observation form, the sheet's footer offers **Übernehmen…** — pick text pages, pick the target field, read the sentence that says the text is mailed to the referee with the PDF, insert into the half on screen. Ink is never imported.
@@ -93,9 +93,9 @@ export type NotebookPage = {
   schema: number;
   ownerId: string;        // outboxOwnerId (App.tsx:1505); the only identity that reads it back (formDraft.ts:3-4)
   pageId: string;         // crypto.randomUUID() at creation (pocketbase.ts:734 precedent) — the merge identity
-  kind: PageKind;
-  text: string;           // kind 'text'; '' on ink
-  points: number;         // kind 'ink' — sample count (cheap "is there ink"); 0 for text
+  kind: PageKind;         // since 25.10.2026: the side last WRITTEN (§3.6)
+  text: string;           // the typed side, on any page
+  points: number;         // the handwritten side's sample count (cheap "is there ink"), on any page
   usedIn: PageUse[];      // ≤ 10
   createdAt: number;      // epoch ms, device clock — the page's EXPIRY clock (createdAt + NOTEBOOK_TTL_MS)
   updatedAt: number;      // epoch ms — the LWW version of THIS page; MONOTONIC on every write
@@ -183,6 +183,31 @@ await ensure('rc_notebook', [
 
 `schema: NOTEBOOK_SCHEMA` on every page; `listPages()` filters `(p.schema ?? 1) <= NOTEBOOK_SCHEMA` (formDraft.ts:283-292 policy). A future ink encoding change is `NOTEBOOK_SCHEMA = 2` + a refusal, never a blind migration.
 
+### 3.6 Two sides of a page (24.10.2026; the switch a view since 25.10.2026)
+
+Jennifer (23.10.2026, iPad and Pencil) found "+ Text" / "+ Stift" confusing and asked for one "new page" with a switch inside it between typing and handwriting. Since 24.10.2026:
+
+- **Every page has a typed side and a handwritten side, both optional.** `text` is the typed side on any page; the strokes (own store, `ink` on the wire), the court under them (`bg`) and their count (`points`) are the handwritten side on any page.
+- **Tippen | Handschrift is a view (25.10.2026).** It changes what the sheet shows and nothing else: no new version, no "Bearbeitet", no push, no fetch of its own. The side on screen is kept per page while the sheet is open — pinned when the page comes on screen, so a write that hands the page's kind to the other side, or a pull bringing another device's, does not swap it under the coach — and the device's default for a new page in `svrz_pad_side`. **`kind` keeps its wire values `'text' | 'ink'` and names the side last WRITTEN**: the first stroke on a typed page makes it `'ink'` in the same commit as the stroke, typing on a pen page makes it `'text'`; a side written empty (Rückgängig on the last stroke, every letter deleted) hands the page to the other side when that one holds something (`kindAfterWrite`). A page opens on its kind — reopened, on another device, and in the installed apps, which show that side only: they show the side with the latest writing on it, so a coach does not delete a page that looks empty there and take its other side with it. A page not yet written follows the switch. For a day (24.10.2026) the switch was an edit of `kind`: every look at the other side was a new version, a "Bearbeitet" and a push.
+- **A round trip keeps each side as it was left**: the typed side its caret (character offsets, restored by the surface itself — StrictMode runs a new surface's effects after its parent's) and its scroll, the handwriting its zoom and its place (`InkPad initialView`). A page turn still opens at the top. A stroke still on the page when a key turns the side or the page goes onto it first (`endStroke`).
+- **`NOTEBOOK_SCHEMA` stays 1.** The installed apps 1.3.6 and 1.3.7 bundle the old frontend and keep running for a while; a schema bump would hide every new page from them. They read `kind` and show that side only — acceptable — and must never destroy the other one.
+- **The wire:** a page this frontend vouches for carries `both: true` ("this client knows both sides"); the server reads it per request and never stores it. Strokes travel only when they changed on this device since the server last acknowledged them, for a page the server never confirmed (`savedAt === ''`), and after a reload once for every page still waiting — in a request of their own; every other push is metadata-only and the server keeps the strokes it holds.
+- **The server merge** (`server/notebook.ts`, `mergeNotebookPayload`, pinned by `e2e/notebook-server-rules.spec.ts`), for an update of a live row: (a) a push without `ink` keeps the stored strokes and `points` — a push without strokes is metadata-only (this also ended a wipe: a pen page's metadata-only push used to replace the payload whole); (b) a page from a client without `both`, of kind `'ink'`, keeps the stored `text` (an old app pushes `''` for text it cannot show); (c) the same, of kind `'text'`, keeps the stored `bg` (it pushes `''` for the court). A `both` client's text always wins, explicit empty strokes clear the handwriting, a tombstone stores `{}`. With nothing stored (a new row, one revived over a tombstone) a push without strokes stores `points: 0`, and the ack's `newRow: true` tells the client to send the strokes it kept home (25.10.2026). The stored payload is read for that one row, by id, only when (a), (b) or (c) can apply. The server went out before the frontend that sends `both`, and goes out before this one.
+
+**Records the frontend before wrote (data-loss review, 25.10.2026).** Coaches' devices hold IndexedDB records of the frontend before: one side each — `''` as the text of a pen page, `''` and `0` as the court and the count of a typed page, whatever the server held — and ink records whose "older than the server's" mark lived in memory only. Taken at their word, the next edit pushed the blanks with `both` and wiped the typed text or the court on the server. So:
+
+- Every record this frontend writes carries a LOCAL-ONLY `sides: 2` (`makePage`, `pageFromServer`, every commit of a marked record or of one never on the server); it never goes on the wire. `wireFrom` sends `both` only for a marked record. An unmarked record is pushed as the installed apps push, and the server's rules (b)/(c) keep the side it could not show; a commit does not mark it — marked by an edit, a rename before the first pull pushed the blank side with `both`. `IndexedDB DB_VERSION` is unchanged.
+- **A pull marks them.** At a tie (`mergeFromServer`) an unmarked record takes the server's `text`, `bg` and `points` and is marked; it asks for the strokes whenever the server counts some (a count cannot tell older strokes from newer ones of the same size). One newer than the server's — edits the frontend before had not pushed — keeps its own side and takes the other from the server (a typed page the court and the count, a pen page the text), and is marked and still waiting: left unmarked, a stroke on it went as a pen page without `both`, the server kept its older text, and the pull after that wrote it over the coach's (25.10.2026). A record the server does not list has no copy there and is marked as it is. A newer server copy replaces it whole, as before. The ink fetch (`GET /api/notebook/pages/:id`) merges the row it brings by the same rule for an unmarked record, and a 404 marks it.
+- **Until then its other side is not offered as empty**: the typed side of an unmarked pen page says "Getippter Text wird geladen…" / "…konnte nicht geladen werden — offline?" with **Erneut versuchen** (a push, then a pull); the handwriting of an unmarked typed page is fetched before it is shown.
+- **Stale strokes are recognised without the mark**: a stored ink whose `inkPoints(...)` differs from the page's own count (which every commit keeps with its strokes) is treated as older than the server's, in `readInk` and in the push.
+
+**Strokes not known to be current are read-only (25.10.2026).** The sheet keeps the strokes on screen with the page id they belong to (a page turned to never shows, or takes a stroke onto, the page before's), and shows "Handschrift wird geladen…" whenever the read may go to the network (`inkMayFetch`: no local strokes and the page counts some or is a synced pen page, or strokes marked stale). Strokes that are stale and whose fetch failed, or that the server should have and could not be asked for, are shown READ-ONLY with "Handschrift konnte nicht geladen werden — offline?" and **Erneut versuchen**; nothing is drawn, erased, undone, cleared or courted onto them. A page that never reached the server stays writable offline. The fetch gives up when the server has not started to answer within 25 s, or when its answer stops coming for 15 s — never while it comes: up to 800 kB at a gym's 24 kB/s takes half a minute. A fetch that finds the page deleted takes the deletion (a pull had not seen it yet); the strokes held here are not kept as "the only copy" of a deleted page. Strokes the server refuses (`ink-shape`, `ink-too-big`, or this device's own `too-big`) no longer hold the page back: it goes again without them in the same push, its text and title sync, the strokes stay on the device with the refusal said on the page (LOCAL-ONLY `inkRejected`), and they are not sent again until they change.
+
+**The remaining limit: per page, the newer copy wins (by design).** A page is still last-writer-wins as a whole; there are no versions per side. Device A types on a page offline while device B draws on it offline: if B syncs after A, B's copy wins and A's typing is lost; if A syncs first, B adopts A's copy. What is mitigated: strokes B holds that the server has not confirmed are never hidden — the strip's pen and the switch's dot count them as well as the page's `points` — and when a newer copy is adopted over them, the server is asked for its strokes at once (`settleHeldInk`): if it holds none of the page, B's strokes are kept and pushed as a new version on top of A's copy, both sides kept. If it holds some, the server's win, and B's unpushed strokes are lost with the rest of B's copy. Per-side versions would close this; they are not built. A record the two-sided build of 24.10.2026 wrote (never released) carries no mark either and is treated as one of the frontend before: a copy of it still waiting at the update is pushed without `both`, and the server's other side wins over its own.
+
+- **The client:** a pull fetches strokes when the server counts some or the page is a pen page, and when it adopts a newer copy of a page whose strokes this device holds. Strokes a pull found older than the server's are marked stale on the stored record (survives a reload) and are not pushed until fetched. The pagehide keepalive takes only pages without strokes. A pull or a push that starts while the boot still reads the store waits for it (`bootLoad`): between the pages and the list of pages holding strokes, a pull merged as if no page held any.
+- **Into the report:** Übernehmen offers a page by its typed side, whichever side it shows; the handwriting never goes in.
+
 ---
 
 ## 4. Storage & sync
@@ -226,7 +251,7 @@ export const notebookSync = {
 ### 4.3 Reads
 
 - `GET /api/notebook` (fields-limited, no ink, `cache: 'no-store'`) at boot once per owner, on `online` (≥ 60 s apart) and on every sheet open. The page list shown = union of local live pages and server rows by `pageId`, higher `updatedAt` wins, tombstones and expired pages excluded.
-- `GET /api/notebook/pages/:pageId` for a pen page's strokes when the local ink is absent or the local page is older than the server's (the merge marks `fetchInk`).
+- `GET /api/notebook/pages/:pageId` for a page's strokes when the local ink is absent or older than the server's (the merge marks `fetchInk`), and at once for strokes held here that a newer copy does not count (§3.6).
 - Any response that is not `{ pages: [...] }` is treated as empty.
 
 ### 4.4 The merge rule (unchanged from v1 §4.4, per page)
@@ -237,7 +262,7 @@ Identity = `pageId`; version = `updatedAt`, monotonic per page; a tombstone is a
 
 - A whole evening offline is normal: pages land in `svrz-notebook` within a second, stay `dirty`, push on `online`/next commit/close. Server-only mode when the store is unavailable (footer says so; unsaved = unacked).
 - Owner flip (App.tsx:4086-4100): `notebookSync.reset()`, pages state cleared, sheet closed. Unmount (3820-3838): `stop()` from the configure effect's cleanup.
-- Wiped device: everything acknowledged comes back at the next sign-in (boot pull → pages; opening a pen page pulls its ink). Lost: pages written offline that never synced, and the last ≤ 7 s before the wipe.
+- Wiped device: everything acknowledged comes back at the next sign-in (boot pull → pages; opening a page's handwriting pulls its ink). Lost: pages written offline that never synced, and the last ≤ 7 s before the wipe.
 
 ### 4.6 Service worker
 
@@ -249,7 +274,7 @@ vite.config.ts:152-154: `&& !url.pathname.startsWith('/api/notebook')` with a on
 
 ### 5.1 Files
 
-- `src/components/NotebookSheet.tsx` (new, ~450 lines): sheet, page strip, text page, Stift page host, import mode, status strip. Reads `PAD_STRINGS[lang]`.
+- `src/components/NotebookSheet.tsx` (new, ~450 lines): sheet, page strip, the typed side, the handwritten side's host, import mode, status strip. Reads `PAD_STRINGS[lang]`.
 - `src/components/InkPad.tsx` (new, lazy chunk: `const InkPad = lazy(() => import('./components/InkPad'))` beside App.tsx:6 — the PdfReader precedent; `<Suspense fallback={<AppSpinner size={64} />}>`; warmed with `void import('./components/InkPad')` when the sheet opens, as App.tsx:1528 does). Precached by the `**/*.js` glob (vite.config.ts:88) — no `globIgnores`.
 - `src/lib/notebook.ts`, `src/lib/notebookSync.ts`, `src/lib/notebookImport.ts`, `src/lib/notepadStrings.ts`, `src/lib/richText.ts` (+ `appendPlainToRich`, export `escapeHtml`), `src/lib/pocketbase.ts` (four wrappers), `src/App.tsx` (state, launcher, wiring), `src/lib/infoHints.ts` + `src/components/InfoHint.tsx` (one hint, `ref: ''` — InfoHint.tsx:62 gains `{hint.ref && (…)}`).
 
@@ -280,9 +305,10 @@ Phone layout (Pixel 5, 393 × 727), top → bottom:
 └────────────────────────────────────────────────┘
 ```
 
-- **Page strip** (`flex gap-1.5 overflow-x-auto`, `-webkit-overflow-scrolling: touch`): one pill per live page, newest first — `shortDayLabel` + `clockLabel` of `createdAt` (appTime.ts:127, 142) and a kind glyph (`Pencil` for text, `PenLine` for ink); current page in the segmented-control colours (App.tsx:5261-5291); `aria-current="page"`. **+ Seite** opens a two-item menu `Textseite` / `Stiftseite` (`Pencil` / `PenLine`), disabled with `tp.padPagesFull` at the cap.
+- **Page strip** (`flex gap-1.5 overflow-x-auto`, `-webkit-overflow-scrolling: touch`): one pill per live page, newest first — `shortDayLabel` + `clockLabel` of `createdAt` (appTime.ts:127, 142) and a glyph per side that carries something (`Keyboard` typed, `PenLine` handwritten, both on a page with both — since 24.10.2026, §3.6); current page in the segmented-control colours (App.tsx:5261-5291); `aria-current="page"`. **+ Neue Seite** (one button since 24.10.2026) opens a page on the side last switched to on this device (`svrz_pad_side`), else on the handwriting where a pen was seen, else on typing; disabled with `tp.padPagesFull` at the cap.
+- **Side switch** (since 24.10.2026, a view since 25.10.2026 — §3.6): `Tippen | Handschrift` at the start of the meta line, at the same spot on both sides; on a phone it shares the first row with the page turner and the dates go under them, each on one line (`whitespace-nowrap`; the "übernommen →" line gives way, truncated). A neutral dot on the side not shown says it has something, and so does the segment's name ("Handschrift — hat Inhalt"). Segments and Neue Seite are 36 px tall, 40 on a touch screen at least 56 rem tall (a tablet; on a phone the 40 cost the whole page its one view in fullscreen); the focus ring is drawn inside the segment.
 - **Text page:** `<textarea>` filling the body; `onChange` → `notebookSync.commit(page, undefined, 500)`. The empty notebook opens on a **virtual** text page (not in the store) that is committed on the first keystroke (decision 16). `enterKeyHint="enter"` (a free page — Enter is a newline). **Zeit** inserts `clockLabel(Date.now()) + ' '` at the caret (`setRangeText`, then `onChange`).
-- **Stift page:** the InkPad (§6) letterboxed in the body at `aspect-ratio: 1000/1414`, toolbar under it (`Stift ◉ · Rot · Radierer · Rückgängig · Seite leeren · Finger ☐`), one line `tp.padInkNotImported`. Only one page is in the DOM at a time, so a textarea is never within 50 px of the canvas (Scribble / Android handwriting hot zones).
+- **Handschrift (the handwritten side):** the InkPad (§6) fills the body as a zoomable stage (since 24.10.2026; it was a box letterboxed at `aspect-ratio: 1000/1414`). The page lies on it as a view (`src/lib/inkView.ts`): it opens at its width (100 %) and at its top, two fingers pinch and move it, and the level is remembered per device, never the position. Toolbar under it (`Stift ◉ · Rot · Radierer · Spielfeld · Rückgängig · Leeren · − 100 % + · Finger ☐`; Leeren is named "Handschrift leeren" since 24.10.2026 and clears the strokes only); the level button switches between the page width and the whole page, and below an 800 px screen Spielfeld, Rückgängig and Leeren show their icon alone. One line under it: `tp.padInkNotImported` (the two-finger hint instead on a touch screen until it has zoomed once, the Scribble hint after two cancelled pen strokes). Only one side of one page is in the DOM at a time, so the editor is never within 50 px of the canvas (Scribble / Android handwriting hot zones).
 - **Seite löschen** → `confirmDialog({ title: tp.padDeleteTitle, message: tp.padDeleteMsg, tone: 'danger', lang })` → tombstone; the strip moves to the next page.
 - **Status strip:** `padSaving` / `padSaved · HH:MM` / `padSynced` / `padSyncPending` / `padSyncFailed` / `padServerOnly` — the vocabulary of the form's own strip (App.tsx:7637-7700).
 - Keyboard on iOS: the textarea is the whole body, so the keyboard covers the lower half of the page the coach is typing on and the caret scrolls into view natively — the composer-on-top problem of v1 does not arise. No `visualViewport` code.
@@ -304,7 +330,9 @@ Phone layout (Pixel 5, 393 × 727), top → bottom:
 | padPrivacy | Privat: nur du siehst diese Seiten. Jede Seite wird eine Woche nach dem Schreiben gelöscht. Nichts davon geht an den Schiedsrichter — ausser du tippst «Übernehmen». | Private: only you can see these pages. Every page is deleted one week after it was written. Nothing here reaches the referee — unless you tap "Insert". |
 | padExpires | wird am {date} gelöscht | deleted on {date} |
 | padExpiresSoon | wird morgen gelöscht | deleted tomorrow |
-| padNewPage / padNewText / padNewInk | Seite / Textseite / Stiftseite | Page / Text page / Pen page |
+| padNewPage | Neue Seite | New page |
+| padSide / padSideText / padSideInk | Tippen oder von Hand schreiben / Tippen / Handschrift | Type or write by hand / Typing / Handwriting |
+| padSideHasText / padSideHasInk / padSideFilled | Tippen — auf dieser Seite ist auch etwas getippt / Handschrift — auf dieser Seite ist auch etwas von Hand geschrieben / hat Inhalt | Typing — something is typed on this page too / Handwriting — something is handwritten on this page too / has content |
 | padPagesFull | Höchstens 40 Seiten — lösche eine, um Platz zu machen. | At most 40 pages — delete one to make room. |
 | padPlaceholder | Schreib hier … | Write here … |
 | padTime | Zeit | Time |
@@ -323,12 +351,15 @@ Phone layout (Pixel 5, 393 × 727), top → bottom:
 | padInsertAgainTitle / padInsertAgainMsg | Nochmals übernehmen? / Diese Seite wurde bereits in «{field}» übernommen. | Insert again? / This page was already inserted into "{field}". |
 | padUsedIn | übernommen → {field} ({role}) · {label} | inserted → {field} ({role}) · {label} |
 | padShowUsed | Bereits übernommene anzeigen | Show inserted pages |
-| padInkOnly / padInkNotImported | Stiftseite — kann nicht übernommen werden, nur angesehen. / Stiftseiten werden nicht übernommen — sie sind zum Nachlesen. | Pen page — cannot be inserted, view only. / Pen pages are not inserted — they are for reading back. |
+| padInkOnly / padInkNotImported | Nur Handschrift — kann nicht übernommen werden, nur angesehen. / Handschrift wird nicht übernommen — nur getippter Text. | Handwriting only — cannot be inserted, view only. / Handwriting is not inserted — only typed text. |
 | padReviewOnly | Beobachtung gesendet — der Notizblock bleibt privat; übernehmen geht hier nicht mehr. | Observation sent — the notebook stays private; inserting is no longer possible here. |
-| padPenBlack / padPenRed / padEraser / padUndo / padClearPage / padClearPageMsg | Stift / Rot / Radierer / Rückgängig / Seite leeren / Alle Striche auf dieser Seite werden gelöscht. | Pen / Red / Eraser / Undo / Clear page / Every stroke on this page is removed. |
+| padPenBlack / padPenRed / padEraser / padUndo | Stift / Rot / Radierer / Rückgängig | Pen / Red / Eraser / Undo |
+| padClearInk / padClearInkShort / padClearInkTitle | Handschrift leeren / Leeren / Handschrift leeren? | Clear handwriting / Clear / Clear the handwriting? |
+| padClearInkMsg / padClearInkMsgNoText | Alle Striche auf dieser Seite werden gelöscht — der getippte Text bleibt. / Alle Striche auf dieser Seite werden gelöscht. | Every stroke on this page is removed — the typed text stays. / Every stroke on this page is removed. |
 | padFinger / padFingerOn / padFingerOff / padPenSeen | Finger / Finger zeichnet / Nur der Stift zeichnet / Stift erkannt — der Finger zeichnet jetzt nicht mehr. | Finger / Finger draws / Pen only / Pen detected — the finger no longer draws. |
 | padPageFull | Seite voll — bitte eine neue Seite beginnen. | Page full — please start a new page. |
-| padInkLoading | Stiftseite wird geladen… | Loading pen page… |
+| padInkLoading / padInkLoadFailed | Handschrift wird geladen… / Handschrift konnte nicht geladen werden — offline? | Loading the handwriting… / Could not load the handwriting — offline? |
+| padTextLoading / padTextLoadFailed / padRetry | Getippter Text wird geladen… / Getippter Text konnte nicht geladen werden — offline? / Erneut versuchen | Loading the typed text… / Could not load the typed text — offline? / Try again |
 | padScribbleHint | Striche fehlen? Auf dem iPad: Einstellungen → Apple Pencil → Kritzeln aus. | Missing strokes? On iPad: Settings → Apple Pencil → Scribble off. |
 | padFull / padFullExit | Vollbild / Vollbild verlassen | Fullscreen / Exit fullscreen |
 
@@ -338,7 +369,14 @@ Reused: `t.close`. Icons in lucide-react 0.577 (verified): `NotebookPen`, `Penci
 
 ## 6. Ink
 
-Unchanged from v1 §6 (component API, two stacked canvases, DPR ≤ 2, re-render from vectors on resize, Pointer Events only with `getCoalescedEvents`, guarded `setPointerCapture`, pen-authoritative palm policy with the 500 ms trailing window and the 40 px contact rule, finger toggle defaulting to on where no pen was ever seen, `pointercancel` drops the stroke and the Scribble hint after two, whole-stroke eraser, undo, the `{ c, w, p, d }` integer encoding, the 800 000-char / 4 000-stroke budget checked at stroke end with the server's predicate, perfect-freehand behind `renderStroke()` with a polyline fallback). The only change: a pen page is a `NotebookPage` of kind `'ink'` keyed by `pageId`, with no page number — order is `createdAt`.
+Unchanged from v1 §6 (component API, two stacked canvases, DPR ≤ 2, re-render from vectors on resize, Pointer Events only with `getCoalescedEvents`, guarded `setPointerCapture`, pen-authoritative palm policy with the 500 ms trailing window, finger toggle defaulting to on where no pen was ever seen, whole-stroke eraser, undo, the `{ c, w, p, d }` integer encoding, the 800 000-char / 4 000-stroke budget checked at stroke end with the server's predicate). The only change: the strokes are the handwritten side of any `NotebookPage`, keyed by `pageId`, with no page number — order is `createdAt`.
+
+Since then (24.10.2026):
+
+- The palm's contact limit is 80 px, not 40 (WebKit reports a light fingertip at about 42), and with the 500 ms trailing window it lives in `src/lib/inkInput.ts`, shared with the signature pad.
+- A cancelled pen or mouse stroke keeps its ink (iPadOS cancels a stroke it hands to Scribble); two cancelled pen strokes bring the Scribble hint. A cancelled touch leaves nothing.
+- A stroke whose pointerup never came ends, keeping its ink, at the next pen or mouse going down, at a real pointer moving with no button, or when the app loses focus or goes to the background.
+- Both canvases are the size of the stage and draw through the view's transform; each stroke's outline is computed once, in page units (`src/lib/inkPath.ts`, options from `src/lib/inkStyle.ts`). There is no `renderStroke()` and no polyline fallback.
 
 ---
 
@@ -354,7 +392,7 @@ sub:     Für: 1. SR · Müller (aktuelles Formular)
 target:  [Bemerkungen ✓] [Highlights] [Verbesserung] [Ziele] [Tipps & Tricks]   ← segmented h-9 (App.tsx:5261-5291)
 list:    ☑ Sa 19:41 ✎  19:41 2. SR steht zu weit links beim Aufschlag …        ← text pages, newest first; current page pre-ticked
          ☐ Fr 20:05 ✎  Aufwärmen: gut strukturiert, Pfiff zu spät …
-         ○ Sa 19:20 🖊  Stiftseite — kann nicht übernommen werden               [thumbnail]
+         ○ Sa 19:20 🖊  Nur Handschrift — kann nicht übernommen werden          [thumbnail]
          [Bereits übernommene anzeigen ☐]
 preview: 19:41 2. SR steht zu weit links beim Aufschlag                          ← verbatim, scrollable, text-xs
          19:52 Netzberührung übersehen 18:18
@@ -362,7 +400,7 @@ footer:  ⚠ Übernommener Text wird Teil des Feedbacks und geht mit dem PDF per
          [Abbrechen]                          [ 1 Seite → Bemerkungen (1. SR) ]   ← h-10 bg-red-600 text-white font-semibold
 ```
 
-Defaults: target Bemerkungen; the page the coach was on is pre-ticked; ink pages greyed with no checkbox; pages already used in this field/half hidden until the toggle. The warning swaps to `padImportWarnTips` for Tipps & Tricks.
+Defaults: target Bemerkungen; the page the coach was on is pre-ticked; ink pages greyed with no checkbox; pages already used in this field/half hidden until the toggle. Since 24.10.2026 (§3.6) a page is offered by its typed text whichever side it shows, with a line saying its handwriting does not go in; a page with handwriting only is the greyed one. The warning swaps to `padImportWarnTips` for Tipps & Tricks.
 
 ### 7.2 What is written
 
@@ -403,7 +441,7 @@ Each step is a commit; check `git log -1` first (a second Claude session commits
 | 2 | **Client library (dark)** | `src/lib/notebook.ts`, `src/lib/notebookSync.ts`, `src/lib/notebookImport.ts`, `src/lib/notepadStrings.ts`, `src/lib/pocketbase.ts`, `src/lib/richText.ts`, `vite.config.ts`, `e2e/notebook-merge.spec.ts` | openDb/run/runTx from formDraft.ts:166-234 (store list, both stores, verify-on-success); list/get/put/tombstone/prune/storeAvailable shapes from 236-444; wrappers `listNotebook()`, `fetchNotebookInk(pageId)`, `pushNotebookPages(pages, { keepalive? })`, `deleteNotebookPage(pageId)` beside pocketbase.ts:1472-1533 with `parkError` (1332) + status/retryAfterMs and the demo short-circuit; `appendPlainToRich` + export `escapeHtml` (richText.ts:38); SW exclusion at vite.config.ts:152-154; pure spec in the net-fail-instant.spec.ts:1-8 style | no | 1.25 d |
 | 3 | **Notebook end to end (text pages)** | `src/components/NotebookSheet.tsx`, `src/App.tsx`, `src/lib/infoHints.ts`, `src/components/InfoHint.tsx` | Shell 775-820 + ConfirmDialog.tsx:33-49; page strip in the segmented-control colours (5261-5291); textarea classes from the RC-note modal (8514-8526); strip vocabulary 7637-7700; launcher (5395-5403, 5227-5231); fullscreen (§5.3); Escape chain 3600-3612; view-change effect + onPop 1785; goOnline 2280; pagehide flush 3808 + `__svrzFlushDraft` 3818; owner flip 4086-4100; workUnsaved 4288; own boot effect; InfoHint with `ref: ''`; server-only mode. **First coach-visible deploy: a notebook that survives the wiped phone, from every screen.** | yes | 2 d |
 | 4 | **Import into the form** | `src/components/NotebookSheet.tsx`, `src/App.tsx` | Import mode (§7.1); `importPagesIntoForm(field, pages)` via the setFormData shape at 7970/7982 and setTipsAndTricks at 8037; the `insert` gate; `usedIn` + re-insert confirm; toast + scrollIntoView | yes | 0.75 d |
-| 5 | **Ink** | `src/components/InkPad.tsx`, `src/components/NotebookSheet.tsx`, `package.json` | `npm i perfect-freehand@1.2.3`; canvas boilerplate SignaturePad.tsx:11-61 minus the snapshot hack, guarded capture; DPR cap PdfReader.tsx:486; `lazy()` beside App.tsx:6; Stiftseite, toolbar, lazy ink fetch, budgets | yes | 2 d |
+| 5 | **Ink** | `src/components/InkPad.tsx`, `src/components/NotebookSheet.tsx`, `package.json` | `npm i perfect-freehand@1.2.3`; canvas boilerplate SignaturePad.tsx:11-61 minus the snapshot hack, guarded capture; DPR cap PdfReader.tsx:486; `lazy()` beside App.tsx:6; the handwritten side, toolbar, lazy ink fetch, budgets | yes | 2 d |
 | 6 | **e2e suite, device checks, docs** | `e2e/notebook*.spec.ts`, `infrastructure.md`, memory | §10; manual iPad (Scribble on/off into the textarea, palm, keyboard over the page) and Android (Gboard handwriting, finger-draw default) checks; 360-px screenshot of the title card with the launcher; confirm the daily log shows `{_confidential:true}` for `PUT /api/notebook/pages` and that `notebook.saved` never carries text; memory `svrz-rc-notepad-plan.md` → built | yes | 1.25 d |
 
 Total ≈ 8.25 focused days; steps 1–3 (≈ 4.25 d) are the release that already helps at the next game weekend.
@@ -499,7 +537,7 @@ tsc notes: as v1 §10 (flat types; `key?` on mapped components; `perfect-freehan
 | Two devices edit the same text page in the same minute; per-page LWW discards one edit | Bounded to one page; monotonic versions and the adopted ack keep the order sane; the strip shows "Auf dem Server gesichert" |
 | Site data wiped while offline before any sync | Unavoidable for a web app; `padPrivacy` says "sobald online", the strip stays amber; `navigator.storage.persist()` requested |
 | A clamped `createdAt` (device clock a day ahead) shortens a page's week | The ack returns the server's stamp and the client adopts it, so the shown date is the enforced one |
-| iPadOS Scribble consumes pen strokes on the canvas | Only one page kind is in the DOM at a time; `touch-action: none` + `user-select: none` + `touchmove preventDefault`; `pointercancel` drops partial strokes; hint after two drops; manual iPad check |
+| iPadOS Scribble consumes pen strokes on the canvas | Only one side of one page is in the DOM at a time; `touch-action: none` + `user-select: none` + `touchmove preventDefault`; `pointercancel` drops partial strokes; hint after two drops; manual iPad check |
 | An 800 KB ink page on gym wifi | Own request 5 s after the last stroke, never on a beacon; failed push stays dirty with backoff; the index GET never carries ink |
 | A flaky network makes the push loop mail the operator | No push while offline; backoff to 60 s; a refused page is never re-sent until edited |
 | Self-declared identity: a colleague who picks the wrong name on a shared tablet reads (and syncs) another coach's pages | Same trust level as parked drafts and the president note, stated in the collection header and `padPrivacy`; owner-scoped keys, live-owner getter, ack owner check; no chair/admin read path; and the pages die within a week |

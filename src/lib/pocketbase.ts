@@ -1829,11 +1829,29 @@ export async function putSettings(payload: { default_season?: number; test_mode?
 
 
 // ---- Signature sessions ----
+/** How long the phone hand-off may take to start. A POST is not covered by
+ *  the service worker's network timeout, and on a gym's weak signal (online in
+ *  name only) it used to hang until the browser gave up; the pad never needs
+ *  it, only the QR does. */
+const SIGNATURE_START_TIMEOUT_MS = 8_000;
 export async function startSignature(context: string, signer?: string): Promise<{ slug: string }> {
   if (isDemoMode()) return demo.startSignature();
-  const res = await fetch(apiUrl('/api/signature/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ context, signer }) });
-  if (!res.ok) throw new Error('Could not start signature');
-  return res.json();
+  let signal: AbortSignal | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') signal = AbortSignal.timeout(SIGNATURE_START_TIMEOUT_MS);
+  else if (typeof AbortController !== 'undefined') {
+    // Safari before 16 has no AbortSignal.timeout.
+    const controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), SIGNATURE_START_TIMEOUT_MS);
+    signal = controller.signal;
+  }
+  try {
+    const res = await fetch(apiUrl('/api/signature/start'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ context, signer }), signal });
+    if (!res.ok) throw new Error('Could not start signature');
+    return await res.json();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 export async function getSignatureSession(slug: string): Promise<{ context: string; signer: string; signed: boolean; data: string }> {
   if (isDemoMode()) return demo.getSignatureSession();
@@ -2353,13 +2371,52 @@ export async function listNotebook(): Promise<{ ownerId: string; pages: ServerPa
   return { ownerId, pages: ownerId ? pages : [] };
 }
 
+/** How long a page's fetch may wait for the server to start answering, and
+ *  then for the next piece of the answer. A fetch that never answered (a
+ *  signal there in name only) kept the sheet on "wird geladen" with nothing
+ *  to press; ended, it says so and offers to try again. Not a cap on the
+ *  whole answer: up to 800 kB of strokes at 24 kB/s takes half a minute,
+ *  and a 25 s cap on everything cut it short on every try, so a big page
+ *  never loaded on a slow link (review of the fix round, 25.10.2026, N2). */
+const NOTEBOOK_INK_START_MS = 25_000;
+const NOTEBOOK_INK_IDLE_MS = 15_000;
 export async function fetchNotebookInk(pageId: string): Promise<{ ownerId: string; page: ServerPage } | null> {
   if (isDemoMode() || !pageId) return null;
-  const response = await fetch(apiUrl(`/api/notebook/pages/${encodeURIComponent(pageId)}`), { credentials: 'include', cache: 'no-store' });
-  if (response.status === 404) return null;
-  if (!response.ok) throw await parkError(response, 'Could not load the page');
-  const raw = await response.json() as { ownerId?: string; page?: ServerPage };
-  return raw && raw.page && raw.ownerId ? { ownerId: parkedText(raw.ownerId), page: raw.page } : null;
+  // setTimeout and an AbortController, not AbortSignal.timeout: the wait is
+  // re-armed with every piece that arrives, and Safari before 16 has no
+  // AbortSignal.timeout at all.
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const wait = (ms: number) => {
+    if (!controller) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), ms);
+  };
+  wait(NOTEBOOK_INK_START_MS);
+  try {
+    const response = await fetch(apiUrl(`/api/notebook/pages/${encodeURIComponent(pageId)}`), { credentials: 'include', cache: 'no-store', signal: controller ? controller.signal : undefined });
+    if (response.status === 404) return null;
+    if (!response.ok) throw await parkError(response, 'Could not load the page');
+    wait(NOTEBOOK_INK_IDLE_MS);
+    let text = '';
+    if (response.body && typeof response.body.getReader === 'function' && typeof TextDecoder !== 'undefined') {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        wait(NOTEBOOK_INK_IDLE_MS);
+        text += decoder.decode(value, { stream: true });
+      }
+      text += decoder.decode();
+    } else {
+      text = await response.text();
+    }
+    const raw = JSON.parse(text) as { ownerId?: string; page?: ServerPage };
+    return raw && raw.page && raw.ownerId ? { ownerId: parkedText(raw.ownerId), page: raw.page } : null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**

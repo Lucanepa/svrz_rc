@@ -31,22 +31,111 @@ function lineText(root: HTMLElement, caret: Range, side: 'before' | 'after'): st
   return side === 'before' ? out.slice(out.lastIndexOf('\n') + 1) : out.split('\n')[0];
 }
 
+/** The plain text a fragment reads as, the way lineText reads it: a <br> is a
+ *  newline, and so is the start of a block after text. */
+function plainOf(node: Node): string {
+  let out = '';
+  const walk = (n: Node): void => {
+    if (n.nodeType === Node.TEXT_NODE) { out += n.textContent || ''; return; }
+    if (n.nodeName === 'BR') { out += '\n'; return; }
+    if (/^(DIV|P|LI)$/.test(n.nodeName) && out && !out.endsWith('\n')) out += '\n';
+    n.childNodes.forEach(walk);
+  };
+  node.childNodes.forEach(walk);
+  return out;
+}
+
+/** A selection's place in a surface as character offsets from its start: a
+ *  bookmark that outlives the surface's DOM, which is rebuilt from the value
+ *  when the surface comes back (the notebook's typed side, after the
+ *  handwriting was on screen). Null when the range is not in the surface. */
+export function caretOffsets(root: HTMLElement, range: Range): [number, number] | null {
+  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
+  const upTo = (node: Node, offset: number): number => {
+    const r = document.createRange();
+    r.setStart(root, 0);
+    r.setEnd(node, offset);
+    return plainOf(r.cloneContents()).length;
+  };
+  try { return [upTo(range.startContainer, range.startOffset), upTo(range.endContainer, range.endOffset)]; } catch { return null; }
+}
+
+/** The DOM point `target` characters into a surface, counted as caretOffsets
+ *  counts them. */
+function pointAt(root: HTMLElement, target: number): [Node, number] {
+  let count = 0;
+  let last = '';
+  let found: [Node, number] | null = null;
+  const walk = (n: Node): void => {
+    if (found) return;
+    if (n.nodeType === Node.TEXT_NODE) {
+      const t = n.textContent || '';
+      if (count + t.length >= target) { found = [n, target - count]; return; }
+      count += t.length;
+      if (t) last = t[t.length - 1];
+      return;
+    }
+    if (n.nodeName === 'BR') {
+      const parent = n.parentNode as Node;
+      if (count >= target) { found = [parent, Array.prototype.indexOf.call(parent.childNodes, n)]; return; }
+      count += 1; last = '\n';
+      return;
+    }
+    if (/^(DIV|P|LI)$/.test(n.nodeName) && count > 0 && last !== '\n') { count += 1; last = '\n'; }
+    n.childNodes.forEach(walk);
+  };
+  root.childNodes.forEach(walk);
+  return found || [root, root.childNodes.length];
+}
+
+/** Puts the selection back where caretOffsets read it, focusing the surface
+ *  without scrolling it: the caller puts the scroll back itself. */
+export function setCaretOffsets(root: HTMLElement, [start, end]: [number, number]): void {
+  const sel = window.getSelection();
+  if (!sel) return;
+  const range = document.createRange();
+  try {
+    const [sn, so] = pointAt(root, start);
+    const [en, eo] = pointAt(root, end);
+    range.setStart(sn, so);
+    range.setEnd(en, eo);
+  } catch { return; }
+  if (document.activeElement !== root) root.focus({ preventScroll: true });
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/** Nothing written: no text, and no more than the one line break a browser
+ *  leaves in a box emptied by hand. The placeholder is keyed on this, set
+ *  from here (data-empty): the CSS rule it replaced — "only a <br>" — also
+ *  matched "Hallo<br>", since a text node is no element, and put the
+ *  placeholder in front of the coach's first line (UI review, 25.10.2026). */
+function markEmpty(el: HTMLElement): void {
+  const empty = !(el.textContent || '') && el.querySelectorAll('br').length <= 1;
+  el.dataset.empty = empty ? 'true' : 'false';
+}
+
 // One editable surface, used both inline and in the full-screen editor.
 //
 // Uncontrolled on purpose: writing `value` back into the DOM on every keystroke
 // puts the caret at position zero, which is the classic contenteditable bug. The
 // DOM is authoritative while the field has focus, and the incoming value is only
 // applied when it differs from what is already rendered.
-export function RichSurface({ value, onChange, placeholder, className, style, autoFocus, onFocus }: {
+export function RichSurface({ value, onChange, placeholder, className, style, autoFocus, initialCaret, onFocus }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   className?: string;
   style?: React.CSSProperties;
   autoFocus?: boolean;
+  /** With autoFocus: where the caret goes, as caretOffsets read it when this
+   *  surface was last on screen. Read once, at mount. */
+  initialCaret?: [number, number] | null;
   onFocus?: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const caretAtMount = useRef(initialCaret);
+  caretAtMount.current = initialCaret;
   /** The checklist box under the pointer, if the pointer is ON one: a click
    *  beside it is a click into the text, and must place the caret as always. */
   const boxAt = (x: number, y: number): { node: Text; index: number } | null => {
@@ -85,9 +174,25 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
     // the browser normalises its own markup and would otherwise look changed
     // after every keystroke.
     if (domToRich(el) !== value) el.innerHTML = next;
+    markEmpty(el);
   }, [value]);
+  // Focused with the caret where it was left, or at the END of what is there:
+  // focus() alone puts it in front of the first letter, and what was typed
+  // next landed there. Here and not in the caller: StrictMode runs a new
+  // surface's effects twice, after its parent's, and a caret the parent put
+  // back was moved to the end again (25.10.2026).
   useEffect(() => {
-    if (autoFocus) ref.current?.focus();
+    const el = ref.current;
+    if (!autoFocus || !el) return;
+    if (caretAtMount.current) { setCaretOffsets(el, caretAtMount.current); return; }
+    el.focus();
+    const sel = window.getSelection();
+    if (!sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
   }, [autoFocus]);
   // Enter on a list line starts the next one: a box after a box (open, even
   // under a ticked one), a bullet after a bullet, 3. after 2. Enter on an item
@@ -132,7 +237,7 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
       aria-label={placeholder}
       data-placeholder={placeholder}
       onFocus={onFocus}
-      onInput={() => { const el = ref.current; if (el) onChange(domToRich(el)); }}
+      onInput={() => { const el = ref.current; if (el) { markEmpty(el); onChange(domToRich(el)); } }}
       // A box is ticked by tapping it. mousedown is held back on a box so the
       // caret stays where the coach was writing (and, on a desktop, the field
       // does not even take focus); the click then swaps the one character in

@@ -87,6 +87,14 @@ async function openPad(page: Page): Promise<void> {
   await expect(sheet(page)).toBeVisible();
 }
 
+/** A new page, on its typed side: one button makes a page, the switch on it
+ *  says which side is on screen. */
+async function newTypedPage(page: Page): Promise<void> {
+  await sheet(page).getByTestId('pad-new-page').click();
+  await sheet(page).getByTestId('pad-side-text').click();
+  await expect(sheet(page).getByTestId('pad-side-text')).toHaveAttribute('aria-pressed', 'true');
+}
+
 test.describe('The device keeps the page', () => {
   test('a reload gives the typed page back, under the derived key', async ({ page }) => {
     await stubSignedInApp(page);
@@ -179,7 +187,7 @@ test.describe('The device keeps the page', () => {
     await sheet(page).locator('button[aria-current="page"]').click();
     await expect(pageBox(page)).toHaveText('newer page');
     // A fresh page sits in front of the others and takes the count with it.
-    await sheet(page).getByRole('button', { name: /^(Text)$/ }).click();
+    await newTypedPage(page);
     await pageBox(page).fill('third');
     await expect(padSaved(page)).toBeVisible();
     await expect(sheet(page).getByText(/^(Seite 1 von 3|Page 1 of 3)$/)).toBeVisible();

@@ -184,6 +184,41 @@ export function kindAfterWrite(p: { text: string; points: number }, side: PageKi
   return typed || !inked ? 'text' : 'ink';
 }
 
+/**
+ * The record a commit stores, from the page the sheet hands in and the record
+ * the cache holds now. The sheet's page is a snapshot of its last render, and
+ * a pull or a strokes fetch may have marked the record in between, bringing in
+ * the side the frontend before could not show. Taken as it was, the snapshot
+ * dropped the mark and that side again: pushed without `both`, the server kept
+ * its older text, and the next pull wrote it over what the coach had typed
+ * (re-check, 25.10.2026). So the mark stays, and the snapshot speaks only for
+ * the side the commit wrote — a stroke never touches the typed side, typing
+ * never the pen side, and the typed side of an unmarked pen page was not
+ * editable at all (it waits for the server's text), so a write there is a
+ * title.
+ */
+export function committedRecord(page: NotebookPage, prev: NotebookPage | null | undefined, withInk: boolean): NotebookPage {
+  const next: NotebookPage = { ...page };
+  if (page.sides !== 2 && prev && prev.sides === 2) {
+    if (withInk) next.text = prev.text;
+    else {
+      next.bg = prev.bg;
+      next.points = prev.points;
+      if (page.kind === 'ink') next.text = prev.text;
+    }
+    next.kind = kindAfterWrite(next, withInk ? 'ink' : page.kind);
+    next.sides = 2;
+    return next;
+  }
+  // A record known on both sides stays so, and one that never reached the
+  // server is known now — there is no other copy. One the frontend before
+  // wrote and the server holds stays unmarked until a pull brings in its
+  // other side: marked by an edit, a rename before the first pull pushed its
+  // blank side with `both` and wiped the server's (25.10.2026).
+  if (page.sides === 2 || !page.savedAt) next.sides = 2; else delete next.sides;
+  return next;
+}
+
 // ---------------------------------------------------------------------------
 // IndexedDB
 // ---------------------------------------------------------------------------

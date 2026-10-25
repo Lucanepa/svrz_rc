@@ -12,7 +12,7 @@
 // LIVE owner and the LIVE pages, not whatever a render captured.
 
 import {
-  NOTEBOOK_SYNC_DELAY_MS, NOTEBOOK_TEXT_DEBOUNCE_MS, batchesFor, getStoredInk, inkPoints, kindAfterWrite, listStoredInkIds, listStoredPages, livePages,
+  NOTEBOOK_SYNC_DELAY_MS, NOTEBOOK_TEXT_DEBOUNCE_MS, batchesFor, committedRecord, getStoredInk, inkPoints, kindAfterWrite, listStoredInkIds, listStoredPages, livePages,
   mergeFromServer, nextVersion, notebookStoreAvailable, pageFromServer, pageIsLive, pruneNotebook, putPages, requestPersistentStorage, wireFrom,
   type InkPage, type NotebookPage, type PageUse, type ServerPage,
 } from './notebook';
@@ -183,13 +183,9 @@ function armPush(): void {
 export function commit(page: NotebookPage, ink?: InkPage | null, debounceMs = NOTEBOOK_TEXT_DEBOUNCE_MS): void {
   if (!config || page.ownerId !== owner()) return;
   const prev = cache.get(page.id);
-  const next: NotebookPage = { ...page, dirty: true, rejectedReason: '', updatedAt: nextVersion(prev) };
-  // A record known on both sides stays so, and one that never reached the
-  // server is known now — there is no other copy. One the frontend before
-  // wrote and the server holds stays unmarked until a pull brings in its
-  // other side: marked by an edit, a rename before the first pull pushed its
-  // blank side with `both` and wiped the server's (25.10.2026).
-  if (page.sides === 2 || !page.savedAt) next.sides = 2; else delete next.sides;
+  // Which side the snapshot speaks for, and whether the record is marked:
+  // committedRecord in notebook.ts.
+  const next: NotebookPage = { ...committedRecord(page, prev, ink !== undefined), dirty: true, rejectedReason: '', updatedAt: nextVersion(prev) };
   cache.set(next.id, next);
   if (ink !== undefined) {
     // New strokes may be taken where the ones before were refused.

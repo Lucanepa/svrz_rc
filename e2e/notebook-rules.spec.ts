@@ -132,3 +132,53 @@ test.describe('The side a write leaves the page on', () => {
     expect(rules.kindAfterWrite(page({ kind: 'ink', text: '', points: 0 }), 'text')).toBe('text');
   });
 });
+
+test.describe('A commit made from a snapshot older than the record', () => {
+  // The sheet commits the page from its last render. A pull or a strokes fetch
+  // that marked the record in between brought in the side the frontend before
+  // could not show; the snapshot must not take the mark or that side away
+  // again (re-check, 25.10.2026: pushed without `both`, the server kept its
+  // older text and the next pull wrote it over the coach's typing).
+  const marked = (over: Partial<NotebookPage>): NotebookPage => ({ ...oldRecord(over), sides: 2 });
+
+  test('typing on an old typed snapshot keeps the text typed and takes the court and the strokes the merge brought', () => {
+    const snapshot = oldRecord({ kind: 'text', text: 'alt und neu', bg: '', points: 0 });
+    const prev = marked({ kind: 'text', text: 'alt', bg: 'court', points: 3 });
+    const next = rules.committedRecord(snapshot, prev, false);
+    expect(next.sides).toBe(2);
+    expect(next.text).toBe('alt und neu');
+    expect(next.bg).toBe('court');
+    expect(next.points).toBe(3);
+    expect(next.kind).toBe('text');
+  });
+
+  test('typing every letter away hands the page to the strokes it now knows of', () => {
+    const next = rules.committedRecord(oldRecord({ kind: 'text', text: '', points: 0 }), marked({ kind: 'text', text: 'alt', points: 3 }), false);
+    expect(next.kind).toBe('ink');
+    expect(next.points).toBe(3);
+  });
+
+  test('a stroke on an old pen snapshot keeps the typed text the merge brought', () => {
+    const snapshot = oldRecord({ kind: 'ink', text: '', points: 5 });
+    const next = rules.committedRecord(snapshot, marked({ kind: 'ink', text: 'vom Laptop getippt', points: 4 }), true);
+    expect(next.sides).toBe(2);
+    expect(next.text).toBe('vom Laptop getippt');
+    expect(next.points).toBe(5);
+    expect(next.kind).toBe('ink');
+  });
+
+  test('a rename on an old pen snapshot keeps the typed text too', () => {
+    const snapshot = oldRecord({ kind: 'ink', title: 'Halbzeit', text: '' });
+    const next = rules.committedRecord(snapshot, marked({ kind: 'ink', text: 'vom Laptop getippt', points: 4 }), false);
+    expect(next.title).toBe('Halbzeit');
+    expect(next.text).toBe('vom Laptop getippt');
+    expect(next.points).toBe(4);
+  });
+
+  test('otherwise the mark goes as before: kept, given to a page never on the server, not given to an old record', () => {
+    expect(rules.committedRecord(marked({ text: 'x' }), marked({}), false).sides).toBe(2);
+    expect(rules.committedRecord(oldRecord({ savedAt: '' }), undefined, false).sides).toBe(2);
+    expect(rules.committedRecord(oldRecord({ kind: 'text', text: 'neu' }), oldRecord({ kind: 'text' }), false).sides).toBeUndefined();
+    expect(rules.committedRecord(oldRecord({ kind: 'text', text: 'neu' }), oldRecord({ kind: 'text' }), false).text).toBe('neu');
+  });
+});

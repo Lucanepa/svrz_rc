@@ -378,13 +378,25 @@ async function readInk(pageId: string, gen: number): Promise<InkRead> {
     emitPages();
     return { page: local, current: true };
   }
-  // A record the frontend before wrote, at the version the server has: its
-  // other side comes in with the strokes, as a pull would bring it.
-  if (p.sides !== 2) {
-    const server = pageFromServer(o, remote.page);
-    if (server && server.updatedAt === p.updatedAt) {
-      const d = mergeFromServer(p, server);
-      if (d.write) { cache.set(id, d.write); if (storeOk) await putPages([{ page: d.write }]).catch(() => {}); }
+  // The row the fetch brought, merged as a pull would merge it where the pull
+  // has not yet: for a record the frontend before wrote, whatever its version
+  // — it had stayed unmarked when newer than the server's, and its handwriting
+  // was written on as if both sides were known (N1) — and for a page the
+  // server has deleted since: its strokes are not "the only copy" to keep,
+  // which revived the page (N4).
+  const server = pageFromServer(o, remote.page);
+  if (server && (p.sides !== 2 || server.deleted)) {
+    const writes: StoreWrite[] = [];
+    mergeRow(server, writes);
+    if (storeOk && writes.length) await putPages(writes).catch(() => {});
+    const merged = cache.get(id);
+    if (!merged || merged.deleted) { emitPages(); return { page: null, current: true }; }
+    if (server.deleted) {
+      // Deleted there, written here since: this copy is the newer one, and
+      // goes as it is. The tombstone holds no strokes to compare with.
+      inkStale.delete(id);
+      emitPages();
+      return { page: local, current: true };
     }
   }
   const serverInk = remote.page.ink && Array.isArray(remote.page.ink.strokes) ? remote.page.ink : null;
@@ -608,6 +620,30 @@ export function flushOnHide(): void {
   }).catch(() => { /* the boot flush carries it */ });
 }
 
+type StoreWrite = { page: NotebookPage; ink?: InkPage | null; inkStale?: boolean };
+
+/** One server row merged into the cache, its store write queued: the pull's
+ *  rule (mergeFromServer), and the same when a page's own fetch brings a row
+ *  the pull has not merged yet (readInk). */
+function mergeRow(server: NotebookPage, writes: StoreWrite[]): void {
+  const local = cache.get(server.id) || null;
+  const holds = inkCache.has(server.id) || inkIds.has(server.id);
+  const d = mergeFromServer(local, server, holds);
+  const stale = d.fetchInk && !!d.write;
+  // The stale mark goes into the store with the page, in one transaction: a
+  // reload before the strokes are fetched must still know they are old.
+  if (d.write) { cache.set(d.write.id, d.write); writes.push({ page: d.write, ink: d.dropInk ? null : undefined, inkStale: stale }); }
+  if (d.write === server) {
+    // A newer copy from the server won: what this device had changed on the
+    // page, its strokes included, is not pushed over it — unless the server
+    // turns out to hold no strokes of it at all (settleHeldInk).
+    inkDirty.delete(server.id);
+    if (local && holds && !server.deleted && !(server.points > 0) && !heldPoints.has(server.id)) heldPoints.set(server.id, local.points);
+  }
+  if (d.dropInk) { inkCache.delete(server.id); inkIds.delete(server.id); inkStale.delete(server.id); heldPoints.delete(server.id); bumpInk(server.id); }
+  if (stale) { inkStale.add(server.id); bumpInk(server.id); }
+}
+
 /** Pull the index (no ink) and merge it, per page. Absence never deletes. */
 export async function pullIndex(opts: { force?: boolean } = {}): Promise<void> {
   // Not before the boot has read the store (bootLoad says why).
@@ -620,28 +656,13 @@ export async function pullIndex(opts: { force?: boolean } = {}): Promise<void> {
   try { result = await listNotebook(); } catch { return; }
   if (owner() !== o) return;
   if (!result.ownerId || result.ownerId !== o) return;
-  const writes: { page: NotebookPage; ink?: InkPage | null; inkStale?: boolean }[] = [];
+  const writes: StoreWrite[] = [];
   const listed = new Set<string>();
   for (const row of result.pages) {
     const server = pageFromServer(o, row);
     if (!server) continue;
     listed.add(server.id);
-    const local = cache.get(server.id) || null;
-    const holds = inkCache.has(server.id) || inkIds.has(server.id);
-    const d = mergeFromServer(local, server, holds);
-    const stale = d.fetchInk && !!d.write;
-    // The stale mark goes into the store with the page, in one transaction: a
-    // reload before the strokes are fetched must still know they are old.
-    if (d.write) { cache.set(d.write.id, d.write); writes.push({ page: d.write, ink: d.dropInk ? null : undefined, inkStale: stale }); }
-    if (d.write === server) {
-      // A newer copy from the server won: what this device had changed on the
-      // page, its strokes included, is not pushed over it — unless the server
-      // turns out to hold no strokes of it at all (settleHeldInk).
-      inkDirty.delete(server.id);
-      if (local && holds && !server.deleted && !(server.points > 0) && !heldPoints.has(server.id)) heldPoints.set(server.id, local.points);
-    }
-    if (d.dropInk) { inkCache.delete(server.id); inkIds.delete(server.id); inkStale.delete(server.id); heldPoints.delete(server.id); bumpInk(server.id); }
-    if (stale) { inkStale.add(server.id); bumpInk(server.id); }
+    mergeRow(server, writes);
   }
   // A record the frontend before wrote that the server does not list has no
   // copy there to lose: both its sides are what this device holds.

@@ -401,9 +401,17 @@ export function pageFromServer(ownerId: string, s: ServerPage): NotebookPage | n
  *     (data-loss review, 25.10.2026). Its strokes are asked for when the
  *     server counts some it does not.
  *  Absence from the server is handled by the CALLER never calling this for a
- *  page the server did not mention: absence never deletes. A record of the
- *  frontend before that is newer than the server's keeps its copy and goes
- *  without `both` (wireFrom), and the server keeps the side it did not show.
+ *  page the server did not mention: absence never deletes.
+ *
+ *  A record of the frontend before that is NEWER than the server's (edits it
+ *  had not pushed) keeps its own side and takes the other from the server —
+ *  a typed page the court and the count, a pen page the text — and is marked
+ *  and still waiting. Left unmarked it went without `both`; drawn on, it went
+ *  as a pen page, the server kept its older text (rule b), and the pull after
+ *  that wrote the older text over the coach's (review of the fix round,
+ *  25.10.2026, N1). At a tie, the strokes of an unmarked record are asked for
+ *  whenever the server counts some: a count cannot tell older strokes from
+ *  newer ones of the same size (N3).
  */
 export function mergeFromServer(local: NotebookPage | null, server: NotebookPage, holdsInk = false): MergeDecision {
   // Strokes to fetch: the server counts some, or the page shows the
@@ -416,10 +424,17 @@ export function mergeFromServer(local: NotebookPage | null, server: NotebookPage
     // or pushed again — never just dropped, they may be the only copy.
     return { write: server, dropInk: server.deleted, fetchInk: inkLive || (holdsInk && !server.deleted) };
   }
-  if (server.updatedAt < local.updatedAt) return { write: null, dropInk: false, fetchInk: false };
-  if (local.sides !== 2 && !server.deleted && !local.deleted) {
+  const old = local.sides !== 2 && !server.deleted && !local.deleted;
+  if (server.updatedAt < local.updatedAt) {
+    if (!old) return { write: null, dropInk: false, fetchInk: false };
+    const write: NotebookPage = local.kind === 'ink'
+      ? { ...local, text: server.text, sides: 2 }
+      : { ...local, bg: server.bg, points: server.points, sides: 2 };
+    return { write, dropInk: false, fetchInk: local.kind !== 'ink' && server.points > 0 };
+  }
+  if (old) {
     const write: NotebookPage = { ...local, text: server.text, bg: server.bg, points: server.points, sides: 2, dirty: false, savedAt: server.savedAt || local.savedAt, rejectedReason: '' };
-    return { write, dropInk: false, fetchInk: server.points > 0 && server.points !== local.points };
+    return { write, dropInk: false, fetchInk: server.points > 0 };
   }
   // Tie: same version on both sides. Nothing to fetch — the strokes we hold ARE
   // this version — but a dirty flag or a missing savedAt is worth clearing.

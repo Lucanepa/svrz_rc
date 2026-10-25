@@ -66,8 +66,9 @@ test.describe('A pull meets a record the frontend before wrote', () => {
     expect(d.write!.points).toBe(3);
     expect(d.write!.sides).toBe(2);
     expect(d.write!.dirty).toBe(false);
-    // Its strokes are this version's: nothing to ask for.
-    expect(d.fetchInk).toBe(false);
+    // Asked for once all the same: strokes the frontend before held may be
+    // older than the server's with the same count (N3, 25.10.2026).
+    expect(d.fetchInk).toBe(true);
   });
 
   test('a tie with an old typed page brings in the court and the stroke count, and asks for the strokes', () => {
@@ -81,11 +82,26 @@ test.describe('A pull meets a record the frontend before wrote', () => {
     expect(rules.mergeFromServer(mine, fromServer({ kind: 'text', text: 'hier', points: 0 })).write).toBeNull();
   });
 
-  test('an old record newer than the server keeps its copy, and is pushed without "both"', () => {
-    const local = oldRecord({ kind: 'ink', text: '', points: 3, updatedAt: AT + 1_000, dirty: true });
-    const d = rules.mergeFromServer(local, fromServer({ kind: 'ink', text: 'getippt', points: 3 }), true);
-    expect(d.write).toBeNull();
-    expect(rules.wireFrom(local)).not.toHaveProperty('both');
+  test('an old record newer than the server keeps its own side, takes the other from the server, and waits marked', () => {
+    // A pen page: its strokes and court are its own, the text the server's.
+    const pen = oldRecord({ kind: 'ink', text: '', bg: 'court', points: 3, updatedAt: AT + 1_000, dirty: true });
+    const d = rules.mergeFromServer(pen, fromServer({ kind: 'ink', text: 'getippt', bg: '', points: 9 }), true);
+    expect(d.write).toMatchObject({ text: 'getippt', bg: 'court', points: 3, sides: 2, dirty: true, updatedAt: AT + 1_000 });
+    expect(d.fetchInk).toBe(false);
+    expect(rules.wireFrom(d.write!).both).toBe(true);
+    // A typed page: its text is its own, the court and the count the server's,
+    // and the strokes behind that count are asked for.
+    const typed = oldRecord({ kind: 'text', text: 'alt und neu getippt', updatedAt: AT + 1_000, dirty: true });
+    const t = rules.mergeFromServer(typed, fromServer({ kind: 'text', text: 'alt', bg: 'court', points: 3 }));
+    expect(t.write).toMatchObject({ text: 'alt und neu getippt', bg: 'court', points: 3, sides: 2, dirty: true, updatedAt: AT + 1_000 });
+    expect(t.fetchInk).toBe(true);
+    // Unmarked and never pushed again until a pull says what the server has.
+    expect(rules.wireFrom(typed)).not.toHaveProperty('both');
+  });
+
+  test('a marked record newer than the server is left as it is', () => {
+    const mine = { ...oldRecord({ kind: 'ink', text: 'hier', points: 3, updatedAt: AT + 1_000, dirty: true }), sides: 2 as const };
+    expect(rules.mergeFromServer(mine, fromServer({ kind: 'ink', text: 'dort', points: 3 })).write).toBeNull();
   });
 
   test('a newer server copy replaces an old record whole, and is marked', () => {

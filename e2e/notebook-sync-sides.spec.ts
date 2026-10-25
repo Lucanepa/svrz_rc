@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { mergeNotebookPayload, sanitizeNotebookPage } from '../server/notebook';
 import { stubSignedInApp, RC, suiteNow } from './support/app';
 
 /**
@@ -20,7 +21,7 @@ const SYNC = { timeout: 12_000 };   // a stroke is stored after 2 s, pushed 5 s 
 type Stroke = { c: number; w: number; p: number; d: number[] };
 type StoredPage = {
   id: string; pageId: string; kind: string; title: string; text: string; bg: string; points: number; dirty: boolean;
-  updatedAt: number; savedAt: string; rejectedReason: string; sides?: number; inkRejected?: string;
+  updatedAt: number; savedAt: string; rejectedReason: string; sides?: number; inkRejected?: string; deleted?: boolean;
 };
 type StoredInk = { id: string; ownerId: string; page: { w: number; h: number; strokes: Stroke[] }; stale?: boolean };
 type Wire = { pageId: string; kind: string; title?: string; text?: string; bg?: string; both?: boolean; points?: number; updatedAt: number; createdAt: number; ink?: { strokes: Stroke[] } };
@@ -97,6 +98,8 @@ type Stub = {
   /** Holds a page's strokes back until the promise settles. */
   inkGate?: (pageId: string) => Promise<void> | undefined;
   inkFails?: (pageId: string) => boolean;
+  /** What a page's own fetch finds, where it is not its row in the index. */
+  getRow?: (pageId: string) => Record<string, unknown> | undefined;
   /** How the server answers a push: refusals, and the pages whose row it had to make. */
   onPush?: (pages: Wire[]) => { rejected?: { pageId: string; reason: string }[]; newRow?: string[]; status?: number } | void;
 };
@@ -131,12 +134,57 @@ async function stubNotebook(page: Page, opts: Stub = {}) {
     const gate = opts.inkGate && opts.inkGate(pageId);
     if (gate) await gate;
     if (opts.inkFails && opts.inkFails(pageId)) { await r.abort('internetdisconnected').catch(() => {}); return; }
-    const row = (opts.index || []).find((p) => p.pageId === pageId);
+    const row = (opts.getRow && opts.getRow(pageId)) || (opts.index || []).find((p) => p.pageId === pageId);
     if (!row) { await r.fulfill({ status: 404, json: { error: 'Page not found.' } }).catch(() => {}); return; }
     const strokes = opts.ink && opts.ink[pageId];
     await r.fulfill({ json: { ownerId: RC.id, page: { ...row, ...(strokes ? { ink: { w: 1000, h: 1414, strokes } } : {}) } } }).catch(() => {});
   });
   return { pushes, inkAsked, order };
+}
+
+type ServerRow = { kind: string; createdAt: number; updatedAt: number; deleted: boolean; savedAt: string; payload: Record<string, unknown> };
+
+/** The server by its own rules (server/notebook.ts): what it stores of a
+ *  push, what it keeps of the side a push did not vouch for, what its index
+ *  and a page's fetch say. For the cases where the answer depends on what was
+ *  stored before. `failFirstPush`: the first push meets a 503. */
+async function fakeServer(page: Page, seedRows: Record<string, ServerRow>, opts: { failFirstPush?: boolean } = {}) {
+  const rows = new Map(Object.entries(seedRows));
+  const pushes: Wire[][] = [];
+  let failed = !opts.failFirstPush;
+  const wire = (pageId: string, row: ServerRow, withInk: boolean) => {
+    const { ink, ...rest } = row.payload;
+    return { pageId, kind: row.kind, createdAt: row.createdAt, updatedAt: row.updatedAt, deleted: row.deleted, schema: 1, savedAt: row.savedAt, ...rest, ...(withInk && ink ? { ink } : {}) };
+  };
+  await page.route('**/api/notebook', (r) => r.fulfill({ json: { ownerId: RC.id, pages: [...rows].map(([id, row]) => wire(id, row, false)) } }));
+  await page.route('**/api/notebook/pages', async (r) => {
+    const body = JSON.parse(r.request().postData() || '{"pages":[]}') as { pages: Wire[] };
+    pushes.push(body.pages);
+    if (!failed) { failed = true; await r.fulfill({ status: 503, json: { error: 'busy' } }); return; }
+    const now = suiteNow();
+    const saved: Record<string, unknown>[] = [];
+    const stale: Record<string, unknown>[] = [];
+    const rejected: Record<string, unknown>[] = [];
+    for (const raw of body.pages) {
+      const s = sanitizeNotebookPage(raw, now);
+      if (!s.page) { rejected.push({ pageId: s.pageId, reason: s.reason }); continue; }
+      const prev = rows.get(s.page.pageId);
+      if (prev && prev.updatedAt >= s.page.updatedAt) { stale.push({ pageId: s.page.pageId, updatedAt: prev.updatedAt }); continue; }
+      const live = !!prev && !prev.deleted;
+      const payload = mergeNotebookPayload(live ? prev.payload : null, s.page, s.both);
+      const createdAt = prev ? prev.createdAt : s.page.createdAt;
+      rows.set(s.page.pageId, { kind: s.page.kind, createdAt, updatedAt: s.page.updatedAt, deleted: s.page.deleted, savedAt: iso(now), payload });
+      saved.push({ pageId: s.page.pageId, savedAt: iso(now), updatedAt: s.page.updatedAt, createdAt, ...(!s.page.deleted && !live ? { newRow: true } : {}) });
+    }
+    await r.fulfill({ json: { ok: true, ownerId: RC.id, saved, stale, rejected } });
+  });
+  await page.route('**/api/notebook/pages/*', async (r) => {
+    const pageId = decodeURIComponent(new URL(r.request().url()).pathname.split('/').pop() || '');
+    const row = rows.get(pageId);
+    if (!row) { await r.fulfill({ status: 404, json: { error: 'Page not found.' } }); return; }
+    await r.fulfill({ json: { ownerId: RC.id, page: wire(pageId, row, true) } });
+  });
+  return { rows, pushes };
 }
 
 const launcher = (page: Page) => page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ });
@@ -296,19 +344,106 @@ test.describe('Records the frontend before wrote', () => {
     await expect.poll(() => pushedFor(pushes, id).filter((w) => w.ink).at(-1)?.ink?.strokes.map((s) => s.w), SYNC).toEqual([7, 4]);
   });
 
+  test('an old typed page with edits not yet pushed, drawn on: its typed text survives the push and the pull after it', async ({ page }) => {
+    // The pull kept the newer local copy and left it unmarked; drawn on, it
+    // went without `both` as a pen page, the server kept its older text (rule
+    // b), and the pull after it wrote that text over the coach's (review of
+    // the fix round, 25.10.2026, N1).
+    test.setTimeout(60_000);
+    const at = suiteNow() - HOUR;
+    const id = 'page-oldtext-003';
+    await seed(page, [row({ pageId: id, kind: 'text', text: 'alt und neu getippt', dirty: true, createdAt: at, updatedAt: at + 60_000 })]);
+    await stubSignedInApp(page);
+    const server = await fakeServer(page, { [id]: { kind: 'text', createdAt: at, updatedAt: at, deleted: false, savedAt: iso(at), payload: { title: '', text: 'alt', bg: 'court', points: 3, usedIn: [], ink: { w: 1000, h: 1414, strokes: [THEIRS] } } } }, { failFirstPush: true });
+    await page.goto('/');
+    await openPad(page);
+    await expect(pageBox(page)).toHaveText('alt und neu getippt');
+    await sideInk(page).click();
+    await expect.poll(() => inkWidths(page, id), SYNC).toEqual([7]);
+    await expect(paper(page)).toBeVisible();
+    await draw(page);
+    await expect.poll(() => (server.rows.get(id)?.payload.ink as { strokes: Stroke[] } | undefined)?.strokes.length, { timeout: 30_000 }).toBe(2);
+    expect(server.rows.get(id)!.payload).toMatchObject({ text: 'alt und neu getippt', bg: 'court' });
+    await expect.poll(async () => (await pageRow(page, id))?.dirty, SYNC).toBe(false);
+    expect(await pageRow(page, id)).toMatchObject({ text: 'alt und neu getippt', bg: 'court', sides: 2 });
+  });
+
+  test('an old typed page with edits not yet pushed keeps the court put under it', async ({ page }) => {
+    // The same record, its first push lost, the court toggled on: pushed as
+    // a typed page without `both`, the server kept its own background (rule
+    // c) and the court went.
+    test.setTimeout(60_000);
+    const at = suiteNow() - HOUR;
+    const id = 'page-oldtext-004';
+    await seed(page, [row({ pageId: id, kind: 'text', text: 'neu getippt', dirty: true, createdAt: at, updatedAt: at + 60_000 })]);
+    await stubSignedInApp(page);
+    const server = await fakeServer(page, { [id]: { kind: 'text', createdAt: at, updatedAt: at, deleted: false, savedAt: iso(at), payload: { title: '', text: 'alt', bg: '', points: 3, usedIn: [], ink: { w: 1000, h: 1414, strokes: [THEIRS] } } } }, { failFirstPush: true });
+    await page.goto('/');
+    await openPad(page);
+    await expect(pageBox(page)).toHaveText('neu getippt');
+    await sideInk(page).click();
+    await expect.poll(() => inkWidths(page, id), SYNC).toEqual([7]);
+    const court = sheet(page).getByRole('button', { name: /^(Spielfeld|Court)$/ });
+    await expect(court).toBeEnabled();
+    await court.click();
+    await expect(court).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(() => server.rows.get(id)?.payload.bg, { timeout: 30_000 }).toBe('court');
+    expect(server.rows.get(id)!.payload).toMatchObject({ text: 'neu getippt' });
+    await expect.poll(async () => (await pageRow(page, id))?.dirty, SYNC).toBe(false);
+    expect(await pageRow(page, id)).toMatchObject({ bg: 'court', text: 'neu getippt' });
+  });
+
+  test('an old typed page with edits not yet pushed, emptied, is handed to the strokes the server holds', async ({ page }) => {
+    // Its count said 0 whatever the server held: emptied, it stayed a typed
+    // page, and the installed apps showed an empty page over the strokes (N5).
+    const at = suiteNow() - HOUR;
+    const id = 'page-oldtext-005';
+    await seed(page, [row({ pageId: id, kind: 'text', text: 'nur kurz', dirty: true, createdAt: at, updatedAt: at + 60_000 })]);
+    await stubSignedInApp(page);
+    const server = await fakeServer(page, { [id]: { kind: 'text', createdAt: at, updatedAt: at, deleted: false, savedAt: iso(at), payload: { title: '', text: 'alt', bg: '', points: 3, usedIn: [], ink: { w: 1000, h: 1414, strokes: [THEIRS] } } } }, { failFirstPush: true });
+    await page.goto('/');
+    await openPad(page);
+    await expect(pageBox(page)).toHaveText('nur kurz');
+    // The boot's pull is in and its push has failed: emptied before the push
+    // goes again.
+    await expect.poll(() => server.pushes.length, SYNC).toBeGreaterThan(0);
+    await pageBox(page).fill('');
+    await expect.poll(async () => (await pageRow(page, id))?.kind, SYNC).toBe('ink');
+    await expect.poll(() => server.rows.get(id)?.kind, { timeout: 30_000 }).toBe('ink');
+    expect(server.rows.get(id)!.payload).toMatchObject({ text: '', points: 3 });
+  });
+
+  test('an old pen page at the server\'s version is read from the server once, even when its strokes count the same', async ({ page }) => {
+    // Same count, older strokes: a count cannot tell them apart (N3).
+    const at = suiteNow() - HOUR;
+    const id = 'page-oldink-0003';
+    await seed(page, [row({ pageId: id, kind: 'ink', points: 3, createdAt: at })], [{ pageId: id, strokes: [MINE] }]);
+    await stubSignedInApp(page);
+    const { pushes, inkAsked } = await stubNotebook(page, { index: [listed({ pageId: id, kind: 'ink', points: 3, createdAt: at })], ink: { [id]: [THEIRS] } });
+    await page.goto('/');
+    await openPad(page);
+    await expect.poll(() => inkAsked, SYNC).toContain(id);
+    await expect.poll(() => inkWidths(page, id), SYNC).toEqual([7]);
+    await expect(paper(page)).toBeVisible();
+    await draw(page);
+    await expect.poll(() => pushedFor(pushes, id).filter((w) => w.ink).at(-1)?.ink?.strokes.map((s) => s.w), SYNC).toEqual([7, 4]);
+    expect(inkAsked.filter((p) => p === id)).toHaveLength(1);
+  });
+
   test('a waiting push of such a record does not carry its old strokes', async ({ page }) => {
     const at = suiteNow() - HOUR;
     const id = 'page-oldink-0002';
     // Renamed on the old frontend, not yet pushed.
     await seed(page, [row({ pageId: id, kind: 'ink', points: 5, title: 'Halbzeit', dirty: true, createdAt: at, updatedAt: at + 60_000 })], [{ pageId: id, strokes: [MINE] }]);
     await stubSignedInApp(page);
-    const { pushes } = await stubNotebook(page, { index: [listed({ pageId: id, kind: 'ink', points: 5, createdAt: at })], ink: { [id]: [stroke(7, 5)] } });
+    const { pushes } = await stubNotebook(page, { index: [listed({ pageId: id, kind: 'ink', points: 5, text: 'auf dem Tablet', createdAt: at })], ink: { [id]: [stroke(7, 5)] } });
     await page.goto('/');
     await expect.poll(() => pushedFor(pushes, id).some((w) => w.title === 'Halbzeit'), SYNC).toBe(true);
     for (const w of pushedFor(pushes, id)) {
       expect(w, 'strokes older than the server\'s stay home').not.toHaveProperty('ink');
-      // The other side of an old record is not known here: the server's rules for the installed apps keep it.
-      expect(w).not.toHaveProperty('both');
+      // The side it could not show came in with the pull before the push:
+      // a push that vouches for both sides carries the server's text.
+      if (w.both) expect(w.text).toBe('auf dem Tablet');
     }
     await expect.poll(async () => (await pageRow(page, id))?.dirty, SYNC).toBe(false);
   });
@@ -405,6 +540,28 @@ test.describe('Strokes that are not known to be current', () => {
     await page.clock.fastForward(25_000);
     await expect(inkFailed(page)).toBeVisible(SYNC);
     await expect(retry(page)).toBeVisible();
+  });
+
+  test('a fetch that finds the page deleted elsewhere takes the deletion, and does not bring the page back', async ({ page }) => {
+    // The pull saw the page live; by the fetch, the tablet had deleted it.
+    // The tombstone holds no strokes, and the strokes held here were kept as
+    // the only copy — as a new version that revived the page (N4).
+    const at = suiteNow() - HOUR;
+    const id = 'page-gone-00001';
+    await seed(page, [marked({ pageId: id, kind: 'ink', points: 3, createdAt: at })], [{ pageId: id, strokes: [MINE], stale: true }]);
+    await stubSignedInApp(page);
+    const { pushes, inkAsked } = await stubNotebook(page, {
+      index: [listed({ pageId: id, kind: 'ink', points: 3, createdAt: at })],
+      getRow: (pageId) => (pageId === id ? listed({ pageId: id, kind: 'ink', deleted: true, createdAt: at, updatedAt: at + 5_000, points: 0 }) : undefined),
+    });
+    await page.goto('/');
+    await openPad(page);
+    await expect.poll(() => inkAsked, SYNC).toContain(id);
+    await expect.poll(async () => (await pageRow(page, id))?.deleted, SYNC).toBe(true);
+    await page.waitForTimeout(6_500);
+    expect(pushedFor(pushes, id).filter((w) => !(w as { deleted?: boolean }).deleted)).toEqual([]);
+    expect((await pageRow(page, id))?.deleted).toBe(true);
+    expect(await inkWidths(page, id)).toBeUndefined();
   });
 
   test('a page that never reached the server stays writable with the network gone', async ({ page }) => {

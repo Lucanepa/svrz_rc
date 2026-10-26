@@ -1824,6 +1824,10 @@ export default function App() {
   }, [landingSettled, rcAuth.rcId]);
 
   const [backendNotice, setBackendNotice] = useState('');
+  /** The filed observation being opened from a Home row, while its records
+   *  load — the row shows a spinner in place of its eye. */
+  const [openingDone, setOpeningDone] = useState<string | null>(null);
+  const openingDoneRef = useRef<string | null>(null);
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
   // Admin via the admin-console session or the in-app database login: keeps
   // the unrestricted RC picker and may open any RC's detail. Plain RC sessions
@@ -3967,11 +3971,26 @@ export default function App() {
   // row from an older server names no record, so we fetch that coachee's
   // records and match on the game date (plus role when the row names one) —
   // then reuse the normal record viewer either way.
+  // Home's notice line sits under the whole page: on 26.10.2026, with no
+  // network, a tap on a filed row waited and then failed with nothing in
+  // view — "clicking does nothing". The row now spins while it loads, and a
+  // failure is a toast, on screen wherever the coach has scrolled to.
+  const doneKey = (row: { coacheeId: string; gameDate: string; role?: string; feedbackId?: string }) =>
+    row.feedbackId || `${row.coacheeId}|${row.gameDate}|${row.role || ''}`;
   const openDoneObservation = async (row: { coacheeId: string; gameDate: string; role?: string; feedbackId?: string }) => {
     if (!row.coacheeId) return;
+    const key = doneKey(row);
+    // A second tap on the same row while it loads is the same request; a tap
+    // on another row takes over, and the first one's answer is let go.
+    if (openingDoneRef.current === key) return;
+    openingDoneRef.current = key;
+    setOpeningDone(key);
     setBackendNotice('');
+    const current = () => openingDoneRef.current === key;
+    const fail = (message: string) => { if (current()) toast.error(message); };
     try {
       const records = await listCoacheeFeedbacks(row.coacheeId);
+      if (!current()) return;
       const byId = (row.feedbackId || '').trim();
       const day = (s: string) => (s || '').slice(0, 10);
       const sameDay = records.filter((r) => day(r.expand?.game?.match_date || '') === day(row.gameDate));
@@ -3997,10 +4016,12 @@ export default function App() {
         if (coachee) selectCoachee(coachee);
         else { setSelectedCoacheeId(row.coacheeId); setSelectedCoacheeName(''); setSelectedCoacheeLevel(''); }
         openFeedbackRecord(match);
-      } else setBackendNotice(formData.lang === 'DE' ? 'Beobachtung nicht gefunden.' : 'Observation not found.');
+      } else fail(formData.lang === 'DE' ? 'Beobachtung nicht gefunden.' : 'Observation not found.');
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      setBackendNotice(localizeRuntimeError(reason, formData.lang));
+      fail(localizeRuntimeError(reason, formData.lang));
+    } finally {
+      if (current()) { openingDoneRef.current = null; setOpeningDone(null); }
     }
   };
 
@@ -8093,7 +8114,9 @@ export default function App() {
                   mapsUrl={f.mapsUrl}
                   onOpen={() => void openDoneObservation(f)}
                   title={de ? 'Feedback öffnen' : 'Open feedback'}
-                  status={<Eye size={15} className="text-stone-400" />}
+                  status={openingDone === doneKey(f)
+                    ? <Loader2 size={15} className="animate-spin text-stone-500" aria-label={de ? 'Wird geöffnet' : 'Opening'} />
+                    : <Eye size={15} className="text-stone-400" />}
                   chips={<>
                     {/* The same marks as on the games still to
                         do: a filed observation on a Testspiel or

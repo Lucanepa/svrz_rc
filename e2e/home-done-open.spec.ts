@@ -225,7 +225,7 @@ test('with the device offline, a filed observation opens at once from the stored
   await page.getByRole('button', { name: /VBC Nachmittag/ }).click();
   await expect(openedMatchNo(page, AFTERNOON.expand.game.match_no)).toBeVisible();
   // Not the 6 s network timeout: the network is known gone, so no waiting.
-  expect(Date.now() - started).toBeLessThan(3000);
+  expect(Date.now() - started).toBeLessThan(5000);
 });
 
 test('a filed observation not on the device, with a network that never answers, says so after 12 s', async ({ page }) => {

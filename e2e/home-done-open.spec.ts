@@ -197,3 +197,47 @@ test('a tap with no network under it spins on the row, then says why instead of 
   await expect(row.getByLabel(/^(Opening|Wird geöffnet)$/)).toHaveCount(0);
   await expect(openedMatchNo(page, AFTERNOON.expand.game.match_no)).toHaveCount(0);
 });
+
+test('Home downloads every filed observation while it has a network', async ({ page }) => {
+  // So a tap on one in a gym with no signal has a stored copy to open.
+  const fetched: string[] = [];
+  page.on('request', (r) => { if (/\/api\/coachees\/[^/]+\/feedbacks$/.test(r.url())) fetched.push(r.url()); });
+  await stubHome(page, true);
+  await expect(page.getByRole('button', { name: /VBC Nachmittag/ })).toBeVisible();
+  // Two rows, one coachee: one list, fetched once.
+  await expect.poll(() => fetched.length).toBe(1);
+  expect(fetched[0]).toContain(`/api/coachees/${COACHEE.id}/feedbacks`);
+});
+
+test('with the device offline, a filed observation opens at once from the stored copy', async ({ page, context }) => {
+  await stubHome(page, true);
+  await expect(page.getByRole('button', { name: /VBC Nachmittag/ })).toBeVisible();
+  // What the service worker stored on the warm-up (no worker under the dev
+  // server, so put it there the way it would).
+  await page.evaluate(async ({ id, body }) => {
+    const cache = await caches.open('svrz-api-get');
+    await cache.put(new URL(`/api/coachees/${id}/feedbacks`, location.href).href,
+      new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }));
+  }, { id: COACHEE.id, body: [MORNING, AFTERNOON] });
+
+  await context.setOffline(true);
+  const started = Date.now();
+  await page.getByRole('button', { name: /VBC Nachmittag/ }).click();
+  await expect(openedMatchNo(page, AFTERNOON.expand.game.match_no)).toBeVisible();
+  // Not the 6 s network timeout: the network is known gone, so no waiting.
+  expect(Date.now() - started).toBeLessThan(3000);
+});
+
+test('a filed observation not on the device, with a network that never answers, says so after 12 s', async ({ page }) => {
+  test.setTimeout(40000);
+  await stubHome(page, true);
+  await expect(page.getByRole('button', { name: /VBC Nachmittag/ })).toBeVisible();
+  await page.route('**/api/coachees/*/feedbacks', () => { /* never answered */ });
+
+  const row = page.getByRole('button', { name: /VBC Nachmittag/ });
+  await row.click();
+  await expect(row.getByLabel(/^(Opening|Wird geöffnet)$/)).toBeVisible();
+  await expect(page.locator('[data-testid="toast"][data-toast-kind="error"]'))
+    .toContainText(/not stored on this device|auf diesem Gerät noch nicht gespeichert/, { timeout: 15000 });
+  await expect(row.getByLabel(/^(Opening|Wird geöffnet)$/)).toHaveCount(0);
+});

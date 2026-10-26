@@ -122,6 +122,7 @@ import { APP_VERSION, BUILD_INFO, VERSION_STAMP } from './lib/buildInfo';
 import { confirmDialog, toast } from './components/ui';
 import { takenAfterReminder } from './lib/reminder';
 import { runOfflineCheck, type OfflineReport } from './lib/offlineReady';
+import { warmFiledObservations } from './lib/offlineFirst';
 import { useDocTextSearch, DOC_TEXT_MIN_QUERY, type DocTextSearch } from './lib/useDocTextSearch';
 import type { DocTextResult } from './lib/docText';
 import { clientLog } from './lib/logger';
@@ -912,6 +913,12 @@ function detectInitialLang(): FeedbackFormData['lang'] {
   }
   return window.navigator.language.toLowerCase().startsWith('en') ? 'EN' : 'DE';
 }
+
+/** How long a tap on a filed Home row waits before saying the observation is
+ *  not on the device (openDoneObservation). Past the 6 s cache timeout and the
+ *  10 s "no connection" mark, so a stored copy has long since answered. */
+const OPEN_DONE_TIMEOUT_MS = 12000;
+const OPEN_DONE_TIMEOUT = 'svrz:open-done-timeout';
 
 function localizeRuntimeError(message: string, lang: FeedbackFormData['lang']): string {
   let normalized = message.trim();
@@ -2929,6 +2936,9 @@ export default function App() {
       // tab is instant instead of triggering an identical fetch.
       setrcCoachSummaryData(summary);
       setRcSummaryKey(`${myName}|${season}`);
+      // Every filed observation in the list, onto the device while there is
+      // a network: a tap on one in a gym with no signal opens the stored copy.
+      if (!isDemoMode()) void warmFiledObservations(doneList, listCoacheeFeedbacks);
     } catch {
       if (isCurrentLoad('home', gen) && homeKeyRef.current !== `${myName}|${season}`) setHomeData(null);
       // The claim above covers the RC detail view too; holding it after a
@@ -3989,7 +3999,13 @@ export default function App() {
     const current = () => openingDoneRef.current === key;
     const fail = (message: string) => { if (current()) toast.error(message); };
     try {
-      const records = await listCoacheeFeedbacks(row.coacheeId);
+      // Stored on the device by Home's warm-up, or not there at all: with no
+      // network a read with nothing stored waits for good, so it gets 12 s.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const records = await Promise.race([
+        listCoacheeFeedbacks(row.coacheeId),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(OPEN_DONE_TIMEOUT)), OPEN_DONE_TIMEOUT_MS); }),
+      ]).finally(() => clearTimeout(timer));
       if (!current()) return;
       const byId = (row.feedbackId || '').trim();
       const day = (s: string) => (s || '').slice(0, 10);
@@ -4019,7 +4035,11 @@ export default function App() {
       } else fail(formData.lang === 'DE' ? 'Beobachtung nicht gefunden.' : 'Observation not found.');
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      fail(localizeRuntimeError(reason, formData.lang));
+      fail(reason === OPEN_DONE_TIMEOUT
+        ? (formData.lang === 'DE'
+          ? 'Keine Verbindung – diese Beobachtung ist auf diesem Gerät noch nicht gespeichert.'
+          : 'No connection – this observation is not stored on this device yet.')
+        : localizeRuntimeError(reason, formData.lang));
     } finally {
       if (current()) { openingDoneRef.current = null; setOpeningDone(null); }
     }

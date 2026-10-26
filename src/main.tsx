@@ -15,6 +15,7 @@ import { enableDemo, isDemoMode } from './lib/demo';
 import { canonicalizeLegacyHash, routeRoot } from './lib/routes';
 import { installLogging, clientLog, noteReloadingPage, scrubTokens, isPageLeaving } from './lib/logger';
 import { connection, installConnectionWatch } from './lib/connection';
+import { installOfflineFirst } from './lib/offlineFirst';
 import ConnectionBanner from './components/ConnectionBanner.tsx';
 import { IS_NATIVE, installNativeFetch } from './lib/native';
 import { installApiLang } from './lib/apiLang';
@@ -79,6 +80,9 @@ installLogging({
   ship: !isDemoMode(),
 });
 installConnectionWatch();
+// Outermost: once the network is known gone, reads answer from the stored
+// copy at once instead of waiting out the 6 s timeout again (lib/offlineFirst.ts).
+if (!isDemoMode()) installOfflineFirst();
 // Each change of what the banner says goes into the session replay, so "the
 // app was broken" can be checked against what the coach was actually told.
 connection.subscribe(() => clientLog.info('net.state', `connection: ${connection.get()}`, { online: navigator.onLine }));

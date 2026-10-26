@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { stubSignedInApp, RC } from './support/app';
+import { BANNER_VISIBLE_MS } from '../src/components/ConnectionBanner';
 import {
-  ConnectionTracker, deriveState, isTimedRead, isNoResponseMessage, SLOW_AFTER_MS,
+  ConnectionTracker, deriveState, isTimedRead, isNoResponseMessage, SLOW_AFTER_MS, NO_ANSWER_AFTER_MS,
 } from '../src/lib/connection';
 
 /**
@@ -22,6 +23,10 @@ test.describe('rules', () => {
     // A cached answer with another read still on its way is still waiting.
     expect(deriveState(true, 0, 'stale', 1)).toBe('slow');
     expect(deriveState(true, 0, 'ok', 1)).toBe('ok');
+    // A read that has heard nothing for NO_ANSWER_AFTER_MS is not slow, it is
+    // not getting through (26.10.2026, a garage with zero bars).
+    expect(deriveState(true, 1, 'ok', 1, 1)).toBe('unreachable');
+    expect(deriveState(false, 1, 'ok', 1, 1)).toBe('offline');
   });
 
   test('only everyday API reads start the slow clock', () => {
@@ -93,6 +98,22 @@ test.describe('in the app', () => {
     await expect(banner).toHaveAttribute('data-state', 'slow', { timeout: SLOW_AFTER_MS + 1000 });
     await expect(banner).toContainText(/Netz|network/);
     await expect(banner).toHaveCount(0, { timeout: 3000 });
+  });
+
+  test('a read that never answers turns from slow to no connection, and the note leaves on its own', async ({ page }) => {
+    test.setTimeout(NO_ANSWER_AFTER_MS + BANNER_VISIBLE_MS + 15000);
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await page.route('**/api/dead-read', () => { /* never answered */ });
+    await page.evaluate(() => { void fetch('/api/dead-read'); });
+
+    const banner = page.getByTestId('connection-banner');
+    await expect(banner).toHaveAttribute('data-state', 'slow', { timeout: SLOW_AFTER_MS + 1000 });
+    // Said once, then out of the way of the buttons under it.
+    await expect(banner).toHaveCount(0, { timeout: BANNER_VISIBLE_MS + 1000 });
+    // A new note — no connection at all — is said again, and leaves too.
+    await expect(banner).toHaveAttribute('data-state', 'unreachable', { timeout: NO_ANSWER_AFTER_MS });
+    await expect(banner).toHaveCount(0, { timeout: BANNER_VISIBLE_MS + 1000 });
   });
 
   test('no response to the session probe is a no-connection screen, not the login form', async ({ page }) => {

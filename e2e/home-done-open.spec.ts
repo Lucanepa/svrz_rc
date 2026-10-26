@@ -179,3 +179,21 @@ test('a done row on a Testspiel says so, and names the hall', async ({ page }) =
   // The hall as a map link, the precise one the sync stored.
   await expect(page.getByRole('link', { name: /Utogrund/ })).toHaveAttribute('href', 'https://maps.example/utogrund');
 });
+
+test('a tap with no network under it spins on the row, then says why instead of doing nothing', async ({ page }) => {
+  // 26.10.2026, a garage with zero bars: the tap waited, failed, and the
+  // reason went to a notice line far below the list — nothing changed on
+  // screen, and the eye read as broken.
+  await stubHome(page, true);
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => { release = r; });
+  await page.route('**/api/coachees/*/feedbacks', async (r) => { await held; await r.abort('internetdisconnected'); });
+
+  const row = page.getByRole('button', { name: /VBC Nachmittag/ });
+  await row.click();
+  await expect(row.getByLabel(/^(Opening|Wird geöffnet)$/)).toBeVisible();
+  release();
+  await expect(page.locator('[data-testid="toast"][data-toast-kind="error"]')).toBeVisible();
+  await expect(row.getByLabel(/^(Opening|Wird geöffnet)$/)).toHaveCount(0);
+  await expect(openedMatchNo(page, AFTERNOON.expand.game.match_no)).toHaveCount(0);
+});

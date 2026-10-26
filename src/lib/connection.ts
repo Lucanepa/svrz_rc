@@ -10,7 +10,8 @@
 //   offline      the device itself says it has no network
 //   slow         an API read has been waiting longer than SLOW_AFTER_MS
 //   stale        the last answer came from the offline cache, not the server
-//   unreachable  a request got no response at all while the device is online
+//   unreachable  a request got no response at all while the device is online,
+//                or an API read has heard nothing for NO_ANSWER_AFTER_MS
 //
 // A server that answers — any status, 500 included — is a reachable server:
 // its errors are the app's to explain, not the network's.
@@ -24,6 +25,14 @@ export type ConnectionState = 'ok' | 'slow' | 'stale' | 'unreachable' | 'offline
  *  Half the service worker's 6 s cache timeout, so the coach is told while it
  *  is happening, not after. */
 export const SLOW_AFTER_MS = 3000;
+
+/** How long an API read may wait before "slow" becomes "no connection". On
+ *  26.10.2026 a coach in an underground garage — phone "online", zero bars —
+ *  read "Slow network" for the whole time down there: a request with no
+ *  network under it hangs rather than fails, so it never said "unreachable".
+ *  Past the service worker's cache timeout and then some, a read that has
+ *  still heard nothing is not slow, it is not getting through. */
+export const NO_ANSWER_AFTER_MS = 10000;
 
 /** The service worker's NetworkFirst timeout (vite.config.ts,
  *  networkTimeoutSeconds). A 200 that took this long was the cache's answer
@@ -72,8 +81,9 @@ export function isTimedRead(method: string, url: string): boolean {
  *  still loading: the banner said "last-loaded data" over a spinner. While
  *  any read is pending after a cached answer, the app is still waiting, and
  *  says so. */
-export function deriveState(online: boolean, slowPending: number, last: Outcome, readsPending = 0): ConnectionState {
+export function deriveState(online: boolean, slowPending: number, last: Outcome, readsPending = 0, deadPending = 0): ConnectionState {
   if (!online) return 'offline';
+  if (deadPending > 0) return 'unreachable';
   if (slowPending > 0) return 'slow';
   if (last === 'unreachable') return 'unreachable';
   if (last === 'stale') return readsPending > 0 ? 'slow' : 'stale';
@@ -91,6 +101,8 @@ type Timer = ReturnType<typeof setTimeout>;
 export class ConnectionTracker {
   private online: boolean;
   private slowPending = 0;
+  /** Timed reads that have heard nothing for NO_ANSWER_AFTER_MS. */
+  private deadPending = 0;
   /** Timed reads in flight, slow or not yet. */
   private readsPending = 0;
   private last: Outcome = 'ok';
@@ -142,16 +154,21 @@ export class ConnectionTracker {
     const key = normalizeUrl(url);
     const startedAt = this.now();
     let slowTimer: Timer | null = null;
+    let deadTimer: Timer | null = null;
     let slow = false;
+    let dead = false;
     let reading = false;
     if (api && isTimedRead(method, url)) {
       reading = true;
       this.readsPending++;
       slowTimer = setTimeout(() => { slow = true; this.slowPending++; this.emit(); }, SLOW_AFTER_MS);
+      deadTimer = setTimeout(() => { dead = true; this.deadPending++; this.emit(); }, NO_ANSWER_AFTER_MS);
     }
     const end = () => {
       if (slowTimer) clearTimeout(slowTimer);
+      if (deadTimer) clearTimeout(deadTimer);
       if (slow) { this.slowPending--; slow = false; }
+      if (dead) { this.deadPending--; dead = false; }
       if (reading) { this.readsPending--; reading = false; }
     };
     return {
@@ -180,7 +197,7 @@ export class ConnectionTracker {
   }
 
   private emit(): void {
-    const next = deriveState(this.online, this.slowPending, this.last, this.readsPending);
+    const next = deriveState(this.online, this.slowPending, this.last, this.readsPending, this.deadPending);
     if (next === this.state) return;
     this.state = next;
     for (const listener of this.listeners) listener();

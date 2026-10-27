@@ -7288,7 +7288,12 @@ export default function App() {
           z-40 sits under every overlay (z-50) and the toasts (z-60); the extra
           bottom padding on the page above keeps the red Senden block able to
           scroll clear of it. On a phone the toast stack is pointer-events-none,
-          so a courtside tap still reaches this button under a toast. */}
+          so a courtside tap still reaches this button under a toast.
+          The one overlay it stays on top of is the document reader (Mike,
+          27.10.2026): a passage of a regulation is copied in
+          the reader and pasted into a page. The sheet then opens over the
+          reader, which sinks under it and is still where it was when the
+          sheet closes. */}
       {padLauncher && !padOpen && (
         <button
           type="button"
@@ -7296,9 +7301,11 @@ export default function App() {
           aria-label={tpPad.padLaunch}
           title={tpPad.padLaunch}
           data-testid="pad-launcher"
-          className={cn("no-print fixed z-40 right-4 sm:right-6 h-14 w-14 sm:h-12 sm:w-auto sm:px-4 rounded-full bg-slate-900 text-white shadow-lg hover:bg-slate-800 active:scale-95 transition flex items-center justify-center gap-2",
+          className={cn("no-print fixed right-4 sm:right-6 h-14 w-14 sm:h-12 sm:w-auto sm:px-4 rounded-full bg-slate-900 text-white shadow-lg hover:bg-slate-800 active:scale-95 transition flex items-center justify-center gap-2",
+            readerDoc ? "z-[61]" : "z-40",
             // Above the bottom bar on a phone; from lg the bar is a side rail.
-            bottomNav
+            // The reader covers the bar.
+            bottomNav && !readerDoc
               ? "bottom-[calc(5.5rem_+_env(safe-area-inset-bottom,0px))] lg:bottom-[calc(1rem_+_env(safe-area-inset-bottom,0px))]"
               : "bottom-[calc(1rem_+_env(safe-area-inset-bottom,0px))]")}
         >
@@ -11300,6 +11307,8 @@ export default function App() {
             onClose={() => { setReaderDoc(null); setReaderJump(null); }}
             initialQuery={readerJump?.query}
             initialPage={readerJump?.page}
+            rememberAs={readerDoc.id}
+            covered={padOpen}
           />
         </Suspense>
       )}

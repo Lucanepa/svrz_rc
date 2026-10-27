@@ -115,29 +115,41 @@ export const HITS_PER_DOC = 3;
 
 /** The hits in one document's pages, the first few as snippets. */
 export function findInPages(pages: DocPages, query: string): { hits: DocTextHit[]; total: number } {
-  const needle = foldText(query.trim());
   const hits: DocTextHit[] = [];
   let total = 0;
-  if (!needle) return { hits, total };
+  const pattern = phrasePattern(query);
+  if (!pattern) return { hits, total };
   pages.forEach((text, i) => {
     const folded = foldText(text);
-    let at = folded.indexOf(needle);
-    while (at !== -1) {
+    for (const m of folded.matchAll(pattern)) {
       total += 1;
       if (hits.length < HITS_PER_DOC) {
+        const at = m.index ?? 0;
+        const end = at + m[0].length;
         const from = Math.max(0, at - 50);
-        const to = Math.min(text.length, at + needle.length + 60);
+        const to = Math.min(text.length, end + 60);
         hits.push({
           page: i + 1,
           before: (from > 0 ? '…' : '') + text.slice(from, at).replace(/\s+/g, ' ').trimStart(),
-          match: text.slice(at, at + needle.length),
-          after: text.slice(at + needle.length, to).replace(/\s+/g, ' ').trimEnd() + (to < text.length ? '…' : ''),
+          match: text.slice(at, end).replace(/\s+/g, ' '),
+          after: text.slice(end, to).replace(/\s+/g, ' ').trimEnd() + (to < text.length ? '…' : ''),
         });
       }
-      at = folded.indexOf(needle, at + needle.length);
     }
   });
   return { hits, total };
+}
+
+/**
+ * A typed phrase as a pattern over folded text: its words, with any run of
+ * spaces or line breaks between them — a justified paragraph breaks a phrase
+ * over two lines as often as not (Mike, 27.10.2026). Null for
+ * an empty query.
+ */
+export function phrasePattern(query: string): RegExp | null {
+  const words = foldText(query.trim()).split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  return new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'), 'g');
 }
 
 /**

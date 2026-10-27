@@ -122,6 +122,8 @@ test('a line of the table of contents jumps to its section, and "Back" returns t
 
   const link = reader.locator('#pdf-page-2 [data-pdf-link]').first();
   await expect(link).toBeVisible({ timeout: 20_000 });
+  // Named by the line it covers, not by forty identical "go to" labels.
+  await expect(link).toHaveAttribute('aria-label', /Spezielles für die Saison/);
   await link.click();
   await expect(pageIndicator(reader)).toHaveText(/^(Seite|Page) 7 /);
 

@@ -186,3 +186,4 @@
   -webkit-user-select: none;
   user-select: none;
 }
+.pdf-text-layer.selecting .endOfContent { top: 0; }

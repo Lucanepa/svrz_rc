@@ -54,8 +54,9 @@ type Hit = { page: number; start: number; end: number; snippet: string };
 type Rect = { left: number; top: number; width: number; height: number };
 /** A place in the document that survives a zoom: a page, and how far down it. */
 type Anchor = { page: number; frac: number };
-/** A link on a page, in CSS pixels at the page's current zoom. */
-type LinkBox = Rect & { dest: unknown; url: string | null };
+/** A link on a page, in fractions of the page's size (so a zoom moves it with
+ *  the page at once), and the words under it, which name it. */
+type LinkBox = Rect & { dest: unknown; url: string | null; label: string };
 
 const STR = {
   DE: {
@@ -125,7 +126,14 @@ const clampScale = (s: number) => Math.max(MIN_SCALE, Math.min(MAX_SCALE, s));
  * wants three times this at full sharpness; it gets slightly less than full
  * sharpness rather than nothing.
  */
-const MAX_CANVAS_PIXELS = 12_000_000;
+const MAX_CANVAS_PIXELS = 10_000_000;
+/**
+ * A zoom draws the new bitmap while the old one is still on screen. Past this
+ * many pixels for the two together the old one goes first — at a high zoom,
+ * where a page is a blank for a moment rather than the tab running out of
+ * canvas memory.
+ */
+const SWAP_PIXELS = 16_000_000;
 
 /** Device pixels per CSS pixel for a page of this size: the screen's own,
  *  up to 3, unless that would break the budget above. */
@@ -408,7 +416,14 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, loa
       if (!el) return;
       if (fitWidth) {
         const width = el.clientWidth - (window.innerWidth < 640 ? 12 : 48);
-        setScale(clampScale(Math.min(3, width / base.w)));
+        const next = clampScale(Math.min(3, width / base.w));
+        if (next !== scaleRef.current) {
+          // A turned iPad keeps the place being read (not before a
+          // remembered place is back: that one is put back on its own).
+          const anchor = restoreRef.current ? null : anchorAt(0);
+          if (anchor) pendingZoom.current = { anchor, cx: 0, cy: 0, xf: 0 };
+          setScale(next);
+        }
       }
       setLaidOut(true);
     };
@@ -457,7 +472,6 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, loa
   };
   const commitZoom = useCallback((next: number, anchor: Anchor | null, cx: number, cy: number, xf: number) => {
     const to = Math.round(clampScale(next) * 100) / 100;
-    setFitWidth(false);
     if (to === scaleRef.current) {
       // No new size to wait for: only the live transform to take off.
       clearLive();
@@ -465,6 +479,7 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, loa
       return;
     }
     pendingZoom.current = anchor ? { anchor, cx, cy, xf } : null;
+    setFitWidth(false);
     setScale(to);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -559,7 +574,10 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, loa
       if (!wheel) wheel = begin(e.clientX, e.clientY, 1);
       if (!wheel) return;
       const unit = e.deltaMode === 1 ? 16 : 1;
-      wheel.ratio = ratioFor(wheel, wheel.ratio * Math.exp(-e.deltaY * unit * 0.01));
+      // A trackpad pinch sends a few pixels per event, a mouse wheel notch
+      // a hundred: capped, a notch is about a quarter more, not 2.7 times.
+      const dy = Math.max(-25, Math.min(25, e.deltaY * unit));
+      wheel.ratio = ratioFor(wheel, wheel.ratio * Math.exp(-dy * 0.01));
       show(wheel);
       window.clearTimeout(wheelTimer);
       wheelTimer = window.setTimeout(() => { const g = wheel; wheel = null; if (g) finish(g); }, 200);
@@ -793,16 +811,58 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, loa
     const onKey = (e: KeyboardEvent) => {
       // The Notizblock is on top: its keys are its own.
       if (coveredRef.current) return;
-      if (e.key === 'Escape') { onClose(); return; }
+      // One Escape peels one layer: what lies under the reader stays open.
+      if (e.key === 'Escape') { e.stopPropagation(); onClose(); return; }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') { // identity:display — a keyboard shortcut, not a name
         e.preventDefault();
         searchRef.current?.focus();
         searchRef.current?.select();
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // Capture: this runs before App's own Escape handler whatever the order
+    // the two were registered in, and still sees the sheet as open on the
+    // Escape that closes it.
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose]);
+
+  // A selection being made: the text layer's end-of-content block spreads
+  // under the whole page, so a drag through the gaps between lines stays on
+  // the words instead of jumping to the page's start or end (pdf.js's viewer
+  // does the same). Ends with the press, or with the selection.
+  useEffect(() => {
+    const layers = () => scrollRef.current?.querySelectorAll('.pdf-text-layer') ?? [];
+    const onDown = (e: PointerEvent) => {
+      const layer = (e.target as Element | null)?.closest?.('.pdf-text-layer');
+      if (layer) layer.classList.add('selecting');
+    };
+    const onUp = () => {
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      layers().forEach((el) => el.classList.remove('selecting'));
+    };
+    const onSelection = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) { layers().forEach((el) => el.classList.remove('selecting')); return; }
+      // iOS draws its own handles, and a drag of them sends no pointer
+      // events to the page: the layers the selection touches are marked here.
+      for (const node of [sel.anchorNode, sel.focusNode]) {
+        const layer = (node instanceof Element ? node : node?.parentElement)?.closest('.pdf-text-layer');
+        if (layer) layer.classList.add('selecting');
+      }
+    };
+    const box = scrollRef.current;
+    box?.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    document.addEventListener('selectionchange', onSelection);
+    return () => {
+      box?.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      document.removeEventListener('selectionchange', onSelection);
+    };
+  }, [doc]);
 
   // The page behind must not scroll while the reader is open.
   useEffect(() => {
@@ -843,7 +903,9 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, loa
     const n = page.pageNumber;
     let pending = layerText.current.get(n);
     if (!pending) {
-      pending = page.getTextContent({ includeMarkedContent: true, disableNormalization: true });
+      // Normalised (the default), so a copied "Offizielle" is plain f-f-i
+      // and not the ligature the PDF draws, which no search would match.
+      pending = page.getTextContent({ includeMarkedContent: true });
       pending.catch(() => layerText.current.delete(n));
       layerText.current.set(n, pending);
     }
@@ -1065,7 +1127,9 @@ function Page({ doc, num, scale, base, hits, activeHit, pageText, textForLayer, 
     if (!el) return;
     const io = new IntersectionObserver(
       ([entry]) => setNear(entry.isIntersecting),
-      { root: el.closest('[data-pdf-scroll]'), rootMargin: '900px 0px' },
+      // 600 px: the next page is drawn before it shows at the usual zoom,
+      // and at 400 % that is still one page either side, not three.
+      { root: el.closest('[data-pdf-scroll]'), rootMargin: '600px 0px' },
     );
     io.observe(el);
     return () => io.disconnect();
@@ -1104,6 +1168,15 @@ function Page({ doc, num, scale, base, hits, activeHit, pageText, textForLayer, 
       canvas.width = Math.floor(viewport.width * ratio);
       canvas.height = Math.floor(viewport.height * ratio);
       canvas.className = 'absolute inset-0 block w-full h-full';
+      const shown = hostRef.current;
+      if (shown) {
+        const held = [...shown.querySelectorAll('canvas')].reduce((n, c) => n + c.width * c.height, 0);
+        if (held && held + canvas.width * canvas.height > SWAP_PIXELS) {
+          shown.querySelectorAll('canvas').forEach(release);
+          shown.replaceChildren();
+          setDrawn(false);
+        }
+      }
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       const render = page.render({
@@ -1145,8 +1218,10 @@ function Page({ doc, num, scale, base, hits, activeHit, pageText, textForLayer, 
         layer = new pdfjsLib.TextLayer({ textContentSource: content, container: fresh, viewport });
         await layer.render();
         if (cancelled) return;
-        // What a drag past the last word lands on, so the selection does not
-        // jump to the top of the page (pdf.js's viewer does the same).
+        // What a drag between or past the words lands on while a selection is
+        // being made (the `selecting` class, set by the reader), so the
+        // selection does not jump to the top of the page (pdf.js's viewer
+        // does the same).
         const end = document.createElement('div');
         end.className = 'endOfContent';
         fresh.append(end);
@@ -1163,26 +1238,42 @@ function Page({ doc, num, scale, base, hits, activeHit, pageText, textForLayer, 
     (async () => {
       try {
         const page = await doc.getPage(num);
-        const annotations = await page.getAnnotations();
+        const [annotations, text] = await Promise.all([page.getAnnotations(), pageText(num).catch(() => null)]);
         if (cancelled) return;
-        const viewport = page.getViewport({ scale });
+        const unit = page.getViewport({ scale: 1 });
+        // Each run of words and where it sits: a contents page is dozens of
+        // links, and a screen reader should hear "7.6 Rotation", not the
+        // same "go to the linked place" forty times.
+        const words = text ? text.spans.map((sp) => {
+          const tx = pdfjsLib.Util.transform(unit.transform, sp.transform);
+          const h = Math.hypot(tx[2], tx[3]) || 10;
+          return { left: tx[4], right: tx[4] + sp.width, mid: tx[5] - h / 2, str: text.text.slice(sp.start, sp.end) };
+        }) : [];
         const boxes: LinkBox[] = [];
         for (const a of annotations as Array<{ subtype?: string; rect?: number[]; dest?: unknown; url?: string }>) {
           if (a.subtype !== 'Link' || !a.rect) continue;
           const url = typeof a.url === 'string' && /^(https?:|mailto:)/i.test(a.url) ? a.url : null;
           if (!url && (a.dest === undefined || a.dest === null)) continue;
-          const [x1, y1] = viewport.convertToViewportPoint(a.rect[0], a.rect[1]);
-          const [x2, y2] = viewport.convertToViewportPoint(a.rect[2], a.rect[3]);
+          const [x1, y1] = unit.convertToViewportPoint(a.rect[0], a.rect[1]);
+          const [x2, y2] = unit.convertToViewportPoint(a.rect[2], a.rect[3]);
+          const left = Math.min(x1, x2);
+          const top = Math.min(y1, y2);
+          const width = Math.abs(x2 - x1);
+          const height = Math.abs(y2 - y1);
+          const label = words
+            .filter((w) => w.mid >= top && w.mid <= top + height && w.right > left && w.left < left + width)
+            .map((w) => w.str).join(' ')
+            .replace(/[.…]{3,}/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90);
           boxes.push({
-            left: Math.min(x1, x2), top: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1),
-            dest: url ? null : a.dest, url,
+            left: left / unit.width, top: top / unit.height, width: width / unit.width, height: height / unit.height,
+            dest: url ? null : a.dest, url, label,
           });
         }
         setLinks(boxes);
       } catch { setLinks([]); }
     })();
     return () => { cancelled = true; };
-  }, [near, doc, num, scale]);
+  }, [near, doc, num, pageText]);
 
   // Highlights are drawn from the same text run that produced the hit, so
   // they land on the words the search actually matched.
@@ -1235,12 +1326,13 @@ function Page({ doc, num, scale, base, hits, activeHit, pageText, textForLayer, 
       ))}
       <div ref={textRef} className="absolute inset-0" />
       {links.map((link, i) => {
-        const box = { left: link.left, top: link.top, width: link.width, height: link.height };
+        const pct = (f: number) => `${f * 100}%`;
+        const box = { left: pct(link.left), top: pct(link.top), width: pct(link.width), height: pct(link.height) };
         const cls = 'absolute z-10 rounded-sm hover:bg-blue-500/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500';
         return link.url ? (
-          <a key={i} href={link.url} target="_blank" rel="noopener noreferrer" data-pdf-link className={cls} style={box} aria-label={link.url} />
+          <a key={i} href={link.url} target="_blank" rel="noopener noreferrer" data-pdf-link className={cls} style={box} aria-label={link.label || link.url} />
         ) : (
-          <button key={i} type="button" data-pdf-link className={cls} style={box} onClick={() => onLink(link.dest)} aria-label={linkLabel} />
+          <button key={i} type="button" data-pdf-link className={cls} style={box} onClick={() => onLink(link.dest)} aria-label={link.label ? `${linkLabel}: ${link.label}` : linkLabel} />
         );
       })}
     </div>

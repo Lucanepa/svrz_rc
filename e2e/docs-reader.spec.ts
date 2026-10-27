@@ -50,7 +50,9 @@ test('searching the document finds the word and jumps to it', async ({ page }) =
   // Lower case, against a word the document capitalises: the search folds case
   // and accents on both sides, the way every other lookup in this app does.
   await reader.getByPlaceholder(/Im Dokument suchen|Search this document/).fill('halle');
-  await expect(reader.getByText(/^\d+\/\d+$/)).toBeVisible({ timeout: 20_000 });
+  // In the header: the page's own words are text in the dialog too now, and
+  // this guide numbers its pages "1/9".
+  await expect(reader.locator('header').getByText(/^\d+\/\d+$/)).toBeVisible({ timeout: 20_000 });
   await expect(reader.getByRole('button', { name: /(S\.|p\.) \d+/ }).first()).toBeVisible();
 });
 

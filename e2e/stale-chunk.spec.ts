@@ -18,6 +18,8 @@ test('the rule: reload once, not mid-form, not twice in a row', () => {
   expect(decideStaleChunkReload({ lastReloadAt: now - 5_000, now, formDirty: true })).toBe('already-reloaded');
   // Long enough ago is a different deploy.
   expect(decideStaleChunkReload({ lastReloadAt: now - STALE_CHUNK_FORGET_MS - 1, now, formDirty: false })).toBe('reload');
+  // No network at all: the same words, but no deploy — never a reload.
+  expect(decideStaleChunkReload({ lastReloadAt: null, now, formDirty: false, offline: true })).toBe('offline');
   expect(readLastReload(null)).toBeNull();
   expect(readLastReload('abc')).toBeNull();
   expect(readLastReload('123')).toBe(123);
@@ -80,4 +82,27 @@ test('mid-form there is no reload: the notice says the entries are kept', async 
   await expect(notice).toContainText(/deine Eingaben bleiben erhalten/);
   expect(await page.evaluate((k) => sessionStorage.getItem(k), STALE_CHUNK_STATE_KEY)).toBeNull();
   await expect(page.getByText(/Da ist etwas schiefgelaufen|Something went wrong/)).toHaveCount(0);
+});
+
+// 27.10.2026: the network went away while Home was still fetching the PDF
+// code, the failed import read as a stale build, and the reload put the
+// browser's offline page where the app had been.
+test('with no network a chunk that will not load is no reason to reload: the notice says why', async ({ page, context }) => {
+  await stubSignedInApp(page);
+  await refuseReader(page);
+  await page.goto('/coachees');
+  const doc = page.getByRole('button', { name: /Leitfaden SR-Technik|Refereeing technique guide/ });
+  await expect(doc).toBeVisible();
+  await context.setOffline(true);
+  await doc.click();
+
+  const notice = page.getByTestId('stale-build');
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText('Keine Verbindung');
+  // No reload, and none offered while there is no network to reload from.
+  expect(await page.evaluate((k) => sessionStorage.getItem(k), STALE_CHUNK_STATE_KEY)).toBeNull();
+  await expect(notice.getByRole('button', { name: 'Neu laden' })).toHaveCount(0);
+  expect(new URL(page.url()).pathname).toBe('/coachees');
+  await context.setOffline(false);
+  await expect(notice.getByRole('button', { name: 'Neu laden' })).toBeVisible();
 });

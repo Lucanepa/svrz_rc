@@ -27,9 +27,17 @@ export function isStaleChunkError(error: unknown): boolean {
   return /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module|ChunkLoadError|Loading chunk .* failed/i.test(text);
 }
 
-export type StaleChunkDecision = 'reload' | 'form-dirty' | 'already-reloaded';
+export type StaleChunkDecision = 'reload' | 'form-dirty' | 'already-reloaded' | 'offline';
 
-export function decideStaleChunkReload(input: { lastReloadAt: number | null; now: number; formDirty: boolean }): StaleChunkDecision {
+/**
+ * `offline`: the device has no network at all. The engines word that failure
+ * exactly like a gone chunk, but it is no deploy, and a reload there trades
+ * the app for the browser's own "you are offline" page. 27.10.2026: Home was
+ * still fetching the PDF code when a test switched the network off, and the
+ * reload took the whole app with it — in the gym, a coach with no signal.
+ */
+export function decideStaleChunkReload(input: { lastReloadAt: number | null; now: number; formDirty: boolean; offline?: boolean }): StaleChunkDecision {
+  if (input.offline) return 'offline';
   if (input.lastReloadAt != null && input.now - input.lastReloadAt < STALE_CHUNK_FORGET_MS) return 'already-reloaded';
   if (input.formDirty) return 'form-dirty';
   return 'reload';
@@ -43,13 +51,23 @@ export function readLastReload(raw: string | null): number | null {
 /** Thrown to the caller when the page cannot be reloaded for it — the message
  *  a toast can show as it is. */
 export class StaleBuildError extends Error {
-  readonly decision: Exclude<StaleChunkDecision, 'reload'>;
-  constructor(decision: Exclude<StaleChunkDecision, 'reload'>, cause: unknown) {
+  readonly decision: Exclude<StaleChunkDecision, 'reload' | 'offline'>;
+  constructor(decision: Exclude<StaleChunkDecision, 'reload' | 'offline'>, cause: unknown) {
     super(decision === 'form-dirty'
       ? 'App-Update nötig. Bitte die Seite neu laden — deine Eingaben bleiben erhalten.'
       : 'App-Update nötig. Bitte die Seite neu laden.');
     this.name = 'StaleBuildError';
     this.decision = decision;
+    (this as { cause?: unknown }).cause = cause;
+  }
+}
+
+/** Thrown when a chunk could not be fetched because the device is offline:
+ *  nothing to reload for, and what to do instead, in the notice's words. */
+export class OfflineChunkError extends Error {
+  constructor(cause: unknown) {
+    super('Keine Verbindung — dieser Teil der App ist noch nicht auf dem Gerät. Mit Netz nochmals öffnen.');
+    this.name = 'OfflineChunkError';
     (this as { cause?: unknown }).cause = cause;
   }
 }
@@ -64,7 +82,11 @@ export async function importFresh<T>(load: () => Promise<T>): Promise<T> {
     if (!isStaleChunkError(error)) throw error;
     let lastReloadAt: number | null = null;
     try { lastReloadAt = readLastReload(sessionStorage.getItem(STALE_CHUNK_STATE_KEY)); } catch { /* private mode */ }
-    const decision = decideStaleChunkReload({ lastReloadAt, now: Date.now(), formDirty: Boolean(window.__svrzFormDirty) });
+    const decision = decideStaleChunkReload({
+      lastReloadAt, now: Date.now(), formDirty: Boolean(window.__svrzFormDirty),
+      offline: typeof navigator !== 'undefined' && navigator.onLine === false,
+    });
+    if (decision === 'offline') throw new OfflineChunkError(error);
     if (decision !== 'reload') throw new StaleBuildError(decision, error);
     try { sessionStorage.setItem(STALE_CHUNK_STATE_KEY, String(Date.now())); } catch { /* private mode */ }
     // Whatever is parked in memory goes to disk first, raced so a wedged

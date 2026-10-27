@@ -1,21 +1,36 @@
+import { useEffect, useState } from 'react';
 import { RotateCw, X } from 'lucide-react';
 
 // What a lazy chunk shows in its place when the build it belongs to is gone
 // and the page could not be reloaded for it (see lib/freshImport.ts): the
 // reason, and the way out. As an overlay where the reader would have been,
 // inline where a pad would have been.
+//
+// With no network the chunk was not gone, only out of reach (freshImport's
+// OfflineChunkError): the notice says so, and offers no reload until the
+// network is back — a reload offline is the browser's error page, not the app.
 export default function StaleBuildNotice({ message, onClose, inline }: { message: string; onClose?: () => void; inline?: boolean }) {
+  const [offline, setOffline] = useState(() => typeof navigator !== 'undefined' && navigator.onLine === false);
+  useEffect(() => {
+    const on = () => setOffline(false);
+    const off = () => setOffline(true);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
+  }, []);
   const body = (
     <div className="w-full max-w-sm rounded-2xl border border-stone-200 bg-white p-5 text-center shadow-sm" data-testid="stale-build">
-      <p className="text-sm font-semibold text-stone-900">App-Update</p>
+      <p className="text-sm font-semibold text-stone-900">{offline ? 'Keine Verbindung' : 'App-Update'}</p>
       <p className="mt-1.5 text-xs text-stone-600">{message}</p>
-      <button
-        type="button"
-        onClick={() => window.location.reload()}
-        className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-red-600 py-2.5 text-sm font-semibold text-white hover:bg-red-700"
-      >
-        <RotateCw className="h-4 w-4" /> Neu laden
-      </button>
+      {!offline && (
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-red-600 py-2.5 text-sm font-semibold text-white hover:bg-red-700"
+        >
+          <RotateCw className="h-4 w-4" /> Neu laden
+        </button>
+      )}
       {onClose && (
         <button type="button" onClick={onClose} className="mt-2 inline-flex w-full items-center justify-center gap-1 text-[11px] text-stone-400 hover:text-stone-600 underline">
           <X className="h-3 w-3" /> Schliessen

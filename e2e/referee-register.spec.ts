@@ -166,6 +166,24 @@ test.describe('the SV-Nr. field on a coachee', () => {
     expect(bodies[0].referee_id).toBe('90004');
   });
 
+  // 27.10.2026: Luca typed a new referee's number, saved, and the number was
+  // gone — the register was two months old and did not hold it, and the field
+  // said only "No match.". The fields had no names either, only placeholders.
+  test('every field of the row has its name, and a number the register lacks says what to do', async ({ page }) => {
+    await openCoacheeTab(page);
+    await editRow(page, 'Mueller, Jürg');
+    const row = page.locator('[data-coachee-row="c2"]');
+    for (const name of [/^(Vorname|First name)$/, /^(Nachname|Last name)$/, /^(E-Mail|Email)$/, /^(Telefon|Phone)$/, /^Niveau$/, /^(SV-Nummer|SV number)$/]) {
+      await expect(row.getByLabel(name)).toBeVisible();
+    }
+    await expect(row.getByText(/^(Gruppe|Group)$/)).toBeVisible();
+
+    const field = row.getByLabel(/^(SV-Nummer|SV number)$/);
+    await field.fill('302199');
+    await expect(page.getByText(/Ist die Person neu, zuerst die aktuelle SVRZ-Liste importieren|If the person is new, import the current SVRZ list first/)).toBeVisible();
+    await expect(page.locator('#coachee-sv-c2 ~ span')).toHaveText(/Nicht im Register|Not in the register/);
+  });
+
   test('clearing the field unlinks: the save sends an empty number', async ({ page }) => {
     await openCoacheeTab(page);
     const bodies = await stubSave(page, 'c1', { json: { id: 'c1' } });
@@ -185,7 +203,8 @@ test.describe('the SV-Nr. field on a coachee', () => {
     await editRow(page, 'Zwahlen, Rita');
     const field = page.locator('#coachee-sv-c1');
     await field.fill('Rita Zwahlen-Meier');
-    await expect(page.locator('#coachee-sv-c1 ~ span')).toHaveText(/Nur aus dem Register|Register entries only/);
+    // Nobody in the register answers to that: said, with what the save does.
+    await expect(page.locator('#coachee-sv-c1 ~ span')).toHaveText(/Nicht im Register — gespeichert wird ohne SV-Nr\.|Not in the register — saved without an SV no\./);
     await field.press('Escape');
     await saveRow(page, 'coachee-sv-c1').click();
     await expect.poll(() => bodies.length).toBe(1);

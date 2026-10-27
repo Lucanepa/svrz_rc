@@ -266,8 +266,13 @@ const STR = {
     backfillFail: (e: string) => `Nachtragen fehlgeschlagen: ${e}`,
     backfillAmbiguous: 'Auf Spielen mehrdeutig — keine Nummer gesetzt',
     backfillUnresolved: 'Auf Spielen, aber nicht im Register',
-    svPick: 'Aus dem Register wählen …',
+    svPick: 'Name oder Nummer eingeben, dann wählen …',
     svPickOnly: 'Nur aus dem Register — bitte einen Eintrag wählen.',
+    // Under the field when what is typed matches nobody: what the save will
+    // do with it. Luca, 27.10.2026, typed a number, saved, and the number
+    // was quietly gone — the register was two months old and did not hold it.
+    svNotInRegister: 'Nicht im Register — gespeichert wird ohne SV-Nr.',
+    svNoneHint: 'Nicht im Register. Ist die Person neu, zuerst die aktuelle SVRZ-Liste importieren (Einstellungen → Schiedsrichter-Register); bis dahin bleibt die SV-Nr. leer.',
     svLinked: (sv: string) => `SV-Nr. ${sv}`,
     copySv: 'SV-Nr. kopieren',
     svCopied: 'SV-Nr. kopiert.',
@@ -590,8 +595,10 @@ const STR = {
     backfillFail: (e: string) => `Backfill failed: ${e}`,
     backfillAmbiguous: 'Ambiguous on games — no number written',
     backfillUnresolved: 'On games, but not in the register',
-    svPick: 'Pick from the register …',
+    svPick: 'Type a name or number, then pick …',
     svPickOnly: 'Register entries only — please pick one.',
+    svNotInRegister: 'Not in the register — saved without an SV no.',
+    svNoneHint: 'Not in the register. If the person is new, import the current SVRZ list first (Settings → Referee register); until then the SV no. stays empty.',
     svLinked: (sv: string) => `SV no. ${sv}`,
     copySv: 'Copy SV no.',
     svCopied: 'SV no. copied.',
@@ -1856,6 +1863,22 @@ function RefusalNote({ refusal, t, onShow }: { refusal: Refusal; t: T; onShow: (
   );
 }
 
+/** A field with its name above it. The coachee rows had placeholders only,
+ *  and a filled-in field shows what it holds, not what it is: the empty SV-Nr.
+ *  field said "Pick from the register …" and nothing else (Luca, 27.10.2026).
+ *  `htmlFor` ties the name to a native field; the group picker is a button
+ *  and gets the name read out with it instead. */
+function Labeled({ label, htmlFor, className, children }: { label: string; htmlFor?: string; className?: string; children: React.ReactNode }) {
+  return (
+    <div className={cn('flex flex-col gap-1 min-w-0', className)}>
+      {htmlFor
+        ? <label htmlFor={htmlFor} className="text-[11px] font-medium text-stone-500">{label}</label>
+        : <span className="text-[11px] font-medium text-stone-500">{label}</span>}
+      {children}
+    </div>
+  );
+}
+
 /** The SV-Nr. on a coachee: a pick off the register, never a typed number.
  *  A typo would create a phantom identity every game then fails to match,
  *  so the field offers the register's rows and hands back a number only for
@@ -1889,7 +1912,10 @@ function SvField({ id, text, sv, onChange, people, t }: {
       describe={(p) => ({ text: t.svLinked(p.svNumber || ''), ok: true })}
       // By the number the form holds, not by the name in the field: a name
       // typed out in full is still no link until a row has been picked.
-      footer={() => (sv ? { text: t.svLinked(sv), ok: true } : { text: t.svPickOnly, ok: false })}
+      footer={(_exact, anyMatch) => (sv
+        ? { text: t.svLinked(sv), ok: true }
+        : { text: anyMatch ? t.svPickOnly : t.svNotInRegister, ok: false })}
+      none={t.svNoneHint}
     />
   );
 }
@@ -2611,38 +2637,50 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
         {notice && <p className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mt-2">{notice}</p>}
       </Card>
       <Card>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-12">
-          <input className={cn(input, 'sm:col-span-3')} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
-          <input className={cn(input, 'sm:col-span-3')} placeholder={t.lastName} value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
-          <input type="email" className={cn(input, 'col-span-2 sm:col-span-3')} placeholder={t.email} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-12 items-start">
+          <Labeled label={t.firstName} htmlFor="coachee-first" className="sm:col-span-3">
+            <input id="coachee-first" className={input} placeholder={t.firstName} value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
+          </Labeled>
+          <Labeled label={t.lastName} htmlFor="coachee-last" className="sm:col-span-3">
+            <input id="coachee-last" className={input} placeholder={t.lastName} value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
+          </Labeled>
+          <Labeled label={t.email} htmlFor="coachee-email" className="col-span-2 sm:col-span-3">
+            <input id="coachee-email" type="email" className={input} placeholder={t.email} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          </Labeled>
           {/* Phone had no field anywhere: it arrived only from the VolleyManager
               sync, so the coachees VM does not carry could never be given one,
               and a wrong number could not be corrected. The app shows it as a
               tel: link on the coachee sheet, which is the point of having it. */}
-          <input type="tel" className={cn(input, 'sm:col-span-3')} placeholder={t.phone} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-          <select
-            className={cn(input, 'sm:col-span-3', !joinStufe(form.referee_level, form.stage) && 'text-stone-400')}
-            value={joinStufe(form.referee_level, form.stage)}
-            onChange={(e) => setForm({ ...form, ...splitStufe(e.target.value) })}
-          >
-            <option value="">{t.stage}</option>
-            {STUFEN.map((v) => <option key={v} value={v} className="text-stone-900">{v}</option>)}
-          </select>
-          <div className="sm:col-span-4"><GroupMultiSelect groups={groups} value={form.groups} onChange={(v) => setForm({ ...form, groups: v })} placeholder={t.chooseGroups} /></div>
+          <Labeled label={t.phone} htmlFor="coachee-phone" className="sm:col-span-3">
+            <input id="coachee-phone" type="tel" className={input} placeholder={t.phone} value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+          </Labeled>
+          <Labeled label={t.stage} htmlFor="coachee-stage" className="sm:col-span-3">
+            <select
+              id="coachee-stage"
+              className={cn(input, !joinStufe(form.referee_level, form.stage) && 'text-stone-400')}
+              value={joinStufe(form.referee_level, form.stage)}
+              onChange={(e) => setForm({ ...form, ...splitStufe(e.target.value) })}
+            >
+              <option value="">{t.stage}</option>
+              {STUFEN.map((v) => <option key={v} value={v} className="text-stone-900">{v}</option>)}
+            </select>
+          </Labeled>
+          <Labeled label={t.group} className="sm:col-span-4"><GroupMultiSelect groups={groups} value={form.groups} onChange={(v) => setForm({ ...form, groups: v })} placeholder={t.chooseGroups} /></Labeled>
           {/* The number, picked off the register: what every game match asks
               first, so a coachee typed in by hand is not left to the spelling. */}
-          <div className="col-span-2 sm:col-span-5" aria-label={t.svNumber}>
+          <Labeled label={t.svNumber} htmlFor="coachee-sv" className="col-span-2 sm:col-span-5">
             <SvField id="coachee-sv" text={svText} sv={form.referee_id} people={registerPeople} t={t}
               onChange={(pick) => { setSvText(pick.name); setForm({ ...form, referee_id: pick.svNumber }); }} />
-          </div>
+          </Labeled>
           {/* Beside the SV-Nr. field, not under it: its list opens downward
               over whatever sits there, and a click meant for this button
-              would pick a referee instead. */}
+              would pick a referee instead. Level with the fields, not with
+              their names above them. */}
           <button
             onClick={add}
             disabled={adding || (!form.first_name && !form.last_name) || refusedForGood(addRefused)}
             title={refusedForGood(addRefused) ? t.refusedSame : undefined}
-            className={cn(btnPrimary, 'justify-center col-span-2 sm:col-span-7 sm:justify-self-end')}
+            className={cn(btnPrimary, 'justify-center col-span-2 sm:col-span-7 sm:justify-self-end sm:mt-5')}
           >{adding ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />} {t.add}</button>
           {addRefused && <RefusalNote refusal={addRefused} t={t} onShow={showRow} />}
         </div>
@@ -2669,25 +2707,36 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
           {/* Held whole: a row list filtered by a season that is still being
               read is last season's people under this season's heading. */}
           {!settling && rows.map((c) => editId === c.id ? (
-            <div key={c.id} data-coachee-row={c.id} className="py-2 grid grid-cols-2 gap-2 sm:grid-cols-12 items-center">
-              <input className={cn(input, 'sm:col-span-3')} value={editForm.first_name} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
-              <input className={cn(input, 'sm:col-span-3')} value={editForm.last_name} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
-              <input type="email" className={cn(input, 'col-span-2 sm:col-span-3')} placeholder={t.email} value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
-              <input type="tel" className={cn(input, 'sm:col-span-3')} placeholder={t.phone} value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
-              <select
-                className={cn(input, 'sm:col-span-3', !joinStufe(editForm.referee_level, editForm.stage) && 'text-stone-400')}
-                value={joinStufe(editForm.referee_level, editForm.stage)}
-                onChange={(e) => setEditForm({ ...editForm, ...splitStufe(e.target.value) })}
-              >
-                <option value="">{t.stage}</option>
-                {STUFEN.map((v) => <option key={v} value={v} className="text-stone-900">{v}</option>)}
-              </select>
-              <div className="sm:col-span-4"><GroupMultiSelect groups={groups} value={editForm.groups} onChange={(v) => setEditForm({ ...editForm, groups: v })} placeholder={t.chooseGroups} /></div>
-              <div className="col-span-2 sm:col-span-5" aria-label={t.svNumber}>
+            <div key={c.id} data-coachee-row={c.id} className="py-2 grid grid-cols-2 gap-2 sm:grid-cols-12 items-start">
+              <Labeled label={t.firstName} htmlFor={`coachee-first-${c.id}`} className="sm:col-span-3">
+                <input id={`coachee-first-${c.id}`} className={input} value={editForm.first_name} onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
+              </Labeled>
+              <Labeled label={t.lastName} htmlFor={`coachee-last-${c.id}`} className="sm:col-span-3">
+                <input id={`coachee-last-${c.id}`} className={input} value={editForm.last_name} onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
+              </Labeled>
+              <Labeled label={t.email} htmlFor={`coachee-email-${c.id}`} className="col-span-2 sm:col-span-3">
+                <input id={`coachee-email-${c.id}`} type="email" className={input} placeholder={t.email} value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
+              </Labeled>
+              <Labeled label={t.phone} htmlFor={`coachee-phone-${c.id}`} className="sm:col-span-3">
+                <input id={`coachee-phone-${c.id}`} type="tel" className={input} placeholder={t.phone} value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
+              </Labeled>
+              <Labeled label={t.stage} htmlFor={`coachee-stage-${c.id}`} className="sm:col-span-3">
+                <select
+                  id={`coachee-stage-${c.id}`}
+                  className={cn(input, !joinStufe(editForm.referee_level, editForm.stage) && 'text-stone-400')}
+                  value={joinStufe(editForm.referee_level, editForm.stage)}
+                  onChange={(e) => setEditForm({ ...editForm, ...splitStufe(e.target.value) })}
+                >
+                  <option value="">{t.stage}</option>
+                  {STUFEN.map((v) => <option key={v} value={v} className="text-stone-900">{v}</option>)}
+                </select>
+              </Labeled>
+              <Labeled label={t.group} className="sm:col-span-4"><GroupMultiSelect groups={groups} value={editForm.groups} onChange={(v) => setEditForm({ ...editForm, groups: v })} placeholder={t.chooseGroups} /></Labeled>
+              <Labeled label={t.svNumber} htmlFor={`coachee-sv-${c.id}`} className="col-span-2 sm:col-span-5">
                 <SvField id={`coachee-sv-${c.id}`} text={editSvText} sv={editForm.referee_id} people={registerPeople} t={t}
                   onChange={(pick) => { setEditSvText(pick.name); setEditForm({ ...editForm, referee_id: pick.svNumber }); }} />
-              </div>
-              <div className="flex gap-1.5 col-span-2 sm:col-span-7 sm:justify-self-end"><button onClick={() => saveEdit(c.id)} disabled={savingEdit || refusedForGood(editRefused)} className={btnPrimary} aria-label={t.save} title={refusedForGood(editRefused) ? t.refusedSame : t.save}>{savingEdit ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}</button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
+              </Labeled>
+              <div className="flex gap-1.5 col-span-2 sm:col-span-7 sm:justify-self-end sm:mt-5"><button onClick={() => saveEdit(c.id)} disabled={savingEdit || refusedForGood(editRefused)} className={btnPrimary} aria-label={t.save} title={refusedForGood(editRefused) ? t.refusedSame : t.save}>{savingEdit ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}</button><button onClick={() => setEditId(null)} className={btnGhost}><X size={14} /></button></div>
               {editRefused && <RefusalNote refusal={editRefused} t={t} onShow={showRow} />}
             </div>
           ) : (
@@ -4569,15 +4618,18 @@ const typedPick = (name: string): PersonPick => ({ name, id: '', svNumber: '' })
  *  each row and `footer` the one under the field — the address by default,
  *  grey when the pick would reach somebody; the SV-Nr. field says the
  *  number instead, and whether the field holds a link at all. */
-function PersonPicker({ id, value, onChange, people, t, describe, footer, placeholder }: {
+function PersonPicker({ id, value, onChange, people, t, describe, footer, placeholder, none }: {
   id: string;
   value: string;
   onChange: (pick: PersonPick) => void;
   people: PickPerson[];
   t: T;
   describe?: (p: PickPerson) => { text: string; ok: boolean };
-  footer?: (exact: PickPerson | undefined) => { text: string; ok: boolean };
+  /** The second argument: whether anyone at all matches what is typed. */
+  footer?: (exact: PickPerson | undefined, anyMatch: boolean) => { text: string; ok: boolean };
   placeholder?: string;
+  /** In the open list when nobody matches; "Kein Treffer." otherwise. */
+  none?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
@@ -4613,7 +4665,7 @@ function PersonPicker({ id, value, onChange, people, t, describe, footer, placeh
   const line = (p: PickPerson) => [p.email || t.noEmail, p.warn].filter(Boolean).join(' · ');
   const reaches = (p: PickPerson) => Boolean(p.email) && !p.warn;
   const detail = describe ?? ((p: PickPerson) => ({ text: line(p), ok: reaches(p) }));
-  const under = footer ?? ((p: PickPerson | undefined) => (p ? detail(p) : { text: t.mgPickUnknown, ok: false }));
+  const under = footer ?? ((p: PickPerson | undefined, _anyMatch: boolean) => (p ? detail(p) : { text: t.mgPickUnknown, ok: false }));
 
   const pick = (p: PickPerson) => { onChange({ name: p.name, id: p.id, svNumber: p.svNumber || '' }); setOpen(false); };
   const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -4650,7 +4702,7 @@ function PersonPicker({ id, value, onChange, people, t, describe, footer, placeh
           onPointerDown={(e) => e.preventDefault()}
         >
           {shown.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-stone-400">{t.mgPickNone}</p>
+            <p className="px-3 py-2 text-xs text-stone-400">{none ?? t.mgPickNone}</p>
           ) : shown.map((p, i) => (
             <button
               key={p.id}
@@ -4680,11 +4732,14 @@ function PersonPicker({ id, value, onChange, people, t, describe, footer, placeh
       )}
       {/* Under the field, the consequence of what stands in it: which address
           the feedback would reach, or that this name is nobody the app knows. */}
-      {hasList && value.trim() !== '' && (
-        <span className={cn('mt-0.5 block text-[11px] truncate', under(exact).ok ? 'text-stone-400' : 'text-amber-600')}>
-          {under(exact).text}
-        </span>
-      )}
+      {hasList && value.trim() !== '' && (() => {
+        const line = under(exact, matches.length > 0);
+        return (
+          <span className={cn('mt-0.5 block text-[11px] truncate', line.ok ? 'text-stone-400' : 'text-amber-600')} title={line.text}>
+            {line.text}
+          </span>
+        );
+      })()}
     </div>
   );
 }

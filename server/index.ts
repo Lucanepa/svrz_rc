@@ -63,7 +63,7 @@ import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, boers
 import { handedOverIds, pickSwitch, switchExpiry, switchOpen, switchSettlement, type HandOver, type SlotBooking } from './switchRequests.ts';
 import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, missingHeldGames, CREW_RELEASE_MIN_DAYS, type HeldGameChange, type HeldGameSide, type HeldSlot, type MissingGamesState } from './gamesSync.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
-import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, type BackfillPlan, type LinkProblem } from './dataHygiene.ts';
+import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, planRegisterWrite, orphanedHandEntry, type BackfillPlan, type LinkProblem, type RegisterWrite } from './dataHygiene.ts';
 import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
 import { readStoredDoc, writeStoredDoc, type StoredDoc } from './docstore.ts';
 import { presidentNoteEntry, presidentNoteBelongsToAnother, type PresidentNoteEntry } from './presidentNotes.ts';
@@ -3088,8 +3088,9 @@ async function getRefereeRegister(): Promise<AnyRecord[]> {
   // the register". Only a successful read is cached. A collection that does
   // not exist yet (setup-schema not re-run after this deploy) IS an empty
   // register and may be; anything else keeps serving the last good read when
-  // there is one — the register only changes at an import, which drops the
-  // cache — and otherwise propagates, the way getActiveRcPeople's does.
+  // there is one — the register only changes at an import or a coachee save
+  // that writes a hand entry, both of which drop the cache — and otherwise
+  // propagates, the way getActiveRcPeople's does.
   await ensureAdminAuth();
   let data: AnyRecord[];
   try {
@@ -11088,6 +11089,65 @@ function linkProblemBody(problem: LinkProblem) {
     : { error: problem.error };
 }
 
+// --- the register follows the coachees --------------------------------------
+// Since 27.10.2026 a coachee saved with an SV-Nr. the register lacks gets a
+// register row of its own (a "hand entry", dataHygiene.ts), which then
+// follows that coachee's edits and goes with the last coachee on it. Before,
+// a new referee's number could only reach the register by an import of the
+// whole SVRZ list — or by hand in Postgres, which is how it was done.
+
+/** Writes what planRegisterWrite decided. The register cache goes with any
+ *  write: the link check right after reads the register, and so does every
+ *  match the games sync makes. Answers the id of a row it created, so a save
+ *  refused after it can take it back. */
+async function applyRegisterWrite(plan: RegisterWrite, req: Request): Promise<string> {
+  if (plan.kind === 'create') {
+    const rec = await withCollection(collectionCandidates.referees, (c) => c.create<AnyRecord>(plan.fields));
+    refereeRegisterCache = null;
+    log.info('referees.hand_entry', 'register entry added with a coachee save', { refereeRecordId: rec.id }, reqCtx(req));
+    return String(rec.id);
+  }
+  if (plan.kind === 'update') {
+    await withCollection(collectionCandidates.referees, (c) => c.update(plan.id, plan.fields));
+    refereeRegisterCache = null;
+    log.info('referees.hand_entry_updated', 'register hand entry follows its coachee', { refereeRecordId: plan.id, fields: Object.keys(plan.fields) }, reqCtx(req));
+  }
+  return '';
+}
+
+async function dropHandEntry(id: string, req: Request, why: string): Promise<void> {
+  if (!id) return;
+  await withCollection(collectionCandidates.referees, (c) => c.delete(id));
+  refereeRegisterCache = null;
+  log.info('referees.hand_entry_dropped', `register hand entry removed: ${why}`, { refereeRecordId: id }, reqCtx(req));
+}
+
+/** After a coachee row was written or deleted: its hand entry follows it, and
+ *  one it let go of goes when no other row holds that number. Never fails the
+ *  save itself — the coachee is what was asked for; a register that lags one
+ *  edit behind is said in the log and put right by the next save or import. */
+async function registerAfterCoacheeWrite(row: AnyRecord | null, previousSv: string, rowId: string, req: Request): Promise<void> {
+  try {
+    const register = await getRefereeRegister();
+    if (row) await applyRegisterWrite(planRegisterWrite(row.referee_id, row, register, new Date().toISOString()), req);
+    const now = row ? asText(row.referee_id) : '';
+    if (previousSv && previousSv !== now) {
+      const orphan = orphanedHandEntry(previousSv, rowId, register, await listCoacheesWithFallbackSort());
+      await dropHandEntry(orphan, req, 'no coachee holds its number any more');
+    }
+  } catch (error) {
+    log.warn('referees.hand_entry_failed', 'register could not follow a coachee save', { coacheeId: rowId, error: safeError(error) }, reqCtx(req));
+  }
+}
+
+/** A number the register lacks becomes a hand entry before the link check,
+ *  which then finds it. 400 for what is no SV-Nr. at all. */
+async function handEntryFor(sv: string, coachee: AnyRecord, req: Request): Promise<{ created: string } | { error: string }> {
+  const plan = planRegisterWrite(sv, coachee, await getRefereeRegister(), new Date().toISOString());
+  if (plan.kind === 'invalid') return { error: plan.error };
+  return { created: plan.kind === 'create' ? await applyRegisterWrite(plan, req) : '' };
+}
+
 app.post('/api/coachees', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
@@ -11097,8 +11157,18 @@ app.post('/api/coachees', requireAdminSession, async (req: Request, res: Express
     // the console is not the only client of this route and a typo must not
     // become an identity.
     const refereeId = asText(data.referee_id);
+    let handEntry = '';
+    if (refereeId) {
+      const entry = await handEntryFor(refereeId, data, req);
+      if ('error' in entry) { res.status(400).json({ error: entry.error }); return; }
+      handEntry = entry.created;
+    }
     const problem = await refereeLinkCheck(refereeId, season, '');
-    if (problem) { res.status(problem.status).json(linkProblemBody(problem)); return; }
+    if (problem) {
+      await dropHandEntry(handEntry, req, 'the coachee save it was made for was refused');
+      res.status(problem.status).json(linkProblemBody(problem));
+      return;
+    }
     const created = await withCollection(collectionCandidates.coachees, (collection) =>
       collection.create({
         full_name: asText(data.full_name),
@@ -11114,7 +11184,12 @@ app.post('/api/coachees', requireAdminSession, async (req: Request, res: Express
         referee_id: refereeId,
         feedback_entries: Array.isArray(data.feedback_entries) ? data.feedback_entries : [],
       }),
-    );
+    ).catch(async (error: unknown) => {
+      await dropHandEntry(handEntry, req, 'the coachee it was made for could not be created').catch(() => {});
+      throw error;
+    });
+    // A number the register already held as a hand entry: it follows this row.
+    if (refereeId && !handEntry) await registerAfterCoacheeWrite(created as AnyRecord, '', String((created as AnyRecord).id), req);
     res.status(201).json(created);
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
@@ -11138,6 +11213,10 @@ app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: Expr
     if ('notes' in raw) payload.notes = asText(raw.notes);
     if ('season' in raw) payload.season = raw.season == null || raw.season === '' ? null : Number(raw.season);
     if ('feedback_entries' in raw) payload.feedback_entries = raw.feedback_entries;
+    // The number the row held before this write: a hand entry it lets go of
+    // may have to go (registerAfterCoacheeWrite).
+    let previousSv = '';
+    let handEntry = '';
     if ('referee_id' in raw) {
       const refereeId = asText(raw.referee_id);
       payload.referee_id = refereeId;
@@ -11154,17 +11233,34 @@ app.put('/api/coachees/:id', requireAdminSession, async (req: Request, res: Expr
       if (refereeId) {
         const current = await withCollection(collectionCandidates.coachees, (c) =>
           c.getOne<AnyRecord>(id, { fields: 'id,season,referee_id' }));
+        previousSv = asText(current.referee_id);
         const season = 'season' in payload ? payload.season as number | null : coacheeRowSeason(current.season);
         const changed = refereeId !== asText(current.referee_id) || season !== coacheeRowSeason(current.season);
         if (changed) {
+          const entry = await handEntryFor(refereeId, { ...current, ...payload }, req);
+          if ('error' in entry) { res.status(400).json({ error: entry.error }); return; }
+          handEntry = entry.created;
           const problem = await refereeLinkCheck(refereeId, season, id);
-          if (problem) { res.status(problem.status).json(linkProblemBody(problem)); return; }
+          if (problem) {
+            await dropHandEntry(handEntry, req, 'the coachee save it was made for was refused');
+            res.status(problem.status).json(linkProblemBody(problem));
+            return;
+          }
         }
+      } else {
+        // Unlinked: the number it held may leave a hand entry nobody holds.
+        const current = await withCollection(collectionCandidates.coachees, (c) =>
+          c.getOne<AnyRecord>(id, { fields: 'id,referee_id' }));
+        previousSv = asText(current.referee_id);
       }
     }
     const updated = await withCollection(collectionCandidates.coachees, (collection) =>
       collection.update(id, payload),
-    );
+    ).catch(async (error: unknown) => {
+      await dropHandEntry(handEntry, req, 'the coachee save it was made for failed').catch(() => {});
+      throw error;
+    });
+    await registerAfterCoacheeWrite(updated as AnyRecord, previousSv, id, req);
     res.json(updated);
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
@@ -11181,11 +11277,16 @@ app.delete('/api/coachees/:id', requireAdminSession, async (req: Request, res: E
     await ensureAdminAuth();
     const id = String(req.params.id);
     const q = escapeFilterValue(id);
+    const gone = await withCollection(collectionCandidates.coachees, (c) =>
+      c.getOne<AnyRecord>(id, { fields: 'id,referee_id' })).catch(() => null);
     const feedbacks = await withCollection(collectionCandidates.refereeCoaches, (c) =>
       c.getFullList<AnyRecord>({ filter: `coachee = "${q}"`, fields: 'id' }));
     for (const fb of feedbacks) await detachFeedback(fb.id, 'coachee');
     const observations = await deleteWhere(collectionCandidates.observations, `coachee = "${q}"`, 'observation');
     await withCollection(collectionCandidates.coachees, (collection) => collection.delete(id));
+    // A hand entry made for this row goes with it, unless another row (another
+    // season, say) still holds the number.
+    if (gone) await registerAfterCoacheeWrite(null, asText(gone.referee_id), id, req);
     log.info('coachee.delete', 'coachee deleted by the console; forms kept in the chair\'s folders, observations removed', { coacheeId: id, keptForms: feedbacks.length, observations }, reqCtx(req));
     res.status(204).send();
   } catch (error) {

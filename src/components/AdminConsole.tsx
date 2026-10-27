@@ -272,7 +272,12 @@ const STR = {
     // do with it. Luca, 27.10.2026, typed a number, saved, and the number
     // was quietly gone — the register was two months old and did not hold it.
     svNotInRegister: 'Nicht im Register — gespeichert wird ohne SV-Nr.',
-    svNoneHint: 'Nicht im Register. Ist die Person neu, zuerst die aktuelle SVRZ-Liste importieren (Einstellungen → Schiedsrichter-Register); bis dahin bleibt die SV-Nr. leer.',
+    svNoneHint: 'Nicht im Register. Ist die Person neu: ihre SV-Nr. eintippen und „ins Register aufnehmen" wählen.',
+    // A number the register lacks, offered as a new register entry: saving
+    // the coachee writes it (server/dataHygiene.ts planRegisterWrite), and it
+    // follows the coachee from then on (Luca, 27.10.2026).
+    svAddNew: (n: string) => `${n} neu ins Register aufnehmen`,
+    svNewEntry: (n: string) => `SV-Nr. ${n} — neu, kommt beim Speichern ins Register`,
     svLinked: (sv: string) => `SV-Nr. ${sv}`,
     copySv: 'SV-Nr. kopieren',
     svCopied: 'SV-Nr. kopiert.',
@@ -598,7 +603,9 @@ const STR = {
     svPick: 'Type a name or number, then pick …',
     svPickOnly: 'Register entries only — please pick one.',
     svNotInRegister: 'Not in the register — saved without an SV no.',
-    svNoneHint: 'Not in the register. If the person is new, import the current SVRZ list first (Settings → Referee register); until then the SV no. stays empty.',
+    svNoneHint: 'Not in the register. If the person is new: type their SV no. and choose "add to the register".',
+    svAddNew: (n: string) => `Add ${n} to the register`,
+    svNewEntry: (n: string) => `SV no. ${n} — new, added to the register on save`,
     svLinked: (sv: string) => `SV no. ${sv}`,
     copySv: 'Copy SV no.',
     svCopied: 'SV no. copied.',
@@ -1901,6 +1908,14 @@ function SvField({ id, text, sv, onChange, people, t }: {
   if (people.length === 0) {
     return <input id={id} className={cn(input, 'text-stone-400')} value={sv} placeholder={t.svNoRegister} disabled title={t.svNoRegister} />;
   }
+  // A number typed out in full that the register does not hold: offered as
+  // a new register entry, which the save writes (27.10.2026). Picked, the
+  // field holds the number, and the line under it says it is new.
+  const typed = text.trim();
+  const offer = /^\d{3,8}$/.test(typed) && !people.some((p) => p.svNumber === typed)
+    ? { label: t.svAddNew(typed), pick: { name: typed, id: '', svNumber: typed } }
+    : null;
+  const known = (n: string) => people.some((p) => p.svNumber === n);
   return (
     <PersonPicker
       id={id}
@@ -1913,9 +1928,10 @@ function SvField({ id, text, sv, onChange, people, t }: {
       // By the number the form holds, not by the name in the field: a name
       // typed out in full is still no link until a row has been picked.
       footer={(_exact, anyMatch) => (sv
-        ? { text: t.svLinked(sv), ok: true }
+        ? { text: known(sv) ? t.svLinked(sv) : t.svNewEntry(sv), ok: true }
         : { text: anyMatch ? t.svPickOnly : t.svNotInRegister, ok: false })}
       none={t.svNoneHint}
+      offer={offer}
     />
   );
 }
@@ -2428,7 +2444,8 @@ function CoacheeDataAdmin({ t, lang, defaultSeason, settingsLoading, active }: {
         settled={settled}
         registerPeople={registerPeople}
         hasRegister={roster?.source === 'roster' && (roster?.people.length ?? 0) > 0}
-        onLinked={() => void reload()}
+        // A link may have added a register entry: the pickers read it again.
+        onLinked={() => { void reload(); void reloadRoster(); }}
       />
     </section>
   );
@@ -2534,7 +2551,8 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
     try {
       await createCoachee({ ...form, full_name, season } as Partial<Coachee>);
       setForm(EMPTY_FORM); setSvText('');
-      await reload();
+      // The save may have added a register entry (a new SV-Nr.).
+      await Promise.all([reload(), reloadRoster()]);
     } catch (e) { setAddRefusal(refusalOf(e, addSent, t)); }
     finally { setAdding(false); }
   };
@@ -2548,7 +2566,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
     try {
       await updateCoachee(id, { ...editForm, full_name } as Partial<Coachee>);
       setEditId(null);
-      await reload();
+      await Promise.all([reload(), reloadRoster()]);
     } catch (e) { setEditRefusal(refusalOf(e, editSent, t)); }
     finally { setSavingEdit(false); }
   };
@@ -2575,7 +2593,7 @@ function CoacheesAdmin({ t, lang, groups, defaultSeason, settingsLoading, target
     // guard() puts a failure in `notice`, which is on screen right below the
     // list — only a clean run gets a toast, so nothing is reported twice.
     let done = false;
-    await guard(async () => { await deleteCoachee(c.id); await reload(); done = true; });
+    await guard(async () => { await deleteCoachee(c.id); await Promise.all([reload(), reloadRoster()]); done = true; });
     if (done) toast.success(t.delCoacheeOk(c.full_name), { lang });
   };
   // The tab is drawn whole, once its three first reads are in: the list, the
@@ -4618,7 +4636,7 @@ const typedPick = (name: string): PersonPick => ({ name, id: '', svNumber: '' })
  *  each row and `footer` the one under the field — the address by default,
  *  grey when the pick would reach somebody; the SV-Nr. field says the
  *  number instead, and whether the field holds a link at all. */
-function PersonPicker({ id, value, onChange, people, t, describe, footer, placeholder, none }: {
+function PersonPicker({ id, value, onChange, people, t, describe, footer, placeholder, none, offer }: {
   id: string;
   value: string;
   onChange: (pick: PersonPick) => void;
@@ -4630,6 +4648,9 @@ function PersonPicker({ id, value, onChange, people, t, describe, footer, placeh
   placeholder?: string;
   /** In the open list when nobody matches; "Kein Treffer." otherwise. */
   none?: string;
+  /** A first row in the open list that is no person yet (the SV field's
+   *  "add to the register"). */
+  offer?: { label: string; pick: PersonPick } | null;
 }) {
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
@@ -4701,8 +4722,20 @@ function PersonPicker({ id, value, onChange, people, t, describe, footer, placeh
           // scrollbar would otherwise blur the input and close what it scrolls.
           onPointerDown={(e) => e.preventDefault()}
         >
+          {offer && (
+            <button
+              type="button"
+              data-testid="picker-offer"
+              // pointerdown, like the rows below: the blur a click starts with
+              // would close the list first.
+              onPointerDown={(e) => { e.preventDefault(); onChange(offer.pick); setOpen(false); }}
+              className="w-full text-left px-3 py-2 flex items-center gap-2 text-sm font-medium text-red-700 hover:bg-red-50 border-b border-stone-100"
+            >
+              <Plus size={14} className="shrink-0" /> {offer.label}
+            </button>
+          )}
           {shown.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-stone-400">{none ?? t.mgPickNone}</p>
+            !offer && <p className="px-3 py-2 text-xs text-stone-400">{none ?? t.mgPickNone}</p>
           ) : shown.map((p, i) => (
             <button
               key={p.id}

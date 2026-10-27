@@ -486,15 +486,23 @@ Four things follow from this:
   **Coachees jetzt verknüpfen** (`POST /api/admin/coachees/link-referees`) →
   **SV-Nr. auf Spielen nachtragen** (`POST /api/admin/games/backfill-referee-ids`)
   → hand-link the rows the card still lists as "nicht verknüpft" (the picker
-  offers register rows only — a typo cannot create a phantom identity) →
+  offers register rows, and since 27.10.2026 a typed number the register
+  lacks as "neu ins Register aufnehmen" — see the next point) →
   **RC-IDs nachtragen** (`POST /api/admin/migrate-rc-ids`, aliases honoured,
   both orders). `GET /api/admin/identity-audit?season=` is the card's data and
   the number to drive to zero.
 - **The `SV-Nr.` field.** Coachee add/edit carries it (backed by the register
   picker); the XLSX may carry an optional `SV-Nr.` column, written only when
   the number exists in the register; `POST/PUT /api/coachees` accept
-  `referee_id` (`''` unlinks, 400 for a number the register does not hold,
-  409 naming the other row when it is already linked in the same season). A
+  `referee_id` (`''` unlinks, 400 for what is not digits, 409 naming the
+  other row when it is already linked in the same season). **Since
+  27.10.2026 a number the register lacks becomes a "hand entry"** in
+  `referees` (`imported_at` = `manual:<ISO>`, made from the coachee row):
+  it follows that coachee's later edits (fills in, never blanks) and is
+  deleted when the last coachee row on its number unlinks or is deleted.
+  Imported rows are never touched by a coachee save; the next register
+  import overwrites a hand entry with the official row (found by number).
+  Rules: `server/dataHygiene.ts` `planRegisterWrite` / `orphanedHandEntry`. A
   season+1 import inherits the number from the previous season's row of the
   same person. Rows that stay unlinked are matched on the name and keep
   record-id URLs — nothing is required.

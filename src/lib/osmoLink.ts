@@ -135,7 +135,7 @@ async function scanOnce(blec: Blec, lastKey?: string, lastName?: string): Promis
     };
     const timer = setTimeout(() => finish(null), SCAN_MS + 500);
     void blec.startScan((devices) => {
-      const cams = devices.filter((d) => isOsmoAdvert(d.manufacturerData) || d.services?.some((s) => s.toLowerCase() === uuid16(OSMO_SERVICE)));
+      const cams = devices.filter((d) => isOsmoAdvert(d.manufacturerData) || d.services?.some((s) => s.toLowerCase() === uuid16(OSMO_SERVICE))); // identity:display — a Bluetooth service UUID, no name
       if (!cams.length) return;
       const last = cams.find((d) => `native:${d.address}` === lastKey) || (lastName ? cams.find((d) => d.name === lastName) : undefined);
       // Asked for one camera (a reconnect): wait for it, do not take another.

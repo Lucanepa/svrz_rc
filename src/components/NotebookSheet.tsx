@@ -537,6 +537,15 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     }
     return (current || madePage.current)?.pageId ?? null;
   };
+  /** A clip line's colour in the page: blue once its video is on this device,
+   *  grey while it waits (or when the clip is another device's). */
+  const clipTone = useMemo(() => {
+    const withVideo = new Set(clips.filter((c) => c.file).map((c) => c.n));
+    return (text: string): string => {
+      const m = CLIP_LINE_RE.exec(text);
+      return m && withVideo.has(Number(m[1])) ? 'bg-sky-100 text-sky-800' : 'bg-stone-100 text-stone-600';
+    };
+  }, [clips]);
   /** A clip picked after "@": its line replaces the "@" at the caret. */
   const mentionClip = (c: Clip) => {
     setMentionMenu(false);
@@ -1152,6 +1161,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       onChange={handleText}
                       placeholder={tp.padPlaceholder}
                       atoms={CLIP_LINE_RE}
+                      atomTone={clipTone}
                       onAtSign={() => { if (clips.length) setMentionMenu(true); }}
                       onAtom={(text) => { const m = CLIP_LINE_RE.exec(text); if (m) openClipByNumber(Number(m[1])); }}
                       className={cn('notebook-surface flex-1 min-w-0 min-h-[40vh] text-sm leading-relaxed py-3 bg-white', showTimes ? 'pl-3 pr-4' : 'px-4')}

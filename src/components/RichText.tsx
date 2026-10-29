@@ -121,8 +121,10 @@ function markEmpty(el: HTMLElement): void {
 // puts the caret at position zero, which is the classic contenteditable bug. The
 // DOM is authoritative while the field has focus, and the incoming value is only
 // applied when it differs from what is already rendered.
-/** The look of an atom (see wrapAtoms): a chip in the line. */
-const ATOM_CLASS = 'rich-atom rounded-md bg-red-50 px-1 text-red-800 cursor-pointer whitespace-nowrap';
+/** The shape of an atom (see wrapAtoms): a chip in the line. Its colour is
+ *  the caller's (atomTone), grey when it gives none. */
+const ATOM_CLASS = 'rich-atom rounded-md px-1 cursor-pointer whitespace-nowrap';
+const ATOM_TONE = 'bg-stone-100 text-stone-600';
 
 /**
  * Wraps every match of `pattern` in the surface's text into a span the caret
@@ -131,7 +133,7 @@ const ATOM_CLASS = 'rich-atom rounded-md bg-red-50 px-1 text-red-800 cursor-poin
  * reads, so the stored value does not change: another device, an older app
  * and the form all still see the plain text. Returns whether it wrapped any.
  */
-function wrapAtoms(root: HTMLElement, pattern: RegExp): boolean {
+function wrapAtoms(root: HTMLElement, pattern: RegExp, tone: (text: string) => string): boolean {
   const texts: Text[] = [];
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
@@ -149,7 +151,7 @@ function wrapAtoms(root: HTMLElement, pattern: RegExp): boolean {
       const span = document.createElement('span');
       span.contentEditable = 'false';
       span.dataset.atom = '1';
-      span.className = ATOM_CLASS;
+      span.className = `${ATOM_CLASS} ${tone(m[0])}`;
       span.textContent = m[0];
       frag.append(span);
       last = m.index + m[0].length;
@@ -162,7 +164,7 @@ function wrapAtoms(root: HTMLElement, pattern: RegExp): boolean {
   return wrapped;
 }
 
-export function RichSurface({ value, onChange, placeholder, className, style, autoFocus, initialCaret, onFocus, atoms, onAtom, onAtSign }: {
+export function RichSurface({ value, onChange, placeholder, className, style, autoFocus, initialCaret, onFocus, atoms, atomTone, onAtom, onAtSign }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
@@ -176,6 +178,9 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
   /** Text that is one piece: shown as a chip the caret cannot enter (the
    *  notebook's clip lines). Stored as the plain text it is. */
   atoms?: RegExp;
+  /** The colour classes of such a chip, from its text (the notebook: blue
+   *  once the clip's video is here). Changing the function restyles them. */
+  atomTone?: (text: string) => string;
   /** A tap on such a chip, with its text. */
   onAtom?: (text: string) => void;
   /** An "@" was just typed (the notebook offers its clips). */
@@ -226,10 +231,18 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
       // The caret is kept by its offset: wrapping replaces the text node it sits in.
       const sel = window.getSelection();
       const at = document.activeElement === el && sel && sel.rangeCount ? caretOffsets(el, sel.getRangeAt(0)) : null;
-      if (wrapAtoms(el, atoms) && at) setCaretOffsets(el, at);
+      if (wrapAtoms(el, atoms, atomTone || (() => ATOM_TONE)) && at) setCaretOffsets(el, at);
     }
     markEmpty(el);
+    // atomTone is left out on purpose: a new colour restyles below, it does not rewrap.
   }, [value, atoms]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !atoms) return;
+    el.querySelectorAll<HTMLElement>('[data-atom]').forEach((span) => {
+      span.className = `${ATOM_CLASS} ${atomTone ? atomTone(span.textContent || '') : ATOM_TONE}`;
+    });
+  }, [atomTone, atoms]);
   // Focused with the caret where it was left, or at the END of what is there:
   // focus() alone puts it in front of the first letter, and what was typed
   // next landed there. Here and not in the caller: StrictMode runs a new

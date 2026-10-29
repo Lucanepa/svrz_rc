@@ -132,6 +132,8 @@ test.describe('The notebook films with an Osmo', () => {
     // The line is one piece in the editor: a chip, the same text underneath.
     await expect(pageBox(page).locator('[data-atom]')).toHaveText(/^\[Clip 1 · \d\d:\d\d:\d\d\]$/);
     await expect(pageBox(page).locator('[data-atom]')).toHaveAttribute('contenteditable', 'false');
+    // Grey while its video is not here yet.
+    await expect(pageBox(page).locator('[data-atom]')).toHaveClass(/bg-stone-100/);
 
     // No video yet: the chip says so, and the card's file is matched by its name.
     const chip = sheet(page).getByTestId('clip-chip');
@@ -157,6 +159,8 @@ test.describe('The notebook films with an Osmo', () => {
     ]);
     await expect(page.getByText(/^(1 von 1 Clips zugeordnet|1 of 1 clips matched)$/)).toBeVisible();
     await expect(sheet(page).getByTestId('clips-attach')).toHaveCount(0);
+    // Blue now that it is.
+    await expect(pageBox(page).locator('[data-atom]')).toHaveClass(/bg-sky-100/);
 
     await sheet(page).getByRole('button', { name: /^(Clip 1 abspielen|Play clip 1)$/ }).click();
     const player = page.getByTestId('clip-player');

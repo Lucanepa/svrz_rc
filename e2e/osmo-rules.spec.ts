@@ -4,7 +4,7 @@ import {
   CMD, CMD_TYPE, FrameReader, buildFrame, connectRequestPayload, crc16, crc32, isOsmoAdvert, parseConnectRequest, parseFrame,
   parseStatus, recordPayload,
 } from '../src/lib/osmoProtocol';
-import { doomedClips, fileStart, matchClipFiles, newClip, type PickedFile } from '../src/lib/clips';
+import { clipNumbersIn, doomedClips, fileEnd, matchClipFiles, newClip, nextClipNumber, type PickedFile } from '../src/lib/clips';
 
 /**
  * The Osmo Action's Bluetooth protocol (src/lib/osmoProtocol.ts) against the
@@ -107,9 +107,38 @@ test.describe('Matching the card to the clips', () => {
   };
   const clip = (id: string, t: number) => ({ clipId: id, at: t, seconds: 10 });
 
-  test('the name of a DJI file is when it started', () => {
-    expect(fileStart(dji(at(19, 42, 10), 3), 10)).toMatchObject({ at: at(19, 42, 10), proxy: false });
-    expect(fileStart({ name: 'GX010123.MP4', lastModified: at(19, 0, 10), size: 1 }, 10).at).toBe(at(19, 0, 0));
+  test('a file ends at its card time; a copied file at its name plus a clip', () => {
+    expect(fileEnd(dji(at(19, 42, 10), 3))).toMatchObject({ at: at(19, 42, 20), proxy: false });
+    // Copied off the card later: the card time is the copy's, the name still the start.
+    expect(fileEnd({ ...dji(at(19, 42, 10), 3), lastModified: at(23, 0, 0) }).at).toBe(at(19, 42, 10) + 11_500);
+    expect(fileEnd({ name: 'GX010123.MP4', lastModified: at(19, 0, 10), size: 1 }).at).toBe(at(19, 0, 10));
+  });
+
+  test('the first evening\'s card: three clips, the camera 14 s ahead, the third with a short buffer', () => {
+    // 29.10.2026, as tapped on the fw13 and as the SD card listed the files.
+    const ms = (h: number, m: number, s: number, frac = 0) => at(h, m, s) + frac;
+    const clips = [
+      { clipId: 'c1', at: ms(22, 5, 30), stoppedAt: ms(22, 5, 31, 600) },
+      { clipId: 'c2', at: ms(22, 5, 42), stoppedAt: ms(22, 5, 43, 600) },
+      { clipId: 'c3', at: ms(22, 5, 49), stoppedAt: ms(22, 5, 50, 600) },
+    ];
+    const card: PickedFile[] = [
+      { name: 'DJI_20261029220534_0018_D.LRF', lastModified: ms(22, 5, 46, 150), size: 9_508_489 },
+      { name: 'DJI_20261029220534_0018_D.MP4', lastModified: ms(22, 5, 46, 280), size: 92_324_728 },
+      { name: 'DJI_20261029220546_0019_D.MP4', lastModified: ms(22, 5, 57, 650), size: 103_662_760 },
+      { name: 'DJI_20261029220546_0019_D.LRF', lastModified: ms(22, 5, 57, 780), size: 10_421_369 },
+      { name: 'DJI_20261029220558_0020_D.MP4', lastModified: ms(22, 6, 4, 440), size: 53_973_726 },
+      { name: 'DJI_20261029220558_0020_D.LRF', lastModified: ms(22, 6, 4, 560), size: 5_208_478 },
+    ];
+    expect(Object.fromEntries(matchClipFiles(clips, card))).toEqual({ c1: 1, c2: 2, c3: 4 });
+  });
+
+  test('clips are numbered across the pages; a page\'s text names the ones it mentions', () => {
+    const a = newClip('rc', 'page-1', 1, at(19, 0, 0), 10, 'Osmo');
+    const b = newClip('rc', 'page-2', 2, at(19, 5, 0), 10, 'Osmo');
+    expect(nextClipNumber([a, b])).toBe(3);
+    expect(nextClipNumber([])).toBe(1);
+    expect(clipNumbersIn('Satz 2 [Clip 2 · 19:05:00] und [Clip 11 · 19:20:31] wie [Clip x]')).toEqual([2, 11]);
   });
 
   test('every clip finds its file, with the camera\'s clock right', () => {

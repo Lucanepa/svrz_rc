@@ -42,6 +42,7 @@ const DE = {
   padTimesLine: 'Geschrieben {date}',
   padSection: 'Abschnitt',
   padSectionTitle: 'Spielabschnitt einfügen',
+  padMentionTitle: 'Clip erwähnen',
   // The camera (an Osmo Action over Bluetooth) and its clips.
   camConnect: 'Kamera',
   camConnectTitle: 'Osmo-Kamera über Bluetooth verbinden',
@@ -193,6 +194,7 @@ const EN: Record<keyof typeof DE, string> = {
   padTimesLine: 'Written {date}',
   padSection: 'Section',
   padSectionTitle: 'Insert a phase of the match',
+  padMentionTitle: 'Mention a clip',
   camConnect: 'Camera',
   camConnectTitle: 'Connect an Osmo camera over Bluetooth',
   camConnecting: 'Connecting …',

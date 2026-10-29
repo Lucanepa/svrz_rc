@@ -162,7 +162,7 @@ function wrapAtoms(root: HTMLElement, pattern: RegExp): boolean {
   return wrapped;
 }
 
-export function RichSurface({ value, onChange, placeholder, className, style, autoFocus, initialCaret, onFocus, atoms, onAtom }: {
+export function RichSurface({ value, onChange, placeholder, className, style, autoFocus, initialCaret, onFocus, atoms, onAtom, onAtSign }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
@@ -178,6 +178,8 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
   atoms?: RegExp;
   /** A tap on such a chip, with its text. */
   onAtom?: (text: string) => void;
+  /** An "@" was just typed (the notebook offers its clips). */
+  onAtSign?: () => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const caretAtMount = useRef(initialCaret);
@@ -289,7 +291,14 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
       aria-label={placeholder}
       data-placeholder={placeholder}
       onFocus={onFocus}
-      onInput={() => { const el = ref.current; if (el) { markEmpty(el); onChange(domToRich(el)); } }}
+      onInput={(e) => {
+        const el = ref.current;
+        if (!el) return;
+        markEmpty(el);
+        onChange(domToRich(el));
+        const ie = e.nativeEvent as InputEvent;
+        if (onAtSign && ie.inputType === 'insertText' && ie.data === '@') onAtSign();
+      }}
       // A box is ticked by tapping it. mousedown is held back on a box so the
       // caret stays where the coach was writing (and, on a desktop, the field
       // does not even take focus); the click then swaps the one character in

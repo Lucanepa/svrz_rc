@@ -203,6 +203,42 @@ test.describe('The notebook films with an Osmo', () => {
     await expect.poll(() => pageBox(page).evaluate((el) => (el as HTMLElement).innerText)).toMatch(/^2\. SR\s*$/);
   });
 
+  test('"@" offers the clips, newest first, and puts the picked one in as its chip', async ({ page }) => {
+    await page.addInitScript(() => {
+      const now = Date.now();
+      const clip = (n: number, ago: number, title = '') => ({
+        id: `rc1|clip-${n}`, ownerId: 'rc1', clipId: `clip-${n}`, pageId: 'page-elsewhere', n, at: now - ago, seconds: 10,
+        stoppedAt: now - ago + 1_500, camera: 'Osmo', file: null, createdAt: now - 5_000, title,
+      });
+      const open = indexedDB.open('svrz-clips', 1);
+      open.onupgradeneeded = () => open.result.createObjectStore('clips', { keyPath: 'id' });
+      open.onsuccess = () => {
+        const tx = open.result.transaction('clips', 'readwrite');
+        tx.objectStore('clips').put(clip(1, 600_000));
+        tx.objectStore('clips').put(clip(2, 60_000, 'Netzfehler'));
+        tx.oncomplete = () => open.result.close();
+      };
+    });
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ }).click();
+    await pageBox(page).click();
+    await page.keyboard.type('Siehe @');
+    const menu = sheet(page).getByTestId('pad-mention');
+    await expect(menu.getByRole('menuitem')).toHaveCount(2);
+    await expect(menu.getByRole('menuitem').first()).toContainText('Clip 2 · Netzfehler');
+    await menu.getByRole('menuitem').first().click();
+    await expect(menu).toHaveCount(0);
+    await expect.poll(() => pageBox(page).evaluate((el) => (el as HTMLElement).innerText)).toMatch(/^Siehe \[Clip 2 · \d\d:\d\d:\d\d\] \s*$/);
+    await expect(pageBox(page).locator('[data-atom]')).toHaveCount(1);
+    // Mentioned here, filmed elsewhere: its chip is on this page's strip too.
+    await expect(sheet(page).getByTestId('clip-chip')).toHaveText(['Clip 2 · Netzfehler']);
+    // Typing on after an "@" is an "@".
+    await page.keyboard.type('mail@x');
+    await expect(menu).toHaveCount(0);
+    await expect.poll(() => pageBox(page).evaluate((el) => (el as HTMLElement).innerText)).toMatch(/mail@x\s*$/);
+  });
+
   test('the camera is off until the options turn it on', async ({ page }) => {
     await fakeOsmo(page, { on: false });
     await stubSignedInApp(page);

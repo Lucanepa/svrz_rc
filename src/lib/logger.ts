@@ -265,7 +265,7 @@ export async function flush(beacon = false): Promise<void> {
       return;
     }
     // Raw fetch, NOT the instrumented one: shipping logs must not generate logs.
-    const send = (keepalive: boolean) => originalFetch(url, {
+    await originalFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
@@ -276,19 +276,8 @@ export async function flush(beacon = false): Promise<void> {
       // their real name. That split made the marker read as an auth problem
       // instead of what it was: half the batches simply arrived cookie-less.
       credentials: 'include',
-      keepalive,
+      keepalive: batch.length < 30,
     });
-    const keepalive = batch.length < 30;
-    try {
-      await send(keepalive);
-    } catch (e) {
-      // The Linux installed app (WebKitGTK on tauri://localhost) never got a
-      // batch through: its keepalive fetch fails where a plain one works, and
-      // not one of its lines reached the server (29.10.2026). Once more
-      // without keepalive before the batch goes back in the queue.
-      if (!keepalive) throw e;
-      await send(false);
-    }
   } catch {
     // Offline or the API is down — or the batch arrived and only the answer
     // was lost. Put it back whole (bounded) so it ships on the next flush
@@ -776,6 +765,11 @@ function installLifecycleLogging(): void {
  *  through VITE_API_BASE_URL; the app still talks to it, the LOG does not. */
 function shipsToAnotherOrigin(base: string): boolean {
   if (!base) return false;
+  // The installed app is no dev server, whatever its page is called: on
+  // Linux and macOS that is tauri://localhost, which the test below took for
+  // one — not a line from a desktop app ever reached the server (found
+  // 29.10.2026; Android and Windows, on http://tauri.localhost, shipped).
+  if (IS_NATIVE) return false;
   try {
     const local = /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname);
     return local && new URL(base, location.href).origin !== location.origin;

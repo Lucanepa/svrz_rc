@@ -19,7 +19,7 @@ import { OsmoError, bluetoothSupport, findNativeCamera, pickWebCamera, type Osmo
 import { DEFAULT_PRE_SECONDS, cameraState, connectCamera, disconnectCamera, saveClip, subscribeCamera } from '../lib/osmoCamera';
 import { isPreRecording, isRecording } from '../lib/osmoProtocol';
 import {
-  allClipIds, clipLine, deleteClips, doomedClips, listClips, matchClipFiles, newClip, nextClipNumber, playableType, putClip, subscribeClips,
+  allClipIds, clipLine, clipNumbersIn, deleteClips, doomedClips, listClips, matchClipFiles, newClip, nextClipNumber, playableType, putClip, subscribeClips,
   type Clip,
 } from '../lib/clips';
 import { cameraMedia, clipFileUrl, importClipFile, pruneClipFiles, saveClipFile, type MediaFile } from '../lib/clipFiles';
@@ -107,9 +107,11 @@ const AUTO_EVERY_MS = 4_000;
  * changed. Renders nothing.
  */
 export function ClipAutoImport({ ownerId, lang }: { ownerId: string; lang: 'DE' | 'EN' }) {
-  const on = useCameraOn();
+  // Not tied to the camera option: clips waiting for a video were filmed, so
+  // the videos are wanted (the option off after a restart left three clips
+  // unmatched with their card plugged in, 29.10.2026).
   useEffect(() => {
-    if (!DESKTOP_APP || !on || !ownerId) return;
+    if (!DESKTOP_APP || !ownerId) return;
     const tp = PAD_TEXT[lang] || PAD_TEXT.DE;
     let busy = false;
     let seen = '';
@@ -155,7 +157,7 @@ export function ClipAutoImport({ ownerId, lang }: { ownerId: string; lang: 'DE' 
     void tick();
     const t = setInterval(() => void tick(), AUTO_EVERY_MS);
     return () => clearInterval(t);
-  }, [on, ownerId, lang]);
+  }, [ownerId, lang]);
   return null;
 }
 
@@ -195,9 +197,8 @@ export function CameraButton({ tp, ownerId, clips, insertLine }: {
   tp: Strings;
   ownerId: string;
   clips: Clip[];
-  /** Writes the text `make` returns for the page on screen (null: a page not
-   *  written yet) at the caret, making the page if need be, and returns the
-   *  page's id, or null when nothing could be written. */
+  /** Writes the text `make` returns at the caret, making the page if need
+   *  be, and returns the page's id, or null when nothing could be written. */
   insertLine: (make: (pageIdBefore: string | null) => string) => string | null;
 }) {
   const cam = useCamera();
@@ -221,11 +222,8 @@ export function CameraButton({ tp, ownerId, clips, insertLine }: {
     let made: Clip | null = null;
     try {
       const done = await saveClip((tappedAt, preSeconds) => {
-        let n = 1;
-        const pageId = insertLine((before) => {
-          n = before ? nextClipNumber(clips, before) : 1;
-          return `${clipLine(n, tappedAt)} `;
-        });
+        const n = nextClipNumber(clips);
+        const pageId = insertLine(() => `${clipLine(n, tappedAt)} `);
         if (!pageId) return;
         made = newClip(ownerId, pageId, n, tappedAt, preSeconds || DEFAULT_PRE_SECONDS, cameraState().name);
         void putClip(made).catch(() => undefined);
@@ -270,23 +268,28 @@ export function CameraButton({ tp, ownerId, clips, insertLine }: {
 }
 
 /** Under the toolbar: the camera's state, the page's clips, "Videos zuordnen". */
-export function ClipStrip({ tp, lang, pageId, clips }: { tp: Strings; lang: 'DE' | 'EN'; pageId: string | null; clips: Clip[] }) {
+export function ClipStrip({ tp, lang, pageId, text, clips }: { tp: Strings; lang: 'DE' | 'EN'; pageId: string | null; text: string; clips: Clip[] }) {
   const cam = useCamera();
   const fileRef = useRef<HTMLInputElement>(null);
   const [openId, setOpenId] = useState<string | null>(null);
-  const onPage = useMemo(() => (pageId ? clips.filter((c) => c.pageId === pageId) : []), [clips, pageId]);
+  // The clips filmed on this page and the ones its text mentions (@).
+  const mentioned = useMemo(() => clipNumbersIn(text).join(','), [text]);
+  const onPage = useMemo(() => {
+    const ns = new Set(mentioned ? mentioned.split(',').map(Number) : []);
+    return pageId ? clips.filter((c) => c.pageId === pageId || ns.has(c.n)) : clips.filter((c) => ns.has(c.n));
+  }, [clips, pageId, mentioned]);
   const waiting = useMemo(() => clips.filter((c) => !c.file), [clips]);
   const open = openId ? clips.find((c) => c.id === openId) || null : null;
   // A tap on a clip line in the page.
   useEffect(() => {
     const onOpen = (e: Event) => {
       const n = (e as CustomEvent<{ n: number }>).detail?.n;
-      const c = onPage.find((x) => x.n === n);
+      const c = onPage.find((x) => x.n === n) || clips.find((x) => x.n === n);
       if (c) setOpenId(c.id);
     };
     window.addEventListener(CLIP_OPEN_EVENT, onOpen);
     return () => window.removeEventListener(CLIP_OPEN_EVENT, onOpen);
-  }, [onPage]);
+  }, [onPage, clips]);
   const camLine = cam.phase === 'confirm' ? fill(tp.camConfirm, { code: cam.code })
     : cam.phase === 'reconnecting' ? tp.camReconnecting
     : cam.phase === 'ready' && cam.status && !isPreRecording(cam.status) && !isRecording(cam.status) ? tp.camNoPrerec
@@ -364,7 +367,7 @@ export function ClipStrip({ tp, lang, pageId, clips }: { tp: Strings; lang: 'DE'
           type="button"
           onMouseDown={(e) => e.preventDefault()}
           onClick={pickFiles}
-          title={tp.clipsAttachTitle}
+          title={DESKTOP_APP ? `${tp.clipsAttachTitle}. ${tp.clipsAutoHint}` : tp.clipsAttachTitle}
           data-testid="clips-attach"
           className="h-7 px-2 inline-flex items-center gap-1 rounded-lg border border-stone-200 text-stone-700 hover:bg-stone-100"
         >
@@ -380,11 +383,6 @@ export function ClipStrip({ tp, lang, pageId, clips }: { tp: Strings; lang: 'DE'
         data-testid="clips-file"
         onChange={(e) => { void attach(e.currentTarget.files); e.currentTarget.value = ''; }}
       />
-      {onPage.length > 0 && (
-        <span className="basis-full text-[11px] text-stone-400">
-          {DESKTOP_APP && onPage.some((c) => !c.file) ? `${tp.clipsAutoHint} ` : ''}{tp.clipsDeviceOnly}
-        </span>
-      )}
       {open && <ClipDialog tp={tp} lang={lang} clip={open} onPickFiles={pickFiles} onClose={() => setOpenId(null)} />}
     </div>
   );

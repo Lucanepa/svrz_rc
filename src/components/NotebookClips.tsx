@@ -505,7 +505,7 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
   };
   const heading = fill(tp.clipChip, { n: clip.n, time: clockLabel(clip.at, { seconds: true }) });
   return (
-    <div className="fixed inset-0 z-[80] bg-black/85 flex flex-col items-center justify-center p-3" role="dialog" aria-label={heading} data-testid="clip-player">
+    <div className="fixed inset-0 z-[80] bg-black/95 flex flex-col items-center justify-center p-3" role="dialog" aria-label={heading} data-testid="clip-player">
       <div className="w-full max-w-4xl flex items-center gap-2 text-white text-sm mb-2">
         <span className="shrink-0 font-medium">{heading}</span>
         <input

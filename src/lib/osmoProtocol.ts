@@ -307,3 +307,5 @@ export function parseStatus(p: Uint8Array): OsmoStatus | null {
 }
 
 export const isRecording = (s: OsmoStatus | null): boolean => !!s && s.cameraStatus === CAMERA_STATUS.shooting;
+/** Pre-Rec armed: the camera buffers, and a record start keeps the seconds before it. */
+export const isPreRecording = (s: OsmoStatus | null): boolean => !!s && s.cameraStatus === CAMERA_STATUS.preRecording;

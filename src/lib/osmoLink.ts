@@ -28,7 +28,7 @@ export type Transport = {
 
 export type OsmoErrorCode =
   | 'unsupported' | 'cancelled' | 'not-found' | 'permission' | 'bluetooth-off'
-  | 'link' | 'refused' | 'timeout' | 'busy' | 'asleep' | 'too-hot' | 'card' | 'record';
+  | 'link' | 'refused' | 'timeout' | 'busy' | 'asleep' | 'too-hot' | 'card' | 'record' | 'no-prerec';
 export class OsmoError extends Error {
   constructor(public code: OsmoErrorCode, message?: string) { super(message || code); }
 }

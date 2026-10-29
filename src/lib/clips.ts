@@ -1,8 +1,10 @@
-// Clips: the short videos a coach records from the notebook with an Osmo
-// Action camera (osmoCamera.ts). The camera records onto its own card; the
-// page gets a line "[Clip 3 · 19:42:10]" the moment the camera starts, and the
-// file is matched to that line after the match, when the coach picks the
-// card's files ("Videos zuordnen").
+// Clips: the short videos a coach saves from the notebook with an Osmo Action
+// camera (osmoCamera.ts) — what happened in the seconds BEFORE the tap, from
+// the camera's Pre-Rec (Luca, 29.10.2026: "the last 10 secs"). The camera
+// writes the clip onto its own card; the page gets a line
+// "[Clip 3 · 19:42:10]" with the time of the tap, and the file is matched to
+// that line after the match, when the coach picks the card's files
+// ("Videos zuordnen").
 //
 // Kept on THIS device only (Luca, 29.10.2026): IndexedDB `svrz-clips`, never
 // sent to the server, never into the form, the PDF or the mail. A clip goes
@@ -11,8 +13,6 @@
 
 import { clockLabel } from './appTime';
 import { NOTEBOOK_TTL_MS } from './notebook';
-
-export const CLIP_SECONDS = 10;
 
 export type ClipFile = { name: string; type: string; size: number; blob: Blob };
 export type Clip = {
@@ -23,8 +23,9 @@ export type Clip = {
   pageId: string;
   /** "Clip n" on its page. */
   n: number;
-  /** This device's clock when the camera said it started. */
-  startedAt: number;
+  /** This device's clock at the tap: the clip is what came before it. */
+  at: number;
+  /** The seconds before the tap the camera kept (its Pre-Rec setting). */
   seconds: number;
   /** 0 while recording, or when the stop was not confirmed. */
   stoppedAt: number;
@@ -68,7 +69,7 @@ export async function listClips(ownerId: string): Promise<Clip[]> {
     req.onsuccess = () => resolve(req.result as Clip[]);
     req.onerror = () => reject(req.error);
   });
-  return all.filter((c) => c.ownerId === ownerId).sort((a, b) => a.startedAt - b.startedAt);
+  return all.filter((c) => c.ownerId === ownerId).sort((a, b) => a.at - b.at);
 }
 
 export async function putClip(clip: Clip): Promise<void> {
@@ -95,9 +96,9 @@ export async function deleteClips(ids: string[]): Promise<void> {
   changed();
 }
 
-export function newClip(ownerId: string, pageId: string, n: number, startedAt: number, seconds: number, camera: string): Clip {
+export function newClip(ownerId: string, pageId: string, n: number, at: number, seconds: number, camera: string): Clip {
   const clipId = crypto.randomUUID();
-  return { id: `${ownerId}|${clipId}`, ownerId, clipId, pageId, n, startedAt, seconds, stoppedAt: 0, camera, file: null, createdAt: startedAt };
+  return { id: `${ownerId}|${clipId}`, ownerId, clipId, pageId, n, at, seconds, stoppedAt: 0, camera, file: null, createdAt: at };
 }
 
 /** The next number on a page. */
@@ -106,7 +107,7 @@ export const nextClipNumber = (clips: Clip[], pageId: string): number =>
 
 /** The line written into the page: plain text, so it reads the same on
  *  another device (which has no video) and in the form if it is imported. */
-export const clipLine = (n: number, startedAt: number): string => `[Clip ${n} · ${clockLabel(startedAt, { seconds: true })}]`;
+export const clipLine = (n: number, at: number): string => `[Clip ${n} · ${clockLabel(at, { seconds: true })}]`;
 export const CLIP_LINE_RE = /\[Clip (\d+) · \d{2}:\d{2}(?::\d{2})?\]/g;
 
 /** The clips whose page is gone or whose week is up. `livePageIds` is the
@@ -124,7 +125,10 @@ const DJI_NAME = /^DJI_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})_(\d{4})_D\.(mp
 const TOLERANCE_MS = 4_000;
 
 /** When a file's recording started, on the camera's clock as this device reads
- *  it, and whether it is DJI's small proxy (.LRF) of a recording. */
+ *  it, and whether it is DJI's small proxy (.LRF) of a recording. Whether the
+ *  name carries the tap or the start of the buffered seconds does not matter:
+ *  it is the same for every clip of an evening, and the matching below finds
+ *  a shift all clips share. */
 export function fileStart(f: PickedFile, seconds: number): { at: number; base: string; proxy: boolean } {
   const m = DJI_NAME.exec(f.name);
   const proxy = /\.lrf$/i.test(f.name);
@@ -134,7 +138,7 @@ export function fileStart(f: PickedFile, seconds: number): { at: number; base: s
     return { at: new Date(+y, +mo - 1, +d, +h, +mi, +s).getTime(), base, proxy };
   }
   // No time in the name (GoPro, a renamed file): the card's file time is the
-  // END of the recording.
+  // END of the recording, a moment after the tap.
   return { at: f.lastModified - seconds * 1000, base, proxy };
 }
 
@@ -146,7 +150,7 @@ export function fileStart(f: PickedFile, seconds: number): { at: number; base: s
  * Of a recording picked twice (the .MP4 and DJI's .LRF proxy) the MP4 is
  * taken. Returns clipId → index into `files`.
  */
-export function matchClipFiles(clips: { clipId: string; startedAt: number; seconds: number }[], files: PickedFile[]): Map<string, number> {
+export function matchClipFiles(clips: { clipId: string; at: number; seconds: number }[], files: PickedFile[]): Map<string, number> {
   const out = new Map<string, number>();
   if (!clips.length || !files.length) return out;
   const seconds = clips[0].seconds;
@@ -159,12 +163,12 @@ export function matchClipFiles(clips: { clipId: string; startedAt: number; secon
   });
   const candidates = [...best.values()];
 
-  const score = (offset: number) => clips.filter((c) => candidates.some((i) => Math.abs(starts[i].at - c.startedAt - offset) <= TOLERANCE_MS)).length;
+  const score = (offset: number) => clips.filter((c) => candidates.some((i) => Math.abs(starts[i].at - c.at - offset) <= TOLERANCE_MS)).length;
   let offset = 0;
   let top = score(0);
   for (const c of clips) {
     for (const i of candidates) {
-      const o = starts[i].at - c.startedAt;
+      const o = starts[i].at - c.at;
       const s = score(o);
       if (s > top || (s === top && Math.abs(o) < Math.abs(offset))) { top = s; offset = o; }
     }
@@ -172,12 +176,12 @@ export function matchClipFiles(clips: { clipId: string; startedAt: number; secon
   if (!top) return out;
 
   const taken = new Set<number>();
-  for (const c of [...clips].sort((a, b) => a.startedAt - b.startedAt)) {
+  for (const c of [...clips].sort((a, b) => a.at - b.at)) {
     let pick = -1;
     let gap = Infinity;
     for (const i of candidates) {
       if (taken.has(i)) continue;
-      const g = Math.abs(starts[i].at - c.startedAt - offset);
+      const g = Math.abs(starts[i].at - c.at - offset);
       if (g <= TOLERANCE_MS && g < gap) { gap = g; pick = i; }
     }
     if (pick >= 0) { taken.add(pick); out.set(c.clipId, pick); }

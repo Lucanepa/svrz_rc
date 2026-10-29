@@ -105,7 +105,7 @@ test.describe('Matching the card to the clips', () => {
     const p = (x: number, w = 2) => String(x).padStart(w, '0');
     return { name: `DJI_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_${p(n, 4)}_D.${ext}`, lastModified: t + 10_000, size: 1 };
   };
-  const clip = (id: string, t: number) => ({ clipId: id, startedAt: t, seconds: 10 });
+  const clip = (id: string, t: number) => ({ clipId: id, at: t, seconds: 10 });
 
   test('the name of a DJI file is when it started', () => {
     expect(fileStart(dji(at(19, 42, 10), 3), 10)).toMatchObject({ at: at(19, 42, 10), proxy: false });

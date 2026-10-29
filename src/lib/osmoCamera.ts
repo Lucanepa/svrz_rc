@@ -1,6 +1,6 @@
 // The conversation with one Osmo Action camera over the link of osmoLink.ts:
 // the handshake, the status the camera pushes twice a second, and a clip —
-// start, wait, stop. One camera at a time, for the whole app; the notebook
+// the seconds the camera's Pre-Rec buffered before the tap, saved. One camera at a time, for the whole app; the notebook
 // reads it through subscribeCamera()/cameraState().
 //
 // The handshake (docs/protocol_data_segment.md, "Connection request 0019"):
@@ -15,8 +15,8 @@
 // keeps its pairing under them, so the second evening needs no tap.
 
 import {
-  CMD, CMD_TYPE, FrameReader, MODE_VIDEO, POWER_SLEEP, buildFrame, connectRequestPayload, connectResponsePayload,
-  isRecording, isResponse, isVideoMode, modePayload, parseConnectRequest, parseConnectResponse, parseStatus,
+  CMD, CMD_TYPE, FrameReader, POWER_SLEEP, buildFrame, connectRequestPayload, connectResponsePayload,
+  isPreRecording, isRecording, isResponse, parseConnectRequest, parseConnectResponse, parseStatus,
   recordPayload, retCode, subscribePayload, type OsmoFrame, type OsmoStatus,
 } from './osmoProtocol';
 import { OsmoError, type OsmoErrorCode, type OsmoLink, type Transport } from './osmoLink';
@@ -29,7 +29,7 @@ export type CameraState = {
   /** The code the camera shows on a first pairing. */
   code: number;
   status: OsmoStatus | null;
-  /** The clip being recorded: when the camera started, and for how long. */
+  /** A clip being saved: the moment of the tap. */
   clip: { startedAt: number; seconds: number } | null;
   /** What last went wrong, for the sentence under the button. */
   error: OsmoErrorCode | null;
@@ -256,39 +256,51 @@ async function waitFor(test: () => boolean, ms: number): Promise<boolean> {
   return test();
 }
 
+/** After the camera says it is recording, this much more before the stop:
+ *  the clip is what came BEFORE the tap, and a stop sent at once could reach
+ *  a camera still busy starting. */
+const TAIL_MS = 1_000;
+/** What a clip holds when the camera does not say (its Pre-Rec setting). */
+export const DEFAULT_PRE_SECONDS = 10;
+
 /**
- * Records one clip of `seconds`. `onStarted` runs the moment the camera says
- * it is recording, with that time — the notebook writes its line then, so the
- * line's time is the clip's. Resolves when the camera has stopped.
+ * Saves the last seconds: the camera has to be in Pre-Rec (camera_status 5,
+ * set on the camera — the protocol has no command for it), so a record start
+ * keeps what it buffered before the tap; it is stopped a moment later and
+ * goes back to Pre-Rec by itself. `onSaved` runs as soon as the camera has
+ * started, with the moment of the tap — the notebook writes its line then.
+ * Resolves when the camera has stopped, with the seconds it kept before the
+ * tap (its recording time includes the pre-recording, so it says).
  */
-export async function recordClip(seconds: number, onStarted?: (startedAt: number) => void): Promise<{ startedAt: number; stoppedAt: number }> {
+export async function saveClip(onSaved?: (tappedAt: number, preSeconds: number) => void): Promise<{ tappedAt: number; preSeconds: number; stoppedAt: number }> {
   const s = session;
   if (!s || state.phase !== 'ready') throw new OsmoError('link');
   if (state.clip) throw new OsmoError('busy');
+  const tappedAt = Date.now();
+  // The first push can be a moment behind the handshake.
+  if (!state.status) await waitFor(() => !!state.status, 1_000);
   const st = state.status;
   if (st) {
     if (st.powerMode === POWER_SLEEP) throw new OsmoError('asleep');
     if (st.temperature >= 2) throw new OsmoError('too-hot');
     if (isRecording(st)) throw new OsmoError('busy');
-    if (st.remainSeconds > 0 && st.remainSeconds < seconds + 2) throw new OsmoError('card');
-    if (!isVideoMode(st.mode)) {
-      await s.send(CMD.mode, modePayload(MODE_VIDEO), CMD_TYPE.replyIfAny);
-      await waitFor(() => !!state.status && isVideoMode(state.status.mode), 3_000);
-    }
+    if (!isPreRecording(st)) throw new OsmoError('no-prerec');
+    if (st.remainSeconds > 0 && st.remainSeconds < 30) throw new OsmoError('card');
   }
-  set({ clip: { startedAt: Date.now(), seconds } });
+  set({ clip: { startedAt: tappedAt, seconds: 0 } });
   try {
     const started = await s.send(CMD.record, recordPayload(true), CMD_TYPE.replyIfAny);
     if (started && retCode(started.payload) !== 0) throw new OsmoError('record', `ret ${retCode(started.payload)}`);
-    // No reply at all: the status says whether it runs.
-    if (!started && !(await waitFor(() => isRecording(state.status), 2_000))) throw new OsmoError('record', 'no reply');
-    const startedAt = Date.now();
-    set({ clip: { startedAt, seconds } });
-    onStarted?.(startedAt);
-    await sleep(seconds * 1000);
+    const running = await waitFor(() => isRecording(state.status), started ? 1_500 : 2_000);
+    if (!started && !running) throw new OsmoError('record', 'no reply');
+    // Seconds on the clock the moment it runs: the pre-recording it kept.
+    const t = running && state.status ? state.status.recordTime : 0;
+    const preSeconds = t >= 1 && t <= 600 ? t : DEFAULT_PRE_SECONDS;
+    onSaved?.(tappedAt, preSeconds);
+    await sleep(TAIL_MS);
     if (session !== s || !s.link) { stopOwed = true; throw new OsmoError('link'); }
     await s.send(CMD.record, recordPayload(false), CMD_TYPE.replyIfAny);
-    return { startedAt, stoppedAt: Date.now() };
+    return { tappedAt, preSeconds, stoppedAt: Date.now() };
   } finally {
     if (session === s) set({ clip: null });
   }

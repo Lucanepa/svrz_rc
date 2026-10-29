@@ -2,22 +2,23 @@ import { test, expect, type Page } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
 
 /**
- * The notebook's camera: an Osmo Action over Web Bluetooth records a clip, the
- * page gets the clip's line at the caret, and the card's video is matched to
- * it afterwards and plays from the strip — on this device only.
+ * The notebook's camera: an Osmo Action over Web Bluetooth saves the seconds
+ * before a tap (its Pre-Rec), the page gets the clip's line at the caret, and
+ * the card's video is matched to it afterwards and plays from the strip — on
+ * this device only.
  *
  * The camera is a fake behind navigator.bluetooth that speaks the protocol of
  * src/lib/osmoProtocol.ts: it answers the connection request, asks back with
- * verify_mode 2 (allowed), pushes its status at 2 Hz once subscribed, and
- * acknowledges record start and stop. It logs what it was sent, so the spec
- * can say a clip really was started and stopped about ten seconds apart.
+ * verify_mode 2 (allowed), pushes its status at 2 Hz once subscribed (Pre-Rec
+ * armed, or not), and acknowledges record start and stop; recording, its
+ * clock starts at the 10 s it buffered. It logs what it was sent.
  */
 
 const sheet = (page: Page) => page.getByRole('dialog', { name: /^(Notizblock|Notebook)$/ });
 const pageBox = (page: Page) => sheet(page).locator('.rich-surface');
 
-async function fakeOsmo(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+async function fakeOsmo(page: Page, { preRec = true } = {}): Promise<void> {
+  await page.addInitScript((preRec) => {
     const t16: number[] = [];
     const t32: number[] = [];
     for (let n = 0; n < 256; n += 1) {
@@ -39,7 +40,7 @@ async function fakeOsmo(page: Page): Promise<void> {
     };
     const log: { at: number; what: string }[] = [];
     (window as unknown as { __osmoLog: typeof log }).__osmoLog = log;
-    let recording = false;
+    let recording = 0;
     let camSeq = 500;
     let pushing: ReturnType<typeof setInterval> | null = null;
 
@@ -51,7 +52,9 @@ async function fakeOsmo(page: Page): Promise<void> {
     }, 20);
     const status = () => {
       const p = new Array(38).fill(0);
-      p[0] = 0x01; p[1] = recording ? 0x03 : 0x01;
+      p[0] = 0x01; p[1] = recording ? 0x03 : preRec ? 0x05 : 0x01;
+      const t = recording ? 10 + Math.floor((Date.now() - recording) / 1000) : 0;
+      p[5] = t & 0xff; p[6] = (t >> 8) & 0xff; // record_time, the pre-recording included
       p[23] = 4380 & 0xff; p[24] = (4380 >> 8) & 0xff; // remain_time
       p[37] = 78; // battery
       return p;
@@ -72,9 +75,10 @@ async function fakeOsmo(page: Page): Promise<void> {
         if (!pushing) pushing = setInterval(() => send(frame(0x00, camSeq++, 0x1d, 0x02, status())), 500);
         send(frame(0x00, camSeq++, 0x1d, 0x02, status()));
       } else if (set === 0x1d && id === 0x03) {
-        recording = u[14 + 4] === 0;
+        recording = u[14 + 4] === 0 ? Date.now() : 0;
         log.push({ at: Date.now(), what: recording ? 'record-start' : 'record-stop' });
         send(frame(0x20, seq, 0x1d, 0x03, [0]));
+        send(frame(0x00, camSeq++, 0x1d, 0x02, status()));
       }
     };
     const write = { writeValueWithResponse: onWrite, writeValueWithoutResponse: onWrite, writeValue: onWrite };
@@ -84,13 +88,13 @@ async function fakeOsmo(page: Page): Promise<void> {
       gatt: { connected: false, connect: async () => device.gatt, disconnect: () => undefined, getPrimaryService: async () => service },
     });
     Object.defineProperty(Navigator.prototype, 'bluetooth', { configurable: true, get: () => ({ requestDevice: async () => device }) });
-  });
+  }, preRec);
 }
 
 const osmoLog = (page: Page) => page.evaluate(() => (window as unknown as { __osmoLog: { at: number; what: string }[] }).__osmoLog.map((l) => ({ ...l })));
 
 test.describe('The notebook films with an Osmo', () => {
-  test('a clip is recorded, written at the caret, matched to its video and played', async ({ page }) => {
+  test('a clip of the seconds before the tap is saved, written at the caret, matched to its video and played', async ({ page }) => {
     test.setTimeout(60_000);
     await fakeOsmo(page);
     await stubSignedInApp(page);
@@ -107,14 +111,14 @@ test.describe('The notebook films with an Osmo', () => {
     await sheet(page).getByTestId('cam-clip').click();
     // At the caret, on the line being typed, the moment the camera starts.
     await expect.poll(() => pageBox(page).evaluate((el) => (el as HTMLElement).innerText)).toMatch(/^2\. SR \[Clip 1 · \d\d:\d\d:\d\d\] \s*$/);
-    await expect(sheet(page).getByTestId('cam-clip')).toContainText(/(Aufnahme|Recording) · \d+ s/);
     await page.keyboard.type('Pfiff zu spät');
-    await expect(sheet(page).getByTestId('cam-clip')).toHaveText(/^Clip 10 s$/, { timeout: 15_000 });
+    // The clip is what came before: the camera is stopped a moment later, not ten seconds on.
+    await expect(sheet(page).getByTestId('cam-clip')).toHaveText(/^Clip$/, { timeout: 5_000 });
     const log = await osmoLog(page);
     const start = log.find((l) => l.what === 'record-start')!;
     const stop = log.find((l) => l.what === 'record-stop')!;
-    expect(stop.at - start.at).toBeGreaterThanOrEqual(9_500);
-    expect(stop.at - start.at).toBeLessThan(12_000);
+    expect(stop.at - start.at).toBeGreaterThanOrEqual(900);
+    expect(stop.at - start.at).toBeLessThan(3_500);
     await expect.poll(() => pageBox(page).evaluate((el) => (el as HTMLElement).innerText)).toMatch(/^2\. SR \[Clip 1 · \d\d:\d\d:\d\d\] Pfiff zu spät\s*$/);
 
     // No video yet: the chip says so, and the card's file is matched by its name.
@@ -127,7 +131,9 @@ test.describe('The notebook films with an Osmo', () => {
       open.onsuccess = () => {
         const req = open.result.transaction('clips', 'readonly').objectStore('clips').getAll();
         req.onsuccess = () => {
-          const d = new Date((req.result[0] as { startedAt: number }).startedAt + 1_000); // the camera's clock, a second on
+          const c = req.result[0] as { at: number; seconds: number };
+          if (c.seconds !== 10) { reject(new Error(`kept ${c.seconds} s`)); return; }
+          const d = new Date(c.at - 10_000 + 1_000); // named after the buffered start, the camera's clock a second on
           const p = (x: number, w = 2) => String(x).padStart(w, '0');
           resolve(`DJI_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_0042_D.MP4`);
         };
@@ -158,6 +164,19 @@ test.describe('The notebook films with an Osmo', () => {
       };
     }));
     expect(stored).toMatchObject({ name, size: 'not really a video'.length });
+  });
+
+  test('with Pre-Rec off on the camera, the strip says so and nothing is recorded', async ({ page }) => {
+    await fakeOsmo(page, { preRec: false });
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ }).click();
+    await sheet(page).getByTestId('cam-connect').click();
+    await expect(sheet(page).getByTestId('cam-state')).toContainText(/^(Pre-Rec ist aus|Pre-Rec is off)/);
+    await sheet(page).getByTestId('cam-clip').click();
+    await expect(page.getByText(/^(Pre-Rec ist an der Kamera aus|Pre-Rec is off on the camera)/)).toBeVisible();
+    expect((await osmoLog(page)).map((l) => l.what)).not.toContain('record-start');
+    await expect(pageBox(page)).toHaveText('');
   });
 
   test('without Bluetooth (Safari, Firefox) there is no camera button', async ({ page }) => {

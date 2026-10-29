@@ -1,5 +1,6 @@
 // The notebook's camera: a button in the typed side's toolbar that connects an
-// Osmo Action over Bluetooth and then records a clip, and a strip under the
+// Osmo Action over Bluetooth and then saves a clip of the seconds before the
+// tap (the camera's Pre-Rec), and a strip under the
 // toolbar with the page's clips — each one plays once its video has been
 // matched from the camera's card ("Videos zuordnen").
 //
@@ -15,9 +16,10 @@ import { clockLabel } from '../lib/appTime';
 import { fill, type PAD_STRINGS } from '../lib/notepadStrings';
 import { IS_NATIVE } from '../lib/native';
 import { OsmoError, bluetoothSupport, findNativeCamera, pickWebCamera, type OsmoErrorCode } from '../lib/osmoLink';
-import { cameraState, connectCamera, disconnectCamera, recordClip, subscribeCamera } from '../lib/osmoCamera';
+import { DEFAULT_PRE_SECONDS, cameraState, connectCamera, disconnectCamera, saveClip, subscribeCamera } from '../lib/osmoCamera';
+import { isPreRecording, isRecording } from '../lib/osmoProtocol';
 import {
-  CLIP_SECONDS, clipLine, deleteClips, doomedClips, listClips, matchClipFiles, newClip, nextClipNumber, playableType, putClip, subscribeClips,
+  clipLine, deleteClips, doomedClips, listClips, matchClipFiles, newClip, nextClipNumber, playableType, putClip, subscribeClips,
   type Clip,
 } from '../lib/clips';
 import { toast } from './ui';
@@ -39,6 +41,7 @@ const ERROR_KEY: Record<OsmoErrorCode, keyof Strings | null> = {
   'too-hot': 'camErrTooHot',
   card: 'camErrCard',
   record: 'camErrRecord',
+  'no-prerec': 'camErrNoPrerec',
 };
 function sayError(tp: Strings, e: unknown): void {
   const code: OsmoErrorCode = e instanceof OsmoError ? e.code : 'link';
@@ -75,20 +78,9 @@ function leftLabel(seconds: number): string {
   return min >= 60 ? `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min` : `${min} min`;
 }
 
-/** Re-renders every quarter second while `on`: the countdown of a clip. */
-function useTick(on: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!on) return;
-    const t = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(t);
-  }, [on]);
-  return now;
-}
-
 const BUTTON = 'h-8 px-2 inline-flex items-center gap-1 rounded-lg border text-xs font-medium transition-colors';
 
-/** The toolbar button: Kamera → Verbinde … → Clip 10 s → Aufnahme · 7 s. */
+/** The toolbar button: Kamera → Verbinde … → Clip → Speichert …. */
 export function CameraButton({ tp, ownerId, clips, insertLine }: {
   tp: Strings;
   ownerId: string;
@@ -99,7 +91,6 @@ export function CameraButton({ tp, ownerId, clips, insertLine }: {
   insertLine: (make: (pageIdBefore: string | null) => string) => string | null;
 }) {
   const cam = useCamera();
-  const now = useTick(!!cam.clip);
   const busy = cam.phase === 'connecting' || cam.phase === 'confirm' || cam.phase === 'reconnecting';
 
   const connect = async () => {
@@ -119,14 +110,14 @@ export function CameraButton({ tp, ownerId, clips, insertLine }: {
   const clip = async () => {
     let made: Clip | null = null;
     try {
-      const done = await recordClip(CLIP_SECONDS, (startedAt) => {
+      const done = await saveClip((tappedAt, preSeconds) => {
         let n = 1;
         const pageId = insertLine((before) => {
           n = before ? nextClipNumber(clips, before) : 1;
-          return `${clipLine(n, startedAt)} `;
+          return `${clipLine(n, tappedAt)} `;
         });
         if (!pageId) return;
-        made = newClip(ownerId, pageId, n, startedAt, CLIP_SECONDS, cameraState().name);
+        made = newClip(ownerId, pageId, n, tappedAt, preSeconds || DEFAULT_PRE_SECONDS, cameraState().name);
         void putClip(made).catch(() => undefined);
       });
       const kept = made as Clip | null;
@@ -137,19 +128,18 @@ export function CameraButton({ tp, ownerId, clips, insertLine }: {
   };
 
   if (cam.phase === 'ready') {
-    const left = cam.clip ? Math.max(0, Math.ceil((cam.clip.startedAt + cam.clip.seconds * 1000 - now) / 1000)) : 0;
     return (
       <button
         type="button"
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => { if (!cam.clip) void clip(); }}
         disabled={!!cam.clip}
-        title={fill(tp.camClipTitle, { s: CLIP_SECONDS })}
+        title={tp.camClipTitle}
         data-testid="cam-clip"
         className={cn(BUTTON, cam.clip ? 'border-red-300 bg-red-50 text-red-700' : 'border-red-200 text-red-700 hover:bg-red-50')}
       >
         <CircleDot size={12} className={cn('shrink-0', cam.clip && 'animate-pulse')} />
-        {cam.clip ? fill(tp.camRecording, { s: left }) : fill(tp.camClip, { s: CLIP_SECONDS })}
+        {cam.clip ? tp.camSaving : tp.camClip}
       </button>
     );
   }
@@ -178,6 +168,7 @@ export function ClipStrip({ tp, pageId, clips }: { tp: Strings; pageId: string |
   const waiting = useMemo(() => clips.filter((c) => !c.file), [clips]);
   const camLine = cam.phase === 'confirm' ? fill(tp.camConfirm, { code: cam.code })
     : cam.phase === 'reconnecting' ? tp.camReconnecting
+    : cam.phase === 'ready' && cam.status && !isPreRecording(cam.status) && !isRecording(cam.status) ? tp.camNoPrerec
     : cam.phase === 'ready' ? (cam.status && cam.status.battery >= 0
       ? fill(tp.camReady, { name: cam.name, bat: cam.status.battery, left: leftLabel(cam.status.remainSeconds) })
       : fill(tp.camReadyShort, { name: cam.name }))
@@ -210,7 +201,7 @@ export function ClipStrip({ tp, pageId, clips }: { tp: Strings; pageId: string |
       {camLine && (
         <span className="inline-flex items-center gap-1 text-stone-600" data-testid="cam-state">
           {cam.phase === 'ready' ? <Video size={12} className="shrink-0 text-stone-500" /> : <LoaderCircle size={12} className="shrink-0 animate-spin" />}
-          <span className={cn(cam.phase === 'confirm' && 'font-semibold text-stone-900')}>{camLine}</span>
+          <span className={cn(cam.phase === 'confirm' && 'font-semibold text-stone-900', camLine === tp.camNoPrerec && 'font-medium text-amber-700')}>{camLine}</span>
           {cam.phase !== 'off' && (
             <button
               type="button"
@@ -226,7 +217,7 @@ export function ClipStrip({ tp, pageId, clips }: { tp: Strings; pageId: string |
         </span>
       )}
       {onPage.map((c) => {
-        const label = fill(tp.clipChip, { n: c.n, time: clockLabel(c.startedAt, { seconds: true }) });
+        const label = fill(tp.clipChip, { n: c.n, time: clockLabel(c.at, { seconds: true }) });
         return c.file ? (
           <button
             key={c.id}
@@ -285,9 +276,9 @@ function ClipPlayer({ tp, clip, onClose }: { tp: Strings; clip: Clip; onClose: (
     return () => window.removeEventListener('keydown', onKey, true);
   }, [onClose]);
   return (
-    <div className="fixed inset-0 z-[80] bg-black/85 flex flex-col items-center justify-center p-3" role="dialog" aria-label={fill(tp.clipChip, { n: clip.n, time: clockLabel(clip.startedAt, { seconds: true }) })} data-testid="clip-player">
+    <div className="fixed inset-0 z-[80] bg-black/85 flex flex-col items-center justify-center p-3" role="dialog" aria-label={fill(tp.clipChip, { n: clip.n, time: clockLabel(clip.at, { seconds: true }) })} data-testid="clip-player">
       <div className="w-full max-w-4xl flex items-center justify-between text-white text-sm mb-2">
-        <span>{fill(tp.clipChip, { n: clip.n, time: clockLabel(clip.startedAt, { seconds: true }) })}</span>
+        <span>{fill(tp.clipChip, { n: clip.n, time: clockLabel(clip.at, { seconds: true }) })}</span>
         <button type="button" onClick={onClose} aria-label={tp.clipClose} className="h-9 w-9 inline-flex items-center justify-center rounded-lg hover:bg-white/10">
           <X size={18} />
         </button>

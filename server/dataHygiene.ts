@@ -37,10 +37,10 @@ export type LinkProblem = { status: 400 | 409; error: string; holder?: { id: str
  * Whether `sv` may be written onto the coachee row `rowId` of `season`, and
  * the answer the route gives when it may not.
  *
- * '' always may — it unlinks. Otherwise the number has to be a licence in
- * the register (400): the console only offers register rows, so a number
- * that is none is a hand-edited request, and a typo must not create a
- * phantom identity the games would then match nobody to. And no OTHER row of
+ * '' always may — it unlinks. Otherwise the number has to be in the
+ * register (400). Since 27.10.2026 the routes first make a hand entry for a
+ * number the register lacks (planRegisterWrite), so this refuses only what
+ * could not be made one; it still guards every other caller. And no OTHER row of
  * the same season may hold it (409, naming that row): the index resolves a
  * same-season tie by roster order, which is no answer at all. A row of
  * another season may — that is the same referee, coached again — and so may
@@ -71,6 +71,88 @@ export function refereeLinkProblem(
     };
   }
   return null;
+}
+
+/**
+ * What marks a register row the console wrote, not the SVRZ import: its
+ * `imported_at` starts with this. Only such a row follows its coachee's edits
+ * and goes when no coachee is left on it. An imported row is the federation's
+ * word and stays as it came; the next import of the SVRZ list overwrites a
+ * hand entry with the official row (it finds it by the number).
+ */
+export const HAND_ENTRY_MARK = 'manual:';
+
+/** An SV-Nr. as SVRZ writes them: digits only. */
+export const SV_NUMBER_RE = /^\d{3,8}$/;
+
+export const isHandEntry = (row: AnyRecord): boolean => text(row.imported_at).startsWith(HAND_ENTRY_MARK);
+
+/** The register fields a coachee row stands for. The coachee's `stage` is a
+ *  digit for a Niveau ("N4" + "1"), or a word on older rows, which is none. */
+export function registerFieldsFromCoachee(coachee: AnyRecord): AnyRecord {
+  const first = text(coachee.first_name);
+  const last = text(coachee.last_name);
+  const stage = text(coachee.stage);
+  return {
+    first_name: first,
+    last_name: last,
+    full_name: text(coachee.full_name) || `${first} ${last}`.trim(),
+    email: text(coachee.email),
+    phone: text(coachee.phone),
+    level: text(coachee.referee_level),
+    stage: /^\d$/.test(stage) ? stage : '',
+  };
+}
+
+export type RegisterWrite =
+  | { kind: 'none' }
+  | { kind: 'invalid'; error: string }
+  | { kind: 'create'; fields: AnyRecord }
+  | { kind: 'update'; id: string; fields: AnyRecord };
+
+/**
+ * What saving a coachee row with the number `sv` writes to the register
+ * (Luca, 27.10.2026: a new referee's number had to be put into Postgres by
+ * hand, because the register only ever changed at an import of the SVRZ
+ * list). A number the register lacks becomes a hand entry made from the
+ * coachee; a hand entry follows the coachee's name, Niveau and contact
+ * (what the coachee row fills in — an empty field erases nothing); an
+ * imported row is left as SVRZ sent it. A number is digits only — the one
+ * check a typo still has to pass, now that the number need not be in the
+ * register already.
+ */
+export function planRegisterWrite(sv: unknown, coachee: AnyRecord, register: AnyRecord[], now: string): RegisterWrite {
+  const number = text(sv);
+  if (!number) return { kind: 'none' };
+  const row = register.find((r) => text(r.sv_number) === number);
+  const fields = registerFieldsFromCoachee(coachee);
+  if (!row) {
+    if (!SV_NUMBER_RE.test(number)) {
+      return { kind: 'invalid', error: say(`„${number}" ist keine SV-Nr. — eine SV-Nr. besteht nur aus Ziffern.`, `"${number}" is not an SV no. — an SV no. is digits only.`) };
+    }
+    return { kind: 'create', fields: { ...fields, sv_number: number, license_active: true, imported_at: `${HAND_ENTRY_MARK}${now}` } };
+  }
+  if (!isHandEntry(row)) return { kind: 'none' };
+  // What the coachee says, never what it leaves out: last season's row of the
+  // same referee, with no Niveau or phone on it, must not blank this season's.
+  const changed = Object.entries(fields).filter(([key, value]) => text(value) !== '' && text(row[key]) !== text(value));
+  return changed.length ? { kind: 'update', id: String(row.id), fields: Object.fromEntries(changed) } : { kind: 'none' };
+}
+
+/**
+ * The hand entry that goes when the coachee row `rowId` lets go of `sv` —
+ * deleted, or linked to another number — and no other row, of any season,
+ * still holds it: a number typed for a row that was a mistake must not stay
+ * behind as a referee nobody is. Its register id, or '' when it stays (an
+ * imported row always does: it is a licence, not a coachee).
+ */
+export function orphanedHandEntry(sv: unknown, rowId: string, register: AnyRecord[], coachees: AnyRecord[]): string {
+  const number = text(sv);
+  if (!number) return '';
+  const row = register.find((r) => text(r.sv_number) === number);
+  if (!row || !isHandEntry(row)) return '';
+  if (coachees.some((c) => String(c.id) !== rowId && text(c.referee_id) === number)) return '';
+  return String(row.id);
 }
 
 /**

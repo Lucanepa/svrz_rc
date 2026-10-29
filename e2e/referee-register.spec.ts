@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as XLSX from 'xlsx';
 import { stubSignedInApp } from './support/app';
-import { refereeLinkProblem, planRefereeIdBackfill, planCoacheeLinks } from '../server/dataHygiene';
+import { refereeLinkProblem, planRefereeIdBackfill, planCoacheeLinks, planRegisterWrite, orphanedHandEntry, HAND_ENTRY_MARK } from '../server/dataHygiene';
 import { registerNumbers } from '../server/coacheeIndex';
 
 // The referee register: the SVRZ "Schiedsrichter verwalten" export, read for
@@ -180,8 +180,42 @@ test.describe('the SV-Nr. field on a coachee', () => {
 
     const field = row.getByLabel(/^(SV-Nummer|SV number)$/);
     await field.fill('302199');
-    await expect(page.getByText(/Ist die Person neu, zuerst die aktuelle SVRZ-Liste importieren|If the person is new, import the current SVRZ list first/)).toBeVisible();
+    // A full number the register lacks is offered as a new entry instead.
+    await expect(page.getByTestId('picker-offer')).toBeVisible();
     await expect(page.locator('#coachee-sv-c2 ~ span')).toHaveText(/Nicht im Register|Not in the register/);
+  });
+
+  // 27.10.2026: a new referee's number had to go into Postgres by hand. Now
+  // the field offers it as a new register entry, and the save writes it.
+  test('a number the register lacks is offered as a new entry; picked, the save sends it and the register is read again', async ({ page }) => {
+    await openCoacheeTab(page);
+    const bodies = await stubSave(page, 'c2', { json: { id: 'c2' } });
+    let registerReads = 0;
+    page.on('request', (r) => { if (r.method() === 'GET' && new URL(r.url()).pathname === '/api/admin/referees') registerReads += 1; });
+    await editRow(page, 'Mueller, Jürg');
+    const field = page.locator('#coachee-sv-c2');
+    // A number the register holds is a pick, not an offer.
+    await field.fill('90004');
+    await expect(page.getByTestId('picker-offer')).toHaveCount(0);
+    await field.fill('302199');
+    const offer = page.getByTestId('picker-offer');
+    await expect(offer).toHaveText(/302199 neu ins Register aufnehmen|Add 302199 to the register/);
+    await offer.click();
+    await expect(field).toHaveValue('302199');
+    await expect(page.locator('#coachee-sv-c2 ~ span')).toHaveText(/SV-Nr\. 302199 — neu|SV no\. 302199 — new/);
+    const before = registerReads;
+    await saveRow(page, 'coachee-sv-c2').click();
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0].referee_id).toBe('302199');
+    await expect.poll(() => registerReads).toBeGreaterThan(before);
+  });
+
+  test('a name is never offered as a new entry: only a number is', async ({ page }) => {
+    await openCoacheeTab(page);
+    await editRow(page, 'Mueller, Jürg');
+    await page.locator('#coachee-sv-c2').fill('Aldo Neu');
+    await expect(page.getByTestId('picker-offer')).toHaveCount(0);
+    await expect(page.getByText(/eintippen und „ins Register aufnehmen" wählen|type their SV no\. and choose "add to the register"/)).toBeVisible();
   });
 
   test('clearing the field unlinks: the save sends an empty number', async ({ page }) => {
@@ -485,5 +519,54 @@ test.describe('planRefereeIdBackfill — which game slots get a number', () => {
       { id: 'g1', first_referee: 'Gast Ohne Akte', first_referee_id: '', second_referee: 'Rita Zwahlen', second_referee_id: '' },
     ], numbersFor);
     expect(plan.patches).toEqual([{ id: 'g1', patch: { second_referee_id: '90003' } }]);
+  });
+});
+
+test.describe('the register follows the coachees (hand entries)', () => {
+  const NOW = '2026-10-27T14:00:00.000Z';
+  const official = { id: 'r1', sv_number: '90003', full_name: 'Rita Zwahlen', level: 'N4', imported_at: '2026-08-27T13:00:08.623Z' };
+  const hand = { id: 'r2', sv_number: '302199', first_name: 'Aldo', last_name: 'Neu', full_name: 'Aldo Neu', level: 'N4', stage: '1', email: '', phone: '', imported_at: `${HAND_ENTRY_MARK}2026-10-27T13:00:00.000Z` };
+  const register = [official, hand];
+  const coachee = { first_name: 'Bea', last_name: 'Beispiel', full_name: 'Bea Beispiel', referee_level: 'N3', stage: '2', email: 'bea@example.ch', phone: '079' };
+
+  test('a number the register lacks becomes a hand entry made from the coachee', () => {
+    const plan = planRegisterWrite('412345', coachee, register, NOW);
+    expect(plan).toEqual({
+      kind: 'create',
+      fields: {
+        sv_number: '412345', first_name: 'Bea', last_name: 'Beispiel', full_name: 'Bea Beispiel',
+        email: 'bea@example.ch', phone: '079', level: 'N3', stage: '2',
+        license_active: true, imported_at: `${HAND_ENTRY_MARK}${NOW}`,
+      },
+    });
+  });
+
+  test('what is no SV-Nr. is refused, and no number writes nothing', () => {
+    expect(planRegisterWrite('41a345', coachee, register, NOW).kind).toBe('invalid');
+    expect(planRegisterWrite('12', coachee, register, NOW).kind).toBe('invalid');
+    expect(planRegisterWrite('', coachee, register, NOW)).toEqual({ kind: 'none' });
+  });
+
+  test('an imported row stays as SVRZ sent it; a hand entry follows its coachee', () => {
+    expect(planRegisterWrite('90003', coachee, register, NOW)).toEqual({ kind: 'none' });
+    const plan = planRegisterWrite('302199', { ...coachee, first_name: 'Aldo', last_name: 'Neu', full_name: 'Aldo Neu', referee_level: 'N4', stage: '1' }, register, NOW);
+    expect(plan).toEqual({ kind: 'update', id: 'r2', fields: { email: 'bea@example.ch', phone: '079' } });
+    // Nothing changed: nothing written.
+    expect(planRegisterWrite('302199', { first_name: 'Aldo', last_name: 'Neu', full_name: 'Aldo Neu', referee_level: 'N4', stage: '1' }, register, NOW)).toEqual({ kind: 'none' });
+    // A sparser row of the same referee (another season) fills in, never blanks.
+    expect(planRegisterWrite('302199', { first_name: 'Aldo', last_name: 'Neu', full_name: 'Aldo Neu' }, register, NOW)).toEqual({ kind: 'none' });
+    // A word in the coachee's stage (older rows) is no Niveau stage.
+    const word = planRegisterWrite('555555', { ...coachee, stage: 'active' }, register, NOW);
+    expect(word.kind === 'create' && word.fields.stage).toBe('');
+  });
+
+  test('a hand entry goes with the last coachee row on it; an imported row never does', () => {
+    const rows = [{ id: 'c1', referee_id: '90003' }, { id: 'c9', referee_id: '302199' }];
+    expect(orphanedHandEntry('302199', 'c9', register, rows)).toBe('r2');
+    // Another row (another season, say) still holds it.
+    expect(orphanedHandEntry('302199', 'c9', register, [...rows, { id: 'c10', referee_id: '302199' }])).toBe('');
+    expect(orphanedHandEntry('90003', 'c1', register, rows)).toBe('');
+    expect(orphanedHandEntry('', 'c1', register, rows)).toBe('');
+    expect(orphanedHandEntry('777777', 'c1', register, rows)).toBe('');
   });
 });

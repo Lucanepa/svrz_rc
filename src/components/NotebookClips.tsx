@@ -438,6 +438,54 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
       .then((b) => setMemoryUrl(URL.createObjectURL(new Blob([b], { type: 'video/mp4' }))))
       .catch((err) => clientLog.warn('clips.play.fail', 'clip video could not be read', { error: String(err).slice(0, 200) }));
   };
+  // The first evening's clips showed their first frame and stopped, with no
+  // error (30.10.2026). Two ways that happens, both handled here and both
+  // logged: the webview refusing to start a video with sound by itself
+  // (then it starts muted, the controls can turn the sound on), and the
+  // stream from the folder stalling (then the file is read into memory,
+  // which the small copy makes cheap, and played from there).
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const stallTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toMemory = (why: string) => {
+    if (memoryUrl || !clip.file?.path) return;
+    const from = path || clip.file.proxyPath || clip.file.path;
+    clientLog.info('clips.play.memory', 'clip read into memory', { why, source: from === clip.file.proxyPath ? 'proxy' : 'original' });
+    void fetch(clipFileUrl(from))
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
+      .then((b) => setMemoryUrl(URL.createObjectURL(new Blob([b], { type: 'video/mp4' }))))
+      .catch((err) => clientLog.warn('clips.play.fail', 'clip video could not be read', { error: String(err).slice(0, 200) }));
+  };
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const say = (evt: string) => clientLog.info('clips.play', evt, {
+      t: Math.round(v.currentTime * 100) / 100, d: Number.isFinite(v.duration) ? Math.round(v.duration * 100) / 100 : null,
+      ready: v.readyState, network: v.networkState, paused: v.paused, muted: v.muted,
+      source: memoryUrl ? 'memory' : path ? (path === clip.file?.proxyPath ? 'proxy' : 'original') : 'blob',
+    });
+    const clearStall = () => { if (stallTimer.current) { clearTimeout(stallTimer.current); stallTimer.current = null; } };
+    const onStall = (evt: string) => () => {
+      say(evt);
+      if (v.ended || v.paused || stallTimer.current) return;
+      stallTimer.current = setTimeout(() => { stallTimer.current = null; if (!v.ended && v.readyState < 3) toMemory(evt); }, 3_000);
+    };
+    const handlers: [string, () => void][] = [
+      ['loadeddata', () => say('loadeddata')],
+      ['playing', () => { clearStall(); say('playing'); }],
+      ['pause', () => say('pause')],
+      ['ended', () => { clearStall(); say('ended'); }],
+      ['waiting', onStall('waiting')],
+      ['stalled', onStall('stalled')],
+    ];
+    for (const [evt, fn] of handlers) v.addEventListener(evt, fn);
+    // Started by hand of the code, so a refusal is seen and answered.
+    v.play().catch((err: unknown) => {
+      say(`play refused: ${(err as { name?: string })?.name || err}`);
+      if ((err as { name?: string })?.name === 'NotAllowedError') { v.muted = true; void v.play().catch(() => undefined); }
+    });
+    return () => { clearStall(); for (const [evt, fn] of handlers) v.removeEventListener(evt, fn); };
+    // The listeners belong to this source; `url` names it.
+  }, [url]);
   const [title, setTitle] = useState(clip.title || '');
   // Escape closes the clip, not the whole notebook (App.tsx closes the sheet
   // on a window-level Escape; capture runs first).
@@ -478,9 +526,9 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
       {url ? (
         <video
           key={url}
+          ref={videoRef}
           src={url}
           controls
-          autoPlay
           playsInline
           onError={onVideoError}
           className="w-full max-w-4xl max-h-[70vh] rounded-lg bg-black"

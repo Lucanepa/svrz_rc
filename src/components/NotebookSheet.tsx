@@ -39,6 +39,7 @@ import { confirmDialog, toast } from './ui';
 import AppSpinner from './AppSpinner';
 import StaleBuildNotice from './StaleBuildNotice';
 import NoteTimes from './NoteTimes';
+import { CameraButton, ClipStrip, cameraSupported, useClips } from './NotebookClips';
 import { importFresh } from '../lib/freshImport';
 import { PEN_TRAILING_MS } from '../lib/inkInput';
 import { WHOLE_PAGE_SNAP } from '../lib/inkView';
@@ -473,6 +474,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
 
   const currentText = current ? current.text : '';
   const currentExtra = current ? current.extra : undefined;
+  // The camera's clips, on this device only. Once the pages are known, a clip
+  // whose page is gone goes too.
+  const clips = useClips(ownerId, status.loaded ? pages.map((p) => p.pageId) : null);
+  const [canFilm] = useState(cameraSupported);
   const times = useMemo(() => lineTimes(currentText, currentExtra), [currentText, currentExtra]);
   /** The evening in the order it happens. A coach taking notes through a match
    *  writes the same handful of headings every time and writes them badly with
@@ -508,6 +513,22 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     }
     const plain = richToPlain(currentText);
     handleText(currentText ? `${currentText.replace(/\s+$/, '')}${plain ? '\n' : ''}${stamp}` : stamp);
+  };
+  /** A clip's line, where the coach is writing — like the time stamp. `make`
+   *  is given the page on screen (null: not written yet) so the clip can be
+   *  numbered on it; the id returned is the page the line went onto, which
+   *  the line itself made when there was none. */
+  const insertLine = (make: (pageIdBefore: string | null) => string): string | null => {
+    const before = (current || madePage.current)?.pageId ?? null;
+    const text = make(before);
+    const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
+    if (surface && document.activeElement === surface) {
+      document.execCommand('insertText', false, text);
+    } else {
+      const plain = richToPlain(currentText);
+      handleText(currentText ? `${currentText.replace(/\s+$/, '')}${plain ? '\n' : ''}${text}` : text);
+    }
+    return (current || madePage.current)?.pageId ?? null;
   };
   const format = (command: string, value?: string) => {
     const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
@@ -1046,8 +1067,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       >
                         <Plus size={12} className="shrink-0" />{tp.padSection}
                       </button>
+                      {canFilm && <CameraButton tp={tp} ownerId={ownerId} clips={clips} insertLine={insertLine} />}
                     </RichToolbar>
                   </div>
+                  <ClipStrip tp={tp} pageId={current ? current.pageId : null} clips={clips} />
                   {sectionMenu && (
                     <>
                       {/* Anywhere else closes it, including the page itself. */}

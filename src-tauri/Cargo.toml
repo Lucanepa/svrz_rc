@@ -21,6 +21,9 @@ serde = { version = "1.0", features = ["derive"] }
 tauri = { version = "2.11.6", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
+# Bluetooth for the notebook's camera (an Osmo Action): btleplug on the
+# desktop, its own backend on Android. The webviews have no Web Bluetooth.
+tauri-plugin-blec = "0.18"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"

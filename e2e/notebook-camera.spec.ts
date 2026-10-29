@@ -1,4 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { openOptions, stubSignedInApp } from './support/app';
 
 /**
@@ -241,6 +244,40 @@ test.describe('The notebook films with an Osmo', () => {
     await page.keyboard.type('mail@x');
     await expect(menu).toHaveCount(0);
     await expect.poll(() => pageBox(page).evaluate((el) => (el as HTMLElement).innerText)).toMatch(/mail@x\s*$/);
+  });
+
+  test('a clip that opens on a still picture starts where it moves, and can be watched from the start', async ({ page }) => {
+    // e2e/fixtures/still-start.webm: two seconds of one frame, then three of motion.
+    const video = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'still-start.webm'));
+    const at = await page.evaluate(() => Date.now());
+    await page.addInitScript((at) => {
+      const open = indexedDB.open('svrz-clips', 1);
+      open.onupgradeneeded = () => open.result.createObjectStore('clips', { keyPath: 'id' });
+      open.onsuccess = () => {
+        const tx = open.result.transaction('clips', 'readwrite');
+        tx.objectStore('clips').put({ id: 'rc1|clip-still', ownerId: 'rc1', clipId: 'clip-still', pageId: 'page-x', n: 1, at, seconds: 10, stoppedAt: at + 1_500, camera: 'Osmo', file: null, createdAt: Date.now() - 5_000 });
+        tx.oncomplete = () => open.result.close();
+      };
+    }, at || Date.now());
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ }).click();
+    await pageBox(page).click();
+    await page.keyboard.type('@');
+    await sheet(page).getByTestId('pad-mention').getByRole('menuitem').first().click();
+    const d = new Date(Date.now() - 12_000);
+    const p = (x: number, w = 2) => String(x).padStart(w, '0');
+    const name = `DJI_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_0007_D.MP4`;
+    await sheet(page).getByTestId('clips-file').setInputFiles([{ name, mimeType: 'video/mp4', buffer: video }]);
+    await expect(page.getByText(/^(1 von 1 Clips zugeordnet|1 of 1 clips matched)$/)).toBeVisible();
+    await sheet(page).getByRole('button', { name: /^(Clip 1 abspielen|Play clip 1)$/ }).click();
+    const player = page.getByTestId('clip-player');
+    const fromStart = player.getByTestId('clip-from-start');
+    await expect(fromStart).toHaveText(/^(Standbild am Anfang übersprungen|Still picture at the start skipped) \(1\.[4-8] s\)/, { timeout: 15_000 });
+    await expect.poll(() => player.getByTestId('clip-video').evaluate((v) => (v as HTMLVideoElement).currentTime), { timeout: 10_000 }).toBeGreaterThan(1.3);
+    await fromStart.click();
+    await expect.poll(() => player.getByTestId('clip-video').evaluate((v) => (v as HTMLVideoElement).currentTime)).toBeLessThan(1.3);
+    await expect(fromStart).toHaveText(/^(Standbild am Anfang überspringen|Skip the still picture at the start)/);
   });
 
   test('the camera is off until the options turn it on', async ({ page }) => {

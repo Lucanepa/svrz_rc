@@ -402,88 +402,133 @@ export function clipFileName(c: Clip): string {
   return `Clip ${c.n} ${when}${name ? ` - ${name}` : ''}.${ext}`;
 }
 
+/**
+ * Where a clip's picture starts moving, in seconds: the camera's Pre-Rec
+ * files open on a still picture for a second or two (the first card,
+ * 30.10.2026: 1.5-2.8 s of one frame, the same in the 720p copy). A hidden
+ * video is stepped through the first seconds and each frame compared, small,
+ * with the first; 0 when it moves at once or cannot be read.
+ */
+async function stillStart(url: string): Promise<number> {
+  const v = document.createElement('video');
+  v.muted = true;
+  v.preload = 'auto';
+  v.src = url;
+  const canvas = document.createElement('canvas');
+  canvas.width = 48;
+  canvas.height = 27;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return 0;
+  const once = (evt: string) => new Promise<void>((resolve, reject) => {
+    const ok = () => { v.removeEventListener(evt, ok); v.removeEventListener('error', bad); resolve(); };
+    const bad = () => { v.removeEventListener(evt, ok); v.removeEventListener('error', bad); reject(new Error('video')); };
+    v.addEventListener(evt, ok);
+    v.addEventListener('error', bad);
+  });
+  const frame = (): Uint8ClampedArray => { ctx.drawImage(v, 0, 0, 48, 27); return ctx.getImageData(0, 0, 48, 27).data; };
+  try {
+    await once('loadeddata');
+    const first = frame();
+    const until = Math.min(5, (Number.isFinite(v.duration) ? v.duration : 5) - 1);
+    for (let t = 0.2; t <= until; t += 0.2) {
+      v.currentTime = t;
+      await once('seeked');
+      const d = frame();
+      let diff = 0;
+      for (let i = 0; i < d.length; i += 4) diff += Math.abs(d[i] - first[i]) + Math.abs(d[i + 1] - first[i + 1]) + Math.abs(d[i + 2] - first[i + 2]);
+      // Average change per pixel and channel: sensor noise stays well under 2.
+      if (diff / (48 * 27 * 3) > 2.5) return t > 0.6 ? Math.max(0, t - 0.4) : 0;
+    }
+    return 0;
+  } catch {
+    return 0;
+  } finally {
+    v.removeAttribute('src');
+    v.load();
+  }
+}
+
 function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lang: 'DE' | 'EN'; clip: Clip; onPickFiles: () => void; onClose: () => void }) {
-  const blob = clip.file?.blob || null;
-  const blobUrl = useMemo(() => (blob ? URL.createObjectURL(blob) : ''), [blob]);
-  useEffect(() => () => { if (blobUrl) URL.revokeObjectURL(blobUrl); }, [blobUrl]);
-  // A file in the installed app's folder plays from there. The camera's
-  // small copy (720p H.264) first when there is one: the original is 2.7K
-  // 10-bit H.265 at 60 fps (the first card, 29.10.2026), a load on a laptop
-  // decoding it in software, and more than a referee's position needs.
-  // "Original" switches; a source that fails falls through to the other.
-  const hasProxy = !!clip.file?.proxyPath;
-  const [original, setOriginal] = useState(!hasProxy);
-  // Last resort, when the webview will not stream from the folder at all:
-  // the file read whole and played from memory.
-  const [memoryUrl, setMemoryUrl] = useState('');
-  useEffect(() => () => { if (memoryUrl) URL.revokeObjectURL(memoryUrl); }, [memoryUrl]);
-  const [tried, setTried] = useState<string[]>([]);
-  const path = clip.file?.path ? (original || !hasProxy ? clip.file.path : clip.file.proxyPath!) : '';
-  const url = memoryUrl || (path ? clipFileUrl(path) : blobUrl);
-  const onVideoError = (e: SyntheticEvent<HTMLVideoElement>) => {
-    const v = e.currentTarget;
-    // What the webview says, so a coach's "it does not play" is answerable.
-    clientLog.warn('clips.play.fail', 'clip video does not play', {
-      source: memoryUrl ? 'memory' : path ? (path === clip.file?.proxyPath ? 'proxy' : 'original') : 'blob',
-      code: v.error?.code ?? null, message: (v.error?.message || '').slice(0, 200), network: v.networkState, ready: v.readyState,
-      type: clip.file?.type || '', size: clip.file?.size || 0,
-    });
-    if (!clip.file?.path || memoryUrl) return;
-    const next = [...tried, path];
-    setTried(next);
-    const other = path === clip.file.path ? clip.file.proxyPath : clip.file.path;
-    if (other && !next.includes(other)) { setOriginal(other === clip.file.path); return; }
-    void fetch(clipFileUrl(clip.file.proxyPath || clip.file.path))
-      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
-      .then((b) => setMemoryUrl(URL.createObjectURL(new Blob([b], { type: 'video/mp4' }))))
-      .catch((err) => clientLog.warn('clips.play.fail', 'clip video could not be read', { error: String(err).slice(0, 200) }));
-  };
-  // The first evening's clips showed their first frame and stopped, with no
-  // error (30.10.2026). Two ways that happens, both handled here and both
-  // logged: the webview refusing to start a video with sound by itself
-  // (then it starts muted, the controls can turn the sound on), and the
-  // stream from the folder stalling (then the file is read into memory,
-  // which the small copy makes cheap, and played from there).
+  const file = clip.file;
+  const hasProxy = !!file?.proxyPath;
+  // The original by default (2.7K on the first card; the 720p copy looked
+  // "very bad", 30.10.2026). "720p" switches to the camera's small copy, and
+  // a failing original falls back to it by itself.
+  const [light, setLight] = useState(false);
+  // What the <video> plays. In the installed app the file is read into
+  // memory first: WebKitGTK will not play from the app's own URL scheme
+  // (NotSupportedError at once, 30.10.2026), while a blob plays.
+  const [url, setUrl] = useState('');
+  const [loadFailed, setLoadFailed] = useState(false);
+  useEffect(() => {
+    if (!file) return undefined;
+    let made = '';
+    let alive = true;
+    setUrl('');
+    setLoadFailed(false);
+    if (file.blob) {
+      made = URL.createObjectURL(file.blob);
+      setUrl(made);
+    } else if (file.path) {
+      const from = light && file.proxyPath ? file.proxyPath : file.path;
+      fetch(clipFileUrl(from))
+        .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
+        .then((b) => { if (!alive) return; made = URL.createObjectURL(new Blob([b], { type: 'video/mp4' })); setUrl(made); })
+        .catch((err) => {
+          clientLog.warn('clips.play.fail', 'clip video could not be read', { light, error: String(err).slice(0, 200) });
+          if (alive && !light && file.proxyPath) setLight(true); else if (alive) setLoadFailed(true);
+        });
+    }
+    return () => { alive = false; if (made) URL.revokeObjectURL(made); };
+  }, [file, light]);
+
+  // Where the picture starts moving: read once per clip, on the small copy
+  // when there is one (cheap to step through), else on what plays.
+  const [startAt, setStartAt] = useState(0);
+  const [fromStart, setFromStart] = useState(false);
+  useEffect(() => {
+    if (!file) return undefined;
+    let alive = true;
+    let made = '';
+    const run = (u: string) => stillStart(u).then((t) => { if (alive) setStartAt(t); });
+    if (file.blob) { made = URL.createObjectURL(file.blob); void run(made); }
+    else if (file.path) {
+      void fetch(clipFileUrl(file.proxyPath || file.path)).then((r) => r.blob())
+        .then((b) => { if (!alive) return; made = URL.createObjectURL(new Blob([b], { type: 'video/mp4' })); return run(made); })
+        .catch(() => undefined);
+    }
+    return () => { alive = false; if (made) URL.revokeObjectURL(made); };
+  }, [file]);
+
   const videoRef = useRef<HTMLVideoElement>(null);
-  const stallTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const toMemory = (why: string) => {
-    if (memoryUrl || !clip.file?.path) return;
-    const from = path || clip.file.proxyPath || clip.file.path;
-    clientLog.info('clips.play.memory', 'clip read into memory', { why, source: from === clip.file.proxyPath ? 'proxy' : 'original' });
-    void fetch(clipFileUrl(from))
-      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
-      .then((b) => setMemoryUrl(URL.createObjectURL(new Blob([b], { type: 'video/mp4' }))))
-      .catch((err) => clientLog.warn('clips.play.fail', 'clip video could not be read', { error: String(err).slice(0, 200) }));
-  };
+  // The skip lands whenever it is known: before the play, or a moment into it.
   useEffect(() => {
     const v = videoRef.current;
-    if (!v) return;
+    if (!v || fromStart || startAt <= 0) return;
+    const jump = () => { if (v.currentTime < startAt) v.currentTime = startAt; };
+    if (v.readyState >= 1) jump(); else v.addEventListener('loadedmetadata', jump, { once: true });
+    return () => v.removeEventListener('loadedmetadata', jump);
+  }, [url, startAt, fromStart]);
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !url) return;
     const say = (evt: string) => clientLog.info('clips.play', evt, {
       t: Math.round(v.currentTime * 100) / 100, d: Number.isFinite(v.duration) ? Math.round(v.duration * 100) / 100 : null,
-      ready: v.readyState, network: v.networkState, paused: v.paused, muted: v.muted,
-      source: memoryUrl ? 'memory' : path ? (path === clip.file?.proxyPath ? 'proxy' : 'original') : 'blob',
+      ready: v.readyState, network: v.networkState, light, skip: startAt,
     });
-    const clearStall = () => { if (stallTimer.current) { clearTimeout(stallTimer.current); stallTimer.current = null; } };
-    const onStall = (evt: string) => () => {
-      say(evt);
-      if (v.ended || v.paused || stallTimer.current) return;
-      stallTimer.current = setTimeout(() => { stallTimer.current = null; if (!v.ended && v.readyState < 3) toMemory(evt); }, 3_000);
+    const onPlaying = () => say('playing');
+    const onError = () => {
+      clientLog.warn('clips.play.fail', 'clip video does not play', { light, err: v.error?.code ?? null, message: (v.error?.message || '').slice(0, 200) });
+      if (!light && hasProxy) setLight(true);
     };
-    const handlers: [string, () => void][] = [
-      ['loadeddata', () => say('loadeddata')],
-      ['playing', () => { clearStall(); say('playing'); }],
-      ['pause', () => say('pause')],
-      ['ended', () => { clearStall(); say('ended'); }],
-      ['waiting', onStall('waiting')],
-      ['stalled', onStall('stalled')],
-    ];
-    for (const [evt, fn] of handlers) v.addEventListener(evt, fn);
-    // Started by hand of the code, so a refusal is seen and answered.
+    v.addEventListener('playing', onPlaying);
+    v.addEventListener('error', onError);
+    // Started by the code, so a refusal is seen: no sound allowed, then muted.
     v.play().catch((err: unknown) => {
       say(`play refused: ${(err as { name?: string })?.name || err}`);
       if ((err as { name?: string })?.name === 'NotAllowedError') { v.muted = true; void v.play().catch(() => undefined); }
     });
-    return () => { clearStall(); for (const [evt, fn] of handlers) v.removeEventListener(evt, fn); };
+    return () => { v.removeEventListener('playing', onPlaying); v.removeEventListener('error', onError); };
     // The listeners belong to this source; `url` names it.
   }, [url]);
   const [title, setTitle] = useState(clip.title || '');
@@ -530,9 +575,13 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
           src={url}
           controls
           playsInline
-          onError={onVideoError}
+          data-testid="clip-video"
           className="w-full max-w-4xl max-h-[70vh] rounded-lg bg-black"
         />
+      ) : file && !loadFailed ? (
+        <div className="w-full max-w-4xl aspect-video max-h-[70vh] rounded-lg bg-white/5 flex items-center justify-center text-white/70">
+          <LoaderCircle size={28} className="animate-spin" />
+        </div>
       ) : (
         <div className="w-full max-w-4xl aspect-video max-h-[70vh] rounded-lg bg-white/5 flex flex-col items-center justify-center gap-3 text-white/80 text-sm">
           <Film size={28} className="opacity-60" />
@@ -543,18 +592,35 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
         </div>
       )}
       <div className="w-full max-w-4xl flex items-center justify-between gap-2 mt-2 text-sm">
-        <span className="text-white/60 text-xs">{fill(tp.clipPre, { s: clip.seconds })}</span>
-        <span className="flex items-center gap-2">
-          {hasProxy && !memoryUrl && (
+        <span className="text-white/60 text-xs flex items-center gap-2 min-w-0">
+          <span className="truncate">{fill(tp.clipPre, { s: clip.seconds })}</span>
+          {startAt > 0 && (
             <button
               type="button"
-              onClick={() => { setTried([]); setOriginal((o) => !o); }}
-              aria-pressed={original}
-              title={tp.clipOriginalTitle}
-              data-testid="clip-original"
-              className={cn('h-9 px-3 inline-flex items-center rounded-lg text-white', original ? 'bg-white/30' : 'bg-white/10 hover:bg-white/20')}
+              onClick={() => {
+                const next = !fromStart;
+                setFromStart(next);
+                const v = videoRef.current;
+                if (v) { v.currentTime = next ? 0 : startAt; void v.play().catch(() => undefined); }
+              }}
+              data-testid="clip-from-start"
+              className="shrink-0 underline decoration-white/30 underline-offset-2 hover:text-white"
             >
-              {tp.clipOriginal}
+              {fromStart ? fill(tp.clipSkipStill, { s: startAt.toFixed(1) }) : fill(tp.clipFromStart, { s: startAt.toFixed(1) })}
+            </button>
+          )}
+        </span>
+        <span className="flex items-center gap-2">
+          {hasProxy && (
+            <button
+              type="button"
+              onClick={() => setLight((l) => !l)}
+              aria-pressed={light}
+              title={tp.clipLightTitle}
+              data-testid="clip-light"
+              className={cn('h-9 px-3 inline-flex items-center rounded-lg text-white', light ? 'bg-white/30' : 'bg-white/10 hover:bg-white/20')}
+            >
+              720p
             </button>
           )}
           {clip.file?.path ? (

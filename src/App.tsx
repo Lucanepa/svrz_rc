@@ -97,6 +97,7 @@ import { importFresh } from './lib/freshImport';
 import StaleBuildNotice from './components/StaleBuildNotice';
 import { NotebookPen, BarChart3, Signature } from 'lucide-react';
 import NotebookSheet, { type InsertContext } from './components/NotebookSheet';
+import { CameraOption, cameraSupported } from './components/NotebookClips';
 import { RichSurface, RichToolbar, RichView, appendBullet, appendCheck } from './components/RichText';
 import * as notebookSync from './lib/notebookSync';
 import type { PadSyncStatus } from './lib/notebookSync';
@@ -7161,6 +7162,7 @@ export default function App() {
                 </button>
               )}
               {rcAuth.rcName && !isDemoMode() && <PushOption lang={formData.lang} />}
+              {rcAuth.rcName && !isDemoMode() && cameraSupported() && <CameraOption lang={formData.lang} />}
               {rcAuth.rcName && !isDemoMode() && (
                 <button
                   type="button"

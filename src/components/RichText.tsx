@@ -121,7 +121,48 @@ function markEmpty(el: HTMLElement): void {
 // puts the caret at position zero, which is the classic contenteditable bug. The
 // DOM is authoritative while the field has focus, and the incoming value is only
 // applied when it differs from what is already rendered.
-export function RichSurface({ value, onChange, placeholder, className, style, autoFocus, initialCaret, onFocus }: {
+/** The look of an atom (see wrapAtoms): a chip in the line. */
+const ATOM_CLASS = 'rich-atom rounded-md bg-red-50 px-1 text-red-800 cursor-pointer whitespace-nowrap';
+
+/**
+ * Wraps every match of `pattern` in the surface's text into a span the caret
+ * cannot enter — a chip that typing cannot break and one Backspace takes
+ * whole. The span holds exactly the matched text and no style domToRich
+ * reads, so the stored value does not change: another device, an older app
+ * and the form all still see the plain text. Returns whether it wrapped any.
+ */
+function wrapAtoms(root: HTMLElement, pattern: RegExp): boolean {
+  const texts: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (!n.parentElement?.closest('[data-atom]')) texts.push(n as Text);
+  }
+  let wrapped = false;
+  for (const t of texts) {
+    const text = t.data;
+    const re = new RegExp(pattern.source, 'g');
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    for (let m = re.exec(text); m; m = re.exec(text)) {
+      if (!m[0]) { re.lastIndex += 1; continue; }
+      if (m.index > last) frag.append(text.slice(last, m.index));
+      const span = document.createElement('span');
+      span.contentEditable = 'false';
+      span.dataset.atom = '1';
+      span.className = ATOM_CLASS;
+      span.textContent = m[0];
+      frag.append(span);
+      last = m.index + m[0].length;
+    }
+    if (!last) continue;
+    if (last < text.length) frag.append(text.slice(last));
+    t.replaceWith(frag);
+    wrapped = true;
+  }
+  return wrapped;
+}
+
+export function RichSurface({ value, onChange, placeholder, className, style, autoFocus, initialCaret, onFocus, atoms, onAtom }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
@@ -132,6 +173,11 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
    *  surface was last on screen. Read once, at mount. */
   initialCaret?: [number, number] | null;
   onFocus?: () => void;
+  /** Text that is one piece: shown as a chip the caret cannot enter (the
+   *  notebook's clip lines). Stored as the plain text it is. */
+  atoms?: RegExp;
+  /** A tap on such a chip, with its text. */
+  onAtom?: (text: string) => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const caretAtMount = useRef(initialCaret);
@@ -174,8 +220,14 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
     // the browser normalises its own markup and would otherwise look changed
     // after every keystroke.
     if (domToRich(el) !== value) el.innerHTML = next;
+    if (atoms) {
+      // The caret is kept by its offset: wrapping replaces the text node it sits in.
+      const sel = window.getSelection();
+      const at = document.activeElement === el && sel && sel.rangeCount ? caretOffsets(el, sel.getRangeAt(0)) : null;
+      if (wrapAtoms(el, atoms) && at) setCaretOffsets(el, at);
+    }
     markEmpty(el);
-  }, [value]);
+  }, [value, atoms]);
   // Focused with the caret where it was left, or at the END of what is there:
   // focus() alone puts it in front of the first letter, and what was typed
   // next landed there. Here and not in the caller: StrictMode runs a new
@@ -244,6 +296,8 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
       // place, so nothing else in the text moves.
       onMouseDown={(e) => { if (boxAt(e.clientX, e.clientY)) e.preventDefault(); }}
       onClick={(e) => {
+        const atom = onAtom ? (e.target as HTMLElement).closest?.('[data-atom]') : null;
+        if (atom && onAtom) { onAtom(atom.textContent || ''); return; }
         const hit = boxAt(e.clientX, e.clientY);
         const el = ref.current;
         if (!hit || !el) return;

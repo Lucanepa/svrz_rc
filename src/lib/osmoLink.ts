@@ -119,14 +119,12 @@ async function openWebLink(device: WbDevice, events: LinkEvents): Promise<OsmoLi
 type Blec = typeof import('@mnlphlp/plugin-blec');
 const SCAN_MS = 8_000;
 
-/** Scans for a camera and takes the first one found: a coach has one camera.
- *  The one used last is taken when it is among them. */
-export async function findNativeCamera(lastKey?: string): Promise<Transport> {
-  const blec: Blec = await import('@mnlphlp/plugin-blec');
-  const state = await blec.getAdapterState().catch(() => 'Unknown');
-  if (state === 'Off') throw new OsmoError('bluetooth-off');
-  if (!(await blec.checkPermissions(true))) throw new OsmoError('permission');
-  const found = await new Promise<{ address: string; name: string } | null>((resolve) => {
+type Found = { address: string; name: string };
+
+/** One scan: the camera used last when it is there (by address, else by name),
+ *  else the nearest one; null when none answered within SCAN_MS. */
+async function scanOnce(blec: Blec, lastKey?: string, lastName?: string): Promise<Found | null> {
+  return new Promise<Found | null>((resolve) => {
     let done = false;
     const finish = (d: { address: string; name: string } | null) => {
       if (done) return;
@@ -139,17 +137,42 @@ export async function findNativeCamera(lastKey?: string): Promise<Transport> {
     void blec.startScan((devices) => {
       const cams = devices.filter((d) => isOsmoAdvert(d.manufacturerData) || d.services?.some((s) => s.toLowerCase() === uuid16(OSMO_SERVICE)));
       if (!cams.length) return;
-      const last = cams.find((d) => `native:${d.address}` === lastKey);
+      const last = cams.find((d) => `native:${d.address}` === lastKey) || (lastName ? cams.find((d) => d.name === lastName) : undefined);
+      // Asked for one camera (a reconnect): wait for it, do not take another.
+      if (lastName && !last) return;
       const pick = last || cams.slice().sort((a, b) => b.rssi - a.rssi)[0];
       finish({ address: pick.address, name: pick.name || 'Osmo' });
     }, SCAN_MS).catch(() => finish(null));
   });
+}
+
+/** Scans for a camera and takes the first one found: a coach has one camera.
+ *  The one used last is taken when it is among them. */
+export async function findNativeCamera(lastKey?: string): Promise<Transport> {
+  const blec: Blec = await import('@mnlphlp/plugin-blec');
+  const state = await blec.getAdapterState().catch(() => 'Unknown');
+  if (state === 'Off') throw new OsmoError('bluetooth-off');
+  if (!(await blec.checkPermissions(true))) throw new OsmoError('permission');
+  const found = await scanOnce(blec, lastKey);
   if (!found) throw new OsmoError('not-found');
-  return {
+  let address = found.address;
+  const transport: Transport = {
     name: found.name,
     key: `native:${found.address}`,
-    open: (events) => openNativeLink(blec, found.address, events),
+    open: async (events) => {
+      try {
+        return await openNativeLink(blec, address, events);
+      } catch (e) {
+        // Back from its menus, a camera can advertise under another address:
+        // look for it again by name before giving up on this try.
+        const again = await scanOnce(blec, undefined, found.name);
+        if (!again) throw e;
+        address = again.address;
+        return openNativeLink(blec, address, events);
+      }
+    },
   };
+  return transport;
 }
 
 async function openNativeLink(blec: Blec, address: string, events: LinkEvents): Promise<OsmoLink> {

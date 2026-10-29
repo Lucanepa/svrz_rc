@@ -20,6 +20,7 @@ import {
   recordPayload, retCode, subscribePayload, type OsmoFrame, type OsmoStatus,
 } from './osmoProtocol';
 import { OsmoError, type OsmoErrorCode, type OsmoLink, type Transport } from './osmoLink';
+import { clientLog } from './logger';
 
 export type CameraPhase = 'off' | 'connecting' | 'confirm' | 'ready' | 'reconnecting';
 export type CameraState = {
@@ -33,6 +34,10 @@ export type CameraState = {
   clip: { startedAt: number; seconds: number } | null;
   /** What last went wrong, for the sentence under the button. */
   error: OsmoErrorCode | null;
+  /** The camera's Pre-Rec length in seconds, 0 while not known. The protocol
+   *  has no setting to read: a clip's start says it (the recording clock
+   *  counts the buffered seconds), and it is kept per camera from then on. */
+  preSeconds: number;
 };
 
 const ID_KEY = 'svrz_osmo_id';
@@ -41,9 +46,14 @@ const HANDSHAKE_REPLY_MS = 3_000;
 /** The coach has to find the camera and tap it on a first pairing. */
 const HANDSHAKE_CONFIRM_MS = 60_000;
 const COMMAND_MS = 5_000;
-const RECONNECT_DELAYS = [1_500, 4_000, 10_000];
+/** A camera drops the link while its menus are open (Pre-Rec, settings):
+ *  keep trying, quickly at first, for as long as a coach would be in there. */
+const RECONNECT_DELAYS = [1_500, 3_000, 5_000];
+const RECONNECT_EVERY_MS = 5_000;
+const RECONNECT_FOR_MS = 10 * 60_000;
+const PRE_KEY = 'svrz_osmo_pre';
 
-const OFF: CameraState = { phase: 'off', name: '', code: 0, status: null, clip: null, error: null };
+const OFF: CameraState = { phase: 'off', name: '', code: 0, status: null, clip: null, error: null, preSeconds: 0 };
 let state: CameraState = OFF;
 const listeners = new Set<() => void>();
 
@@ -117,7 +127,18 @@ class Session {
     }
     if (f.cmdSet === CMD.status[0] && f.cmdId === CMD.status[1]) {
       const s = parseStatus(f.payload);
-      if (s) set({ status: s });
+      if (!s) return;
+      // Into the activity log when what the camera is doing changes — counts
+      // and modes only. What it reports while waiting in Pre-Rec is how the
+      // buffer's length might be read before the first clip.
+      const prev = state.status;
+      if (!prev || prev.cameraStatus !== s.cameraStatus || prev.mode !== s.mode || prev.powerMode !== s.powerMode) {
+        clientLog.info('osmo.status', 'camera status changed', { mode: s.mode, cameraStatus: s.cameraStatus, recordTime: s.recordTime, powerMode: s.powerMode, battery: s.battery, temperature: s.temperature });
+      }
+      // Waiting in Pre-Rec, the clock may count the buffer as it fills: its
+      // highest value is then the setting. A clip's own count overrides it.
+      if (isPreRecording(s) && s.recordTime > state.preSeconds && s.recordTime <= 600 && !preMeasured) set({ status: s, preSeconds: s.recordTime });
+      else set({ status: s });
       return;
     }
     if (f.cmdSet === CMD.connect[0] && f.cmdId === CMD.connect[1]) this.cameraConnect?.(f);
@@ -191,6 +212,8 @@ class Session {
 }
 
 let session: Session | null = null;
+/** The Pre-Rec length came from a clip on this connection: the standby clock no longer overrides it. */
+let preMeasured = false;
 /** A clip that was started and could not be stopped (the link dropped): it is
  *  stopped as soon as the camera is back. */
 let stopOwed = false;
@@ -205,7 +228,7 @@ async function openSession(s: Session, first: boolean): Promise<void> {
     // Only say "confirm on the camera" when it is visibly waiting for that.
     confirmTimer = setTimeout(() => { if (session === s) set({ phase: 'confirm', code }); }, first ? 600 : 3_000);
   }).finally(() => { if (confirmTimer) clearTimeout(confirmTimer); });
-  set({ phase: 'ready', error: null, code: 0 });
+  set({ phase: 'ready', error: null, code: 0, preSeconds: state.preSeconds || keptPre(s.transport.key) });
   if (stopOwed) {
     stopOwed = false;
     await s.send(CMD.record, recordPayload(false), CMD_TYPE.replyIfAny).catch(() => undefined);
@@ -215,30 +238,49 @@ async function openSession(s: Session, first: boolean): Promise<void> {
 /** Connects to a camera picked with pickWebCamera() or findNativeCamera(). */
 export async function connectCamera(transport: Transport): Promise<void> {
   await disconnectCamera();
+  preMeasured = false;
   const s = new Session(transport);
   session = s;
   set({ ...OFF, phase: 'connecting', name: transport.name });
+  const t0 = Date.now();
   try {
     await openSession(s, true);
+    clientLog.info('osmo.connected', 'camera connected', { ms: Date.now() - t0, known: pairedWith().includes(transport.key) });
   } catch (e) {
-    if (session === s) { session = null; await s.close().catch(() => undefined); set({ ...OFF, error: e instanceof OsmoError ? e.code : 'link' }); }
+    const code = e instanceof OsmoError ? e.code : 'link';
+    clientLog.warn('osmo.connect.fail', `camera connect failed: ${code}`, { code, ms: Date.now() - t0 });
+    if (session === s) { session = null; await s.close().catch(() => undefined); set({ ...OFF, error: code }); }
     throw e;
   }
 }
 
+function keptPre(key: string): number {
+  const all = readJson<Record<string, number>>(PRE_KEY, {});
+  return Number.isFinite(all[key]) ? all[key] : 0;
+}
+function keepPre(key: string, seconds: number): void {
+  const all = readJson<Record<string, number>>(PRE_KEY, {});
+  all[key] = seconds;
+  writeJson(PRE_KEY, all);
+}
+
 async function lost(s: Session): Promise<void> {
   note('link lost');
+  clientLog.info('osmo.lost', 'camera link lost', { recording: !!state.clip });
   if (state.clip) stopOwed = true;
   s.link = null;
   set({ phase: 'reconnecting', status: null, clip: null });
-  for (const wait of RECONNECT_DELAYS) {
-    await new Promise((r) => setTimeout(r, wait));
+  const until = Date.now() + RECONNECT_FOR_MS;
+  for (let attempt = 0; Date.now() < until; attempt += 1) {
+    await new Promise((r) => setTimeout(r, RECONNECT_DELAYS[attempt] ?? RECONNECT_EVERY_MS));
     if (session !== s || s.ended) return;
     try {
       await openSession(s, false);
+      clientLog.info('osmo.reconnected', 'camera back', { attempt: attempt + 1 });
       return;
     } catch { await s.link?.close().catch(() => undefined); s.link = null; }
   }
+  clientLog.warn('osmo.reconnect.fail', 'camera did not come back', {});
   if (session === s) { session = null; set({ ...OFF, error: 'link' }); }
 }
 
@@ -295,12 +337,18 @@ export async function saveClip(onSaved?: (tappedAt: number, preSeconds: number) 
     if (!started && !running) throw new OsmoError('record', 'no reply');
     // Seconds on the clock the moment it runs: the pre-recording it kept.
     const t = running && state.status ? state.status.recordTime : 0;
-    const preSeconds = t >= 1 && t <= 600 ? t : DEFAULT_PRE_SECONDS;
+    const measured = t >= 1 && t <= 600 ? t : 0;
+    const preSeconds = measured || state.preSeconds || DEFAULT_PRE_SECONDS;
+    if (measured) { preMeasured = true; keepPre(s.transport.key, measured); set({ preSeconds: measured }); }
+    clientLog.info('osmo.clip', 'clip saved', { recordTime: t, reply: !!started, ms: Date.now() - tappedAt });
     onSaved?.(tappedAt, preSeconds);
     await sleep(TAIL_MS);
     if (session !== s || !s.link) { stopOwed = true; throw new OsmoError('link'); }
     await s.send(CMD.record, recordPayload(false), CMD_TYPE.replyIfAny);
     return { tappedAt, preSeconds, stoppedAt: Date.now() };
+  } catch (e) {
+    clientLog.warn('osmo.clip.fail', `clip failed: ${e instanceof OsmoError ? e.code : 'link'}`, { code: e instanceof OsmoError ? e.code : 'link' });
+    throw e;
   } finally {
     if (session === s) set({ clip: null });
   }

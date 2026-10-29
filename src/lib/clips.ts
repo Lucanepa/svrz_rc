@@ -31,6 +31,8 @@ export type Clip = {
   stoppedAt: number;
   /** The camera's Bluetooth name. */
   camera: string;
+  /** The coach's own name for it, '' or absent when none. */
+  title?: string;
   file: ClipFile | null;
   createdAt: number;
 };
@@ -108,7 +110,8 @@ export const nextClipNumber = (clips: Clip[], pageId: string): number =>
 /** The line written into the page: plain text, so it reads the same on
  *  another device (which has no video) and in the form if it is imported. */
 export const clipLine = (n: number, at: number): string => `[Clip ${n} · ${clockLabel(at, { seconds: true })}]`;
-export const CLIP_LINE_RE = /\[Clip (\d+) · \d{2}:\d{2}(?::\d{2})?\]/g;
+/** A clip line in a page's text: one piece in the editor (RichSurface atoms). */
+export const CLIP_LINE_RE = /\[Clip (\d+) · \d{2}:\d{2}(?::\d{2})?\]/;
 
 /** The clips whose page is gone or whose week is up. `livePageIds` is the
  *  owner's live pages; only clips older than `graceMs` go for a missing page,

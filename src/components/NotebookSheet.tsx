@@ -39,7 +39,8 @@ import { confirmDialog, toast } from './ui';
 import AppSpinner from './AppSpinner';
 import StaleBuildNotice from './StaleBuildNotice';
 import NoteTimes from './NoteTimes';
-import { CameraButton, ClipStrip, cameraSupported, useClips } from './NotebookClips';
+import { CameraButton, ClipStrip, cameraSupported, openClipByNumber, useCameraOn, useClips } from './NotebookClips';
+import { CLIP_LINE_RE } from '../lib/clips';
 import { importFresh } from '../lib/freshImport';
 import { PEN_TRAILING_MS } from '../lib/inkInput';
 import { WHOLE_PAGE_SNAP } from '../lib/inkView';
@@ -477,7 +478,8 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   // The camera's clips, on this device only. Once the pages are known, a clip
   // whose page is gone goes too.
   const clips = useClips(ownerId, status.loaded ? pages.map((p) => p.pageId) : null);
-  const [canFilm] = useState(cameraSupported);
+  const [canBluetooth] = useState(cameraSupported);
+  const canFilm = useCameraOn() && canBluetooth;
   const times = useMemo(() => lineTimes(currentText, currentExtra), [currentText, currentExtra]);
   /** The evening in the order it happens. A coach taking notes through a match
    *  writes the same handful of headings every time and writes them badly with
@@ -1070,7 +1072,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       {canFilm && <CameraButton tp={tp} ownerId={ownerId} clips={clips} insertLine={insertLine} />}
                     </RichToolbar>
                   </div>
-                  <ClipStrip tp={tp} pageId={current ? current.pageId : null} clips={clips} />
+                  <ClipStrip tp={tp} lang={lang} pageId={current ? current.pageId : null} clips={clips} />
                   {sectionMenu && (
                     <>
                       {/* Anywhere else closes it, including the page itself. */}
@@ -1108,6 +1110,8 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       value={currentText}
                       onChange={handleText}
                       placeholder={tp.padPlaceholder}
+                      atoms={CLIP_LINE_RE}
+                      onAtom={(text) => { const m = CLIP_LINE_RE.exec(text); if (m) openClipByNumber(Number(m[1])); }}
                       className={cn('notebook-surface flex-1 min-w-0 min-h-[40vh] text-sm leading-relaxed py-3 bg-white', showTimes ? 'pl-3 pr-4' : 'px-4')}
                     />
                   </div>

@@ -265,7 +265,7 @@ export async function flush(beacon = false): Promise<void> {
       return;
     }
     // Raw fetch, NOT the instrumented one: shipping logs must not generate logs.
-    await originalFetch(url, {
+    const send = (keepalive: boolean) => originalFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
@@ -276,8 +276,19 @@ export async function flush(beacon = false): Promise<void> {
       // their real name. That split made the marker read as an auth problem
       // instead of what it was: half the batches simply arrived cookie-less.
       credentials: 'include',
-      keepalive: batch.length < 30,
+      keepalive,
     });
+    const keepalive = batch.length < 30;
+    try {
+      await send(keepalive);
+    } catch (e) {
+      // The Linux installed app (WebKitGTK on tauri://localhost) never got a
+      // batch through: its keepalive fetch fails where a plain one works, and
+      // not one of its lines reached the server (29.10.2026). Once more
+      // without keepalive before the batch goes back in the queue.
+      if (!keepalive) throw e;
+      await send(false);
+    }
   } catch {
     // Offline or the API is down — or the batch arrived and only the answer
     // was lost. Put it back whole (bounded) so it ships on the next flush

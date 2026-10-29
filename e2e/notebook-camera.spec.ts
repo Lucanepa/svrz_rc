@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { stubSignedInApp } from './support/app';
+import { openOptions, stubSignedInApp } from './support/app';
 
 /**
  * The notebook's camera: an Osmo Action over Web Bluetooth saves the seconds
@@ -17,7 +17,14 @@ import { stubSignedInApp } from './support/app';
 const sheet = (page: Page) => page.getByRole('dialog', { name: /^(Notizblock|Notebook)$/ });
 const pageBox = (page: Page) => sheet(page).locator('.rich-surface');
 
-async function fakeOsmo(page: Page, { preRec = true } = {}): Promise<void> {
+/** The camera is off until turned on in the options; these specs turn it on
+ *  for the device first, unless they test exactly that. */
+async function cameraOn(page: Page): Promise<void> {
+  await page.addInitScript(() => { try { localStorage.setItem('svrz_camera_on', '1'); } catch { /* none */ } });
+}
+
+async function fakeOsmo(page: Page, { preRec = true, on = true } = {}): Promise<void> {
+  if (on) await cameraOn(page);
   await page.addInitScript((preRec) => {
     const t16: number[] = [];
     const t32: number[] = [];
@@ -120,6 +127,11 @@ test.describe('The notebook films with an Osmo', () => {
     expect(stop.at - start.at).toBeGreaterThanOrEqual(900);
     expect(stop.at - start.at).toBeLessThan(3_500);
     await expect.poll(() => pageBox(page).evaluate((el) => (el as HTMLElement).innerText)).toMatch(/^2\. SR \[Clip 1 · \d\d:\d\d:\d\d\] Pfiff zu spät\s*$/);
+    // The camera's clock at the start said how much it kept.
+    await expect(sheet(page).getByTestId('cam-prerec')).toHaveText('· Pre-Rec 10 s');
+    // The line is one piece in the editor: a chip, the same text underneath.
+    await expect(pageBox(page).locator('[data-atom]')).toHaveText(/^\[Clip 1 · \d\d:\d\d:\d\d\]$/);
+    await expect(pageBox(page).locator('[data-atom]')).toHaveAttribute('contenteditable', 'false');
 
     // No video yet: the chip says so, and the card's file is matched by its name.
     const chip = sheet(page).getByTestId('clip-chip');
@@ -150,10 +162,19 @@ test.describe('The notebook films with an Osmo', () => {
     const player = page.getByTestId('clip-player');
     await expect(player).toBeVisible();
     await expect(player.locator('video')).toHaveAttribute('src', /^blob:/);
+    // A name of its own: on the chip, and in the name it is saved under.
+    await player.getByTestId('clip-name').fill('Pfiff zu spät');
+    await player.getByTestId('clip-name').press('Enter');
+    await expect(player.getByTestId('clip-download')).toHaveAttribute('download', /^Clip 1 \d{4}-\d\d-\d\d \d\d\.\d\d\.\d\d - Pfiff zu spät\.mp4$/);
     // Escape closes the video and leaves the notebook open.
     await page.keyboard.press('Escape');
     await expect(player).toHaveCount(0);
     await expect(sheet(page)).toBeVisible();
+    await expect(sheet(page).getByTestId('clip-chip')).toHaveText('Clip 1 · Pfiff zu spät');
+    // A tap on the line in the page opens the same clip.
+    await pageBox(page).locator('[data-atom]').click();
+    await expect(player).toBeVisible();
+    await page.keyboard.press('Escape');
 
     // The video is this device's: nothing about it went to the server.
     const stored = await page.evaluate(() => new Promise<{ name: string; size: number }>((resolve) => {
@@ -164,6 +185,40 @@ test.describe('The notebook films with an Osmo', () => {
       };
     }));
     expect(stored).toMatchObject({ name, size: 'not really a video'.length });
+
+    // Deleted: gone from the device, the line stays on the page.
+    await sheet(page).getByTestId('clip-chip').click();
+    await player.getByTestId('clip-delete').click();
+    await page.getByRole('button', { name: /^(Löschen|Delete)$/ }).last().click();
+    await expect(player).toHaveCount(0);
+    await expect(sheet(page).getByTestId('clip-chip')).toHaveCount(0);
+    await expect(pageBox(page).locator('[data-atom]')).toHaveCount(1);
+
+    // Typing cannot break the line: Backspace takes the words, then the whole clip.
+    await pageBox(page).click();
+    await page.keyboard.press('End');
+    for (let i = 0; i < 'Pfiff zu spät'.length + 1; i += 1) await page.keyboard.press('Backspace');
+    await expect(pageBox(page).locator('[data-atom]')).toHaveCount(1);
+    await page.keyboard.press('Backspace');
+    await expect.poll(() => pageBox(page).evaluate((el) => (el as HTMLElement).innerText)).toMatch(/^2\. SR\s*$/);
+  });
+
+  test('the camera is off until the options turn it on', async ({ page }) => {
+    await fakeOsmo(page, { on: false });
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ }).click();
+    await expect(sheet(page).getByRole('button', { name: /^(Zeit|Time)$/ })).toBeVisible();
+    await expect(sheet(page).getByTestId('cam-connect')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await openOptions(page);
+    const option = page.getByTestId('option-camera');
+    await expect(option).toHaveAttribute('aria-pressed', 'false');
+    await option.click();
+    await expect(option).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ }).click();
+    await expect(sheet(page).getByTestId('cam-connect')).toBeVisible();
   });
 
   test('with Pre-Rec off on the camera, the strip says so and nothing is recorded', async ({ page }) => {
@@ -180,6 +235,7 @@ test.describe('The notebook films with an Osmo', () => {
   });
 
   test('without Bluetooth (Safari, Firefox) there is no camera button', async ({ page }) => {
+    await cameraOn(page);
     await page.addInitScript(() => { Object.defineProperty(Navigator.prototype, 'bluetooth', { configurable: true, get: () => undefined }); });
     await stubSignedInApp(page);
     await page.goto('/');

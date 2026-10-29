@@ -9,7 +9,7 @@
 // and gets the page's id back. Everything about the camera is in
 // lib/osmoCamera.ts, everything about the clips in lib/clips.ts.
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type SyntheticEvent } from 'react';
 import { CircleDot, Download, Film, LoaderCircle, Play, Trash2, Unplug, Upload, Video, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clockLabel } from '../lib/appTime';
@@ -406,23 +406,37 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
   const blob = clip.file?.blob || null;
   const blobUrl = useMemo(() => (blob ? URL.createObjectURL(blob) : ''), [blob]);
   useEffect(() => () => { if (blobUrl) URL.revokeObjectURL(blobUrl); }, [blobUrl]);
-  // A file in the installed app's folder plays from there; if the webview
-  // cannot decode the camera's video, the camera's small copy of it is tried.
-  const [useProxy, setUseProxy] = useState(false);
-  // Last resort, when the webview will not stream from the folder at all
-  // (WebKitGTK and a custom scheme have not always agreed): the file read
-  // whole — the small copy when there is one — and played from memory.
+  // A file in the installed app's folder plays from there. The camera's
+  // small copy (720p H.264) first when there is one: the original is 2.7K
+  // 10-bit H.265 at 60 fps (the first card, 29.10.2026), a load on a laptop
+  // decoding it in software, and more than a referee's position needs.
+  // "Original" switches; a source that fails falls through to the other.
+  const hasProxy = !!clip.file?.proxyPath;
+  const [original, setOriginal] = useState(!hasProxy);
+  // Last resort, when the webview will not stream from the folder at all:
+  // the file read whole and played from memory.
   const [memoryUrl, setMemoryUrl] = useState('');
   useEffect(() => () => { if (memoryUrl) URL.revokeObjectURL(memoryUrl); }, [memoryUrl]);
-  const path = clip.file?.path ? (useProxy && clip.file.proxyPath ? clip.file.proxyPath : clip.file.path) : '';
+  const [tried, setTried] = useState<string[]>([]);
+  const path = clip.file?.path ? (original || !hasProxy ? clip.file.path : clip.file.proxyPath!) : '';
   const url = memoryUrl || (path ? clipFileUrl(path) : blobUrl);
-  const onVideoError = () => {
+  const onVideoError = (e: SyntheticEvent<HTMLVideoElement>) => {
+    const v = e.currentTarget;
+    // What the webview says, so a coach's "it does not play" is answerable.
+    clientLog.warn('clips.play.fail', 'clip video does not play', {
+      source: memoryUrl ? 'memory' : path ? (path === clip.file?.proxyPath ? 'proxy' : 'original') : 'blob',
+      code: v.error?.code ?? null, message: (v.error?.message || '').slice(0, 200), network: v.networkState, ready: v.readyState,
+      type: clip.file?.type || '', size: clip.file?.size || 0,
+    });
     if (!clip.file?.path || memoryUrl) return;
-    if (!useProxy && clip.file.proxyPath) { setUseProxy(true); return; }
+    const next = [...tried, path];
+    setTried(next);
+    const other = path === clip.file.path ? clip.file.proxyPath : clip.file.path;
+    if (other && !next.includes(other)) { setOriginal(other === clip.file.path); return; }
     void fetch(clipFileUrl(clip.file.proxyPath || clip.file.path))
       .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
       .then((b) => setMemoryUrl(URL.createObjectURL(new Blob([b], { type: 'video/mp4' }))))
-      .catch((e) => clientLog.warn('clips.play.fail', 'clip video does not play', { error: String(e).slice(0, 200) }));
+      .catch((err) => clientLog.warn('clips.play.fail', 'clip video could not be read', { error: String(err).slice(0, 200) }));
   };
   const [title, setTitle] = useState(clip.title || '');
   // Escape closes the clip, not the whole notebook (App.tsx closes the sheet
@@ -483,6 +497,18 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
       <div className="w-full max-w-4xl flex items-center justify-between gap-2 mt-2 text-sm">
         <span className="text-white/60 text-xs">{fill(tp.clipPre, { s: clip.seconds })}</span>
         <span className="flex items-center gap-2">
+          {hasProxy && !memoryUrl && (
+            <button
+              type="button"
+              onClick={() => { setTried([]); setOriginal((o) => !o); }}
+              aria-pressed={original}
+              title={tp.clipOriginalTitle}
+              data-testid="clip-original"
+              className={cn('h-9 px-3 inline-flex items-center rounded-lg text-white', original ? 'bg-white/30' : 'bg-white/10 hover:bg-white/20')}
+            >
+              {tp.clipOriginal}
+            </button>
+          )}
           {clip.file?.path ? (
             // The installed app: a copy in the Downloads folder (a webview's
             // download link goes nowhere there).

@@ -12,6 +12,7 @@
 // scope is that folder alone (tauri.conf.json).
 
 use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -147,11 +148,86 @@ pub async fn import_clip_file(app: AppHandle, src: String, clip_id: String, prox
   };
   let dest = clips_dir(&app)?.join(format!("{clip_id}.{ext}"));
   let to = dest.clone();
-  tauri::async_runtime::spawn_blocking(move || fs::copy(&src, &to).map(|_| ()))
+  tauri::async_runtime::spawn_blocking(move || {
+    fs::copy(&src, &to)?;
+    // The copy plays better without DJI's own tracks; a file it cannot
+    // read is left as it is.
+    let _ = free_data_tracks(&to);
+    Ok::<(), std::io::Error>(())
+  })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
   Ok(dest.to_string_lossy().into_owned())
+}
+
+fn be32(b: &[u8], at: usize) -> u64 { u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]) as u64 }
+fn be64(b: &[u8], at: usize) -> u64 {
+  u64::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3], b[at + 4], b[at + 5], b[at + 6], b[at + 7]])
+}
+
+/// The boxes in `buf[start..end]`: (offset, size, header length, type).
+fn boxes(buf: &[u8], start: usize, end: usize) -> Vec<(usize, usize, usize, [u8; 4])> {
+  let mut out = Vec::new();
+  let mut i = start;
+  while i + 8 <= end {
+    let mut size = be32(buf, i) as usize;
+    let mut hdr = 8;
+    if size == 1 && i + 16 <= end { size = be64(buf, i + 8) as usize; hdr = 16; } else if size == 0 { size = end - i; }
+    if size < hdr || i + size > end { break; }
+    out.push((i, size, hdr, [buf[i + 4], buf[i + 5], buf[i + 6], buf[i + 7]]));
+    i += size;
+  }
+  out
+}
+
+/// DJI's MP4s carry tracks of the camera's own (`djmd`, `dbgi`: handler
+/// `meta`) next to the video and the sound. Each of those `trak` boxes is
+/// renamed `free` in place: four bytes, no size or offset changes, and every
+/// player then sees a plain video with sound.
+fn free_data_tracks(path: &Path) -> std::io::Result<u32> {
+  let mut f = fs::OpenOptions::new().read(true).write(true).open(path)?;
+  let len = f.metadata()?.len();
+  // The top-level boxes, by their headers only: mdat is most of the file.
+  let mut pos = 0u64;
+  let mut moov: Option<(u64, u64)> = None;
+  while pos + 8 <= len {
+    let mut head = [0u8; 16];
+    f.seek(SeekFrom::Start(pos))?;
+    let n = f.read(&mut head)?;
+    if n < 8 { break; }
+    let mut size = be32(&head, 0);
+    if size == 1 && n >= 16 { size = be64(&head, 8); } else if size == 0 { size = len - pos; }
+    if size < 8 { break; }
+    if &head[4..8] == b"moov" { moov = Some((pos, size)); break; }
+    pos += size;
+  }
+  let Some((at, size)) = moov else { return Ok(0) };
+  if size > 64 * 1024 * 1024 { return Ok(0); }
+  let mut buf = vec![0u8; size as usize];
+  f.seek(SeekFrom::Start(at))?;
+  f.read_exact(&mut buf)?;
+  let mut freed = 0;
+  let moov_hdr = if be32(&buf, 0) == 1 { 16 } else { 8 };
+  for (ti, tsize, thdr, ttyp) in boxes(&buf, moov_hdr, buf.len()) {
+    if &ttyp != b"trak" { continue; }
+    let mut handler: Option<[u8; 4]> = None;
+    for (mi, msize, mhdr, mtyp) in boxes(&buf, ti + thdr, ti + tsize) {
+      if &mtyp != b"mdia" { continue; }
+      for (hi, _hsize, hhdr, htyp) in boxes(&buf, mi + mhdr, mi + msize) {
+        // hdlr: version/flags (4), pre_defined (4), handler_type (4).
+        if &htyp == b"hdlr" && hi + hhdr + 12 <= buf.len() {
+          let h = hi + hhdr + 8;
+          handler = Some([buf[h], buf[h + 1], buf[h + 2], buf[h + 3]]);
+        }
+      }
+    }
+    if matches!(handler.as_ref(), Some(h) if h == b"vide" || h == b"soun") { continue; }
+    f.seek(SeekFrom::Start(at + ti as u64 + 4))?;
+    f.write_all(b"free")?;
+    freed += 1;
+  }
+  Ok(freed)
 }
 
 fn files_of(dir: &Path, clip_id: &str) -> Vec<PathBuf> {
@@ -207,4 +283,40 @@ pub async fn save_clip_file(app: AppHandle, clip_id: String, file_name: String) 
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
   Ok(dest.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn b(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut out = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+    out.extend_from_slice(typ);
+    out.extend_from_slice(body);
+    out
+  }
+  fn trak(handler: &[u8; 4]) -> Vec<u8> {
+    let mut hdlr = vec![0u8; 8];
+    hdlr.extend_from_slice(handler);
+    hdlr.extend_from_slice(&[0u8; 12]);
+    b(b"trak", &b(b"mdia", &b(b"hdlr", &hdlr)))
+  }
+
+  #[test]
+  fn only_the_camera_s_own_tracks_are_freed() {
+    let mut moov_body = b(b"mvhd", &[0u8; 100]);
+    for h in [b"vide", b"soun", b"meta", b"meta"] { moov_body.extend(trak(h)); }
+    let mut file = b(b"ftyp", b"isom0000");
+    file.extend(b(b"mdat", &[7u8; 64]));
+    let moov_at = file.len();
+    file.extend(b(b"moov", &moov_body));
+    let path = std::env::temp_dir().join(format!("svrz-freetrak-{}.mp4", std::process::id()));
+    fs::write(&path, &file).unwrap();
+    assert_eq!(free_data_tracks(&path).unwrap(), 2);
+    let after = fs::read(&path).unwrap();
+    assert_eq!(after.len(), file.len());
+    let types: Vec<[u8; 4]> = boxes(&after, moov_at + 8, after.len()).iter().map(|x| x.3).collect();
+    assert_eq!(types, vec![*b"mvhd", *b"trak", *b"trak", *b"free", *b"free"]);
+    fs::remove_file(&path).ok();
+  }
 }

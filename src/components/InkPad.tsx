@@ -67,6 +67,8 @@ export type InkPadControl = {
 export type InkPadProps = {
   page: InkPage;
   bg: PageBackground;
+  /** The court across the page instead of down it. */
+  bgLandscape?: boolean;
   readOnly?: boolean;
   tool: InkTool;
   /** Touch draws. Off by default once a pen has been seen on this device. */
@@ -201,11 +203,31 @@ export function pageChars(page: InkPage): number {
 }
 
 /** The court a coach sketches positions on: 9 × 18 m, portrait, net across the
- *  middle, attack lines 3 m from it. Light lines under the ink, never part of
- *  it. Drawn in page units under the view's transform; `scale` (CSS px per
- *  unit) keeps the lines at least a pixel wide at any zoom. */
-function renderBackground(ctx: CanvasRenderingContext2D, bg: PageBackground, scale: number): void {
+ *  middle, attack lines 3 m from it — or `landscape`, across the page's width
+ *  with the net upright (Luca, 29.10.2026: "can we also rotate to
+ *  landscape"). Light lines under the ink, never part of it. Drawn in page
+ *  units under the view's transform; `scale` (CSS px per unit) keeps the
+ *  lines at least a pixel wide at any zoom. */
+function renderBackground(ctx: CanvasRenderingContext2D, bg: PageBackground, scale: number, landscape = false): void {
   if (bg !== 'court') return;
+  if (landscape) {
+    // 18 m across 880 units, 9 m down 440, in the middle of the page.
+    const left = 60; const right = 940;
+    const top = 487; const bottom = 927;
+    const mid = (left + right) / 2;
+    const attack = (right - left) / 6;
+    ctx.save();
+    ctx.strokeStyle = '#d6d3d1';
+    ctx.lineWidth = Math.max(2, 1 / scale);
+    ctx.strokeRect(left, top, right - left, bottom - top);
+    ctx.beginPath(); ctx.moveTo(mid - attack, top); ctx.lineTo(mid - attack, bottom);
+    ctx.moveTo(mid + attack, top); ctx.lineTo(mid + attack, bottom); ctx.stroke();
+    ctx.strokeStyle = '#a8a29e';
+    ctx.lineWidth = Math.max(5, 2 / scale);
+    ctx.beginPath(); ctx.moveTo(mid, top - 30); ctx.lineTo(mid, bottom + 30); ctx.stroke();
+    ctx.restore();
+    return;
+  }
   const left = 175; const right = 825;
   const top = 57; const bottom = 1357;
   const mid = (top + bottom) / 2;
@@ -280,7 +302,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   /** The thinnest radius a line draws with on this stage (lib/inkStyle.ts). */
   let minR = 0;
   /** What the page canvas shows now, so a stroke end can draw just that stroke. */
-  let drawn: { strokes: InkStroke[]; bg: PageBackground; view: View; minR: number; w: number; h: number } | null = null;
+  let drawn: { strokes: InkStroke[]; bg: PageBackground; land: boolean; view: View; minR: number; w: number; h: number } | null = null;
   /** Strokes handed to onStrokeEnd that the page prop does not carry yet. */
   let pending: InkStroke[] = [];
   let frame = 0; let pageDirty = true; let liveDirty = false;
@@ -328,9 +350,10 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     const ctx = pageCanvas.getContext('2d');
     if (!ctx || !stageSize) return;
     const bg = props().bg;
+    const land = !!props().bgLandscape;
     const strokes = strokesOnPage();
     const prev = drawn;
-    if (prev && prev.bg === bg && prev.view === view && prev.minR === minR && prev.w === pageCanvas.width && prev.h === pageCanvas.height && strokes.length >= prev.strokes.length) {
+    if (prev && prev.bg === bg && prev.land === land && prev.view === view && prev.minR === minR && prev.w === pageCanvas.width && prev.h === pageCanvas.height && strokes.length >= prev.strokes.length) {
       let same = true;
       for (let i = 0; i < prev.strokes.length; i += 1) if (prev.strokes[i] !== strokes[i]) { same = false; break; }
       if (same && strokes.length === prev.strokes.length) return;
@@ -347,7 +370,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, pageCanvas.width, pageCanvas.height);
     withPageTransform(ctx, (s) => {
-      renderBackground(ctx, bg, s);
+      renderBackground(ctx, bg, s, land);
       const [x0, y0, x1, y1] = visibleRect(stageSize!, view);
       let colour = -1;
       for (const stroke of strokes) {
@@ -360,7 +383,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       }
     });
     stats.slowFrameMs = Math.max(stats.slowFrameMs, performance.now() - t0);
-    drawn = { strokes, bg, view, minR, w: pageCanvas.width, h: pageCanvas.height };
+    drawn = { strokes, bg, land, view, minR, w: pageCanvas.width, h: pageCanvas.height };
   };
 
   const drawLive = () => {
@@ -927,7 +950,7 @@ export default function InkPad(props: InkPadProps) {
     return () => { engine.destroy(); engineRef.current = null; };
   }, []);
 
-  useEffect(() => { engineRef.current?.pageChanged(); }, [props.page, props.bg]);
+  useEffect(() => { engineRef.current?.pageChanged(); }, [props.page, props.bg, props.bgLandscape]);
 
   useImperativeHandle(controlRef, () => ({
     zoomIn: () => engineRef.current?.zoomStep(1),

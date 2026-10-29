@@ -391,6 +391,19 @@ export { requestPersistentStorage };
 export type MergeDecision = { write: NotebookPage | null; dropInk: boolean; fetchInk: boolean };
 
 const SAFE_BG = (v: unknown): PageBackground => (v === 'court' ? 'court' : '');
+
+/** The court lies across the page (29.10.2026). Kept in the page's `extra`
+ *  bag, which the server and every older build carry along untouched, so the
+ *  background stays 'court' for them: an older app shows it upright. */
+export const COURT_LANDSCAPE_KEY = 'court';
+export const courtLandscape = (p: { extra?: Record<string, unknown> } | null | undefined): boolean => p?.extra?.[COURT_LANDSCAPE_KEY] === 'h';
+export function withCourtLandscape<T extends { extra?: Record<string, unknown> }>(p: T, on: boolean): T {
+  const extra: Record<string, unknown> = { ...(p.extra || {}) };
+  if (on) extra[COURT_LANDSCAPE_KEY] = 'h'; else delete extra[COURT_LANDSCAPE_KEY];
+  const next = { ...p, extra };
+  if (!Object.keys(extra).length) delete next.extra;
+  return next;
+}
 /** A title is a LABEL, not content: one line of plain text, capped, and never
  *  markup — it is drawn into the page strip, which has room for neither a
  *  second line nor a tag. */

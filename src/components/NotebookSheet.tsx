@@ -21,12 +21,12 @@
 // so opening and closing the sheet never syncs an empty row.
 
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { BrushCleaning, ChevronLeft, ChevronRight, Clock, Eraser, FileIcon, Hand, Keyboard, LayoutTemplate, Maximize2, Minimize2, MoveHorizontal, NotebookPen, PenLine, Plus, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { BrushCleaning, ChevronLeft, ChevronRight, Clock, Eraser, FileIcon, Hand, Keyboard, LayoutTemplate, Maximize2, Minimize2, MoveHorizontal, NotebookPen, PenLine, Plus, RotateCw, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clockLabel, dayLabel, dayTimeLabel } from '../lib/appTime';
 import { PAD_STRINGS, fill, type PadLang } from '../lib/notepadStrings';
 import {
-  NOTEBOOK_MAX_PAGES, NOTEBOOK_MAX_TITLE_LEN, NOTEBOOK_INK_DEBOUNCE_MS, NOTEBOOK_TTL_MS, inkPoints, kindAfterWrite, makePage, pageExpiresAt, sidesKnown,
+  NOTEBOOK_MAX_PAGES, NOTEBOOK_MAX_TITLE_LEN, NOTEBOOK_INK_DEBOUNCE_MS, NOTEBOOK_TTL_MS, courtLandscape, inkPoints, kindAfterWrite, makePage, pageExpiresAt, sidesKnown, withCourtLandscape,
   type InkPage, type InkStroke, type NotebookPage, type PadField, type PageBackground, type PageKind,
 } from '../lib/notebook';
 import * as notebookSync from '../lib/notebookSync';
@@ -138,7 +138,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const [sectionMenu, setSectionMenu] = useState(false);
   /** "@" typed on the typed side: the coach's clips to mention, newest first. */
   const [mentionMenu, setMentionMenu] = useState(false);
-  const [virtual, setVirtual] = useState<{ kind: PageKind; bg: PageBackground } | null>(null);
+  const [virtual, setVirtual] = useState<{ kind: PageKind; bg: PageBackground; landscape?: boolean } | null>(null);
   const [sideDefault, setSideDefault] = useState<PageKind>(initialSide);
   /** The side on screen, per page, while the sheet is open: a view, never
    *  written. A page not in it shows its kind — the side last written. */
@@ -580,7 +580,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
       setInkState({ pageId: open.pageId, page: next, current: true });
       return;
     }
-    const page = makePage(ownerId, 'ink', virtualBg);
+    const page = virtual?.landscape ? withCourtLandscape(makePage(ownerId, 'ink', virtualBg), true) : makePage(ownerId, 'ink', virtualBg);
     page.points = inkPoints(next);
     notebookSync.commit(page, next, 0);
     madePage.current = page;
@@ -685,6 +685,14 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
       if (!inkWritable) return;
       notebookSync.commit({ ...current, bg: next, kind: kindAfterWrite(current, 'ink') }, undefined, 0);
     } else if (virtual) setVirtual({ ...virtual, bg: next });
+  };
+  /** The court across the page or down it: a view of the same page, kept with it. */
+  const landscape = current ? courtLandscape(current) : !!virtual?.landscape;
+  const rotateCourt = () => {
+    if (current) {
+      if (!inkWritable) return;
+      notebookSync.commit({ ...withCourtLandscape(current, !landscape), kind: kindAfterWrite(current, 'ink') }, undefined, 0);
+    } else if (virtual) setVirtual({ ...virtual, landscape: !landscape });
   };
   const deletePage = async () => {
     if (!current) { setVirtual(null); turnPage(); return; }
@@ -1181,6 +1189,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                           key={viewKey}
                           page={inkPage}
                           bg={activeBg}
+                          bgLandscape={landscape}
                           readOnly={!inkWritable}
                           tool={tool}
                           fingerDraws={fingerDraws}
@@ -1230,6 +1239,9 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       </button>
                     ))}
                     <button type="button" onClick={toggleCourt} disabled={!inkWritable} aria-pressed={activeBg === 'court'} aria-label={tp.padCourt} title={tp.padCourt} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border text-xs font-medium disabled:opacity-40', activeBg === 'court' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><LayoutTemplate size={14} /><span className="hidden min-[50rem]:inline">{tp.padCourt}</span></button>
+                    {activeBg === 'court' && (
+                      <button type="button" onClick={rotateCourt} disabled={!inkWritable} aria-pressed={landscape} aria-label={tp.padCourtRotate} title={tp.padCourtRotate} data-testid="pad-court-rotate" className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border text-xs font-medium disabled:opacity-40', landscape ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><RotateCw size={14} /><span className="hidden min-[50rem]:inline">{tp.padCourtRotate}</span></button>
+                    )}
                     <button type="button" onClick={undo} disabled={inkPage.strokes.length === 0 || !inkWritable} aria-label={tp.padUndo} title={tp.padUndo} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><Undo2 size={14} /><span className="hidden min-[50rem]:inline">{tp.padUndo}</span></button>
                     <button type="button" onClick={() => void clearInk()} disabled={inkPage.strokes.length === 0 || !inkWritable} aria-label={tp.padClearInk} title={tp.padClearInk} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><BrushCleaning size={14} /><span className="hidden min-[50rem]:inline">{tp.padClearInkShort}</span></button>
                     {/* Zoom for whoever does not think to pinch, and for a

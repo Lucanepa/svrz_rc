@@ -13,16 +13,18 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'reac
 import { CircleDot, Download, Film, LoaderCircle, Play, Trash2, Unplug, Upload, Video, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clockLabel } from '../lib/appTime';
-import { fill, type PAD_STRINGS } from '../lib/notepadStrings';
+import { PAD_STRINGS as PAD_TEXT, fill, type PAD_STRINGS } from '../lib/notepadStrings';
 import { IS_NATIVE } from '../lib/native';
 import { OsmoError, bluetoothSupport, findNativeCamera, pickWebCamera, type OsmoErrorCode } from '../lib/osmoLink';
 import { DEFAULT_PRE_SECONDS, cameraState, connectCamera, disconnectCamera, saveClip, subscribeCamera } from '../lib/osmoCamera';
 import { isPreRecording, isRecording } from '../lib/osmoProtocol';
 import {
-  clipLine, deleteClips, doomedClips, listClips, matchClipFiles, newClip, nextClipNumber, playableType, putClip, subscribeClips,
+  allClipIds, clipLine, deleteClips, doomedClips, listClips, matchClipFiles, newClip, nextClipNumber, playableType, putClip, subscribeClips,
   type Clip,
 } from '../lib/clips';
+import { cameraMedia, clipFileUrl, importClipFile, pruneClipFiles, saveClipFile, type MediaFile } from '../lib/clipFiles';
 import { confirmDialog, toast } from './ui';
+import { clientLog } from '../lib/logger';
 
 type Strings = Record<keyof (typeof PAD_STRINGS)['DE'], string>;
 const LAST_CAMERA_KEY = 'svrz_osmo_last';
@@ -89,6 +91,72 @@ export function CameraOption({ lang }: { lang: 'DE' | 'EN' }) {
       <span className="text-xs font-semibold text-stone-500">{on ? (de ? 'An' : 'On') : (de ? 'Aus' : 'Off')}</span>
     </button>
   );
+}
+
+/** The installed app on a computer: it can read a plugged-in card itself. */
+const DESKTOP_APP = IS_NATIVE && typeof navigator !== 'undefined' && !/Android/i.test(navigator.userAgent);
+
+const baseOf = (name: string) => name.replace(/\.[^.]+$/, '').toUpperCase();
+const AUTO_EVERY_MS = 4_000;
+
+/**
+ * The installed app on a computer, after the match: plug in the camera or its
+ * SD card and the clips waiting for a video get theirs — matched by time,
+ * copied into the app's folder, playable in the notebook at once. Polls only
+ * while a clip is waiting, and matches again only when what is on the cards
+ * changed. Renders nothing.
+ */
+export function ClipAutoImport({ ownerId, lang }: { ownerId: string; lang: 'DE' | 'EN' }) {
+  const on = useCameraOn();
+  useEffect(() => {
+    if (!DESKTOP_APP || !on || !ownerId) return;
+    const tp = PAD_TEXT[lang] || PAD_TEXT.DE;
+    let busy = false;
+    let seen = '';
+    // Files of clips that are gone (their page went on another run): once.
+    void allClipIds().then((ids) => pruneClipFiles(ids)).catch(() => undefined);
+    const tick = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const waiting = (await listClips(ownerId)).filter((c) => !c.file);
+        if (!waiting.length) { seen = ''; return; }
+        const media = await cameraMedia();
+        const key = media.map((m) => `${m.path}:${m.size}`).join('|');
+        if (!media.length || key === seen) return;
+        seen = key;
+        const map = matchClipFiles(waiting, media.map((m) => ({ name: m.name, lastModified: m.modified, size: m.size })));
+        clientLog.info('clips.auto', 'videos on a card', { files: media.length, waiting: waiting.length, matched: map.size });
+        let k = 0;
+        for (const c of waiting) {
+          const i = map.get(c.clipId);
+          if (i === undefined) continue;
+          const f: MediaFile = media[i];
+          try {
+            const path = await importClipFile(f.path, c.clipId, false);
+            const isProxy = /\.lrf$/i.test(f.name);
+            const lrf = isProxy ? undefined : media.find((m) => m.path !== f.path && /\.lrf$/i.test(m.name) && baseOf(m.name) === baseOf(f.name));
+            const proxyPath = lrf ? await importClipFile(lrf.path, c.clipId, true).catch(() => undefined) : undefined;
+            await putClip({ ...c, file: { name: f.name, type: playableType({ name: f.name, type: '' }), size: f.size, path, ...(proxyPath ? { proxyPath } : {}) } });
+            k += 1;
+          } catch (e) {
+            // The card went away mid-copy: it is tried again when it is back.
+            clientLog.warn('clips.auto.fail', 'copy off the card failed', { error: String(e).slice(0, 200) });
+            seen = '';
+          }
+        }
+        if (k) toast.success(fill(tp.clipsAutoAttached, { k, m: waiting.length }));
+      } catch {
+        /* not this app's command, or no card: the next tick asks again */
+      } finally {
+        busy = false;
+      }
+    };
+    void tick();
+    const t = setInterval(() => void tick(), AUTO_EVERY_MS);
+    return () => clearInterval(t);
+  }, [on, ownerId, lang]);
+  return null;
 }
 
 /** A clip line in the page asks for its clip: the strip of the page on screen opens it. */
@@ -312,7 +380,11 @@ export function ClipStrip({ tp, lang, pageId, clips }: { tp: Strings; lang: 'DE'
         data-testid="clips-file"
         onChange={(e) => { void attach(e.currentTarget.files); e.currentTarget.value = ''; }}
       />
-      {onPage.length > 0 && <span className="basis-full text-[11px] text-stone-400">{tp.clipsDeviceOnly}</span>}
+      {onPage.length > 0 && (
+        <span className="basis-full text-[11px] text-stone-400">
+          {DESKTOP_APP && onPage.some((c) => !c.file) ? `${tp.clipsAutoHint} ` : ''}{tp.clipsDeviceOnly}
+        </span>
+      )}
       {open && <ClipDialog tp={tp} lang={lang} clip={open} onPickFiles={pickFiles} onClose={() => setOpenId(null)} />}
     </div>
   );
@@ -333,9 +405,27 @@ export function clipFileName(c: Clip): string {
 }
 
 function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lang: 'DE' | 'EN'; clip: Clip; onPickFiles: () => void; onClose: () => void }) {
-  const blob = clip.file ? clip.file.blob : null;
-  const url = useMemo(() => (blob ? URL.createObjectURL(blob) : ''), [blob]);
-  useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
+  const blob = clip.file?.blob || null;
+  const blobUrl = useMemo(() => (blob ? URL.createObjectURL(blob) : ''), [blob]);
+  useEffect(() => () => { if (blobUrl) URL.revokeObjectURL(blobUrl); }, [blobUrl]);
+  // A file in the installed app's folder plays from there; if the webview
+  // cannot decode the camera's video, the camera's small copy of it is tried.
+  const [useProxy, setUseProxy] = useState(false);
+  // Last resort, when the webview will not stream from the folder at all
+  // (WebKitGTK and a custom scheme have not always agreed): the file read
+  // whole — the small copy when there is one — and played from memory.
+  const [memoryUrl, setMemoryUrl] = useState('');
+  useEffect(() => () => { if (memoryUrl) URL.revokeObjectURL(memoryUrl); }, [memoryUrl]);
+  const path = clip.file?.path ? (useProxy && clip.file.proxyPath ? clip.file.proxyPath : clip.file.path) : '';
+  const url = memoryUrl || (path ? clipFileUrl(path) : blobUrl);
+  const onVideoError = () => {
+    if (!clip.file?.path || memoryUrl) return;
+    if (!useProxy && clip.file.proxyPath) { setUseProxy(true); return; }
+    void fetch(clipFileUrl(clip.file.proxyPath || clip.file.path))
+      .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
+      .then((b) => setMemoryUrl(URL.createObjectURL(new Blob([b], { type: 'video/mp4' }))))
+      .catch((e) => clientLog.warn('clips.play.fail', 'clip video does not play', { error: String(e).slice(0, 200) }));
+  };
   const [title, setTitle] = useState(clip.title || '');
   // Escape closes the clip, not the whole notebook (App.tsx closes the sheet
   // on a window-level Escape; capture runs first).
@@ -374,7 +464,15 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
         </button>
       </div>
       {url ? (
-        <video src={url} controls autoPlay playsInline className="w-full max-w-4xl max-h-[70vh] rounded-lg bg-black" />
+        <video
+          key={url}
+          src={url}
+          controls
+          autoPlay
+          playsInline
+          onError={onVideoError}
+          className="w-full max-w-4xl max-h-[70vh] rounded-lg bg-black"
+        />
       ) : (
         <div className="w-full max-w-4xl aspect-video max-h-[70vh] rounded-lg bg-white/5 flex flex-col items-center justify-center gap-3 text-white/80 text-sm">
           <Film size={28} className="opacity-60" />
@@ -387,7 +485,22 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
       <div className="w-full max-w-4xl flex items-center justify-between gap-2 mt-2 text-sm">
         <span className="text-white/60 text-xs">{fill(tp.clipPre, { s: clip.seconds })}</span>
         <span className="flex items-center gap-2">
-          {url && (
+          {clip.file?.path ? (
+            // The installed app: a copy in the Downloads folder (a webview's
+            // download link goes nowhere there).
+            <button
+              type="button"
+              onClick={() => {
+                saveTitle();
+                void saveClipFile(clip.clipId, clipFileName({ ...clip, title: title.trim() }))
+                  .then((where) => toast.success(fill(tp.clipSavedTo, { path: where })), () => toast.error(tp.clipSaveFailed));
+              }}
+              data-testid="clip-download"
+              className="h-9 px-3 inline-flex items-center gap-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white"
+            >
+              <Download size={14} />{tp.clipDownload}
+            </button>
+          ) : url && (
             <a
               href={url}
               download={clipFileName({ ...clip, title: title.trim() })}

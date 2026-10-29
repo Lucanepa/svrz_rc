@@ -14,7 +14,10 @@
 import { clockLabel } from './appTime';
 import { NOTEBOOK_TTL_MS } from './notebook';
 
-export type ClipFile = { name: string; type: string; size: number; blob: Blob };
+/** The video of a clip: in IndexedDB (`blob`, the web app and a picked file),
+ *  or in the installed app's folder (`path`, copied off a plugged-in card,
+ *  with `proxyPath` the camera's small .LRF copy when it had one). */
+export type ClipFile = { name: string; type: string; size: number; blob?: Blob; path?: string; proxyPath?: string };
 export type Clip = {
   /** `${ownerId}|${clipId}`. */
   id: string;
@@ -89,6 +92,15 @@ export async function putClip(clip: Clip): Promise<void> {
 export async function deleteClips(ids: string[]): Promise<void> {
   if (!ids.length) return;
   const d = await db();
+  // The installed app's files go with their clips.
+  const withFiles = await new Promise<Clip[]>((resolve) => {
+    const req = d.transaction(CLIPS, 'readonly').objectStore(CLIPS).getAll();
+    req.onsuccess = () => resolve((req.result as Clip[]).filter((c) => ids.includes(c.id) && c.file?.path));
+    req.onerror = () => resolve([]);
+  });
+  if (withFiles.length) {
+    void import('./clipFiles').then((m) => Promise.all(withFiles.map((c) => m.deleteClipFiles(c.clipId).catch(() => undefined)))).catch(() => undefined);
+  }
   await new Promise<void>((resolve, reject) => {
     const t = d.transaction(CLIPS, 'readwrite');
     for (const id of ids) t.objectStore(CLIPS).delete(id);
@@ -96,6 +108,16 @@ export async function deleteClips(ids: string[]): Promise<void> {
     t.onerror = () => reject(t.error);
   });
   changed();
+}
+
+/** Every clip id on this device, any coach's: what the installed app's folder may keep. */
+export async function allClipIds(): Promise<string[]> {
+  const d = await db();
+  return new Promise<string[]>((resolve, reject) => {
+    const req = d.transaction(CLIPS, 'readonly').objectStore(CLIPS).getAll();
+    req.onsuccess = () => resolve((req.result as Clip[]).map((c) => c.clipId));
+    req.onerror = () => reject(req.error);
+  });
 }
 
 export function newClip(ownerId: string, pageId: string, n: number, at: number, seconds: number, camera: string): Clip {

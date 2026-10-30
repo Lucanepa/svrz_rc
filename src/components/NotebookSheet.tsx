@@ -34,7 +34,7 @@ import type { PadSyncStatus } from '../lib/notebookSync';
 import { importBlock, pageBlock } from '../lib/notebookImport';
 import { richToPlain } from '../lib/richText';
 import { lineTimes, withLineTimes } from '../lib/notebookTimes';
-import { RichSurface, RichToolbar, appendBullet, appendCheck, appendNumbered, caretOffsets } from './RichText';
+import { RichSurface, RichToolbar, appendBullet, appendCheck, appendNumbered, caretOffsets, editAtCaret } from './RichText';
 import { confirmDialog, toast } from './ui';
 import AppSpinner from './AppSpinner';
 import StaleBuildNotice from './StaleBuildNotice';
@@ -503,7 +503,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     const line = `— ${label} —`;
     const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
     if (surface && document.activeElement === surface) {
-      document.execCommand('insertText', false, `\n${line}\n`);
+      editAtCaret('insertText', `\n${line}\n`);
       return;
     }
     const plain = richToPlain(currentText);
@@ -515,7 +515,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     if (surface && document.activeElement === surface) {
       // At the caret: execCommand keeps the selection and fires the surface's
       // own input event, which is what commits the page.
-      document.execCommand('insertText', false, stamp);
+      editAtCaret('insertText', stamp);
       return;
     }
     const plain = richToPlain(currentText);
@@ -530,7 +530,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     const text = make(before);
     const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
     if (surface && document.activeElement === surface) {
-      document.execCommand('insertText', false, text);
+      editAtCaret('insertText', text);
     } else {
       const plain = richToPlain(currentText);
       handleText(currentText ? `${currentText.replace(/\s+$/, '')}${plain ? '\n' : ''}${text}` : text);
@@ -551,8 +551,8 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     setMentionMenu(false);
     const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
     if (!surface || document.activeElement !== surface) return;
-    document.execCommand('delete');
-    document.execCommand('insertText', false, `${clipLine(c.n, c.at)} `);
+    editAtCaret('delete');
+    editAtCaret('insertText', `${clipLine(c.n, c.at)} `);
   };
   const format = (command: string, value?: string) => {
     const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;

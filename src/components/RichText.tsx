@@ -11,6 +11,21 @@ import { BOX_DONE, BOX_OPEN, domToRich, richToEditableHtml, richToPlain, toRuns 
  *  number with its dot) and the space after it. */
 const LIST_LINE = new RegExp(`^([ \\t]*)([${BOX_OPEN}${BOX_DONE}•]|(\\d{1,3})\\.)(?: |$)`);
 
+/** Set while the app itself edits a surface through execCommand. WebKit fires
+ *  `beforeinput` for execCommand too, so the `\n` in an inserted text reached
+ *  the list handler again as insertParagraph, which inserted `\n• ` again, and
+ *  so on: hundreds of bullets and a "Maximum call stack size exceeded" on an
+ *  iPad (30.10.2026). Chromium does not fire it, which is why only Safari did. */
+let ownEdit = 0;
+
+/** execCommand with the list handler held off — every edit the app makes on a
+ *  surface goes through here, not just the list's own. */
+export function editAtCaret(command: 'insertText' | 'delete', text?: string): boolean {
+  ownEdit += 1;
+  try { return document.execCommand(command, false, text); }
+  finally { ownEdit -= 1; }
+}
+
 /** The text of the caret's line on one side of it, read off the DOM the way
  *  domToRich reads it: a <br> or a block ends a line, as does a newline in a
  *  text node. (Range.toString() would lose the <br>s, and with them the lines.) */
@@ -270,7 +285,7 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
     const el = ref.current;
     if (!el) return;
     const onBeforeInput = (e: InputEvent) => {
-      if (e.inputType !== 'insertParagraph') return;
+      if (e.inputType !== 'insertParagraph' || ownEdit) return;
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return;
       const caret = sel.getRangeAt(0);
@@ -283,13 +298,13 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
       if (!before.slice(marker.length).trim() && !after.trim()) {
         // An empty item: take its marker back off, and the list is over.
         for (let i = 0; i < before.length; i += 1) sel.modify('extend', 'backward', 'character');
-        if (document.execCommand('delete')) e.preventDefault();
+        if (editAtCaret('delete')) e.preventDefault();
         return;
       }
       const next = mark === BOX_OPEN || mark === BOX_DONE ? `${BOX_OPEN} ` : mark === '•' ? '• ' : `${Number(num) + 1}. `;
       // Only once the browser has taken the insert is its own Enter cancelled:
       // a browser that refuses execCommand here still gets a plain new line.
-      if (document.execCommand('insertText', false, `\n${indent}${next}`)) e.preventDefault();
+      if (editAtCaret('insertText', `\n${indent}${next}`)) e.preventDefault();
     };
     el.addEventListener('beforeinput', onBeforeInput);
     return () => el.removeEventListener('beforeinput', onBeforeInput);
@@ -333,7 +348,7 @@ export function RichSurface({ value, onChange, placeholder, className, style, au
       onPaste={(e) => {
         e.preventDefault();
         const text = e.clipboardData.getData('text/plain');
-        document.execCommand('insertText', false, text);
+        editAtCaret('insertText', text);
       }}
       className={cn('rich-surface outline-none whitespace-pre-wrap break-words', className)}
       style={style}

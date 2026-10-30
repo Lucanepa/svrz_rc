@@ -481,6 +481,43 @@ test.describe('Into the form', () => {
     await expect.poll(async () => (await storedPages(page))[0]?.text).toMatch(/• a\n• b$/);
   });
 
+  // WebKit fires `beforeinput` for execCommand too, so the newline the list
+  // handler inserted came back to it as another Enter: one Enter on an iPad
+  // wrote hundreds of bullets and overflowed the stack (30.10.2026). Chromium
+  // does not, so CI never saw it; this makes Chromium do what WebKit does.
+  test('an Enter on a list line adds one marker where execCommand fires beforeinput (WebKit)', async ({ page }) => {
+    await page.addInitScript(() => {
+      const original = document.execCommand.bind(document);
+      let depth = 0;
+      document.execCommand = (command: string, ui?: boolean, value?: string) => {
+        if (command === 'insertText' && value?.includes('\n') && depth < 40) {
+          depth += 1;
+          try {
+            document.activeElement?.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertParagraph', bubbles: true, cancelable: true }));
+          } finally { depth -= 1; }
+        }
+        return original(command, ui, value);
+      };
+    });
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await pageBox(page).fill('• a');
+    await pageBox(page).press('Control+End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('b');
+    await expect(pageBox(page)).toHaveText(/^• a\s*• b$/);
+
+    // A heading written on a list line is a heading, not the next item.
+    await sheet(page).getByTestId('pad-section').click();
+    await sheet(page).getByRole('button', { name: /^(Vorspiel|Pre-game)$/ }).click();
+    await expect(pageBox(page)).toHaveText(/^• a\s*• b\s*— (Vorspiel|Pre-game) —$/);
+    await expect.poll(async () => (await storedPages(page))[0]?.text).toMatch(/^• a\n• b\n— (Vorspiel|Pre-game) —\n?$/);
+    expect(errors).toEqual([]);
+  });
+
   test('the phases of a match are headings a thumb can write', async ({ page }) => {
     await stubSignedInApp(page);
     await page.goto('/');

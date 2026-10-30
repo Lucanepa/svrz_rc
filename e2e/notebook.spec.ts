@@ -396,14 +396,39 @@ test.describe('Into the form', () => {
     await pageBox(page).evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); const sel = window.getSelection(); sel?.removeAllRanges(); sel?.addRange(r); });
     await sheet(page).getByRole('button', { name: /^(Fett|Bold)$/ }).click();
     await expect(pageBox(page).locator('b')).toHaveText('erster Satz');
+    // Caret at the end, nothing selected: the list buttons add a new line
+    // (a selection would turn the selected lines into items instead).
+    await pageBox(page).press('Control+End');
     await sheet(page).getByRole('button', { name: /Aufzählung|Bullet/ }).click();
-    await expect(pageBox(page)).toHaveText(/•/);
+    await expect(pageBox(page)).toHaveText(/erster Satz\s*•\s?$/);
     await sheet(page).getByRole('button', { name: /Nummerierung|Numbered/ }).click();
     await expect(pageBox(page)).toHaveText(/1\. ?$/);
     await sheet(page).getByRole('button', { name: /Nummerierung|Numbered/ }).click();
     await expect(pageBox(page)).toHaveText(/2\. ?$/);
     await expect(padSaved(page)).toBeVisible();
     expect((await storedPages(page))[0].text).toMatch(/<b>erster Satz<\/b>/);
+  });
+
+  test('selected lines become a numbered list, or a checklist, in the page', async ({ page }) => {
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPad(page);
+    await pageBox(page).fill('Netz messen');
+    await pageBox(page).press('Control+End');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('Antennen');
+    await pageBox(page).evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+    });
+    await sheet(page).getByRole('button', { name: /^1\. (Nummerierung|Numbered)$/ }).click();
+    await expect(pageBox(page)).toHaveText(/^1\. Netz messen\s*2\. Antennen$/);
+    // Another kind swaps the marks rather than stacking them.
+    await sheet(page).getByRole('button', { name: /Checkliste|Checklist/ }).click();
+    await expect(pageBox(page)).toHaveText(/^☐ Netz messen\s*☐ Antennen$/);
+    await expect.poll(async () => (await storedPages(page))[0]?.text).toMatch(/^☐ Netz messen\n☐ Antennen$/);
   });
 
   test('a checklist line, ticked and unticked by tapping its box', async ({ page }) => {

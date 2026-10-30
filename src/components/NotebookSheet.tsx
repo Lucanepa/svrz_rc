@@ -34,7 +34,7 @@ import type { PadSyncStatus } from '../lib/notebookSync';
 import { importBlock, pageBlock } from '../lib/notebookImport';
 import { richToPlain } from '../lib/richText';
 import { lineTimes, withLineTimes } from '../lib/notebookTimes';
-import { RichSurface, RichToolbar, appendBullet, appendCheck, appendNumbered, caretOffsets, editAtCaret } from './RichText';
+import { RichSurface, RichToolbar, appendBullet, appendCheck, appendNumbered, caretOffsets, editAtCaret, markSelectedLines } from './RichText';
 import { confirmDialog, toast } from './ui';
 import AppSpinner from './AppSpinner';
 import StaleBuildNotice from './StaleBuildNotice';
@@ -1069,7 +1069,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
               ) : side === 'text' ? (
                 <div ref={surfaceRef} className="relative flex-1 min-h-0 flex flex-col">
                   <div className="px-3 py-1.5 border-b border-stone-100 overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
-                    <RichToolbar de={de} onCommand={format} onBullet={() => handleText(appendBullet(currentText))} onNumber={() => handleText(appendNumbered(currentText))} onCheck={() => handleText(appendCheck(currentText))}>
+                    <RichToolbar de={de} onCommand={format} onBullet={() => markSelectedLines('bullet') || handleText(appendBullet(currentText))} onNumber={() => markSelectedLines('number') || handleText(appendNumbered(currentText))} onCheck={() => markSelectedLines('check') || handleText(appendCheck(currentText))}>
                       <span className="mx-0.5 h-5 w-px bg-stone-200" />
                       {/* With the other things that go into the text, not up by
                           the page arrows. mousedown is prevented so the stamp

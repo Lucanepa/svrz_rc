@@ -46,6 +46,8 @@ async function openTextCache(): Promise<Cache | null> {
 }
 
 async function extract(url: string): Promise<DocPages> {
+  // pdf.js reads page text with `for await` over a stream; Safari cannot.
+  await import('./streamIterator');
   const [pdfjsLib, worker] = await Promise.all([
     import('pdfjs-dist/legacy/build/pdf.mjs'),
     import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'),

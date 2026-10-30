@@ -120,6 +120,64 @@ export function setCaretOffsets(root: HTMLElement, [start, end]: [number, number
   sel.addRange(range);
 }
 
+export type ListKind = 'bullet' | 'number' | 'check';
+
+/** A toolbar list button on a selection: every written line the selection
+ *  touches becomes an item — or, when every one of them already is an item of
+ *  that kind, stops being one. Lines that were another kind of item swap
+ *  their mark. A coach writes first and lists afterwards: select, tap
+ *  "Bullet" (30.10.2026, an RC on an iPad mini — the button only ever added
+ *  a new bullet at the end). False when no surface holds a selection: the
+ *  caller adds a new item at the end, as before. */
+export function markSelectedLines(kind: ListKind): boolean {
+  const el = document.activeElement as HTMLElement | null;
+  const sel = window.getSelection();
+  if (!el?.classList.contains('rich-surface') || !sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+  const at = caretOffsets(el, sel.getRangeAt(0));
+  if (!at) return false;
+  const text = plainOf(el);
+  const [from, to] = at;
+  // The lines the selection touches, by where each starts. A selection that
+  // ends at the very start of a line (a triple tap does that) leaves it out.
+  const lines: { start: number; text: string }[] = [];
+  const first = from === 0 ? 0 : text.lastIndexOf('\n', from - 1) + 1;
+  for (let start = first; start === first || start < to;) {
+    const end = text.indexOf('\n', start);
+    const line = text.slice(start, end === -1 ? text.length : end);
+    if (line.trim()) lines.push({ start, text: line });
+    if (end === -1) break;
+    start = end + 1;
+  }
+  if (!lines.length) return false;
+  const kindOf = (mark: string | undefined, num: string | undefined): ListKind | null =>
+    num ? 'number' : mark === '•' ? 'bullet' : mark === BOX_OPEN || mark === BOX_DONE ? 'check' : null;
+  const parsed = lines.map((line) => {
+    const m = LIST_LINE.exec(line.text);
+    return { ...line, indent: m ? m[1].length : (/^[ \t]*/.exec(line.text)?.[0].length ?? 0), marker: m ? m[0].length - m[1].length : 0, kind: m ? kindOf(m[2], m[3]) : null };
+  });
+  const off = parsed.every((line) => line.kind === kind);
+  let shift = 0;
+  // Last line first, so the offsets of the lines above stay where they were.
+  for (let i = parsed.length - 1; i >= 0; i -= 1) {
+    const line = parsed[i];
+    const at0 = line.start + line.indent;
+    const mark = kind === 'bullet' ? '• ' : kind === 'check' ? `${BOX_OPEN} ` : `${i + 1}. `;
+    if (line.marker) {
+      setCaretOffsets(el, [at0, at0 + line.marker]);
+      editAtCaret('delete');
+      shift -= line.marker;
+    }
+    if (!off) {
+      setCaretOffsets(el, [at0, at0]);
+      editAtCaret('insertText', mark);
+      shift += mark.length;
+    }
+  }
+  // The same lines stay selected, marks and all, for a second tap.
+  setCaretOffsets(el, [parsed[0].start, to + shift]);
+  return true;
+}
+
 /** Nothing written: no text, and no more than the one line break a browser
  *  leaves in a box emptied by hand. The placeholder is keyed on this, set
  *  from here (data-empty): the CSS rule it replaced — "only a <br>" — also

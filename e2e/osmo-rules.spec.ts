@@ -115,7 +115,7 @@ test.describe('Matching the card to the clips', () => {
   });
 
   test('the first evening\'s card: three clips, the camera 14 s ahead, the third with a short buffer', () => {
-    // 29.10.2026, as tapped on the fw13 and as the SD card listed the files.
+    // 29.10.2026, as tapped on the laptop and as the SD card listed the files.
     const ms = (h: number, m: number, s: number, frac = 0) => at(h, m, s) + frac;
     const clips = [
       { clipId: 'c1', at: ms(22, 5, 30), stoppedAt: ms(22, 5, 31, 600) },

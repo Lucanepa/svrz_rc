@@ -98,7 +98,7 @@ import StaleBuildNotice from './components/StaleBuildNotice';
 import { NotebookPen, BarChart3, Signature } from 'lucide-react';
 import NotebookSheet, { type InsertContext } from './components/NotebookSheet';
 import { CameraOption, ClipAutoImport, cameraSupported } from './components/NotebookClips';
-import { RichSurface, RichToolbar, RichView, appendBullet, appendCheck } from './components/RichText';
+import { RichSurface, RichToolbar, RichView, appendBullet, appendCheck, markSelectedLines } from './components/RichText';
 import * as notebookSync from './lib/notebookSync';
 import type { PadSyncStatus } from './lib/notebookSync';
 import { PAD_STRINGS, fill as padFill } from './lib/notepadStrings';
@@ -781,7 +781,8 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
   const [open, setOpen] = useState(false);
   const de = lang === 'DE';
   // Plain-text bullets: renders correctly in the PDF and the e-mail as-is.
-  const addBullet = () => onChange(appendBullet(value));
+  // Selected lines become bullets; with nothing selected a new one is added.
+  const addBullet = () => { if (!markSelectedLines('bullet')) onChange(appendBullet(value)); };
   return (
     <>
       <div className="relative">
@@ -824,7 +825,7 @@ function ExpandableTextarea({ value, onChange, label, placeholder, lang, minHeig
                   document.execCommand(command, false, commandValue);
                 }}
                 onBullet={addBullet}
-                onCheck={() => onChange(appendCheck(value))}
+                onCheck={() => { if (!markSelectedLines('check')) onChange(appendCheck(value)); }}
               />
               <span className="ml-auto text-[11px] text-stone-400">{richToPlain(value).length}</span>
             </div>

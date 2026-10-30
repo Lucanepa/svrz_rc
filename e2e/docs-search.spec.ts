@@ -71,6 +71,23 @@ test('the search looks inside the documents on this device, and a hit opens the 
   await expect(page.locator('#pdf-search')).toHaveValue('Netzoberkante');
 });
 
+// The same on a Safari that cannot `for await` over a stream (up to 26.x):
+// pdf.js reads page text that way, so the text search found nothing there.
+test('the search looks inside the documents on a Safari that cannot iterate a stream', async ({ page }) => {
+  test.slow();
+  await page.addInitScript(() => {
+    delete (ReadableStream.prototype as unknown as Record<PropertyKey, unknown>)[Symbol.asyncIterator];
+    delete (ReadableStream.prototype as unknown as Record<PropertyKey, unknown>).values;
+  });
+  await stubSignedInApp(page, { keepDocsDefault: true });
+  await page.goto('/');
+  await storeDoc(page, '/docs/Leitfaden-SR-Technik.pdf');
+  await docsSearch(page).fill('Netzoberkante');
+  const results = page.getByTestId('doc-text-results');
+  await expect(results.getByText(/Leitfaden SR-Technik|Refereeing technique guide/)).toBeVisible({ timeout: 30_000 });
+  await expect(results.locator('mark').first()).toHaveText(/Netzoberkante/i);
+});
+
 test('"Dokumente beilegen" has the same search, inside the text too', async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');

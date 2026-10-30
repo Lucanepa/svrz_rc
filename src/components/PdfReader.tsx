@@ -28,6 +28,9 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { ChevronDown, ChevronUp, CornerUpLeft, ExternalLink, Loader2, Minus, Plus, Search, X } from 'lucide-react';
+// Before pdf.js: it reads page text with `for await` over a stream, which no
+// shipping Safari can do on its own.
+import '../lib/streamIterator';
 // The legacy build, deliberately. The default one calls Math.sumPrecise, which
 // no Safari has yet — and half of these coaches read this on an iPhone in a
 // gym. Where the modern build failed it did not fail loudly: font parsing threw,
@@ -699,6 +702,9 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, loa
         // "berührt den Ball zweimal", never what the coach typed.
         const loose: Hit[] = [];
         let unreadable = 0;
+        // Why the first unreadable page was: a count alone said "135 of 135"
+        // on an iPad for three days and nothing else (30.10.2026).
+        let unreadableWhy = '';
         const hitAt = (n: number, page: PageText, at: number, length: number): Hit => {
           const start = Math.max(0, at - 40);
           return {
@@ -718,7 +724,11 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, loa
           if (cancelled) return;
           const n = order[i];
           let page: PageText;
-          try { page = await pageText(n); } catch { unreadable += 1; continue; }
+          try { page = await pageText(n); } catch (error) {
+            unreadable += 1;
+            unreadableWhy ||= error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+            continue;
+          }
           for (const m of page.folded.matchAll(phrase)) found.push(hitAt(n, page, m.index ?? 0, m[0].length));
           if (words.length > 1 && words.every((w) => page.folded.includes(w))) {
             for (const w of words) {
@@ -765,6 +775,7 @@ export default function PdfReader({ url, title, originalHref, lang, onClose, loa
           // nothing.
           clientLog.info('pdf.search', 'searched a document in the reader', {
             pages: doc.numPages, hits: sorted.length, wordByWord, words: words.length, unreadable, chars: q.length, ms: Math.round(performance.now() - started),
+            ...(unreadableWhy ? { unreadableWhy } : {}),
           });
         }
       })();

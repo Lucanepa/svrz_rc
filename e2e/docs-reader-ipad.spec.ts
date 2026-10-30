@@ -150,6 +150,22 @@ test('a typed search goes to its first match, not only into the list', async ({ 
   await expect(reader.locator('#pdf-page-6 .ring-amber-500').first()).toBeInViewport({ timeout: 10_000 });
 });
 
+// Safari up to 26.x cannot `for await` over a stream, and pdf.js 6 reads every
+// page's text that way: on Mike's iPad (30.10.2026) all 135 pages of the
+// rulebook were "unreadable", every search found nothing and no word could be
+// selected. Playwright's WebKit is newer and can, so it is taken away here.
+test('a Safari that cannot iterate a stream still searches every page and lays out the words', async ({ page }) => {
+  await page.addInitScript(() => {
+    delete (ReadableStream.prototype as unknown as Record<PropertyKey, unknown>)[Symbol.asyncIterator];
+    delete (ReadableStream.prototype as unknown as Record<PropertyKey, unknown>).values;
+  });
+  await page.goto('/coachees');
+  const reader = await openDoc(page, GUIDE);
+  await reader.getByPlaceholder(/Im Dokument suchen|Search this document/).fill('laufwege');
+  await expect(reader.locator('header').getByText(/^1\/\d+$/)).toBeVisible({ timeout: 20_000 });
+  await expect(reader.locator('#pdf-page-1 .pdf-text-layer span', { hasText: /^Leitfaden SR-Technik/ }).first()).toBeAttached({ timeout: 20_000 });
+});
+
 test('while the document is still on its way, the search says so instead of "no matches"', async ({ page }) => {
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });

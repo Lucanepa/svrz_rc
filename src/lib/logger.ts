@@ -765,6 +765,11 @@ function installLifecycleLogging(): void {
  *  through VITE_API_BASE_URL; the app still talks to it, the LOG does not. */
 function shipsToAnotherOrigin(base: string): boolean {
   if (!base) return false;
+  // The installed app is no dev server, whatever its page is called: on
+  // Linux and macOS that is tauri://localhost, which the test below took for
+  // one — not a line from a desktop app ever reached the server (found
+  // 29.10.2026; Android and Windows, on http://tauri.localhost, shipped).
+  if (IS_NATIVE) return false;
   try {
     const local = /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname);
     return local && new URL(base, location.href).origin !== location.origin;

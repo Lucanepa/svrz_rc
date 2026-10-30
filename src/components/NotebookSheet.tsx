@@ -21,12 +21,12 @@
 // so opening and closing the sheet never syncs an empty row.
 
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { BrushCleaning, ChevronLeft, ChevronRight, Clock, Eraser, FileIcon, Hand, Keyboard, LayoutTemplate, Maximize2, Minimize2, MoveHorizontal, NotebookPen, PenLine, Plus, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { BrushCleaning, ChevronLeft, ChevronRight, Clock, Eraser, FileIcon, Hand, Keyboard, LayoutTemplate, Maximize2, Minimize2, MoveHorizontal, NotebookPen, PenLine, Plus, RotateCw, Trash2, Undo2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clockLabel, dayLabel, dayTimeLabel } from '../lib/appTime';
 import { PAD_STRINGS, fill, type PadLang } from '../lib/notepadStrings';
 import {
-  NOTEBOOK_MAX_PAGES, NOTEBOOK_MAX_TITLE_LEN, NOTEBOOK_INK_DEBOUNCE_MS, NOTEBOOK_TTL_MS, inkPoints, kindAfterWrite, makePage, pageExpiresAt, sidesKnown,
+  NOTEBOOK_MAX_PAGES, NOTEBOOK_MAX_TITLE_LEN, NOTEBOOK_INK_DEBOUNCE_MS, NOTEBOOK_TTL_MS, courtLandscape, inkPoints, kindAfterWrite, makePage, pageExpiresAt, sidesKnown, withCourtLandscape,
   type InkPage, type InkStroke, type NotebookPage, type PadField, type PageBackground, type PageKind,
 } from '../lib/notebook';
 import * as notebookSync from '../lib/notebookSync';
@@ -39,6 +39,8 @@ import { confirmDialog, toast } from './ui';
 import AppSpinner from './AppSpinner';
 import StaleBuildNotice from './StaleBuildNotice';
 import NoteTimes from './NoteTimes';
+import { CameraButton, ClipStrip, cameraSupported, clipLabel, openClipByNumber, useCameraOn, useClips } from './NotebookClips';
+import { CLIP_LINE_RE, clipLine, type Clip } from '../lib/clips';
 import { importFresh } from '../lib/freshImport';
 import { PEN_TRAILING_MS } from '../lib/inkInput';
 import { WHOLE_PAGE_SNAP } from '../lib/inkView';
@@ -134,7 +136,9 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const [currentId, setCurrentId] = useState<string>(() => rememberedPage(pages) || (pages[0] ? pages[0].pageId : ''));
   useEffect(() => { if (currentId) writePref(lastPageKey, currentId); }, [currentId, lastPageKey]);
   const [sectionMenu, setSectionMenu] = useState(false);
-  const [virtual, setVirtual] = useState<{ kind: PageKind; bg: PageBackground } | null>(null);
+  /** "@" typed on the typed side: the coach's clips to mention, newest first. */
+  const [mentionMenu, setMentionMenu] = useState(false);
+  const [virtual, setVirtual] = useState<{ kind: PageKind; bg: PageBackground; landscape?: boolean } | null>(null);
   const [sideDefault, setSideDefault] = useState<PageKind>(initialSide);
   /** The side on screen, per page, while the sheet is open: a view, never
    *  written. A page not in it shows its kind — the side last written. */
@@ -348,15 +352,16 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   // lot to pay for a menu opened by mistake. Capture, so it runs before that
   // one — the ConfirmDialog does the same.
   useEffect(() => {
-    if (!sectionMenu) return;
+    if (!sectionMenu && !mentionMenu) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       e.stopPropagation();
       setSectionMenu(false);
+      setMentionMenu(false);
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [sectionMenu]);
+  }, [sectionMenu, mentionMenu]);
 
   // Body scroll lock and focus restore, the ConfirmDialog way.
   useEffect(() => {
@@ -422,6 +427,8 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
   const madePage = useRef<NotebookPage | null>(null);
   useEffect(() => { if (current || virtual) madePage.current = null; }, [current, virtual]);
   const handleText = (value: string) => {
+    // Typing on after an "@" is an "@", not a mention.
+    if (mentionMenu) setMentionMenu(false);
     const open = current || madePage.current;
     // Every change stamps the lines it made: kept whether or not the column is
     // on, so turning it back on shows the evening as it was written.
@@ -473,6 +480,11 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
 
   const currentText = current ? current.text : '';
   const currentExtra = current ? current.extra : undefined;
+  // The camera's clips, on this device only. Once the pages are known, a clip
+  // whose page is gone goes too.
+  const clips = useClips(ownerId, status.loaded ? pages.map((p) => p.pageId) : null);
+  const [canBluetooth] = useState(cameraSupported);
+  const canFilm = useCameraOn() && canBluetooth;
   const times = useMemo(() => lineTimes(currentText, currentExtra), [currentText, currentExtra]);
   /** The evening in the order it happens. A coach taking notes through a match
    *  writes the same handful of headings every time and writes them badly with
@@ -509,6 +521,39 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
     const plain = richToPlain(currentText);
     handleText(currentText ? `${currentText.replace(/\s+$/, '')}${plain ? '\n' : ''}${stamp}` : stamp);
   };
+  /** A clip's line, where the coach is writing — like the time stamp. `make`
+   *  is given the page on screen (null: not written yet) so the clip can be
+   *  numbered on it; the id returned is the page the line went onto, which
+   *  the line itself made when there was none. */
+  const insertLine = (make: (pageIdBefore: string | null) => string): string | null => {
+    const before = (current || madePage.current)?.pageId ?? null;
+    const text = make(before);
+    const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
+    if (surface && document.activeElement === surface) {
+      document.execCommand('insertText', false, text);
+    } else {
+      const plain = richToPlain(currentText);
+      handleText(currentText ? `${currentText.replace(/\s+$/, '')}${plain ? '\n' : ''}${text}` : text);
+    }
+    return (current || madePage.current)?.pageId ?? null;
+  };
+  /** A clip line's colour in the page: blue once its video is on this device,
+   *  grey while it waits (or when the clip is another device's). */
+  const clipTone = useMemo(() => {
+    const withVideo = new Set(clips.filter((c) => c.file).map((c) => c.n));
+    return (text: string): string => {
+      const m = CLIP_LINE_RE.exec(text);
+      return m && withVideo.has(Number(m[1])) ? 'bg-sky-100 text-sky-800' : 'bg-stone-100 text-stone-600';
+    };
+  }, [clips]);
+  /** A clip picked after "@": its line replaces the "@" at the caret. */
+  const mentionClip = (c: Clip) => {
+    setMentionMenu(false);
+    const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
+    if (!surface || document.activeElement !== surface) return;
+    document.execCommand('delete');
+    document.execCommand('insertText', false, `${clipLine(c.n, c.at)} `);
+  };
   const format = (command: string, value?: string) => {
     const surface = surfaceRef.current?.querySelector('.rich-surface') as HTMLElement | null;
     if (surface && document.activeElement !== surface) surface.focus();
@@ -535,7 +580,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
       setInkState({ pageId: open.pageId, page: next, current: true });
       return;
     }
-    const page = makePage(ownerId, 'ink', virtualBg);
+    const page = virtual?.landscape ? withCourtLandscape(makePage(ownerId, 'ink', virtualBg), true) : makePage(ownerId, 'ink', virtualBg);
     page.points = inkPoints(next);
     notebookSync.commit(page, next, 0);
     madePage.current = page;
@@ -640,6 +685,14 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
       if (!inkWritable) return;
       notebookSync.commit({ ...current, bg: next, kind: kindAfterWrite(current, 'ink') }, undefined, 0);
     } else if (virtual) setVirtual({ ...virtual, bg: next });
+  };
+  /** The court across the page or down it: a view of the same page, kept with it. */
+  const landscape = current ? courtLandscape(current) : !!virtual?.landscape;
+  const rotateCourt = () => {
+    if (current) {
+      if (!inkWritable) return;
+      notebookSync.commit({ ...withCourtLandscape(current, !landscape), kind: kindAfterWrite(current, 'ink') }, undefined, 0);
+    } else if (virtual) setVirtual({ ...virtual, landscape: !landscape });
   };
   const deletePage = async () => {
     if (!current) { setVirtual(null); turnPage(); return; }
@@ -1046,8 +1099,38 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       >
                         <Plus size={12} className="shrink-0" />{tp.padSection}
                       </button>
+                      {canFilm && <CameraButton tp={tp} ownerId={ownerId} clips={clips} insertLine={insertLine} />}
                     </RichToolbar>
                   </div>
+                  <ClipStrip tp={tp} lang={lang} pageId={current ? current.pageId : null} text={currentText} clips={clips} />
+                  {mentionMenu && clips.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        aria-label={tp.padCancel}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => setMentionMenu(false)}
+                        className="absolute inset-0 z-10 cursor-default"
+                      />
+                      <div role="menu" aria-label={tp.padMentionTitle} data-testid="pad-mention" className="absolute left-3 right-3 top-[2.85rem] z-20 max-h-72 overflow-auto rounded-xl border border-stone-200 bg-white p-1.5 shadow-lg sm:max-w-sm">
+                        <p className="px-2 pb-1 text-[11px] font-medium text-stone-500">{tp.padMentionTitle}</p>
+                        {[...clips].sort((a, b) => b.at - a.at).slice(0, 20).map((c) => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            role="menuitem"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => mentionClip(c)}
+                            className="w-full h-8 px-2 inline-flex items-center gap-2 rounded-lg text-left text-xs text-stone-700 hover:bg-stone-100"
+                          >
+                            <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', c.file ? 'bg-red-600' : 'bg-stone-300')} />
+                            <span className="truncate">{clipLabel(tp, c)}</span>
+                            <span className="ml-auto shrink-0 text-stone-400">{dayLabel(c.at)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                   {sectionMenu && (
                     <>
                       {/* Anywhere else closes it, including the page itself. */}
@@ -1085,6 +1168,10 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       value={currentText}
                       onChange={handleText}
                       placeholder={tp.padPlaceholder}
+                      atoms={CLIP_LINE_RE}
+                      atomTone={clipTone}
+                      onAtSign={() => { if (clips.length) setMentionMenu(true); }}
+                      onAtom={(text) => { const m = CLIP_LINE_RE.exec(text); if (m) openClipByNumber(Number(m[1])); }}
                       className={cn('notebook-surface flex-1 min-w-0 min-h-[40vh] text-sm leading-relaxed py-3 bg-white', showTimes ? 'pl-3 pr-4' : 'px-4')}
                     />
                   </div>
@@ -1102,6 +1189,7 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                           key={viewKey}
                           page={inkPage}
                           bg={activeBg}
+                          bgLandscape={landscape}
                           readOnly={!inkWritable}
                           tool={tool}
                           fingerDraws={fingerDraws}
@@ -1151,6 +1239,9 @@ export default function NotebookSheet({ lang, ownerId, pages, status, insert, re
                       </button>
                     ))}
                     <button type="button" onClick={toggleCourt} disabled={!inkWritable} aria-pressed={activeBg === 'court'} aria-label={tp.padCourt} title={tp.padCourt} className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border text-xs font-medium disabled:opacity-40', activeBg === 'court' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><LayoutTemplate size={14} /><span className="hidden min-[50rem]:inline">{tp.padCourt}</span></button>
+                    {activeBg === 'court' && (
+                      <button type="button" onClick={rotateCourt} disabled={!inkWritable} aria-pressed={landscape} aria-label={tp.padCourtRotate} title={tp.padCourtRotate} data-testid="pad-court-rotate" className={cn('shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border text-xs font-medium disabled:opacity-40', landscape ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50')}><RotateCw size={14} /><span className="hidden min-[50rem]:inline">{tp.padCourtRotate}</span></button>
+                    )}
                     <button type="button" onClick={undo} disabled={inkPage.strokes.length === 0 || !inkWritable} aria-label={tp.padUndo} title={tp.padUndo} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><Undo2 size={14} /><span className="hidden min-[50rem]:inline">{tp.padUndo}</span></button>
                     <button type="button" onClick={() => void clearInk()} disabled={inkPage.strokes.length === 0 || !inkWritable} aria-label={tp.padClearInk} title={tp.padClearInk} className="shrink-0 h-9 px-2.5 inline-flex items-center gap-1 rounded-lg border border-stone-300 bg-white text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-40"><BrushCleaning size={14} /><span className="hidden min-[50rem]:inline">{tp.padClearInkShort}</span></button>
                     {/* Zoom for whoever does not think to pinch, and for a

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the app's own pages may ask of the shell: open a link outside the app, update and restart itself.",
+  "description": "What the app's own pages may ask of the shell: open a link outside the app, update and restart itself, and use Bluetooth for the notebook's camera.",
   "windows": [
     "main"
   ],
@@ -27,6 +27,7 @@
         }
       ]
     },
-    "process:allow-restart"
+    "process:allow-restart",
+    "blec:default"
   ]
 }

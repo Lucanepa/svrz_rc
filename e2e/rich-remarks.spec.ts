@@ -52,11 +52,13 @@ test('selected lines become bullets, and a second tap takes them off', async ({ 
   await page.getByRole('button', { name: /Edit larger|Grösser bearbeiten/ }).first().click();
   const surface = page.getByRole('dialog').locator('.rich-surface');
   await surface.click();
-  await page.keyboard.type('Ruhige Präsenz');
+  // A line at a time, not a key at a time: every keystroke re-renders the
+  // whole form, and sixty of them ran out the 30 s on a CI runner.
+  await page.keyboard.insertText('Ruhige Präsenz');
   await page.keyboard.press('Enter');
-  await page.keyboard.type('Netzkontrolle besprochen');
+  await page.keyboard.insertText('Netzkontrolle besprochen');
   await page.keyboard.press('Enter');
-  await page.keyboard.type('Schreiber instruiert');
+  await page.keyboard.insertText('Schreiber instruiert');
   await expect(surface).toHaveText(/^Ruhige Präsenz\s*Netzkontrolle besprochen\s*Schreiber instruiert$/);
   // From the middle of the second line to the middle of the third.
   const selectFromTo = (a: string, b: string) => surface.evaluate((el, [a, b]) => {

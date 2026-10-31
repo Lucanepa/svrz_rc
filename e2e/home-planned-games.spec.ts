@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 import { stubSignedInApp, summaryGame, BOERSE_RED, GAME, GAME_LD, GAME_MANUAL, GAME_VM, RC } from './support/app';
 
@@ -139,4 +140,89 @@ test('a game can be given back from the row that shows it', async ({ page }) => 
   // name for an API older than the id. The server only ever let a coach clear
   // their own.
   expect(JSON.parse(assigned[0].body)).toEqual({ assignedRc: '', assignedRcId: '' });
+});
+
+// A coach's planned games had no calendar button: the Games tab has one, but
+// it lists free games, and a game leaves it once somebody takes it — the coach
+// included (asked 31.10.2026). The row on Home that shows the game carries it.
+test('a planned game goes into the calendar from its row on Home', async ({ page }) => {
+  await page.route(/\/api\/rc-overview\/[^/]+\/coachees/, (r) => r.fulfill({
+    json: [{
+      coacheeId: 'c1', coacheeName: 'Coachee Eins',
+      doneFeedbacks: [],
+      outstandingGames: [{ ...game(2), gameDate: '2026-09-20T15:00:00Z' }],
+      plannedGames: [{
+        ...game(1),
+        matchNo: '418398',
+        location: 'Halle Riesbach, Strasse 3, 8008 Zürich',
+        crew: [
+          { name: 'Coachee Eins', role: '1. SR', coachee: true },
+          { name: 'Zweite Person', role: '2. SR', coachee: false },
+        ],
+      }],
+    }],
+  }));
+  await page.goto('/home');
+
+  const planned = page.getByTestId('game-row').filter({ hasText: 'Heim 1' });
+  const download = page.waitForEvent('download');
+  await planned.getByRole('button', { name: /^(Kalender-Export|Export to calendar)$/ }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe('418398.ics');
+  const ics = await readFile((await file.path())!, 'utf8');
+  expect(ics).toContain('SUMMARY:418398 Heim 1 vs Gast 1');
+  expect(ics).toContain('DTSTART:20261001T193000Z');
+  expect(ics).toContain('DTEND:20261001T213000Z');
+  // Commas are TEXT separators in iCalendar: escaped, as the feed does.
+  expect(ics).toContain('LOCATION:Halle Riesbach\\, Strasse 3\\, 8008 Zürich');
+  expect(ics).toContain('1SR: Coachee Eins');
+  expect(ics).toContain('2SR: Zweite Person');
+  expect(ics).toContain('UID:g1@svrz-rc');
+
+  // A game still waiting for its report is over: no calendar entry for it.
+  const outstanding = page.getByTestId('game-row').filter({ hasText: 'Heim 2' });
+  await expect(outstanding).toBeVisible();
+  await expect(outstanding.getByRole('button', { name: /^(Kalender-Export|Export to calendar)$/ })).toHaveCount(0);
+});
+
+// Three labelled thirds already filled a phone's line; the calendar button is
+// an icon so the four still fit on it, with no label cut or pushed off.
+// German first: its labels are the longer ones.
+for (const lang of ['DE', 'EN'] as const) {
+  test(`on a narrow phone the four buttons of a planned game share one line (${lang})`, async ({ page }) => {
+    await page.addInitScript((l) => { try { localStorage.setItem('svrz_lang', l); } catch { /* ignore */ } }, lang);
+    await page.setViewportSize({ width: 360, height: 780 });
+    await page.goto('/home');
+    const row = page.getByTestId('game-row').filter({ hasText: /Heim \d+/ }).first();
+    const buttons = row.getByRole('button', { name: /^(Open game|Spiel öffnen|Send reminder|Erinnerung senden|Give game back|Spiel abgeben|Export to calendar|Kalender-Export)$/ });
+    await expect(buttons).toHaveCount(4);
+    const rowBox = (await row.boundingBox())!;
+    const boxes = await Promise.all((await buttons.all()).map(async (b) => (await b.boundingBox())!));
+    for (const box of boxes) {
+      expect(Math.round(box.y)).toBe(Math.round(boxes[0].y));
+      expect(box.x + box.width).toBeLessThanOrEqual(rowBox.x + rowBox.width + 0.5);
+    }
+    const clipped = await buttons.evaluateAll((els) => els.filter((el) => el.scrollWidth > el.clientWidth + 1).length);
+    expect(clipped).toBe(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+}
+
+// The subscription carries every game the coach takes and drops the ones
+// handed back. It was reachable from the Options sheet alone.
+test('the calendar subscription opens from the heading of the planned list', async ({ page }) => {
+  let asked = 0;
+  await page.route('**/api/ical/me*', (r) => {
+    asked++;
+    return r.fulfill({ json: {
+      name: 'Coach Test', count: 10, srGames: false, srCount: 0,
+      url: 'https://api.example/api/ical/tok.ics?lang=de',
+      webcalUrl: 'webcal://api.example/api/ical/tok.ics?lang=de',
+      downloadUrl: 'https://api.example/api/ical/tok.ics?lang=de&download=1',
+    } });
+  });
+  await page.goto('/home');
+  await page.getByRole('button', { name: /^(Kalender-Abo|Calendar subscription)$/ }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect.poll(() => asked).toBeGreaterThan(0);
 });

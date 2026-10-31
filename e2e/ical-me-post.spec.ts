@@ -32,7 +32,8 @@ async function openCalendar(page: import('@playwright/test').Page, seen: Seen[])
   });
   await page.goto('/');
   await openOptions(page);
-  await page.getByRole('button', { name: /Kalender-Abo|Calendar subscription/ }).click();
+  // The Options row: Home's planned list carries a button of the same name.
+  await page.getByRole('dialog', { name: /^(Options|Optionen)$/ }).getByRole('button', { name: /Kalender-Abo|Calendar subscription/ }).click();
   await expect.poll(() => seen.length).toBeGreaterThan(0);
 }
 

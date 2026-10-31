@@ -612,7 +612,21 @@ function formatDisplayDate(value: string): string {
   return dayTimeLabel(value) || value;
 }
 
-function downloadIcal(game: EligibleGame) {
+/** What a one-off calendar file needs of a game. The Games tab and Home hold
+ *  their games in different shapes; both hand this over. */
+type IcalGame = {
+  id: string; date: string; matchNo?: string;
+  /** "Home vs Away". */
+  teams: string;
+  location?: string; league?: string; firstReferee?: string; secondReferee?: string;
+};
+
+const icalOfGame = (game: EligibleGame): IcalGame => ({
+  id: game.id, date: game.date, matchNo: game.matchNo, teams: `${game.homeTeam} vs ${game.awayTeam}`,
+  location: game.location, league: game.league, firstReferee: game.firstReferee, secondReferee: game.secondReferee,
+});
+
+function downloadIcal(game: IcalGame) {
   // The same three shapes the subscription feed handles (see icalMoment on the
   // server) — and the same answers, so a downloaded file and a subscribed feed
   // can never disagree about one fixture.
@@ -638,7 +652,7 @@ function downloadIcal(game: EligibleGame) {
       `DTEND;VALUE=DATE:${next.getUTCFullYear()}${two(next.getUTCMonth() + 1)}${two(next.getUTCDate())}`,
     );
   }
-  const title = `${game.matchNo} ${game.homeTeam} vs ${game.awayTeam}`;
+  const title = [game.matchNo, game.teams].filter(Boolean).join(' ');
   // Same escaping the subscription feed applies (icsEscape on the server): a
   // hall address is "Halle, Strasse 3, 8005 Zürich" — commas and semicolons are
   // TEXT separators in iCalendar, and an unescaped one is a malformed value.
@@ -654,7 +668,7 @@ function downloadIcal(game: EligibleGame) {
     `DTSTAMP:${fmt(new Date())}`,
     `SUMMARY:${esc(title)}`,
     `LOCATION:${esc(game.location || '')}`,
-    `DESCRIPTION:${esc(game.league)}${game.firstReferee ? `\\n1SR: ${esc(game.firstReferee)}` : ''}${game.secondReferee ? `\\n2SR: ${esc(game.secondReferee)}` : ''}`,
+    `DESCRIPTION:${esc(game.league || '')}${game.firstReferee ? `\\n1SR: ${esc(game.firstReferee)}` : ''}${game.secondReferee ? `\\n2SR: ${esc(game.secondReferee)}` : ''}`,
     `UID:${game.id}@svrz-rc`,
     'END:VEVENT',
     'END:VCALENDAR',
@@ -7950,17 +7964,20 @@ export default function App() {
                 }
                 return { hard, soft };
               };
-              /** One row of the coach's own lists. `canRemind` only for games
-               *  still to come: reminding somebody about a match they have
-               *  already refereed is noise. */
-              /** One of the row's three buttons: an equal third of the line on
-               *  a phone, a compact fixed-width button from `sm`, where three
-               *  thirds of a laptop row would be three slabs. */
-              const HOME_TOOL_BTN = 'inline-flex h-8 flex-1 basis-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-1.5 text-[11px] font-medium transition-colors sm:flex-none sm:basis-auto sm:px-3 sm:text-xs';
+              /** One row of the coach's own lists. `upcoming` for games still
+               *  to come: they get the reminder and the calendar file.
+               *  Reminding somebody about a match they have already refereed
+               *  is noise, and so is a calendar entry for an evening gone. */
+              /** One of the row's three labelled buttons: an equal third of
+               *  the line on a phone, a compact fixed-width button from `sm`,
+               *  where three thirds of a laptop row would be three slabs. Tight
+               *  padding on a phone: with the calendar icon beside them, the
+               *  German labels overran a 360 px line by 4 px. */
+              const HOME_TOOL_BTN = 'inline-flex h-8 flex-1 basis-0 items-center justify-center gap-1 whitespace-nowrap rounded-md px-1 text-[11px] font-medium transition-colors sm:flex-none sm:basis-auto sm:gap-1.5 sm:px-3 sm:text-xs';
               /** `pendingPill` off for the upcoming list: a game still to come
                *  is pending by definition, so the pill said nothing there. The
                *  "In Bearbeitung" pill for an open draft stays everywhere. */
-              const gameRow = (g: HomeGame, key: string, canRemind = false, tone: RowTone = 'red', pendingPill = true) => {
+              const gameRow = (g: HomeGame, key: string, upcoming = false, tone: RowTone = 'red', pendingPill = true) => {
                 const scope = gameScope(g);
                 const inScope = scope.hard.length === 0;
                 // Nothing filed yet: the only question this list can answer is
@@ -8048,7 +8065,7 @@ export default function App() {
                       <PenLine size={13} className="shrink-0" />
                       {de ? 'Beobachten' : 'Observe'}
                     </button>
-                    {canRemind && (
+                    {upcoming && (
                       <button
                         onClick={() => void remindFromHome(g.gameId, `${g.teams} (${fmtDate(g.gameDate)})`, de)}
                         aria-label={de ? 'Erinnerung senden' : 'Send reminder'}
@@ -8072,6 +8089,26 @@ export default function App() {
                       <RotateCcw size={13} className="shrink-0" />
                       {de ? 'Abgeben' : 'Give back'}
                     </button>
+                    {/* The coach's own planned games used to have no calendar
+                        button at all: the Games tab had one, but it lists free
+                        games, and a taken one leaves it. An icon, not a fourth
+                        label: three labelled thirds already fill a phone's
+                        line. */}
+                    {upcoming && (
+                      <button
+                        onClick={() => downloadIcal({
+                          id: g.gameId, date: g.gameDate, matchNo: g.matchNo, teams: g.teams,
+                          location: g.location, league: g.league,
+                          firstReferee: g.crew?.find((r) => r.role === '1. SR')?.name,
+                          secondReferee: g.crew?.find((r) => r.role === '2. SR')?.name,
+                        })}
+                        aria-label={de ? 'Kalender-Export' : 'Export to calendar'}
+                        title={de ? 'Kalender-Export: das Spiel als Termin für deinen Kalender' : 'Export to calendar: the game as an event for your calendar'}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-stone-300 bg-white text-stone-500 transition-colors hover:bg-stone-50"
+                      >
+                        <CalendarDays size={14} />
+                      </button>
+                    )}
                   </>}
                 >
                   {/* The answer to the check Infoschreiben 4.1 asks for, before
@@ -8532,6 +8569,22 @@ export default function App() {
                           icon={<CalendarDays size={14} />}
                           title={de ? 'Nächste Beobachtungen' : 'Next observations'}
                           count={homeData.nextGames.length || undefined}
+                          // One subscription carries every game the coach
+                          // takes, and drops the ones given back — better
+                          // than a file per game, and it lived only in the
+                          // Options sheet. No demo branch, as there: the demo
+                          // has no feed to subscribe to.
+                          action={!isDemoMode() && (
+                            <button
+                              type="button"
+                              onClick={() => setShowCalendarModal(true)}
+                              title={de ? 'Alle übernommenen Spiele automatisch in deinem Kalender' : 'Every game you take, in your calendar by itself'}
+                              className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-[11px] font-medium text-stone-600 transition-colors hover:bg-stone-100"
+                            >
+                              <CalendarPlus size={12} className="shrink-0" />
+                              {de ? 'Kalender-Abo' : 'Calendar subscription'}
+                            </button>
+                          )}
                           // Absence of a warning is itself a claim, and this is
                         />
                         {/* Every one of them: this list is the answer to the
@@ -9436,7 +9489,7 @@ export default function App() {
                                       );
                                     })()}
                                     <button
-                                      onClick={(e) => { e.stopPropagation(); downloadIcal(game); }}
+                                      onClick={(e) => { e.stopPropagation(); downloadIcal(icalOfGame(game)); }}
                                       className="h-9 w-9 flex items-center justify-center border border-stone-300 rounded-md bg-white shadow-sm hover:border-stone-400 hover:bg-stone-50 transition-colors cursor-pointer"
                                       title={formData.lang === 'DE' ? 'Kalender-Export' : 'Export to calendar'}
                                     >

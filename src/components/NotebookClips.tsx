@@ -19,7 +19,7 @@ import { OsmoError, bluetoothSupport, findNativeCamera, pickWebCamera, type Osmo
 import { DEFAULT_PRE_SECONDS, cameraState, connectCamera, disconnectCamera, saveClip, subscribeCamera } from '../lib/osmoCamera';
 import { isPreRecording, isRecording } from '../lib/osmoProtocol';
 import {
-  allClipIds, clipLine, clipNumbersIn, deleteClips, doomedClips, listClips, matchClipFiles, newClip, nextClipNumber, playableType, putClip, subscribeClips,
+  HEAVY_MBIT, allClipIds, clipLine, clipMbit, clipNumbersIn, deleteClips, doomedClips, fallsBehind, listClips, matchClipFiles, newClip, nextClipNumber, playableType, putClip, subscribeClips,
   type Clip,
 } from '../lib/clips';
 import { cameraMedia, clipFileUrl, importClipFile, pruneClipFiles, saveClipFile, type MediaFile } from '../lib/clipFiles';
@@ -544,9 +544,29 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
   const file = clip.file;
   const hasProxy = !!file?.proxyPath;
   // The original by default (2.7K on the first card; the 720p copy looked
-  // "very bad", 30.10.2026). "720p" switches to the camera's small copy, and
-  // a failing original falls back to it by itself.
-  const [light, setLight] = useState(false);
+  // "very bad", 30.10.2026). "720p" switches to the camera's small copy. The
+  // app takes the copy itself when the original cannot play: one too heavy to
+  // start on (4K at 120 fps, 31.10.2026 — clips.ts), one that falls behind
+  // while playing, and one that fails to load.
+  const mbit = clipMbit(file, clip.seconds);
+  const heavy = hasProxy && mbit > HEAVY_MBIT;
+  const [light, setLight] = useState(heavy);
+  /** Why the copy plays, when the app chose it. */
+  const [lightWhy, setLightWhy] = useState<'' | 'heavy' | 'slow'>(heavy ? 'heavy' : '');
+  /** Falling behind with no copy to go to. */
+  const [slowNoCopy, setSlowNoCopy] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  /** Where the picture was when the source changed: the new one goes on there. */
+  const resumeAt = useRef(0);
+  const switchLight = (next: boolean, why: '' | 'heavy' | 'slow' = '') => {
+    resumeAt.current = videoRef.current?.currentTime ?? 0;
+    setLight(next);
+    setLightWhy(next ? why : '');
+  };
+  useEffect(() => {
+    if (heavy) clientLog.info('clips.play.light', 'original too heavy, the 720p copy plays', { mbit: Math.round(mbit) });
+    // Once, for the clip this dialog was opened on.
+  }, []);
   // What the <video> plays. In the installed app the file is read into
   // memory first: WebKitGTK will not play from the app's own URL scheme
   // (NotSupportedError at once, 30.10.2026), while a blob plays.
@@ -592,7 +612,6 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
     return () => { alive = false; if (made) URL.revokeObjectURL(made); };
   }, [file]);
 
-  const videoRef = useRef<HTMLVideoElement>(null);
   // The skip lands whenever it is known: before the play, or a moment into it.
   useEffect(() => {
     const v = videoRef.current;
@@ -601,6 +620,16 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
     if (v.readyState >= 1) jump(); else v.addEventListener('loadedmetadata', jump, { once: true });
     return () => v.removeEventListener('loadedmetadata', jump);
   }, [url, startAt, fromStart]);
+  // After a switch between the original and the copy: on from the same place.
+  useEffect(() => {
+    const v = videoRef.current;
+    const at = resumeAt.current;
+    if (!v || !url || at <= 0) return;
+    resumeAt.current = 0;
+    const go = () => { v.currentTime = at; };
+    if (v.readyState >= 1) go(); else v.addEventListener('loadedmetadata', go, { once: true });
+    return () => v.removeEventListener('loadedmetadata', go);
+  }, [url]);
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !url) return;
@@ -615,12 +644,38 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
     };
     v.addEventListener('playing', onPlaying);
     v.addEventListener('error', onError);
+    // Falling behind (clips.ts): timed from each start of play, anew after a
+    // seek; a pause stops the clock.
+    let since: { wall: number; media: number } | null = null;
+    const start = () => { since = v.paused ? null : { wall: performance.now(), media: v.currentTime }; };
+    const stop = () => { since = null; };
+    v.addEventListener('playing', start);
+    v.addEventListener('seeked', start);
+    v.addEventListener('seeking', stop);
+    v.addEventListener('pause', stop);
+    const watch = window.setInterval(() => {
+      if (!since || v.paused || v.ended) return;
+      const wall = (performance.now() - since.wall) / 1000;
+      const media = v.currentTime - since.media;
+      if (!fallsBehind(wall, media, v.playbackRate)) return;
+      window.clearInterval(watch);
+      clientLog.info('clips.play.slow', 'clip falls behind', { light, wall: Math.round(wall * 10) / 10, media: Math.round(media * 10) / 10, mbit: Math.round(mbit) });
+      if (!light && hasProxy) switchLight(true, 'slow'); else setSlowNoCopy(true);
+    }, 500);
     // Started by the code, so a refusal is seen: no sound allowed, then muted.
     v.play().catch((err: unknown) => {
       say(`play refused: ${(err as { name?: string })?.name || err}`);
       if ((err as { name?: string })?.name === 'NotAllowedError') { v.muted = true; void v.play().catch(() => undefined); }
     });
-    return () => { v.removeEventListener('playing', onPlaying); v.removeEventListener('error', onError); };
+    return () => {
+      window.clearInterval(watch);
+      v.removeEventListener('playing', onPlaying);
+      v.removeEventListener('error', onError);
+      v.removeEventListener('playing', start);
+      v.removeEventListener('seeked', start);
+      v.removeEventListener('seeking', stop);
+      v.removeEventListener('pause', stop);
+    };
     // The listeners belong to this source; `url` names it.
   }, [url]);
   const [title, setTitle] = useState(clip.title || '');
@@ -683,6 +738,9 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
           </button>
         </div>
       )}
+      {(slowNoCopy || (light && lightWhy)) && (
+        <p className="w-full max-w-4xl mt-2 text-xs text-amber-200" data-testid="clip-heavy">{slowNoCopy ? tp.clipSlow : tp.clipHeavy}</p>
+      )}
       <div className="w-full max-w-4xl flex items-center justify-between gap-2 mt-2 text-sm">
         <span className="text-white/60 text-xs flex items-center gap-2 min-w-0">
           <span className="truncate">{fill(tp.clipPre, { s: clip.seconds })}</span>
@@ -706,7 +764,7 @@ function ClipDialog({ tp, lang, clip, onPickFiles, onClose }: { tp: Strings; lan
           {hasProxy && (
             <button
               type="button"
-              onClick={() => setLight((l) => !l)}
+              onClick={() => switchLight(!light)}
               aria-pressed={light}
               title={tp.clipLightTitle}
               data-testid="clip-light"

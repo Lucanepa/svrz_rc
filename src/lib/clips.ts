@@ -236,3 +236,37 @@ export function matchClipFiles(clips: { clipId: string; at: number; stoppedAt?: 
 
 /** The type a picked file is played with: DJI's .LRF is an MP4 under another name. */
 export const playableType = (f: { name: string; type: string }): string => (f.type && f.type.startsWith('video/') ? f.type : 'video/mp4');
+
+// ── Too heavy to play ────────────────────────────────────────────────────
+// The camera films what it is set to, and 4K at 120 fps (10-bit H.265, 311
+// Mbit/s, 600 MB for 16 s) is more than the installed app plays in real time
+// on a laptop: 1.5 s of video in 7 s (31.10.2026, Radeon 890M). The GPU decodes
+// it at twice real time while the frames stay on it; what falls behind is
+// copying every 4K frame back to memory, 120 times a second — GStreamer's
+// download path (the webview's) took 35 s for 16 s, mpv's vaapi-copy fell
+// short too. 2.7K at 60 fps (75 Mbit/s) played. Such a clip starts on the
+// camera's 720p copy, and an original that falls behind switches to it.
+
+/** Over this the original starts on the 720p copy, when there is one. */
+export const HEAVY_MBIT = 150;
+
+/** The original's data rate in Mbit/s: its size over the clip's length — the
+ *  Pre-Rec seconds and the second the camera ran on after the tap. */
+export function clipMbit(file: { size: number } | null | undefined, seconds: number): number {
+  if (!file || !(file.size > 0)) return 0;
+  return (file.size * 8) / (Math.max(1, seconds + 1) * 1e6);
+}
+
+/** How long a play is watched before it is judged, in seconds. */
+export const BEHIND_AFTER_S = 4;
+
+/**
+ * Whether a video falls behind: under 60 % of real time over at least
+ * BEHIND_AFTER_S seconds, at the speed it is set to — slow motion picked in
+ * the player is not falling behind.
+ */
+export function fallsBehind(wallSeconds: number, mediaSeconds: number, playbackRate = 1): boolean {
+  if (wallSeconds < BEHIND_AFTER_S) return false;
+  const rate = playbackRate > 0 ? playbackRate : 1;
+  return mediaSeconds / (wallSeconds * rate) < 0.6;
+}

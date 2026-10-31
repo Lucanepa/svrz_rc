@@ -4,7 +4,7 @@ import {
   CMD, CMD_TYPE, FrameReader, buildFrame, connectRequestPayload, crc16, crc32, isOsmoAdvert, parseConnectRequest, parseFrame,
   parseStatus, recordPayload,
 } from '../src/lib/osmoProtocol';
-import { clipNumbersIn, doomedClips, fileEnd, matchClipFiles, newClip, nextClipNumber, type PickedFile } from '../src/lib/clips';
+import { HEAVY_MBIT, clipMbit, clipNumbersIn, doomedClips, fallsBehind, fileEnd, matchClipFiles, newClip, nextClipNumber, type PickedFile } from '../src/lib/clips';
 
 /**
  * The Osmo Action's Bluetooth protocol (src/lib/osmoProtocol.ts) against the
@@ -174,5 +174,25 @@ test.describe('Matching the card to the clips', () => {
     const old = newClip('rc', 'page-1', 2, now - 8 * 24 * 3_600_000, 10, 'Osmo');
     const doomed = doomedClips([kept, pageGone, justNow, old], new Set(['page-1']), now).map((c) => c.pageId + c.n);
     expect(doomed).toEqual(['page-21', 'page-12']);
+  });
+
+  // 31.10.2026: 4K at 120 fps, 614 MB for a 15 s Pre-Rec clip — less than half
+  // speed on the laptop. The 2.7K/60 card of the day before (75 Mbit/s) played.
+  test('a 4K/120 original is too heavy to start on; a 2.7K/60 one is not', () => {
+    expect(clipMbit({ size: 614_270_983 }, 15)).toBeGreaterThan(HEAVY_MBIT);
+    expect(clipMbit({ size: 150_000_000 }, 15)).toBeLessThan(HEAVY_MBIT);
+    expect(clipMbit(null, 15)).toBe(0);
+    expect(clipMbit({ size: 0 }, 15)).toBe(0);
+  });
+
+  test('falling behind is under 60 % of real time, judged after four seconds, at the chosen speed', () => {
+    // The laptop's log: 1.5 s of video in 7 s.
+    expect(fallsBehind(7, 1.5)).toBe(true);
+    expect(fallsBehind(4, 3.9)).toBe(false);
+    // Too early to say.
+    expect(fallsBehind(3, 0.2)).toBe(false);
+    // Slow motion set in the player is not falling behind.
+    expect(fallsBehind(8, 2, 0.25)).toBe(false);
+    expect(fallsBehind(8, 0.8, 0.25)).toBe(true);
   });
 });

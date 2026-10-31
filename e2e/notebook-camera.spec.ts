@@ -109,6 +109,50 @@ async function clipMenu(page: Page) {
   return list;
 }
 
+/**
+ * A clip of the installed app: its files in the app's folder, the original and
+ * the camera's 720p copy, both played from their file URLs. The page is given
+ * the app's convertFileSrc, pointing at a route that serves a 12 s moving
+ * video, and the route notes which file was asked for.
+ */
+async function desktopClip(page: Page, size: number): Promise<string[]> {
+  const video = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'moving-12s.webm'));
+  const asked: string[] = [];
+  await page.route('https://clips.test/**', (r) => {
+    asked.push(new URL(r.request().url()).pathname);
+    return r.fulfill({ body: video, contentType: 'video/webm' });
+  });
+  await page.addInitScript((size) => {
+    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = { convertFileSrc: (p: string) => `https://clips.test${p}` };
+    const now = Date.now();
+    const open = indexedDB.open('svrz-clips', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('clips', { keyPath: 'id' });
+    open.onsuccess = () => {
+      const tx = open.result.transaction('clips', 'readwrite');
+      tx.objectStore('clips').put({
+        id: 'rc1|clip-4k', ownerId: 'rc1', clipId: 'clip-4k', pageId: 'page-x', n: 1, at: now - 60_000, seconds: 15,
+        stoppedAt: now - 58_000, camera: 'Osmo', createdAt: now - 5_000,
+        file: { name: 'DJI_0001_D.MP4', type: 'video/mp4', size, path: '/clips/clip-4k.mp4', proxyPath: '/clips/clip-4k.proxy.mp4' },
+      });
+      tx.oncomplete = () => open.result.close();
+    };
+  }, size);
+  return asked;
+}
+
+/** Opens the notebook, mentions the one clip and taps its line. */
+async function openTheClip(page: Page) {
+  await stubSignedInApp(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ }).click();
+  await pageBox(page).click();
+  await page.keyboard.type('@');
+  await sheet(page).getByTestId('pad-mention').getByRole('menuitem').first().click();
+  await pageBox(page).locator('[data-atom]').click();
+  await expect(page.getByTestId('clip-player')).toBeVisible();
+  return page.getByTestId('clip-player');
+}
+
 const osmoLog = (page: Page) => page.evaluate(() => (window as unknown as { __osmoLog: { at: number; what: string }[] }).__osmoLog.map((l) => ({ ...l })));
 
 test.describe('The notebook films with an Osmo', () => {
@@ -302,6 +346,52 @@ test.describe('The notebook films with an Osmo', () => {
     await fromStart.click();
     await expect.poll(() => player.getByTestId('clip-video').evaluate((v) => (v as HTMLVideoElement).currentTime)).toBeLessThan(1.3);
     await expect(fromStart).toHaveText(/^(Standbild am Anfang überspringen|Skip the still picture at the start)/);
+  });
+
+
+  // 31.10.2026: the camera filmed 4K at 120 fps, 600 MB a clip, and the laptop
+  // played 1.5 s of it in 7 s. Such an original starts on the 720p copy — and
+  // is not read into memory at all unless asked for.
+  test('a 4K/120 original starts on the 720p copy, and says why', async ({ page }) => {
+    const asked = await desktopClip(page, 614_270_983);
+    const player = await openTheClip(page);
+    await expect(player.getByTestId('clip-light')).toHaveAttribute('aria-pressed', 'true');
+    await expect(player.getByTestId('clip-heavy')).toHaveText(/zu schwer für dieses Gerät|too heavy for this device/);
+    await expect(player.getByTestId('clip-video')).toHaveAttribute('src', /^blob:/);
+    expect(asked).toContain('/clips/clip-4k.proxy.mp4');
+    expect(asked).not.toContain('/clips/clip-4k.mp4');
+    // The original, when the coach asks for it.
+    await player.getByTestId('clip-light').click();
+    await expect(player.getByTestId('clip-light')).toHaveAttribute('aria-pressed', 'false');
+    await expect(player.getByTestId('clip-heavy')).toHaveCount(0);
+    await expect.poll(() => asked).toContain('/clips/clip-4k.mp4');
+  });
+
+  test('an original that falls behind switches to the 720p copy, where it was', async ({ page }) => {
+    // The original's clock runs at a third of real time: what a device that
+    // cannot decode it in time shows.
+    await page.addInitScript(() => {
+      const real = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime')!;
+      let slowed: HTMLMediaElement | null = null;
+      Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+        configurable: true,
+        get(this: HTMLMediaElement) {
+          const t = real.get!.call(this) as number;
+          if (!slowed && this.dataset.testid === 'clip-video') slowed = this;
+          return this === slowed ? t * 0.3 : t;
+        },
+        set(this: HTMLMediaElement, v: number) { real.set!.call(this, v); },
+      });
+    });
+    const asked = await desktopClip(page, 2_000_000);
+    const player = await openTheClip(page);
+    await expect(player.getByTestId('clip-light')).toHaveAttribute('aria-pressed', 'false');
+    expect(asked).toContain('/clips/clip-4k.mp4');
+    // Judged four seconds into the play.
+    await expect(player.getByTestId('clip-light')).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 });
+    await expect(player.getByTestId('clip-heavy')).toBeVisible();
+    // On from where the original was, not from the start.
+    await expect.poll(() => player.getByTestId('clip-video').evaluate((v) => (v as HTMLVideoElement).currentTime)).toBeGreaterThan(0.8);
   });
 
   test('the camera is off until the options turn it on', async ({ page }) => {

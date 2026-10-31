@@ -109,8 +109,10 @@ test.describe('Matching the card to the clips', () => {
 
   test('a file ends at its card time; a copied file at its name plus a clip', () => {
     expect(fileEnd(dji(at(19, 42, 10), 3))).toMatchObject({ at: at(19, 42, 20), proxy: false });
-    // Copied off the card later: the card time is the copy's, the name still the start.
-    expect(fileEnd({ ...dji(at(19, 42, 10), 3), lastModified: at(23, 0, 0) }).at).toBe(at(19, 42, 10) + 11_500);
+    // Copied off the card later: the card time is the copy's; the name's guess stands beside it.
+    expect(fileEnd({ ...dji(at(19, 42, 10), 3), lastModified: at(23, 0, 0) })).toMatchObject({ at: at(23, 0, 0), alt: at(19, 42, 10) + 11_500 });
+    // A card time before the name is no recording's end: the name alone.
+    expect(fileEnd({ ...dji(at(19, 42, 10), 3), lastModified: at(19, 0, 0) })).toMatchObject({ at: at(19, 42, 10) + 11_500, alt: null });
     expect(fileEnd({ name: 'GX010123.MP4', lastModified: at(19, 0, 10), size: 1 }).at).toBe(at(19, 0, 10));
   });
 
@@ -139,6 +141,62 @@ test.describe('Matching the card to the clips', () => {
     expect(nextClipNumber([a, b])).toBe(3);
     expect(nextClipNumber([])).toBe(1);
     expect(clipNumbersIn('Satz 2 [Clip 2 · 19:05:00] und [Clip 11 · 19:20:31] wie [Clip x]')).toEqual([2, 11]);
+  });
+
+  test('31.10.2026: Pre-Rec names a file from the stop before, minutes earlier; every clip finds its own', () => {
+    // As tapped and stopped on the laptop, and as the SD card listed the files.
+    // The camera 18 s ahead. DJI_..._0001 is named 18:46:55 and ends 19:01:01:
+    // Pre-Rec had been buffering since the camera was set up. A rule taking a
+    // card time 5 minutes past the name for a copy's left c34, c36, c38 and
+    // c44 without a video.
+    const on31 = (h: number, m: number, s: number, ms = 0) => new Date(2026, 9, 31, h, m, s).getTime() + ms;
+    const clips = [
+      { clipId: 'c34', at: on31(19, 0, 41, 919), stoppedAt: on31(19, 0, 43, 881) },
+      { clipId: 'c35', at: on31(19, 1, 6, 862), stoppedAt: on31(19, 1, 8, 785) },
+      { clipId: 'c36', at: on31(19, 13, 20, 846), stoppedAt: on31(19, 13, 22, 725) },
+      { clipId: 'c37', at: on31(19, 14, 34, 2), stoppedAt: on31(19, 14, 36, 6) },
+      { clipId: 'c38', at: on31(19, 21, 1, 881), stoppedAt: on31(19, 21, 3, 788) },
+      { clipId: 'c39', at: on31(19, 21, 7, 935), stoppedAt: on31(19, 21, 9, 929) },
+      { clipId: 'c40', at: on31(19, 22, 0, 83), stoppedAt: on31(19, 22, 1, 987) },
+      { clipId: 'c41', at: on31(19, 25, 39, 166), stoppedAt: on31(19, 25, 41, 111) },
+      { clipId: 'c42', at: on31(19, 29, 48, 268), stoppedAt: on31(19, 29, 50, 189) },
+      { clipId: 'c43', at: on31(19, 32, 19, 662), stoppedAt: on31(19, 32, 21, 550) },
+      { clipId: 'c44', at: on31(19, 39, 28, 389), stoppedAt: on31(19, 39, 30, 331) },
+    ];
+    const card: PickedFile[] = [
+      { name: 'DJI_20261031184655_0001_D.MP4', lastModified: on31(19, 1, 1, 190), size: 415824619 },
+      { name: 'DJI_20261031184655_0001_D.LRF', lastModified: on31(19, 1, 1, 320), size: 40203104 },
+      { name: 'DJI_20261031190101_0002_D.MP4', lastModified: on31(19, 1, 26, 150), size: 212729209 },
+      { name: 'DJI_20261031190101_0002_D.LRF', lastModified: on31(19, 1, 26, 300), size: 22534021 },
+      { name: 'DJI_20261031190126_0003_D.MP4', lastModified: on31(19, 13, 40, 110), size: 217458432 },
+      { name: 'DJI_20261031190126_0003_D.LRF', lastModified: on31(19, 13, 40, 240), size: 39752917 },
+      { name: 'DJI_20261031191340_0004_D.MP4', lastModified: on31(19, 14, 53, 280), size: 218316370 },
+      { name: 'DJI_20261031191340_0004_D.LRF', lastModified: on31(19, 14, 53, 410), size: 36108240 },
+      { name: 'DJI_20261031191453_0005_D.LRF', lastModified: on31(19, 21, 21, 180), size: 40607840 },
+      { name: 'DJI_20261031191453_0005_D.MP4', lastModified: on31(19, 21, 21, 320), size: 411553462 },
+      { name: 'DJI_20261031192121_0006_D.MP4', lastModified: on31(19, 21, 27, 200), size: 47478624 },
+      { name: 'DJI_20261031192121_0006_D.LRF', lastModified: on31(19, 21, 27, 350), size: 4728093 },
+      { name: 'DJI_20261031192127_0007_D.MP4', lastModified: on31(19, 22, 19, 360), size: 214238142 },
+      { name: 'DJI_20261031192127_0007_D.LRF', lastModified: on31(19, 22, 19, 500), size: 27266736 },
+      { name: 'DJI_20261031192219_0008_D.MP4', lastModified: on31(19, 25, 58, 470), size: 215870455 },
+      { name: 'DJI_20261031192219_0008_D.LRF', lastModified: on31(19, 25, 58, 610), size: 39634269 },
+      { name: 'DJI_20261031192559_0009_D.MP4', lastModified: on31(19, 30, 7, 590), size: 216031699 },
+      { name: 'DJI_20261031192559_0009_D.LRF', lastModified: on31(19, 30, 7, 760), size: 39762235 },
+      { name: 'DJI_20261031193008_0010_D.MP4', lastModified: on31(19, 32, 38, 970), size: 217664110 },
+      { name: 'DJI_20261031193008_0010_D.LRF', lastModified: on31(19, 32, 39, 120), size: 39817871 },
+      { name: 'DJI_20261031193239_0011_D.MP4', lastModified: on31(19, 39, 47, 730), size: 412888836 },
+      { name: 'DJI_20261031193239_0011_D.LRF', lastModified: on31(19, 39, 47, 850), size: 39692972 },
+    ];
+    expect(Object.fromEntries(matchClipFiles(clips, card))).toEqual({
+      c34: 0, c35: 2, c36: 4, c37: 6, c38: 9, c39: 10, c40: 12, c41: 14, c42: 16, c43: 18, c44: 20,
+    });
+  });
+
+  test('copied off the card, the files still find their clips by their names', () => {
+    // Every card time is the copy's, a minute apart from nothing; the names carry the starts.
+    const clips = [clip('a', at(19, 42, 10)), clip('b', at(19, 44, 10)), clip('c', at(19, 50, 0))];
+    const copied = [dji(at(19, 41, 59), 1), dji(at(19, 43, 59), 2), dji(at(19, 49, 49), 3)].map((f, k) => ({ ...f, lastModified: at(23, 0, k) }));
+    expect(Object.fromEntries(matchClipFiles(clips, copied))).toEqual({ a: 0, b: 1, c: 2 });
   });
 
   test('every clip finds its file, with the camera\'s clock right', () => {

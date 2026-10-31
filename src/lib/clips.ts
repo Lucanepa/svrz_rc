@@ -156,8 +156,6 @@ export type PickedFile = { name: string; lastModified: number; size: number };
 
 const DJI_NAME = /^DJI_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})_(\d{4})_D\.(mp4|lrf)$/i;
 const TOLERANCE_MS = 3_000;
-/** Longer than any clip: a card time further from the name's start is a copy's. */
-const MAX_CLIP_MS = 5 * 60_000;
 /** A clip's length when nothing says it: ten buffered seconds and the stop. */
 const USUAL_CLIP_MS = 11_500;
 
@@ -169,20 +167,28 @@ const USUAL_CLIP_MS = 11_500;
  * buffered, which is less when the clip before ended only seconds earlier
  * (the third clip of the first evening, 29.10.2026, started 9 s after its
  * tap where the others started 4 s after), while its end is always the stop
- * a second after the tap. The card's file time is that end; DJI's name
- * carries the start, and stands in when the file time is a copy's.
+ * a second after the tap. The card's file time is that end.
+ *
+ * DJI's name does not say when the clip began: with Pre-Rec it is when the
+ * camera began buffering, the stop of the clip before — 14 minutes before
+ * the clip itself on 31.10.2026, when a "longer than any clip" rule took such
+ * card times for a copy's and four clips of the evening found no video. So
+ * the card time counts whenever it is after the name, and the name's guess
+ * (`alt`, the name plus a usual clip) stands beside it, for a file whose
+ * card time is a copy's; the match takes whichever lines up.
  */
-export function fileEnd(f: PickedFile): { at: number; base: string; proxy: boolean } {
+export function fileEnd(f: PickedFile): { at: number; alt: number | null; base: string; proxy: boolean } {
   const m = DJI_NAME.exec(f.name);
   const proxy = /\.lrf$/i.test(f.name);
   const base = f.name.replace(/\.[^.]+$/, '').toUpperCase();
   if (m) {
     const [, y, mo, d, h, mi, s] = m;
-    const start = new Date(+y, +mo - 1, +d, +h, +mi, +s).getTime();
-    const ownTime = f.lastModified >= start && f.lastModified - start <= MAX_CLIP_MS;
-    return { at: ownTime ? f.lastModified : start + USUAL_CLIP_MS, base, proxy };
+    const named = new Date(+y, +mo - 1, +d, +h, +mi, +s).getTime() + USUAL_CLIP_MS;
+    return f.lastModified >= named - USUAL_CLIP_MS
+      ? { at: f.lastModified, alt: named, base, proxy }
+      : { at: named, alt: null, base, proxy };
   }
-  return { at: f.lastModified, base, proxy };
+  return { at: f.lastModified, alt: null, base, proxy };
 }
 
 /** When a clip ended on this device's clock: the stop it was sent, or a moment after the tap. */
@@ -207,13 +213,26 @@ export function matchClipFiles(clips: { clipId: string; at: number; stoppedAt?: 
     if (prev === undefined || (ends[prev].proxy && !e.proxy)) best.set(e.base, i);
   });
   const candidates = [...best.values()];
-
-  const score = (offset: number) => clips.filter((c) => candidates.some((i) => Math.abs(ends[i].at - clipEnd(c) - offset) <= TOLERANCE_MS)).length;
+  const timesOf = (i: number): number[] => (ends[i].alt === null ? [ends[i].at] : [ends[i].at, ends[i].alt as number]);
+  // Every time a recording may have ended, sorted: a clip's score is a search.
+  const points = candidates.flatMap((i) => timesOf(i)).sort((a, b) => a - b);
+  const near = (x: number): boolean => {
+    let lo = 0;
+    let hi = points.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (points[mid] < x - TOLERANCE_MS) lo = mid + 1; else hi = mid; }
+    return lo < points.length && points[lo] <= x + TOLERANCE_MS;
+  };
+  const score = (offset: number) => clips.filter((c) => near(clipEnd(c) + offset)).length;
   let offset = 0;
   let top = score(0);
+  const tried = new Set<number>();
   for (const c of clips) {
-    for (const i of candidates) {
-      const o = ends[i].at - clipEnd(c);
+    for (const t of points) {
+      const o = t - clipEnd(c);
+      // Offsets a few hundred ms apart score alike; one of them is enough.
+      const key = Math.round(o / 250);
+      if (tried.has(key)) continue;
+      tried.add(key);
       const s = score(o);
       if (s > top || (s === top && Math.abs(o) < Math.abs(offset))) { top = s; offset = o; }
     }
@@ -226,7 +245,7 @@ export function matchClipFiles(clips: { clipId: string; at: number; stoppedAt?: 
     let gap = Infinity;
     for (const i of candidates) {
       if (taken.has(i)) continue;
-      const g = Math.abs(ends[i].at - clipEnd(c) - offset);
+      const g = Math.min(...timesOf(i).map((t) => Math.abs(t - clipEnd(c) - offset)));
       if (g <= TOLERANCE_MS && g < gap) { gap = g; pick = i; }
     }
     if (pick >= 0) { taken.add(pick); out.set(c.clipId, pick); }

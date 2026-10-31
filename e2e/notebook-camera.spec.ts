@@ -26,9 +26,9 @@ async function cameraOn(page: Page): Promise<void> {
   await page.addInitScript(() => { try { localStorage.setItem('svrz_camera_on', '1'); } catch { /* none */ } });
 }
 
-async function fakeOsmo(page: Page, { preRec = true, on = true } = {}): Promise<void> {
+async function fakeOsmo(page: Page, { preRec = true, on = true, battery = 78 } = {}): Promise<void> {
   if (on) await cameraOn(page);
-  await page.addInitScript((preRec) => {
+  await page.addInitScript(({ preRec, battery }) => {
     const t16: number[] = [];
     const t32: number[] = [];
     for (let n = 0; n < 256; n += 1) {
@@ -66,7 +66,7 @@ async function fakeOsmo(page: Page, { preRec = true, on = true } = {}): Promise<
       const t = recording ? 10 + Math.floor((Date.now() - recording) / 1000) : 0;
       p[5] = t & 0xff; p[6] = (t >> 8) & 0xff; // record_time, the pre-recording included
       p[23] = 4380 & 0xff; p[24] = (4380 >> 8) & 0xff; // remain_time
-      p[37] = 78; // battery
+      p[37] = battery;
       return p;
     };
     const onWrite = async (buf: BufferSource) => {
@@ -98,7 +98,15 @@ async function fakeOsmo(page: Page, { preRec = true, on = true } = {}): Promise<
       gatt: { connected: false, connect: async () => device.gatt, disconnect: () => undefined, getPrimaryService: async () => service },
     });
     Object.defineProperty(Navigator.prototype, 'bluetooth', { configurable: true, get: () => ({ requestDevice: async () => device }) });
-  }, preRec);
+  }, { preRec, battery });
+}
+
+/** The page's clips sit in the strip's "Clips (n)" menu: opens it, once. */
+async function clipMenu(page: Page) {
+  const list = sheet(page).getByTestId('clips-list');
+  if (!(await list.isVisible())) await sheet(page).getByTestId('clips-menu').click();
+  await expect(list).toBeVisible();
+  return list;
 }
 
 const osmoLog = (page: Page) => page.evaluate(() => (window as unknown as { __osmoLog: { at: number; what: string }[] }).__osmoLog.map((l) => ({ ...l })));
@@ -113,7 +121,13 @@ test.describe('The notebook films with an Osmo', () => {
     await expect(sheet(page)).toBeVisible();
 
     await sheet(page).getByTestId('cam-connect').click();
-    await expect(sheet(page).getByTestId('cam-state')).toContainText(/OsmoAction5Pro-TEST · (Akku|battery) 78 % · 1 h 13 min/);
+    // Folded: the camera's name. The chevron unfolds its battery and card.
+    await expect(sheet(page).getByTestId('cam-state')).toContainText('OsmoAction5Pro-TEST');
+    await expect(sheet(page).getByTestId('cam-power')).toHaveCount(0);
+    await expect(sheet(page).getByRole('button', { name: /^(Trennen|Disconnect)$/ })).toHaveCount(0);
+    await sheet(page).getByTestId('cam-details').click();
+    await expect(sheet(page).getByTestId('cam-power')).toHaveText(/^(Akku|battery) 78 % · 1 h 13 min/);
+    await expect(sheet(page).getByRole('button', { name: /^(Trennen|Disconnect)$/ })).toBeVisible();
     expect((await osmoLog(page)).map((l) => l.what)).toEqual(['connect-request', 'connect-response', 'subscribe']);
 
     await pageBox(page).click();
@@ -139,9 +153,14 @@ test.describe('The notebook films with an Osmo', () => {
     await expect(pageBox(page).locator('[data-atom]')).toHaveClass(/bg-stone-100/);
 
     // No video yet: the chip says so, and the card's file is matched by its name.
-    const chip = sheet(page).getByTestId('clip-chip');
-    await expect(chip).toContainText(/Clip 1 · \d\d:\d\d:\d\d/);
-    await expect(chip).toHaveAttribute('title', /^(Video fehlt|Video missing)$/);
+    await expect(sheet(page).getByTestId('clips-menu')).toHaveText('Clips (1)');
+    const item = (await clipMenu(page)).getByTestId('clip-item');
+    await expect(item).toContainText(/Clip 1 · \d\d:\d\d:\d\d/);
+    await expect(item).toContainText(/Video fehlt|Video missing/);
+    // Escape folds the menu and leaves the notebook open.
+    await page.keyboard.press('Escape');
+    await expect(sheet(page).getByTestId('clips-list')).toHaveCount(0);
+    await expect(sheet(page)).toBeVisible();
     const name = await page.evaluate(() => new Promise<string>((resolve, reject) => {
       const open = indexedDB.open('svrz-clips', 1);
       open.onerror = () => reject(open.error);
@@ -161,11 +180,12 @@ test.describe('The notebook films with an Osmo', () => {
       { name: 'DJI_20200101120000_0001_D.MP4', mimeType: 'video/mp4', buffer: Buffer.from('another evening') },
     ]);
     await expect(page.getByText(/^(1 von 1 Clips zugeordnet|1 of 1 clips matched)$/)).toBeVisible();
+    await clipMenu(page);
     await expect(sheet(page).getByTestId('clips-attach')).toHaveCount(0);
     // Blue now that it is.
     await expect(pageBox(page).locator('[data-atom]')).toHaveClass(/bg-sky-100/);
 
-    await sheet(page).getByRole('button', { name: /^(Clip 1 abspielen|Play clip 1)$/ }).click();
+    await (await clipMenu(page)).getByRole('menuitem', { name: /^(Clip 1 abspielen|Play clip 1)$/ }).click();
     const player = page.getByTestId('clip-player');
     await expect(player).toBeVisible();
     await expect(player.locator('video')).toHaveAttribute('src', /^blob:/);
@@ -177,7 +197,8 @@ test.describe('The notebook films with an Osmo', () => {
     await page.keyboard.press('Escape');
     await expect(player).toHaveCount(0);
     await expect(sheet(page)).toBeVisible();
-    await expect(sheet(page).getByTestId('clip-chip')).toHaveText('Clip 1 · Pfiff zu spät');
+    await expect((await clipMenu(page)).getByTestId('clip-item')).toHaveText('Clip 1 · Pfiff zu spät');
+    await page.keyboard.press('Escape');
     // A tap on the line in the page opens the same clip.
     await pageBox(page).locator('[data-atom]').click();
     await expect(player).toBeVisible();
@@ -194,11 +215,11 @@ test.describe('The notebook films with an Osmo', () => {
     expect(stored).toMatchObject({ name, size: 'not really a video'.length });
 
     // Deleted: gone from the device, the line stays on the page.
-    await sheet(page).getByTestId('clip-chip').click();
+    await (await clipMenu(page)).getByTestId('clip-item').click();
     await player.getByTestId('clip-delete').click();
     await page.getByRole('button', { name: /^(Löschen|Delete)$/ }).last().click();
     await expect(player).toHaveCount(0);
-    await expect(sheet(page).getByTestId('clip-chip')).toHaveCount(0);
+    await expect(sheet(page).getByTestId('clips-menu')).toHaveCount(0);
     await expect(pageBox(page).locator('[data-atom]')).toHaveCount(1);
 
     // Typing cannot break the line: Backspace takes the words, then the whole clip.
@@ -239,7 +260,10 @@ test.describe('The notebook films with an Osmo', () => {
     await expect.poll(() => pageBox(page).evaluate((el) => (el as HTMLElement).innerText)).toMatch(/^Siehe \[Clip 2 · \d\d:\d\d:\d\d\] \s*$/);
     await expect(pageBox(page).locator('[data-atom]')).toHaveCount(1);
     // Mentioned here, filmed elsewhere: its chip is on this page's strip too.
-    await expect(sheet(page).getByTestId('clip-chip')).toHaveText(['Clip 2 · Netzfehler']);
+    const items = (await clipMenu(page)).getByTestId('clip-item');
+    await expect(items).toHaveCount(1);
+    await expect(items).toContainText('Clip 2 · Netzfehler');
+    await page.keyboard.press('Escape');
     // Typing on after an "@" is an "@".
     await page.keyboard.type('mail@x');
     await expect(menu).toHaveCount(0);
@@ -270,7 +294,7 @@ test.describe('The notebook films with an Osmo', () => {
     const name = `DJI_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_0007_D.MP4`;
     await sheet(page).getByTestId('clips-file').setInputFiles([{ name, mimeType: 'video/mp4', buffer: video }]);
     await expect(page.getByText(/^(1 von 1 Clips zugeordnet|1 of 1 clips matched)$/)).toBeVisible();
-    await sheet(page).getByRole('button', { name: /^(Clip 1 abspielen|Play clip 1)$/ }).click();
+    await (await clipMenu(page)).getByRole('menuitem', { name: /^(Clip 1 abspielen|Play clip 1)$/ }).click();
     const player = page.getByTestId('clip-player');
     const fromStart = player.getByTestId('clip-from-start');
     await expect(fromStart).toHaveText(/^(Standbild am Anfang übersprungen|Still picture at the start skipped) \(1\.[4-8] s\)/, { timeout: 15_000 });
@@ -309,6 +333,72 @@ test.describe('The notebook films with an Osmo', () => {
     await expect(page.getByText(/^(Pre-Rec ist an der Kamera aus|Pre-Rec is off on the camera)/)).toBeVisible();
     expect((await osmoLog(page)).map((l) => l.what)).not.toContain('record-start');
     await expect(pageBox(page)).toHaveText('');
+  });
+
+  test('the page\'s clips sit in one menu, the newest first', async ({ page }) => {
+    await page.addInitScript(() => {
+      const now = Date.now();
+      const clip = (n: number, ago: number, title = '') => ({
+        id: `rc1|clip-${n}`, ownerId: 'rc1', clipId: `clip-${n}`, pageId: 'page-elsewhere', n, at: now - ago, seconds: 10,
+        stoppedAt: now - ago + 1_500, camera: 'Osmo', file: null, createdAt: now - 5_000, title,
+      });
+      const open = indexedDB.open('svrz-clips', 1);
+      open.onupgradeneeded = () => open.result.createObjectStore('clips', { keyPath: 'id' });
+      open.onsuccess = () => {
+        const tx = open.result.transaction('clips', 'readwrite');
+        tx.objectStore('clips').put(clip(1, 600_000));
+        tx.objectStore('clips').put(clip(2, 60_000, 'Netzfehler'));
+        tx.objectStore('clips').put(clip(3, 300_000));
+        tx.oncomplete = () => open.result.close();
+      };
+    });
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ }).click();
+    await pageBox(page).click();
+    // Mentioned on this page: all three are its clips. The "@" menu is newest first too.
+    for (const i of [0, 1, 2]) {
+      await page.keyboard.type(' @');
+      await sheet(page).getByTestId('pad-mention').getByRole('menuitem').nth(i).click();
+    }
+    await expect(pageBox(page).locator('[data-atom]')).toHaveCount(3);
+
+    // One button on the strip, not a chip per clip.
+    await expect(sheet(page).getByTestId('clips-menu')).toHaveText('Clips (3)');
+    await expect(sheet(page).getByTestId('clip-item')).toHaveCount(0);
+    const items = (await clipMenu(page)).getByTestId('clip-item');
+    await expect(items).toHaveCount(3);
+    await expect(items.nth(0)).toContainText('Clip 2 · Netzfehler');
+    await expect(items.nth(1)).toContainText(/^Clip 3 · /);
+    await expect(items.nth(2)).toContainText(/^Clip 1 · /);
+    // Still waiting for their videos: the menu offers to add them.
+    await expect(sheet(page).getByTestId('clips-attach')).toBeVisible();
+
+    // A tap beside the menu folds it, and the page keeps what was written.
+    await sheet(page).getByRole('button', { name: /^(Abbrechen|Cancel)$/ }).first().click({ position: { x: 5, y: 5 } });
+    await expect(sheet(page).getByTestId('clips-list')).toHaveCount(0);
+    await expect(pageBox(page).locator('[data-atom]')).toHaveCount(3);
+
+    // Picking one folds the menu and opens that clip.
+    await (await clipMenu(page)).getByTestId('clip-item').nth(0).click();
+    await expect(sheet(page).getByTestId('clips-list')).toHaveCount(0);
+    await expect(page.getByTestId('clip-player')).toContainText(/Clip 2/);
+  });
+
+  test('a low battery shows on the folded camera line; unfolded, the details are remembered', async ({ page }) => {
+    await fakeOsmo(page, { battery: 15 });
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await page.getByRole('button', { name: /^(Notizblock öffnen|Open the notebook)$/ }).click();
+    await sheet(page).getByTestId('cam-connect').click();
+    await expect(sheet(page).getByTestId('cam-state')).toContainText('OsmoAction5Pro-TEST');
+    await expect(sheet(page).getByTestId('cam-battery-low')).toHaveText(/^· (Akku|battery) 15 %$/);
+    await sheet(page).getByTestId('cam-details').click();
+    await expect(sheet(page).getByTestId('cam-details')).toHaveAttribute('aria-expanded', 'true');
+    // Unfolded, the battery is in the details and not twice.
+    await expect(sheet(page).getByTestId('cam-battery-low')).toHaveCount(0);
+    await expect(sheet(page).getByTestId('cam-power')).toHaveText(/^(Akku|battery) 15 % · 1 h 13 min/);
+    expect(await page.evaluate(() => localStorage.getItem('svrz_cam_details'))).toBe('1');
   });
 
   test('without Bluetooth (Safari, Firefox) there is no camera button', async ({ page }) => {

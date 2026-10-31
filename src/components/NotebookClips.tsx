@@ -10,7 +10,7 @@
 // lib/osmoCamera.ts, everything about the clips in lib/clips.ts.
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type SyntheticEvent } from 'react';
-import { CircleDot, Download, Film, LoaderCircle, Play, Trash2, Unplug, Upload, Video, X } from 'lucide-react';
+import { ChevronDown, CircleDot, Download, Film, LoaderCircle, Play, Trash2, Unplug, Upload, Video, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { clockLabel } from '../lib/appTime';
 import { PAD_STRINGS as PAD_TEXT, fill, type PAD_STRINGS } from '../lib/notepadStrings';
@@ -267,17 +267,41 @@ export function CameraButton({ tp, ownerId, clips, insertLine }: {
   );
 }
 
-/** Under the toolbar: the camera's state, the page's clips, "Videos zuordnen". */
+/** At or under this the battery shows on the folded camera line too. */
+const LOW_BATTERY = 20;
+/** Whether the camera line is unfolded, per device. */
+const CAM_DETAILS_KEY = 'svrz_cam_details';
+
+/**
+ * Under the toolbar: the camera, and the page's clips.
+ *
+ * Both used to be spelled out in full — the camera's battery, card and
+ * Pre-Rec, and a chip per clip — and an evening of thirty clips filled three
+ * lines above the page (31.10.2026). Now the camera shows its name, with a
+ * chevron that unfolds the rest, and the clips sit in one "Clips (n)" menu,
+ * the newest on top as in the "@" menu. What needs the coach — the code to
+ * confirm, a lost link, Pre-Rec off, a low battery — stays on the line folded.
+ */
 export function ClipStrip({ tp, lang, pageId, text, clips }: { tp: Strings; lang: 'DE' | 'EN'; pageId: string | null; text: string; clips: Clip[] }) {
   const cam = useCamera();
   const fileRef = useRef<HTMLInputElement>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [menu, setMenu] = useState(false);
+  const [details, setDetails] = useState(() => {
+    try { return localStorage.getItem(CAM_DETAILS_KEY) === '1'; } catch { return false; }
+  });
+  const toggleDetails = () => {
+    const next = !details;
+    setDetails(next);
+    try { if (next) localStorage.setItem(CAM_DETAILS_KEY, '1'); else localStorage.removeItem(CAM_DETAILS_KEY); } catch { /* storage refused: this run only */ }
+  };
   // The clips filmed on this page and the ones its text mentions (@).
   const mentioned = useMemo(() => clipNumbersIn(text).join(','), [text]);
   const onPage = useMemo(() => {
     const ns = new Set(mentioned ? mentioned.split(',').map(Number) : []);
     return pageId ? clips.filter((c) => c.pageId === pageId || ns.has(c.n)) : clips.filter((c) => ns.has(c.n));
   }, [clips, pageId, mentioned]);
+  const newestFirst = useMemo(() => [...onPage].sort((a, b) => b.at - a.at), [onPage]);
   const waiting = useMemo(() => clips.filter((c) => !c.file), [clips]);
   const open = openId ? clips.find((c) => c.id === openId) || null : null;
   // A tap on a clip line in the page.
@@ -290,12 +314,28 @@ export function ClipStrip({ tp, lang, pageId, text, clips }: { tp: Strings; lang
     window.addEventListener(CLIP_OPEN_EVENT, onOpen);
     return () => window.removeEventListener(CLIP_OPEN_EVENT, onOpen);
   }, [onPage, clips]);
+  // Another page has other clips.
+  useEffect(() => { setMenu(false); }, [pageId]);
+  // Escape closes the menu before anything else: App.tsx closes the whole
+  // sheet on Escape, as the Section menu explains. Capture, to run first.
+  useEffect(() => {
+    if (!menu) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setMenu(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [menu]);
+
+  const ready = cam.phase === 'ready';
+  const noPrerec = ready && !!cam.status && !isPreRecording(cam.status) && !isRecording(cam.status);
+  const battery = ready && cam.status ? cam.status.battery : -1;
   const camLine = cam.phase === 'confirm' ? fill(tp.camConfirm, { code: cam.code })
     : cam.phase === 'reconnecting' ? tp.camReconnecting
-    : cam.phase === 'ready' && cam.status && !isPreRecording(cam.status) && !isRecording(cam.status) ? tp.camNoPrerec
-    : cam.phase === 'ready' ? (cam.status && cam.status.battery >= 0
-      ? fill(tp.camReady, { name: cam.name, bat: cam.status.battery, left: leftLabel(cam.status.remainSeconds) })
-      : fill(tp.camReadyShort, { name: cam.name }))
+    : noPrerec ? tp.camNoPrerec
+    : ready ? cam.name
     : '';
   if (!camLine && !onPage.length) return null;
 
@@ -320,20 +360,43 @@ export function ClipStrip({ tp, lang, pageId, text, clips }: { tp: Strings; lang
     else toast.error(tp.clipsAttachedNone);
   };
   const pickFiles = () => fileRef.current?.click();
+  const keepCaret = (e: SyntheticEvent) => e.preventDefault();
 
   return (
-    <div className="px-3 py-1.5 border-b border-stone-100 flex flex-wrap items-center gap-1.5 text-xs" data-testid="clip-strip">
+    <div className="relative px-3 py-1.5 border-b border-stone-100 flex flex-wrap items-center gap-1.5 text-xs" data-testid="clip-strip">
       {camLine && (
-        <span className="inline-flex items-center gap-1 text-stone-600" data-testid="cam-state">
-          {cam.phase === 'ready' ? <Video size={12} className="shrink-0 text-stone-500" /> : <LoaderCircle size={12} className="shrink-0 animate-spin" />}
-          <span className={cn(cam.phase === 'confirm' && 'font-semibold text-stone-900', camLine === tp.camNoPrerec && 'font-medium text-amber-700')}>{camLine}</span>
-          {cam.phase === 'ready' && cam.preSeconds > 0 && camLine !== tp.camNoPrerec && (
-            <span className="text-stone-500" data-testid="cam-prerec">· {fill(tp.camPreRec, { s: cam.preSeconds })}</span>
+        <span className="inline-flex flex-wrap items-center gap-1 text-stone-600" data-testid="cam-state">
+          {ready ? <Video size={12} className="shrink-0 text-stone-500" /> : <LoaderCircle size={12} className="shrink-0 animate-spin" />}
+          <span className={cn(cam.phase === 'confirm' && 'font-semibold text-stone-900', noPrerec && 'font-medium text-amber-700')}>{camLine}</span>
+          {ready && !details && !noPrerec && battery >= 0 && battery <= LOW_BATTERY && (
+            <span className="font-medium text-amber-700" data-testid="cam-battery-low">· {fill(tp.camBatteryLow, { bat: battery })}</span>
           )}
-          {cam.phase !== 'off' && (
+          {ready && (
             <button
               type="button"
-              onMouseDown={(e) => e.preventDefault()}
+              onMouseDown={keepCaret}
+              onClick={toggleDetails}
+              aria-expanded={details}
+              aria-label={tp.camDetails}
+              title={tp.camDetails}
+              data-testid="cam-details"
+              className="h-6 w-6 inline-flex items-center justify-center rounded-md text-stone-500 hover:bg-stone-100"
+            >
+              <ChevronDown size={12} className={cn('transition-transform', details && 'rotate-180')} />
+            </button>
+          )}
+          {ready && details && cam.status && battery >= 0 && (
+            <span data-testid="cam-power">{fill(tp.camPower, { bat: battery, left: leftLabel(cam.status.remainSeconds) })}</span>
+          )}
+          {ready && details && cam.preSeconds > 0 && !noPrerec && (
+            <span className="text-stone-500" data-testid="cam-prerec">· {fill(tp.camPreRec, { s: cam.preSeconds })}</span>
+          )}
+          {/* Folded, "Trennen" waits behind the chevron with the rest; while
+              connecting it stays out, as the way to give up. */}
+          {cam.phase !== 'off' && (!ready || details) && (
+            <button
+              type="button"
+              onMouseDown={keepCaret}
               onClick={() => void disconnectCamera()}
               title={tp.camDisconnect}
               aria-label={tp.camDisconnect}
@@ -344,35 +407,64 @@ export function ClipStrip({ tp, lang, pageId, text, clips }: { tp: Strings; lang
           )}
         </span>
       )}
-      {onPage.map((c) => (
-        <button
-          key={c.id}
-          type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setOpenId(c.id)}
-          aria-label={c.file ? fill(tp.clipPlay, { n: c.n }) : `${clipLabel(tp, c)} · ${tp.clipNoFile}`}
-          title={c.file ? undefined : tp.clipNoFile}
-          data-testid="clip-chip"
-          className={cn(
-            'h-7 max-w-[16rem] px-2 inline-flex items-center gap-1 rounded-full border',
-            c.file ? 'border-stone-300 bg-white text-stone-800 hover:bg-stone-50' : 'border-dashed border-stone-300 text-stone-500 hover:bg-stone-50',
-          )}
-        >
-          {c.file ? <Play size={11} className="shrink-0" /> : <Film size={11} className="shrink-0" />}
-          <span className="truncate">{clipLabel(tp, c)}</span>
-        </button>
-      ))}
-      {waiting.length > 0 && onPage.some((c) => !c.file) && (
+      {onPage.length > 0 && (
         <button
           type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={pickFiles}
-          title={DESKTOP_APP ? `${tp.clipsAttachTitle}. ${tp.clipsAutoHint}` : tp.clipsAttachTitle}
-          data-testid="clips-attach"
-          className="h-7 px-2 inline-flex items-center gap-1 rounded-lg border border-stone-200 text-stone-700 hover:bg-stone-100"
+          onMouseDown={keepCaret}
+          onClick={() => setMenu((v) => !v)}
+          aria-haspopup="menu"
+          aria-expanded={menu}
+          title={tp.clipsMenuTitle}
+          data-testid="clips-menu"
+          className={cn('h-7 px-2 inline-flex items-center gap-1 rounded-lg border text-stone-700 hover:bg-stone-100', menu ? 'border-stone-300 bg-stone-100' : 'border-stone-200')}
         >
-          <Upload size={11} className="shrink-0" />{tp.clipsAttach}
+          <Film size={11} className="shrink-0" />
+          {fill(tp.clipsMenu, { n: onPage.length })}
+          <ChevronDown size={11} className={cn('shrink-0 transition-transform', menu && 'rotate-180')} />
         </button>
+      )}
+      {menu && onPage.length > 0 && (
+        <>
+          {/* Anywhere else closes it, the page included. */}
+          <button
+            type="button"
+            aria-label={tp.padCancel}
+            onMouseDown={keepCaret}
+            onClick={() => setMenu(false)}
+            className="fixed inset-0 z-10 cursor-default"
+          />
+          <div role="menu" aria-label={tp.clipsMenuTitle} data-testid="clips-list" className="absolute left-3 top-full z-20 mt-1 w-[min(22rem,calc(100%-1.5rem))] max-h-72 overflow-auto rounded-xl border border-stone-200 bg-white p-1.5 shadow-lg">
+            {newestFirst.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                role="menuitem"
+                onMouseDown={keepCaret}
+                onClick={() => { setMenu(false); setOpenId(c.id); }}
+                aria-label={c.file ? fill(tp.clipPlay, { n: c.n }) : `${clipLabel(tp, c)} · ${tp.clipNoFile}`}
+                data-testid="clip-item"
+                className="w-full h-8 px-2 inline-flex items-center gap-2 rounded-lg text-left text-xs text-stone-700 hover:bg-stone-100"
+              >
+                {c.file ? <Play size={11} className="shrink-0 text-stone-500" /> : <Film size={11} className="shrink-0 text-stone-400" />}
+                <span className={cn('truncate', !c.file && 'text-stone-500')}>{clipLabel(tp, c)}</span>
+                {!c.file && <span className="ml-auto shrink-0 text-[11px] text-stone-400">{tp.clipNoFile}</span>}
+              </button>
+            ))}
+            {waiting.length > 0 && onPage.some((c) => !c.file) && (
+              <button
+                type="button"
+                role="menuitem"
+                onMouseDown={keepCaret}
+                onClick={() => { setMenu(false); pickFiles(); }}
+                title={DESKTOP_APP ? `${tp.clipsAttachTitle}. ${tp.clipsAutoHint}` : tp.clipsAttachTitle}
+                data-testid="clips-attach"
+                className="mt-1 w-full h-8 px-2 inline-flex items-center gap-2 rounded-lg border-t border-stone-100 text-left text-xs font-medium text-stone-700 hover:bg-stone-100"
+              >
+                <Upload size={11} className="shrink-0" />{tp.clipsAttach}
+              </button>
+            )}
+          </div>
+        </>
       )}
       <input
         ref={fileRef}

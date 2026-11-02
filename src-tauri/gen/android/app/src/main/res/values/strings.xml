@@ -3,4 +3,6 @@
     <string name="main_activity_title">"SVRZ RC"</string>
     <!-- AndroidManifest.xml → asset_statements: the site whose passkeys this app shares. -->
     <string name="asset_statements" translatable="false">[{\"include\": \"https://svrz-rc.openvolley.app/.well-known/assetlinks.json\"}]</string>
+    <!-- Phone notifications (PushStore.kt): the channel name in Android's settings. -->
+    <string name="push_channel_name">Spiele und Börse</string>
 </resources>

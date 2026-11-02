@@ -1,5 +1,6 @@
 package app.openvolley.svrzrc
 
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.view.View
@@ -19,6 +20,15 @@ class MainActivity : TauriActivity() {
     )
     super.onCreate(savedInstanceState)
     keepWebViewClearOfSystemBars()
+    // A tap on a phone notification that started the app (PushStore.kt).
+    PushStore.rememberTap(this, intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    // Before super: super hands the intent to the plugins, and PushPlugin then
+    // tells the page a tap is waiting.
+    PushStore.rememberTap(this, intent)
+    super.onNewIntent(intent)
   }
 
   // Android 15+ always draws the app edge to edge (targetSdk 36 can no longer

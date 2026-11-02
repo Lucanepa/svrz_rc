@@ -1444,6 +1444,21 @@ without the App Store needs a paid Apple account and a device list.
   Manager through the in-app `passkey` plugin (see "API Authentication Model" →
   Passkeys, and `public/.well-known/assetlinks.json`). The desktop app keeps
   the team password and shows no passkey controls.
+- **Phone notifications on Android (1.4.7).** No service worker means no Push
+  API, so the subscription comes from the in-app `push` plugin
+  (`src-tauri/src/push.rs`, `gen/android/…/PushPlugin.kt`, `PushStore.kt`):
+  UnifiedPush — a distributor app the coach has (Sunup, ntfy), else Google's
+  push through Play services via the embedded FCM distributor 3.1.0 (LGPL, no
+  Firebase SDK or project: it registers with the API's VAPID key and gets an
+  `fcm.googleapis.com/fcm/send/…` endpoint). The page registers it with
+  `/api/push/subscribe` like a browser's, so the API's web-push sender reaches
+  it unchanged. A distributor app that does not answer in 10 s (installed but
+  never opened) falls back to the built-in one; any registration gets 30 s.
+  A tap opens the payload's `url` (an in-app path): `MainActivity` keeps it in
+  `PushStore` (a tap can arrive before Tauri loads its plugins), the page takes
+  it via `plugin:push|take_open_url` on start and on `svrz-push-tap`. The
+  libraries bring kotlin-stdlib 2.3, so the Android project's Kotlin Gradle
+  plugin is 2.2.20 (Tauri's template had 1.9.25). Desktop app: no push.
 - **API reads cached without a service worker.** A wrapper around `fetch` does
   what the Workbox `svrz-api-get` rule does for the PWA: network first, 6 s
   timeout, the last good copy from IndexedDB (`svrz-native` / `api-get`, 300

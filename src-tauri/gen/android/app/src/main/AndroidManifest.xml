@@ -14,6 +14,12 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.svrz_rc"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
+        <!-- Passkeys (PasskeyPlugin.kt): the app's half of the link with
+             svrz-rc.openvolley.app. The site's half is
+             public/.well-known/assetlinks.json; Google Play services wants
+             both before it hands the app the site's passkeys — with only the
+             site's, sign-in failed "RP ID cannot be validated" (1.4.5). -->
+        <meta-data android:name="asset_statements" android:resource="@string/asset_statements" />
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"

@@ -1,4 +1,6 @@
 <resources>
     <string name="app_name">"SVRZ RC"</string>
     <string name="main_activity_title">"SVRZ RC"</string>
+    <!-- AndroidManifest.xml → asset_statements: the site whose passkeys this app shares. -->
+    <string name="asset_statements" translatable="false">[{\"include\": \"https://svrz-rc.openvolley.app/.well-known/assetlinks.json\"}]</string>
 </resources>

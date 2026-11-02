@@ -602,8 +602,12 @@ Three layers, plus capability tokens:
      in `server/passkeys.ts`; `WEBAUTHN_ANDROID_ORIGINS` replaces it), and
      Google lets the app at the site's passkeys only because
      `public/.well-known/assetlinks.json` (served by Pages, `_headers`) names
-     `app.openvolley.svrzrc` and the same cert. **If the release key ever
-     changes, change both**, or every app sign-in fails. A passkey made in
+     `app.openvolley.svrzrc` and the same cert (relations `handle_all_urls` +
+     `get_login_creds`, as Google's checklist has it), and the app's manifest
+     points back with `asset_statements` (`res/values/strings.xml`). Without
+     the app's half, 1.4.5 got "RP ID cannot be validated" although Google's
+     `assetlinks:check` said linked. **If the release key ever changes,
+     change both**, or every app sign-in fails. A passkey made in
      Chrome on the phone also works in the app (same RP, same password
      manager). A phone with nothing that keeps passkeys answers
      `no-provider`: the app says so once and stops offering. The desktop app

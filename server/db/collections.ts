@@ -379,4 +379,23 @@ export const COLLECTIONS: Record<string, CollectionMeta> = {
       {name: 'updated', type: 'autodate'},
     ],
   },
+  rc_passkeys: {
+    name: 'rc_passkeys',
+    // Born on Postgres (02.11.2026).
+    id: 'pg_rc_passkeys',
+    delegate: 'rcPasskey',
+    fields: [
+      {name: 'id', type: 'text'},
+      {name: 'rc_id', type: 'text'},
+      {name: 'credential_id', type: 'text'},
+      {name: 'public_key', type: 'text'},
+      {name: 'counter', type: 'number'},
+      {name: 'transports', type: 'json'},
+      {name: 'backed_up', type: 'bool'},
+      {name: 'label', type: 'text'},
+      {name: 'last_used', type: 'text'},
+      {name: 'created', type: 'autodate'},
+      {name: 'updated', type: 'autodate'},
+    ],
+  },
 };

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, createContext, useContext, type ReactNode } from 'react';
 import { foldName } from '../lib/coacheeName';
-import { Lock, Loader2, ArrowLeft, Eye, EyeOff, User, Languages, Search, Check, ChevronDown, WifiOff, RotateCw } from 'lucide-react';
+import { Lock, Loader2, ArrowLeft, Eye, EyeOff, User, Languages, Search, Check, ChevronDown, WifiOff, RotateCw, Fingerprint } from 'lucide-react';
 import SvrzLogo from '../SvrzLogo';
 import {
   getAuthMe, rcLogout, logoutAdmin, hasPendingLogout, settlePendingLogout,
@@ -11,9 +11,14 @@ import { connection, looksLikeCacheTiming } from '../lib/connection';
 import AppSpinner from './AppSpinner';
 import { Skeleton } from './Skeleton';
 import { getStoredLang, setStoredLang, getStoredRcId, setStoredRcId, type Lang } from '../lib/prefs';
+import {
+  anyPasskeyOnDevice, deviceCanHoldPasskey, dismissPasskeyOffer, isPasskeyAlreadyHere, isPasskeyCancel,
+  markPasskeyOnDevice, passkeyOfferDismissed, passkeyOnDevice, passkeysPossible, setUpPasskey, signInWithPasskey,
+} from '../lib/passkeys';
+import { toast } from './ui';
 import { useScreenLang } from '../lib/useScreenLang';
 
-type ApiError = Error & { status?: number; retryAfterMs?: number };
+type ApiError = Error & { status?: number; retryAfterMs?: number; code?: string };
 
 /** How long the session probe waits before it calls the server unreachable.
  *  Well past the service worker's 6 s cache fallback, so a device with a
@@ -85,6 +90,17 @@ const STR = {
       + 'Bitte im Datenschutz die Option „Cross-Site-Tracking verhindern" für diese Seite deaktivieren '
       + 'oder einen anderen Browser verwenden.',
     sessionExpired: 'Sitzung abgelaufen – bitte neu anmelden. Offene Formulare sind als Entwurf gespeichert.',
+    passkeyLogin: 'Mit Fingerabdruck oder Gesicht anmelden',
+    passkeyWaiting: 'Warte auf das Gerät…',
+    passkeyOr: 'oder mit dem Team-Passwort',
+    passkeyDeviceFailed: 'Das Gerät hat die Anmeldung nicht bestätigt. Bitte nochmals versuchen oder das Team-Passwort verwenden.',
+    passkeyOfferTitle: 'Nächstes Mal mit Fingerabdruck?',
+    passkeyOfferBody: 'Richte eine Anmeldung per Fingerabdruck, Gesicht oder Geräte-PIN ein. Beim nächsten Mal genügt ein Antippen – ohne Team-Passwort und ohne Namen wählen.',
+    passkeyOfferPrivacy: 'Dein Fingerabdruck und dein Gesicht verlassen das Gerät nie. Richte es nur auf deinem eigenen Gerät ein.',
+    passkeyOfferYes: 'Einrichten',
+    passkeyOfferNo: 'Nicht jetzt',
+    passkeySetUpDone: 'Eingerichtet. Beim nächsten Mal genügt dein Fingerabdruck oder dein Gesicht.',
+    passkeySetUpFailed: 'Das Einrichten hat nicht geklappt. Du kannst es später unter Optionen nochmals versuchen.',
   },
   EN: {
     brand: 'Referee Coaching',
@@ -121,6 +137,17 @@ const STR = {
       + 'Please turn off "Prevent cross-site tracking" for this site in your privacy settings, '
       + 'or use a different browser.',
     sessionExpired: 'Session expired – please sign in again. Open forms are saved as drafts.',
+    passkeyLogin: 'Sign in with fingerprint or face',
+    passkeyWaiting: 'Waiting for the device…',
+    passkeyOr: 'or with the team password',
+    passkeyDeviceFailed: 'The device did not confirm the sign-in. Please try again or use the team password.',
+    passkeyOfferTitle: 'Fingerprint next time?',
+    passkeyOfferBody: 'Set up sign-in with your fingerprint, face or device PIN. Next time one tap is enough – no team password, no picking your name.',
+    passkeyOfferPrivacy: 'Your fingerprint and your face never leave the device. Only set this up on your own device.',
+    passkeyOfferYes: 'Set up',
+    passkeyOfferNo: 'Not now',
+    passkeySetUpDone: 'Set up. Next time your fingerprint or face is enough.',
+    passkeySetUpFailed: 'The set-up did not work. You can try again later under Options.',
   },
 } satisfies Record<Lang, Record<string, unknown>>;
 
@@ -181,12 +208,27 @@ const inputClass = (error: string) =>
 const primaryButtonClass =
   'w-full inline-flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 active:scale-[0.99] disabled:bg-stone-300 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl text-sm transition-all shadow-sm shadow-red-600/20';
 
+const secondaryButtonClass =
+  'w-full inline-flex items-center justify-center gap-2 border border-stone-300 bg-white hover:bg-stone-50 active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed text-stone-800 font-semibold py-3 rounded-xl text-sm transition-all';
+
+/** A passkey refusal or failure in words. The server's refusals carry a code
+ *  and are already in the asker's language; the device's own failures have
+ *  no status, and are not the network (errorMessage would say they were). */
+function passkeyErrorMessage(err: unknown, t: Strings): string {
+  const e = err as ApiError;
+  if (typeof e?.status === 'number') return e.code ? e.message : errorMessage(err, t);
+  if (err instanceof TypeError) return errorMessage(err, t);
+  return t.passkeyDeviceFailed;
+}
+
 // 'shared' is the login screen; 'identify' is the picker — reached after
 // signing in, and again from the app whenever someone hands the device on.
+// 'passkey-offer' comes once after the picker, on a device that can hold a
+// passkey and has none for this coach yet: set up fingerprint sign-in, or not.
 // There used to be a third: a per-person e-mail and password, which is what
 // admin rights and the chair's survey access hung off. Both now have their own
 // password on the admin page, so the app has one way in and one screen for it.
-type View = 'shared' | 'identify';
+type View = 'shared' | 'identify' | 'passkey-offer';
 
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [authed, setAuthed] = useState(false);
@@ -219,6 +261,13 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const lastRecheckRef = useRef(0);
   const recheckBusyRef = useRef(false);
   const recheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Passkeys. Decided once: whether this page can run the ceremony at all
+  // never changes while it is open.
+  const [canPasskey] = useState(() => passkeysPossible());
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  // The session the offer stands in front of: adopted on either answer.
+  const [offerMe, setOfferMe] = useState<AuthMe | null>(null);
 
   // Picker state.
   const [roster, setRoster] = useState<RcRosterEntry[] | null>(null);
@@ -464,6 +513,14 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       // must mount with exactly the rights the API will honour.
       const me = await getAuthMe().catch(() => null);
       if (!me?.rc?.id) throw new Error(t.cookieBlocked);
+      // Offered once per coach and device, and only where the device can keep
+      // the key itself. Everything else goes straight in, as before.
+      if (!passkeyOnDevice(rc.id) && !passkeyOfferDismissed(rc.id) && await deviceCanHoldPasskey()) {
+        clientLog.info('auth.passkey', 'offering fingerprint sign-in', { rcId: rc.id });
+        setOfferMe(me);
+        setView('passkey-offer');
+        return;
+      }
       adoptSession(me);
     } catch (err) {
       const message = errorMessage(err, t, (err as ApiError).message);
@@ -472,6 +529,79 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  // The everyday way in once a passkey is set up: no password, no picker —
+  // the key says whose it is.
+  const handlePasskeyLogin = async () => {
+    if (passkeyBusy) return;
+    setError('');
+    setNotice('');
+    setPasskeyBusy(true);
+    clientLog.info('auth.passkey-login', 'passkey sign-in started');
+    try {
+      const { rc, credentialId, onThisDevice } = await signInWithPasskey();
+      clientLog.info('auth.passkey-login', 'passkey sign-in ok', { rcId: rc.id, name: rc.name, onThisDevice });
+      setStoredRcId(rc.id);
+      if (onThisDevice) markPasskeyOnDevice(rc.id, true, credentialId);
+      const me = await getAuthMe().catch(() => null);
+      if (!me?.rc?.id) throw new Error(t.cookieBlocked);
+      adoptSession(me);
+    } catch (err) {
+      if (isPasskeyCancel(err)) {
+        clientLog.info('auth.passkey-login', 'the device sheet was closed');
+        return;
+      }
+      const message = (err as Error)?.message === t.cookieBlocked ? t.cookieBlocked : passkeyErrorMessage(err, t);
+      clientLog.warn('auth.passkey-login', `passkey sign-in failed: ${message}`, { status: (err as ApiError).status, code: (err as ApiError).code, error: err });
+      setError(message);
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
+
+  const finishOffer = () => {
+    const me = offerMe;
+    setOfferMe(null);
+    setError('');
+    if (me) adoptSession(me);
+  };
+
+  const acceptPasskeyOffer = async () => {
+    const id = offerMe?.rc?.id;
+    if (!id || passkeyBusy) return;
+    setError('');
+    setPasskeyBusy(true);
+    try {
+      const added = await setUpPasskey();
+      clientLog.info('auth.passkey', 'fingerprint sign-in set up', { rcId: id, onThisDevice: added.onThisDevice });
+      if (added.onThisDevice) markPasskeyOnDevice(id, true, added.credentialId);
+      else dismissPasskeyOffer(id);
+      toast.success(t.passkeySetUpDone);
+      finishOffer();
+    } catch (err) {
+      if (isPasskeyCancel(err)) {
+        clientLog.info('auth.passkey', 'the device sheet was closed during the set-up', { rcId: id });
+        return;
+      }
+      if (isPasskeyAlreadyHere(err)) {
+        clientLog.info('auth.passkey', 'this device already holds a passkey for the coach', { rcId: id });
+        markPasskeyOnDevice(id, true);
+        finishOffer();
+        return;
+      }
+      clientLog.warn('auth.passkey', 'fingerprint sign-in set-up failed', { rcId: id, status: (err as ApiError).status, code: (err as ApiError).code, error: err });
+      setError(typeof (err as ApiError).status === 'number' ? passkeyErrorMessage(err, t) : t.passkeySetUpFailed);
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
+
+  const declinePasskeyOffer = () => {
+    const id = offerMe?.rc?.id;
+    if (id) dismissPasskeyOffer(id);
+    clientLog.info('auth.passkey', 'fingerprint sign-in declined for now', { rcId: id });
+    finishOffer();
   };
 
   // Hand the device on without signing out: back to the picker, session intact.
@@ -566,6 +696,22 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const query = foldName(rcSearch);
   const visibleRoster = (roster ?? []).filter((p) => !query || foldName(p.fullName).includes(query));
   const chosenName = (roster ?? []).find((p) => p.id === chosenRcId)?.fullName ?? null;
+  // Somebody set one up on this device: the button leads and the keyboard
+  // stays down. Read on every render, not once: a coach who just set one up
+  // and logged out is back here without a reload.
+  const passkeyFirst = canPasskey && anyPasskeyOnDevice();
+  const passkeyButton = (
+    <button
+      type="button"
+      onClick={() => void handlePasskeyLogin()}
+      disabled={passkeyBusy || submitting}
+      className={secondaryButtonClass}
+      data-testid="passkey-login"
+    >
+      {passkeyBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4 text-red-600" />}
+      {passkeyBusy ? t.passkeyWaiting : t.passkeyLogin}
+    </button>
+  );
   const passwordField = (id: string, autoComplete: string, placeholder: string, value: string, onChange: (v: string) => void) => (
     <div className="relative">
       <label htmlFor={id} className="sr-only">{placeholder}</label>
@@ -621,6 +767,14 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                   {notice}
                 </p>
               )}
+              {canPasskey && passkeyFirst && (
+                <>
+                  {passkeyButton}
+                  <p className="my-4 flex items-center gap-3 text-[11px] text-stone-400 before:h-px before:flex-1 before:bg-stone-200 after:h-px after:flex-1 after:bg-stone-200">
+                    {t.passkeyOr}
+                  </p>
+                </>
+              )}
               <form onSubmit={handleSharedSubmit} className="space-y-3">
                 <div className="relative">
                   <label htmlFor="rc-username" className="sr-only">{t.username}</label>
@@ -635,24 +789,27 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                     value={username}
                     onChange={e => setUsername(e.target.value)}
                     placeholder={t.username}
-                    autoFocus
-                    disabled={submitting}
+                    // Not when the fingerprint button leads: a phone would
+                    // open its keyboard over it.
+                    autoFocus={!passkeyFirst}
+                    disabled={submitting || passkeyBusy}
                     className={inputClass(error)}
                   />
                 </div>
                 <div>
                   {passwordField('rc-password', 'current-password', t.password, password, setPassword)}
-                  {error && <p className="text-red-600 text-xs mt-2 font-medium">{error}</p>}
+                  {error && <p className="text-red-600 text-xs mt-2 font-medium" data-testid="login-error">{error}</p>}
                 </div>
                 <button
                   type="submit"
-                  disabled={!username.trim() || password.length < 1 || submitting}
+                  disabled={!username.trim() || password.length < 1 || submitting || passkeyBusy}
                   className={primaryButtonClass}
                 >
                   {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                   {submitting ? t.checking : t.login}
                 </button>
               </form>
+              {canPasskey && !passkeyFirst && <div className="mt-3">{passkeyButton}</div>}
               {/* #/admin is a different door with its own password, not a
                   second form behind this one — the console no longer sits
                   behind this gate at all (see main.tsx). */}
@@ -764,6 +921,23 @@ export default function AuthGate({ children }: { children: ReactNode }) {
                 <ArrowLeft className="h-3 w-3" /> {t.backToLogin}
               </button>
             </form>
+          )}
+
+          {view === 'passkey-offer' && (
+            <div className="space-y-3 text-center" data-testid="passkey-offer">
+              <Fingerprint className="mx-auto h-9 w-9 text-red-600" aria-hidden="true" />
+              <h1 className="text-base font-semibold text-stone-800">{t.passkeyOfferTitle}</h1>
+              <p className="text-xs text-stone-600">{t.passkeyOfferBody}</p>
+              <p className="text-[11px] text-stone-400">{t.passkeyOfferPrivacy}</p>
+              {error && <p className="text-red-600 text-xs font-medium">{error}</p>}
+              <button type="button" onClick={() => void acceptPasskeyOffer()} disabled={passkeyBusy} className={`${primaryButtonClass} mt-2`}>
+                {passkeyBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />}
+                {passkeyBusy ? t.passkeyWaiting : t.passkeyOfferYes}
+              </button>
+              <button type="button" onClick={declinePasskeyOffer} disabled={passkeyBusy} className="w-full py-2 text-xs font-medium text-stone-500 hover:text-stone-700">
+                {t.passkeyOfferNo}
+              </button>
+            </div>
           )}
 
         </div>

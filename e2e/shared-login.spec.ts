@@ -50,7 +50,7 @@ const FAKE_TEAM_PW = 'not-a-real-password';
 async function signInWithTeamCredential(page: Page): Promise<void> {
   await page.getByPlaceholder(/Benutzername|Username/).fill('Referee-Coaching');
   await page.getByPlaceholder(/^(Passwort|Password)$/).fill(FAKE_TEAM_PW);
-  await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();
+  await page.getByRole('button', { name: /^(Anmelden|Sign in)$/ }).click();
 }
 
 test.describe('Team login', () => {

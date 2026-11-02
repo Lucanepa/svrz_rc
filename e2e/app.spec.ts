@@ -53,7 +53,7 @@ test.describe('Admin console', () => {
   // it asks for the admin password when the session has no admin rights.
   test('asks for the admin password when the session has none', async ({ page }) => {
     await page.goto('/admin');
-    await expect(page.getByRole('button', { name: /Anmelden|Sign in/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^(Anmelden|Sign in)$/ })).toBeVisible();
     await expect(page.locator('input[type="password"]')).toBeVisible();
   });
 

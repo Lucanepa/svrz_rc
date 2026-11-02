@@ -71,6 +71,6 @@ test.describe('Mobile layout', () => {
     await page.goto('/admin');
 
     await expect(page.locator('input[type="password"]')).toBeVisible();
-    await expect(page.getByRole('button', { name: /Anmelden|Sign in/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^(Anmelden|Sign in)$/ })).toBeVisible();
   });
 });

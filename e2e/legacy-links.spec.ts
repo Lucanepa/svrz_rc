@@ -84,7 +84,7 @@ test('a hash link to the admin console opens the console', async ({ page }) => {
 
   await expect(page).toHaveURL(/\/admin\/settings$/);
   // The console's own login, not the app: the console is a different root.
-  await expect(page.getByRole('button', { name: /Anmelden|Sign in/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^(Anmelden|Sign in)$/ })).toBeVisible();
 });
 
 test('a survey link is NOT rewritten — its token stays in the fragment', async ({ page }) => {

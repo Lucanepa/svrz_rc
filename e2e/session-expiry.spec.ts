@@ -160,7 +160,7 @@ test.describe('in the app', () => {
     gone = false;
     await page.getByPlaceholder(/Benutzername|Username/).fill('Referee-Coaching');
     await page.getByPlaceholder(/^(Passwort|Password)$/).fill('not-a-real-password');
-    await page.getByRole('button', { name: /Anmelden|Sign in/ }).click();
+    await page.getByRole('button', { name: /^(Anmelden|Sign in)$/ }).click();
     await page.getByRole('button', { name: RC.name }).click();
     await page.getByRole('button', { name: /Weiter|Continue/ }).click();
     await expect(tipsBox(page)).toHaveValue(typed);

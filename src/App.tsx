@@ -72,6 +72,7 @@ import {
 import RcMeetingsHome from './components/RcMeetingsHome';
 import SwitchRequestsHome, { SwitchRequestsTab } from './components/SwitchRequestsHome';
 import PushOption from './components/PushOption';
+import PasskeyOption from './components/PasskeyOption';
 import { resyncPush } from './lib/push';
 import { answerSwitch, clearSwitchRequests, isOpenRequest, pendingFor, refreshSwitchRequests, requestSwitch, useSwitchRequests, type SwitchRequestView } from './lib/switchRequests';
 import InfoHint from './components/InfoHint';
@@ -7221,6 +7222,7 @@ export default function App() {
                   </span>
                 </button>
               )}
+              {rcAuth.rcName && rcAuth.rcId && !isDemoMode() && <PasskeyOption lang={formData.lang} rcId={rcAuth.rcId} />}
               {rcAuth.rcName && rcAuth.sharedSession && (
                 <button
                   onClick={() => { void (async () => {

@@ -171,6 +171,12 @@ ADMIN_SESSION_TTL_MS="28800000"           # default 8h
 SHARED_LOGIN_USERNAME="Referee-Coaching"
 SHARED_LOGIN_PASSWORD="<set in the env, or change it in the admin console>"
 
+# Passkey sign-in (server/passkeys.ts). Both optional: the relying party
+# defaults to APP_PUBLIC_URL's host, the allowed page origins to the
+# CORS_ALLOWED_ORIGINS on that host. Changing the RP ID orphans every passkey.
+WEBAUTHN_RP_ID=""
+WEBAUTHN_ORIGINS=""
+
 # The RC chair's own login, typed on the same form as the admin one at /admin.
 PRESIDENT_UI_USERNAME="praesidium"
 PRESIDENT_UI_PASSWORD="<set to open the chair's tabs; unset keeps them shut>"
@@ -462,6 +468,22 @@ then `docker exec … node deploy/hetzner/seed/setup-schema.mjs`): reads on a
 missing collection answer an empty notebook, writes say
 `Die Sammlung „rc_notebook" fehlt in PocketBase`.
 
+### `rc_passkeys` — the coaches' passkeys (since 2026-11-02)
+
+One row per device key: `rc_id`, `credential_id` (the device's name for the
+key, base64url, unique), `public_key` (base64url COSE — the private key never
+leaves the device), `counter` (the device's signature count), `transports`
+(JSON), `backed_up` (synced by iCloud Keychain / Google Password Manager),
+`label` ("iPhone · Safari", from the user agent), `last_used` (ISO). Born on
+Postgres (`prisma/migrations/20261102120000_rc_passkeys`), applied by
+`db:migrate` at container start. A table of its own so no endpoint handing out
+coach records can carry one along. Endpoints, all under `/api/auth/`:
+`passkey/register/options` + `passkey/register` (an identified app session,
+for that coach only — not a console session), `passkey/login/options` +
+`passkey/login` (no session), `GET passkeys` and `DELETE passkeys/:id` (the
+coach's own). Refusals carry a `code` the app acts on: `challenge`,
+`unknown`, `outdated`, `inactive`, `invalid`, `duplicate`, `limit`.
+
 ## Identity: SV number, RC id, match number (since 2026-09-16)
 
 Who a row is about is decided by a number, and the folded name is only the
@@ -529,8 +551,9 @@ Three layers, plus capability tokens:
 1. **PocketBase admin auth** (server-side, via env creds) for every DB
    operation. The browser never talks to PocketBase.
 2. **App session cookie** `svrz_rc_session` — who the app is acting as. Signed
-   (HMAC, `ADMIN_SESSION_SECRET`), `httpOnly`, 30 days. There is exactly one way
-   to open it: `POST /api/auth/shared/login` with the team credential. It starts
+   (HMAC, `ADMIN_SESSION_SECRET`), `httpOnly`, 30 days. There are two ways to
+   open it: a coach's own passkey (below), or `POST /api/auth/shared/login` with
+   the team credential. The team login starts
    with **no identity** — every `requireRcSession` route answers 401 until
    `POST /api/auth/rc/identify` names an RC (the list comes from
    `GET /api/auth/rc/roster`). That name is a **claim, not a proof**, so the
@@ -552,6 +575,49 @@ Three layers, plus capability tokens:
    and they die with the next rotation — the deploy itself logs nobody out. If
    PocketBase cannot be read at startup the generation check is skipped (not
    failed closed) until the first successful read.
+
+   **Passkeys (since 2026-11-02, `server/passkeys.ts`).** A coach can sign in
+   with the device's fingerprint, face or PIN instead of the team password: the
+   device keeps a private key, the server keeps the public one in
+   `rc_passkeys`, and the app never sees a fingerprint or a face. Offered once
+   after the picker on a device that can hold a key (and under Optionen →
+   "Anmeldung per Fingerabdruck", where the coach also sees and removes theirs).
+   A passkey login opens an **identified** session for the coach the key is
+   filed under — no picker — with fresh clocks (`iat` = now), like typing the
+   password. Rules:
+   - The relying party is the **web app's host** (`svrz-rc.openvolley.app`,
+     from `APP_PUBLIC_URL`; `WEBAUTHN_RP_ID` overrides), and only the page
+     origins in `CORS_ALLOWED_ORIGINS` on that host may run a ceremony
+     (`WEBAUTHN_ORIGINS` overrides). The installed app (`tauri://`,
+     `tauri.localhost`) cannot hold a passkey for a web host and keeps the team
+     password; the app hides every passkey control there (`IS_NATIVE`).
+   - Discoverable keys and user verification are **required**: sign-in starts
+     with no name typed, and "fingerprint or face" is the point.
+   - **A passkey set up before the team password last changed is dead**, like
+     every session. The name on a session is picked, not proven, so anyone with
+     the team password could set up a passkey under any name; without this a
+     leaked password, used once, would outlive the rotation meant to shut it
+     out. After a rotation the coach signs in once with the new password and
+     is offered the set-up again; dead keys are listed as "Abgelaufen" and
+     deleted when the coach sets up a new one.
+   - **A passkey unused for 180 days is dead** (counted from its last sign-in,
+     or its set-up when never used): a key somebody else made under a coach's
+     name and never needed again does not stay a way in for good.
+   - A deactivated coach's passkeys stop working (the roster check), and the
+     coach is **mailed** whenever a passkey is set up under their name, with
+     how to remove it. A coach with no e-mail on file: the mail goes to
+     `CREDENTIAL_2FA_EMAIL` instead. The console's test mode suppresses it.
+   - The set-up reads the password generation **before** judging the session
+     (right after a restart it is not known yet) and checks the session again
+     just before it writes the row; the login dates its session from before
+     the generation was read. So a rotation racing either one still wins.
+   - A rotation reaches passkeys only through the console (it stamps
+     `auth_credentials.shared.updatedAt`); changing `SHARED_LOGIN_PASSWORD` in
+     the env alone does not.
+   - Challenges are in memory, single-use, 3 min, at most 2000 outstanding;
+     a restart costs whoever had the device sheet open one more tap. At most
+     10 live passkeys per coach. Ceremony bodies are kept out of the activity
+     log (`CONFIDENTIAL_BODY_PATHS`): they map keys to coaches.
 
    There used to be a second kind (`mode: 'personal'`, a per-RC e-mail and
    password) and it was the only thing that could prove identity, which is why
@@ -653,6 +719,12 @@ Sign-in rate limits (in memory, reset on restart):
   password) still gets in. Before, anyone with a few dozen IPs could lock the
   whole region out indefinitely. A flood is still cut to one wrong guess per
   address per window.
+- **Passkey login** (`/api/auth/passkey/login`): 10 failures per IP per 5 min,
+  charged before the check and refunded on success (the console's pattern).
+  Its options (`/api/auth/passkey/login/options`, no session needed): 60 per
+  IP per 5 min. Setting one up (`/api/auth/passkey/register[/options]`): 20
+  calls per **coach** per 15 min (not per IP: a hall behind one NAT), and 5
+  finished set-ups per coach per hour — each one mails the coach.
 
 ## API Endpoints (What They Do)
 

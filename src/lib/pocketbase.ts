@@ -382,12 +382,78 @@ export async function identifyAsRc(rcId: string): Promise<{ id: string; name: st
   return (await response.json() as { rc: { id: string; name: string } }).rc;
 }
 
-/** The API's error body turned into an Error the gate can render. */
-async function apiError(response: Response, fallback: string): Promise<Error & { status?: number; retryAfterMs?: number }> {
-  const data = await response.json().catch(() => ({})) as { error?: string; retryAfterMs?: number };
-  const err = new Error(data.error || fallback) as Error & { status?: number; retryAfterMs?: number };
+// ── Passkeys (sign-in with the device's fingerprint, face or PIN) ─────
+// The ceremonies themselves are in lib/passkeys.ts; these are the four calls
+// around them and the list under Optionen.
+
+/** What the server sends to start a ceremony: a challenge id to hand back,
+ *  and the options for the device. Typed loosely here; lib/passkeys.ts hands
+ *  them to the WebAuthn library, which knows their shape. */
+export type PasskeyCeremonyStart = { challengeId: string; options: unknown };
+
+/** One of the coach's passkeys. `outdated`: set up before the team password
+ *  last changed, so it no longer signs in. */
+export type PasskeyEntry = {
+  id: string;
+  label: string;
+  created: string;
+  lastUsed: string;
+  credentialId: string;
+  outdated: boolean;
+};
+
+async function postJson(path: string, body: unknown, fallback: string): Promise<Response> {
+  const response = await fetch(apiUrl(path), {
+    credentials: 'include',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!response.ok) throw await apiError(response, fallback);
+  return response;
+}
+
+export async function passkeyLoginOptions(): Promise<PasskeyCeremonyStart> {
+  return (await postJson('/api/auth/passkey/login/options', {}, 'Could not start the sign-in')).json() as Promise<PasskeyCeremonyStart>;
+}
+
+/** Signs in with what the device answered. Like the team login, a fresh
+ *  cookie retires a pending logout and the previous coach's cached data. */
+export async function passkeyLogin(challengeId: string, response: unknown): Promise<{ id: string; name: string; firstName?: string }> {
+  const answer = await postJson('/api/auth/passkey/login', { challengeId, response }, 'Sign-in failed');
+  setPendingLogout(false);
+  await clearApiCache();
+  return (await answer.json() as { rc: { id: string; name: string; firstName?: string } }).rc;
+}
+
+export async function passkeyRegisterOptions(): Promise<PasskeyCeremonyStart> {
+  return (await postJson('/api/auth/passkey/register/options', {}, 'Could not start the set-up')).json() as Promise<PasskeyCeremonyStart>;
+}
+
+export async function passkeyRegister(challengeId: string, response: unknown): Promise<PasskeyEntry> {
+  const answer = await postJson('/api/auth/passkey/register', { challengeId, response }, 'Set-up failed');
+  return (await answer.json() as { passkey: PasskeyEntry }).passkey;
+}
+
+export async function listPasskeys(): Promise<PasskeyEntry[]> {
+  const response = await fetch(apiUrl('/api/auth/passkeys'), { credentials: 'include', cache: 'no-store' });
+  if (!response.ok) throw await apiError(response, 'Could not load the passkeys');
+  return response.json() as Promise<PasskeyEntry[]>;
+}
+
+export async function removePasskey(id: string): Promise<void> {
+  const response = await fetch(apiUrl(`/api/auth/passkeys/${encodeURIComponent(id)}`), { credentials: 'include', method: 'DELETE' });
+  if (!response.ok) throw await apiError(response, 'Could not remove the passkey');
+}
+
+/** The API's error body turned into an Error the gate can render. `code` is
+ *  set where the server says more than a status can (the passkey refusals). */
+async function apiError(response: Response, fallback: string): Promise<Error & { status?: number; retryAfterMs?: number; code?: string }> {
+  const data = await response.json().catch(() => ({})) as { error?: string; retryAfterMs?: number; code?: string };
+  const err = new Error(data.error || fallback) as Error & { status?: number; retryAfterMs?: number; code?: string };
   err.status = response.status;
   err.retryAfterMs = data.retryAfterMs;
+  if (data.code) err.code = data.code;
   return err;
 }
 

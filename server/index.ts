@@ -12,6 +12,7 @@ import { createHash, createHmac, randomUUID, randomBytes, randomInt, timingSafeE
 import { readFileSync } from 'node:fs';
 import { crc32 } from 'node:zlib';
 import { judgeRcSession, rcSessionTimes } from './rcSession.ts';
+import { cleanTransports, createPasskeyCeremonies, passkeyConfig, passkeyDeviceLabel, passkeyOutlived, PasskeyError, PASSKEYS_PER_RC_MAX, type StoredPasskey } from './passkeys.ts';
 import { log, query as queryLogs, sessions as logSessions, ringStats, ringEntries, pruneLogFiles, record as recordLog, captureConsole, printUnlogged, localDate, type LogLevel, type LogSource } from './logstore.ts';
 import {
   readDay, groupEntries, listDays, annotate, listAnnotations,
@@ -197,6 +198,12 @@ const ALLOWED_ORIGINS = [...new Set([
 // live, and never before — 'lax' against a cross-site API logs everyone out.
 const SESSION_SAMESITE: 'lax' | 'none' =
   process.env.SESSION_COOKIE_SAMESITE === 'lax' ? 'lax' : 'none';
+
+// Passkey sign-in (server/passkeys.ts). The relying party is the web app's
+// host, and the ceremony may come from the web app's origins only — the
+// installed app's tauri:// pages cannot hold a passkey for a web host, so the
+// native app keeps the team password.
+const passkeys = createPasskeyCeremonies(passkeyConfig(process.env, ALLOWED_ORIGINS.filter((o) => !NATIVE_APP_ORIGINS.includes(o))));
 
 app.use(cors({
   origin: (origin, cb) => {
@@ -424,6 +431,10 @@ const CONFIDENTIAL_BODY_PATHS = [
   // array is built at module load, when that constant is still in its
   // temporal dead zone.
   /^\/api\/notebook(\/[^/]+){0,2}\/?$/i,
+  // A passkey ceremony names the key and the coach it belongs to (credential
+  // id, user handle). Nothing a replay could use, but the console that reads
+  // this log has no business holding the map from keys to coaches.
+  /^\/api\/auth\/passkey\//i,
 ];
 
 function logBody(path: string, body: unknown): unknown {
@@ -825,6 +836,15 @@ function peekRateLimit(store: RateLimitStore, key: string, max: number): { allow
 
 // Per-IP limiter for login endpoints (RC login + admin login).
 const gateAttempts: RateLimitStore = new Map();
+// Passkeys: the sign-in options are reachable with no session, the set-up
+// needs one. Each its own bucket, so neither can starve the other.
+const passkeyOptionsRl: RateLimitStore = new Map();
+// Keyed by the coach, not the address: a hall full of coaches behind one NAT
+// setting theirs up must not use up each other's budget.
+const passkeyRegisterRl: RateLimitStore = new Map();
+// Set-ups finished per coach. Each one mails the coach, so this is also what
+// keeps somebody with the team password from filling a coach's inbox.
+const passkeyAddedRl: RateLimitStore = new Map();
 // Namespaced per route, not one bucket for all four sign-in doors. Sharing it
 // meant ten sign-ins of ANY kind from one address in five minutes — a
 // season-kickoff meeting on one office WiFi, every coach on the same NAT — 429'd
@@ -968,7 +988,7 @@ setInterval(() => {
   // Every bucket, not just the login ones: clientLogRl is fed by an
   // unauthenticated endpoint that any scanner can reach, so a forgotten map
   // grows one entry per source IP for the life of the process.
-  for (const store of [gateAttempts, signatureAttempts, signatureStartAttempts, sharedLoginGlobal, sharedLoginIpFailures, logReadRl, surveyAttempts, clientLogRl, clientLogGlobalRl, parkAttempts, notebookAttempts, unauthLogRl, coacheeFileSvFails, coacheeFileSvDayFails, coacheeFileIpFails, coacheeFileGlobalFails]) {
+  for (const store of [gateAttempts, passkeyOptionsRl, passkeyRegisterRl, passkeyAddedRl, signatureAttempts, signatureStartAttempts, sharedLoginGlobal, sharedLoginIpFailures, logReadRl, surveyAttempts, clientLogRl, clientLogGlobalRl, parkAttempts, notebookAttempts, unauthLogRl, coacheeFileSvFails, coacheeFileSvDayFails, coacheeFileIpFails, coacheeFileGlobalFails]) {
     for (const [ip, entry] of store) {
       if (now >= entry.resetAt) store.delete(ip);
     }
@@ -979,6 +999,7 @@ setInterval(() => {
   for (const [key, entry] of credChallenges) {
     if (now > entry.expiresAt) credChallenges.delete(key);
   }
+  passkeys.sweep();
 }, 10 * 60 * 1000);
 
 function unique(values: string[]): string[] {
@@ -7164,6 +7185,326 @@ app.post('/api/auth/rc/logout', (_req: Request, res: ExpressResponse) => {
     path: '/',
   });
   res.json({ ok: true });
+});
+
+// ── Passkeys: sign-in with the device's fingerprint, face or PIN ─────
+// The rules and the ceremonies are in server/passkeys.ts; read its header for
+// where a passkey stands next to the team password (the short of it: a passkey
+// set up before the password last changed is dead, like every session).
+
+const PASSKEY_COLLECTION = 'rc_passkeys';
+
+function storedPasskey(row: AnyRecord): StoredPasskey {
+  return {
+    id: String(row.id),
+    rcId: asText(row.rc_id),
+    credentialId: asText(row.credential_id),
+    publicKey: asText(row.public_key),
+    counter: Number(row.counter) || 0,
+    transports: cleanTransports(row.transports),
+    createdMs: Date.parse(asText(row.created)),
+    lastUsedMs: Date.parse(asText(row.last_used)) || 0,
+  };
+}
+
+/** Dead by the password's generation or by disuse (server/passkeys.ts). */
+function passkeyDead(p: StoredPasskey): boolean {
+  return passkeyOutlived(p.createdMs, sharedCredentialSince, p.lastUsedMs);
+}
+
+async function passkeyRowsOf(rcId: string): Promise<AnyRecord[]> {
+  return db.collection(PASSKEY_COLLECTION).getFullList<AnyRecord>({
+    filter: `rc_id = "${escapeFilterValue(rcId)}"`, sort: 'created',
+  });
+}
+
+async function passkeyByCredentialId(credentialId: string): Promise<AnyRecord | null> {
+  const rows = await db.collection(PASSKEY_COLLECTION).getFullList<AnyRecord>({
+    filter: `credential_id = "${escapeFilterValue(credentialId)}"`,
+  });
+  return rows[0] ?? null;
+}
+
+/** The answer a refusal gets: a code the app acts on, and words it shows. */
+function refusePasskey(res: ExpressResponse, status: number, code: string, de: string, en: string): void {
+  res.status(status).json({ error: say(de, en), code });
+}
+
+/** Mails the coach that a passkey now opens the app under their name. The name
+ *  on a session is picked, not proven, so this mail is how the coach hears
+ *  about a passkey somebody else set up as them. Honours the console's test
+ *  mode: it goes to a referee coach, not to an operator. */
+async function mailPasskeyAdded(person: ActiveRcPerson, label: string): Promise<void> {
+  // A coach with no address on file: the operator mailbox (the one the
+  // password-change codes go to) hears instead, or the set-up goes unseen.
+  const to = person.email || credential2faRecipient('shared');
+  if (!to) {
+    log.warn('auth.passkey-register', 'nobody to tell: the coach has no e-mail and no CREDENTIAL_2FA_EMAIL is set', { rcId: person.id });
+    return;
+  }
+  if (await isEmailTestMode()) {
+    log.info('auth.passkey-register', 'test mode — the set-up notice was not mailed', { rcId: person.id });
+    return;
+  }
+  const when = new Date().toISOString();
+  const at = `${fmtDateDe(when)} ${fmtTimeDe(when)}`.trim();
+  const de = person.email
+    ? `Hallo ${person.firstName || person.fullName}\n\nAm ${at} wurde für deinen Namen eine Anmeldung per Fingerabdruck oder Gesicht (Passkey) eingerichtet, auf: ${label}.\n\nWarst du das nicht? Entferne sie in der App unter Optionen → „Anmeldung per Fingerabdruck“ und melde dich beim RC-Verantwortlichen.`
+    : `Am ${at} wurde für ${person.fullName} eine Anmeldung per Fingerabdruck oder Gesicht (Passkey) eingerichtet, auf: ${label}. Für diesen Referee Coach ist keine E-Mail-Adresse hinterlegt, deshalb geht diese Nachricht hierher.\n\nWar es nicht ${person.fullName}? Ein Wechsel des Team-Passworts in der Administration beendet alle Passkeys.`;
+  const en = person.email
+    ? `Hello ${person.firstName || person.fullName}\n\nOn ${at} a fingerprint or face sign-in (passkey) was set up under your name, on: ${label}.\n\nWas this not you? Remove it in the app under Options → "Fingerprint or face sign-in" and tell the RC lead.`
+    : `On ${at} a fingerprint or face sign-in (passkey) was set up for ${person.fullName}, on: ${label}. This referee coach has no e-mail address on file, so this message comes here.\n\nWas it not ${person.fullName}? Changing the team password in the administration ends every passkey.`;
+  const html = emailShell(
+    `<h1 style="margin:0 0 6px;${mailText(20, MAIL_INK, `font-weight:700;line-height:1.3;${MAIL_DISPLAY}`)}">Neue Anmeldung per Fingerabdruck</h1>`
+    + `<p style="margin:0 0 14px;${mailText(13, MAIL_MUTED)}">New fingerprint sign-in</p>`
+    + bilingualBlockHtml(de, en),
+  );
+  await sendMailResilient({
+    from: MAIL_FROM,
+    to,
+    subject: 'Neue Anmeldung per Fingerabdruck / New fingerprint sign-in – SVRZ Referee Coaching',
+    text: bilingualText(de, en) + MAIL_APP_URL,
+    html,
+    attachments: emailAttachments(),
+  });
+}
+
+// Setting one up: the coach the session names, and only that coach. Not
+// requireRcSession — a console session passes that with nobody behind it, and
+// a passkey has to be filed under somebody.
+app.post('/api/auth/passkey/register/options', async (req: Request, res: ExpressResponse) => {
+  const ctx = reqCtx(req);
+  try {
+    // The generation first, then the session: right after a restart the
+    // generation is not known yet, and a session from before the last
+    // rotation would pass a check made without it.
+    await readCredentials();
+    const session = await resolveRcSession(req);
+    if (!session) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const { person } = session;
+    tagReqUser(req, person.fullName);
+    const rl = checkRateLimit(passkeyRegisterRl, person.id, 20, 15 * 60 * 1000);
+    if (!rl.allowed) { denyRateLimited(req, res, 'passkey-register:rc', rl.retryAfterMs); return; }
+    const live = (await passkeyRowsOf(person.id)).map(storedPasskey).filter((p) => !passkeyDead(p));
+    if (live.length >= PASSKEYS_PER_RC_MAX) {
+      refusePasskey(res, 400, 'limit',
+        `Du hast schon ${PASSKEYS_PER_RC_MAX} Passkeys. Entferne zuerst einen, den du nicht mehr brauchst.`,
+        `You already have ${PASSKEYS_PER_RC_MAX} passkeys. Remove one you no longer need first.`);
+      return;
+    }
+    const { challengeId, options } = await passkeys.registrationOptions({
+      rcId: person.id, name: person.fullName, existing: live,
+    });
+    res.json({ challengeId, options });
+  } catch (error) {
+    if (error instanceof CredentialsUnavailableError) { answerCredentialsUnavailable(res, 'auth.passkey-register', error, ctx); return; }
+    log.error('auth.passkey-register', 'could not prepare the set-up', { error }, ctx);
+    res.status(isMissingCollectionError(error) ? 503 : 500).json({ error: say('Passkeys sind gerade nicht verfügbar.', 'Passkeys are not available right now.') });
+  }
+});
+
+app.post('/api/auth/passkey/register', async (req: Request, res: ExpressResponse) => {
+  const ctx = reqCtx(req);
+  try {
+    await readCredentials(); // before the session, as above
+    const session = await resolveRcSession(req);
+    if (!session) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const { person } = session;
+    tagReqUser(req, person.fullName);
+    const rl = checkRateLimit(passkeyRegisterRl, person.id, 20, 15 * 60 * 1000);
+    if (!rl.allowed) { denyRateLimited(req, res, 'passkey-register:rc', rl.retryAfterMs); return; }
+    const body = (req.body ?? {}) as { challengeId?: unknown; response?: unknown };
+    let added: Awaited<ReturnType<typeof passkeys.finishRegistration>>;
+    try {
+      added = await passkeys.finishRegistration({
+        challengeId: asText(body.challengeId), rcId: person.id, response: body.response as never,
+      });
+    } catch (error) {
+      if (!(error instanceof PasskeyError)) throw error;
+      log.warn('auth.passkey-register', `rejected: ${error.code}`, { rcId: person.id, reason: error.message }, ctx);
+      if (error.code === 'challenge' || error.code === 'mismatch') {
+        refusePasskey(res, 400, 'challenge', 'Die Einrichtung ist abgelaufen. Bitte nochmals versuchen.', 'The set-up timed out. Please try again.');
+      } else {
+        refusePasskey(res, 400, 'invalid', 'Der Passkey konnte nicht geprüft werden.', 'The passkey could not be verified.');
+      }
+      return;
+    }
+    // One key, one row. A key already filed under somebody else is not moved:
+    // it would take that coach's sign-in with it.
+    const clash = await passkeyByCredentialId(added.credentialId);
+    if (clash && asText(clash.rc_id) !== person.id) {
+      log.warn('auth.passkey-register', 'rejected: the key is filed under another coach', { rcId: person.id, other: asText(clash.rc_id) }, ctx);
+      refusePasskey(res, 409, 'duplicate', 'Dieser Passkey gehört schon jemand anderem.', 'This passkey already belongs to someone else.');
+      return;
+    }
+    const label = passkeyDeviceLabel(asText(req.get('user-agent')));
+    // Keys that died (the last password change, or disuse) go when a new one
+    // comes: they can never sign in again, and the list should show what can.
+    // So does this same key's old row. Gone only once nothing below refuses.
+    const rows = await passkeyRowsOf(person.id);
+    const replaced = rows.filter((row) => passkeyDead(storedPasskey(row)) || String(row.id) === String(clash?.id ?? ''));
+    const liveCount = rows.length - replaced.length;
+    // Counted again here, not only in the options: two set-ups started side by
+    // side would each have seen room for one more.
+    if (liveCount >= PASSKEYS_PER_RC_MAX) {
+      refusePasskey(res, 400, 'limit',
+        `Du hast schon ${PASSKEYS_PER_RC_MAX} Passkeys. Entferne zuerst einen, den du nicht mehr brauchst.`,
+        `You already have ${PASSKEYS_PER_RC_MAX} passkeys. Remove one you no longer need first.`);
+      return;
+    }
+    const addedRl = checkRateLimit(passkeyAddedRl, person.id, 5, 60 * 60 * 1000);
+    if (!addedRl.allowed) { denyRateLimited(req, res, 'passkey-added:rc', addedRl.retryAfterMs); return; }
+    // The session again, as late as it gets: a rotation that landed while
+    // this request awaited the database has ended it.
+    if (!verifyRcSession(req).ok) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    for (const old of replaced) await db.collection(PASSKEY_COLLECTION).delete(String(old.id));
+    const row = await db.collection(PASSKEY_COLLECTION).create<AnyRecord>({
+      rc_id: person.id,
+      credential_id: added.credentialId,
+      public_key: added.publicKey,
+      counter: added.counter,
+      transports: added.transports,
+      backed_up: added.backedUp,
+      label,
+      last_used: '',
+    });
+    log.info('auth.passkey-register', 'passkey set up', { rcId: person.id, name: person.fullName, label, backedUp: added.backedUp }, ctx);
+    void mailPasskeyAdded(person, label).catch((error) => {
+      log.warn('auth.passkey-register', 'the set-up notice could not be mailed', { rcId: person.id, error }, ctx);
+    });
+    res.json({ ok: true, passkey: { id: String(row.id), label, created: asText(row.created), lastUsed: '', credentialId: added.credentialId, outdated: false } });
+  } catch (error) {
+    if (error instanceof CredentialsUnavailableError) { answerCredentialsUnavailable(res, 'auth.passkey-register', error, ctx); return; }
+    log.error('auth.passkey-register', 'backend failure while setting up a passkey', { error }, ctx);
+    res.status(isMissingCollectionError(error) ? 503 : 500).json({ error: say('Passkeys sind gerade nicht verfügbar.', 'Passkeys are not available right now.') });
+  }
+});
+
+// Signing in. The options are reachable with no session at all, so they have
+// their own per-address budget, and the challenge map its own ceiling.
+app.post('/api/auth/passkey/login/options', async (req: Request, res: ExpressResponse) => {
+  const ctx = reqCtx(req);
+  const rl = checkRateLimit(passkeyOptionsRl, ctx.ip, 60, 5 * 60 * 1000);
+  if (!rl.allowed) { denyRateLimited(req, res, 'passkey-options:ip', rl.retryAfterMs); return; }
+  try {
+    res.json(await passkeys.authenticationOptions());
+  } catch (error) {
+    log.error('auth.passkey-login', 'could not prepare the sign-in', { error }, ctx);
+    res.status(500).json({ error: say('Passkeys sind gerade nicht verfügbar.', 'Passkeys are not available right now.') });
+  }
+});
+
+app.post('/api/auth/passkey/login', async (req: Request, res: ExpressResponse) => {
+  const ctx = reqCtx(req);
+  // Charged up front and given back on success: only a refusal spends it (see
+  // refundRateLimit for why it is not a peek and a charge).
+  const ipRl = checkGateRateLimit(ctx.ip, 'passkey-login');
+  if (!ipRl.allowed) { denyRateLimited(req, res, 'login:ip', ipRl.retryAfterMs, { kind: 'passkey' }); return; }
+  const body = (req.body ?? {}) as { challengeId?: unknown; response?: unknown };
+  // The session minted below dates its login from HERE, before the generation
+  // is read: a rotation landing in between then ends it, as it would any
+  // session whose login predates it.
+  const checkedAt = Date.now();
+  try {
+    // Through the store (a console rotation updates it at once; a change made
+    // in the database directly shows within the store's 60 s cache).
+    await readCredentials();
+    let verified: Awaited<ReturnType<typeof passkeys.finishAuthentication>>;
+    let row: AnyRecord | null = null;
+    try {
+      verified = await passkeys.finishAuthentication({
+        challengeId: asText(body.challengeId),
+        response: body.response as never,
+        lookup: async (credentialId) => {
+          row = await passkeyByCredentialId(credentialId);
+          return row ? storedPasskey(row) : null;
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof PasskeyError)) throw error;
+      log.warn('auth.passkey-login', `rejected: ${error.code}`, { reason: error.message }, ctx);
+      if (error.code === 'challenge') {
+        refusePasskey(res, 400, 'challenge', 'Die Anmeldung ist abgelaufen. Bitte nochmals versuchen.', 'The sign-in timed out. Please try again.');
+      } else if (error.code === 'unknown') {
+        refusePasskey(res, 401, 'unknown',
+          'Dieser Passkey ist hier nicht (mehr) bekannt. Melde dich mit dem Team-Passwort an und richte ihn neu ein.',
+          'This passkey is not (or no longer) known here. Sign in with the team password and set it up again.');
+      } else {
+        refusePasskey(res, 401, 'invalid', 'Der Passkey konnte nicht geprüft werden.', 'The passkey could not be verified.');
+      }
+      return;
+    }
+    const { passkey, newCounter } = verified;
+    if (passkeyDead(passkey)) {
+      log.warn('auth.passkey-login', 'rejected: set up before the team password last changed, or unused too long', { rcId: passkey.rcId }, ctx);
+      refusePasskey(res, 401, 'outdated',
+        'Das Team-Passwort wurde geändert. Melde dich einmal mit dem neuen Passwort an und richte die Anmeldung per Fingerabdruck danach neu ein.',
+        'The team password was changed. Sign in once with the new password, then set up fingerprint sign-in again.');
+      return;
+    }
+    const person = (await getActiveRcPeople()).find((p) => p.id === passkey.rcId);
+    if (!person) {
+      log.warn('auth.passkey-login', 'rejected: the coach is not active', { rcId: passkey.rcId }, ctx);
+      refusePasskey(res, 401, 'inactive', 'Dieser Referee Coach ist nicht mehr aktiv.', 'This referee coach is no longer active.');
+      return;
+    }
+    await db.collection(PASSKEY_COLLECTION).update(passkey.id, { counter: newCounter, last_used: new Date().toISOString() });
+    refundGateRateLimit(ctx.ip, 'passkey-login');
+    tagReqUser(req, person.fullName);
+    log.info('auth.passkey-login', 'ok', { rcId: person.id, name: person.fullName, label: asText((row as AnyRecord | null)?.label) }, ctx);
+    // A fresh login: the device just proved itself, so the session's clocks
+    // start now — the same as typing the password.
+    setRcSessionCookie(res, createRcSessionToken({ rcId: person.id, name: person.fullName, loginAt: checkedAt }));
+    res.json({ ok: true, rc: { id: person.id, name: person.fullName, firstName: person.firstName } });
+  } catch (error) {
+    if (error instanceof CredentialsUnavailableError) { answerCredentialsUnavailable(res, 'auth.passkey-login', error, ctx); return; }
+    log.error('auth.passkey-login', 'backend failure while signing in with a passkey', { error }, ctx);
+    res.status(503).json({ error: say('Die Anmeldung ist gerade nicht erreichbar.', 'Auth backend unavailable') });
+  }
+});
+
+// The coach's own passkeys, for Optionen. `outdated` marks one that died with
+// the last password change — shown so the coach knows why it stopped working.
+app.get('/api/auth/passkeys', async (req: Request, res: ExpressResponse) => {
+  const ctx = reqCtx(req);
+  try {
+    const session = await resolveRcSession(req);
+    if (!session) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    await readCredentials();
+    const rows = await passkeyRowsOf(session.person.id);
+    res.set('Cache-Control', 'no-store');
+    res.json(rows.map((row) => ({
+      id: String(row.id),
+      label: asText(row.label),
+      created: asText(row.created),
+      lastUsed: asText(row.last_used),
+      credentialId: asText(row.credential_id),
+      outdated: passkeyDead(storedPasskey(row)),
+    })));
+  } catch (error) {
+    if (error instanceof CredentialsUnavailableError) { answerCredentialsUnavailable(res, 'auth.passkeys', error, ctx); return; }
+    log.error('auth.passkeys', 'could not list the passkeys', { error }, ctx);
+    res.status(isMissingCollectionError(error) ? 503 : 500).json({ error: say('Passkeys sind gerade nicht verfügbar.', 'Passkeys are not available right now.') });
+  }
+});
+
+app.delete('/api/auth/passkeys/:id', async (req: Request, res: ExpressResponse) => {
+  const ctx = reqCtx(req);
+  try {
+    const session = await resolveRcSession(req);
+    if (!session) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const id = asText(req.params.id);
+    // Only the coach's own: the filter is the ownership check.
+    const row = (await passkeyRowsOf(session.person.id)).find((r) => String(r.id) === id);
+    if (!row) { res.status(404).json({ error: say('Diesen Passkey gibt es nicht.', 'No such passkey.') }); return; }
+    await db.collection(PASSKEY_COLLECTION).delete(id);
+    tagReqUser(req, session.person.fullName);
+    log.info('auth.passkeys', 'passkey removed', { rcId: session.person.id, label: asText(row.label) }, ctx);
+    res.json({ ok: true });
+  } catch (error) {
+    log.error('auth.passkeys', 'could not remove the passkey', { error }, ctx);
+    res.status(500).json({ error: say('Der Passkey konnte nicht entfernt werden.', 'The passkey could not be removed.') });
+  }
 });
 
 // ---- Signature sessions (cross-device signing via slug capability token) ----

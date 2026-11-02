@@ -423,3 +423,28 @@ model RcSavedSignature {
   @@unique([rc_id])
   @@map("rc_saved_signatures")
 }
+
+/// A coach's passkey (02.11.2026): sign-in with the device's fingerprint, face
+/// or PIN. Only the PUBLIC key is here — the private one never leaves the
+/// device, and neither does the fingerprint or the face. One row per device
+/// key; `credential_id` is what the device names it by. In a table of its own
+/// so that no endpoint handing out coach records can carry one along.
+model RcPasskey {
+  id String @id @db.VarChar(15)
+  rc_id String @default("")
+  credential_id String @default("")
+  public_key String @default("")
+  counter Float @default(0)
+  transports Json? @db.Json
+  backed_up Boolean @default(false)
+  label String @default("")
+  last_used String @default("")
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@unique([credential_id])
+  @@index([rc_id])
+  @@map("rc_passkeys")
+}

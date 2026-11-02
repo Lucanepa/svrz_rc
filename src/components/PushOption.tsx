@@ -3,6 +3,7 @@ import { Bell, BellOff, Loader2 } from 'lucide-react';
 import { disablePush, enablePush, pushState, type PushState } from '../lib/push';
 import { confirmDialog, toast } from './ui';
 import { cn } from '../lib/utils';
+import { IS_NATIVE } from '../lib/native';
 
 /**
  * Optionen → Benachrichtigungen (asked 2026-10-10): phone notifications on
@@ -27,7 +28,7 @@ export default function PushOption({ lang }: { lang: 'DE' | 'EN' }) {
   const label: Record<PushState, string> = {
     unsupported: '',
     'ios-home-screen': de ? 'Erst zum Home-Bildschirm' : 'Add to Home Screen first',
-    denied: de ? 'Im Browser blockiert' : 'Blocked in the browser',
+    denied: IS_NATIVE ? (de ? 'In Android blockiert' : 'Blocked in Android') : (de ? 'Im Browser blockiert' : 'Blocked in the browser'),
     off: de ? 'Aus' : 'Off',
     on: de ? 'An' : 'On',
   };
@@ -41,9 +42,13 @@ export default function PushOption({ lang }: { lang: 'DE' | 'EN' }) {
       return;
     }
     if (state === 'denied') {
-      toast.info(de
-        ? 'Benachrichtigungen sind für diese Seite im Browser blockiert — in den Website-Einstellungen erlauben, dann hier einschalten.'
-        : 'Notifications are blocked for this site in the browser — allow them in the site settings, then switch them on here.');
+      toast.info(IS_NATIVE
+        ? (de
+          ? 'Benachrichtigungen sind für die App blockiert — in den Android-Einstellungen unter Apps → SVRZ RC erlauben, dann hier einschalten.'
+          : 'Notifications are blocked for the app — allow them in Android\'s settings under Apps → SVRZ RC, then switch them on here.')
+        : (de
+          ? 'Benachrichtigungen sind für diese Seite im Browser blockiert — in den Website-Einstellungen erlauben, dann hier einschalten.'
+          : 'Notifications are blocked for this site in the browser — allow them in the site settings, then switch them on here.'));
       return;
     }
     if (state === 'on') {
@@ -70,6 +75,18 @@ export default function PushOption({ lang }: { lang: 'DE' | 'EN' }) {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg === 'denied') setState('denied');
+      // The Android app's own refusals (src/lib/push.ts → nativeError).
+      if (msg === 'no-distributor') {
+        toast.error(de
+          ? 'Auf diesem Telefon gibt es keinen Push-Dienst. Installiere eine kostenlose UnifiedPush-App wie Sunup oder ntfy aus F-Droid und versuche es dann erneut.'
+          : 'This phone has no push service. Install a free UnifiedPush app such as Sunup or ntfy from F-Droid, then try again.');
+        return;
+      }
+      if (msg.startsWith('distributor-silent:')) {
+        const app = msg.slice('distributor-silent:'.length);
+        toast.error(de ? `${app} hat nicht geantwortet. Öffne ${app} einmal und versuche es dann erneut.` : `${app} did not answer. Open ${app} once, then try again.`);
+        return;
+      }
       toast.error(msg === 'denied' || msg === 'dismissed'
         ? (de ? 'Nicht erlaubt — der Browser hat keine Benachrichtigungen zugelassen.' : 'Not allowed — the browser did not permit notifications.')
         : (de ? `Konnte nicht eingeschaltet werden: ${msg}` : `Could not be switched on: ${msg}`));

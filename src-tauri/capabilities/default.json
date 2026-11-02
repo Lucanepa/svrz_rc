@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the app's own pages may ask of the shell: open a link outside the app, update and restart itself, use Bluetooth for the notebook's camera, and (Android) ask the phone for a passkey.",
+  "description": "What the app's own pages may ask of the shell: open a link outside the app, update and restart itself, use Bluetooth for the notebook's camera, and (Android) ask the phone for a passkey and for phone notifications.",
   "windows": [
     "main"
   ],
@@ -30,6 +30,10 @@
     "process:allow-restart",
     "blec:default",
     "passkey:allow-create",
-    "passkey:allow-get"
+    "passkey:allow-get",
+    "push:allow-state",
+    "push:allow-subscribe",
+    "push:allow-unsubscribe",
+    "push:allow-take-open-url"
   ]
 }

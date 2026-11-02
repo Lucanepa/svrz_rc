@@ -9,6 +9,7 @@
 
 mod clipfiles;
 mod passkey;
+mod push;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,6 +18,7 @@ pub fn run() {
     .plugin(tauri_plugin_process::init())
     .plugin(tauri_plugin_blec::init())
     .plugin(passkey::init())
+    .plugin(push::init())
     .invoke_handler(tauri::generate_handler![
       clipfiles::camera_media,
       clipfiles::import_clip_file,

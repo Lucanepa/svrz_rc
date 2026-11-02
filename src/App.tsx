@@ -73,7 +73,7 @@ import RcMeetingsHome from './components/RcMeetingsHome';
 import SwitchRequestsHome, { SwitchRequestsTab } from './components/SwitchRequestsHome';
 import PushOption from './components/PushOption';
 import PasskeyOption from './components/PasskeyOption';
-import { resyncPush } from './lib/push';
+import { resyncPush, watchNotificationTaps } from './lib/push';
 import { answerSwitch, clearSwitchRequests, isOpenRequest, pendingFor, refreshSwitchRequests, requestSwitch, useSwitchRequests, type SwitchRequestView } from './lib/switchRequests';
 import InfoHint from './components/InfoHint';
 import { inSeasonOrManual as inSeasonWindow, currentSeason, seasonLabel as seasonLabelOf } from './lib/season';
@@ -2441,6 +2441,10 @@ export default function App() {
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
+
+  // Android app: a notification tap names a page; open it (after the popstate
+  // listener above, which does the opening).
+  useEffect(() => watchNotificationTaps(), []);
 
   // A landing URL that names a coachee — `/games/<sv|id>`, `/feedbacks/<sv|id>/…`.
   // Nothing is on screen yet and the roster has not arrived, so the open waits

@@ -86,10 +86,17 @@ dependencies {
     // Passkeys (PasskeyPlugin.kt): Android's Credential Manager, and the
     // bridge to Google Play services' password manager for phones before
     // Android 14 (on 14+ any installed provider answers through the system).
-    // 1.5.0, not 1.6: 1.6 is built with Kotlin 2.1, and this project's Kotlin
-    // plugin (1.9.25) cannot read its classes.
+    // 1.5.0, not 1.6: 1.6 is built with Kotlin 2.1, which the project's Kotlin
+    // plugin could not read until it moved to 2.2 (2026-11-02, phone
+    // notifications); 1.5.0 is kept as tested.
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
+    // Phone notifications (PushPlugin.kt): UnifiedPush (Apache-2.0), and its
+    // embedded FCM distributor (LGPL-2.1, no Firebase SDK) for phones without a
+    // distributor app: it registers with Play services using the API's VAPID
+    // key, and the fcm.googleapis.com endpoint takes the API's Web Push as is.
+    implementation("org.unifiedpush.android:connector:3.3.5")
+    implementation("org.unifiedpush.android:embedded-fcm-distributor:3.1.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")

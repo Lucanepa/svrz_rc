@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { crc32 } from 'node:zlib';
 import { judgeRcSession, rcSessionTimes } from './rcSession.ts';
 import { cleanTransports, createPasskeyCeremonies, passkeyConfig, passkeyDeviceLabel, passkeyOutlived, PasskeyError, PASSKEYS_PER_RC_MAX, type StoredPasskey } from './passkeys.ts';
+import { quietExpectedWarnings } from './quietWarnings.ts';
 import { log, query as queryLogs, sessions as logSessions, ringStats, ringEntries, pruneLogFiles, record as recordLog, captureConsole, printUnlogged, localDate, type LogLevel, type LogSource } from './logstore.ts';
 import {
   readDay, groupEntries, listDays, annotate, listAnnotations,
@@ -89,6 +90,9 @@ import {
 // Otherwise it exists only in the container's stdout, which the next redeploy
 // throws away, and the log that claims to hold everything quietly does not.
 captureConsole();
+// Before anything can warn: the passkey library's first ceremony after a
+// restart sets off two harmless Web Crypto notices (server/quietWarnings.ts).
+quietExpectedWarnings();
 
 // quiet: dotenv 17+ prints "◇ injected env (0) from .env" on every load, on
 // stderr — and with the console captured above, that became an `error` line

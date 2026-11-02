@@ -209,6 +209,9 @@ test.describe('Fingerprint sign-in', () => {
       return r.fulfill({ json: { ok: true } });
     });
     await page.goto('/');
+    // Playwright's WebKit on Linux has no WebAuthn (iOS Safari does), and the
+    // row rightly hides where the browser cannot run a ceremony.
+    test.skip(!(await page.evaluate(() => typeof window.PublicKeyCredential === 'function')), 'no WebAuthn in this browser build');
     await openOptions(page);
     const option = page.getByTestId('passkey-option');
     await option.getByRole('button', { name: /Anmeldung per Fingerabdruck/ }).click();

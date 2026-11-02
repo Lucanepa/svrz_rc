@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ChevronDown, Fingerprint, Loader2, Trash2 } from 'lucide-react';
 import { listPasskeys, removePasskey, type PasskeyEntry } from '../lib/pocketbase';
 import {
-  forgetPasskeyOnDevice, isPasskeyAlreadyHere, isPasskeyCancel, markPasskeyOnDevice,
+  deviceReason, forgetPasskeyOnDevice, isPasskeyAlreadyHere, isPasskeyCancel, markPasskeyOnDevice,
   passkeyIdOnDevice, passkeyOnDevice, passkeysPossible, setUpPasskey,
 } from '../lib/passkeys';
 import { confirmDialog, toast } from './ui';
@@ -77,9 +77,12 @@ export default function PasskeyOption({ lang, rcId }: { lang: 'DE' | 'EN'; rcId:
         return;
       }
       const status = (error as { status?: number }).status;
+      const reason = deviceReason(error);
       toast.error(typeof status === 'number'
         ? (error as Error).message
-        : (de ? 'Das Einrichten hat nicht geklappt.' : 'The set-up did not work.'));
+        : reason === 'no-provider' || reason === 'unsupported'
+          ? (de ? 'Auf diesem Gerät gibt es keinen Passwort-Manager, der Passkeys speichert (z. B. Google Passwortmanager).' : 'Nothing on this device can store passkeys (for example Google Password Manager).')
+          : (de ? 'Das Einrichten hat nicht geklappt.' : 'The set-up did not work.'));
     } finally {
       setBusy(false);
     }

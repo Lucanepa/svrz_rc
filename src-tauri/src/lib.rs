@@ -2,10 +2,13 @@
 // the page cannot do from inside a webview — open a link in the system
 // browser, update itself, restart after an update, talk Bluetooth to the
 // notebook's camera (src/lib/osmoLink.ts), and take the camera's videos off a
-// plugged-in card into its own folder (clipfiles.rs). Everything else (the session, the
-// offline cache) is the page's own work; see src/lib/native.ts.
+// plugged-in card into its own folder (clipfiles.rs), and on Android sign in
+// with a passkey through the phone's Credential Manager (passkey.rs).
+// Everything else (the session, the offline cache) is the page's own work; see
+// src/lib/native.ts.
 
 mod clipfiles;
+mod passkey;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -13,6 +16,7 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_process::init())
     .plugin(tauri_plugin_blec::init())
+    .plugin(passkey::init())
     .invoke_handler(tauri::generate_handler![
       clipfiles::camera_media,
       clipfiles::import_clip_file,

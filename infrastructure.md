@@ -171,11 +171,14 @@ ADMIN_SESSION_TTL_MS="28800000"           # default 8h
 SHARED_LOGIN_USERNAME="Referee-Coaching"
 SHARED_LOGIN_PASSWORD="<set in the env, or change it in the admin console>"
 
-# Passkey sign-in (server/passkeys.ts). Both optional: the relying party
+# Passkey sign-in (server/passkeys.ts). All optional: the relying party
 # defaults to APP_PUBLIC_URL's host, the allowed page origins to the
-# CORS_ALLOWED_ORIGINS on that host. Changing the RP ID orphans every passkey.
+# CORS_ALLOWED_ORIGINS on that host, the Android app to the release key's
+# android:apk-key-hash. Changing the RP ID orphans every passkey. Set
+# WEBAUTHN_ANDROID_ORIGINS only to test a debug build (it REPLACES the list).
 WEBAUTHN_RP_ID=""
 WEBAUTHN_ORIGINS=""
+WEBAUTHN_ANDROID_ORIGINS=""
 
 # The RC chair's own login, typed on the same form as the admin one at /admin.
 PRESIDENT_UI_USERNAME="praesidium"
@@ -588,9 +591,24 @@ Three layers, plus capability tokens:
    - The relying party is the **web app's host** (`svrz-rc.openvolley.app`,
      from `APP_PUBLIC_URL`; `WEBAUTHN_RP_ID` overrides), and only the page
      origins in `CORS_ALLOWED_ORIGINS` on that host may run a ceremony
-     (`WEBAUTHN_ORIGINS` overrides). The installed app (`tauri://`,
-     `tauri.localhost`) cannot hold a passkey for a web host and keeps the team
-     password; the app hides every passkey control there (`IS_NATIVE`).
+     (`WEBAUTHN_ORIGINS` overrides). The installed app's own pages
+     (`tauri://`, `tauri.localhost`) never run a ceremony.
+   - **The Android app (since 1.4.5)** asks the phone's Credential Manager
+     instead: an in-app Tauri plugin (`src-tauri/src/passkey.rs` →
+     `gen/android/…/PasskeyPlugin.kt`, `androidx.credentials` 1.5.0 — 1.6 needs
+     Kotlin 2.1) takes the server's options and returns the browser-shaped
+     answer. Android names the caller `android:apk-key-hash:<base64url SHA-256
+     of the signing cert>`, which the server accepts (`ANDROID_APP_ORIGINS`
+     in `server/passkeys.ts`; `WEBAUTHN_ANDROID_ORIGINS` replaces it), and
+     Google lets the app at the site's passkeys only because
+     `public/.well-known/assetlinks.json` (served by Pages, `_headers`) names
+     `app.openvolley.svrzrc` and the same cert. **If the release key ever
+     changes, change both**, or every app sign-in fails. A passkey made in
+     Chrome on the phone also works in the app (same RP, same password
+     manager). A phone with nothing that keeps passkeys answers
+     `no-provider`: the app says so once and stops offering. The desktop app
+     keeps the team password (no WebAuthn in its web views); the page hides
+     every passkey control there.
    - Discoverable keys and user verification are **required**: sign-in starts
      with no name typed, and "fingerprint or face" is the point.
    - **A passkey set up before the team password last changed is dead**, like
@@ -1417,6 +1435,11 @@ without the App Store needs a paid Apple account and a device list.
   as the Cookie line and answers new tokens in `X-Svrz-Set-Session`. Only
   `svrz_rc_session` and `svrz_admin_session` cross; everything else about auth
   is unchanged. A native request is marked `X-Svrz-Client: native/<version>`.
+- **Passkeys on Android only (1.4.5).** The web view cannot hold a passkey for
+  the web host, so the Android app hands the ceremony to the phone's Credential
+  Manager through the in-app `passkey` plugin (see "API Authentication Model" →
+  Passkeys, and `public/.well-known/assetlinks.json`). The desktop app keeps
+  the team password and shows no passkey controls.
 - **API reads cached without a service worker.** A wrapper around `fetch` does
   what the Workbox `svrz-api-get` rule does for the PWA: network first, 6 s
   timeout, the last good copy from IndexedDB (`svrz-native` / `api-get`, 300

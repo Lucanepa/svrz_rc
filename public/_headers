@@ -29,3 +29,10 @@
 # that is not, so nothing may keep a copy of it.
 /edge-probe.txt
   Cache-Control: no-store
+
+# Android's proof that the installed app (app.openvolley.svrzrc, signed with
+# the SVRZ RC key) may use this site's passkeys. Google fetches it with no
+# redirects and wants JSON; an hour keeps a key change from lingering.
+/.well-known/assetlinks.json
+  Content-Type: application/json
+  Cache-Control: public, max-age=3600

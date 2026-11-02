@@ -204,9 +204,10 @@ const SESSION_SAMESITE: 'lax' | 'none' =
   process.env.SESSION_COOKIE_SAMESITE === 'lax' ? 'lax' : 'none';
 
 // Passkey sign-in (server/passkeys.ts). The relying party is the web app's
-// host, and the ceremony may come from the web app's origins only — the
-// installed app's tauri:// pages cannot hold a passkey for a web host, so the
-// native app keeps the team password.
+// host. A ceremony comes from the web app's pages, or from the installed
+// Android app through Android's Credential Manager (named by its signing key,
+// ANDROID_APP_ORIGINS) — never from the app's own tauri:// pages, which
+// cannot hold a passkey for a web host. The desktop app keeps the password.
 const passkeys = createPasskeyCeremonies(passkeyConfig(process.env, ALLOWED_ORIGINS.filter((o) => !NATIVE_APP_ORIGINS.includes(o))));
 
 app.use(cors({

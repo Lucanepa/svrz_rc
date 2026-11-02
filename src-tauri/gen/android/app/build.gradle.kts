@@ -83,6 +83,13 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
+    // Passkeys (PasskeyPlugin.kt): Android's Credential Manager, and the
+    // bridge to Google Play services' password manager for phones before
+    // Android 14 (on 14+ any installed provider answers through the system).
+    // 1.5.0, not 1.6: 1.6 is built with Kotlin 2.1, and this project's Kotlin
+    // plugin (1.9.25) cannot read its classes.
+    implementation("androidx.credentials:credentials:1.5.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")

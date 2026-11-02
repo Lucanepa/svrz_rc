@@ -3,19 +3,25 @@
 // side, and where a passkey stands next to the team password, is in
 // server/passkeys.ts.
 //
-// Web only. The installed app's pages live on tauri:// (or tauri.localhost),
-// and a passkey belongs to the web app's host — the device would refuse the
-// ceremony, and on Linux the app's web view has no passkey support at all. So
-// the installed app keeps the team password, and nothing here is offered there.
+// The installed app's pages live on tauri.localhost, and a passkey belongs to
+// the web app's host, so the app's web view cannot run the ceremony itself.
+// On Android the app asks the phone's Credential Manager instead (the
+// `passkey` plugin, src-tauri/src/passkey.rs) and gets the same JSON a browser
+// would send; the server accepts it by the app's signing key. The desktop app
+// keeps the team password (its web views have no passkey support), and
+// nothing here is offered there.
 
+import { invoke } from '@tauri-apps/api/core';
 import {
   browserSupportsWebAuthn,
   platformAuthenticatorIsAvailable,
   sendSignal,
   startAuthentication,
   startRegistration,
+  type AuthenticationResponseJSON,
   type PublicKeyCredentialCreationOptionsJSON,
   type PublicKeyCredentialRequestOptionsJSON,
+  type RegistrationResponseJSON,
 } from '@simplewebauthn/browser';
 import { IS_NATIVE } from './native';
 import {
@@ -23,9 +29,14 @@ import {
   type PasskeyEntry,
 } from './pocketbase';
 
+/** The installed Android app (not a browser on Android). */
+function isAndroidApp(): boolean {
+  return IS_NATIVE && /Android/i.test(navigator.userAgent);
+}
+
 /** This page can run a passkey ceremony at all. */
 export function passkeysPossible(): boolean {
-  if (IS_NATIVE) return false;
+  if (IS_NATIVE) return isAndroidApp();
   try { return browserSupportsWebAuthn(); } catch { return false; }
 }
 
@@ -35,7 +46,44 @@ export function passkeysPossible(): boolean {
  *  keep one. */
 export async function deviceCanHoldPasskey(): Promise<boolean> {
   if (!passkeysPossible()) return false;
+  // Android cannot be asked beforehand whether a password manager will take
+  // the key; nearly every phone has Google's. One without says so when asked
+  // (deviceReason 'no-provider'), and the offer is not repeated.
+  if (isAndroidApp()) return true;
   try { return await platformAuthenticatorIsAvailable(); } catch { return false; }
+}
+
+/** Why the phone said no, in the Android app: `none` (no passkey here to sign
+ *  in with), `no-provider` (nothing on the phone keeps passkeys),
+ *  `unsupported`, `error`. Cancelling and "already here" come as the browser's
+ *  own NotAllowedError / InvalidStateError, so the checks below cover both. */
+export type DeviceReason = 'none' | 'no-provider' | 'unsupported' | 'error';
+
+export function deviceReason(error: unknown): DeviceReason | null {
+  return (error as { deviceReason?: DeviceReason } | null)?.deviceReason ?? null;
+}
+
+/** The ceremony through the app's plugin: the server's options in, the
+ *  device's answer (as browser-shaped JSON) out. */
+async function askAndroid(command: 'create' | 'get', options: unknown): Promise<unknown> {
+  // `hints` is newer than some Play services builds, which refuse a request
+  // carrying a field they do not know; the phone picks its own sheet anyway.
+  const request = { ...(options as Record<string, unknown>) };
+  delete request.hints;
+  try {
+    const answer = await invoke<{ responseJson: string }>(`plugin:passkey|${command}`, { requestJson: JSON.stringify(request) });
+    return JSON.parse(answer.responseJson) as unknown;
+  } catch (failure) {
+    const f = (failure ?? {}) as { code?: string; message?: string };
+    const error = new Error(f.message || String(failure)) as Error & { deviceReason?: DeviceReason };
+    if (f.code === 'cancelled') error.name = 'NotAllowedError';
+    else if (f.code === 'exists') error.name = 'InvalidStateError';
+    else {
+      error.name = 'PasskeyDeviceError';
+      error.deviceReason = f.code === 'none' || f.code === 'no-provider' || f.code === 'unsupported' ? f.code : 'error';
+    }
+    throw error;
+  }
 }
 
 /** The person closed the device's sheet, or let it time out: not an error
@@ -62,7 +110,9 @@ export function isPasskeyAlreadyHere(error: unknown): boolean {
 export async function signInWithPasskey(): Promise<{ rc: { id: string; name: string; firstName?: string }; credentialId: string; onThisDevice: boolean }> {
   const { challengeId, options } = await passkeyLoginOptions();
   const optionsJSON = options as PublicKeyCredentialRequestOptionsJSON;
-  const response = await startAuthentication({ optionsJSON });
+  const response = isAndroidApp()
+    ? await askAndroid('get', optionsJSON) as AuthenticationResponseJSON
+    : await startAuthentication({ optionsJSON });
   try {
     const rc = await passkeyLogin(challengeId, response);
     return { rc, credentialId: response.id, onThisDevice: response.authenticatorAttachment !== 'cross-platform' };
@@ -71,7 +121,7 @@ export async function signInWithPasskey(): Promise<{ rc: { id: string; name: str
     // A key the server no longer knows (removed under Optionen, or set up on
     // a test server): ask the device to stop offering it. Best effort — most
     // browsers ignore it so far, and it changes nothing here either way.
-    if (code === 'unknown' && optionsJSON.rpId) {
+    if (code === 'unknown' && optionsJSON.rpId && !isAndroidApp()) {
       void sendSignal({ signalName: 'unknownCredential', rpID: optionsJSON.rpId, credentialID: response.id }).catch(() => {});
     }
     // Dead or gone: this device no longer has a working passkey, so the next
@@ -86,7 +136,9 @@ export async function signInWithPasskey(): Promise<{ rc: { id: string; name: str
  *  device; `onThisDevice` is false when the person chose a phone or a key. */
 export async function setUpPasskey(): Promise<PasskeyEntry & { onThisDevice: boolean }> {
   const { challengeId, options } = await passkeyRegisterOptions();
-  const response = await startRegistration({ optionsJSON: options as PublicKeyCredentialCreationOptionsJSON });
+  const response = isAndroidApp()
+    ? await askAndroid('create', options) as RegistrationResponseJSON
+    : await startRegistration({ optionsJSON: options as PublicKeyCredentialCreationOptionsJSON });
   const entry = await passkeyRegister(challengeId, response);
   return { ...entry, onThisDevice: response.authenticatorAttachment !== 'cross-platform' };
 }
@@ -94,7 +146,7 @@ export async function setUpPasskey(): Promise<PasskeyEntry & { onThisDevice: boo
 /** Asks the device to forget a passkey the server just removed. Best effort,
  *  like every signal; the relying party is the page's own host. */
 export function forgetPasskeyOnDevice(credentialId: string): void {
-  if (!credentialId) return;
+  if (!credentialId || isAndroidApp()) return;
   void sendSignal({ signalName: 'unknownCredential', rpID: window.location.hostname, credentialID: credentialId }).catch(() => {});
 }
 

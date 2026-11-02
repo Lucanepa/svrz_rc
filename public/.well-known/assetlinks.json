@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.get_login_creds"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.openvolley.svrzrc",
+      "sha256_cert_fingerprints": [
+        "DA:0E:C9:54:6F:BF:F2:6B:64:78:50:23:C7:5E:02:51:A2:68:70:2A:BD:3C:83:0F:F0:D6:3A:E7:DC:75:0C:AE"
+      ]
+    }
+  }
+]

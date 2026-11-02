@@ -51,6 +51,11 @@ jobs:
           name: dist
           path: dist
           retention-days: 1
+          # upload-artifact v4 leaves out dot-files by default, and the site
+          # has one that matters: .well-known/assetlinks.json, which lets the
+          # Android app use the site's passkeys. Without this the deploy job
+          # never saw it and Pages answered 404 (02.11.2026).
+          include-hidden-files: true
 
   test:
     runs-on: ubuntu-latest

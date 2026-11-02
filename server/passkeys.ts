@@ -62,9 +62,33 @@ export type PasskeyConfig = {
   /** The WebAuthn relying party: the web app's host name. */
   rpId: string;
   rpName: string;
-  /** The page origins a ceremony may come from. */
+  /** The page origins a ceremony may come from, and the installed Android
+   *  app's (`android:apk-key-hash:…`). */
   origins: string[];
 };
+
+/**
+ * The SVRZ RC release signing certificate's SHA-256 (CN=SVRZ RC — every APK
+ * on GitHub and in the F-Droid repo is signed with it), written the way
+ * Android and public/.well-known/assetlinks.json write it. The two must
+ * match: assetlinks.json is what lets Google hand the app this site's
+ * passkeys, and this is how the server recognises the app's answers.
+ */
+export const RELEASE_CERT_SHA256 = 'DA:0E:C9:54:6F:BF:F2:6B:64:78:50:23:C7:5E:02:51:A2:68:70:2A:BD:3C:83:0F:F0:D6:3A:E7:DC:75:0C:AE';
+
+/** A signing certificate as a passkey origin: Android names an app caller
+ *  `android:apk-key-hash:` + the base64url SHA-256 of its certificate. */
+export function apkKeyHashOrigin(sha256ColonHex: string): string {
+  return `android:apk-key-hash:${Buffer.from(sha256ColonHex.replace(/:/g, ''), 'hex').toString('base64url')}`;
+}
+
+/**
+ * The installed Android app, as a passkey origin. The app asks Android's
+ * Credential Manager directly (its web view cannot hold a web passkey), and
+ * Android then names it by its signing key. WEBAUTHN_ANDROID_ORIGINS replaces
+ * this (a debug build signs with another key).
+ */
+export const ANDROID_APP_ORIGINS = [apkKeyHashOrigin(RELEASE_CERT_SHA256)];
 
 /**
  * Where passkeys belong. The ceremony runs on the PAGE (svrz-rc.openvolley.app),
@@ -85,7 +109,10 @@ export function passkeyConfig(env: Record<string, string | undefined>, corsOrigi
   const origins = (explicit.length ? explicit : corsOrigins)
     .filter((o) => !/^(tauri:|https?:\/\/tauri\.localhost(:\d+)?$)/i.test(o))
     .filter((o) => originMatchesRp(o, rpId));
-  return { rpId, rpName: 'SVRZ Referee Coaching', origins: [...new Set(origins)] };
+  const androidEnv = (env.WEBAUTHN_ANDROID_ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean);
+  const android = (env.WEBAUTHN_ANDROID_ORIGINS !== undefined ? androidEnv : ANDROID_APP_ORIGINS)
+    .filter((o) => /^android:apk-key-hash:[A-Za-z0-9_-]{43}$/.test(o));
+  return { rpId, rpName: 'SVRZ Referee Coaching', origins: [...new Set([...origins, ...android])] };
 }
 
 /** An origin whose host is the RP ID or one of its subdomains, over https —
@@ -139,14 +166,16 @@ export function passkeyDeviceLabel(userAgent: string): string {
               : /CrOS/.test(ua) ? 'Chromebook'
                 : /Linux/.test(ua) ? 'Linux'
                   : '';
+  // The installed Android app's web view says "; wv)" and is no browser.
   const browser =
-    /Edg\//.test(ua) ? 'Edge'
-      : /SamsungBrowser\//.test(ua) ? 'Samsung Internet'
-        : /Firefox\/|FxiOS\//.test(ua) ? 'Firefox'
-          : /OPR\//.test(ua) ? 'Opera'
-            : /Chrome\/|CriOS\//.test(ua) ? 'Chrome'
-              : /Safari\//.test(ua) ? 'Safari'
-                : '';
+    /; wv\)/.test(ua) ? 'App'
+      : /Edg\//.test(ua) ? 'Edge'
+        : /SamsungBrowser\//.test(ua) ? 'Samsung Internet'
+          : /Firefox\/|FxiOS\//.test(ua) ? 'Firefox'
+            : /OPR\//.test(ua) ? 'Opera'
+              : /Chrome\/|CriOS\//.test(ua) ? 'Chrome'
+                : /Safari\//.test(ua) ? 'Safari'
+                  : '';
   return [device, browser].filter(Boolean).join(' · ') || 'Unbekanntes Gerät';
 }
 

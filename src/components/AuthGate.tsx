@@ -12,7 +12,7 @@ import AppSpinner from './AppSpinner';
 import { Skeleton } from './Skeleton';
 import { getStoredLang, setStoredLang, getStoredRcId, setStoredRcId, type Lang } from '../lib/prefs';
 import {
-  anyPasskeyOnDevice, deviceCanHoldPasskey, dismissPasskeyOffer, isPasskeyAlreadyHere, isPasskeyCancel,
+  anyPasskeyOnDevice, deviceCanHoldPasskey, deviceReason, dismissPasskeyOffer, isPasskeyAlreadyHere, isPasskeyCancel,
   markPasskeyOnDevice, passkeyOfferDismissed, passkeyOnDevice, passkeysPossible, setUpPasskey, signInWithPasskey,
 } from '../lib/passkeys';
 import { toast } from './ui';
@@ -101,6 +101,8 @@ const STR = {
     passkeyOfferNo: 'Nicht jetzt',
     passkeySetUpDone: 'Eingerichtet. Beim nächsten Mal genügt dein Fingerabdruck oder dein Gesicht.',
     passkeySetUpFailed: 'Das Einrichten hat nicht geklappt. Du kannst es später unter Optionen nochmals versuchen.',
+    passkeyNoneHere: 'Auf diesem Gerät ist noch kein Passkey für SVRZ RC gespeichert. Melde dich mit dem Team-Passwort an – danach kannst du ihn einrichten.',
+    passkeyNoProvider: 'Auf diesem Gerät gibt es keinen Passwort-Manager, der Passkeys speichert (z. B. Google Passwortmanager). Bitte das Team-Passwort verwenden.',
   },
   EN: {
     brand: 'Referee Coaching',
@@ -148,6 +150,8 @@ const STR = {
     passkeyOfferNo: 'Not now',
     passkeySetUpDone: 'Set up. Next time your fingerprint or face is enough.',
     passkeySetUpFailed: 'The set-up did not work. You can try again later under Options.',
+    passkeyNoneHere: 'No passkey for SVRZ RC is stored on this device yet. Sign in with the team password – then you can set one up.',
+    passkeyNoProvider: 'Nothing on this device can store passkeys (for example Google Password Manager). Please use the team password.',
   },
 } satisfies Record<Lang, Record<string, unknown>>;
 
@@ -218,6 +222,10 @@ function passkeyErrorMessage(err: unknown, t: Strings): string {
   const e = err as ApiError;
   if (typeof e?.status === 'number') return e.code ? e.message : errorMessage(err, t);
   if (err instanceof TypeError) return errorMessage(err, t);
+  // The Android app's own answers (lib/passkeys.ts, deviceReason).
+  const reason = deviceReason(err);
+  if (reason === 'none') return t.passkeyNoneHere;
+  if (reason === 'no-provider' || reason === 'unsupported') return t.passkeyNoProvider;
   return t.passkeyDeviceFailed;
 }
 
@@ -587,6 +595,15 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       if (isPasskeyAlreadyHere(err)) {
         clientLog.info('auth.passkey', 'this device already holds a passkey for the coach', { rcId: id });
         markPasskeyOnDevice(id, true);
+        finishOffer();
+        return;
+      }
+      // Nothing on this phone can keep a passkey: say so once, do not ask
+      // again, and let the coach in.
+      if (deviceReason(err) === 'no-provider' || deviceReason(err) === 'unsupported') {
+        clientLog.warn('auth.passkey', 'no passkey provider on this device', { rcId: id, error: err });
+        dismissPasskeyOffer(id);
+        toast.info(t.passkeyNoProvider);
         finishOffer();
         return;
       }

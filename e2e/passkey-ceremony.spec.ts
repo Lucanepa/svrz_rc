@@ -1,8 +1,9 @@
 import { test, expect, type Page } from '@playwright/test';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { readFileSync } from 'node:fs';
 import {
-  cleanTransports, createPasskeyCeremonies, originMatchesRp, passkeyConfig, passkeyDeviceLabel, passkeyOutlived,
+  ANDROID_APP_ORIGINS, apkKeyHashOrigin, RELEASE_CERT_SHA256, cleanTransports, createPasskeyCeremonies, originMatchesRp, passkeyConfig, passkeyDeviceLabel, passkeyOutlived,
   PasskeyError, PASSKEY_CHALLENGE_TTL_MS, PASSKEY_CHALLENGES_MAX, PASSKEY_IDLE_MS, type PasskeyConfig, type StoredPasskey,
 } from '../server/passkeys';
 
@@ -257,16 +258,30 @@ test.describe('Passkey rules', () => {
 
   test('the relying party is the web app, and only its pages may ask', () => {
     const cors = ['https://svrz-rc.openvolley.app', 'tauri://localhost', 'http://tauri.localhost', 'https://tauri.localhost', 'https://rc.lucanepa.com'];
-    expect(passkeyConfig({}, cors)).toEqual({ rpId: 'svrz-rc.openvolley.app', rpName: 'SVRZ Referee Coaching', origins: ['https://svrz-rc.openvolley.app'] });
+    expect(passkeyConfig({}, cors)).toEqual({ rpId: 'svrz-rc.openvolley.app', rpName: 'SVRZ Referee Coaching', origins: ['https://svrz-rc.openvolley.app', ...ANDROID_APP_ORIGINS] });
     expect(passkeyConfig({ APP_PUBLIC_URL: 'https://staging.example.org/app/' }, ['https://staging.example.org']).rpId).toBe('staging.example.org');
-    expect(passkeyConfig({ WEBAUTHN_RP_ID: 'localhost', WEBAUTHN_ORIGINS: 'http://localhost:3000, https://evil.example' }, cors))
+    expect(passkeyConfig({ WEBAUTHN_RP_ID: 'localhost', WEBAUTHN_ORIGINS: 'http://localhost:3000, https://evil.example', WEBAUTHN_ANDROID_ORIGINS: '' }, cors))
       .toMatchObject({ rpId: 'localhost', origins: ['http://localhost:3000'] });
     expect(originMatchesRp('http://svrz-rc.openvolley.app', 'svrz-rc.openvolley.app')).toBe(false);
     expect(originMatchesRp('https://svrz-rc.openvolley.app.evil.example', 'svrz-rc.openvolley.app')).toBe(false);
     expect(originMatchesRp('not a url', 'localhost')).toBe(false);
     // The installed app's own origins never run a ceremony, not even on a
     // development RP where https://tauri.localhost would match the host rule.
-    expect(passkeyConfig({ WEBAUTHN_RP_ID: 'localhost' }, ['http://localhost:3000', ...cors]).origins).toEqual(['http://localhost:3000']);
+    expect(passkeyConfig({ WEBAUTHN_RP_ID: 'localhost', WEBAUTHN_ANDROID_ORIGINS: '' }, ['http://localhost:3000', ...cors]).origins).toEqual(['http://localhost:3000']);
+  });
+
+  test('the installed Android app signs in by its signing key, and only that key', () => {
+    // The release key: the same certificate public/.well-known/assetlinks.json gives Google.
+    const assetlinks = JSON.parse(readFileSync('public/.well-known/assetlinks.json', 'utf8'));
+    expect(assetlinks[0].target.sha256_cert_fingerprints).toEqual([RELEASE_CERT_SHA256]);
+    expect(ANDROID_APP_ORIGINS).toEqual([apkKeyHashOrigin(RELEASE_CERT_SHA256)]);
+    expect(ANDROID_APP_ORIGINS[0]).toMatch(/^android:apk-key-hash:[A-Za-z0-9_-]{43}$/);
+    expect(assetlinks[0].target.package_name).toBe('app.openvolley.svrzrc');
+    expect(assetlinks[0].relation).toContain('delegate_permission/common.get_login_creds');
+    // A debug build signs with another key: the env replaces the list, and
+    // anything that is not an apk-key-hash is dropped.
+    const debug = apkKeyHashOrigin(Array(32).fill('AB').join(':'));
+    expect(passkeyConfig({ WEBAUTHN_ANDROID_ORIGINS: `${debug}, https://evil.example, android:apk-key-hash:short` }, []).origins).toEqual([debug]);
   });
 
   test('the device label names the device and the browser, nothing more', () => {
@@ -277,5 +292,7 @@ test.describe('Passkey rules', () => {
     expect(passkeyDeviceLabel('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0')).toBe('Windows · Edge');
     expect(passkeyDeviceLabel('Mozilla/5.0 (Macintosh; Intel Mac OS X 15.6; rv:144.0) Gecko/20100101 Firefox/144.0')).toBe('Mac · Firefox');
     expect(passkeyDeviceLabel('')).toBe('Unbekanntes Gerät');
+    // The installed Android app's web view.
+    expect(passkeyDeviceLabel('Mozilla/5.0 (Linux; Android 16; Pixel 7 Build/BP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/141.0.0.0 Mobile Safari/537.36')).toBe('Android · App');
   });
 });

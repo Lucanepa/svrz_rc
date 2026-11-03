@@ -3517,6 +3517,11 @@ type CoacheeObservationSummary = {
    *  "sent" the moment it exists here; it is only "complete" once this is
    *  true too. */
   hasPresidentNote: boolean;
+  /** The role that report asked the further visit in ("Y, als 1SR" → '1SR'),
+   *  while one is wanted; '' for a plain Y, or when none is wanted. The app
+   *  narrows the coachee's focus games to it and skips the "already observed"
+   *  notice on a game in that role — that game IS the visit asked for. */
+  furtherVisitRole: '1SR' | '2SR' | '';
 };
 
 async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<string, boolean>; coachees?: AnyRecord[] }) {
@@ -3589,6 +3594,9 @@ async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<st
   }
 
   const summaryById = new Map<string, CoacheeObservationSummary>();
+  // Coachee id → their newest report, for those whose newest observation asks
+  // for a further visit: the role it was asked in lives only in that report.
+  const askedIn = new Map<string, string>();
   for (const coachee of coachees) {
     const coacheeId = coachee.id;
     const st = stats.get(coacheeId);
@@ -3612,7 +3620,36 @@ async function getCoacheeObservationSummaryMap(opts?: { activeOverrides?: Map<st
       needsObservation: isActive && (count === 0 || (st?.hasFurther ?? false)),
       latestObservationAt: st?.latestAt ?? '',
       hasPresidentNote: Boolean(latestFeedbackId) && notedIds.has(latestFeedbackId),
+      furtherVisitRole: '',
     });
+    if (st?.hasFurther && latestFeedbackId) askedIn.set(coacheeId, latestFeedbackId);
+  }
+
+  // Read only for the few coachees a further visit is wanted for. A failed read
+  // costs the narrowing and nothing else: every game stays in focus, as before
+  // the role was recorded, rather than the coachee list failing to load.
+  if (askedIn.size > 0) {
+    try {
+      const ids = [...new Set(askedIn.values())];
+      const reports = await withCollection(collectionCandidates.refereeCoaches, (c) => c.getFullList<AnyRecord>({
+        filter: ids.map((id) => `id = "${escapeFilterValue(id)}"`).join(' || '),
+        fields: 'id,feedback_json',
+      }));
+      const roleById = new Map(reports.map((r) => {
+        const results = ((r.feedback_json as AnyRecord | undefined)?.results ?? {}) as AnyRecord;
+        const role = asText(results.secondBesuchRole);
+        // The role only counts beside the Y it qualifies.
+        const asked: CoacheeObservationSummary['furtherVisitRole'] =
+          asText(results.secondBesuch) === 'Y' && (role === '1SR' || role === '2SR') ? role : '';
+        return [String(r.id), asked];
+      }));
+      for (const [coacheeId, feedbackId] of askedIn) {
+        const summary = summaryById.get(coacheeId);
+        if (summary) summary.furtherVisitRole = roleById.get(feedbackId) ?? '';
+      }
+    } catch (error) {
+      console.warn('[observation-summary] further-visit roles unreadable:', safeError(error));
+    }
   }
 
   return summaryById;
@@ -11397,6 +11434,7 @@ app.get('/api/coachees', requireRcSession, async (_req: Request, res: ExpressRes
         needsObservation: isActive,
         latestObservationAt: '',
         hasPresidentNote: false,
+        furtherVisitRole: '',
       };
       return {
         ...row,

@@ -220,17 +220,10 @@ export const USEFUL_DOCS: UsefulDoc[] = [
     DE: { title: 'Leitfaden SR-Grundausbildung N4', note: 'Voraussetzungen, Ablauf und Prüfung der Grundausbildung zum N4-SR.' },
     EN: { title: 'Basic referee course N4 guide', note: 'Requirements, course structure and exam for becoming an N4 referee.' },
   },
-  {
-    id: 'erGbo',
-    group: 'training',
-    kind: 'pdf',
-    href: 'https://www.svrz.ch/_Resources/Persistent/5/2/9/d/529d3bceeb82b16df032b72dd4767f83c792625b/Auszug%20ER%20und%20GBO_2026-27.pdf',
-    proxyId: 'auszug-er-gbo',
-    bytes: 83738,
-    badge: 'PDF',
-    DE: { title: 'Auszug ER und GBO für SR', note: 'Die SR-Artikel aus Ergänzungsreglement und Gebührenordnung: Pflichtpensum, Aufgebot, Bussen.' },
-    EN: { title: 'ER and GBO extract for referees', note: 'The referee articles from the supplementary regulation and fee schedule: quota, appointments, fines.' },
-  },
+  // "Auszug ER und GBO" left the list on 03.11.2026: it quotes the ER of
+  // 01.07.2025 and the GBO 2025/26 and says so itself, and nothing newer was
+  // published. Its articles now live in the Reglement der Unparteiischen and
+  // the GBO of 8 July 2026, both below (a coach's note, 2026-11-03).
   {
     id: 'srN3',
     group: 'training',
